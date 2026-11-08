@@ -668,6 +668,30 @@ impl<'src> Parser<'src> {
                 self.bump_into(SyntaxKind::WHEN_TOK);
                 if self.peek_is_expr_start() {
                     self.parse_expr();
+                    // A guard whose last construct has a bare body — a raw `fun`
+                    // or match clause, a `let … in` — can end on that body's
+                    // trailing `;` (`when fun x -> a; -> b`). FCS accepts such a
+                    // trailing separator before a closer or `then`, but not before
+                    // the clause's `->`. Read the raw stream: a `;` inside parens
+                    // (`when (a;) -> b`) is followed by the swallowed `)`, which the
+                    // filtered stream does not show.
+                    let last_significant =
+                        self.raw_tokens[..self.raw_pos]
+                            .iter()
+                            .rev()
+                            .find_map(|(tok, span)| match tok {
+                                Ok(TriviaToken::Lexed(t)) if trivia_kind(t).is_none() => {
+                                    Some((t.clone(), span.clone()))
+                                }
+                                Ok(TriviaToken::Lexed(_)) => None,
+                                _ => None,
+                            });
+                    if let Some((Token::Semi, semi)) = last_significant {
+                        self.errors.push(ParseError {
+                            message: "unexpected `;` at the end of a `when` guard".to_string(),
+                            span: semi,
+                        });
+                    }
                 } else {
                     let span = self
                         .peek()
@@ -1286,8 +1310,8 @@ impl<'src> Parser<'src> {
     ///
     /// With no `BlockBegin` — a raw `finally`, where LexFilter pushed no context
     /// (see [`DualKeyword`]) — nothing closes the body, so it is a bare sequence
-    /// ([`SeqBody::Bare`]): `try a finally b; ; c` leaves the second `;` to the
-    /// enclosing sequence.
+    /// ([`SeqBody::Bare`](super::expr::SeqBody::Bare)): `try a finally b; ; c`
+    /// leaves the second `;` to the enclosing sequence.
     fn parse_block_body_after_keyword(&mut self, keyword: &str) {
         let opened = matches!(
             self.peek(),

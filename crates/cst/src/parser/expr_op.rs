@@ -67,9 +67,8 @@ impl<'src> Parser<'src> {
         // const-literal arm. The expression-start gates classify a lambda head
         // through the same [`DualKeyword::lambda_head`], so a head they admit
         // always reaches this arm. FCS rejects `- fun …` / `& fun …` at the
-        // grammar level for the same reason `- if …` is rejected; the
-        // diagnostic side would reuse `maybe_warn_keyword_after_prefix`'s
-        // pattern in a follow-up if we ever care to emit it.
+        // grammar level for the same reason `- if …` is rejected;
+        // `maybe_warn_keyword_after_prefix` reports it at the prefix sites.
         let lambda_head = match self.peek() {
             Some((Ok(tok), _)) => DualKeyword::lambda_head(tok),
             _ => None,
@@ -107,11 +106,10 @@ impl<'src> Parser<'src> {
         // this dispatch — `parse_do_block_body` claims that `Virtual::Do`
         // directly, after the condition's `parse_expr` has already stopped.)
         // FCS rejects `- do …` / `& do …` at the grammar level (a `declExpr`,
-        // not a `minusExpr` operand); like `fun`/`do!` above, `do` is a virtual,
-        // so the prefix-operand path accepts it leniently (an error-recovery
-        // tree, no panic) — the same deferred-diagnostic class as `fun` (a
-        // follow-up would extend `maybe_warn_keyword_after_prefix` to the
-        // virtuals).
+        // not a `minusExpr` operand); like `do!` above, the prefix-operand path
+        // accepts it leniently (an error-recovery tree, no panic), since `do` is
+        // not among the [`decl_expr_keyword`]s that
+        // `maybe_warn_keyword_after_prefix` reports.
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::Do)), _))
@@ -151,8 +149,8 @@ impl<'src> Parser<'src> {
         // only fires for an expression-position `let` — a function/`let`/`fun`/
         // `if`/`match` body, a paren body, a tuple element. FCS rejects
         // `- let …` / `& let …` at the grammar level (like `- if …`); this path
-        // produces an error-recovery tree rather than panicking, the diagnostic
-        // a possible follow-up (`maybe_warn_keyword_after_prefix`).
+        // produces an error-recovery tree rather than panicking, and
+        // `maybe_warn_keyword_after_prefix` reports it.
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::Let)), _))
@@ -837,8 +835,9 @@ impl<'src> Parser<'src> {
         self.builder.finish_node();
     }
 
-    /// FCS rejects `- if …` / `& if …` / `- match …` / `& match …` at the
-    /// grammar level: `minusExpr`'s operand is `minusExpr`, not `declExpr`,
+    /// FCS rejects `- if …` / `& if …` / `- match …` / `& match …` (and every
+    /// other [`decl_expr_keyword`] construct) at the grammar level:
+    /// `minusExpr`'s operand is `minusExpr`, not `declExpr`,
     /// and the FCS parser raises a "syntax error" against the `IF` / `MATCH`
     /// token. Our `Token::If` and `Token::Match` both sit in
     /// `raw_starts_minus_expr` so [`Parser::parse_minus_expr`]'s `if`- and
@@ -851,27 +850,11 @@ impl<'src> Parser<'src> {
         let Some((Ok(ft), span)) = self.peek().cloned() else {
             return;
         };
-        let keyword = match ft {
-            FilteredToken::Raw(Token::If) => "if",
-            FilteredToken::Raw(Token::Match) => "match",
-            FilteredToken::Raw(Token::MatchBang) => "match!",
-            FilteredToken::Raw(Token::While) => "while",
-            FilteredToken::Raw(Token::WhileBang) => "while!",
-            FilteredToken::Raw(Token::For) => "for",
-            FilteredToken::Raw(Token::Try) => "try",
-            // `lazy`/`assert` are `declExpr`-level prefixes (not `minusExpr`), so
-            // FCS rejects `- lazy …` / `& lazy …` / `upcast lazy …` exactly as it
-            // rejects `- if …`. Surface the same diagnostic at the prefix sites.
-            // Both spellings reach here: the same-line raw `Token::Lazy`/`Assert`
-            // *and* the offside/control-flow `OLAZY`/`OASSERT` relabel
-            // (`- lazy⏎ …` / `& lazy if …`), so match the virtual too — else the
-            // relabelled form would slip through with no diagnostic.
-            FilteredToken::Raw(Token::Lazy) | FilteredToken::Virtual(Virtual::Lazy) => "lazy",
-            FilteredToken::Raw(Token::Assert) | FilteredToken::Virtual(Virtual::Assert) => "assert",
-            // `fixed` is a `declExpr`-level prefix (not `minusExpr`), so FCS
-            // rejects `- fixed …` / `& fixed …` exactly as it rejects `- if …`.
-            FilteredToken::Raw(Token::Fixed) => "fixed",
-            _ => return,
+        // Every keyword construct FCS has only at `declExpr` level, in either
+        // spelling: the same-line raw `Token::Lazy` and the offside `OLAZY`
+        // relabel (`- lazy⏎ …`) alike, so neither slips through.
+        let Some(keyword) = decl_expr_keyword(&ft) else {
+            return;
         };
         self.errors.push(ParseError {
             message: format!(

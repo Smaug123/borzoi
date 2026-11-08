@@ -50,6 +50,7 @@ use crate::lexfilter::{
 };
 use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode, kind_interval};
 use dual_keyword::{DualKeyword, KeywordForm};
+use expr::decl_expr_keyword;
 
 /// FCS's `parsAugmentationsIllegalOnDelegateType` (`FSComp.txt:545`) — a
 /// delegate type definition (`type T = delegate of …`) admits no augmentation,

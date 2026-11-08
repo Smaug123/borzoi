@@ -1353,35 +1353,11 @@ impl<'src> Parser<'src> {
     }
 
     /// `true` if the current token heads a keyword construct that FCS's grammar
-    /// has only at `declExpr` level, never as a `minusExpr`: `fixed`, `lazy`,
-    /// `assert`, `if`, `match`/`match!`, `try`, `while`/`while!`, `for`,
-    /// `let … in`, and a lambda (`fun`/`function`, either spelling —
-    /// [`DualKeyword::lambda_head`]). Each is dispatched from
-    /// [`Self::parse_minus_expr`], so the Pratt loop would otherwise take it as
-    /// a `minusExpr` LHS.
+    /// has only at `declExpr` level ([`decl_expr_keyword`]). Each is dispatched
+    /// from [`Self::parse_minus_expr`], so the Pratt loop would otherwise take
+    /// it as a `minusExpr` LHS.
     pub(super) fn at_decl_expr_construct_head(&self) -> bool {
-        match self.peek() {
-            Some((Ok(tok), _)) => {
-                DualKeyword::lambda_head(tok).is_some()
-                    || matches!(
-                        tok,
-                        FilteredToken::Raw(
-                            Token::Fixed
-                                | Token::Lazy
-                                | Token::Assert
-                                | Token::If
-                                | Token::Match
-                                | Token::MatchBang
-                                | Token::Try
-                                | Token::While
-                                | Token::WhileBang
-                                | Token::For
-                                | Token::Let
-                        ) | FilteredToken::Virtual(Virtual::Let | Virtual::Lazy | Virtual::Assert)
-                    )
-            }
-            _ => false,
-        }
+        matches!(self.peek(), Some((Ok(tok), _)) if decl_expr_keyword(tok).is_some())
     }
 
     /// `true` if the current filtered token can lead a fresh expression
@@ -1627,6 +1603,39 @@ impl<'src> Parser<'src> {
             _ => false,
         }
     }
+}
+
+/// The keyword `tok` spells if it heads a construct that FCS's grammar has
+/// only at `declExpr` level, never as a `minusExpr`: `fixed`, `lazy`, `assert`,
+/// `if`, `match`/`match!`, `try`, `while`/`while!`, `for`, `let … in`, and a
+/// lambda (`fun`/`function`, either spelling — [`DualKeyword::lambda_head`]).
+/// `lazy`, `assert` and `let` count in both their raw and offside spellings.
+///
+/// Such a construct is neither a `<-` assignment target
+/// ([`Parser::at_decl_expr_construct_head`]) nor a prefix operator's operand
+/// ([`Parser::maybe_warn_keyword_after_prefix`]); both ask this one function,
+/// so the two cannot disagree about which keywords these are.
+pub(super) fn decl_expr_keyword(tok: &FilteredToken<'_>) -> Option<&'static str> {
+    if let Some(lambda) = DualKeyword::lambda_head(tok) {
+        return Some(match lambda {
+            DualKeyword::Function => "function",
+            _ => "fun",
+        });
+    }
+    Some(match tok {
+        FilteredToken::Raw(Token::Fixed) => "fixed",
+        FilteredToken::Raw(Token::Lazy) | FilteredToken::Virtual(Virtual::Lazy) => "lazy",
+        FilteredToken::Raw(Token::Assert) | FilteredToken::Virtual(Virtual::Assert) => "assert",
+        FilteredToken::Raw(Token::If) => "if",
+        FilteredToken::Raw(Token::Match) => "match",
+        FilteredToken::Raw(Token::MatchBang) => "match!",
+        FilteredToken::Raw(Token::Try) => "try",
+        FilteredToken::Raw(Token::While) => "while",
+        FilteredToken::Raw(Token::WhileBang) => "while!",
+        FilteredToken::Raw(Token::For) => "for",
+        FilteredToken::Raw(Token::Let) | FilteredToken::Virtual(Virtual::Let) => "let",
+        _ => return None,
+    })
 }
 
 /// One statement separator as [`Parser::finish_seq_block`] meets it.

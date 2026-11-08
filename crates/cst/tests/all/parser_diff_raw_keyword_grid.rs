@@ -11,8 +11,11 @@
 //! `then` body is a `declExpr`, so it stops at `;`), and nothing closes them.
 //!
 //! Hand-written cases sample those boundaries badly, so this composes a small
-//! grammar of constructs: every construct with leaf holes, and every construct
-//! with one hole filled by another construct. Each cell goes to
+//! grammar of constructs: exhaustively, every construct with leaf holes and
+//! every construct with one hole filled by another construct; and randomly,
+//! trees up to [`RANDOM_DEPTH`] deep, since the defects that survive the
+//! exhaustive grid are combinations of three constructs or more (a raw body's
+//! trailing `;` inside a `when` guard). Each cell goes to
 //! [`assert_parse_verdicts_match`], so a cell we wrongly reject, wrongly accept,
 //! or accept with a divergent tree fails. Nothing here hard-codes which cells
 //! FCS accepts.
@@ -26,8 +29,9 @@ const HOLE: &str = "@";
 /// Expression constructs, each with one or more [`HOLE`]s. They span the
 /// keywords that have a raw spelling, the separators and operators whose
 /// precedence decides where a raw body ends (`;`, `,`, `then`, an infix, a type
-/// annotation, an assignment, a cast, an application), the constructs that are raw in every layout (`let … in`,
-/// `lazy`, verbose `while … done`), and the loops FCS rejects without `done`.
+/// annotation, an assignment, a cast, an application, a prefix operator), the
+/// constructs that are raw in every layout (`let … in`, `lazy`, verbose
+/// `while … done`), and the loops FCS rejects without `done`.
 const CONSTRUCTS: &[&str] = &[
     "if @ then @",
     "if @ then @ else @",
@@ -53,6 +57,7 @@ const CONSTRUCTS: &[&str] = &[
     "@ := @",
     "@ :> int",
     "f @",
+    "- @",
     "@ : int",
     "(@)",
     "let x = @ in @",
@@ -266,4 +271,104 @@ fn diff_raw_keyword_grid_offside_control() {
             .map(|e| format!("let v = ({e})\n")),
         OFFSIDE_CONTROL_KNOWN,
     );
+}
+
+/// How deep [`random_expression`] nests constructs.
+const RANDOM_DEPTH: u32 = 4;
+
+/// SplitMix64: a small deterministic generator, so a failing seed reproduces.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// `true` with probability `numerator / denominator`.
+    fn chance(&mut self, numerator: u64, denominator: u64) -> bool {
+        self.next() % denominator < numerator
+    }
+
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items[(self.next() % items.len() as u64) as usize]
+    }
+}
+
+/// A random expression from [`CONSTRUCTS`], nesting at most `depth` deep: each
+/// hole is a leaf or, below the depth limit, another random expression, which
+/// is parenthesised one time in four (the swallowed-closer boundary).
+fn random_expression(rng: &mut SplitMix64, depth: u32) -> String {
+    if depth == 0 || rng.chance(1, 4) {
+        return rng.pick(&["1", "x"]).to_owned();
+    }
+    let construct = rng.pick(CONSTRUCTS);
+    let mut out = String::new();
+    for (i, piece) in construct.split(HOLE).enumerate() {
+        if i > 0 {
+            let inner = random_expression(rng, depth - 1);
+            if rng.chance(1, 4) {
+                out.push_str(&format!("({inner})"));
+            } else {
+                out.push_str(&inner);
+            }
+        }
+        out.push_str(piece);
+    }
+    out
+}
+
+/// Positions a random expression is placed in, all inside a module header's
+/// attribute list so every keyword in it is raw.
+const RANDOM_CONTEXTS: &[&str] = &[
+    "module [<A(@)>] M\nlet x = 1\n",
+    "module [<A(1, @)>] M\nlet x = 1\n",
+    "module [<A(@ <- 1)>] M\nlet x = 1\n",
+    "module [<A(match 0 with _ when @ -> 1)>] M\nlet x = 1\n",
+    "module [<A(if @ then 1 else 2)>] M\nlet x = 1\n",
+    "module [<A(@)>] M =\n  let x = 1\n",
+];
+
+/// `cases` random cells from `seed`: a random expression in a random context.
+fn random_cells(seed: u64, cases: usize) -> Vec<String> {
+    let mut rng = SplitMix64(seed);
+    (0..cases)
+        .map(|_| {
+            let context = rng.pick(RANDOM_CONTEXTS);
+            context.replace(HOLE, &random_expression(&mut rng, RANDOM_DEPTH))
+        })
+        .collect()
+}
+
+/// A fixed-seed sample of random cells, run on every test pass.
+#[test]
+fn diff_raw_keyword_random() {
+    sweep("random", random_cells(0x5EED_0110, 2_000), &[]);
+}
+
+/// The random sweep at depth: `BORZOI_RAW_KEYWORD_SEED` picks the seed (the
+/// clock by default, printed so a failure reproduces) and
+/// `BORZOI_RAW_KEYWORD_CASES` the count.
+#[test]
+#[ignore = "deep random sweep; run explicitly when touching the raw-keyword productions"]
+fn deep_diff_raw_keyword_random() {
+    let seed = std::env::var("BORZOI_RAW_KEYWORD_SEED")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock after the epoch")
+                .as_nanos() as u64
+        });
+    let cases: usize = std::env::var("BORZOI_RAW_KEYWORD_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30_000);
+    eprintln!("raw-keyword random sweep seed: {seed} (cases={cases})");
+    sweep("deep random", random_cells(seed, cases), &[]);
 }
