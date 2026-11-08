@@ -1,9 +1,9 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–4, 7b, 7c and 8 have landed. Stage 8 chose **A₁**
-> (see its section for the numbers and the conditions). B₁ now commits on half
-> the corpus, exactly as the restore does; the resolver's dependency asset
-> filters block the other half. Supersedes slice 8 of
+> **Status:** stages 1–4, 7b, 7c and 8 have landed, and so has the
+> resolver's handling of dependency asset filters. Stage 8 chose **A₁** (see
+> its section for the numbers and the conditions). B₁ now commits on four of
+> the six corpus projects, exactly as the restore does. Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -660,6 +660,31 @@ targeting packs) now pass the check, and decline on what stood behind it.
 
 So the next stage is the resolver's dependency asset filters, which the
 corpus now names as the one blocker, then 5, 6 and 7a.
+
+### Dependency asset filters — landed
+
+`resolve_offline` declined whenever a version it settled on, or a losing
+version, declared a dependency with an `include` or `exclude` asset filter.
+`dotnet pack` writes `exclude="Build,Analyzers"` on every dependency, so the
+decline blocked half the corpus. A filter decides which of a package's assets
+flow to the project, not which packages are in the graph, so the resolver now
+ignores it. `resolver_diff` holds that to both restore engines: its random
+generator attaches filters (`exclude="Build,Analyzers"`, `include="None"`,
+`exclude="All"` and others, chosen without drawing from its random stream, so
+its graphs are unchanged), its wide-graph generator filters every seventh
+dependency, which reaches losing versions with filtered dependencies, and the
+soak passes. The filters still matter for compile assets, which stage 9's
+consumer will have to apply.
+
+| corpus project (6) | B₁ |
+|---|---|
+| TypeEquality, WoofWare.Incremental, WoofWare.LiangHyphenation, WoofWare.WeakHashTable | commits |
+| WoofWare.Expect | declines: a losing version that is not a leaf of the legacy engine's tree (the resolver's engine-agreement envelope) |
+| WoofWare.PawPrint.Domain | declines: System.Diagnostics.DiagnosticSource 9.0.2's nuspec declares `<contentFiles>` (ILLink descriptors, as Microsoft's `System.*` packages do), outside B₁'s vocabulary |
+
+The two declines are the next targets: modelling `<contentFiles>` (restore
+validates its `buildAction`, `copyToOutput` and `flatten`), and the losing
+versions the engine-agreement envelope turns away.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 
