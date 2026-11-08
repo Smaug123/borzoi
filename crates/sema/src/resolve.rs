@@ -86,7 +86,8 @@ pub use model::{
 };
 pub use state::ActivePatternShape;
 use state::{
-    Resolver, implicit_open_groups, implicit_open_namespaces, implicit_shortening_prefixes,
+    DottedOpacity, Resolver, implicit_open_groups, implicit_open_namespaces,
+    implicit_shortening_prefixes,
 };
 
 /// Resolve every name use in `file` to its defining binder — within this file,
@@ -421,7 +422,7 @@ pub fn resolve_file(
         r.pattern_suppressed_case_ids = HashSet::new();
         r.unmodelled_open_active = false;
         r.opaque_value_open = false;
-        r.opaque_dotted_open = false;
+        r.dotted_opacity = DottedOpacity::default();
         r.recursive_module_active = module.is_rec();
         // An `[<AutoOpen>]` module declared in one `namespace N` block is
         // opened again by every later block of `N`, and only of `N`.
@@ -2343,7 +2344,7 @@ impl<'a> Resolver<'a> {
             module_aliases: HashMap::new(),
             unmodelled_open_active: false,
             opaque_value_open: false,
-            opaque_dotted_open: false,
+            dotted_opacity: DottedOpacity::default(),
             recursive_module_active: false,
             contributions: FileContributions::default(),
             own_extension_statics: std::collections::BTreeSet::new(),
@@ -2367,6 +2368,7 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
+            member_decl_counts: HashMap::new(),
         }
     }
 
@@ -2382,12 +2384,18 @@ impl<'a> Resolver<'a> {
         pos: rowan::TextSize,
         kind: model::ExportDeclKind,
     ) {
-        self.export_decls.push(model::ExportDecl {
+        let decl = model::ExportDecl {
             path,
             pos,
             anonymous_root: self.anonymous_root,
             kind,
-        });
+        };
+        // The walk is never screened: a signature replaces this file's own
+        // identities only when the fold publishes them.
+        if let Some(member) = decl.member_path(&self.items, false) {
+            *self.member_decl_counts.entry(member).or_default() += 1;
+        }
+        self.export_decls.push(decl);
     }
 
     /// Attach a case's type-qualified path to the most recently appended

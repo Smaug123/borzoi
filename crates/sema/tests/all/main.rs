@@ -94,6 +94,7 @@ mod resolve_cross_file_active_patterns;
 mod resolve_cross_file_cases;
 mod resolve_diff;
 mod resolve_divergence;
+mod resolve_duplicate_case_names_diff;
 mod resolve_enums;
 mod resolve_exceptions;
 mod resolve_export_case_kind;
