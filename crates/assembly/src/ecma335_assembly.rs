@@ -516,7 +516,7 @@ impl Ecma335Assembly {
                         // overlays that locate a row by a reconstructed name key.
                         // After the record settle, so only the properties that
                         // survive it are stamped.
-                        crate::fsharp_pickle_merge::apply_type_member_doc_sigs(
+                        crate::fsharp_pickle_merge::apply_type_member_overlays(
                             &mut out,
                             &ccu,
                             &self.physical_methods(),

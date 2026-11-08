@@ -96,21 +96,45 @@ enum Binding {
     IntLiteral { value: i32 },
 }
 
-/// One member of a generated class.
+/// A `[<CompilationRepresentation>]` flag on an instance member, which
+/// decides whether fsc compiles it as an IL instance method or as a static
+/// taking the receiver first. F# declares the member instance either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompiledAs {
+    /// No attribute: instance in IL, except on a null-as-true union
+    /// ([`Decl::Union::null_as_true`]), which compiles it static.
+    Default,
+    /// `Static`: a static taking the receiver, on any type.
+    Static,
+    /// `Instance`: instance in IL, even on a null-as-true union.
+    Instance,
+}
+
+/// One member of a generated class or union.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClassMember {
     /// `member _.M<i> (q0: t0, q1: t1) : ret = …` (tupled — the idiomatic
     /// F# member shape, one IL parameter per element). Empty `params`
     /// renders as `member _.M<i> () : ret = …`. `is_private` exercises
-    /// the accessibility filter on both sides of the diff.
+    /// the accessibility filter on both sides of the diff. `compiled` is
+    /// [`CompiledAs::Default`] on a static method.
     Method {
         params: Vec<Ty>,
         ret: Ty,
         is_static: bool,
         is_private: bool,
+        compiled: CompiledAs,
+    },
+    /// `member _.Q<i> : ty = …` (or `static member Q<i>`) — a getter-only
+    /// property. `compiled` as on [`ClassMember::Method`].
+    Property {
+        ty: Ty,
+        is_static: bool,
+        compiled: CompiledAs,
     },
     /// `member val [private] P<i> : ty = Unchecked.defaultof<ty> with
-    /// get, set`. `is_private` as on [`ClassMember::Method`].
+    /// get, set`. `is_private` as on [`ClassMember::Method`]. Classes only:
+    /// a union cannot declare one.
     AutoProperty { ty: Ty, is_private: bool },
 }
 
@@ -132,6 +156,12 @@ enum Decl {
         cases: Vec<Vec<Ty>>,
         is_struct: bool,
         require_qualified_access: bool,
+        /// `[<CompilationRepresentation(UseNullAsTrueValue)>]`. Only set on
+        /// the shapes fsc accepts it on (FS1196): a reference union with
+        /// exactly one nullary case and at least one carrying case.
+        null_as_true: bool,
+        /// Methods and getter properties; never [`ClassMember::AutoProperty`].
+        members: Vec<ClassMember>,
     },
     /// `type T<i> = | E0 = 0 | E1 = 1 | …` — an int enum.
     Enum { case_count: usize },
@@ -232,6 +262,18 @@ fn render_binding(out: &mut String, idx: usize, b: &Binding) {
     }
 }
 
+fn render_compiled_as(out: &mut String, compiled: CompiledAs) {
+    let flag = match compiled {
+        CompiledAs::Default => return,
+        CompiledAs::Static => "Static",
+        CompiledAs::Instance => "Instance",
+    };
+    let _ = writeln!(
+        out,
+        "    [<CompilationRepresentation(CompilationRepresentationFlags.{flag})>]"
+    );
+}
+
 fn render_class_member(out: &mut String, idx: usize, m: &ClassMember) {
     match m {
         ClassMember::Method {
@@ -239,7 +281,9 @@ fn render_class_member(out: &mut String, idx: usize, m: &ClassMember) {
             ret,
             is_static,
             is_private,
+            compiled,
         } => {
+            render_compiled_as(out, *compiled);
             let access = if *is_private { "private " } else { "" };
             let receiver = if *is_static {
                 format!("static member {access}M")
@@ -262,6 +306,24 @@ fn render_class_member(out: &mut String, idx: usize, m: &ClassMember) {
                 "    {receiver}{idx} {params_src} : {} = {}",
                 render_ty(ret),
                 default_expr(ret)
+            );
+        }
+        ClassMember::Property {
+            ty,
+            is_static,
+            compiled,
+        } => {
+            render_compiled_as(out, *compiled);
+            let receiver = if *is_static {
+                "static member "
+            } else {
+                "member _."
+            };
+            let _ = writeln!(
+                out,
+                "    {receiver}Q{idx} : {} = {}",
+                render_ty(ty),
+                default_expr(ty)
             );
         }
         ClassMember::AutoProperty { ty, is_private } => {
@@ -297,12 +359,26 @@ fn render_decl(out: &mut String, idx: usize, d: &Decl) {
             cases,
             is_struct,
             require_qualified_access,
+            null_as_true,
+            members,
         } => {
             if *is_struct {
                 let _ = writeln!(out, "[<Struct>]");
             }
             if *require_qualified_access {
                 let _ = writeln!(out, "[<RequireQualifiedAccess>]");
+            }
+            if *null_as_true {
+                assert!(
+                    !is_struct
+                        && cases.iter().filter(|c| c.is_empty()).count() == 1
+                        && cases.iter().any(|c| !c.is_empty()),
+                    "the strategy only sets `null_as_true` on a shape fsc accepts: {cases:?}"
+                );
+                let _ = writeln!(
+                    out,
+                    "[<CompilationRepresentation(CompilationRepresentationFlags.UseNullAsTrueValue)>]"
+                );
             }
             let _ = writeln!(out, "type T{idx} =");
             for (ci, case) in cases.iter().enumerate() {
@@ -317,6 +393,13 @@ fn render_decl(out: &mut String, idx: usize, d: &Decl) {
                         .join(" * ");
                     let _ = writeln!(out, "    | C{ci} of {payload}");
                 }
+            }
+            for (mi, m) in members.iter().enumerate() {
+                assert!(
+                    !matches!(m, ClassMember::AutoProperty { .. }),
+                    "a union cannot declare an auto-property"
+                );
+                render_class_member(out, mi, m);
             }
         }
         Decl::Enum { case_count } => {
@@ -456,6 +539,65 @@ fn smoke_full_vocabulary_agrees() {
             ],
             is_struct: false,
             require_qualified_access: true,
+            null_as_true: false,
+            members: vec![],
+        },
+        // A null-as-true union: fsc compiles its default instance members as
+        // statics taking the receiver, and keeps an `Instance`-flagged one
+        // instance.
+        Decl::Union {
+            cases: vec![vec![Ty::Int], vec![]],
+            is_struct: false,
+            require_qualified_access: false,
+            null_as_true: true,
+            members: vec![
+                ClassMember::Method {
+                    params: vec![Ty::String, Ty::Int],
+                    ret: Ty::Bool,
+                    is_static: false,
+                    is_private: false,
+                    compiled: CompiledAs::Default,
+                },
+                ClassMember::Method {
+                    params: vec![],
+                    ret: Ty::Int,
+                    is_static: false,
+                    is_private: false,
+                    compiled: CompiledAs::Default,
+                },
+                ClassMember::Property {
+                    ty: Ty::Float,
+                    is_static: false,
+                    compiled: CompiledAs::Default,
+                },
+                ClassMember::Property {
+                    ty: Ty::Int,
+                    is_static: false,
+                    compiled: CompiledAs::Instance,
+                },
+                ClassMember::Method {
+                    params: vec![Ty::Int],
+                    ret: Ty::Int,
+                    is_static: true,
+                    is_private: false,
+                    compiled: CompiledAs::Default,
+                },
+            ],
+        },
+        // A struct union whose `Static`-flagged method takes its receiver by
+        // reference.
+        Decl::Union {
+            cases: vec![vec![Ty::Int]],
+            is_struct: true,
+            require_qualified_access: false,
+            null_as_true: false,
+            members: vec![ClassMember::Method {
+                params: vec![Ty::Bool],
+                ret: Ty::Int,
+                is_static: false,
+                is_private: false,
+                compiled: CompiledAs::Static,
+            }],
         },
         Decl::Enum { case_count: 3 },
         Decl::Exception {
@@ -469,18 +611,33 @@ fn smoke_full_vocabulary_agrees() {
                     ret: Ty::String,
                     is_static: false,
                     is_private: false,
+                    compiled: CompiledAs::Default,
                 },
                 ClassMember::Method {
                     params: vec![],
                     ret: Ty::Int,
                     is_static: true,
                     is_private: false,
+                    compiled: CompiledAs::Default,
                 },
                 ClassMember::Method {
                     params: vec![Ty::Int],
                     ret: Ty::Bool,
                     is_static: false,
                     is_private: true,
+                    compiled: CompiledAs::Default,
+                },
+                ClassMember::Method {
+                    params: vec![Ty::Int],
+                    ret: Ty::Int,
+                    is_static: false,
+                    is_private: false,
+                    compiled: CompiledAs::Static,
+                },
+                ClassMember::Property {
+                    ty: Ty::String,
+                    is_static: false,
+                    compiled: CompiledAs::Static,
                 },
                 ClassMember::AutoProperty {
                     ty: Ty::Float,
@@ -572,7 +729,25 @@ fn binding_strategy() -> impl Strategy<Value = Binding> {
     ]
 }
 
-fn class_member_strategy() -> impl Strategy<Value = ClassMember> {
+/// A member's `[<CompilationRepresentation>]` flag: any of the three on an
+/// instance member, none on a static one (an `Instance`-flagged static member
+/// compiles to an instance method that has lost its first argument, which the
+/// projection declines rather than surfaces).
+fn compiled_as_strategy(is_static: bool) -> BoxedStrategy<CompiledAs> {
+    if is_static {
+        Just(CompiledAs::Default).boxed()
+    } else {
+        prop_oneof![
+            Just(CompiledAs::Default),
+            Just(CompiledAs::Static),
+            Just(CompiledAs::Instance),
+        ]
+        .boxed()
+    }
+}
+
+/// A method or getter property: what both a class and a union can declare.
+fn method_or_property_strategy() -> impl Strategy<Value = ClassMember> {
     prop_oneof![
         (
             prop::collection::vec(ty_strategy(), 0..3),
@@ -580,12 +755,48 @@ fn class_member_strategy() -> impl Strategy<Value = ClassMember> {
             any::<bool>(),
             any::<bool>()
         )
-            .prop_map(|(params, ret, is_static, is_private)| ClassMember::Method {
-                params,
-                ret,
-                is_static,
-                is_private,
+            .prop_flat_map(|(params, ret, is_static, is_private)| {
+                compiled_as_strategy(is_static).prop_map(move |compiled| ClassMember::Method {
+                    params: params.clone(),
+                    ret: ret.clone(),
+                    is_static,
+                    is_private,
+                    compiled,
+                })
             }),
+        (ty_strategy(), any::<bool>()).prop_flat_map(|(ty, is_static)| {
+            compiled_as_strategy(is_static).prop_map(move |compiled| ClassMember::Property {
+                ty: ty.clone(),
+                is_static,
+                compiled,
+            })
+        }),
+    ]
+}
+
+/// A struct's `Static`-flagged instance property compiles to a static whose
+/// receiver is a byref *index parameter*, which the projection refuses
+/// (recording the member as skipped) while FCS shows the property: a decline,
+/// outside what this differential grades. `struct_static_compiled_property_is_refused`
+/// in `projector_fsharp_core.rs` pins it instead.
+fn without_byref_receiver_property(m: ClassMember) -> ClassMember {
+    match m {
+        ClassMember::Property {
+            ty,
+            is_static,
+            compiled: CompiledAs::Static,
+        } => ClassMember::Property {
+            ty,
+            is_static,
+            compiled: CompiledAs::Default,
+        },
+        other => other,
+    }
+}
+
+fn class_member_strategy() -> impl Strategy<Value = ClassMember> {
+    prop_oneof![
+        method_or_property_strategy(),
         (ty_strategy(), any::<bool>())
             .prop_map(|(ty, is_private)| ClassMember::AutoProperty { ty, is_private }),
     ]
@@ -601,15 +812,46 @@ fn decl_strategy() -> impl Strategy<Value = Decl> {
         (
             prop::collection::vec(prop::collection::vec(ty_strategy(), 0..3), 1..4),
             any::<bool>(),
-            any::<bool>()
+            any::<bool>(),
+            prop::collection::vec(method_or_property_strategy(), 0..3)
         )
-            .prop_map(|(cases, is_struct, require_qualified_access)| {
+            .prop_map(|(cases, is_struct, require_qualified_access, members)| {
                 Decl::Union {
                     cases,
                     is_struct,
                     require_qualified_access,
+                    null_as_true: false,
+                    members: if is_struct {
+                        members
+                            .into_iter()
+                            .map(without_byref_receiver_property)
+                            .collect()
+                    } else {
+                        members
+                    },
                 }
             }),
+        // A null-as-true union, built in the one shape fsc accepts (FS1196):
+        // carrying cases with the single nullary case inserted among them.
+        (
+            prop::collection::vec(prop::collection::vec(ty_strategy(), 1..3), 1..3),
+            any::<prop::sample::Index>(),
+            any::<bool>(),
+            prop::collection::vec(method_or_property_strategy(), 0..4)
+        )
+            .prop_map(
+                |(mut cases, nullary_at, require_qualified_access, members)| {
+                    let at = nullary_at.index(cases.len() + 1);
+                    cases.insert(at, vec![]);
+                    Decl::Union {
+                        cases,
+                        is_struct: false,
+                        require_qualified_access,
+                        null_as_true: true,
+                        members,
+                    }
+                }
+            ),
         (1usize..5).prop_map(|case_count| Decl::Enum { case_count }),
         prop::collection::vec(ty_strategy(), 0..3).prop_map(|fields| Decl::Exception { fields }),
         (

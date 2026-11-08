@@ -1489,3 +1489,36 @@ fn an_unnamed_nested_type_of_an_enumerable_union_is_a_type() {
         "the complete case list does not name `Circle`, so it is not a carrier"
     );
 }
+
+/// `Option<'T>` is a null-as-true union, so fsc compiles its instance members
+/// `IsSome`/`IsNone` as IL statics taking the receiver first. F# declares them
+/// instance properties: `o.IsSome` is a `bool`, and `Option<int>.IsSome` is
+/// FS0806 ("Property 'IsSome' is not static") — so the static path must not
+/// resolve the name, and the instance path must.
+#[test]
+fn option_is_some_is_an_instance_property() {
+    let env = crate::common::fsharp_core_env();
+    let option = env
+        .lookup_type(&ns(&["Microsoft", "FSharp", "Core"]), "Option", 1)
+        .expect("`Option<'T>`, indexed by its F# name");
+    for name in ["IsSome", "IsNone"] {
+        let ty = env
+            .instance_data_member_ty(option, name)
+            .unwrap_or_else(|| panic!("`o.{name}` resolves as an instance property"));
+        assert_eq!(ty, &TypeRef::Primitive(Primitive::Bool), "{name}");
+        assert!(
+            !matches!(env.static_lookup(option, name), StaticLookup::Resolved(_)),
+            "`Option<_>.{name}` must not resolve as a static"
+        );
+        assert!(
+            env.public_instance_member_names(option).contains(&name),
+            "dot-completion offers {name}"
+        );
+    }
+    // `Option.Some` is a static method F# declares, surfaced from the case
+    // maker fsc compiled in its place.
+    assert!(matches!(
+        env.static_lookup(option, "Some"),
+        StaticLookup::Resolved(_)
+    ));
+}

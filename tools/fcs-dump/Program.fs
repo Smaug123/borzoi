@@ -4112,6 +4112,22 @@ let private renderMethodSignature
                 m.ReturnParameter
     sprintf "(%s) -> %s" paramStr returnStr
 
+/// Whether a non-constructor member is projected `instance`, which is FCS's
+/// semantic `IsInstanceMember` for an intrinsic member and the compiled shape
+/// (`IsInstanceMemberInCompiledCode`) for an F# extension member.
+///
+/// The two views differ exactly where fsc compiles a member under a staticness
+/// other than the one F# declares. An extension member compiles to a static of
+/// its module taking the receiver, and the Rust side keeps that IL shape (with
+/// the receiver re-prepended in the rendered signature, below). An intrinsic
+/// instance member of a null-as-true union, or one carrying
+/// `[<CompilationRepresentation(Static)>]`, also compiles to a static taking
+/// the receiver; the Rust side reshapes it into the instance member F#
+/// declares, and FCS's `CurriedParameterGroups` already omit its receiver.
+let private projectedAsInstance (m: FSharpMemberOrFunctionOrValue) =
+    if m.IsExtensionMember then m.IsInstanceMemberInCompiledCode
+    else m.IsInstanceMember
+
 /// Project the flag set the Rust-side `normalise_method` emits:
 /// - `instance` / `static`
 /// - `virtual` if the method participates in dispatch (declares a slot OR
@@ -4124,10 +4140,7 @@ let private renderMethodSignature
 let private memberFlags (ilMethodDef: obj option) (m: FSharpMemberOrFunctionOrValue) =
     // Two adjustments to FCS's view of "instance":
     //
-    // 1. Non-constructors: FCS's `IsInstanceMember` is the semantic view —
-    //    an F# extension method reads as instance even though it compiles
-    //    static. The Rust side reads the raw ECMA-335 calling-convention
-    //    `instance` bit, so we want `IsInstanceMemberInCompiledCode`.
+    // 1. Non-constructors: see `projectedAsInstance`.
     //
     // 2. Constructors: FCS reports both `.ctor` and `.cctor` as not-instance
     //    (you don't "call a constructor on an instance" semantically), but
@@ -4136,7 +4149,7 @@ let private memberFlags (ilMethodDef: obj option) (m: FSharpMemberOrFunctionOrVa
     //    compiled-code answer for those.
     let isInstance =
         if m.IsConstructor then m.LogicalName <> ".cctor"
-        else m.IsInstanceMemberInCompiledCode
+        else projectedAsInstance m
     let isAbstract =
         match ilMethodDef with
         | Some d -> getProp d "IsAbstract" :?> bool
@@ -4597,7 +4610,7 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
                         m.DisplayName
                 let flags =
                     [|
-                        if m.IsInstanceMemberInCompiledCode then "instance" else "static"
+                        if projectedAsInstance m then "instance" else "static"
                         if m.HasGetterMethod then "get"
                         if m.HasSetterMethod then "set"
                     |]

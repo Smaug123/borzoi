@@ -936,3 +936,122 @@ fn fsharp_core_reads_its_own_attribute_classes_off_its_abbreviations() {
         assert!(!message.is_error, "{name}'s message is a warning");
     }
 }
+
+/// The entity at `namespace::name` with `arity` generic parameters.
+fn entity_at_arity<'a>(
+    es: &'a [Entity],
+    namespace: &[&str],
+    name: &str,
+    arity: usize,
+) -> &'a Entity {
+    es.iter()
+        .find(|e| {
+            e.name == name
+                && e.generic_parameters.len() == arity
+                && e.namespace
+                    .iter()
+                    .map(String::as_str)
+                    .eq(namespace.iter().copied())
+        })
+        .unwrap_or_else(|| panic!("entity {}.{name}`{arity} not found", namespace.join(".")))
+}
+
+/// Every member of `e` under the F# name `name`, as `(kind, is_static, IL parameter count)`.
+fn shapes_named(e: &Entity, name: &str) -> Vec<(&'static str, bool, usize)> {
+    e.members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Method(m) if m.source_name.as_deref().unwrap_or(&m.name) == name => {
+                Some(("method", m.is_static, m.signature.parameters.len()))
+            }
+            Member::Property(p) if p.name == name => {
+                Some(("property", p.is_static, p.parameters.len()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `Option<'T>` is `[<CompilationRepresentation(UseNullAsTrueValue)>]`, so fsc
+/// compiles its instance members as IL statics taking the receiver first
+/// (`get_IsSome(FSharpOption<T>)`); F# still declares them instance members, and
+/// that is how FCS surfaces them. `Value` opts out with
+/// `[<CompilationRepresentation(Instance)>]` and `ToString` is an override, so
+/// both are instance in IL too.
+///
+/// `static member Some` and `List.Cons` are F# members whose IL methods fsc
+/// discards in favour of the case makers of the same name it generates for
+/// FSharp.Core's two specially named unions (`IlxGen.fs`, `tdefDiscards`); the
+/// maker is the method a call to the member binds to.
+#[test]
+fn fsharp_core_members_project_as_fsharp_declares_them() {
+    let entities = load();
+    let core = ["Microsoft", "FSharp", "Core"];
+    let option = entity_at_arity(&entities, &core, "FSharpOption", 1);
+    for name in ["IsSome", "IsNone", "Value"] {
+        assert_eq!(
+            shapes_named(option, name),
+            [("property", false, 0)],
+            "Option.{name} is a parameterless instance property"
+        );
+    }
+    assert_eq!(shapes_named(option, "ToString"), [("method", false, 0)]);
+    assert_eq!(shapes_named(option, "None"), [("property", true, 0)]);
+    assert_eq!(shapes_named(option, "Some"), [("method", true, 1)]);
+    let is_some = option
+        .members
+        .iter()
+        .find_map(|m| match m {
+            Member::Property(p) if p.name == "IsSome" => Some(p),
+            _ => None,
+        })
+        .expect("IsSome");
+    assert_eq!(
+        is_some.ty,
+        borzoi_assembly::TypeRef::Primitive(borzoi_assembly::Primitive::Bool)
+    );
+
+    let list = entity_at_arity(
+        &entities,
+        &["Microsoft", "FSharp", "Collections"],
+        "FSharpList",
+        1,
+    );
+    assert_eq!(shapes_named(list, "Cons"), [("method", true, 2)]);
+    assert_eq!(shapes_named(list, "Empty"), [("property", true, 0)]);
+    assert_eq!(shapes_named(list, "IsEmpty"), [("property", false, 0)]);
+    for e in [option, list] {
+        assert!(
+            e.skipped_members.is_empty(),
+            "{}: nothing is refused: {:?}",
+            e.name,
+            e.skipped_members
+        );
+    }
+}
+
+/// A struct's `[<CompilationRepresentation(Static)>]` instance property compiles
+/// to a static whose receiver is a byref *index parameter*, which the property
+/// projection refuses outright. Refused is the sound reading: in its IL shape
+/// it would be a static indexer F# does not have. The same member as a method
+/// takes its byref receiver as an ordinary parameter, and is reshaped.
+#[test]
+fn struct_static_compiled_property_is_refused() {
+    let bytes = std::fs::read(crate::common::ensure_doc_ids_fs_built()).expect("read DocIdsFs");
+    let entities = Ecma335Assembly::parse(&bytes)
+        .expect("parse DocIdsFs")
+        .enumerate_type_defs()
+        .expect("enumerate DocIdsFs");
+    let s = entity(&entities, &["DocIdsFs"], "StaticCompiledStruct");
+    assert!(
+        shapes_named(s, "Doubled").is_empty(),
+        "no `Doubled` member in any shape"
+    );
+    assert!(
+        s.skipped_members.iter().any(|m| m.name == "Doubled"),
+        "the refusal is recorded: {:?}",
+        s.skipped_members
+    );
+    let c = entity(&entities, &["DocIdsFs"], "StaticCompiled");
+    assert_eq!(shapes_named(c, "Twice"), [("method", false, 1)]);
+}

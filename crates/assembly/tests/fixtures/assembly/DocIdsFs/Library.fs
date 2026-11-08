@@ -342,3 +342,54 @@ type SharedName() =
     /// The second getter.
     [<CompiledName("Shared")>]
     member _.Second = 2
+
+/// A union whose `None`-like case is `null`: fsc compiles its instance members
+/// as IL statics taking the receiver first, while F# (and its keys) still
+/// declare them instance members.
+[<CompilationRepresentation(CompilationRepresentationFlags.UseNullAsTrueValue)>]
+type Maybe<'a> =
+    /// The null case.
+    | Nothing
+    /// The carrying case.
+    | Just of 'a
+
+    /// An instance property.
+    member x.HasValue = match x with Just _ -> true | Nothing -> false
+
+    /// A tupled instance method.
+    member x.OrElse(fallback: 'a, _unused: int) = match x with Just v -> v | Nothing -> fallback
+
+    /// A curried instance method.
+    member x.Fold (f: 'a -> int) (seed: int) = match x with Just v -> f v + seed | Nothing -> seed
+
+    /// An instance indexer.
+    member x.Item with get (i: int) = i
+
+    /// A settable instance property.
+    member x.Sink with set (_: int) = ()
+
+    /// An instance property fsc keeps instance.
+    [<CompilationRepresentation(CompilationRepresentationFlags.Instance)>]
+    member x.Kept = 1
+
+    /// A static member taking the union.
+    static member Lift(m: Maybe<'a>) = m
+
+/// A class whose instance member is compiled static.
+type StaticCompiled() =
+    /// An instance method compiled as an IL static.
+    [<CompilationRepresentation(CompilationRepresentationFlags.Static)>]
+    member x.Twice(a: int) = a * 2
+
+/// A struct whose instance member is compiled static, taking the receiver by
+/// reference.
+[<Struct>]
+type StaticCompiledStruct =
+    {
+        /// A field.
+        Value: int
+    }
+
+    /// An instance property compiled as an IL static.
+    [<CompilationRepresentation(CompilationRepresentationFlags.Static)>]
+    member x.Doubled = x.Value * 2

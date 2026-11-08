@@ -38,9 +38,13 @@ hit M:DocIdsFs.Funcs.|Positive|_|(System.Int32) <= Method |Positive|_|(System.In
 hit M:DocIdsFs.Hidden.GenericShared``1(System.Int32) <= Method GenericShared<1>(System.Int32)
 hit M:DocIdsFs.Hidden.Shared(System.Int32) <= Method Shared(System.Int32)
 hit M:DocIdsFs.IShape.Describe <= Method Describe()
+hit M:DocIdsFs.Maybe`1.Fold(Microsoft.FSharp.Core.FSharpFunc{`0,System.Int32},System.Int32) <= Method Fold(Microsoft.FSharp.Core.FSharpFunc{`0,System.Int32},System.Int32)
+hit M:DocIdsFs.Maybe`1.Lift(DocIdsFs.Maybe{`0}) <= Method Lift(DocIdsFs.Maybe{`0})
+hit M:DocIdsFs.Maybe`1.OrElse(`0,System.Int32) <= Method OrElse(`0,System.Int32)
 hit M:DocIdsFs.Point.Scale(System.Int32) <= Method Scale(System.Int32)
 hit M:DocIdsFs.Pos.#ctor(System.Int32,System.Int32) <= Method .ctor(System.Int32,System.Int32)
 hit M:DocIdsFs.Shape.Scaled(System.Double) <= Method Scaled(System.Double)
+hit M:DocIdsFs.StaticCompiled.Twice(System.Int32) <= Method Twice(System.Int32)
 hit M:DocIdsFs.ThingModule.make(System.Int32) <= Method make(System.Int32)
 hit M:DocIdsFs.Widget.#ctor <= Method .ctor()
 hit M:DocIdsFs.Widget.Add(System.Int32) <= Method Add(System.Int32)
@@ -64,6 +68,10 @@ hit P:DocIdsFs.Hidden.Renamed.B(System.String) <= Property D(System.String)
 hit P:DocIdsFs.Hidden.RenamedAlike.A(System.Int32) <= Property B(System.Int32)
 hit P:DocIdsFs.Hidden.RenamedAlike.B(System.Int32) <= Property D(System.Int32)
 hit P:DocIdsFs.IShape.Area <= Property Area()
+hit P:DocIdsFs.Maybe`1.HasValue <= Property HasValue()
+hit P:DocIdsFs.Maybe`1.Item(System.Int32) <= Property Item(System.Int32)
+hit P:DocIdsFs.Maybe`1.Kept <= Property Kept()
+hit P:DocIdsFs.Maybe`1.Sink(System.Int32) <= Property Sink()
 hit P:DocIdsFs.Point.Sum <= Property Sum()
 hit P:DocIdsFs.Point.X <= Field X()
 hit P:DocIdsFs.Point.Y <= Field Y()
@@ -72,6 +80,7 @@ hit P:DocIdsFs.SPoint.S <= Field S()
 hit P:DocIdsFs.Shape.Area <= Property Area()
 hit P:DocIdsFs.Shape.Rect.height <= Property height()
 hit P:DocIdsFs.Shape.Rect.width <= Property width()
+hit P:DocIdsFs.StaticCompiledStruct.Value <= Field Value()
 hit P:DocIdsFs.Thing.V <= Field V()
 hit P:DocIdsFs.Widget.Count <= Property Count()
 hit P:DocIdsFs.Widget.Count(System.Int32) <= Property Count()
@@ -97,6 +106,9 @@ hit T:DocIdsFs.Hidden.RenamedAlike
 hit T:DocIdsFs.Hidden.SharedHidden
 hit T:DocIdsFs.IShape
 hit T:DocIdsFs.IntId
+hit T:DocIdsFs.Maybe`1
+hit T:DocIdsFs.Maybe`1.Just
+hit T:DocIdsFs.Maybe`1.Nothing
 hit T:DocIdsFs.Pair`1
 hit T:DocIdsFs.ParamMarker
 hit T:DocIdsFs.Point
@@ -108,6 +120,8 @@ hit T:DocIdsFs.Shape.Circle
 hit T:DocIdsFs.Shape.Empty
 hit T:DocIdsFs.Shape.Rect
 hit T:DocIdsFs.SharedName
+hit T:DocIdsFs.StaticCompiled
+hit T:DocIdsFs.StaticCompiledStruct
 hit T:DocIdsFs.Thing
 hit T:DocIdsFs.ThingModule
 hit T:DocIdsFs.Tree`1
@@ -115,7 +129,7 @@ hit T:DocIdsFs.Tree`1.Leaf
 hit T:DocIdsFs.Tree`1.Node
 hit T:DocIdsFs.Widget
 hit T:DocIdsFs.m
-keys 125
+keys 140
 miss M:DocIdsFs.Dropped`1.Corner(System.Int32[0:])
 miss M:DocIdsFs.Hidden.Elided.Corner(System.Int32[0:, 0:])
 miss M:DocIdsFs.Hidden.RankShared(System.Int32[0:])
@@ -126,5 +140,6 @@ miss M:DocIdsFs.Widget.remove_Changed(Microsoft.FSharp.Control.FSharpHandler{Sys
 miss P:DocIdsFs.Hidden.SharedHidden.Second
 miss P:DocIdsFs.SharedName.First
 miss P:DocIdsFs.SharedName.Second
+miss P:DocIdsFs.StaticCompiledStruct.Doubled
 miss T:DocIdsFs.metre
 pickle decoded
