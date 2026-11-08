@@ -68,7 +68,7 @@ tmp=
 setup_fixture() {
   tmp="$(mktemp -d)"
   local fake="$tmp/repo" bin="$tmp/bin"
-  mkdir -p "$fake/tools/ci" "$fake/target/debug" "$bin" "$tmp/nops" "$tmp/slowps" "$tmp/remote/owner"
+  mkdir -p "$fake/tools/ci" "$fake/target/debug" "$bin" "$tmp/nops" "$tmp/slowps" "$tmp/racymkdir" "$tmp/remote/owner"
   cp "$here/project-corpus-gate.sh" "$here/project-corpus.sh" "$fake/tools/ci/"
 
   # One upstream repository with two pins, each holding the project.
@@ -161,7 +161,15 @@ if [ "${*: -1}" = "$FAKE_PS_SLOW_PID" ]; then
 fi
 PATH="${PATH#*:}" exec ps "$@"
 EOF
-  chmod +x "$fake/target/debug/borzoi-stats" "$bin"/* "$tmp/nops/ps" "$tmp/slowps/ps"
+  # A `mkdir` that reports success for a directory that already exists, `-p`
+  # or not, as uutils' did before 0.11 (Ubuntu 26.04's): two runs racing to
+  # create one directory both succeed, so it excludes nothing.
+  cat >"$tmp/racymkdir/mkdir" <<'EOF'
+#!/usr/bin/env bash
+[ -d "${*: -1}" ] && exit 0
+PATH="${PATH#*:}" exec mkdir "$@"
+EOF
+  chmod +x "$fake/target/debug/borzoi-stats" "$bin"/* "$tmp/nops/ps" "$tmp/slowps/ps" "$tmp/racymkdir/mkdir"
 }
 
 # run_gate NAME PLAN REV [STEP...]: one local gate run, in the background of
@@ -193,6 +201,11 @@ show_failure() { # name
   fi
 }
 
+# A process as the gate script records it (its `identity`).
+identity_of() { # pid
+  printf '%s %s\n' "$1" "$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$1")"
+}
+
 count_log() { grep -c "^$1" "$tmp/log" 2>/dev/null || true; }
 
 test_concurrency() {
@@ -203,8 +216,9 @@ test_concurrency() {
   step="$(bash "$here/project-corpus-gate.sh" --list | head -n1)"
 
   setup_fixture
-  run_gate a "$tmp/plan1" "$rev1" "$step" &
-  run_gate b "$tmp/plan1" "$rev1" "$step" &
+  # The lock may not rest on the host's `mkdir` excluding a second creator.
+  EXTRA_PATH="$tmp/racymkdir" run_gate a "$tmp/plan1" "$rev1" "$step" &
+  EXTRA_PATH="$tmp/racymkdir" run_gate b "$tmp/plan1" "$rev1" "$step" &
   wait
   assert_eq "two concurrent runs of one pin: first succeeds" 0 "$(cat "$tmp/a.status")"
   show_failure a
@@ -261,30 +275,45 @@ test_concurrency() {
   assert_eq "an empty registration does not stop materialisation" 0 "$(cat "$tmp/h2.status")"
   show_failure h2
 
-  mkdir "$tmp/cache/lock"
-  echo "$dead gone" >"$tmp/cache/lock/owner"
+  echo "$dead gone" >"$tmp/cache/lock"
   run_gate i "$tmp/plan2" "$rev2" "$step"
   assert_eq "a lock held by a dead run fails fast" 1 "$(cat "$tmp/i.status")"
   assert_eq "the failure names the lock to remove" 1 \
     "$(grep -c "rm -r.*$tmp/cache/lock" "$tmp/i.out")"
-  rm -r "$tmp/cache/lock"
+  rm "$tmp/cache/lock"
 
-  # A lock whose run died between taking it and recording itself.
-  mkdir "$tmp/cache/lock"
+  # A lock whose run died between creating it and recording itself.
+  : >"$tmp/cache/lock"
   touch -t 202001010000 "$tmp/cache/lock"
   run_gate i2 "$tmp/plan2" "$rev2" "$step"
   assert_eq "a lock with no owner for over a minute fails fast" 1 "$(cat "$tmp/i2.status")"
   assert_eq "naming the lock to remove" 1 \
     "$(grep -c "no owner recorded" "$tmp/i2.out")"
+  rm "$tmp/cache/lock"
+
+  # An older gate script's lock: a directory with its owner inside.
+  mkdir "$tmp/cache/lock"
+  echo "$dead gone" >"$tmp/cache/lock/owner"
+  run_gate i3 "$tmp/plan2" "$rev2" "$step"
+  assert_eq "an older script's lock held by a dead run fails fast" 1 "$(cat "$tmp/i3.status")"
+  assert_eq "naming that run" 1 "$(grep -c "($dead gone)" "$tmp/i3.out")"
   rm -r "$tmp/cache/lock"
 
-  # Or that died with its owner file created but not yet written.
+  # Or held by a live one: this run waits for it.
   mkdir "$tmp/cache/lock"
-  : >"$tmp/cache/lock/owner"
-  touch -t 202001010000 "$tmp/cache/lock"
-  run_gate i3 "$tmp/plan2" "$rev2" "$step"
-  assert_eq "a lock with an empty owner for over a minute fails fast" 1 "$(cat "$tmp/i3.status")"
+  sleep 30 &
+  local older
+  older=$!
+  identity_of "$older" >"$tmp/cache/lock/owner"
+  run_gate i4 "$tmp/plan2" "$rev2" "$step" &
+  for _ in $(seq 100); do grep -q "waiting for" "$tmp/i4.out" 2>/dev/null && break; sleep 0.1; done
+  assert_eq "a run waits on an older script's live lock" "1 waiting, 0 reading" \
+    "$(grep -c "waiting for" "$tmp/i4.out") waiting, $(find "$tmp/cache/readers" -type f | wc -l | tr -d ' ') reading"
   rm -r "$tmp/cache/lock"
+  kill "$older"
+  wait
+  assert_eq "and takes the lock once it is released" 0 "$(cat "$tmp/i4.status")"
+  show_failure i4
 
   EXTRA_PATH="$tmp/nops" run_gate j "$tmp/plan2" "$rev2" "$step"
   assert_eq "a run that cannot read its own start time fails" 1 "$(cat "$tmp/j.status")"
@@ -297,8 +326,8 @@ test_concurrency() {
   : >"$tmp/log"
   FAKE_RESTORE_FAILS=1 FAKE_RESTORE_FAILS_AFTER="$tmp/ps-entered" \
     run_gate k "$tmp/plan1" "$rev1" "$step" &
-  for _ in $(seq 100); do [ -s "$tmp/cache/lock/owner" ] && break; sleep 0.1; done
-  holder="$(cut -d' ' -f1 "$tmp/cache/lock/owner")"
+  for _ in $(seq 100); do [ -s "$tmp/cache/lock" ] && break; sleep 0.1; done
+  holder="$(cut -d' ' -f1 "$tmp/cache/lock")"
   EXTRA_PATH="$tmp/slowps" FAKE_PS_SLOW_PID="$holder" run_gate l "$tmp/plan1" "$rev1" "$step"
   wait
   assert_eq "the waiter did look at the holder as it exited" yes \
