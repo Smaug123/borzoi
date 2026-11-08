@@ -4175,12 +4175,35 @@ pub(crate) fn apply_type_member_overlays(
         let Some(ecma) = locate_type_row(entities, &target, physical) else {
             continue;
         };
-        settle_compiled_shapes(ecma, &target, physical);
-        surface_case_maker_members(ecma, &target.keys, physical);
-        stamp_doc_sigs(ecma, &target.keys, physical);
-        stamp_arg_groups(ecma, &target.keys, physical);
+        overlay_type_row(ecma, &target, physical);
     }
     Ok(())
+}
+
+/// The steps of [`apply_type_member_overlays`] on one located row.
+fn overlay_type_row(ecma: &mut Entity, target: &TypeMemberTarget, physical: &PhysicalMethods) {
+    let mut reshaped = settle_compiled_shapes(ecma, target, physical);
+    surface_case_maker_members(ecma, &target.keys, physical, &reshaped);
+    reshaped.resize(ecma.members.len(), false);
+    stamp_doc_sigs(ecma, &target.keys, physical, &reshaped);
+    stamp_arg_groups(ecma, &target.keys, physical, &reshaped);
+}
+
+/// Whether the `i`th member of a row holds `slot`: it occupies the slot's
+/// declared shape, *and* it came by that shape the way the slot's val
+/// compiled — a receiver-first val's slot holds only a member
+/// [`settle_compiled_shapes`] reshaped (`reshaped[i]`), an as-declared val's
+/// only one it did not, and a static-compiled-instance val's none (its member
+/// was refused). Occupancy alone cannot tell a reshaped member from one
+/// declared in that shape, so without the second half a receiver-first val
+/// whose own method the projection elided would claim another val's member.
+fn holds(reshaped: &[bool], i: usize, member: &Member, slot: &DocSlot) -> bool {
+    occupies(member, slot)
+        && match slot.compiled() {
+            Compiled::AsDeclared => !reshaped[i],
+            Compiled::StaticWithReceiver => reshaped[i],
+            Compiled::InstanceFromStatic => false,
+        }
 }
 
 /// Every pickled F# type (not a module, namespace, abbreviation or
@@ -4425,11 +4448,14 @@ fn locate_type_row<'a>(
 /// F# does not have, so it must be visibly absent rather than present and
 /// wrong. A property that one accessor's group reshapes and another's refuses
 /// is refused.
+///
+/// Returns, per member of the settled row, whether this reshaped it — what
+/// [`holds`] needs to keep each reshaped member its own val's.
 fn settle_compiled_shapes(
     entity: &mut Entity,
     target: &TypeMemberTarget,
     physical: &PhysicalMethods,
-) {
+) -> Vec<bool> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Settle {
         Reshape,
@@ -4478,18 +4504,24 @@ fn settle_compiled_shapes(
         }
     }
     let mut refused = Vec::new();
+    let mut reshaped = Vec::new();
     for (i, member) in std::mem::take(&mut entity.members).into_iter().enumerate() {
         match (decisions.get(&i), member) {
-            (None, member) => entity.members.push(member),
+            (None, member) => {
+                entity.members.push(member);
+                reshaped.push(false);
+            }
             (Some(Settle::Reshape), Member::Method(mut m)) => {
                 m.signature.parameters.remove(0);
                 m.is_static = false;
                 entity.members.push(Member::Method(m));
+                reshaped.push(true);
             }
             (Some(Settle::Reshape), Member::Property(mut p)) => {
                 p.parameters.remove(0);
                 p.is_static = false;
                 entity.members.push(Member::Property(p));
+                reshaped.push(true);
             }
             (Some(_), member) => refused.push(member),
         }
@@ -4509,6 +4541,7 @@ fn settle_compiled_shapes(
                     .to_string(),
             }
         }));
+    reshaped
 }
 
 /// Surface the case maker of a union as the static member method it stands
@@ -4526,7 +4559,12 @@ fn settle_compiled_shapes(
 /// it, exactly one physical method does, and exactly one of the union's
 /// [`Entity::union_case_makers`] is a method of that name and arity. The one
 /// physical method is then the val's, and it is that maker.
-fn surface_case_maker_members(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
+fn surface_case_maker_members(
+    entity: &mut Entity,
+    keys: &[DocKey],
+    physical: &PhysicalMethods,
+    reshaped: &[bool],
+) {
     if entity.kind != EntityKind::Union {
         return;
     }
@@ -4546,7 +4584,11 @@ fn surface_case_maker_members(entity: &mut Entity, keys: &[DocKey], physical: &P
             continue;
         };
         if vals != 1
-            || entity.members.iter().any(|m| occupies(m, slot))
+            || entity
+                .members
+                .iter()
+                .enumerate()
+                .any(|(i, m)| holds(reshaped, i, m, slot))
             || physical_occupants(entity, slot, physical) != 1
         {
             continue;
@@ -4630,7 +4672,12 @@ fn leads_with_receiver(member: &Member, target: &TypeMemberTarget) -> bool {
 /// abstract val that an override in the slot can pair with is counted once,
 /// which can only under-count the vals' methods — so an equal physical count
 /// still proves every method of the slot is one of theirs.
-fn stamp_arg_groups(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
+fn stamp_arg_groups(
+    entity: &mut Entity,
+    keys: &[DocKey],
+    physical: &PhysicalMethods,
+    reshaped: &[bool],
+) {
     /// A grouping without its names: the receiver flag, and each group's size.
     fn shape(c: &CurriedArgs) -> (bool, Vec<usize>) {
         (
@@ -4686,11 +4733,21 @@ fn stamp_arg_groups(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMet
         // At most the methods the vals compile to: an abstract slot and its
         // default share one.
         let methods = facts.vals - facts.dispatch_slots.min(facts.overrides);
-        let occupants = entity.members.iter().filter(|m| occupies(m, slot)).count();
+        let occupants = entity
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| holds(reshaped, *i, m, slot))
+            .count();
         if occupants != methods || physical_occupants(entity, slot, physical) != methods {
             continue;
         }
-        for member in entity.members.iter_mut().filter(|m| occupies(m, slot)) {
+        for (_, member) in entity
+            .members
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, m)| holds(reshaped, *i, m, slot))
+        {
             let Member::Method(m) = member else {
                 continue;
             };
@@ -4805,7 +4862,12 @@ fn physical_occupants(entity: &Entity, slot: &DocSlot, physical: &PhysicalMethod
 
 /// Stamp `entity`'s members from one type's pickled keys; see
 /// [`apply_type_member_overlays`] for when a slot is unambiguous.
-fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMethods) {
+fn stamp_doc_sigs(
+    entity: &mut Entity,
+    keys: &[DocKey],
+    physical: &PhysicalMethods,
+    reshaped: &[bool],
+) {
     // Per slot: how many vals claim it, and their key if they all agree.
     #[allow(clippy::type_complexity)]
     let mut slots: HashMap<&DocSlot, (usize, Option<(Option<&String>, usize)>)> = HashMap::new();
@@ -4826,7 +4888,7 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMetho
     let mut claims: HashMap<(usize, bool), usize> = HashMap::new();
     for slot in slots.keys() {
         for (i, m) in entity.members.iter().enumerate() {
-            if occupies(m, slot) {
+            if holds(reshaped, i, m, slot) {
                 *claims.entry((i, is_setter(slot))).or_default() += 1;
             }
         }
@@ -4836,7 +4898,7 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMetho
             continue;
         };
         if entity.members.iter().enumerate().any(|(i, m)| {
-            occupies(m, slot) && claims.get(&(i, is_setter(slot))).is_some_and(|&n| n > 1)
+            holds(reshaped, i, m, slot) && claims.get(&(i, is_setter(slot))).is_some_and(|&n| n > 1)
         }) {
             continue;
         }
@@ -4863,7 +4925,9 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMetho
         let occupants: Vec<&Member> = entity
             .members
             .iter()
-            .filter(|m| occupies(m, slot))
+            .enumerate()
+            .filter(|(i, m)| holds(reshaped, *i, m, slot))
+            .map(|(_, m)| m)
             .collect();
         let keyed_as = match slot {
             DocSlot::Setter { .. } => crate::doc_id::KeyedAs::Setter,
@@ -4882,7 +4946,12 @@ fn stamp_doc_sigs(entity: &mut Entity, keys: &[DocKey], physical: &PhysicalMetho
         {
             continue;
         }
-        for member in entity.members.iter_mut().filter(|m| occupies(m, slot)) {
+        for (_, member) in entity
+            .members
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, m)| holds(reshaped, *i, m, slot))
+        {
             match (member, slot) {
                 (Member::Method(m), DocSlot::Method { .. }) => m.xml_doc_sig = Some(key.clone()),
                 (Member::Property(p), DocSlot::Getter { .. } | DocSlot::ValField(_)) => {
@@ -7718,7 +7787,8 @@ mod tests {
                     }
                 }
             }
-            stamp_doc_sigs(&mut entity, &keys, &physical);
+            let reshaped = vec![false; entity.members.len()];
+            stamp_doc_sigs(&mut entity, &keys, &physical, &reshaped);
             for (member, truth) in entity.members.iter().zip(&truth) {
                 let Member::Method(m) = member else {
                     unreachable!("the generator builds methods only")
@@ -7746,6 +7816,11 @@ mod tests {
         /// Whether the val is an `abstract` slot with its `default`: two vals,
         /// one IL method.
         paired: bool,
+        /// Whether the val is an instance member fsc compiled as a static
+        /// taking the receiver first: its IL method is static and one
+        /// parameter wider. Only for a plain (unpaired) val; a hidden method
+        /// keeps the staticness drawn.
+        receiver_first: bool,
     }
 
     fn group_slot_item() -> impl Strategy<Value = GroupSlotItem> {
@@ -7763,13 +7838,19 @@ mod tests {
             ),
             proptest::option::of(member),
             any::<bool>(),
+            any::<bool>(),
         )
-            .prop_map(|(name, is_static, groups, val, paired)| GroupSlotItem {
-                name,
-                is_static,
-                groups,
-                val,
-                paired,
+            .prop_map(|(name, is_static, groups, val, paired, receiver_first)| {
+                let receiver_first = receiver_first && val.is_some() && !paired;
+                GroupSlotItem {
+                    name,
+                    // A receiver-first val's IL method is static.
+                    is_static: is_static || receiver_first,
+                    groups,
+                    val,
+                    paired,
+                    receiver_first,
+                }
             })
     }
 
@@ -7782,7 +7863,9 @@ mod tests {
         /// members a type holds, a method that receives a grouping is a val's,
         /// grouped as that val groups its arguments, and named as it names them
         /// — or, where several vals share its slot, as its own IL names its
-        /// parameters.
+        /// parameters. Receiver-first vals run through the whole row overlay,
+        /// so a member reshaped from one stays that val's, and a val whose own
+        /// method was elided claims nobody else's.
         #[test]
         fn type_member_arg_group_stamp_hands_each_method_its_own_vals_grouping(
             items in proptest::collection::vec(group_slot_item(), 0..8)
@@ -7802,22 +7885,40 @@ mod tests {
                     })
                     .collect(),
             };
+            let receiver = TypeRef::Named {
+                assembly: None,
+                namespace: vec!["N".to_string()],
+                name: "T".to_string(),
+                type_args: Vec::new(),
+                segment_arities: vec![0],
+            };
+            // The method's IL parameter count, receiver included.
+            let il_arity = |i: &GroupSlotItem| arity(i) + usize::from(i.receiver_first);
             let method_of = |k: usize, i: &GroupSlotItem| {
                 let mut m = make_ecma_method(&format!("M{}", i.name));
                 if let Member::Method(mm) = &mut m {
                     mm.is_static = i.is_static;
                     mm.arg_groups = ArgGroups::Unknowable;
-                    mm.signature.parameters = (0..arity(i))
-                        .map(|p| Parameter {
-                            name: Some(format!("il{k}_{p}")),
-                            ty: TypeRef::Primitive(Primitive::I4),
-                            is_byref: false,
-                            is_out: false,
-                            is_readonly_ref: false,
-                            default: crate::model::ParamDefault::None,
-                            is_param_array: false,
-                            nullability: Nullability::Oblivious,
-                        })
+                    // Tags the member with its item, for the oracle below.
+                    mm.metadata_token = k as u32;
+                    let param = |name: String, ty: TypeRef| Parameter {
+                        name: Some(name),
+                        ty,
+                        is_byref: false,
+                        is_out: false,
+                        is_readonly_ref: false,
+                        default: crate::model::ParamDefault::None,
+                        is_param_array: false,
+                        nullability: Nullability::Oblivious,
+                    };
+                    mm.signature.parameters = i
+                        .receiver_first
+                        .then(|| param("this".to_string(), receiver.clone()))
+                        .into_iter()
+                        .chain(
+                            (0..arity(i))
+                                .map(|p| param(format!("il{k}_{p}"), TypeRef::Primitive(Primitive::I4))),
+                        )
                         .collect();
                 }
                 m
@@ -7832,7 +7933,7 @@ mod tests {
                         PhysicalMethod {
                             declaring_type: "T".to_string(),
                             name: format!("M{}", item.name),
-                            params: Some(arity(item)),
+                            params: Some(il_arity(item)),
                             is_static: item.is_static,
                             accessor_of: None,
                         },
@@ -7843,11 +7944,15 @@ mod tests {
             let slot_of = |i: &GroupSlotItem| DocSlot::Method {
                 name: format!("M{}", i.name),
                 arity: arity(i),
-                is_static: i.is_static,
-                compiled: Compiled::AsDeclared,
+                is_static: i.is_static && !i.receiver_first,
+                compiled: if i.receiver_first {
+                    Compiled::StaticWithReceiver
+                } else {
+                    Compiled::AsDeclared
+                },
             };
             let mut keys = Vec::new();
-            // Per projected member: its own val's grouping, if it has a val.
+            // Per item: its own val's grouping, if it has a val.
             let mut truth = Vec::new();
             for (k, item) in items.iter().enumerate() {
                 match item.val {
@@ -7866,11 +7971,9 @@ mod tests {
                                 role,
                             });
                         }
+                        truth.push(Some(curried_of(item)));
                         match member {
-                            ValMember::Kept => {
-                                entity.members.push(method_of(k, item));
-                                truth.push(Some(curried_of(item)));
-                            }
+                            ValMember::Kept => entity.members.push(method_of(k, item)),
                             ValMember::Refused => entity.skipped_members.push(SkippedMember {
                                 name: format!("M{}", item.name),
                                 reason: "refused".to_string(),
@@ -7889,15 +7992,20 @@ mod tests {
                     *acc.entry(k.slot.clone()).or_default() += 1;
                     acc
                 });
-            stamp_arg_groups(&mut entity, &keys, &physical);
-            let kept: Vec<&GroupSlotItem> = items
-                .iter()
-                .filter(|i| matches!(i.val, None | Some(ValMember::Kept)))
-                .collect();
-            for ((member, truth), item) in entity.members.iter().zip(&truth).zip(&kept) {
+            let target = TypeMemberTarget {
+                namespace: vec!["N".to_string()],
+                type_chain: vec!["T".to_string()],
+                arity: 0,
+                il_name: "T".to_string(),
+                keys,
+            };
+            overlay_type_row(&mut entity, &target, &physical);
+            for member in &entity.members {
                 let Member::Method(m) = member else {
                     unreachable!("the generator builds methods only")
                 };
+                let k = m.metadata_token as usize;
+                let (item, truth) = (&items[k], &truth[k]);
                 let ArgGroups::Read(stamped) = &m.arg_groups else {
                     continue;
                 };
@@ -9766,5 +9874,94 @@ mod tests {
             [&TypeRef::Primitive(Primitive::I4)]
         );
         assert!(entity.skipped_members.is_empty());
+    }
+
+    /// A receiver-first val whose own method the projection elided must not
+    /// claim a member of another val that merely has the shape it declares:
+    /// after the reshape, `occupies` alone cannot tell a reshaped member from
+    /// a natively declared one, and two slots both claiming the one member
+    /// let a `HashMap`'s order pick whose argument groups it gets.
+    #[test]
+    fn an_elided_receiver_first_val_claims_no_other_member() {
+        let param = |name: &str| Parameter {
+            name: Some(name.to_string()),
+            ty: TypeRef::Primitive(Primitive::String),
+            is_byref: false,
+            is_out: false,
+            is_readonly_ref: false,
+            default: crate::model::ParamDefault::None,
+            is_param_array: false,
+            nullability: Nullability::Oblivious,
+        };
+        let groups = |gs: &[&[&str]]| CurriedArgs {
+            leading_receiver: false,
+            groups: gs
+                .iter()
+                .map(|g| ArgGroup {
+                    args: g
+                        .iter()
+                        .map(|n| CurriedArg {
+                            name: Some(n.to_string()),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+        let key = |compiled: Compiled, curried: CurriedArgs| DocKey {
+            slot: DocSlot::Method {
+                name: "M".to_string(),
+                arity: 2,
+                is_static: false,
+                compiled,
+            },
+            key: None,
+            erased_typars: 0,
+            curried: Some(curried),
+            role: SlotRole::Plain,
+        };
+        let physical_method = |params: usize, is_static: bool| PhysicalMethod {
+            declaring_type: "T".to_string(),
+            name: "M".to_string(),
+            params: Some(params),
+            is_static,
+            accessor_of: None,
+        };
+        // HashMap order varies per map, so one run may pass by luck.
+        for _ in 0..64 {
+            let mut m = make_ecma_method("M");
+            if let Member::Method(mm) = &mut m {
+                mm.is_static = false;
+                mm.signature.parameters = vec![param("x"), param("y")];
+            }
+            let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Record);
+            entity.members.push(m);
+            entity.method_def_tokens = vec![0, 1];
+            // The elided receiver-first method, and the projected one.
+            let physical: PhysicalMethods = [
+                (0, physical_method(3, true)),
+                (1, physical_method(2, false)),
+            ]
+            .into_iter()
+            .collect();
+            let target = TypeMemberTarget {
+                namespace: vec!["N".to_string()],
+                type_chain: vec!["T".to_string()],
+                arity: 0,
+                il_name: "T".to_string(),
+                keys: vec![
+                    key(Compiled::StaticWithReceiver, groups(&[&["a"], &["b"]])),
+                    key(Compiled::AsDeclared, groups(&[&["x", "y"]])),
+                ],
+            };
+            overlay_type_row(&mut entity, &target, &physical);
+            let [Member::Method(m)] = entity.members.as_slice() else {
+                panic!("one method: {:?}", entity.members);
+            };
+            assert_eq!(
+                m.arg_groups,
+                ArgGroups::Read(Box::new(groups(&[&["x", "y"]]))),
+                "the member keeps its own val's grouping"
+            );
+        }
     }
 }
