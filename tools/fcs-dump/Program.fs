@@ -306,13 +306,20 @@ let private dumpAst (absolute: string) (defines: string list) =
 /// `.fsx`). The Rust differential sweep
 /// (`crates/cst/tests/parser_corpus_diff.rs`) defines the matching `.fs`/`.fsi`
 /// set so the two compare like-for-like.
+///
+/// A line may be `<path><TAB><langversion>`, which parses that file at that
+/// `<LangVersion>`, overriding `BORZOI_FCS_LANGVERSION`.
 let private dumpAstBatchCore () =
     let options = buildOptionsCompact ()
     let checker = FSharpChecker.Create()
 
     let mutable line = Console.In.ReadLine()
     while not (isNull line) do
-        let path = (Option.ofObj line |> Option.defaultValue "").Trim()
+        let request = (Option.ofObj line |> Option.defaultValue "").Trim()
+        let path, requestLangVersion =
+            match request.LastIndexOf '\t' with
+            | -1 -> request, None
+            | i -> request.Substring(0, i), Some(request.Substring(i + 1))
         if path <> "" then
             // Serialise *inside* the guard: a deeply-nested AST can make
             // System.Text.Json throw (or, beyond the stack, overflow — see
@@ -336,8 +343,10 @@ let private dumpAstBatchCore () =
                     // (Forcing a symbol here would instead desync `.fsx` from the
                     // single-file dump.)
                     let parsingOptions =
-                        { parsingOptions0 with ConditionalDefines = [] }
-                        |> withLangVersion
+                        let opts = { parsingOptions0 with ConditionalDefines = [] } |> withLangVersion
+                        match requestLangVersion with
+                        | None -> opts
+                        | Some v -> { opts with LangVersionText = v }
                     let parseResults =
                         checker.ParseFile(absolute, sourceText, parsingOptions, userOpName = "fcs-dump-ast-batch")
                         |> Async.RunSynchronously
@@ -685,8 +694,7 @@ let private internalLex =
                     "fcs-dump: FSharpLexerImpl.lex has no parameter %s; it takes (%s)"
                     name
                     (ps |> Array.map (fun p -> string p.Name + ": " + string p.ParameterType) |> String.concat ", ")
-        let langVersion =
-            Activator.CreateInstance((param "langVersion").ParameterType, [| box "latestmajor"; null |])
+        let langVersionType = (param "langVersion").ParameterType
         let pathMap =
             match asm.GetType("Internal.Utilities.PathMapModule") with
             | null -> failwith "fcs-dump: Internal.Utilities.PathMapModule not found"
@@ -701,10 +709,14 @@ let private internalLex =
             with
             | None -> failwith "fcs-dump: FSharpToken(token, range) constructor not found"
             | Some c -> c
-        lex, (param "lexCallback").ParameterType, langVersion, pathMap, tokenCtor)
+        lex, (param "lexCallback").ParameterType, langVersionType, pathMap, tokenCtor)
 
-let private lexInternal (text: string) =
-    let lex, callbackType, langVersion, pathMap, tokenCtor = internalLex.Force()
+/// Lex `text` through FCS's internal lexer and LexFilter at `langVersionText`
+/// (a `<LangVersion>` token such as `latestmajor` or `4.6`), which decides every
+/// `SupportsFeature` gate the lexer and lex-filter consult.
+let private lexInternal (langVersionText: string) (text: string) =
+    let lex, callbackType, langVersionType, pathMap, tokenCtor = internalLex.Force()
+    let langVersion = Activator.CreateInstance(langVersionType, [| box langVersionText; null |])
     let tokenType = callbackType.GetGenericArguments().[0]
     let innerType = callbackType.GetGenericArguments().[1]
     let tokens = ResizeArray()
@@ -758,14 +770,20 @@ let private dumpTokensInternalBatch () =
     let options = buildOptionsCompact ()
     let mutable line = Console.In.ReadLine()
     while not (isNull line) do
-        let path = (Option.ofObj line |> Option.defaultValue "").Trim()
+        let request = (Option.ofObj line |> Option.defaultValue "").Trim()
+        // `<path>` or `<path>\t<langversion>`: the version rides on the request
+        // rather than the environment, so one resident child serves every version.
+        let path, langVersionText =
+            match request.LastIndexOf '\t' with
+            | -1 -> request, "latestmajor"
+            | i -> request.Substring(0, i), request.Substring(i + 1)
         if path <> "" then
             let payload =
                 try
                     let absolute = Path.GetFullPath path
                     box {| Path = path
                            WithLexFilter = true
-                           Tokens = (lexInternal (File.ReadAllText absolute)).ToArray() |}
+                           Tokens = (lexInternal langVersionText (File.ReadAllText absolute)).ToArray() |}
                 with ex ->
                     box {| Path = path
                            WithLexFilter = true
@@ -7823,7 +7841,8 @@ let private usage () =
     eprintfn "  tokens-filtered [--compact] dump post-LexFilter token stream"
     eprintfn "  tokens-filtered-batch    read paths from stdin, emit JSONL"
     eprintfn "  tokens-lexfilter-internal-batch  as tokens-filtered-batch, with the"
-    eprintfn "                           tokens the public tokenizer drops (block ends)"
+    eprintfn "                           tokens the public tokenizer drops (block ends);"
+    eprintfn "                           a line may be <path><TAB><langversion>"
     eprintfn "  tokens-raw-batch         read paths from stdin, emit JSONL"
     eprintfn "  entities <dll-path>      dump entity skeletons of a managed DLL"
     eprintfn "  uses <source-path>       dump symbol uses (name-resolution oracle)"

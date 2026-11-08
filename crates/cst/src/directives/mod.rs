@@ -16,7 +16,7 @@ pub use driver::{
 };
 pub use expr::{Expr, ParseError, ParseErrorKind, parse_if_expr};
 pub use line::{
-    Directive, DirectiveError, DirectiveErrorKind, DirectiveKind, Recognised, WarningNumber,
-    recognise_directive,
+    Directive, DirectiveError, DirectiveErrorKind, DirectiveKind, Recognised, WarningArgument,
+    WarningNumber, recognise_directive,
 };
 pub use line_store::{LineDirective, LineDirectiveStore, Remapped};

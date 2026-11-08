@@ -1345,7 +1345,7 @@ impl SemanticState {
     ///
     /// The outcome is recorded for [`Self::fold_outcome`] to report. Without
     /// this, a refusal introduced *after* the file was opened — an edit that
-    /// makes a Compile item straddle the F# 8 indentation boundary, a sibling
+    /// makes a Compile item straddle a language-version shape boundary, a sibling
     /// source deleted on disk — would be reached only from a handler, which has
     /// no connection to the client, and the project would go quiet with no
     /// message. A success clears any prior observation.
@@ -1430,8 +1430,8 @@ fn build_parses(
     // the same decision.
     // `LangVersion` provenance is the third axis, gated per *source shape*
     // below rather than here: the language version shapes the token stream
-    // (the lex-filter's strict-indentation push decision at the F# 8
-    // boundary), so an unknowable version can mis-shape the fold — but the
+    // (the lex-filter's `relaxWhitespace2` pops at the F# 6 boundary and its
+    // strict-indentation push decision at F# 8), so an unknowable version can mis-shape the fold — but the
     // provenance mark alone can't gate wholesale, because a real SDK's own
     // conditional LangVersion default trips it for EVERY project (probed,
     // dotnet 10.0.301, even with a cleanly body-pinned value —
@@ -1535,52 +1535,54 @@ fn build_parses(
             return Err(FoldRefusal::ParserPanic { file: include });
         };
         // The intersection gate promised above: this file MAY parse to a
-        // differently shaped tree at another language version (an offside
-        // version-gated push — the F# 8 strict-indentation boundary), and
-        // the project's `LangVersion` provenance can't tell us which version
-        // the real build uses. The flag is a sound *over*-approximation
-        // (an EOF-anchored push — `module M =` at end of file, a common
-        // mid-edit state — differs as a stack operation but reconverges via
-        // the EOF cascade), and real SDK projects are always
-        // provenance-tainted, so acting on the flag alone would flicker the
-        // fold off while the user types. Verify: re-parse once from the
-        // *other* side of the boundary (strictness is the only shape input,
-        // so one representative per side decides) and refuse only genuine
-        // divergence — folding then could export bindings from a tree the
-        // compiler never sees; handlers fall back to single-file resolution
-        // (best-guess version, accepted best-effort). The extra parse runs
-        // only for flagged files in untrusted-provenance projects.
+        // differently shaped tree at another language version (a decision the
+        // lex-filter makes differently across the F# 6 `relaxWhitespace2` or
+        // the F# 8 strict-indentation boundary), and the project's
+        // `LangVersion` provenance can't tell us which version the real build
+        // uses. The flag is a sound *over*-approximation (an EOF-anchored push
+        // — `module M =` at end of file, a common mid-edit state — differs as
+        // a stack operation but reconverges via the EOF cascade), and real SDK
+        // projects are always provenance-tainted, so acting on the flag alone
+        // would flicker the fold off while the user types. Verify: re-parse
+        // at the representative of every *other* shape band (those gates are
+        // the only shape inputs, so one version per band decides) and refuse
+        // only genuine divergence — folding then could export bindings from a
+        // tree the compiler never sees; handlers fall back to single-file
+        // resolution (best-guess version, accepted best-effort). The extra
+        // parses run only for flagged files in untrusted-provenance projects.
         if lang_version_untrusted && parse.shape_depends_on_language_version {
-            let other_side = if lang.strict_indentation_is_error() {
-                LanguageVersion::V7_0
-            } else {
-                LanguageVersion::DEFAULT
-            };
-            let other = if signature {
-                parse_sig_with_symbols(&text, &symbols, other_side)
-            } else {
-                parse_with_symbols(&text, &symbols, other_side)
-            };
-            let Some(other) = other else {
-                tracing::warn!(
-                    file = %include.display(),
-                    "Compile item triggered parser panic; refusing to resolve project"
-                );
-                return Err(FoldRefusal::ParserPanic { file: include });
-            };
-            // Green-node equality is recursively structural (rowan compares
-            // header + children, tokens by kind + text — verified against
-            // the vendored source), so this is an allocation-free tree
-            // comparison; both directions are pinned by the mid-edit
-            // (reconverges, folds) and straddling (differs, refuses) tests.
-            if other.root.green() != parse.root.green() {
-                tracing::info!(
-                    project = %project.display(),
-                    file = %include.display(),
-                    "refusing project parses: LangVersion provenance is untrusted and \
-                     this file parses to a different tree across the F# 8 boundary"
-                );
-                return Err(FoldRefusal::LanguageVersionShape { file: include });
+            let own_band = lang.shape_representative();
+            for other_side in LanguageVersion::SHAPE_REPRESENTATIVES {
+                if other_side == own_band {
+                    continue;
+                }
+                let other = if signature {
+                    parse_sig_with_symbols(&text, &symbols, other_side)
+                } else {
+                    parse_with_symbols(&text, &symbols, other_side)
+                };
+                let Some(other) = other else {
+                    tracing::warn!(
+                        file = %include.display(),
+                        "Compile item triggered parser panic; refusing to resolve project"
+                    );
+                    return Err(FoldRefusal::ParserPanic { file: include });
+                };
+                // Green-node equality is recursively structural (rowan compares
+                // header + children, tokens by kind + text — verified against
+                // the vendored source), so this is an allocation-free tree
+                // comparison; both directions are pinned by the mid-edit
+                // (reconverges, folds) and straddling (differs, refuses) tests.
+                if other.root.green() != parse.root.green() {
+                    tracing::info!(
+                        project = %project.display(),
+                        file = %include.display(),
+                        other_version = %other_side,
+                        "refusing project parses: LangVersion provenance is untrusted and \
+                         this file parses to a different tree at another language version"
+                    );
+                    return Err(FoldRefusal::LanguageVersionShape { file: include });
+                }
             }
         }
         // Before `parse.root` is moved into the `SourceFile`: the errors and the
@@ -4523,7 +4525,7 @@ mod tests {
     /// project whose `<LangVersion>` provenance is untrusted refuses the fold
     /// **only** when some file's parse shape actually depends on the language
     /// version (`Parse::shape_depends_on_language_version` — an offside
-    /// version-gated context push, the F# 8 strict-indentation boundary).
+    /// a lex-filter decision across the F# 6 or F# 8 boundary).
     /// Version-invariant files keep folding under the same untrusted
     /// provenance — which is what keeps real SDK projects folding, since a
     /// real SDK's conditional LangVersion default marks the provenance for

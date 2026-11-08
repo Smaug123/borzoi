@@ -1,11 +1,14 @@
 //! `Parse::shape_depends_on_language_version` — the version-shape-sensitivity
 //! flag (see `FilterRun::shape_depends_on_language_version`).
 //!
-//! The lex-filter's strict-indentation gate (F# 8,
-//! `LanguageVersion::strict_indentation_is_error`) is the one place the
-//! filtered stream's *shape* depends on the language version: a version-gated
-//! context push whose anchor is offside is aborted at F# 8+ but kept (with a
-//! warning) below. The flag records reaching such a point, and `false` must
+//! Two lex-filter gates make the filtered stream's *shape* depend on the
+//! language version: strict indentation (F# 8,
+//! `LanguageVersion::strict_indentation_is_error`), under which a version-gated
+//! context push whose anchor is offside is aborted rather than kept (with a
+//! warning), and `relaxWhitespace2` (F# 6,
+//! `LanguageVersion::supports_relax_whitespace2`), under which a dedented
+//! closer leaves an enclosing context open and a `CtxtMatch` is popped with its
+//! clauses. The flag records reaching such a point, and `false` must
 //! **prove** the tree is identical under every version — that is the property
 //! the LSP's fold trusts when a project's `<LangVersion>` provenance is
 //! unknowable.
@@ -79,6 +82,37 @@ fn eof_anchored_flag_can_over_approximate() {
     );
 }
 
+/// A closer dedented to exactly the `let`'s column pops the `let` at the
+/// closer below F# 6.0 and at the next token from 6.0
+/// (`relaxWhitespace2OffsideRule`), which moves the `ODECLEND` — and so the
+/// tree — across the F# 6 boundary while F# 7 and F# 10 agree.
+#[test]
+fn dedented_closer_straddles_the_f6_boundary() {
+    let src = "let x = (\n    1\n)\nlet y = 2\n";
+    let v5 = parse_at(src, LanguageVersion::V5_0);
+    let v7 = parse_at(src, LanguageVersion::V7_0);
+    let v10 = parse_at(src, LanguageVersion::V10_0);
+    assert_ne!(tree_shape(&v5), tree_shape(&v7));
+    assert_eq!(tree_shape(&v7), tree_shape(&v10));
+    for p in [&v5, &v7, &v10] {
+        assert!(p.shape_depends_on_language_version);
+    }
+}
+
+/// Every `match` pops its `CtxtMatch` with its clauses from F# 6.0 and leaves
+/// it below; when the token that ends the clauses would pop the `CtxtMatch`
+/// anyway, the worlds reconverge and the flag stays clear.
+#[test]
+fn an_ordinary_match_does_not_set_the_flag() {
+    let src = "let f x =\n    match x with\n    | 1 -> 2\n    | _ -> 3\n\nlet g = f (match 1 with 1 -> 2 | _ -> 3)\n";
+    for lang in LanguageVersion::SHAPE_REPRESENTATIVES {
+        assert!(
+            !parse_at(src, lang).shape_depends_on_language_version,
+            "{lang}"
+        );
+    }
+}
+
 #[test]
 fn plain_source_does_not_set_the_flag() {
     let src = "module M\n\nlet answer = 42\n\nlet double = answer * 2\n";
@@ -115,6 +149,18 @@ fn snippet() -> impl Strategy<Value = String> {
             Just("do ()"),
             Just("fun () ->"),
             Just("()"),
+            // The `relaxWhitespace2` (F# 6) shapes: closers that can land at
+            // an enclosing context's column, and clauses that end while the
+            // `match` is still open.
+            Just("let y = ("),
+            Just(")"),
+            Just("[ 1"),
+            Just("]"),
+            Just("begin"),
+            Just("end"),
+            Just("(match x with"),
+            Just("| A -> 1)"),
+            Just("|> ignore"),
         ],
     )
         .prop_map(|(indent, stmt)| format!("{}{}", " ".repeat(indent), stmt));
@@ -127,24 +173,27 @@ fn snippet() -> impl Strategy<Value = String> {
 
 proptest! {
     /// Soundness (the property the LSP fold trusts): an unset flag proves the
-    /// tree is identical across the F# 8 boundary. And symmetry: the first
-    /// divergence point is reached in the same state by both runs, so the two
-    /// runs always agree on the flag.
+    /// tree is identical in every shape band. And symmetry: the first
+    /// divergence point is reached in the same state by every run, so all runs
+    /// agree on the flag.
     #[test]
     fn unset_flag_proves_version_invariance(src in snippet()) {
-        let v7 = parse_at(&src, LanguageVersion::V7_0);
-        let v10 = parse_at(&src, LanguageVersion::V10_0);
-        prop_assert_eq!(
-            v7.shape_depends_on_language_version,
-            v10.shape_depends_on_language_version,
-            "both runs reach the first version-gated divergence point identically"
-        );
-        if !v10.shape_depends_on_language_version {
+        let [lo, mid, hi] = LanguageVersion::SHAPE_REPRESENTATIVES.map(|lang| parse_at(&src, lang));
+        for p in [&lo, &mid] {
             prop_assert_eq!(
-                tree_shape(&v7),
-                tree_shape(&v10),
-                "an unset flag must prove the tree is version-invariant"
+                p.shape_depends_on_language_version,
+                hi.shape_depends_on_language_version,
+                "every run reaches the first version-gated divergence point identically"
             );
+        }
+        if !hi.shape_depends_on_language_version {
+            for p in [&lo, &mid] {
+                prop_assert_eq!(
+                    tree_shape(p),
+                    tree_shape(&hi),
+                    "an unset flag must prove the tree is version-invariant"
+                );
+            }
         }
     }
 }

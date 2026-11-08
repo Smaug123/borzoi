@@ -9,13 +9,9 @@
 //! preview SDK), and `preview` is a sentinel above every numbered version
 //! (FCS's `previewVersion = 9999`). See [`docs/ast-versioning-plan.md`] D3.
 //!
-//! This is the *value type* only — the seam, not the machinery. The parser does
-//! **not** branch on it yet; the gate that distinguishes the two surfaces we
-//! model — F# 10.0 ([`LanguageVersion::DEFAULT`], frozen) and
-//! [`Preview`](LanguageVersion::Preview) (every implemented feature on, e.g.
-//! `#elif`) — is a later slice. What the type buys today is faithful
-//! `<LangVersion>` parsing for the LSP, which needs to recognise a pinned
-//! version in order to diagnose it.
+//! Beyond faithful `<LangVersion>` parsing, the type answers each FCS
+//! `SupportsFeature` question the lexer, lex-filter and parser ask, as one
+//! predicate per feature (`supports_*` and friends below).
 //!
 //! [`docs/ast-versioning-plan.md`]: ../../../docs/ast-versioning-plan.md
 
@@ -84,6 +80,63 @@ impl LanguageVersion {
     /// once several gated features make it earn its place.
     pub fn supports_preprocessor_elif(self) -> bool {
         self >= LanguageVersion::V11_0
+    }
+
+    /// Whether FCS's `LanguageFeature.RelaxWhitespace` (F# 4.7,
+    /// `LanguageFeatures.fs`) is on: the lex-filter's undentation limit for a
+    /// `static member P with get() =` body (`CtxtWithAsLet` over
+    /// `CtxtMemberHead`) is the member head's column + 1. Below 4.7 the limit
+    /// is found further down the stack. The limit only grades offside
+    /// *warnings* below F# 8 (where no push is strict), so this gate never
+    /// moves the token stream.
+    pub fn supports_relax_whitespace(self) -> bool {
+        self >= LanguageVersion::V4_7
+    }
+
+    /// Whether FCS's `LanguageFeature.RelaxWhitespace2` (F# 6.0,
+    /// `LanguageFeatures.fs`) is on. It gates three lex-filter behaviours:
+    /// the `relaxWhitespace2OffsideRule` `+1` grace that lets a dedented
+    /// closer sit at an enclosing context's column without popping it
+    /// (shape-affecting), popping a `CtxtMatch` together with the
+    /// `CtxtMatchClauses` above it (shape-affecting), and three undentation-
+    /// limit arms (warnings only below F# 8, where it is always on).
+    pub fn supports_relax_whitespace2(self) -> bool {
+        self >= LanguageVersion::V6_0
+    }
+
+    /// Whether FCS's `LanguageFeature.ParsedHashDirectiveArgumentNonQuotes`
+    /// (F# 9.0, `LanguageFeatures.fs`) is on: a `#nowarn` / `#warnon`
+    /// argument may be unquoted (`40`) or `FS`-prefixed (`FS40`, `"FS40"`).
+    /// Below 9.0 only a quoted bare number (`"40"`) is read.
+    pub fn supports_non_quoted_hash_directive_arguments(self) -> bool {
+        self >= LanguageVersion::V9_0
+    }
+
+    /// One version from each band of the gates that shape the lex-filter's
+    /// token stream — `RelaxWhitespace2` (F# 6.0) and `StrictIndentation`
+    /// (F# 8.0) — ascending. Two versions in the same band filter every source
+    /// to the same stream, so comparing parses at these decides whether a
+    /// parse flagged
+    /// [`shape_depends_on_language_version`](crate::parser::Parse::shape_depends_on_language_version)
+    /// really differs between any two versions.
+    pub const SHAPE_REPRESENTATIVES: [LanguageVersion; 3] = [
+        LanguageVersion::V5_0,
+        LanguageVersion::V7_0,
+        LanguageVersion::DEFAULT,
+    ];
+
+    /// The member of [`SHAPE_REPRESENTATIVES`](Self::SHAPE_REPRESENTATIVES)
+    /// sharing this version's band, i.e. the version whose token stream this
+    /// one's always equals.
+    pub fn shape_representative(self) -> LanguageVersion {
+        match (
+            self.supports_relax_whitespace2(),
+            self.strict_indentation_is_error(),
+        ) {
+            (false, _) => LanguageVersion::V5_0,
+            (true, false) => LanguageVersion::V7_0,
+            (true, true) => LanguageVersion::DEFAULT,
+        }
     }
 
     /// Whether the lex-filter's offside "this token is offside of context
@@ -286,6 +339,27 @@ mod tests {
         assert!(Preview.supports_preprocessor_elif());
         for v in LanguageVersion::NUMBERED {
             assert_eq!(v.supports_preprocessor_elif(), v >= V11_0, "{v:?}");
+        }
+    }
+
+    /// Each version maps to the representative of its shape band: the one in
+    /// [`LanguageVersion::SHAPE_REPRESENTATIVES`] that answers both
+    /// shape-affecting gates the same way, and each representative to itself.
+    #[test]
+    fn shape_representative_shares_the_gates() {
+        let shape_gates = |v: LanguageVersion| {
+            (
+                v.supports_relax_whitespace2(),
+                v.strict_indentation_is_error(),
+            )
+        };
+        for v in LanguageVersion::NUMBERED.into_iter().chain([Preview]) {
+            let rep = v.shape_representative();
+            assert!(LanguageVersion::SHAPE_REPRESENTATIVES.contains(&rep), "{v}");
+            assert_eq!(shape_gates(rep), shape_gates(v), "{v}");
+        }
+        for rep in LanguageVersion::SHAPE_REPRESENTATIVES {
+            assert_eq!(rep.shape_representative(), rep);
         }
     }
 

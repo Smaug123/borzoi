@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc cf17c736da29916e72eeb570ae74cee01144396062103e02ea0e081d72b6557e # shrinks to src = "match x with\n"
 cc aaed783df41682fcec605265da06ea86e3b29501d6e25ee844ae480a5810cd4b # shrinks to src = "match)..\n"
+cc 543977e58ef170f357c7e2bdd577fdf0f0fdec38921a5384e0ea52cee57436e3 # shrinks to src = "begin\n#if FOO\n"
+cc ee70dcb122e3ed9c016e93e9194660196ae5a3df7f45576b960c20a8877f9a12 # shrinks to src = "(match x with\n   begin\n end\n"

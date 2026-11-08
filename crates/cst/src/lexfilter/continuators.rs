@@ -430,17 +430,14 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         }
     }
 
-    /// FCS's `relaxWhitespace2OffsideRule` (LexFilter.fs:1473-1500). A
-    /// per-token predicate that is `true` only when the current token is an
-    /// `ODUMMY` wrapping a `TokenRExprParen` (LexFilter.fs:194-198: END /
-    /// RPAREN / RBRACE / BAR_RBRACE / RBRACK / BAR_RBRACK / RQUOTE /
-    /// GREATER true). When `true`, the sixteen offside-pop arms below bump
-    /// the strict guard `tokenStartCol <= offsidePos.Column` up to
-    /// `tokenStartCol + 1 <= offsidePos.Column`, i.e. an `ODUMMY` queued at
-    /// exactly the outer context's anchor column does NOT pop that context.
-    /// FCS gates this on `relaxWhitespace2`, which is enabled for F# 6.0+;
-    /// the LSP targets `latestmajor` (languageVersion100), so the gate is
-    /// always on for us.
+    /// The token half of FCS's `relaxWhitespace2OffsideRule`
+    /// (LexFilter.fs:1473-1500): whether the current token is an `ODUMMY`
+    /// wrapping a `TokenRExprParen` (LexFilter.fs:194-198: END / RPAREN /
+    /// RBRACE / BAR_RBRACE / RBRACK / BAR_RBRACK / RQUOTE / GREATER true).
+    /// FCS's rule is this predicate *and* `relaxWhitespace2` (F# 6.0+); the
+    /// offside-pop arms consult the conjunction through
+    /// [`Filter::is_offside_of`], which also records when the version half
+    /// decides the outcome.
     ///
     /// The `ODUMMY TokenRExprParen` itself is synthesised at three call
     /// sites in `mod.rs`: the IN+CtxtLetDecl arm queues `Dummy(In)` (not a
@@ -449,14 +446,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// `TokenRExprParen` closing a `CtxtParen`; and the
     /// END+CtxtWithAsAugment arm queues `Dummy(End)` (`End` is in
     /// `TokenRExprParen`, so this predicate fires).
-    ///
-    /// Without this rule, a closer dedented past an outer-context anchor
-    /// would only pop that context at the NEXT real token's range — so the
-    /// virtual end token (ODECLEND, OEND, OBLOCKSEP) emits at the wrong
-    /// column. With the rule, FCS emits the virtual end at the closer's
-    /// range, then leaves the outer context alone until something further
-    /// offside arrives.
-    pub(super) fn is_relax_whitespace2_offside_rule(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_rexpr_paren_dummy(token: &TokenContent<'_>) -> bool {
         let TokenContent::Dummy { inner, .. } = token else {
             return false;
         };

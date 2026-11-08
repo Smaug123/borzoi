@@ -65,6 +65,7 @@
 
 use super::expr::{ParseError as ExprParseError, parse_if_expr};
 use crate::directives::expr::Expr;
+use crate::language_version::LanguageVersion;
 use std::ops::Range;
 
 /// A warning number parsed from a `#nowarn` / `#warnon` directive argument.
@@ -77,6 +78,17 @@ use std::ops::Range;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WarningNumber(pub i32);
 
+/// One parsed `#nowarn` / `#warnon` argument: its [`WarningNumber`] and whether
+/// FCS accepts it only under `LanguageFeature.ParsedHashDirectiveArgumentNonQuotes`
+/// (F# 9.0, [`LanguageVersion::supports_non_quoted_hash_directive_arguments`]) —
+/// an unquoted argument (`40`, `FS40`) or an `FS`-prefixed one, even quoted
+/// (`"FS40"`). Below 9.0 FCS drops such an argument (`WarnScopes.getNumber`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WarningArgument {
+    pub number: WarningNumber,
+    pub needs_non_quoted_arguments: bool,
+}
+
 /// A recognised hash directive — either a conditional-compilation directive
 /// that drives the preprocessor state machine, or a trivia directive
 /// (`#nowarn` / `#warnon` / `#line`) that the driver silently consumes.
@@ -87,17 +99,19 @@ pub enum Directive {
     Else,
     EndIf,
     /// `#nowarn ...` — suppress the listed warning(s) for the rest of the
-    /// file. `numbers` holds the parsed warning numbers in source order.
+    /// file. `numbers` holds the parsed warning arguments in source order,
+    /// including those only F# 9.0+ accepts; [`Directive::warning_numbers`]
+    /// reads them at a language version.
     /// Arguments FCS can't parse as a warning number — and a keyword glued to
     /// a non-whitespace byte (e.g. `#nowarn40`, which FCS reads as the
     /// directive identifier `nowarn40`) — yield an empty list.
     NoWarn {
-        numbers: Vec<WarningNumber>,
+        numbers: Vec<WarningArgument>,
     },
     /// `#warnon ...` — re-enable the listed warning(s) for the rest of the
     /// file. Symmetric to [`Directive::NoWarn`].
     WarnOn {
-        numbers: Vec<WarningNumber>,
+        numbers: Vec<WarningArgument>,
     },
     /// `#line N "file"` or the bare-numeric alternate `# N "file"` —
     /// source-position pragma emitted by fslex / fsyacc and other code
@@ -152,6 +166,21 @@ impl Directive {
             self,
             Self::NoWarn { .. } | Self::WarnOn { .. } | Self::Line { .. }
         )
+    }
+
+    /// The warning numbers a `#nowarn` / `#warnon` lists, as FCS reads them at
+    /// `lang`: below F# 9.0 the arguments only the non-quoted form admits are
+    /// dropped. Empty for every other directive.
+    pub fn warning_numbers(&self, lang: LanguageVersion) -> Vec<WarningNumber> {
+        let (Self::NoWarn { numbers } | Self::WarnOn { numbers }) = self else {
+            return Vec::new();
+        };
+        let non_quoted = lang.supports_non_quoted_hash_directive_arguments();
+        numbers
+            .iter()
+            .filter(|a| non_quoted || !a.needs_non_quoted_arguments)
+            .map(|a| a.number)
+            .collect()
     }
 }
 
@@ -569,7 +598,7 @@ fn parse_line_number(digits: &str) -> u32 {
 /// - Each argument is parsed by [`parse_warning_number`]; ones that don't
 ///   parse are dropped (FCS diagnoses them, but the recogniser only reports
 ///   directive *shape*, so payload parsing is best-effort here).
-fn parse_warn_numbers(body: &str) -> Vec<WarningNumber> {
+fn parse_warn_numbers(body: &str) -> Vec<WarningArgument> {
     let after = body.trim_start_matches([' ', '\t']);
     if after.len() == body.len() && !body.is_empty() {
         // The keyword was glued to a non-whitespace byte (`#nowarn40`).
@@ -590,21 +619,13 @@ fn parse_warn_numbers(body: &str) -> Vec<WarningNumber> {
         .collect()
 }
 
-/// Parse a single `#nowarn` / `#warnon` argument into a [`WarningNumber`],
+/// Parse a single `#nowarn` / `#warnon` argument into a [`WarningArgument`],
 /// mirroring FCS `WarnScopes.getNumber`: strip a `"""..."""` or `"..."` quote
 /// wrapping, strip a leading `FS`, then parse with `Int32.TryParse`. Returns
 /// `None` for arguments that don't parse.
 ///
-/// # Language-version divergence
-///
-/// FCS gates both the *unquoted* argument form and the `FS` prefix on the
-/// `ParsedHashDirectiveArgumentNonQuotes` language feature, supported from F#
-/// 9.0. We don't model language versions, so we always behave as if that
-/// feature is on. The default language version is 10.0, so this matches FCS
-/// for the default and every langversion >= 9.0; the divergence appears only
-/// under an explicitly-selected `<LangVersion>` of 8 or lower.
-///
-/// FCS's behaviour as a function of whether the feature is on (`f`):
+/// FCS gates two of those steps on the `ParsedHashDirectiveArgumentNonQuotes`
+/// language feature (F# 9.0), as a function of whether it is on (`f`):
 /// 1. Quote-strip `"""..."""` / `"..."` to an inner string (always); a
 ///    non-quoted argument is accepted only when `f`.
 /// 2. An inner string beginning `FS` is accepted (prefix stripped) only when
@@ -612,23 +633,30 @@ fn parse_warn_numbers(body: &str) -> Vec<WarningNumber> {
 /// 3. The remainder parses via `Int32.TryParse`.
 ///
 /// So with `f` off, only quoted non-`FS` numbers (`"40"`, `"""40"""`) survive;
-/// `40`, `FS40`, and `"FS40"` are all rejected. We accept that whole superset
-/// unconditionally. A caller needing langversion-accurate parsing would thread
-/// a `bool` for `f` through here and gate steps 1 and 2 on it; recognition
-/// (byte consumption) is unaffected either way.
-fn parse_warning_number(arg: &str) -> Option<WarningNumber> {
-    let unquoted = if let Some(inner) = arg
+/// `40`, `FS40`, and `"FS40"` are all rejected. The argument is parsed as if
+/// `f` were on and records whether it needed `f`
+/// ([`WarningArgument::needs_non_quoted_arguments`]); recognition (byte
+/// consumption) does not depend on `f`.
+fn parse_warning_number(arg: &str) -> Option<WarningArgument> {
+    let (unquoted, quoted) = if let Some(inner) = arg
         .strip_prefix("\"\"\"")
         .and_then(|s| s.strip_suffix("\"\"\""))
     {
-        inner
+        (inner, true)
     } else if arg.len() >= 2 && arg.starts_with('"') && arg.ends_with('"') {
-        &arg[1..arg.len() - 1]
+        (&arg[1..arg.len() - 1], true)
     } else {
-        arg
+        (arg, false)
     };
-    let digits = unquoted.strip_prefix("FS").unwrap_or(unquoted);
-    digits.parse::<i32>().ok().map(WarningNumber)
+    let (digits, fs_prefixed) = match unquoted.strip_prefix("FS") {
+        Some(digits) => (digits, true),
+        None => (unquoted, false),
+    };
+    let number = WarningNumber(digits.parse::<i32>().ok()?);
+    Some(WarningArgument {
+        number,
+        needs_non_quoted_arguments: !quoted || fs_prefixed,
+    })
 }
 
 #[cfg(test)]
@@ -1030,9 +1058,24 @@ mod tests {
 
     // ---- example tests: trivia directives ----
 
-    /// Convenience for asserting a recognised `#nowarn` / `#warnon` payload.
-    fn nums(ns: &[i32]) -> Vec<WarningNumber> {
-        ns.iter().copied().map(WarningNumber).collect()
+    /// A recognised `#nowarn` / `#warnon` payload of quoted bare numbers, which
+    /// every language version reads.
+    fn quoted(ns: &[i32]) -> Vec<WarningArgument> {
+        args(ns, false)
+    }
+
+    /// A payload only F# 9.0+ reads (unquoted or `FS`-prefixed arguments).
+    fn non_quoted(ns: &[i32]) -> Vec<WarningArgument> {
+        args(ns, true)
+    }
+
+    fn args(ns: &[i32], needs_non_quoted_arguments: bool) -> Vec<WarningArgument> {
+        ns.iter()
+            .map(|&n| WarningArgument {
+                number: WarningNumber(n),
+                needs_non_quoted_arguments,
+            })
+            .collect()
     }
 
     #[test]
@@ -1041,7 +1084,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[40])
+                numbers: quoted(&[40])
             }
         );
         assert_eq!(r.range, 0..12);
@@ -1049,13 +1092,12 @@ mod tests {
 
     #[test]
     fn nowarn_with_numeric_arg_is_recognised() {
-        // Unquoted argument — FCS gates this on a language feature; we accept
-        // the superset.
+        // Unquoted argument: FCS reads it only from F# 9.0.
         let r = recognise_directive("#nowarn 40", 0).unwrap().unwrap();
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[40])
+                numbers: non_quoted(&[40])
             }
         );
     }
@@ -1068,7 +1110,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[40, 42])
+                numbers: quoted(&[40, 42])
             }
         );
     }
@@ -1081,7 +1123,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[40])
+                numbers: quoted(&[40])
             }
         );
     }
@@ -1094,7 +1136,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[57])
+                numbers: non_quoted(&[57])
             }
         );
     }
@@ -1107,7 +1149,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[57])
+                numbers: quoted(&[57])
             }
         );
     }
@@ -1118,7 +1160,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[57])
+                numbers: quoted(&[57])
             }
         );
     }
@@ -1126,7 +1168,7 @@ mod tests {
     #[test]
     fn nowarn_invalid_arg_is_dropped() {
         let r = recognise_directive("#nowarn \"abc\"", 0).unwrap().unwrap();
-        assert_eq!(r.directive, Directive::NoWarn { numbers: nums(&[]) });
+        assert_eq!(r.directive, Directive::NoWarn { numbers: vec![] });
     }
 
     #[test]
@@ -1137,7 +1179,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[57, 58])
+                numbers: quoted(&[57, 58])
             }
         );
     }
@@ -1150,7 +1192,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[-1])
+                numbers: quoted(&[-1])
             }
         );
     }
@@ -1159,7 +1201,7 @@ mod tests {
     fn bare_nowarn_with_no_body_is_recognised() {
         // FCS's `anystring` allows the empty body. We do too — with no numbers.
         let r = recognise_directive("#nowarn", 0).unwrap().unwrap();
-        assert_eq!(r.directive, Directive::NoWarn { numbers: nums(&[]) });
+        assert_eq!(r.directive, Directive::NoWarn { numbers: vec![] });
         assert_eq!(r.range, 0..7);
     }
 
@@ -1169,7 +1211,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[40])
+                numbers: non_quoted(&[40])
             }
         );
     }
@@ -1181,7 +1223,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::NoWarn {
-                numbers: nums(&[40])
+                numbers: non_quoted(&[40])
             }
         );
         assert_eq!(r.range, 0..10);
@@ -1193,7 +1235,7 @@ mod tests {
         assert_eq!(
             r.directive,
             Directive::WarnOn {
-                numbers: nums(&[3218])
+                numbers: quoted(&[3218])
             }
         );
     }
@@ -1201,7 +1243,7 @@ mod tests {
     #[test]
     fn bare_warnon_is_recognised() {
         let r = recognise_directive("#warnon", 0).unwrap().unwrap();
-        assert_eq!(r.directive, Directive::WarnOn { numbers: nums(&[]) });
+        assert_eq!(r.directive, Directive::WarnOn { numbers: vec![] });
         assert_eq!(r.range, 0..7);
     }
 
@@ -1212,7 +1254,7 @@ mod tests {
         // matches the rule and is swallowed; FCS reads the lexeme's
         // identifier as `nowarnsomething`, which yields no warning numbers.
         let r = recognise_directive("#nowarnsomething", 0).unwrap().unwrap();
-        assert_eq!(r.directive, Directive::NoWarn { numbers: nums(&[]) });
+        assert_eq!(r.directive, Directive::NoWarn { numbers: vec![] });
     }
 
     #[test]
@@ -1221,7 +1263,7 @@ mod tests {
         // `"#nowarn" anystring`, but FCS reads the identifier as `nowarn40`,
         // so there are no warning numbers.
         let r = recognise_directive("#nowarn40", 0).unwrap().unwrap();
-        assert_eq!(r.directive, Directive::NoWarn { numbers: nums(&[]) });
+        assert_eq!(r.directive, Directive::NoWarn { numbers: vec![] });
     }
 
     #[test]
@@ -1229,7 +1271,7 @@ mod tests {
         // `#warnonx` (typo / unknown extension) still matches FCS rule
         // `"#warnon" anystring`; FCS surfaces the diagnostic later. No numbers.
         let r = recognise_directive("#warnonx", 0).unwrap().unwrap();
-        assert_eq!(r.directive, Directive::WarnOn { numbers: nums(&[]) });
+        assert_eq!(r.directive, Directive::WarnOn { numbers: vec![] });
     }
 
     #[test]
@@ -1672,12 +1714,26 @@ mod tests {
                 .iter()
                 .map(|&(n, style)| render_warning_arg(n, style))
                 .collect();
-            let expected: Vec<WarningNumber> =
-                nums.iter().map(|&(n, _)| WarningNumber(n)).collect();
+            let expected: Vec<WarningArgument> = nums
+                .iter()
+                .map(|&(n, style)| WarningArgument {
+                    number: WarningNumber(n),
+                    needs_non_quoted_arguments: warning_arg_needs_non_quoted(style),
+                })
+                .collect();
+            // Below F# 9.0 FCS reads exactly the quoted bare numbers.
+            let below_9: Vec<WarningNumber> = nums
+                .iter()
+                .filter(|&&(_, style)| !warning_arg_needs_non_quoted(style))
+                .map(|&(n, _)| WarningNumber(n))
+                .collect();
+            let from_9: Vec<WarningNumber> = nums.iter().map(|&(n, _)| WarningNumber(n)).collect();
             let semis = if semis { ";;" } else { "" };
             let comment = if comment { " // a comment" } else { "" };
             let s = format!("#{keyword} {}{semis}{comment}", rendered.join(" "));
             let r = recognise_directive(&s, 0).expect("recognised").expect("ok");
+            prop_assert_eq!(r.directive.warning_numbers(LanguageVersion::V8_0), below_9);
+            prop_assert_eq!(r.directive.warning_numbers(LanguageVersion::V9_0), from_9);
             let got = match r.directive {
                 Directive::NoWarn { numbers } if !warnon => numbers,
                 Directive::WarnOn { numbers } if warnon => numbers,
@@ -1685,6 +1741,12 @@ mod tests {
             };
             prop_assert_eq!(got, expected);
         }
+    }
+
+    /// Whether [`render_warning_arg`]'s `style` is one only F# 9.0+ reads: the
+    /// unquoted and `FS`-prefixed forms.
+    fn warning_arg_needs_non_quoted(style: usize) -> bool {
+        matches!(style % 6, 0 | 3 | 4)
     }
 
     /// Render a warning number in one of the forms FCS's `getNumber` accepts.

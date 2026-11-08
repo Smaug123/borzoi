@@ -668,8 +668,8 @@ impl Workspace {
     /// conditional LangVersion default trips it for **every** project
     /// (probed, dotnet 10.0.301, even with a cleanly body-pinned value) —
     /// see `sdk_project_fold_e2e`. The version does shape the *token
-    /// stream* (the lex-filter threads `strictIndentation` into its
-    /// SeqBlock push decision at the F# 8 boundary); the cross-file fold
+    /// stream* (the lex-filter's `relaxWhitespace2` pops at F# 6 and its
+    /// strict-indentation push decision at F# 8); the cross-file fold
     /// covers that exactly, refusing only untrusted provenance × a file
     /// whose parse shape provably depends on the version
     /// (`Parse::shape_depends_on_language_version` in `build_parses`), while
