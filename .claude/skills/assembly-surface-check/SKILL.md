@@ -1,6 +1,6 @@
 ---
 name: assembly-surface-check
-description: How to find out what `borzoi-assembly` *actually* projects from a referenced DLL, rather than assuming. Use when a type or member from a referenced assembly is mysteriously "not found" by the LSP (it may have been dropped, not absent — whole-type drops are silent through the `EcmaView` trait), or when picking a BCL member for a sema/differential test (the sema tests read the reference pack, but `fcs-dump` type-checks against the SDK runtime BCL, and the two disagree about which methods are single-candidate).
+description: How to find out what `borzoi-assembly` *actually* projects from a referenced DLL, rather than assuming. Use when a type or member from a referenced assembly is mysteriously "not found" by the LSP (it may have been dropped, not absent — `EcmaView::enumerate_type_defs` discards the whole-type drop records that `enumerate_type_defs_with_skips` returns), or when picking a BCL member for a sema/differential test (the sema tests read the reference pack, but `fcs-dump` type-checks against the SDK runtime BCL, and the two disagree about which methods are single-candidate).
 ---
 
 # What does our reader actually see in that DLL?
@@ -16,31 +16,33 @@ decode is dropped and recorded, rather than sinking the whole assembly. So a
 missing entity is ambiguous between "not in the DLL" and "we refused it".
 
 - **Member drops** are recorded on `Entity::skipped_members`.
-- **Whole-type drops** (the type's own shape is undecodable) are recorded on
-  *nothing* — the `EcmaView::enumerate_type_defs` trait method silently omits
-  them. To see them you must call the concrete
-  `Ecma335Assembly::enumerate_type_defs_with_skips() -> (Vec<Entity>, Vec<SkippedMember>)`.
+- **Whole-type drops** (the type's own shape is undecodable) have no entity to
+  hang a record on, so they land in `AssemblyProjectionSkips::dropped_types`,
+  next to `skipped_fsharp_overlays`. Both come back from the `EcmaView` trait's
+  required method, `enumerate_type_defs_with_skips() -> Result<(Vec<Entity>,
+  AssemblyProjectionSkips), ImportError>` (`use borzoi_assembly::EcmaView` to
+  call it on an `Ecma335Assembly`).
 
-That asymmetry is the trap: code and tests written against the trait cannot
-tell a dropped type from an absent one.
+The trap is the sugar `EcmaView::enumerate_type_defs`, which discards the
+`AssemblyProjectionSkips`: code and tests written against it cannot tell a
+dropped type from an absent one. Probe with the with-skips form.
 
-### Known signature-coverage gaps
+### What is still refused
 
-Still refused (per-item, not per-assembly), in rough BCL frequency order — this
-is the worklist for any "improve DLL parsing" task:
+Don't keep a list here; it goes stale. Two gates measure it:
 
-- `modreq` custom modifiers (`in` / `ref readonly` params, `init` setters)
-- `allows ref struct` typar — **the one that drops whole types** (~55 in the
-  9.0.2 shared runtime)
-- function pointers (`ELEMENT_TYPE_FNPTR`)
-- byref-returning properties
-- `TYPEDBYREF`
+- `crates/assembly/tests/manifests/bcl_ref_pack_projection.txt` pins every
+  type in the .NET reference pack, with a `dropped-member` / dropped-type line
+  per refusal and its reason. `grep -v 'members=[0-9]*$'` on it is the
+  current census.
+- `projection_skip_sweep` (ignored, `BORZOI_DLL_SWEEP_ROOT`) classifies the
+  losses in a NuGet cache by cause; see `AGENTS.md`.
 
 Structural corruption (cyclic nesting) stays fatal, via
 `ImportError::CyclicTypeNesting`.
 
-**Before adding to that list, dump the actual failing `(signature, byte-count)`
-pairs.** An apparent gap can be a decoder bug: the "NullableAttribute byte[]
+**Before treating a refusal as a coverage gap, dump the actual failing
+`(signature, byte-count)` pairs.** An apparent gap can be a decoder bug: the "NullableAttribute byte[]
 length mismatch" drops looked like a coverage gap but were `walk_nullable_sig`
 skipping the pointer node in the `[Nullable]` pre-order flag walk, so `T*` /
 `T*[]` positions came up a byte short (Roslyn visits the pointer node as
