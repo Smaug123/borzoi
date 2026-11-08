@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity, OpenTrace,
-    Resolution, SlotClass,
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, MemberDeclarations,
+    OpenOpacity, OpenTrace, QualifiedMember, Resolution, SlotClass,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
@@ -1147,7 +1147,7 @@ impl<'a> Resolver<'a> {
             self.open_generation += 1;
         }
         if group.hides_names() {
-            self.opaque_dotted_open = true;
+            self.dotted_opacity.set_opaque();
         }
         let project_ns = group.project_ns;
         // The **project module** half. `ResolveLongIdentAsModuleOrNamespace`
@@ -1253,7 +1253,7 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .any(|&c| self.assemblies.is_public(c))
             }) {
-                self.opaque_dotted_open = true;
+                self.dotted_opacity.set_opaque();
             }
         }
         self.apply_assembly_fold_group(&namespace, group, 0);
@@ -1278,7 +1278,7 @@ impl<'a> Resolver<'a> {
         // enclosing namespace, which `open_tier_candidates` already offers at
         // tier 2 — an extra tier-1 copy of the same path would decide nothing.
         if self.is_project_module_path(&namespace) {
-            self.opaque_dotted_open = true;
+            self.dotted_opacity.set_opaque();
         }
     }
 
@@ -1288,7 +1288,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn open_trace_snapshot(&self) -> OpenTraceSnapshot {
         OpenTraceSnapshot {
             opaque_value: self.opaque_value_open,
-            opaque_dotted: self.opaque_dotted_open,
+            opaque_dotted: self.dotted_opacity.any(),
             unmodelled: self.unmodelled_open_active,
             generation: self.open_generation,
             entries: self.scopes.last().map_or(0, |f| f.entries.len()),
@@ -1314,7 +1314,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn open_opacity_since(&self, before: &OpenTraceSnapshot) -> OpenOpacity {
         OpenOpacity {
             opaque_value: self.opaque_value_open && !before.opaque_value,
-            opaque_dotted: self.opaque_dotted_open && !before.opaque_dotted,
+            opaque_dotted: self.dotted_opacity.any() && !before.opaque_dotted,
             unmodelled: self.unmodelled_open_active && !before.unmodelled,
             staled_earlier: self.open_generation > before.generation,
             imported_deferred: self.scopes.last().is_some_and(|f| {
@@ -1872,6 +1872,18 @@ impl<'a> Resolver<'a> {
     /// walk as [`CrossFileCase::Declined`]: a lower tier's reading is not
     /// what FCS binds when a higher one holds the path.
     fn cross_file_type_case_tiered(&self, written: &[String], rooted: bool) -> CrossFileCase {
+        self.cross_file_type_case_located(written, rooted)
+            .map_or(CrossFileCase::Miss, |(found, _)| found)
+    }
+
+    /// [`Self::cross_file_type_case_tiered`], additionally reporting the full
+    /// path (`[container.., Type, Case]`) the reading was found at; `None` for
+    /// a miss.
+    fn cross_file_type_case_located(
+        &self,
+        written: &[String],
+        rooted: bool,
+    ) -> Option<(CrossFileCase, Vec<String>)> {
         // An `open type T` (modelled or not) sets `unmodelled_open_active`: T's
         // unmodelled nested types could supply the head segment, shadowing the
         // project type for the qualifier (`open Lib; open type Demo.Thing; Inner.Red`
@@ -1879,19 +1891,19 @@ impl<'a> Resolver<'a> {
         // candidate could be redirected by that open, so defer — exactly as the
         // qualified-value branch does (`rooted || !unmodelled_open_active`).
         if !rooted && self.unmodelled_open_active {
-            return CrossFileCase::Miss;
+            return None;
         }
-        let hit = |full: &[String], tier: CaseTier| -> CrossFileCase {
+        let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
             match self
                 .preceding
-                .type_qualified_case(full, &self.container_path)
-                .filter(|_| !self.value_shadows_case(full))
+                .type_qualified_case(&full, &self.container_path)
+                .filter(|_| !self.value_shadows_case(&full))
             {
-                None => CrossFileCase::Miss,
-                Some(_) if self.earlier_case_type_namesake_possible(full, written.len() > 2) => {
-                    CrossFileCase::Declined
+                None => None,
+                Some(_) if self.earlier_case_type_namesake_possible(&full, written.len() > 2) => {
+                    Some((CrossFileCase::Declined, full))
                 }
-                Some(id) => CrossFileCase::Hit(tier, id),
+                Some(id) => Some((CrossFileCase::Hit(tier, id), full)),
             }
         };
         if !rooted {
@@ -1905,29 +1917,27 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                return hit(&full, CaseTier::Alias);
+                return hit(full, CaseTier::Alias);
             }
             // Tier 1 — explicit opens, latest first.
             for prefix in self.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                match hit(&full, CaseTier::Namespace) {
-                    CrossFileCase::Miss => {}
-                    found => return found,
+                if let Some(found) = hit(full, CaseTier::Namespace) {
+                    return Some(found);
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
             for k in (1..=self.container_path.len()).rev() {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
-                match hit(&full, CaseTier::Namespace) {
-                    CrossFileCase::Miss => {}
-                    found => return found,
+                if let Some(found) = hit(full, CaseTier::Namespace) {
+                    return Some(found);
                 }
             }
         }
         // Tier 3 — the path as written (root / fully-qualified).
-        hit(written, CaseTier::Namespace)
+        hit(written.to_vec(), CaseTier::Namespace)
     }
 
     /// Bring the **direct** exported values of project module `module_path` into
@@ -2594,9 +2604,16 @@ impl<'a> Resolver<'a> {
     /// value an already-name-shortened `Mod.value` resolves to. Only `let` values
     /// are recorded with qualified paths, so a `value` that is actually a nested
     /// module / type yields `None` (the path then defers, never a wrong member).
-    pub(super) fn qualified_value_in(&self, module_path: &[String], value: &str) -> Option<ItemId> {
+    pub(super) fn qualified_value_in(
+        &self,
+        module_path: &[String],
+        value: &str,
+    ) -> QualifiedMember {
         let mut full = module_path.to_vec();
         full.push(value.to_string());
+        if let Some(contested) = self.contested_qualified_expression(&full) {
+            return contested;
+        }
         // `last`, not `find`: a same-file name can be exported more than once at
         // the same path — a union case and a later `let` of the same name (`type T
         // = Red`; `let Red = 0`). F# resolves the *latest* such binding in
@@ -2622,6 +2639,93 @@ impl<'a> Resolver<'a> {
                 self.preceding
                     .lookup_qualified_path(&full, &self.container_path)
             })
+            .map_or(QualifiedMember::Absent, QualifiedMember::Bound)
+    }
+
+    /// The expression-position reading of `path` as an **earlier file's**
+    /// qualified member, written in full (no name-shortening, so no same-file
+    /// candidate: [`Self::qualified_value_in`] reads those).
+    fn earlier_file_qualified_member(&self, path: &[String]) -> QualifiedMember {
+        match self.contested_qualified_expression(path) {
+            // An earlier file's id lies below the base this file numbers from.
+            Some(QualifiedMember::Bound(id))
+                if id.index() < self.preceding.next_base() as usize =>
+            {
+                QualifiedMember::Bound(id)
+            }
+            Some(_) => QualifiedMember::Declined,
+            None => self
+                .preceding
+                .lookup_qualified_path(path, &self.container_path)
+                .map_or(QualifiedMember::Absent, QualifiedMember::Bound),
+        }
+    }
+
+    /// Every declaration of a member at `path` (container + name) the walk
+    /// knows of: earlier files' ([`ProjectItems::member_decl_files`](super::model::ProjectItems::member_decl_files))
+    /// and this file's so far ([`Self::member_decl_counts`]), accessible or
+    /// not, of every kind [`ExportDecl::member_path`](super::model::ExportDecl::member_path) counts.
+    pub(super) fn member_declarations(&self, path: &[String]) -> MemberDeclarations {
+        let earlier = self
+            .preceding
+            .member_decl_files
+            .get(path)
+            .map_or(&[][..], Vec::as_slice);
+        let own = self.member_decl_counts.get(path).copied().unwrap_or(0);
+        let mut files = earlier
+            .iter()
+            .copied()
+            .chain((own > 0).then(|| self.preceding.num_files()));
+        let first = files.next();
+        MemberDeclarations {
+            count: earlier.len() + own,
+            one_file: files.all(|f| Some(f) == first),
+        }
+    }
+
+    /// The expression-position reading of the qualified member `full`
+    /// (container + name) when the container declares the name **more than
+    /// once**; `None` when it declares it at most once, where the latest
+    /// accessible export is the only candidate.
+    ///
+    /// FCS's `ResolveExprLongIdentInModuleOrNamespace` reads a module's values
+    /// first, whatever their position among its declarations, then its
+    /// exceptions, then the union case of the first type declaring the name;
+    /// a namespace split over files is searched fragment by fragment, the
+    /// latest first. Only the first step is modelled: a module (one file —
+    /// a module cannot span files) that declares an ordinary value of the
+    /// name binds it, provided every such value is accessible here (FCS's
+    /// value table holds one value per name, so an inaccessible one may be
+    /// the one it reads, and it would then move on to the cases). Anything
+    /// else — two unions sharing a case name, an exception beside a case, a
+    /// declaration we count but cannot bind (an `extern`, a possible case) —
+    /// declines, explicitly, so that no lower-priority reading of the path
+    /// commits in its place.
+    fn contested_qualified_expression(&self, full: &[String]) -> Option<QualifiedMember> {
+        let decls = self.member_declarations(full);
+        if decls.count <= 1 {
+            return None;
+        }
+        if !decls.one_file {
+            return Some(QualifiedMember::Declined);
+        }
+        let site = &self.container_path;
+        let accessible = |root: Option<usize>| super::model::accessible_from(root, full, site);
+        let own = self
+            .items
+            .iter()
+            .filter(|i| i.qualified.as_deref() == Some(full) && !i.is_case())
+            .map(|i| (i.id, accessible(i.access_root_len)));
+        let earlier = self
+            .preceding
+            .ordinary_values_at(full)
+            .map(|(id, root)| (id, accessible(root)));
+        // `own` is this file's, which folds after every earlier one.
+        let values: Vec<(ItemId, bool)> = earlier.chain(own).collect();
+        Some(match values.last() {
+            Some(&(id, true)) if values.iter().all(|&(_, ok)| ok) => QualifiedMember::Bound(id),
+            _ => QualifiedMember::Declined,
+        })
     }
 
     /// Whether a same-file companion value at the exact path `full` is **provably
@@ -3032,7 +3136,7 @@ impl<'a> Resolver<'a> {
         // matching the cross-file branch below).
         if let [case_seg] = rest
             && !self.opaque_value_open
-            && !self.opaque_dotted_open
+            && !self.dotted_opacity.any()
             && !self.unmodelled_open_active
             && !head_staled
             && !self.head_contested_by_project_module(first, case_seg)
@@ -3102,7 +3206,7 @@ impl<'a> Resolver<'a> {
         // contest the slot cannot order defers the whole path.
         if let [member_seg] = rest
             && !self.opaque_value_open
-            && !self.opaque_dotted_open
+            && !self.dotted_opacity.any()
             && !self.unmodelled_open_active
             && !head_staled
             && !self.head_contested_by_project_module(first, member_seg)
@@ -3218,9 +3322,27 @@ impl<'a> Resolver<'a> {
         } else {
             HeadSlot::Held
         };
+        // A `Type.Case` past enumerable project-module opens, which the
+        // block below treats as opaque: the one channel that checks the head
+        // against what they bring. A value or a staled entry still takes the
+        // head first.
+        if !head_is_definite_value
+            && !head_staled
+            && first.text() != "global"
+            && self.dotted_opacity.any()
+            && let Some(id) = self.type_qualified_case_past_project_opens(
+                &segments
+                    .iter()
+                    .map(|t| id_text(t).to_string())
+                    .collect::<Vec<_>>(),
+            )
+        {
+            self.record_qualified_item(segments, id);
+            return;
+        }
         if (!head_is_definite_value || matches!(head_slot, HeadSlot::Evicted))
             && !self.opaque_value_open
-            && !self.opaque_dotted_open
+            && !self.dotted_opacity.any()
             && !head_staled
         {
             // A **same-file module-qualified** type-qualified case (`Pal.Color.Red`
@@ -3299,12 +3421,19 @@ impl<'a> Resolver<'a> {
                     // the head, now rejected.
                     && let head_len = module_path.len() - prefix.len() + 1
                     && !self.container_path.starts_with(&module_path[..head_len])
-                    && let Some(id) =
+                    && let found @ (QualifiedMember::Bound(_) | QualifiedMember::Declined) =
                         self.qualified_value_in(&module_path, &id_text(value_seg))
                 {
                     let whole =
                         TextRange::new(first.text_range().start(), value_seg.text_range().end());
-                    self.record(whole, Resolution::Item(id));
+                    match found {
+                        QualifiedMember::Bound(id) => self.record(whole, Resolution::Item(id)),
+                        _ => self.defer_with_cause(
+                            whole,
+                            segments,
+                            DeclineSite::pre_walk(DeclineCause::QualifiedNameDeclaredTwice),
+                        ),
+                    }
                     for seg in prefix_segs {
                         self.record(
                             seg.text_range(),
@@ -3331,12 +3460,18 @@ impl<'a> Resolver<'a> {
             // it can be handled when the parser supports `global` as an expr atom.)
             if let Some(last) = rest.last()
                 && !sig_screened
-                && let Some(id) = self
-                    .preceding
-                    .lookup_qualified_path(&written_path, &self.container_path)
+                && let found @ (QualifiedMember::Bound(_) | QualifiedMember::Declined) =
+                    self.earlier_file_qualified_member(&written_path)
             {
                 let whole = TextRange::new(first.text_range().start(), last.text_range().end());
-                self.record(whole, Resolution::Item(id));
+                match found {
+                    QualifiedMember::Bound(id) => self.record(whole, Resolution::Item(id)),
+                    _ => self.defer_with_cause(
+                        whole,
+                        segments,
+                        DeclineSite::pre_walk(DeclineCause::QualifiedNameDeclaredTwice),
+                    ),
+                }
                 for seg in segments.iter().take(segments.len() - 1) {
                     self.record(
                         seg.text_range(),
@@ -3557,7 +3692,7 @@ impl<'a> Resolver<'a> {
             // kept the assembly walk from running at all; the other three are
             // reached with the walk already declined, and `record_decline`
             // keeps whichever cause spoke first.
-            let cause = if self.opaque_value_open || self.opaque_dotted_open || head_staled {
+            let cause = if self.opaque_value_open || self.dotted_opacity.any() || head_staled {
                 DeclineCause::OpaqueValueHead
             } else if head_is_case {
                 DeclineCause::CaseQualifierHead
@@ -3578,7 +3713,7 @@ impl<'a> Resolver<'a> {
             // might have made is lost, so the census names the guard rather
             // than reading it as a clean miss.
             if !rest.is_empty()
-                && (self.opaque_value_open || self.opaque_dotted_open || head_staled)
+                && (self.opaque_value_open || self.dotted_opacity.any() || head_staled)
                 && matches!(
                     self.resolutions.get(&first.text_range()),
                     Some(Resolution::Deferred(_)) | None
@@ -4587,7 +4722,16 @@ impl<'a> Resolver<'a> {
     /// module/type/value that out-ranks the type for the qualifier, so defer while
     /// one is in scope.
     pub(super) fn record_qualified_case_pattern(&mut self, segs: &[SyntaxToken]) {
-        if self.opaque_value_open || self.opaque_dotted_open || self.unmodelled_open_active {
+        if self.opaque_value_open || self.dotted_opacity.any() || self.unmodelled_open_active {
+            // Enumerable project-module opens are checked against the head
+            // instead (a pattern head is never a value, so no value test).
+            if segs.first().is_some_and(|t| t.text() != "global") {
+                let written: Vec<String> = segs.iter().map(|t| id_text(t).to_string()).collect();
+                if let Some(id) = self.type_qualified_case_past_project_opens(&written) {
+                    self.record_qualified_item(segs, id);
+                    return;
+                }
+            }
             // A definite decline by a named gate, so the census says so.
             self.record_path_decline(segs, DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
             return;
@@ -4805,6 +4949,119 @@ impl<'a> Resolver<'a> {
     fn project_binds_type_simple_name(&self, name: &str) -> bool {
         self.own_type_simple_names.contains(name)
             || self.preceding.project_type_simple_names.contains(name)
+    }
+
+    /// Whether an `open` of the project module `module` puts in scope exactly
+    /// what the earlier files' indices list for it and its `[<AutoOpen>]`
+    /// descendants — the condition for [`DottedOpacity::add_project_module`]
+    /// (see [`DottedOpacity`](super::state::DottedOpacity)): the module is an
+    /// earlier file's (a header or a real nested module), this file has
+    /// declared nothing under it, and nothing in its subtree carries a
+    /// hidden-value marker or is an implicit headerless module, so no name it
+    /// brings escapes enumeration.
+    pub(super) fn project_module_names_enumerable(&self, module: &[String]) -> bool {
+        (self.preceding.is_exact_project_module(module)
+            || self.preceding.is_real_nested_module(module))
+            && !self.export_decls.iter().any(|d| d.path.starts_with(module))
+            && !self
+                .modules_with_hidden_values
+                .iter()
+                .any(|p| p.starts_with(module))
+            && !self
+                .preceding
+                .modules_with_hidden_values
+                .iter()
+                .any(|p| p.starts_with(module))
+            && !self.preceding.opaque_hidden_value_module(module)
+            && !self.preceding.implicit_module_open_screened(module)
+    }
+
+    /// Whether no enumerable project module opened in scope
+    /// ([`DottedOpacity::project_modules`](super::state::DottedOpacity::project_modules)),
+    /// nor any `[<AutoOpen>]` descendant its `open` also brings, puts anything
+    /// named `head` in scope but the type at `owner` itself — and that type
+    /// shares its path with no module, value or member.
+    ///
+    /// Deliberately kind-blind: a module, value, exception, alias or a second
+    /// type of the name could each take a dotted head before (or instead of)
+    /// `owner` in one of FCS's searches, so any of them answers no.
+    fn opened_project_modules_leave_head(&self, head: &str, owner: &[String]) -> bool {
+        self.dotted_opacity.project_modules().iter().all(|module| {
+            let mut frontier = vec![module.clone()];
+            while let Some(m) = frontier.pop() {
+                let mut path = m.clone();
+                path.push(head.to_string());
+                let names_head = if path == owner {
+                    self.preceding.is_real_nested_module(&path)
+                        || self.preceding.declares_member_at(&path)
+                } else {
+                    self.preceding.binds_along_path(&path)
+                        || self.preceding.declares_member_at(&path)
+                };
+                if names_head {
+                    return false;
+                }
+                frontier.extend(self.preceding.auto_open_modules_directly_in(&m));
+            }
+            true
+        })
+    }
+
+    /// The earlier-file case a two-segment `Type.Case` reads as while the only
+    /// opens that make dotted heads opaque are enumerable project modules
+    /// ([`DottedOpacity`](super::state::DottedOpacity)) — the one channel that
+    /// may resolve past them, since it can check the head against everything
+    /// they bring.
+    ///
+    /// The case is found by the same tiered walk as every type-qualified case
+    /// ([`Self::cross_file_type_case_located`]), and committed only when
+    /// nothing else could take the head `Type`: no opened project module
+    /// supplies the name but as that very type
+    /// ([`Self::opened_project_modules_leave_head`]), this file declares no
+    /// type or module of it, no explicitly opened referenced-assembly
+    /// namespace has an entity of it, and the guards of the ordinary channel
+    /// (the signature screen, a same-file type owning the case) are clear.
+    /// The caller has ruled out a value or a staled entry taking the head.
+    fn type_qualified_case_past_project_opens(&self, written: &[String]) -> Option<ItemId> {
+        let [head, _case] = written else {
+            return None;
+        };
+        if self.dotted_opacity.beyond_project_modules()
+            || self.opaque_value_open
+            || self.unmodelled_open_active
+            || self.own_type_simple_names.contains(head)
+            || self.own_module_simple_names.contains(head)
+            || self.assembly_case_head_contends_at_an_open(head)
+            || self.sig_screens_case_reading_of(written)
+            || self.cross_file_case_shadowed_same_file(written)
+        {
+            return None;
+        }
+        let Some((CrossFileCase::Hit(_, id), at)) =
+            self.cross_file_type_case_located(written, false)
+        else {
+            return None;
+        };
+        let owner = &at[..at.len() - 1];
+        (self.opened_project_modules_leave_head(head, owner)
+            && !self.preceding.declares_member_at(&at))
+        .then_some(id)
+    }
+
+    /// Record `id` as the reading of the whole dotted path `segments`, its
+    /// qualifier segments deferred (no module- or type-as-def model).
+    fn record_qualified_item(&mut self, segments: &[SyntaxToken], id: ItemId) {
+        let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
+            return;
+        };
+        let whole = TextRange::new(first.text_range().start(), last.text_range().end());
+        self.record(whole, Resolution::Item(id));
+        for seg in &segments[..segments.len() - 1] {
+            self.record(
+                seg.text_range(),
+                Resolution::Deferred(DeferredReason::QualifiedAccess),
+            );
+        }
     }
 
     /// Resolve a bare `Type.Case` PATTERN against the referenced assemblies — the

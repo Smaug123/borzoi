@@ -331,6 +331,14 @@ pub struct ProjectItems {
     /// value/constructor namespaces read the same history through different
     /// predicates.
     pub(super) value_exports: HashMap<Vec<String>, Vec<ExportRecord>>,
+    /// Member path (container + name) → the Compile-order file of **every**
+    /// earlier-file declaration there ([`ExportDecl::member_path`]): values,
+    /// union cases with or without `[<RequireQualifiedAccess>]`, exception
+    /// constructors, active-pattern cases, possible cases and `extern`s,
+    /// accessible or not. Unlike [`Self::value_exports`] it is complete, so
+    /// one entry proves the container declares the name once
+    /// ([`Resolver::member_declarations`](super::state::Resolver::member_declarations)).
+    pub(super) member_decl_files: HashMap<Vec<String>, Vec<usize>>,
     /// Declared project *module header* paths (`["Demo"]`, `["Demo", "Calc"]`).
     ///
     /// A project module header and a same-named referenced-assembly *namespace*
@@ -767,6 +775,28 @@ impl ProjectItems {
             .and_then(|h| h.iter().rev().find(|r| !r.pattern_only))
             .filter(|r| !r.is_case)
             .map(|r| r.id)
+    }
+
+    /// Whether an earlier file declares a value- or constructor-space member
+    /// at exactly `path` ([`ExportDecl::member_path`]), of any kind or
+    /// accessibility.
+    pub(super) fn declares_member_at(&self, path: &[String]) -> bool {
+        self.member_decl_files.contains_key(path) || self.value_exports.contains_key(path)
+    }
+
+    /// Every earlier-file **ordinary value** (not a case, not an
+    /// active-pattern case) exported at exactly `path`, in Compile order, with
+    /// its accessibility root (see [`ExportRecord::access_root_len`]).
+    pub(super) fn ordinary_values_at(
+        &self,
+        path: &[String],
+    ) -> impl Iterator<Item = (ItemId, Option<usize>)> + '_ {
+        self.value_exports
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter(|r| !r.is_case && !r.pattern_only)
+            .map(|r| (r.id, r.access_root_len))
     }
 
     /// Whether `names` *is* exactly a declared project module path. Such a bare
@@ -1443,6 +1473,12 @@ impl ProjectItems {
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
         }
+        for path in idx.member_decls {
+            self.member_decl_files
+                .entry(path)
+                .or_default()
+                .push(file_idx);
+        }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
@@ -1602,6 +1638,7 @@ type QualifiedCaseExport = (ItemId, Option<usize>);
 #[derive(Default, PartialEq, Eq)]
 struct FileExportIndices {
     value_exports: Vec<(Vec<String>, ExportRecord)>,
+    member_decls: Vec<Vec<String>>,
     case_item_ids: Vec<ItemId>,
     attributed_value_ids: Vec<ItemId>,
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
@@ -1744,6 +1781,9 @@ impl FileExportIndices {
         let trust_attribute_spellings = screened.is_some_and(|(_, trust)| trust);
         let mut fi = Self::default();
         for decl in &file.export_decls {
+            if let Some(path) = decl.member_path(&file.exports.items, screen.is_some()) {
+                fi.member_decls.push(path);
+            }
             let anon = decl.anonymous_root;
             match &decl.kind {
                 ExportDeclKind::Item {
@@ -2118,6 +2158,82 @@ pub(super) struct ExportDecl {
     /// keeps the derivations faithful without losing that information (plan pitfall 1).
     pub(super) anonymous_root: bool,
     pub(super) kind: ExportDeclKind,
+}
+
+/// How many declarations of one member name a container makes, as far as the
+/// walk can see ([`Resolver::member_declarations`](super::state::Resolver::member_declarations)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MemberDeclarations {
+    /// Every declaration, of every kind [`ExportDecl::member_path`] counts.
+    pub(super) count: usize,
+    /// Whether they all sit in one Compile-order file (vacuously true for
+    /// none).
+    pub(super) one_file: bool,
+}
+
+/// What a module-qualified member reference reads as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QualifiedMember {
+    /// It binds this item.
+    Bound(ItemId),
+    /// The container declares the name, but which declaration FCS binds is
+    /// not modelled: the reference must defer, and no other reading of the
+    /// path may commit in its place.
+    Declined,
+    /// The container exports nothing of the name accessible here.
+    Absent,
+}
+
+impl ExportDecl {
+    /// The path (container + name) of the **value- or constructor-space
+    /// member** this declaration adds to its container, if it adds one: a
+    /// value, a union case (`[<RequireQualifiedAccess>]` or not), an
+    /// `exception` constructor, an active-pattern case, a possible case
+    /// (`type T = X`) or an `extern`. These are every declaration a
+    /// module-qualified reference `Container.Name` can bind in expression or
+    /// pattern position, so their count per path is what
+    /// [`Resolver::member_declarations`](super::state::Resolver::member_declarations) reports. A type, module or
+    /// exception *tycon* names something a dotted path reaches through, not
+    /// such a member, and an anonymous-root declaration has no cross-file
+    /// path.
+    ///
+    /// `items` is the declaring file's [`ResolvedFile::exports`]`.items`;
+    /// `screened` says the file is a signature's paired implementation, whose
+    /// own identities the signature replaces (so they are not counted twice
+    /// beside the signature-derived ones).
+    pub(super) fn member_path(
+        &self,
+        items: &[ExportedItem],
+        screened: bool,
+    ) -> Option<Vec<String>> {
+        if self.anonymous_root {
+            return None;
+        }
+        match &self.kind {
+            ExportDeclKind::Item {
+                item: Some(idx), ..
+            }
+            | ExportDeclKind::ActivePatternCase {
+                item: Some(idx), ..
+            } => (!screened || !matches!(items[*idx].def, ExportDef::Own(_)))
+                .then(|| self.path.clone()),
+            ExportDeclKind::OpaqueCase => Some(self.path.clone()),
+            ExportDeclKind::Extern { name } if !name.is_empty() => {
+                let mut path = self.path.clone();
+                path.extend(name.iter().cloned());
+                Some(path)
+            }
+            ExportDeclKind::Item { item: None, .. }
+            | ExportDeclKind::ActivePatternCase { item: None, .. }
+            | ExportDeclKind::Extern { .. }
+            | ExportDeclKind::Type { .. }
+            | ExportDeclKind::TypeAugmentation
+            | ExportDeclKind::Module { .. }
+            | ExportDeclKind::ModuleAbbrev
+            | ExportDeclKind::ExceptionTycon
+            | ExportDeclKind::Namespace => None,
+        }
+    }
 }
 
 /// The typed payload of an [`ExportDecl`]. Each variant corresponds to a
@@ -2613,6 +2729,12 @@ pub enum DeclineCause {
     /// `[<AutoOpen>]` module may bring it into scope ahead of every implicit
     /// open and the root, and which one FCS binds is not modelled.
     EarlierTypeOutsideNamespace,
+    /// A module- or namespace-qualified member the container declares more
+    /// than once — two unions sharing a case name, a value beside a case, an
+    /// exception beside a case — where FCS's order for the route (expression,
+    /// pattern, namespace fragments) picks a declaration the walk does not
+    /// model.
+    QualifiedNameDeclaredTwice,
 }
 
 impl DeclineCause {
@@ -2682,6 +2804,7 @@ impl DeclineCause {
         DeclineCause::EarlierTypeOpenedOver,
         DeclineCause::EarlierTypeNamespaceShared,
         DeclineCause::EarlierTypeOutsideNamespace,
+        DeclineCause::QualifiedNameDeclaredTwice,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2749,6 +2872,7 @@ impl DeclineCause {
             DeclineCause::EarlierTypeOpenedOver => "earlier_type_opened_over",
             DeclineCause::EarlierTypeNamespaceShared => "earlier_type_namespace_shared",
             DeclineCause::EarlierTypeOutsideNamespace => "earlier_type_outside_namespace",
+            DeclineCause::QualifiedNameDeclaredTwice => "qualified_name_declared_twice",
         }
     }
 }

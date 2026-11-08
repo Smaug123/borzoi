@@ -1443,7 +1443,7 @@ impl<'a> Resolver<'a> {
                         // its namespace half's types included — keep their dotted
                         // resolution.
                         if group.hides_names() {
-                            self.opaque_dotted_open = true;
+                            self.dotted_opacity.set_opaque();
                         }
 
                         // -- The namespace reading's prefixes (the reading is a chain
@@ -1534,7 +1534,7 @@ impl<'a> Resolver<'a> {
                                     .iter()
                                     .any(|&c| self.assemblies.is_public(c))
                             }) {
-                                self.opaque_dotted_open = true;
+                                self.dotted_opacity.set_opaque();
                             }
                         }
 
@@ -1626,7 +1626,15 @@ impl<'a> Resolver<'a> {
                                 namespace_reading: false,
                                 module_reading: false,
                             });
-                            self.opaque_dotted_open = true;
+                            if !resolved_alias
+                                && !has_assembly_module
+                                && !assembly_ns_applies
+                                && self.project_module_names_enumerable(gp)
+                            {
+                                self.dotted_opacity.add_project_module(gp.clone());
+                            } else {
+                                self.dotted_opacity.set_opaque();
+                            }
                         }
                     }
                 }
@@ -1771,7 +1779,7 @@ impl<'a> Resolver<'a> {
         let saved_pattern_suppressed_case_ids = self.pattern_suppressed_case_ids.clone();
         let saved_unmodelled_open = self.unmodelled_open_active;
         let saved_opaque_value_open = self.opaque_value_open;
-        let saved_opaque_dotted_open = self.opaque_dotted_open;
+        let saved_dotted_opacity = self.dotted_opacity.clone();
         let saved_latest_open_pos = self.latest_open_pos;
         let saved_recursive_module = self.recursive_module_active;
         let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
@@ -1848,7 +1856,7 @@ impl<'a> Resolver<'a> {
         self.pattern_suppressed_case_ids = saved_pattern_suppressed_case_ids;
         self.unmodelled_open_active = saved_unmodelled_open;
         self.opaque_value_open = saved_opaque_value_open;
-        self.opaque_dotted_open = saved_opaque_dotted_open;
+        self.dotted_opacity = saved_dotted_opacity;
         self.latest_open_pos = saved_latest_open_pos;
         self.recursive_module_active = saved_recursive_module;
         if let Some(saved) = saved_rec_module_names {
