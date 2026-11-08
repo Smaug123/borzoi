@@ -239,13 +239,6 @@ impl ScopeEntry {
         }
     }
 
-    /// Withdraw what this entry commits, for `cause`: it stays in scope,
-    /// shadowing by position, and names nothing.
-    pub(super) fn withdraw(&mut self, cause: DeclineCause) {
-        self.resolution = Resolution::Deferred(DeferredReason::UnboundName);
-        self.decline = Some(cause);
-    }
-
     fn opened_unchecked(
         name: String,
         resolution: Resolution,

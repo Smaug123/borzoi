@@ -1,0 +1,875 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all auto_open_member_sweep::an_inaccessible_member_does_not_change_any_cell
+after opaque open: ap/expr + "extern int private Nn()" loss
+after opaque open: ap/expr + "type private Nn() = class end" loss
+after opaque open: ap/expr + "type private NnBarX = Nn" loss
+after opaque open: private ap/expr + "extern int private Nn()" loss
+after opaque open: private ap/expr + "type private Nn() = class end" loss
+after opaque open: private ap/expr + "type private NnBarX = Nn" loss
+after opaque open: private case/expr + "extern int private Nn()" loss
+after opaque open: private case/expr + "type private Nn() = class end" loss
+after opaque open: private case/expr + "type private NnBarX = Nn" loss
+after opaque open: private exn/expr + "extern int private Nn()" loss
+after opaque open: private exn/expr + "type private Nn() = class end" loss
+after opaque open: private exn/expr + "type private NnBarX = Nn" loss
+after opaque open: private literal/expr + "extern int private Nn()" loss
+after opaque open: private literal/expr + "type private Nn() = class end" loss
+after opaque open: private literal/expr + "type private NnBarX = Nn" loss
+after opaque open: private nested-auto/expr + "extern int private Nn()" loss
+after opaque open: private nested-auto/expr + "type private Nn() = class end" loss
+after opaque open: private nested-auto/expr + "type private NnBarX = Nn" loss
+after opaque open: private rqa-barless-case/expr + "extern int private Nn()" loss
+after opaque open: private rqa-barless-case/expr + "type private Nn() = class end" loss
+after opaque open: private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+after opaque open: private rqa-case/expr + "extern int private Nn()" loss
+after opaque open: private rqa-case/expr + "type private Nn() = class end" loss
+after opaque open: private rqa-case/expr + "type private NnBarX = Nn" loss
+after opaque open: private value/expr + "extern int private Nn()" loss
+after opaque open: private value/expr + "type private Nn() = class end" loss
+after opaque open: private value/expr + "type private NnBarX = Nn" loss
+after opaque open: rqa-barless-case/expr + "extern int private Nn()" loss
+after opaque open: rqa-barless-case/expr + "type private Nn() = class end" loss
+after opaque open: rqa-barless-case/expr + "type private NnBarX = Nn" loss
+after opaque open: rqa-case/expr + "extern int private Nn()" loss
+after opaque open: rqa-case/expr + "type private Nn() = class end" loss
+after opaque open: rqa-case/expr + "type private NnBarX = Nn" loss
+ap ; case/expr + "extern int private Nn()" loss
+ap ; case/expr + "type private Nn() = class end" loss
+ap ; case/expr + "type private NnBarX = Nn" loss
+ap ; exn/expr + "extern int private Nn()" loss
+ap ; exn/expr + "type private Nn() = class end" loss
+ap ; exn/expr + "type private NnBarX = Nn" loss
+ap ; literal/expr + "extern int private Nn()" loss
+ap ; literal/expr + "type private Nn() = class end" loss
+ap ; nested-auto/expr + "extern int private Nn()" loss
+ap ; nested-auto/expr + "type private Nn() = class end" loss
+ap ; private case/expr + "extern int private Nn()" loss
+ap ; private case/expr + "type private Nn() = class end" loss
+ap ; private case/expr + "type private NnBarX = Nn" loss
+ap ; private exn/expr + "extern int private Nn()" loss
+ap ; private exn/expr + "type private Nn() = class end" loss
+ap ; private exn/expr + "type private NnBarX = Nn" loss
+ap ; private literal/expr + "extern int private Nn()" loss
+ap ; private literal/expr + "type private Nn() = class end" loss
+ap ; private literal/expr + "type private NnBarX = Nn" loss
+ap ; private nested-auto/expr + "extern int private Nn()" loss
+ap ; private nested-auto/expr + "type private Nn() = class end" loss
+ap ; private nested-auto/expr + "type private NnBarX = Nn" loss
+ap ; private rqa-barless-case/expr + "extern int private Nn()" loss
+ap ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+ap ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+ap ; private rqa-case/expr + "extern int private Nn()" loss
+ap ; private rqa-case/expr + "type private Nn() = class end" loss
+ap ; private rqa-case/expr + "type private NnBarX = Nn" loss
+ap ; private value/expr + "extern int private Nn()" loss
+ap ; private value/expr + "type private Nn() = class end" loss
+ap ; private value/expr + "type private NnBarX = Nn" loss
+ap ; rqa-barless-case/expr + "extern int private Nn()" loss
+ap ; rqa-barless-case/expr + "type private Nn() = class end" loss
+ap ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+ap ; rqa-case/expr + "extern int private Nn()" loss
+ap ; rqa-case/expr + "type private Nn() = class end" loss
+ap ; rqa-case/expr + "type private NnBarX = Nn" loss
+ap ; value/expr + "extern int private Nn()" loss
+ap ; value/expr + "type private Nn() = class end" loss
+ap/expr + "extern int private Nn()" loss
+ap/expr + "type private Nn() = class end" loss
+ap/expr + "type private NnBarX = Nn" loss
+barless-case ; literal/expr + "extern int private Nn()" loss
+barless-case ; literal/expr + "type private Nn() = class end" loss
+barless-case ; nested-auto/expr + "extern int private Nn()" loss
+barless-case ; nested-auto/expr + "type private Nn() = class end" loss
+barless-case ; value/expr + "extern int private Nn()" loss
+barless-case ; value/expr + "type private Nn() = class end" loss
+case ; ap/expr + "extern int private Nn()" loss
+case ; ap/expr + "type private Nn() = class end" loss
+case ; ap/expr + "type private NnBarX = Nn" loss
+case ; case/expr + "extern int private Nn()" loss
+case ; case/expr + "type private Nn() = class end" loss
+case ; case/expr + "type private NnBarX = Nn" loss
+case ; case/pattern + "extern int private Nn()" loss
+case ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; case/pattern + "type private NnBarX = Nn" loss
+case ; exn/expr + "extern int private Nn()" loss
+case ; exn/expr + "type private Nn() = class end" loss
+case ; exn/expr + "type private NnBarX = Nn" loss
+case ; exn/pattern + "extern int private Nn()" loss
+case ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; exn/pattern + "type private NnBarX = Nn" loss
+case ; literal/expr + "extern int private Nn()" loss
+case ; literal/expr + "type private Nn() = class end" loss
+case ; nested-auto/expr + "extern int private Nn()" loss
+case ; nested-auto/expr + "type private Nn() = class end" loss
+case ; nested-auto/pattern + "extern int private Nn()" loss
+case ; nested-auto/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; nested-auto/pattern + "type private NnBarX = Nn" loss
+case ; private ap/expr + "extern int private Nn()" loss
+case ; private ap/expr + "type private Nn() = class end" loss
+case ; private ap/expr + "type private NnBarX = Nn" loss
+case ; private case/expr + "extern int private Nn()" loss
+case ; private case/expr + "type private Nn() = class end" loss
+case ; private case/expr + "type private NnBarX = Nn" loss
+case ; private case/pattern + "extern int private Nn()" loss
+case ; private case/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private case/pattern + "type private NnBarX = Nn" loss
+case ; private exn/expr + "extern int private Nn()" loss
+case ; private exn/expr + "type private Nn() = class end" loss
+case ; private exn/expr + "type private NnBarX = Nn" loss
+case ; private exn/pattern + "extern int private Nn()" loss
+case ; private exn/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private exn/pattern + "type private NnBarX = Nn" loss
+case ; private literal/expr + "extern int private Nn()" loss
+case ; private literal/expr + "type private Nn() = class end" loss
+case ; private literal/expr + "type private NnBarX = Nn" loss
+case ; private literal/pattern + "extern int private Nn()" loss
+case ; private literal/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private literal/pattern + "type private NnBarX = Nn" loss
+case ; private nested-auto/expr + "extern int private Nn()" loss
+case ; private nested-auto/expr + "type private Nn() = class end" loss
+case ; private nested-auto/expr + "type private NnBarX = Nn" loss
+case ; private nested-auto/pattern + "extern int private Nn()" loss
+case ; private nested-auto/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private nested-auto/pattern + "type private NnBarX = Nn" loss
+case ; private rqa-barless-case/expr + "extern int private Nn()" loss
+case ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+case ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+case ; private rqa-barless-case/pattern + "extern int private Nn()" loss
+case ; private rqa-barless-case/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private rqa-barless-case/pattern + "type private NnBarX = Nn" loss
+case ; private rqa-case/expr + "extern int private Nn()" loss
+case ; private rqa-case/expr + "type private Nn() = class end" loss
+case ; private rqa-case/expr + "type private NnBarX = Nn" loss
+case ; private rqa-case/pattern + "extern int private Nn()" loss
+case ; private rqa-case/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private rqa-case/pattern + "type private NnBarX = Nn" loss
+case ; private type/pattern + "extern int private Nn()" loss
+case ; private type/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private value/expr + "extern int private Nn()" loss
+case ; private value/expr + "type private Nn() = class end" loss
+case ; private value/expr + "type private NnBarX = Nn" loss
+case ; private value/pattern + "extern int private Nn()" loss
+case ; private value/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; private value/pattern + "type private NnBarX = Nn" loss
+case ; rqa-barless-case/expr + "extern int private Nn()" loss
+case ; rqa-barless-case/expr + "type private Nn() = class end" loss
+case ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+case ; rqa-barless-case/pattern + "extern int private Nn()" loss
+case ; rqa-barless-case/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; rqa-barless-case/pattern + "type private NnBarX = Nn" loss
+case ; rqa-case/expr + "extern int private Nn()" loss
+case ; rqa-case/expr + "type private Nn() = class end" loss
+case ; rqa-case/expr + "type private NnBarX = Nn" loss
+case ; rqa-case/pattern + "extern int private Nn()" loss
+case ; rqa-case/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; rqa-case/pattern + "type private NnBarX = Nn" loss
+case ; type/pattern + "extern int private Nn()" loss
+case ; type/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; value/expr + "extern int private Nn()" loss
+case ; value/expr + "type private Nn() = class end" loss
+case ; value/pattern + "extern int private Nn()" loss
+case ; value/pattern + "let private (|Nn|_|) x = Some x" loss
+case ; value/pattern + "type private NnBarX = Nn" loss
+case/expr + "extern int private Nn()" loss
+case/expr + "type private Nn() = class end" loss
+case/expr + "type private NnBarX = Nn" loss
+case/pattern + "extern int private Nn()" loss
+case/pattern + "let private (|Nn|_|) x = Some x" loss
+case/pattern + "type private NnBarX = Nn" loss
+exn ; ap/expr + "extern int private Nn()" loss
+exn ; ap/expr + "type private Nn() = class end" loss
+exn ; ap/expr + "type private NnBarX = Nn" loss
+exn ; case/expr + "extern int private Nn()" loss
+exn ; case/expr + "type private Nn() = class end" loss
+exn ; case/expr + "type private NnBarX = Nn" loss
+exn ; case/pattern + "extern int private Nn()" loss
+exn ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; case/pattern + "type private NnBarX = Nn" loss
+exn ; literal/expr + "extern int private Nn()" loss
+exn ; literal/expr + "type private Nn() = class end" loss
+exn ; nested-auto/expr + "extern int private Nn()" loss
+exn ; nested-auto/expr + "type private Nn() = class end" loss
+exn ; nested-auto/pattern + "extern int private Nn()" loss
+exn ; nested-auto/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; nested-auto/pattern + "type private NnBarX = Nn" loss
+exn ; private ap/expr + "extern int private Nn()" loss
+exn ; private ap/expr + "type private Nn() = class end" loss
+exn ; private ap/expr + "type private NnBarX = Nn" loss
+exn ; private case/expr + "extern int private Nn()" loss
+exn ; private case/expr + "type private Nn() = class end" loss
+exn ; private case/expr + "type private NnBarX = Nn" loss
+exn ; private case/pattern + "extern int private Nn()" loss
+exn ; private case/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; private case/pattern + "type private NnBarX = Nn" loss
+exn ; private literal/expr + "extern int private Nn()" loss
+exn ; private literal/expr + "type private Nn() = class end" loss
+exn ; private literal/expr + "type private NnBarX = Nn" loss
+exn ; private literal/pattern + "extern int private Nn()" loss
+exn ; private literal/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; private literal/pattern + "type private NnBarX = Nn" loss
+exn ; private nested-auto/expr + "extern int private Nn()" loss
+exn ; private nested-auto/expr + "type private Nn() = class end" loss
+exn ; private nested-auto/expr + "type private NnBarX = Nn" loss
+exn ; private nested-auto/pattern + "extern int private Nn()" loss
+exn ; private nested-auto/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; private nested-auto/pattern + "type private NnBarX = Nn" loss
+exn ; private rqa-barless-case/expr + "extern int private Nn()" loss
+exn ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+exn ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+exn ; private rqa-barless-case/pattern + "extern int private Nn()" loss
+exn ; private rqa-barless-case/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; private rqa-barless-case/pattern + "type private NnBarX = Nn" loss
+exn ; private rqa-case/expr + "extern int private Nn()" loss
+exn ; private rqa-case/expr + "type private Nn() = class end" loss
+exn ; private rqa-case/expr + "type private NnBarX = Nn" loss
+exn ; private rqa-case/pattern + "extern int private Nn()" loss
+exn ; private rqa-case/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; private rqa-case/pattern + "type private NnBarX = Nn" loss
+exn ; private value/expr + "extern int private Nn()" loss
+exn ; private value/expr + "type private Nn() = class end" loss
+exn ; private value/expr + "type private NnBarX = Nn" loss
+exn ; private value/pattern + "extern int private Nn()" loss
+exn ; private value/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; private value/pattern + "type private NnBarX = Nn" loss
+exn ; rqa-barless-case/expr + "extern int private Nn()" loss
+exn ; rqa-barless-case/expr + "type private Nn() = class end" loss
+exn ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+exn ; rqa-barless-case/pattern + "extern int private Nn()" loss
+exn ; rqa-barless-case/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; rqa-barless-case/pattern + "type private NnBarX = Nn" loss
+exn ; rqa-case/expr + "extern int private Nn()" loss
+exn ; rqa-case/expr + "type private Nn() = class end" loss
+exn ; rqa-case/expr + "type private NnBarX = Nn" loss
+exn ; rqa-case/pattern + "extern int private Nn()" loss
+exn ; rqa-case/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; rqa-case/pattern + "type private NnBarX = Nn" loss
+exn ; value/expr + "extern int private Nn()" loss
+exn ; value/expr + "type private Nn() = class end" loss
+exn ; value/pattern + "extern int private Nn()" loss
+exn ; value/pattern + "let private (|Nn|_|) x = Some x" loss
+exn ; value/pattern + "type private NnBarX = Nn" loss
+exn/expr + "extern int private Nn()" loss
+exn/expr + "type private Nn() = class end" loss
+exn/expr + "type private NnBarX = Nn" loss
+exn/pattern + "extern int private Nn()" loss
+exn/pattern + "let private (|Nn|_|) x = Some x" loss
+exn/pattern + "type private NnBarX = Nn" loss
+literal ; ap/expr + "extern int private Nn()" loss
+literal ; ap/expr + "type private Nn() = class end" loss
+literal ; barless-case/expr + "extern int private Nn()" loss
+literal ; barless-case/expr + "type private Nn() = class end" loss
+literal ; case/expr + "extern int private Nn()" loss
+literal ; case/expr + "type private Nn() = class end" loss
+literal ; exn/expr + "extern int private Nn()" loss
+literal ; exn/expr + "type private Nn() = class end" loss
+literal ; nested-auto/expr + "extern int private Nn()" loss
+literal ; nested-auto/expr + "type private Nn() = class end" loss
+literal ; private ap/expr + "extern int private Nn()" loss
+literal ; private ap/expr + "type private Nn() = class end" loss
+literal ; private barless-case/expr + "extern int private Nn()" loss
+literal ; private barless-case/expr + "type private Nn() = class end" loss
+literal ; private case/expr + "extern int private Nn()" loss
+literal ; private case/expr + "type private Nn() = class end" loss
+literal ; private exn/expr + "extern int private Nn()" loss
+literal ; private exn/expr + "type private Nn() = class end" loss
+literal ; private nested-auto/expr + "extern int private Nn()" loss
+literal ; private nested-auto/expr + "type private Nn() = class end" loss
+literal ; private rqa-barless-case/expr + "extern int private Nn()" loss
+literal ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+literal ; private rqa-case/expr + "extern int private Nn()" loss
+literal ; private rqa-case/expr + "type private Nn() = class end" loss
+literal ; rqa-barless-case/expr + "extern int private Nn()" loss
+literal ; rqa-barless-case/expr + "type private Nn() = class end" loss
+literal ; rqa-case/expr + "extern int private Nn()" loss
+literal ; rqa-case/expr + "type private Nn() = class end" loss
+literal/expr + "extern int private Nn()" loss
+literal/expr + "type private Nn() = class end" loss
+nested-auto ; ap/expr + "extern int private Nn()" loss
+nested-auto ; ap/expr + "type private Nn() = class end" loss
+nested-auto ; barless-case/expr + "extern int private Nn()" loss
+nested-auto ; barless-case/expr + "type private Nn() = class end" loss
+nested-auto ; case/expr + "extern int private Nn()" loss
+nested-auto ; case/expr + "type private Nn() = class end" loss
+nested-auto ; case/pattern + "extern int private Nn()" loss
+nested-auto ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+nested-auto ; case/pattern + "type private NnBarX = Nn" loss
+nested-auto ; exn/expr + "extern int private Nn()" loss
+nested-auto ; exn/expr + "type private Nn() = class end" loss
+nested-auto ; exn/pattern + "extern int private Nn()" loss
+nested-auto ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+nested-auto ; exn/pattern + "type private NnBarX = Nn" loss
+nested-auto ; literal/expr + "extern int private Nn()" loss
+nested-auto ; literal/expr + "type private Nn() = class end" loss
+nested-auto ; nested-auto/expr + "extern int private Nn()" loss
+nested-auto ; nested-auto/expr + "type private Nn() = class end" loss
+nested-auto ; private ap/expr + "extern int private Nn()" loss
+nested-auto ; private ap/expr + "type private Nn() = class end" loss
+nested-auto ; private barless-case/expr + "extern int private Nn()" loss
+nested-auto ; private barless-case/expr + "type private Nn() = class end" loss
+nested-auto ; private case/expr + "extern int private Nn()" loss
+nested-auto ; private case/expr + "type private Nn() = class end" loss
+nested-auto ; private exn/expr + "extern int private Nn()" loss
+nested-auto ; private exn/expr + "type private Nn() = class end" loss
+nested-auto ; private literal/expr + "extern int private Nn()" loss
+nested-auto ; private literal/expr + "type private Nn() = class end" loss
+nested-auto ; private nested-auto/expr + "extern int private Nn()" loss
+nested-auto ; private nested-auto/expr + "type private Nn() = class end" loss
+nested-auto ; private rqa-barless-case/expr + "extern int private Nn()" loss
+nested-auto ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+nested-auto ; private rqa-case/expr + "extern int private Nn()" loss
+nested-auto ; private rqa-case/expr + "type private Nn() = class end" loss
+nested-auto ; private value/expr + "extern int private Nn()" loss
+nested-auto ; private value/expr + "type private Nn() = class end" loss
+nested-auto ; rqa-barless-case/expr + "extern int private Nn()" loss
+nested-auto ; rqa-barless-case/expr + "type private Nn() = class end" loss
+nested-auto ; rqa-case/expr + "extern int private Nn()" loss
+nested-auto ; rqa-case/expr + "type private Nn() = class end" loss
+nested-auto ; value/expr + "extern int private Nn()" loss
+nested-auto ; value/expr + "type private Nn() = class end" loss
+nested-auto/expr + "extern int private Nn()" loss
+nested-auto/expr + "type private Nn() = class end" loss
+private ap ; case/expr + "extern int private Nn()" loss
+private ap ; case/expr + "type private Nn() = class end" loss
+private ap ; case/expr + "type private NnBarX = Nn" loss
+private ap ; exn/expr + "extern int private Nn()" loss
+private ap ; exn/expr + "type private Nn() = class end" loss
+private ap ; exn/expr + "type private NnBarX = Nn" loss
+private ap ; literal/expr + "extern int private Nn()" loss
+private ap ; literal/expr + "type private Nn() = class end" loss
+private ap ; nested-auto/expr + "extern int private Nn()" loss
+private ap ; nested-auto/expr + "type private Nn() = class end" loss
+private ap ; private case/expr + "extern int private Nn()" loss
+private ap ; private case/expr + "type private Nn() = class end" loss
+private ap ; private case/expr + "type private NnBarX = Nn" loss
+private ap ; private exn/expr + "extern int private Nn()" loss
+private ap ; private exn/expr + "type private Nn() = class end" loss
+private ap ; private exn/expr + "type private NnBarX = Nn" loss
+private ap ; private literal/expr + "extern int private Nn()" loss
+private ap ; private literal/expr + "type private Nn() = class end" loss
+private ap ; private literal/expr + "type private NnBarX = Nn" loss
+private ap ; private nested-auto/expr + "extern int private Nn()" loss
+private ap ; private nested-auto/expr + "type private Nn() = class end" loss
+private ap ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private ap ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private ap ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private ap ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private ap ; private rqa-case/expr + "extern int private Nn()" loss
+private ap ; private rqa-case/expr + "type private Nn() = class end" loss
+private ap ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private ap ; private value/expr + "extern int private Nn()" loss
+private ap ; private value/expr + "type private Nn() = class end" loss
+private ap ; private value/expr + "type private NnBarX = Nn" loss
+private ap ; rqa-barless-case/expr + "extern int private Nn()" loss
+private ap ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private ap ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private ap ; rqa-case/expr + "extern int private Nn()" loss
+private ap ; rqa-case/expr + "type private Nn() = class end" loss
+private ap ; rqa-case/expr + "type private NnBarX = Nn" loss
+private ap ; value/expr + "extern int private Nn()" loss
+private ap ; value/expr + "type private Nn() = class end" loss
+private ap/expr + "extern int private Nn()" loss
+private ap/expr + "type private Nn() = class end" loss
+private ap/expr + "type private NnBarX = Nn" loss
+private barless-case ; literal/expr + "extern int private Nn()" loss
+private barless-case ; literal/expr + "type private Nn() = class end" loss
+private barless-case ; nested-auto/expr + "extern int private Nn()" loss
+private barless-case ; nested-auto/expr + "type private Nn() = class end" loss
+private barless-case ; value/expr + "extern int private Nn()" loss
+private barless-case ; value/expr + "type private Nn() = class end" loss
+private case ; ap/expr + "extern int private Nn()" loss
+private case ; ap/expr + "type private Nn() = class end" loss
+private case ; ap/expr + "type private NnBarX = Nn" loss
+private case ; case/expr + "extern int private Nn()" loss
+private case ; case/expr + "type private Nn() = class end" loss
+private case ; case/expr + "type private NnBarX = Nn" loss
+private case ; case/pattern + "extern int private Nn()" loss
+private case ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private case ; case/pattern + "type private NnBarX = Nn" loss
+private case ; exn/expr + "extern int private Nn()" loss
+private case ; exn/expr + "type private Nn() = class end" loss
+private case ; exn/expr + "type private NnBarX = Nn" loss
+private case ; exn/pattern + "extern int private Nn()" loss
+private case ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+private case ; exn/pattern + "type private NnBarX = Nn" loss
+private case ; literal/expr + "extern int private Nn()" loss
+private case ; literal/expr + "type private Nn() = class end" loss
+private case ; nested-auto/expr + "extern int private Nn()" loss
+private case ; nested-auto/expr + "type private Nn() = class end" loss
+private case ; private ap/expr + "extern int private Nn()" loss
+private case ; private ap/expr + "type private Nn() = class end" loss
+private case ; private ap/expr + "type private NnBarX = Nn" loss
+private case ; private case/expr + "extern int private Nn()" loss
+private case ; private case/expr + "type private Nn() = class end" loss
+private case ; private case/expr + "type private NnBarX = Nn" loss
+private case ; private exn/expr + "extern int private Nn()" loss
+private case ; private exn/expr + "type private Nn() = class end" loss
+private case ; private exn/expr + "type private NnBarX = Nn" loss
+private case ; private literal/expr + "extern int private Nn()" loss
+private case ; private literal/expr + "type private Nn() = class end" loss
+private case ; private literal/expr + "type private NnBarX = Nn" loss
+private case ; private nested-auto/expr + "extern int private Nn()" loss
+private case ; private nested-auto/expr + "type private Nn() = class end" loss
+private case ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private case ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private case ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private case ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private case ; private rqa-case/expr + "extern int private Nn()" loss
+private case ; private rqa-case/expr + "type private Nn() = class end" loss
+private case ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private case ; private value/expr + "extern int private Nn()" loss
+private case ; private value/expr + "type private Nn() = class end" loss
+private case ; private value/expr + "type private NnBarX = Nn" loss
+private case ; rqa-barless-case/expr + "extern int private Nn()" loss
+private case ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private case ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private case ; rqa-case/expr + "extern int private Nn()" loss
+private case ; rqa-case/expr + "type private Nn() = class end" loss
+private case ; rqa-case/expr + "type private NnBarX = Nn" loss
+private case ; value/expr + "extern int private Nn()" loss
+private case ; value/expr + "type private Nn() = class end" loss
+private case/expr + "extern int private Nn()" loss
+private case/expr + "type private Nn() = class end" loss
+private case/expr + "type private NnBarX = Nn" loss
+private exn ; ap/expr + "extern int private Nn()" loss
+private exn ; ap/expr + "type private Nn() = class end" loss
+private exn ; ap/expr + "type private NnBarX = Nn" loss
+private exn ; case/expr + "extern int private Nn()" loss
+private exn ; case/expr + "type private Nn() = class end" loss
+private exn ; case/expr + "type private NnBarX = Nn" loss
+private exn ; case/pattern + "extern int private Nn()" loss
+private exn ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private exn ; case/pattern + "type private NnBarX = Nn" loss
+private exn ; literal/expr + "extern int private Nn()" loss
+private exn ; literal/expr + "type private Nn() = class end" loss
+private exn ; nested-auto/expr + "extern int private Nn()" loss
+private exn ; nested-auto/expr + "type private Nn() = class end" loss
+private exn ; private ap/expr + "extern int private Nn()" loss
+private exn ; private ap/expr + "type private Nn() = class end" loss
+private exn ; private ap/expr + "type private NnBarX = Nn" loss
+private exn ; private case/expr + "extern int private Nn()" loss
+private exn ; private case/expr + "type private Nn() = class end" loss
+private exn ; private case/expr + "type private NnBarX = Nn" loss
+private exn ; private literal/expr + "extern int private Nn()" loss
+private exn ; private literal/expr + "type private Nn() = class end" loss
+private exn ; private literal/expr + "type private NnBarX = Nn" loss
+private exn ; private nested-auto/expr + "extern int private Nn()" loss
+private exn ; private nested-auto/expr + "type private Nn() = class end" loss
+private exn ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private exn ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private exn ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private exn ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private exn ; private rqa-case/expr + "extern int private Nn()" loss
+private exn ; private rqa-case/expr + "type private Nn() = class end" loss
+private exn ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private exn ; private value/expr + "extern int private Nn()" loss
+private exn ; private value/expr + "type private Nn() = class end" loss
+private exn ; private value/expr + "type private NnBarX = Nn" loss
+private exn ; rqa-barless-case/expr + "extern int private Nn()" loss
+private exn ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private exn ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private exn ; rqa-case/expr + "extern int private Nn()" loss
+private exn ; rqa-case/expr + "type private Nn() = class end" loss
+private exn ; rqa-case/expr + "type private NnBarX = Nn" loss
+private exn ; value/expr + "extern int private Nn()" loss
+private exn ; value/expr + "type private Nn() = class end" loss
+private exn/expr + "extern int private Nn()" loss
+private exn/expr + "type private Nn() = class end" loss
+private exn/expr + "type private NnBarX = Nn" loss
+private literal ; ap/expr + "extern int private Nn()" loss
+private literal ; ap/expr + "type private Nn() = class end" loss
+private literal ; ap/expr + "type private NnBarX = Nn" loss
+private literal ; case/expr + "extern int private Nn()" loss
+private literal ; case/expr + "type private Nn() = class end" loss
+private literal ; case/expr + "type private NnBarX = Nn" loss
+private literal ; case/pattern + "extern int private Nn()" loss
+private literal ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private literal ; case/pattern + "type private NnBarX = Nn" loss
+private literal ; exn/expr + "extern int private Nn()" loss
+private literal ; exn/expr + "type private Nn() = class end" loss
+private literal ; exn/expr + "type private NnBarX = Nn" loss
+private literal ; exn/pattern + "extern int private Nn()" loss
+private literal ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+private literal ; exn/pattern + "type private NnBarX = Nn" loss
+private literal ; nested-auto/expr + "extern int private Nn()" loss
+private literal ; nested-auto/expr + "type private Nn() = class end" loss
+private literal ; private ap/expr + "extern int private Nn()" loss
+private literal ; private ap/expr + "type private Nn() = class end" loss
+private literal ; private ap/expr + "type private NnBarX = Nn" loss
+private literal ; private case/expr + "extern int private Nn()" loss
+private literal ; private case/expr + "type private Nn() = class end" loss
+private literal ; private case/expr + "type private NnBarX = Nn" loss
+private literal ; private exn/expr + "extern int private Nn()" loss
+private literal ; private exn/expr + "type private Nn() = class end" loss
+private literal ; private exn/expr + "type private NnBarX = Nn" loss
+private literal ; private nested-auto/expr + "extern int private Nn()" loss
+private literal ; private nested-auto/expr + "type private Nn() = class end" loss
+private literal ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private literal ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private literal ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private literal ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private literal ; private rqa-case/expr + "extern int private Nn()" loss
+private literal ; private rqa-case/expr + "type private Nn() = class end" loss
+private literal ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private literal ; rqa-barless-case/expr + "extern int private Nn()" loss
+private literal ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private literal ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private literal ; rqa-case/expr + "extern int private Nn()" loss
+private literal ; rqa-case/expr + "type private Nn() = class end" loss
+private literal ; rqa-case/expr + "type private NnBarX = Nn" loss
+private literal/expr + "extern int private Nn()" loss
+private literal/expr + "type private Nn() = class end" loss
+private literal/expr + "type private NnBarX = Nn" loss
+private nested-auto ; ap/expr + "extern int private Nn()" loss
+private nested-auto ; ap/expr + "type private Nn() = class end" loss
+private nested-auto ; ap/expr + "type private NnBarX = Nn" loss
+private nested-auto ; case/expr + "extern int private Nn()" loss
+private nested-auto ; case/expr + "type private Nn() = class end" loss
+private nested-auto ; case/expr + "type private NnBarX = Nn" loss
+private nested-auto ; case/pattern + "extern int private Nn()" loss
+private nested-auto ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private nested-auto ; case/pattern + "type private NnBarX = Nn" loss
+private nested-auto ; exn/expr + "extern int private Nn()" loss
+private nested-auto ; exn/expr + "type private Nn() = class end" loss
+private nested-auto ; exn/expr + "type private NnBarX = Nn" loss
+private nested-auto ; exn/pattern + "extern int private Nn()" loss
+private nested-auto ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+private nested-auto ; exn/pattern + "type private NnBarX = Nn" loss
+private nested-auto ; literal/expr + "extern int private Nn()" loss
+private nested-auto ; literal/expr + "type private Nn() = class end" loss
+private nested-auto ; nested-auto/expr + "extern int private Nn()" loss
+private nested-auto ; nested-auto/expr + "type private Nn() = class end" loss
+private nested-auto ; private ap/expr + "extern int private Nn()" loss
+private nested-auto ; private ap/expr + "type private Nn() = class end" loss
+private nested-auto ; private ap/expr + "type private NnBarX = Nn" loss
+private nested-auto ; private case/expr + "extern int private Nn()" loss
+private nested-auto ; private case/expr + "type private Nn() = class end" loss
+private nested-auto ; private case/expr + "type private NnBarX = Nn" loss
+private nested-auto ; private exn/expr + "extern int private Nn()" loss
+private nested-auto ; private exn/expr + "type private Nn() = class end" loss
+private nested-auto ; private exn/expr + "type private NnBarX = Nn" loss
+private nested-auto ; private literal/expr + "extern int private Nn()" loss
+private nested-auto ; private literal/expr + "type private Nn() = class end" loss
+private nested-auto ; private literal/expr + "type private NnBarX = Nn" loss
+private nested-auto ; private nested-auto/expr + "extern int private Nn()" loss
+private nested-auto ; private nested-auto/expr + "type private Nn() = class end" loss
+private nested-auto ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private nested-auto ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private nested-auto ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private nested-auto ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private nested-auto ; private rqa-case/expr + "extern int private Nn()" loss
+private nested-auto ; private rqa-case/expr + "type private Nn() = class end" loss
+private nested-auto ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private nested-auto ; private value/expr + "extern int private Nn()" loss
+private nested-auto ; private value/expr + "type private Nn() = class end" loss
+private nested-auto ; private value/expr + "type private NnBarX = Nn" loss
+private nested-auto ; rqa-barless-case/expr + "extern int private Nn()" loss
+private nested-auto ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private nested-auto ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private nested-auto ; rqa-case/expr + "extern int private Nn()" loss
+private nested-auto ; rqa-case/expr + "type private Nn() = class end" loss
+private nested-auto ; rqa-case/expr + "type private NnBarX = Nn" loss
+private nested-auto ; value/expr + "extern int private Nn()" loss
+private nested-auto ; value/expr + "type private Nn() = class end" loss
+private nested-auto/expr + "extern int private Nn()" loss
+private nested-auto/expr + "type private Nn() = class end" loss
+private nested-auto/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; ap/expr + "extern int private Nn()" loss
+private rqa-barless-case ; ap/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; ap/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; case/expr + "extern int private Nn()" loss
+private rqa-barless-case ; case/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; case/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; case/pattern + "extern int private Nn()" loss
+private rqa-barless-case ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private rqa-barless-case ; case/pattern + "type private NnBarX = Nn" loss
+private rqa-barless-case ; exn/expr + "extern int private Nn()" loss
+private rqa-barless-case ; exn/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; exn/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; exn/pattern + "extern int private Nn()" loss
+private rqa-barless-case ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+private rqa-barless-case ; exn/pattern + "type private NnBarX = Nn" loss
+private rqa-barless-case ; literal/expr + "extern int private Nn()" loss
+private rqa-barless-case ; literal/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; nested-auto/expr + "extern int private Nn()" loss
+private rqa-barless-case ; nested-auto/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private ap/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private ap/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private ap/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; private case/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private case/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private case/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; private exn/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private exn/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private exn/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; private literal/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private literal/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private literal/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; private nested-auto/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private nested-auto/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; private rqa-case/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private rqa-case/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; private value/expr + "extern int private Nn()" loss
+private rqa-barless-case ; private value/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; private value/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; rqa-barless-case/expr + "extern int private Nn()" loss
+private rqa-barless-case ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; rqa-case/expr + "extern int private Nn()" loss
+private rqa-barless-case ; rqa-case/expr + "type private Nn() = class end" loss
+private rqa-barless-case ; rqa-case/expr + "type private NnBarX = Nn" loss
+private rqa-barless-case ; value/expr + "extern int private Nn()" loss
+private rqa-barless-case ; value/expr + "type private Nn() = class end" loss
+private rqa-barless-case/expr + "extern int private Nn()" loss
+private rqa-barless-case/expr + "type private Nn() = class end" loss
+private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private rqa-case ; ap/expr + "extern int private Nn()" loss
+private rqa-case ; ap/expr + "type private Nn() = class end" loss
+private rqa-case ; ap/expr + "type private NnBarX = Nn" loss
+private rqa-case ; case/expr + "extern int private Nn()" loss
+private rqa-case ; case/expr + "type private Nn() = class end" loss
+private rqa-case ; case/expr + "type private NnBarX = Nn" loss
+private rqa-case ; case/pattern + "extern int private Nn()" loss
+private rqa-case ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private rqa-case ; case/pattern + "type private NnBarX = Nn" loss
+private rqa-case ; exn/expr + "extern int private Nn()" loss
+private rqa-case ; exn/expr + "type private Nn() = class end" loss
+private rqa-case ; exn/expr + "type private NnBarX = Nn" loss
+private rqa-case ; exn/pattern + "extern int private Nn()" loss
+private rqa-case ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+private rqa-case ; exn/pattern + "type private NnBarX = Nn" loss
+private rqa-case ; literal/expr + "extern int private Nn()" loss
+private rqa-case ; literal/expr + "type private Nn() = class end" loss
+private rqa-case ; nested-auto/expr + "extern int private Nn()" loss
+private rqa-case ; nested-auto/expr + "type private Nn() = class end" loss
+private rqa-case ; private ap/expr + "extern int private Nn()" loss
+private rqa-case ; private ap/expr + "type private Nn() = class end" loss
+private rqa-case ; private ap/expr + "type private NnBarX = Nn" loss
+private rqa-case ; private case/expr + "extern int private Nn()" loss
+private rqa-case ; private case/expr + "type private Nn() = class end" loss
+private rqa-case ; private case/expr + "type private NnBarX = Nn" loss
+private rqa-case ; private exn/expr + "extern int private Nn()" loss
+private rqa-case ; private exn/expr + "type private Nn() = class end" loss
+private rqa-case ; private exn/expr + "type private NnBarX = Nn" loss
+private rqa-case ; private literal/expr + "extern int private Nn()" loss
+private rqa-case ; private literal/expr + "type private Nn() = class end" loss
+private rqa-case ; private literal/expr + "type private NnBarX = Nn" loss
+private rqa-case ; private nested-auto/expr + "extern int private Nn()" loss
+private rqa-case ; private nested-auto/expr + "type private Nn() = class end" loss
+private rqa-case ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private rqa-case ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private rqa-case ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private rqa-case ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private rqa-case ; private rqa-case/expr + "extern int private Nn()" loss
+private rqa-case ; private rqa-case/expr + "type private Nn() = class end" loss
+private rqa-case ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private rqa-case ; private value/expr + "extern int private Nn()" loss
+private rqa-case ; private value/expr + "type private Nn() = class end" loss
+private rqa-case ; private value/expr + "type private NnBarX = Nn" loss
+private rqa-case ; rqa-barless-case/expr + "extern int private Nn()" loss
+private rqa-case ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private rqa-case ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private rqa-case ; rqa-case/expr + "extern int private Nn()" loss
+private rqa-case ; rqa-case/expr + "type private Nn() = class end" loss
+private rqa-case ; rqa-case/expr + "type private NnBarX = Nn" loss
+private rqa-case ; value/expr + "extern int private Nn()" loss
+private rqa-case ; value/expr + "type private Nn() = class end" loss
+private rqa-case/expr + "extern int private Nn()" loss
+private rqa-case/expr + "type private Nn() = class end" loss
+private rqa-case/expr + "type private NnBarX = Nn" loss
+private type ; case/pattern + "extern int private Nn()" loss
+private type ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private value ; ap/expr + "extern int private Nn()" loss
+private value ; ap/expr + "type private Nn() = class end" loss
+private value ; ap/expr + "type private NnBarX = Nn" loss
+private value ; case/expr + "extern int private Nn()" loss
+private value ; case/expr + "type private Nn() = class end" loss
+private value ; case/expr + "type private NnBarX = Nn" loss
+private value ; case/pattern + "extern int private Nn()" loss
+private value ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+private value ; case/pattern + "type private NnBarX = Nn" loss
+private value ; exn/expr + "extern int private Nn()" loss
+private value ; exn/expr + "type private Nn() = class end" loss
+private value ; exn/expr + "type private NnBarX = Nn" loss
+private value ; exn/pattern + "extern int private Nn()" loss
+private value ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+private value ; exn/pattern + "type private NnBarX = Nn" loss
+private value ; nested-auto/expr + "extern int private Nn()" loss
+private value ; nested-auto/expr + "type private Nn() = class end" loss
+private value ; private ap/expr + "extern int private Nn()" loss
+private value ; private ap/expr + "type private Nn() = class end" loss
+private value ; private ap/expr + "type private NnBarX = Nn" loss
+private value ; private case/expr + "extern int private Nn()" loss
+private value ; private case/expr + "type private Nn() = class end" loss
+private value ; private case/expr + "type private NnBarX = Nn" loss
+private value ; private exn/expr + "extern int private Nn()" loss
+private value ; private exn/expr + "type private Nn() = class end" loss
+private value ; private exn/expr + "type private NnBarX = Nn" loss
+private value ; private nested-auto/expr + "extern int private Nn()" loss
+private value ; private nested-auto/expr + "type private Nn() = class end" loss
+private value ; private nested-auto/expr + "type private NnBarX = Nn" loss
+private value ; private rqa-barless-case/expr + "extern int private Nn()" loss
+private value ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+private value ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private value ; private rqa-case/expr + "extern int private Nn()" loss
+private value ; private rqa-case/expr + "type private Nn() = class end" loss
+private value ; private rqa-case/expr + "type private NnBarX = Nn" loss
+private value ; rqa-barless-case/expr + "extern int private Nn()" loss
+private value ; rqa-barless-case/expr + "type private Nn() = class end" loss
+private value ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+private value ; rqa-case/expr + "extern int private Nn()" loss
+private value ; rqa-case/expr + "type private Nn() = class end" loss
+private value ; rqa-case/expr + "type private NnBarX = Nn" loss
+private value/expr + "extern int private Nn()" loss
+private value/expr + "type private Nn() = class end" loss
+private value/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; ap/expr + "extern int private Nn()" loss
+rqa-barless-case ; ap/expr + "type private Nn() = class end" loss
+rqa-barless-case ; ap/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; case/expr + "extern int private Nn()" loss
+rqa-barless-case ; case/expr + "type private Nn() = class end" loss
+rqa-barless-case ; case/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; case/pattern + "extern int private Nn()" loss
+rqa-barless-case ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+rqa-barless-case ; case/pattern + "type private NnBarX = Nn" loss
+rqa-barless-case ; exn/expr + "extern int private Nn()" loss
+rqa-barless-case ; exn/expr + "type private Nn() = class end" loss
+rqa-barless-case ; exn/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; exn/pattern + "extern int private Nn()" loss
+rqa-barless-case ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+rqa-barless-case ; exn/pattern + "type private NnBarX = Nn" loss
+rqa-barless-case ; literal/expr + "extern int private Nn()" loss
+rqa-barless-case ; literal/expr + "type private Nn() = class end" loss
+rqa-barless-case ; nested-auto/expr + "extern int private Nn()" loss
+rqa-barless-case ; nested-auto/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private ap/expr + "extern int private Nn()" loss
+rqa-barless-case ; private ap/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private ap/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; private case/expr + "extern int private Nn()" loss
+rqa-barless-case ; private case/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private case/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; private exn/expr + "extern int private Nn()" loss
+rqa-barless-case ; private exn/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private exn/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; private literal/expr + "extern int private Nn()" loss
+rqa-barless-case ; private literal/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private literal/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; private nested-auto/expr + "extern int private Nn()" loss
+rqa-barless-case ; private nested-auto/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private nested-auto/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; private rqa-barless-case/expr + "extern int private Nn()" loss
+rqa-barless-case ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; private rqa-case/expr + "extern int private Nn()" loss
+rqa-barless-case ; private rqa-case/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private rqa-case/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; private value/expr + "extern int private Nn()" loss
+rqa-barless-case ; private value/expr + "type private Nn() = class end" loss
+rqa-barless-case ; private value/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; rqa-barless-case/expr + "extern int private Nn()" loss
+rqa-barless-case ; rqa-barless-case/expr + "type private Nn() = class end" loss
+rqa-barless-case ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; rqa-case/expr + "extern int private Nn()" loss
+rqa-barless-case ; rqa-case/expr + "type private Nn() = class end" loss
+rqa-barless-case ; rqa-case/expr + "type private NnBarX = Nn" loss
+rqa-barless-case ; value/expr + "extern int private Nn()" loss
+rqa-barless-case ; value/expr + "type private Nn() = class end" loss
+rqa-barless-case/expr + "extern int private Nn()" loss
+rqa-barless-case/expr + "type private Nn() = class end" loss
+rqa-barless-case/expr + "type private NnBarX = Nn" loss
+rqa-case ; ap/expr + "extern int private Nn()" loss
+rqa-case ; ap/expr + "type private Nn() = class end" loss
+rqa-case ; ap/expr + "type private NnBarX = Nn" loss
+rqa-case ; case/expr + "extern int private Nn()" loss
+rqa-case ; case/expr + "type private Nn() = class end" loss
+rqa-case ; case/expr + "type private NnBarX = Nn" loss
+rqa-case ; case/pattern + "extern int private Nn()" loss
+rqa-case ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+rqa-case ; case/pattern + "type private NnBarX = Nn" loss
+rqa-case ; exn/expr + "extern int private Nn()" loss
+rqa-case ; exn/expr + "type private Nn() = class end" loss
+rqa-case ; exn/expr + "type private NnBarX = Nn" loss
+rqa-case ; exn/pattern + "extern int private Nn()" loss
+rqa-case ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+rqa-case ; exn/pattern + "type private NnBarX = Nn" loss
+rqa-case ; literal/expr + "extern int private Nn()" loss
+rqa-case ; literal/expr + "type private Nn() = class end" loss
+rqa-case ; nested-auto/expr + "extern int private Nn()" loss
+rqa-case ; nested-auto/expr + "type private Nn() = class end" loss
+rqa-case ; private ap/expr + "extern int private Nn()" loss
+rqa-case ; private ap/expr + "type private Nn() = class end" loss
+rqa-case ; private ap/expr + "type private NnBarX = Nn" loss
+rqa-case ; private case/expr + "extern int private Nn()" loss
+rqa-case ; private case/expr + "type private Nn() = class end" loss
+rqa-case ; private case/expr + "type private NnBarX = Nn" loss
+rqa-case ; private exn/expr + "extern int private Nn()" loss
+rqa-case ; private exn/expr + "type private Nn() = class end" loss
+rqa-case ; private exn/expr + "type private NnBarX = Nn" loss
+rqa-case ; private literal/expr + "extern int private Nn()" loss
+rqa-case ; private literal/expr + "type private Nn() = class end" loss
+rqa-case ; private literal/expr + "type private NnBarX = Nn" loss
+rqa-case ; private nested-auto/expr + "extern int private Nn()" loss
+rqa-case ; private nested-auto/expr + "type private Nn() = class end" loss
+rqa-case ; private nested-auto/expr + "type private NnBarX = Nn" loss
+rqa-case ; private rqa-barless-case/expr + "extern int private Nn()" loss
+rqa-case ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+rqa-case ; private rqa-barless-case/expr + "type private NnBarX = Nn" loss
+rqa-case ; private rqa-case/expr + "extern int private Nn()" loss
+rqa-case ; private rqa-case/expr + "type private Nn() = class end" loss
+rqa-case ; private rqa-case/expr + "type private NnBarX = Nn" loss
+rqa-case ; private value/expr + "extern int private Nn()" loss
+rqa-case ; private value/expr + "type private Nn() = class end" loss
+rqa-case ; private value/expr + "type private NnBarX = Nn" loss
+rqa-case ; rqa-barless-case/expr + "extern int private Nn()" loss
+rqa-case ; rqa-barless-case/expr + "type private Nn() = class end" loss
+rqa-case ; rqa-barless-case/expr + "type private NnBarX = Nn" loss
+rqa-case ; rqa-case/expr + "extern int private Nn()" loss
+rqa-case ; rqa-case/expr + "type private Nn() = class end" loss
+rqa-case ; rqa-case/expr + "type private NnBarX = Nn" loss
+rqa-case ; value/expr + "extern int private Nn()" loss
+rqa-case ; value/expr + "type private Nn() = class end" loss
+rqa-case/expr + "extern int private Nn()" loss
+rqa-case/expr + "type private Nn() = class end" loss
+rqa-case/expr + "type private NnBarX = Nn" loss
+type ; case/pattern + "extern int private Nn()" loss
+type ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+value ; ap/expr + "extern int private Nn()" loss
+value ; ap/expr + "type private Nn() = class end" loss
+value ; barless-case/expr + "extern int private Nn()" loss
+value ; barless-case/expr + "type private Nn() = class end" loss
+value ; case/expr + "extern int private Nn()" loss
+value ; case/expr + "type private Nn() = class end" loss
+value ; case/pattern + "extern int private Nn()" loss
+value ; case/pattern + "let private (|Nn|_|) x = Some x" loss
+value ; case/pattern + "type private NnBarX = Nn" loss
+value ; exn/expr + "extern int private Nn()" loss
+value ; exn/expr + "type private Nn() = class end" loss
+value ; exn/pattern + "extern int private Nn()" loss
+value ; exn/pattern + "let private (|Nn|_|) x = Some x" loss
+value ; exn/pattern + "type private NnBarX = Nn" loss
+value ; nested-auto/expr + "extern int private Nn()" loss
+value ; nested-auto/expr + "type private Nn() = class end" loss
+value ; private ap/expr + "extern int private Nn()" loss
+value ; private ap/expr + "type private Nn() = class end" loss
+value ; private barless-case/expr + "extern int private Nn()" loss
+value ; private barless-case/expr + "type private Nn() = class end" loss
+value ; private case/expr + "extern int private Nn()" loss
+value ; private case/expr + "type private Nn() = class end" loss
+value ; private exn/expr + "extern int private Nn()" loss
+value ; private exn/expr + "type private Nn() = class end" loss
+value ; private nested-auto/expr + "extern int private Nn()" loss
+value ; private nested-auto/expr + "type private Nn() = class end" loss
+value ; private rqa-barless-case/expr + "extern int private Nn()" loss
+value ; private rqa-barless-case/expr + "type private Nn() = class end" loss
+value ; private rqa-case/expr + "extern int private Nn()" loss
+value ; private rqa-case/expr + "type private Nn() = class end" loss
+value ; rqa-barless-case/expr + "extern int private Nn()" loss
+value ; rqa-barless-case/expr + "type private Nn() = class end" loss
+value ; rqa-case/expr + "extern int private Nn()" loss
+value ; rqa-case/expr + "type private Nn() = class end" loss
+value/expr + "extern int private Nn()" loss
+value/expr + "type private Nn() = class end" loss

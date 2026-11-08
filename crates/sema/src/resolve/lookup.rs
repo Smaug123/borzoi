@@ -578,21 +578,67 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether a project `[<AutoOpen>]` module directly in `namespace` — this
-    /// file's or an earlier Compile-order one's — holds a **nested module**.
+    /// Whether an unrooted `open path` may name, by its short name, a project
+    /// module nested in a project `[<AutoOpen>]` module that `interps` (the
+    /// open's own reading) does not open.
     ///
-    /// Such a submodule is enterable by its short name (FCS enters every nested
-    /// module of a folded container into `eModulesAndNamespaces`), so `open
-    /// Inner` reaches it and its values out-rank the auto-open module's own. We
-    /// lend no project shortening prefix (task #30), so that `open` does nothing
-    /// on our side — which makes the outer value's entry unsafe to commit.
-    fn project_auto_open_here_nests_a_module(&self, namespace: &[String]) -> bool {
-        let mut auto_opens = self.auto_open_modules_directly_in(namespace);
-        auto_opens.extend(self.preceding.auto_open_modules_directly_in(namespace));
-        auto_opens.iter().any(|ao| {
-            let under = |p: &Vec<String>| p.len() > ao.len() && p.starts_with(ao.as_slice());
-            self.nested_module_exports.iter().any(under)
-                || self.preceding.nested_module_paths.iter().any(under)
+    /// FCS enters every module a folded module nests under its short name,
+    /// but a project auto-open module lends no shortening prefix (task #30),
+    /// so the walk cannot follow such an `open`, and what it brings could
+    /// replace anything in scope. Blind to position and scope, which can only
+    /// over-decline: every parent of a project module named `path`'s head
+    /// that is, or may be, auto-open is a candidate prefix, every parent
+    /// module when written attribute names cannot be trusted.
+    pub(super) fn may_name_unlent_module(
+        &self,
+        path: &[String],
+        interps: &[OpenInterpretation],
+    ) -> bool {
+        let Some(head) = path.first() else {
+            return false;
+        };
+        let spellings_trusted = self.attribute_spellings_trusted(["AutoOpen"].into_iter());
+        let parent_may_auto_open = |parent: &[String]| {
+            if spellings_trusted {
+                self.auto_open_module_paths.iter().any(|(p, _)| p == parent)
+                    || self
+                        .preceding
+                        .auto_open_module_paths
+                        .iter()
+                        .any(|(p, _)| p == parent)
+            } else {
+                self.is_project_module_path(parent)
+            }
+        };
+        let declared_modules = self
+            .module_paths
+            .iter()
+            .chain(&self.nested_module_exports)
+            .chain(self.export_decls.iter().filter_map(|d| {
+                matches!(
+                    d.kind,
+                    super::model::ExportDeclKind::Module { .. }
+                        | super::model::ExportDeclKind::ModuleAbbrev
+                )
+                .then_some(&d.path)
+            }))
+            .chain(&self.preceding.nested_module_paths)
+            .chain(&self.preceding.real_nested_modules);
+        let opened = |full: &[String]| {
+            interps
+                .iter()
+                .any(|i| matches!(i, OpenInterpretation::Module(p) if p.as_slice() == full))
+        };
+        declared_modules.clone().any(|p| {
+            let Some((last, parent)) = p.split_last() else {
+                return false;
+            };
+            if last != head || !parent_may_auto_open(parent) {
+                return false;
+            }
+            let mut full = parent.to_vec();
+            full.extend_from_slice(path);
+            !opened(&full) && declared_modules.clone().any(|q| *q == full)
         })
     }
 
@@ -1171,20 +1217,12 @@ impl<'a> Resolver<'a> {
                 module_reading: !handles.is_empty(),
             });
         }
-        // NOTE: a project `[<AutoOpen>]` module in this namespace nests short
-        // names too, and FCS folds the project fragment last, so `open <short>`
-        // binds the project's where both sides nest that name — while the
-        // project half lends no shortening prefix of its own (task #30), so we
-        // bind the assembly's. Neither lever available here fixes it:
-        // withholding the assembly prefix leaves the *enclosing* auto-open value
-        // standing (a wrong target of its own — the reason
-        // `open_shortening_matrix` exists), and recording the namespace in
-        // `incomplete_open_prefixes` — whose veto is exactly "a prefix may hide
-        // a nested module" — is unusable here because that veto fires on the
-        // presence of ANY incomplete prefix for EVERY relative open: measured,
-        // it took `WoofWare.PawPrint.Domain` from 2348 imported-symbol matches
-        // to 44. Task #30 is the fix; the shape needs a project and an assembly
-        // auto-open module in one namespace nesting the SAME short name.
+        // A project `[<AutoOpen>]` module in this namespace nests short names
+        // too, and FCS folds the project fragment last, so `open <short>`
+        // binds the project's where both sides nest that name. The project
+        // half lends no shortening prefix of its own (task #30), so such an
+        // `open` goes opaque ([`Self::may_name_unlent_module`]) rather than
+        // binding the assembly's.
         // The assembly **module** half's dotted-head bookkeeping, keyed on the
         // handles rather than the merged surface list — the explicit-`open`
         // path's, for the same reasons, because the reachability it describes is
@@ -1222,27 +1260,11 @@ impl<'a> Resolver<'a> {
         // The project namespace half's own cases/exceptions and its
         // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves
         // so that on a shared name the project entry wins by position.
+        // A module nested in one of its `[<AutoOpen>]` modules answers to its
+        // short name, which the walk cannot follow; a later `open` of it goes
+        // opaque ([`Self::may_name_unlent_module`]).
         if project_ns {
-            let before = self.module_frame().entries.len();
             self.open_project_namespace_values(&namespace, 0);
-            // A project `[<AutoOpen>]` module here that holds a **nested module**
-            // can be shortened through: FCS enters that submodule under its short
-            // name, so `open Inner` reaches it and its `target` out-ranks the
-            // auto-open module's own `target` this fold just pushed. The project
-            // half lends no shortening prefix (task #30), so the `open` does
-            // nothing on our side and the outer entry would stand — a wrong
-            // target. Nothing here can weigh the two, so the entries decline.
-            //
-            // Gated on a nested module actually existing: an auto-open module of
-            // plain values shortens to nothing and keeps its entries. That is
-            // what makes this affordable — the `[<AutoOpen>]` modules real
-            // projects put in their own namespace are overwhelmingly flat.
-            if self.project_auto_open_here_nests_a_module(&namespace) {
-                let count = self.module_frame().entries.len();
-                for i in before..count {
-                    self.module_frame().entries[i].withdraw(DeclineCause::OpenFoldResidue);
-                }
-            }
         }
         // The project module half's opaque-marker bump: hidden names no
         // signature screen bounds must stale this fold's own assembly entries
@@ -2175,11 +2197,12 @@ impl<'a> Resolver<'a> {
     /// child", covering `namespace`'s own entries and any earlier sibling but
     /// never a later one.
     ///
-    /// **Not** used for a plain project *module* open (`has_project_module` in
-    /// `decls.rs`'s `ModuleDecl::Open` arm still calls
-    /// [`Self::open_module_values`] directly) — recursing there is a separate,
-    /// unscoped gap this slice does not touch (`docs/assembly-module-open-plan.md`
-    /// §7 only prices the namespace flavor).
+    /// A project **module** is folded the same way: an explicit `open` of it
+    /// and its own fold-back as an `[<AutoOpen>]` module
+    /// ([`Self::auto_open_module_contribution`]) both bring its members, then
+    /// its `[<AutoOpen>]` children's. A module is one declaration, so the
+    /// direct-tier straddle below, which orders a namespace's files, never
+    /// applies to it.
     ///
     /// Before recursing into each `[<AutoOpen>]` submodule, this pushes a
     /// `Deferred` override for that submodule's own constructible type names
@@ -2421,7 +2444,16 @@ impl<'a> Resolver<'a> {
         // module's list position, mis-ordering multi-file/nested fragments.)
         let mut count = self.open_module_values(namespace, open_pos, None);
         let fragments = self.auto_open_fragments_reachable(namespace);
-        for (frag_path, frag_file) in fragments.iter().cloned() {
+        // A fragment is reached by its attribute's spelling, which proves
+        // nothing once written names cannot be trusted (a project type
+        // spelled `AutoOpenAttribute` takes it): fold none of them, and stale
+        // everything earlier, which any of them may shadow.
+        let fragments_trusted =
+            fragments.is_empty() || self.attribute_spellings_trusted(["AutoOpen"].into_iter());
+        if !fragments_trusted {
+            self.open_generation += 1;
+        }
+        for (frag_path, frag_file) in fragments.iter().filter(|_| fragments_trusted).cloned() {
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2451,12 +2483,12 @@ impl<'a> Resolver<'a> {
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
         }
         // What each fragment adds that this fold does not model
-        // ([`Self::fragment_open_contributions`]). These are marks, so they go
+        // ([`Self::module_open_contributions`]). These are marks, so they go
         // after every fragment: a sibling a fragment records may stand after
         // an `[<AutoOpen>]` child folded later, and a decline that lands too
         // late costs only availability.
         for (frag_path, _) in &fragments {
-            self.fragment_open_contributions(frag_path, open_pos);
+            self.module_open_contributions(frag_path, open_pos);
         }
         // The straddle winners, re-pushed last so they out-position the submodule
         // pushes. `value_winners` / `ctor_winners` are non-empty only when
@@ -3045,14 +3077,11 @@ impl<'a> Resolver<'a> {
 
         // A qualified in-file **static member** `Color.Red` (probes M1/M2d of
         // `docs/project-type-member-plan.md`). Same opaque-open gating as the
-        // case branch above. The qualifier follows the *enum* rule — latest-wins
-        // across the type and value namespaces (probes M2c/M2d): a value of the
-        // head name *later* in source than the type takes the qualifier (member
-        // access on the value — fall through to the intra-file shape, which
-        // resolves the head to that value); the type otherwise keeps it and the
-        // member emits. An in-scope value with **no in-file range** (an opened /
-        // auto-open value) is an unprobed contest — defer the whole path rather
-        // than pick a side.
+        // case branch above. A value of the head name in scope takes the
+        // qualifier (member access on the value — fall through to the
+        // intra-file shape, which resolves the head to it) unless a type
+        // evicted it from the unqualified slot, when the member emits; a
+        // contest the slot cannot order defers the whole path.
         if let [member_seg] = rest
             && !self.opaque_value_open
             && !self.opaque_dotted_open
@@ -3065,12 +3094,26 @@ impl<'a> Resolver<'a> {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
             if head_is_value {
-                match self.value_slot_position(head) {
-                    // A later value takes the qualifier: member access on the
-                    // value — the intra-file fallback below resolves the head to
-                    // it (M2c). An earlier value lost it to the type (M2d).
-                    Some(vr) if vr > self.defs[type_id.index()].range.start() => {}
-                    Some(_) => {
+                // FCS gives a value in scope the qualifier outright unless a
+                // type took its unqualified slot ([`Self::head_value_slot`]):
+                // a later constructible type does (M2d), a later value takes
+                // it back (M2c), and a record or union never takes it. The
+                // qualifier then goes to the latest type of the name, which
+                // an `open` may have brought after this one.
+                let type_pos = u32::from(self.defs[type_id.index()].range.start());
+                match self.head_value_slot(head) {
+                    // Member access on the value — the intra-file fallback
+                    // below resolves the head to it.
+                    HeadSlot::Held => {}
+                    HeadSlot::Evicted if !self.lexical_type_is_latest(head, type_pos) => {
+                        self.defer_with_cause(
+                            first.text_range(),
+                            segments,
+                            DeclineSite::pre_walk(DeclineCause::ValueEvicted),
+                        );
+                        return;
+                    }
+                    HeadSlot::Evicted => {
                         self.record_type_qualifier(
                             first,
                             member_seg,
@@ -3079,9 +3122,7 @@ impl<'a> Resolver<'a> {
                         );
                         return;
                     }
-                    // An opened value has no in-file position to compare — the
-                    // opened-value-vs-lexical-type qualifier contest is unprobed.
-                    None => {
+                    HeadSlot::Unordered => {
                         // An unorderable contest between the head's two slots,
                         // reached before the fallback that usually names it.
                         self.defer_with_cause(
@@ -5279,6 +5320,54 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Whether the in-file type defined at `type_pos` is the latest type named
+    /// `head` in scope, of any slot class and from any source: an earlier or
+    /// enclosing block's, an opened project path's, an opened assembly
+    /// namespace's, or the enclosing namespace's (position 0). A later one
+    /// takes a type-qualified path from it.
+    fn lexical_type_is_latest(&self, head: &str, type_pos: u32) -> bool {
+        let lexical = (0..=self.container_path.len()).flat_map(|k| {
+            self.type_slot_history
+                .get(&self.container_path[..k])
+                .and_then(|m| m.get(head))
+                .into_iter()
+                .flatten()
+                .map(|&(pos, _)| pos)
+        });
+        let opened = self
+            .explicit_open_prefixes
+            .iter()
+            .chain(&self.module_open_prefixes)
+            .filter(|(_, prefix)| {
+                let mut path = prefix.clone();
+                path.push(head.to_string());
+                self.type_path_exports.iter().any(|(p, _, _)| *p == path)
+                    || self.preceding.exported_type_slot_class(&path).is_some()
+                    || self
+                        .type_defs
+                        .get(prefix.as_slice())
+                        .is_some_and(|m| m.contains_key(head))
+            })
+            .map(|(pos, _)| *pos);
+        let assembly = self
+            .assembly_open_prefixes
+            .iter()
+            .filter(|(_, prefix)| !self.assemblies.public_types_named(prefix, head).is_empty())
+            .map(|(pos, _)| *pos);
+        let enclosing = {
+            let ns = self.enclosing_namespace();
+            let mut path = ns.to_vec();
+            path.push(head.to_string());
+            (!ns.is_empty() && self.preceding.exported_type_slot_class(&path).is_some())
+                .then_some(0)
+        };
+        lexical
+            .chain(opened)
+            .chain(assembly)
+            .chain(enclosing)
+            .all(|pos| pos <= type_pos)
+    }
+
     /// Whether a **project module** owns `head` at any completion the bare
     /// head can reach — the relative tiers of the same-file candidate walk
     /// (`k >= namespace_depth`, plus the root) **and** every explicit
@@ -5490,13 +5579,12 @@ impl<'a> Resolver<'a> {
         self.latest_entry_noting_withdrawals(name).0
     }
 
-    /// [`Self::latest_entry`], and whether the walk passed over an **opened**
+    /// [`Self::latest_entry`], and whether the walk stopped at an **opened**
     /// entry of the name because an [`opaque_value_open`](Self::opaque_value_open)
-    /// is in scope — the one skip that withdraws a name the walk would
+    /// is in scope — the one stop that withdraws a name the walk would
     /// otherwise have found. One walk, so the census
     /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
     fn latest_entry_noting_withdrawals(&self, name: &str) -> (Option<&ScopeEntry>, bool) {
-        let mut withdrawn_by_opaque_open = false;
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
                 if entry.name != name {
@@ -5506,19 +5594,20 @@ impl<'a> Resolver<'a> {
                     continue; // constructor namespace only — not a value here
                 }
                 if entry.from_open && self.opaque_value_open {
-                    // An opaque open could shadow this opened name.
-                    withdrawn_by_opaque_open = true;
-                    continue;
+                    // An opaque open could shadow this opened name, which
+                    // itself shadows everything before it: nothing older may
+                    // answer in its place.
+                    return (None, true);
                 }
                 if let Resolution::Local(id) = entry.resolution
                     && self.defs[id.index()].kind == DefKind::ActivePattern
                 {
                     continue; // pattern-only: not a value in expression position
                 }
-                return (Some(entry), withdrawn_by_opaque_open);
+                return (Some(entry), false);
             }
         }
-        (None, withdrawn_by_opaque_open)
+        (None, false)
     }
 
     /// Which guard declined a **bare** expression-position `name` that

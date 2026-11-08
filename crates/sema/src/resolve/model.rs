@@ -499,7 +499,7 @@ pub struct ProjectItems {
     pub(super) core_attribute_alias_declared: bool,
     /// Per project module, what earlier files' declarations add to an `open`
     /// of it beyond its folded values ([`FileContributions::module_opens`]).
-    pub(super) module_open_contributions: HashMap<Vec<String>, super::contributors::ModuleOpens>,
+    pub(super) module_open_contributions: HashMap<Vec<String>, super::contributors::Contribution>,
     /// Per namespace, what earlier files' declarations add to an `open` of it
     /// that the namespace fold does not model
     /// ([`FileContributions::namespace_opens`]).

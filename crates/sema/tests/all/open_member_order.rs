@@ -36,6 +36,19 @@ use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_fil
 /// the last file, and FCS must bind it to the last occurrence of `want` in
 /// file `want_file`. We must name the same declaration, or nothing.
 fn assert_open_binds(label: &str, files: &[&str], probe: &str, want_file: usize, want: &str) {
+    assert_fcs_graded_bind(label, files, probe, want_file, want, false);
+}
+
+/// As [`assert_open_binds`], and with `must_commit` we must name the
+/// declaration: a decline fails too.
+pub(crate) fn assert_fcs_graded_bind(
+    label: &str,
+    files: &[&str],
+    probe: &str,
+    want_file: usize,
+    want: &str,
+    must_commit: bool,
+) {
     let paths: Vec<PathBuf> = files
         .iter()
         .enumerate()
@@ -86,16 +99,21 @@ fn assert_open_binds(label: &str, files: &[&str], probe: &str, want_file: usize,
         .collect();
     let proj = resolve_project(&impls, &AssemblyEnv::default());
     let ours = proj.file(last).resolution_at(span);
-    if let Some(res) = ours
-        && let Some((file, def)) = proj
-            .item_def(res)
+    let named = ours.and_then(|res| {
+        proj.item_def(res)
             .or_else(|| proj.file(last).resolved_def(res).map(|d| (last, d)))
-    {
-        assert_eq!(
-            (file, usize::from(def.range.start())),
+            .map(|(file, def)| (res, file, usize::from(def.range.start())))
+    });
+    match named {
+        Some((res, file, start)) => assert_eq!(
+            (file, start),
             (fcs_file, decl.start),
             "{label}: we bind a different declaration from FCS ({res:?})"
-        );
+        ),
+        None => assert!(
+            !must_commit,
+            "{label}: we decline where FCS binds {want:?} ({ours:?})"
+        ),
     }
 }
 

@@ -388,12 +388,7 @@ const ROWS: &[Row] = &[
               module A =\n    type T = Some of int | Nope\n\
               module Use =\n    let a = Some 1\n    let b = None\n",
         probes: &[
-            defer(
-                "Some",
-                1,
-                "proj:UcR13.A.T.Some:unioncase",
-                "the walk does not fold a same-file auto-open module's cases",
-            ),
+            commit("Some", 1, "proj:UcR13.A.T.Some:unioncase"),
             commit("None", 0, NONE),
         ],
     },
@@ -406,12 +401,7 @@ const ROWS: &[Row] = &[
               module A =\n    type T = Circle of int | Square\n\
               module Use =\n    let a = Circle 1\n    let b = Empty\n",
         probes: &[
-            defer(
-                "Circle",
-                1,
-                "proj:UcR13b.A.T.Circle:unioncase",
-                "the walk does not fold a same-file auto-open module's cases",
-            ),
+            commit("Circle", 1, "proj:UcR13b.A.T.Circle:unioncase"),
             commit(
                 "Empty",
                 0,
@@ -457,12 +447,7 @@ const ROWS: &[Row] = &[
               module A =\n    exception Error of string\n\
               module Use =\n    let a = Error \"x\"\n    let b = Ok 1\n",
         probes: &[
-            defer(
-                "Error",
-                1,
-                "proj:UcR13i.A.Error:type",
-                "the walk does not fold a same-file auto-open module's exceptions",
-            ),
+            commit("Error", 1, "proj:UcR13i.A.Error:type"),
             commit("Ok", 0, OK),
         ],
     },
@@ -654,24 +639,9 @@ const ROWS: &[Row] = &[
         src: "namespace UcTable.AoUnion\n\
               module Use =\n    let f x = match x with Some v -> v | None -> 0\n    let a = Some 1\n",
         probes: &[
-            defer(
-                "Some",
-                0,
-                "proj:UcTable.AoUnion.A.U.Some:unioncase",
-                "the enclosing-namespace fold withdraws the earlier file's case",
-            ),
-            defer(
-                "None",
-                0,
-                "proj:UcTable.AoUnion.A.U.None:unioncase",
-                "the enclosing-namespace fold withdraws the earlier file's case",
-            ),
-            defer(
-                "Some",
-                1,
-                "proj:UcTable.AoUnion.A.U.Some:unioncase",
-                "the enclosing-namespace fold withdraws the earlier file's case",
-            ),
+            commit("Some", 0, "proj:UcTable.AoUnion.A.U.Some:unioncase"),
+            commit("None", 0, "proj:UcTable.AoUnion.A.U.None:unioncase"),
+            commit("Some", 1, "proj:UcTable.AoUnion.A.U.Some:unioncase"),
         ],
     },
     Row {
@@ -1442,12 +1412,7 @@ const RECOVERED: &[Row] = &[
               module A =\n    type T = Ok of int | \n\
               module Use =\n    let a = Ok 1\n    let b = Some 2\n",
         probes: &[
-            defer(
-                "Ok",
-                1,
-                "proj:UcX05.A.T.Ok:unioncase",
-                "the walk does not fold a same-file auto-open module's cases",
-            ),
+            commit("Ok", 1, "proj:UcX05.A.T.Ok:unioncase"),
             commit("Some", 0, SOME),
         ],
     },

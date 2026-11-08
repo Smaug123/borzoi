@@ -470,6 +470,12 @@ enum Place {
     AutoOpenModule,
     /// `module Other =` holding the decl, then `open Other`, probed below.
     Opened,
+    /// `[<AutoOpen>] module Wrap = module Child =` holding the decl, then
+    /// `open Child` by its short name, probed below. FCS enters a folded
+    /// module's nested modules under their short names, so the decl takes the
+    /// name from everything in scope; a project auto-open module lends no
+    /// shortening prefix, so the walk must not answer from what it replaces.
+    ShortOpened,
     /// `module rec AfterRec =` probed **before** its own decl.
     RecForward,
     /// `module rec AfterRec =` probed after its own decl.
@@ -486,6 +492,7 @@ impl Place {
         Place::Nested,
         Place::AutoOpenModule,
         Place::Opened,
+        Place::ShortOpened,
         Place::RecForward,
         Place::RecBackward,
         Place::AndGroup,
@@ -497,6 +504,7 @@ impl Place {
             Place::Nested => "nested",
             Place::AutoOpenModule => "auto-open-module",
             Place::Opened => "opened",
+            Place::ShortOpened => "short-opened",
             Place::RecForward => "rec-forward",
             Place::RecBackward => "rec-backward",
             Place::AndGroup => "and-group",
@@ -577,6 +585,14 @@ impl Follower {
                 src.push_str(&format!("module Other{n} =\n    let anchor{n} = 0\n\n"));
                 decl(src, "    ");
                 src.push_str(&format!("open Other{n}\n\n"));
+                push_probes(src, "")
+            }
+            Place::ShortOpened => {
+                src.push_str(&format!(
+                    "[<AutoOpen>]\nmodule Wrap{n} =\n    module Child{n} =\n        let anchor{n} = 0\n\n"
+                ));
+                decl(src, "        ");
+                src.push_str(&format!("open Child{n}\n\n"));
                 push_probes(src, "")
             }
             Place::RecForward => {
@@ -731,12 +747,12 @@ impl Channel {
     ];
 
     /// The channels the follower grid crosses: every way a member reaches the
-    /// block, the no-fold controls included — except the two that `open` a
-    /// module holding the fragment, which reach its members only as declines,
-    /// so no follower can make them commit anything.
-    /// The pair grid keeps them.
+    /// block, the no-fold controls included.
     const FOLLOWED: &'static [Channel] = &[
         Channel::FoldBack,
+        Channel::OpenSameFile,
+        Channel::OpenCrossFile,
+        Channel::NamespaceCrossFile,
         Channel::NamespaceImplicit,
         Channel::Inline,
         Channel::OpenPlain,
@@ -837,7 +853,14 @@ fn cells(channels: &[Channel]) -> Vec<Cell> {
     for &channel in channels {
         for members in &sequences {
             let n = out.len();
-            out.push(build_cell(channel, n, members, None));
+            out.push(build_cell(channel, n, members, None, false));
+        }
+        // Each shape alone again, after an opaque `open`: what it hides
+        // still sits below the fold, which shadows the enclosing binding
+        // whether or not the walk can see what the fold brings.
+        for members in sequences.iter().filter(|m| m.len() == 1) {
+            let n = out.len();
+            out.push(build_cell(channel, n, members, None, true));
         }
     }
     out
@@ -880,19 +903,33 @@ fn follower_cells(channels: &[Channel], first: usize) -> Vec<Cell> {
                     continue;
                 }
                 let n = first + out.len();
-                out.push(build_cell(channel, n, &[shape], Some(follower)));
+                out.push(build_cell(channel, n, &[shape], Some(follower), false));
             }
         }
     }
     out
 }
 
-fn build_cell(channel: Channel, n: usize, members: &[Shape], follower: Option<Follower>) -> Cell {
+/// One cell of `members` in `channel`, numbered `n`. `opaque_open` writes
+/// an `open type` of a project class, whose names the walk cannot list, ahead
+/// of the enclosing binding.
+fn build_cell(
+    channel: Channel,
+    n: usize,
+    members: &[Shape],
+    follower: Option<Follower>,
+    opaque_open: bool,
+) -> Cell {
     let label = members
         .iter()
         .map(|s| s.tag())
         .collect::<Vec<_>>()
         .join(" ; ");
+    let label = if opaque_open {
+        format!("after opaque open: {label}")
+    } else {
+        label
+    };
 
     // The fragment's members at `indent`, and the fragment itself.
     let member_lines = |indent: &str| {
@@ -922,10 +959,15 @@ fn build_cell(channel: Channel, n: usize, members: &[Shape], follower: Option<Fo
     // A follower cell writes none: the contest it asks about is between the
     // fold and what follows it, so what the follower takes the name from is the
     // fold's member alone.
-    let enclosing = if follower.is_some() {
-        String::new()
+    let opaque = if opaque_open {
+        format!("type OpaqueT{n}() =\n    class end\n\nopen type OpaqueT{n}\n\n")
     } else {
-        format!("let {NAME} = 99\n\n")
+        String::new()
+    };
+    let enclosing = if follower.is_some() {
+        opaque
+    } else {
+        format!("{opaque}let {NAME} = 99\n\n")
     };
     let (mut files, mut src) = match channel {
         Channel::FoldBack => (
@@ -1500,10 +1542,13 @@ fn resolve_cell(cell: &Cell) -> ResolvedCell {
 /// **A member that is not in scope cannot change what is.**
 ///
 /// Append an inaccessible declaration to each cell's fragment and the probe must
-/// resolve exactly as before — same variant, same target range. `private` at the
-/// fragment's own level means the member never reaches the enclosing block, so
-/// its only possible effect is on machinery that scans the fragment *without*
-/// applying the accessibility test the fold itself applies.
+/// resolve exactly as before — same variant, same target range — or decline.
+/// `private` at the fragment's own level means the member never reaches the
+/// enclosing block, so its only possible effect is on machinery that scans the
+/// fragment *without* applying the accessibility test the fold itself applies.
+/// A target that moves fails; a decline is that machinery's availability
+/// cost, pinned per probe in the exact manifest
+/// `tests/manifests/auto_open_member_sweep_inaccessible.txt`.
 ///
 /// This is the sweep's answer to its own arity. The grid above is pairwise, and
 /// the first defect of exactly this shape took **three** members to build — an
@@ -1575,12 +1620,17 @@ fn an_inaccessible_member_does_not_change_any_cell() {
     );
 
     // A loss is a decline the invisible member caused: no wrong target, but
-    // machinery that counted a member the fold itself filters out.
-    assert!(
-        losses.is_empty(),
-        "{} probes decline only because an out-of-scope member was added:\n  {}",
-        losses.len(),
-        losses.join("\n  ")
+    // machinery that counted a member the fold itself filters out. The marks
+    // a fold pushes for what it does not model and the bar-less case
+    // declines are blind to access, so each loss is pinned.
+    let manifest = Manifest::from_entries(losses.into_iter().map(|l| format!("{l} loss")))
+        .unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    borzoi_oracle_harness::manifest::check(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/manifests/auto_open_member_sweep_inaccessible.txt"),
+        &manifest,
+        "BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all \
+         auto_open_member_sweep::an_inaccessible_member_does_not_change_any_cell",
     );
 }
 
@@ -1631,8 +1681,8 @@ fn an_ordinary_value_moves_no_pattern_probe() {
         for members in &sequences {
             let mut with_value = members.clone();
             with_value.push(value);
-            let before = build_cell(channel, 0, members, None);
-            let after = build_cell(channel, 0, &with_value, None);
+            let before = build_cell(channel, 0, members, None, false);
+            let after = build_cell(channel, 0, &with_value, None, false);
             let (resolved_before, resolved_after) = (resolve_cell(&before), resolve_cell(&after));
             for ((probe, span_before), (_, span_after)) in before.probes.iter().zip(&after.probes) {
                 if *probe != Probe::Pattern {
