@@ -58,6 +58,22 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     state
         .semantic
         .set_on_demand_restore_enabled(enable_on_demand_restore);
+    // Workspace-trust opt-in, separate from restore: reading a C#
+    // `<ProjectReference>` through the C# sidecar runs a design-time build of
+    // the referenced project, which executes its MSBuild targets and loads its
+    // analyzers and source generators, so only a host that trusts the
+    // workspace should set `enableCSharpProjectReferences: true`. Without it,
+    // each C# reference is unread and the project's assembly env is marked
+    // incomplete.
+    let enable_csharp_project_references = init_params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.get("enableCSharpProjectReferences"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    state
+        .semantic
+        .set_csharp_project_references_enabled(enable_csharp_project_references);
     state.set_client_capabilities(client_capabilities);
 
     borzoi::server::run(connection, state)?;

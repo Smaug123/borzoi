@@ -60,6 +60,7 @@ impl LspClient {
         let thread = thread::spawn(move || {
             let mut state = State::new();
             state.workspace = workspace();
+            state.semantic = crate::corpus_semantic_state();
             state.set_client_capabilities(capabilities);
             run_with_fetcher(server, state, None).expect("the server loop ends cleanly");
         });
