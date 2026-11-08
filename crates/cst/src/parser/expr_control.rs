@@ -74,25 +74,11 @@ impl<'src> Parser<'src> {
             });
         }
 
-        // `Virtual::Then` — the rewrite of raw `Token::Then`. Same
-        // mechanics as `Virtual::Let` (LexFilter shares the
-        // raw-still-at-raw_pos invariant): drain trivia to the virtual's
-        // start, emit the raw text as `THEN_TOK`, advance both cursors.
-        // Going through `bump_into` would drain the raw as ERROR (no
-        // `trivia_kind` matches) before reaching the virtual.
-        if let Some((Ok(FilteredToken::Virtual(Virtual::Then)), then_span)) = self.peek().cloned() {
-            self.drain_raw_up_to(then_span.start);
-            debug_assert!(
-                matches!(
-                    self.raw_tokens.get(self.raw_pos),
-                    Some((Ok(TriviaToken::Lexed(Token::Then)), s)) if *s == then_span,
-                ),
-                "Virtual::Then must be backed by a raw Token::Then at raw_pos with matching span"
-            );
-            self.emit_text(SyntaxKind::THEN_TOK, then_span);
-            self.raw_pos += 1;
-            self.pos += 1;
-        } else {
+        // `then` — LexFilter's `OTHEN` relabel, or a raw `THEN` where no
+        // offside context was pushed (FCS's `ifExprThen: THEN declExpr`; see
+        // [`DualKeyword`]). Either way the keyword's text is emitted as
+        // `THEN_TOK`.
+        let Some(then_form) = self.bump_dual_keyword(DualKeyword::Then) else {
             let span = self
                 .peek()
                 .map(|(_, s)| s.clone())
@@ -103,7 +89,7 @@ impl<'src> Parser<'src> {
             });
             self.builder.finish_node();
             return;
-        }
+        };
 
         // `Virtual::BlockBegin` anchors the then-body's offside block
         // (LexFilter pushes a SeqBlock with `AddBlockEnd::Yes`). Consume
@@ -124,7 +110,7 @@ impl<'src> Parser<'src> {
         // Then-branch. `parse_if_body` handles single- and multi-
         // statement bodies (the latter wrapped in `SEQUENTIAL_EXPR`) and
         // releases exactly the BlockEnd we opened.
-        self.parse_if_body("then", opened_then_block);
+        self.parse_if_branch_body("then", then_form, opened_then_block);
 
         // Continuation. Three cases:
         //
@@ -153,18 +139,8 @@ impl<'src> Parser<'src> {
         //   [`IfThenElseExpr::else_branch`] surfaces as `None`
         //   (FCS's `SynExpr.IfThenElse.elseExpr = None`).
         match self.peek().cloned() {
-            Some((Ok(FilteredToken::Virtual(Virtual::Else)), else_span)) => {
-                self.drain_raw_up_to(else_span.start);
-                debug_assert!(
-                    matches!(
-                        self.raw_tokens.get(self.raw_pos),
-                        Some((Ok(TriviaToken::Lexed(Token::Else)), s)) if *s == else_span,
-                    ),
-                    "Virtual::Else must be backed by a raw Token::Else at raw_pos with matching span"
-                );
-                self.emit_text(SyntaxKind::ELSE_TOK, else_span);
-                self.raw_pos += 1;
-                self.pos += 1;
+            Some((Ok(tok), _)) if DualKeyword::Else.form_of(&tok).is_some() => {
+                let else_form = self.bump_dual_keyword(DualKeyword::Else);
 
                 let opened_else_block = matches!(
                     self.peek(),
@@ -173,7 +149,8 @@ impl<'src> Parser<'src> {
                 if opened_else_block {
                     self.bump_into(SyntaxKind::ERROR);
                 }
-                self.parse_if_body("else", opened_else_block);
+                let else_form = else_form.expect("the arm's guard matched an `else`");
+                self.parse_if_branch_body("else", else_form, opened_else_block);
             }
             Some((Ok(FilteredToken::Raw(Token::Elif)), elif_span)) => {
                 // Bare `elif` vs merged `else if` (LexFilter rewrote both
@@ -284,6 +261,36 @@ impl<'src> Parser<'src> {
         self.builder.finish_node(); // IF_THEN_ELSE_EXPR
     }
 
+    /// The body of an `if`'s `then` or `else` branch, after the keyword (in
+    /// `form`) and any offside `OBLOCKBEGIN` (`has_block`).
+    ///
+    /// The offside spellings take a block (`OTHEN typedSequentialExprBlock`,
+    /// `OELSE typedSequentialExprBlock`), gathered by [`Self::parse_if_body`].
+    /// The raw spellings take a bare `declExpr` (`THEN declExpr`, `ELSE
+    /// declExpr`), which ends before a `;`, a `then` separator or a `: T`
+    /// annotation: those belong to the enclosing sequence, so `if c then a; b`
+    /// is `Sequential(IfThenElse(c, a), b)`.
+    fn parse_if_branch_body(&mut self, branch: &str, form: KeywordForm, has_block: bool) {
+        match form {
+            KeywordForm::Offside => self.parse_if_body(branch, has_block),
+            KeywordForm::Raw => {
+                debug_assert!(!has_block, "a raw `{branch}` opens no offside block");
+                if self.peek_is_expr_start() {
+                    self.parse_expr();
+                } else {
+                    let span = self
+                        .peek()
+                        .map(|(_, s)| s.clone())
+                        .unwrap_or_else(|| self.source.len()..self.source.len());
+                    self.errors.push(ParseError {
+                        message: format!("expected expression after `{branch}`"),
+                        span,
+                    });
+                }
+            }
+        }
+    }
+
     /// `pars.fsy:4318 FUN atomicPatterns RARROW typedSeqExprBlockR` —
     /// the `fun <pat>+ -> <body>` lambda form. Phase 5.2 covers the
     /// single-arrow shape with one or more atomic argument patterns
@@ -306,34 +313,21 @@ impl<'src> Parser<'src> {
     /// `CtxtFun` then emits [`Virtual::End`]. Both trail the body and
     /// are drained as zero-width ERROR tokens before this node closes.
     ///
-    /// Caller must have already verified that `peek()` returns
-    /// `FilteredToken::Virtual(Virtual::Fun)`.
+    /// A raw `FUN` (where LexFilter pushed no `CtxtFun`, see [`DualKeyword`])
+    /// takes the same path, minus the trailing close: nothing was pushed, so
+    /// nothing pops.
+    ///
+    /// Caller must have already verified that `peek()` is a `fun` in either
+    /// spelling ([`DualKeyword::lambda_head`]).
     pub(super) fn parse_fun_expr(&mut self) {
-        let fun_span = self
-            .peek()
-            .map(|(_, s)| s.clone())
-            .expect("parse_fun_expr invoked without a peeked Virtual::Fun");
-
         self.builder
             .start_node(FSharpLang::kind_to_raw(SyntaxKind::FUN_EXPR));
 
-        // `Virtual::Fun` is LexFilter's rewrite of the raw `Token::Fun`
-        // (LexFilter.fs:2532). Same emission pattern as `Virtual::Let`
-        // / `Virtual::Then`: the raw still sits at `raw_pos` with the
-        // same span as the virtual, so drain leading trivia (into the
-        // node), assert the raw match, emit `FUN_TOK` directly, and
-        // advance both cursors.
-        self.drain_raw_up_to(fun_span.start);
-        debug_assert!(
-            matches!(
-                self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::Fun)), s)) if *s == fun_span,
-            ),
-            "Virtual::Fun must be backed by a raw Token::Fun at raw_pos with matching span"
-        );
-        self.emit_text(SyntaxKind::FUN_TOK, fun_span);
-        self.raw_pos += 1;
-        self.pos += 1;
+        // `fun` — LexFilter's `OFUN` relabel (LexFilter.fs:2532), or a raw
+        // `FUN` where no `CtxtFun` was pushed (see [`DualKeyword`]).
+        let form = self
+            .bump_dual_keyword(DualKeyword::Fun)
+            .expect("parse_fun_expr invoked without a peeked `fun`");
 
         // Argument patterns. FCS's grammar is `FUN atomicPatterns
         // RARROW …` (pars.fsy:4318) where `atomicPatterns` is
@@ -409,6 +403,13 @@ impl<'src> Parser<'src> {
         // the first statement plus each same-indent `Virtual::BlockSep`
         // continuation, wrapped in `SEQUENTIAL_EXPR` when more than one.
         self.parse_seq_block_body("expected expression after `->`");
+
+        // A raw `fun` pushed no `CtxtFun`, so nothing closes it: FCS's
+        // `FUN atomicPatterns RARROW typedSequentialExprBlock` ends with the body.
+        if form == KeywordForm::Raw {
+            self.builder.finish_node(); // FUN_EXPR
+            return;
+        }
 
         // Drain the trailing scaffolding for *this* lambda only: the
         // `->` pushed a one-sided SeqBlock, which closes with
@@ -549,11 +550,9 @@ impl<'src> Parser<'src> {
         // error itself.
         self.parse_seq_block_body(&format!("expected expression after `{keyword}`"));
 
-        // `with` keyword. `Virtual::With` is LexFilter's `OWITH` relabel of
-        // the raw `Token::With` at the same span — emit the keyword and
-        // advance both cursors (the `FUN_TOK` pattern).
-        let Some((Ok(FilteredToken::Virtual(Virtual::With)), with_span)) = self.peek().cloned()
-        else {
+        // `with` keyword — LexFilter's `OWITH` relabel, or a raw `WITH` where
+        // no `CtxtMatchClauses` was pushed (see [`DualKeyword`]).
+        let Some(form) = self.bump_dual_keyword(DualKeyword::With) else {
             let span = self
                 .peek()
                 .map(|(_, s)| s.clone())
@@ -565,20 +564,9 @@ impl<'src> Parser<'src> {
             self.builder.finish_node(); // node_kind
             return;
         };
-        self.drain_raw_up_to(with_span.start);
-        debug_assert!(
-            matches!(
-                self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::With)), s)) if *s == with_span,
-            ),
-            "Virtual::With must be backed by a raw Token::With at raw_pos with matching span"
-        );
-        self.emit_text(SyntaxKind::WITH_TOK, with_span);
-        self.raw_pos += 1;
-        self.pos += 1;
 
         // Clause list (FCS's `patternClauses`), shared with `function …`.
-        self.parse_match_clauses();
+        self.parse_match_clauses(form);
 
         self.builder.finish_node(); // node_kind
     }
@@ -588,6 +576,10 @@ impl<'src> Parser<'src> {
     /// cursor sits at the first clause's optional leading `|` (or its
     /// pattern); on exit it has drained the trailing `CtxtMatchClauses`
     /// close (`Virtual::End`).
+    ///
+    /// `opener` is the spelling of the keyword that opened the list (`with` or
+    /// `function`): only an offside opener pushed the `CtxtMatchClauses` whose
+    /// close this drains.
     ///
     /// The caller owns the enclosing node ([`SyntaxKind::MATCH_EXPR`] or
     /// [`SyntaxKind::MATCH_LAMBDA_EXPR`]) and must `finish_node()` it after
@@ -616,7 +608,7 @@ impl<'src> Parser<'src> {
     /// continuation check handles both. Each clause owns its leading
     /// `BAR_TOK` (clause 1's is the optional leading bar; later clauses'
     /// is the separator), mirroring FCS's per-clause `BarRange`.
-    pub(super) fn parse_match_clauses(&mut self) {
+    pub(super) fn parse_match_clauses(&mut self, opener: KeywordForm) {
         loop {
             self.builder
                 .start_node(FSharpLang::kind_to_raw(SyntaxKind::MATCH_CLAUSE));
@@ -735,6 +727,13 @@ impl<'src> Parser<'src> {
             break;
         }
 
+        // A raw opener (`WITH`/`FUNCTION`) pushed no `CtxtMatchClauses`, so
+        // nothing closes the list: FCS's `WITH withPatternClauses` ends with the
+        // last clause.
+        if opener == KeywordForm::Raw {
+            return;
+        }
+
         // Drain the `CtxtMatchClauses` close (zero-width). Exactly one —
         // see the doc comment.
         match self.peek() {
@@ -841,12 +840,10 @@ impl<'src> Parser<'src> {
             return;
         }
 
-        // `with` keyword. `Virtual::With` is LexFilter's `OWITH` relabel of the
-        // raw `Token::With` at the same span — emit the keyword and advance both
-        // cursors (the `FUN_TOK`/`WITH_TOK` pattern). A missing handler bails
-        // cleanly without a panic.
-        let Some((Ok(FilteredToken::Virtual(Virtual::With)), with_span)) = self.peek().cloned()
-        else {
+        // `with` keyword — LexFilter's `OWITH` relabel, or a raw `WITH` where
+        // no `CtxtMatchClauses` was pushed (see [`DualKeyword`]). A missing
+        // handler bails cleanly without a panic.
+        let Some(form) = self.bump_dual_keyword(DualKeyword::With) else {
             let span = self
                 .peek()
                 .map(|(_, s)| s.clone())
@@ -858,20 +855,9 @@ impl<'src> Parser<'src> {
             self.builder.finish_node(); // TRY_EXPR
             return;
         };
-        self.drain_raw_up_to(with_span.start);
-        debug_assert!(
-            matches!(
-                self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::With)), s)) if *s == with_span,
-            ),
-            "Virtual::With must be backed by a raw Token::With at raw_pos with matching span"
-        );
-        self.emit_text(SyntaxKind::WITH_TOK, with_span);
-        self.raw_pos += 1;
-        self.pos += 1;
 
         // Clause list (FCS's `withClauses`), shared verbatim with `match … with`.
-        self.parse_match_clauses();
+        self.parse_match_clauses(form);
 
         self.builder.finish_node(); // TRY_EXPR
     }
@@ -892,35 +878,23 @@ impl<'src> Parser<'src> {
     /// pattern as [`Parser::parse_fun_expr`]'s `FUN_TOK` / `parse_match_expr`'s
     /// `WITH_TOK`.
     ///
-    /// Precondition: the next non-trivia filtered token is
-    /// `FilteredToken::Virtual(Virtual::Function)`.
+    /// A raw `FUNCTION` (no `CtxtFunction` pushed, see [`DualKeyword`]) has no
+    /// trailing close for [`Parser::parse_match_clauses`] to drain.
+    ///
+    /// Precondition: the next non-trivia filtered token is a `function` in
+    /// either spelling ([`DualKeyword::lambda_head`]).
     pub(super) fn parse_function_expr(&mut self) {
-        let fn_span = self
-            .peek()
-            .map(|(_, s)| s.clone())
-            .expect("parse_function_expr invoked without a peeked Virtual::Function");
-
         self.builder
             .start_node(FSharpLang::kind_to_raw(SyntaxKind::MATCH_LAMBDA_EXPR));
 
-        // `Virtual::Function` is LexFilter's `OFUNCTION` relabel of the raw
-        // `Token::Function` at the same span (the `FUN_TOK` / `WITH_TOK`
-        // pattern): drain leading trivia into the node, assert the raw
-        // match, emit `FUNCTION_TOK` directly, and advance both cursors.
-        self.drain_raw_up_to(fn_span.start);
-        debug_assert!(
-            matches!(
-                self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::Function)), s)) if *s == fn_span,
-            ),
-            "Virtual::Function must be backed by a raw Token::Function at raw_pos with matching span"
-        );
-        self.emit_text(SyntaxKind::FUNCTION_TOK, fn_span);
-        self.raw_pos += 1;
-        self.pos += 1;
+        // `function` — LexFilter's `OFUNCTION` relabel, or a raw `FUNCTION`
+        // where no `CtxtFunction` was pushed (see [`DualKeyword`]).
+        let form = self
+            .bump_dual_keyword(DualKeyword::Function)
+            .expect("parse_function_expr invoked without a peeked `function`");
 
         // Clause list (FCS's `patternClauses`), shared with `match`.
-        self.parse_match_clauses();
+        self.parse_match_clauses(form);
 
         self.builder.finish_node(); // MATCH_LAMBDA_EXPR
     }
@@ -1227,14 +1201,15 @@ impl<'src> Parser<'src> {
         self.builder.finish_node(); // FOR_EXPR
     }
 
-    /// Claim the `Virtual::Do` keyword (→ [`SyntaxKind::DO_TOK`]) and parse the
-    /// SeqBlock body of a `do`-block loop (`while`/`while!`/`for`).
-    /// `Virtual::Do` is LexFilter's `ODO` relabel of the raw `Token::Do` at the
-    /// same span — emit `DO_TOK` and advance both cursors (the `WITH_TOK`
-    /// pattern). On a missing `do`, push a diagnostic and return without
-    /// consuming a body; the caller's enclosing `finish_node` runs regardless.
+    /// Claim the `do` keyword (→ [`SyntaxKind::DO_TOK`]) and parse the body of
+    /// a `do`-block loop (`while`/`while!`/`for`). The `do` is LexFilter's `ODO`
+    /// relabel ([`Virtual::Do`]), whose body is a SeqBlock closed by an offside
+    /// `ODECLEND` or a `done`; or a raw `DO` (see [`DualKeyword`]), whose body
+    /// must end with a raw `done`. On a missing `do`, push a diagnostic and
+    /// return without consuming a body; the caller's enclosing `finish_node`
+    /// runs regardless.
     fn parse_do_block_body(&mut self, keyword: &str) {
-        let Some((Ok(FilteredToken::Virtual(Virtual::Do)), do_span)) = self.peek().cloned() else {
+        let Some(form) = self.bump_dual_keyword(DualKeyword::Do) else {
             let span = self
                 .peek()
                 .map(|(_, s)| s.clone())
@@ -1245,19 +1220,31 @@ impl<'src> Parser<'src> {
             });
             return;
         };
-        self.drain_raw_up_to(do_span.start);
-        debug_assert!(
-            matches!(
-                self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::Do)), s)) if *s == do_span,
-            ),
-            "Virtual::Do must be backed by a raw Token::Do at raw_pos with matching span"
-        );
-        self.emit_text(SyntaxKind::DO_TOK, do_span);
-        self.raw_pos += 1;
-        self.pos += 1;
 
-        self.parse_block_body_after_keyword(keyword);
+        match form {
+            KeywordForm::Offside => self.parse_block_body_after_keyword(keyword),
+            // A raw `DO` (no `CtxtDo` pushed, see [`DualKeyword`]) takes FCS's
+            // verbose form, `doToken typedSequentialExprBlock doneDeclEnd`, with
+            // no offside close to stand in for the `done`: the raw `DONE` is
+            // required.
+            KeywordForm::Raw => {
+                self.parse_seq_block_body(&format!(
+                    "expected expression after `do` in `{keyword}`"
+                ));
+                if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Done)), _))) {
+                    self.bump_into(SyntaxKind::DONE_TOK);
+                } else {
+                    let span = self
+                        .peek()
+                        .map(|(_, s)| s.clone())
+                        .unwrap_or_else(|| self.source.len()..self.source.len());
+                    self.errors.push(ParseError {
+                        message: format!("expected `done` to close the `{keyword}` loop"),
+                        span,
+                    });
+                }
+            }
+        }
     }
 
     /// Parse a *regular* offside block body (`Virtual::BlockBegin` … body …

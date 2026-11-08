@@ -465,7 +465,10 @@ impl<'src> Parser<'src> {
                         (Sep::Offside, span.clone())
                     }
                     Some((Ok(FilteredToken::Raw(Token::Semi)), span)) => (Sep::Semi, span.clone()),
-                    Some((Ok(FilteredToken::Virtual(Virtual::Then)), span)) => {
+                    // `then` in either spelling: FCS's `sequentialExpr` has both
+                    // `declExpr OTHEN OBLOCKBEGIN …` and `declExpr THEN
+                    // sequentialExpr` (see [`DualKeyword`]).
+                    Some((Ok(tok), span)) if DualKeyword::Then.form_of(tok).is_some() => {
                         (Sep::Then, span.clone())
                     }
                     _ => break,
@@ -496,17 +499,16 @@ impl<'src> Parser<'src> {
                     // constructors (`T(x) then this.P <- 1`) and any statement
                     // position. LexFilter relabels `then` to `Virtual::Then`
                     // (backed by a real `Token::Then`) and wraps the RHS in its own
-                    // offside block. Emit the `then` as a `THEN_TOK` (the
-                    // `parse_do_bang` idiom), consume the RHS block's `OBLOCKBEGIN`
-                    // zero-width, and record the open block so its matching
-                    // `OBLOCKEND` is drained after the RHS statements — the RHS
-                    // statements then join *this* flat sequence, matching the
-                    // normaliser's flattening of FCS's right-leaning `Sequential`.
+                    // offside block. Emit the `then` as a `THEN_TOK`, consume the
+                    // RHS block's `OBLOCKBEGIN` zero-width, and record the open
+                    // block so its matching `OBLOCKEND` is drained after the RHS
+                    // statements — the RHS statements then join *this* flat
+                    // sequence, matching the normaliser's flattening of FCS's
+                    // right-leaning `Sequential`. A raw `THEN` (`declExpr THEN
+                    // sequentialExpr`) opens no block, so its RHS statements join
+                    // the sequence directly.
                     Sep::Then => {
-                        self.drain_raw_up_to(span.start);
-                        self.emit_text(SyntaxKind::THEN_TOK, span);
-                        self.raw_pos += 1;
-                        self.pos += 1;
+                        self.bump_dual_keyword(DualKeyword::Then);
                         if matches!(
                             self.peek(),
                             Some((Ok(FilteredToken::Virtual(Virtual::BlockBegin)), _))
@@ -1421,14 +1423,13 @@ impl<'src> Parser<'src> {
             // infix `^` the Pratt loop owns, never reaching this head gate. Kept
             // out of `peek_starts_app_arg`, so `f ^1` stays infix.
             Some((Ok(FilteredToken::Raw(Token::Op("^"))), _)) => true,
-            // `Virtual::Fun` is LexFilter's rewrite of `Token::Fun`. The
-            // raw `Token::Fun` is in `raw_starts_minus_expr`, but the
-            // filtered stream only ever surfaces the virtual at this
-            // position (LexFilter's `pushCtxt CtxtFun`), so the raw arm
-            // above would never fire for `fun`. Recognise it here so
-            // `fun … -> …` is an expression starter at file top, in
-            // tuple elements, in paren bodies, etc.
-            Some((Ok(FilteredToken::Virtual(Virtual::Fun)), _)) => true,
+            // A lambda head: `fun`/`function` in either spelling — LexFilter's
+            // `OFUN`/`OFUNCTION` relabel, or the raw keyword where it pushed no
+            // context (see [`DualKeyword`]). Classified by the same
+            // [`DualKeyword::lambda_head`] that `parse_minus_expr` dispatches
+            // on, so the gate and the dispatch agree by construction. Admits
+            // `fun … -> …` at file top, in tuple elements, in paren bodies, etc.
+            Some((Ok(tok), _)) if DualKeyword::lambda_head(tok).is_some() => true,
             // `Virtual::DoBang` — LexFilter's rewrite of `Token::DoBang`.
             // Like `fun`, the filtered stream only surfaces the virtual, so
             // recognise it here (`do! e` is an expression-start in a CE body,
@@ -1472,13 +1473,6 @@ impl<'src> Parser<'src> {
             // — FCS relabels a non-block `use … in` to `Let`; see the
             // `parse_minus_expr` dispatch note.)
             Some((Ok(FilteredToken::Raw(Token::Let)), _)) => true,
-            // `Virtual::Function` (`OFUNCTION`) — LexFilter's rewrite of
-            // `Token::Function`. Recognised here for the same reason as
-            // `Virtual::Fun`: the filtered stream only ever surfaces the
-            // virtual, so `function … -> …` must be classified as an
-            // expression starter at file top, on a `let` RHS, in tuple
-            // elements, in paren bodies, etc.
-            Some((Ok(FilteredToken::Virtual(Virtual::Function)), _)) => true,
             // `Virtual::Lazy`/`Virtual::Assert` (`OLAZY`/`OASSERT`) — LexFilter's
             // rewrite of an offside/control-flow `lazy`/`assert`. Only the virtual
             // surfaces for that form, so recognise it as an expression starter

@@ -49,6 +49,7 @@ use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
 };
 use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode, kind_interval};
+use dual_keyword::{DualKeyword, KeywordForm};
 
 /// FCS's `parsAugmentationsIllegalOnDelegateType` (`FSComp.txt:545`) — a
 /// delegate type definition (`type T = delegate of …`) admits no augmentation,
@@ -127,6 +128,7 @@ mod decls_recover;
 mod decls_repr;
 mod decls_sig;
 mod decls_type;
+mod dual_keyword;
 mod escapes;
 mod expr;
 mod expr_app;

@@ -59,21 +59,33 @@ impl<'src> Parser<'src> {
             self.parse_if_then_else();
             return;
         }
-        // `fun <pat>+ -> <body>` — `Virtual::Fun` is LexFilter's rewrite
-        // of `Token::Fun`. Like `if`, this dispatch lives here (not at
-        // the Pratt entry) so the prefix-operand path also intercepts
-        // it rather than falling through to atomic-level and tripping
-        // on the virtual. FCS rejects `- fun …` / `& fun …` at the
+        // `fun <pat>+ -> <body>` / `function <clauses>` — in either spelling:
+        // LexFilter's `OFUN`/`OFUNCTION` relabel, or the raw keyword where it
+        // pushed no context (see [`DualKeyword`]). Like `if`, this dispatch
+        // lives here (not at the Pratt entry) so the prefix-operand path also
+        // intercepts it rather than falling through to the atomic level's
+        // const-literal arm. The expression-start gates classify a lambda head
+        // through the same [`DualKeyword::lambda_head`], so a head they admit
+        // always reaches this arm. FCS rejects `- fun …` / `& fun …` at the
         // grammar level for the same reason `- if …` is rejected; the
         // diagnostic side would reuse `maybe_warn_keyword_after_prefix`'s
-        // pattern in a follow-up if we ever care to emit it (`fun` is a
-        // virtual, so it needs a separate arm there).
-        if matches!(
-            self.peek(),
-            Some((Ok(FilteredToken::Virtual(Virtual::Fun)), _))
-        ) {
-            self.parse_fun_expr();
-            return;
+        // pattern in a follow-up if we ever care to emit it.
+        match self.peek() {
+            Some((Ok(tok), _)) => match DualKeyword::lambda_head(tok) {
+                Some(DualKeyword::Fun) => {
+                    self.parse_fun_expr();
+                    return;
+                }
+                Some(DualKeyword::Function) => {
+                    self.parse_function_expr();
+                    return;
+                }
+                Some(
+                    DualKeyword::Then | DualKeyword::Else | DualKeyword::With | DualKeyword::Do,
+                )
+                | None => {}
+            },
+            _ => {}
         }
         // `do! e` — LexFilter rewrites raw `Token::DoBang` to
         // `Virtual::DoBang` and wraps the body in a SeqBlock
@@ -230,20 +242,9 @@ impl<'src> Parser<'src> {
             self.parse_try_expr();
             return;
         }
-        // `function <clauses>` — `Virtual::Function` is LexFilter's
-        // `OFUNCTION` relabel of `Token::Function`. Like `fun`/`match`, the
-        // dispatch lives here so the prefix-operand path also intercepts it
-        // rather than tripping at atomic level on the virtual.
-        if matches!(
-            self.peek(),
-            Some((Ok(FilteredToken::Virtual(Virtual::Function)), _))
-        ) {
-            self.parse_function_expr();
-            return;
-        }
         // `lazy`/`assert` with an offside (later-line) or control-flow operand —
         // LexFilter's `OLAZY`/`OASSERT` relabel of `Token::Lazy`/`Token::Assert`
-        // (it also pushed a SeqBlock). Dispatched here beside `Virtual::Function`
+        // (it also pushed a SeqBlock). Dispatched here beside the lambda heads
         // so the prefix-operand path intercepts it; the same-line raw forms are
         // handled in the raw-token match below. `parse_lazy_or_assert` re-emits
         // the keyword text from the virtual and parses the block operand.
@@ -1337,10 +1338,10 @@ impl<'src> Parser<'src> {
             // IndexFromEnd 1)` in FCS (the `+` operand is a `minusExpr`, which
             // `^expr` is). Mirrors the `peek_is_expr_start` arm.
             Some((Ok(FilteredToken::Raw(Token::Op("^"))), _)) => true,
-            // Virtual rewrite of `Token::Fun` — kept symmetric with the
-            // `peek_is_expr_start` arm so an infix RHS like `1 + fun x -> x`
-            // (should it ever be valid input) classifies the same way.
-            Some((Ok(FilteredToken::Virtual(Virtual::Fun)), _)) => true,
+            // A lambda head (`fun`/`function`, either spelling) — kept symmetric
+            // with the `peek_is_expr_start` arm, and classified by the same
+            // [`DualKeyword::lambda_head`] that `parse_minus_expr` dispatches on.
+            Some((Ok(tok), _)) if DualKeyword::lambda_head(tok).is_some() => true,
             // `Virtual::Let` — a *block-leading* `let … in` as the infix RHS,
             // `a &&⏎    let y = x⏎    y` (the `&&`-at-end-of-line layout, where
             // LexFilter promotes the next-line `let` to the virtual rather than
@@ -1348,9 +1349,6 @@ impl<'src> Parser<'src> {
             // `peek_is_expr_start`'s `Virtual::Let` arm; `parse_minus_expr`
             // dispatches it to `parse_let_or_use_expr`.
             Some((Ok(FilteredToken::Virtual(Virtual::Let)), _)) => true,
-            // Virtual rewrite of `Token::Function` (`OFUNCTION`) — same
-            // symmetry as `Virtual::Fun`.
-            Some((Ok(FilteredToken::Virtual(Virtual::Function)), _)) => true,
             // `Virtual::Lazy`/`Virtual::Assert` (`OLAZY`/`OASSERT`) — an
             // offside/control-flow `lazy`/`assert` as the infix/cons RHS, e.g.
             // `a ||⏎ lazy⏎ b` or `a || lazy if c then d else e`. Kept symmetric
