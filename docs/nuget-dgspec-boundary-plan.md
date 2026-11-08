@@ -1,8 +1,9 @@
 # Restore at the dgspec boundary — plan
 
 > **Status:** stages 1–5, 7a (without transitive pinning), 7b, 7c and 8 have
-> landed, and so has the
-> resolver's handling of dependency asset filters and B₁'s of `<contentFiles>`.
+> landed, and so have the
+> resolver's handling of dependency asset filters, B₁'s of `<contentFiles>`, and
+> B₁'s reading of the environment restore runs under.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions).
 > B₁ now commits on five of the six corpus projects, exactly as the restore
 > does. Supersedes slice 8 of
@@ -756,6 +757,60 @@ raises a transitive package to its central version, which changes the
 closure, and still declines. A hand case grades each shape against B₀, and
 the generator writes central package management. No corpus project uses
 it, so the census does not move.
+
+### The restore environment — landed
+
+B₁ committed a wrong closure on a well-formed input that no differential
+saw: with `NUGET_USE_LEGACY_ASSET_TARGET_FALLBACK_DEPENDENCY_RESOLUTION` set,
+restore drops the dependencies of a group chosen through the asset-target
+fallback list, and B₁ kept them. Every oracle child ran under the test
+process's environment, and B₁ read none, so the two always agreed on it.
+`restore.rs` hands `dotnet` the project's whole build environment, so the
+LSP's restore sees whatever the user has set.
+
+So `resolve_dgspec` now takes the environment `restore.rs` computes
+(`restore_environment`, which `restore.rs` itself spawns with), and every
+variable in it has a verdict (`dgspec/environment.rs`). Probing restore under
+each variable NuGet names settled them:
+
+- **Modelled: the home variables.** Restore loads `NuGet.Config` and every
+  `.config` file of `config/` in `{home}/.nuget/NuGet`, whether or not the
+  spec names them, and throws on one it cannot load. Home is
+  `DOTNET_CLI_HOME`, else `HOME`; an empty `DOTNET_CLI_HOME` is not skipped
+  (restore wrote its default config under the working folder). Valid user
+  configs naming sources, fallback folders or a packages folder moved
+  nothing, and a missing one is replaced by the default, which moved nothing
+  either. B₁ holds these files to the vocabulary it holds the spec's config
+  files to, and declines an empty, relative or absent home.
+- **Inert, each graded with a value that would expose a read:** the packages
+  and fallback folders (the SDK resolves them into the spec), the HTTP cache
+  and the credential plugins (HTTP sources only), extraction and signature
+  verification (a warm cache extracts nothing), the concurrency limit,
+  `NUGET_SHOW_STACK`, `DOTNET_HOST_PATH` and the CLI's message language.
+- **Declined:** every other `NUGET_` variable, read or not, since NuGet
+  builds some names at run time. That includes `NUGET_SCRATCH`: pointed at a
+  missing folder, it wedges restore rather than failing it.
+- **Unread:** everything else. A test scans the verified NuGet's assemblies
+  for every `NUGET_` and `DOTNET_` name they hold and fails if B₁ ignores one.
+
+What the scan cannot see is a variable NuGet reaches only through the .NET
+runtime: `HOME` (modelled) and the temporary folder, which B₁ assumes is
+writable, as it assumes the machine can run a restore at all. On Windows NuGet
+finds the user config through `APPDATA`, which is not modelled, so a Windows
+host declines.
+
+`restore_is_graded_under_every_environment_b1_admits` restores generated and
+hand specs under each admitted variable and each home layout, against an
+oracle restoring under the same environment, and requires each admitted
+variable to be graded on a committed spec. The legacy variable is in it too,
+so the sweep is seen to move restore. Removing any one part of the check
+(variables, the user config, the extra configs, the home precedence) fails it.
+Every other case in `dgspec_resolve_diff.rs`, and every restore in
+`restore_graph.rs`, runs under one controlled environment shared by the real
+restore, the oracle and B₁: each variable B₁ has a verdict on removed, and a
+home of the suite's own. Review found the caller's environment deciding what a
+case graded three times, one test at a time, before that replaced the
+per-test fixes. The census does not move.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 

@@ -1,12 +1,13 @@
 /// Differential-test oracle over the real NuGet client libraries
 /// (test-only; never shipped in the LSP — see docs/nuget-restore-plan.md).
 ///
-/// Usage: `nuget-oracle --nuget-from <sdk-dir> [--env NAME=VALUE]...`, where
-/// `<sdk-dir>` is one .NET SDK's directory (`<dotnet-root>/sdk/<version>/`).
-/// Each `--env` sets an environment variable before any NuGet type loads, so
-/// the differentials can grade NuGet under environments that change what it
-/// does (`NUGET_ENABLE_EXPERIMENTAL_MACROS`, for one, makes the dgspec reader
-/// expand `$(User)`).
+/// Usage: `nuget-oracle --nuget-from <sdk-dir> [--env NAME=VALUE | --unset NAME]...`,
+/// where `<sdk-dir>` is one .NET SDK's directory (`<dotnet-root>/sdk/<version>/`).
+/// Each `--env` sets an environment variable, and each `--unset` removes one,
+/// before any NuGet type loads, so the differentials can grade NuGet under
+/// environments that change what it does (`NUGET_ENABLE_EXPERIMENTAL_MACROS`,
+/// for one, makes the dgspec reader expand `$(User)`). Unsetting is not setting
+/// empty: NuGet reads an empty `DOTNET_CLI_HOME` as the working folder.
 ///
 /// Which NuGet answers: the one in `<sdk-dir>`, loaded from there at runtime.
 /// The project references the NuGet packages for compilation only; none of
@@ -1098,16 +1099,19 @@ let private serve (sdkDir: string) =
 
         line <- Console.In.ReadLine()
 
-/// The `--env NAME=VALUE` assignments after `--nuget-from <dir>`, or `None`
-/// if anything else is there.
-let rec private environmentArguments (rest: string list) : (string * string) list option =
+/// The `--env NAME=VALUE` assignments (`Some VALUE`) and `--unset NAME`
+/// removals (`None`) after `--nuget-from <dir>`, in order, or `None` if
+/// anything else is there.
+let rec private environmentArguments (rest: string list) : (string * string option) list option =
     match rest with
     | [] -> Some []
     | "--env" :: assignment :: rest when assignment.IndexOf '=' > 0 ->
         let i = assignment.IndexOf '='
 
         environmentArguments rest
-        |> Option.map (fun more -> (assignment.Substring(0, i), assignment.Substring(i + 1)) :: more)
+        |> Option.map (fun more -> (assignment.Substring(0, i), Some(assignment.Substring(i + 1))) :: more)
+    | "--unset" :: name :: rest when name.Length > 0 && name.IndexOf '=' < 0 ->
+        environmentArguments rest |> Option.map (fun more -> (name, None) :: more)
     | _ -> None
 
 [<EntryPoint>]
@@ -1115,7 +1119,7 @@ let main argv =
     match List.ofArray argv with
     | "--nuget-from" :: dir :: rest when (environmentArguments rest).IsSome ->
         for (name, value) in (environmentArguments rest).Value do
-            Environment.SetEnvironmentVariable(name, value)
+            Environment.SetEnvironmentVariable(name, Option.toObj value)
 
         let sdkDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath dir)
 
@@ -1139,5 +1143,5 @@ let main argv =
             serve sdkDir
             0
     | _ ->
-        eprintfn "usage: nuget-oracle --nuget-from <sdk-dir> [--env NAME=VALUE]..."
+        eprintfn "usage: nuget-oracle --nuget-from <sdk-dir> [--env NAME=VALUE | --unset NAME]..."
         2

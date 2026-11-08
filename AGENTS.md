@@ -131,7 +131,13 @@ This is a Cargo workspace with nine members:
   for a NuGet on its verified list (`src/dgspec/verified_nuget.txt`), which
   `dgspec_resolve_diff` derives from the oracle, so a devshell SDK bump fails
   that test until the list is regenerated (the failure prints the command), and
-  regenerating it is the claim that the differential has graded the new NuGet. Self-contained: depends only
+  regenerating it is the claim that the differential has graded the new NuGet.
+  It also takes the environment `restore.rs` spawns with
+  (`restore::restore_environment`): NuGet reads variables while restoring, and
+  an oracle child shares the test's environment, so only grading under each
+  variable (`restore_is_graded_under_every_environment_b1_admits`) and scanning
+  the verified NuGet for the names it reads makes that dependence visible.
+  Self-contained: depends only
   on `roxmltree` and `serde`/`serde_json`.
   Differentially tested against the real NuGet client libraries via
   `tools/nuget-oracle` — a test-only JSONL batch oracle in the same mould as
