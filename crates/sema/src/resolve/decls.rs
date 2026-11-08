@@ -1107,6 +1107,16 @@ impl<'a> Resolver<'a> {
                         self.open_generation += 1;
                         self.unmodelled_open_active = true;
                     }
+                    // A module nested in a project `[<AutoOpen>]` module answers
+                    // to its short name, which the walk cannot follow: what
+                    // this open brings could replace anything in scope.
+                    let names_unlent_module =
+                        !rooted && self.may_name_unlent_module(&path, &interps);
+                    if names_unlent_module {
+                        self.opaque_value_open = true;
+                        self.open_generation += 1;
+                        self.unmodelled_open_active = true;
+                    }
                     let project_resolved = interps.iter().any(|i| match i {
                         OpenInterpretation::Module(_) => true,
                         OpenInterpretation::AssemblyModule(_) => false,
@@ -1601,11 +1611,10 @@ impl<'a> Resolver<'a> {
                             if project_module_bump && !bump_covered_by_screen {
                                 self.open_generation += 1;
                             }
-                            // An explicit `open M` brings *every* direct member of
-                            // M (every fragment, every file) into scope, so no
-                            // per-fragment restriction — that is only for a fragment
-                            // reached implicitly by opening its enclosing namespace.
-                            self.open_module_values(gp, pos, None);
+                            // An explicit `open M` brings M's own members, then
+                            // its `[<AutoOpen>]` children's, as the namespace
+                            // fold does a namespace's.
+                            self.open_project_namespace_values(gp, pos);
                             self.module_open_contributions(gp, pos);
                             self.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and

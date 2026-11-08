@@ -13,6 +13,7 @@ mod assembly_union_case_table;
 mod attr_resolution_diff;
 mod attr_resolution_sweep;
 mod augmentation_scope_diff;
+mod auto_open_fold_back;
 mod auto_open_member_sweep;
 mod binder_site_grid;
 mod classify_assembly_diff;

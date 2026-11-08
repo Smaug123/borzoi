@@ -13416,36 +13416,42 @@ src/Compiler/TypedTree/TcGlobals.fs:216:35-216:38	ccu Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:216:39-216:40	n Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:216:43-216:62	mkNonLocalTyconRef2 Value { is_function: true } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:216:63-216:66	ccu Parameter use agree-none
+src/Compiler/TypedTree/TcGlobals.fs:216:67-216:80	CorePathArray Value { is_function: false } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:216:7-216:22	mk_MFCore_tcref Value { is_function: true } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:216:81-216:82	n Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:217:35-217:38	ccu Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:217:39-217:40	n Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:217:43-217:62	mkNonLocalTyconRef2 Value { is_function: true } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:217:63-217:66	ccu Parameter use agree-none
+src/Compiler/TypedTree/TcGlobals.fs:217:67-217:81	QuotationsPath Value { is_function: false } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:217:7-217:28	mk_MFQuotations_tcref Value { is_function: true } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:217:82-217:83	n Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:218:35-218:38	ccu Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:218:39-218:40	n Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:218:43-218:62	mkNonLocalTyconRef2 Value { is_function: true } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:218:63-218:66	ccu Parameter use agree-none
+src/Compiler/TypedTree/TcGlobals.fs:218:67-218:80	LinqPathArray Value { is_function: false } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:218:7-218:22	mk_MFLinq_tcref Value { is_function: true } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:218:81-218:82	n Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:219:35-219:38	ccu Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:219:39-219:40	n Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:219:43-219:62	mkNonLocalTyconRef2 Value { is_function: true } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:219:63-219:66	ccu Parameter use agree-none
+src/Compiler/TypedTree/TcGlobals.fs:219:67-219:87	CollectionsPathArray Value { is_function: false } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:219:7-219:29	mk_MFCollections_tcref Value { is_function: true } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:219:88-219:89	n Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:220:35-220:38	ccu Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:220:39-220:40	n Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:220:43-220:62	mkNonLocalTyconRef2 Value { is_function: true } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:220:63-220:66	ccu Parameter use agree-none
+src/Compiler/TypedTree/TcGlobals.fs:220:67-220:87	CompilerServicesPath Value { is_function: false } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:220:7-220:34	mk_MFCompilerServices_tcref Value { is_function: true } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:220:88-220:89	n Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:221:35-221:38	ccu Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:221:39-221:40	n Parameter def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:221:43-221:62	mkNonLocalTyconRef2 Value { is_function: true } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:221:63-221:66	ccu Parameter use agree-none
+src/Compiler/TypedTree/TcGlobals.fs:221:67-221:83	ControlPathArray Value { is_function: false } use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:221:7-221:25	mk_MFControl_tcref Value { is_function: true } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:221:84-221:85	n Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:223:25-223:29	path Parameter def agree-none
@@ -14243,20 +14249,28 @@ src/Compiler/TypedTree/TcGlobals.fs:540:37-540:53	v_list_tcr_canon Value { is_fu
 src/Compiler/TypedTree/TcGlobals.fs:540:7-540:18	v_nil_ucref Value { is_function: false } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:542:63-542:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:542:7-542:22	fslib_MF_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:542:72-542:85	RootPathArray Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:543:63-543:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:543:7-543:26	fslib_MFCore_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:543:72-543:85	CorePathArray Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:544:63-544:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:544:7-544:26	fslib_MFLinq_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:544:72-544:85	LinqPathArray Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:545:63-545:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:545:7-545:33	fslib_MFCollections_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:545:72-545:92	CollectionsPathArray Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:546:63-546:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:546:7-546:38	fslib_MFCompilerServices_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:546:72-546:92	CompilerServicesPath Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:547:63-547:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:547:7-547:40	fslib_MFLinqRuntimeHelpers_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:547:72-547:94	LinqRuntimeHelpersPath Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:548:63-548:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:548:7-548:29	fslib_MFControl_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:548:72-548:88	ControlPathArray Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:549:63-549:71	fslibCcu Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:549:7-549:35	fslib_MFNativeInterop_nleref Value { is_function: false } def agree-none
+src/Compiler/TypedTree/TcGlobals.fs:549:72-549:89	NativeInteropPath Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:54:9-54:13	Root Value { is_function: false } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:551:7-551:40	fslib_MFLanguagePrimitives_nleref Value { is_function: false } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:551:76-551:95	fslib_MFCore_nleref Value { is_function: false } use unpaired-none
@@ -14545,6 +14559,7 @@ src/Compiler/TypedTree/TcGlobals.fs:674:29-674:46	BuiltinAttribInfo Type use agr
 src/Compiler/TypedTree/TcGlobals.fs:674:7-674:23	mk_MFCore_attrib Value { is_function: true } def agree-none
 src/Compiler/TypedTree/TcGlobals.fs:675:103-675:105	nm Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:675:28-675:31	ilg Parameter use unpaired-none
+src/Compiler/TypedTree/TcGlobals.fs:675:60-675:64	Core Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:675:7-675:17	AttribInfo UnionCase use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:675:73-675:75	nm Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:675:78-675:93	mk_MFCore_tcref Value { is_function: true } use agree-none
@@ -14555,6 +14570,7 @@ src/Compiler/TypedTree/TcGlobals.fs:677:7-677:35	mk_MFCompilerServices_attrib Va
 src/Compiler/TypedTree/TcGlobals.fs:678:106-678:114	fslibCcu Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:678:115-678:117	nm Parameter use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:678:28-678:31	ilg Parameter use unpaired-none
+src/Compiler/TypedTree/TcGlobals.fs:678:60-678:64	Core Value { is_function: false } use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:678:7-678:17	AttribInfo UnionCase use agree-none
 src/Compiler/TypedTree/TcGlobals.fs:678:73-678:75	nm Parameter use unpaired-none
 src/Compiler/TypedTree/TcGlobals.fs:678:78-678:105	mk_MFCompilerServices_tcref Value { is_function: true } use agree-none
@@ -16611,6 +16627,8 @@ src/Compiler/Utilities/sformat.fs:100:7-100:11	Attr UnionCase def agree-none
 src/Compiler/Utilities/sformat.fs:100:75-100:81	Layout Type use agree-doc
 src/Compiler/Utilities/sformat.fs:1012:20-1012:28	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1012:37-1012:54	exceededPrintSize Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1013:21-1013:26	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1013:28-1013:42	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1015:27-1015:28	x Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1016:31-1016:36	reprL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1016:37-1016:45	showMode Parameter use agree-none
@@ -16621,6 +16639,8 @@ src/Compiler/Utilities/sformat.fs:1016:71-1016:72	x Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1017:31-1017:32	x PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1018:29-1018:33	path Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1018:46-1018:47	x PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1019:29-1019:34	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1019:36-1019:50	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1021:29-1021:33	path Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1021:38-1021:39	x PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1023:33-1023:36	res Value { is_function: false } def agree-none
@@ -16628,6 +16648,8 @@ src/Compiler/Utilities/sformat.fs:1025:37-1025:39	ty Value { is_function: false 
 src/Compiler/Utilities/sformat.fs:1025:42-1025:43	x PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1027:36-1027:38	ty Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1027:56-1027:58	ty Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1028:42-1028:47	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1028:49-1028:56	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1028:58-1028:59	x PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:102:12-102:18	layout Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1031:43-1031:45	ty Value { is_function: false } use agree-none
@@ -16660,6 +16682,8 @@ src/Compiler/Utilities/sformat.fs:105:29-105:31	jl PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1060:29-1060:32	res Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1061:18-1061:19	e PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1062:17-1062:27	countNodes Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1063:17-1063:22	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1063:24-1063:31	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1063:45-1063:46	e PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1066:100-1066:103	obj Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1066:13-1066:36	structuredFormatObjectL Value { is_function: true } def agree-none
@@ -16693,8 +16717,13 @@ src/Compiler/Utilities/sformat.fs:1086:84-1086:87	txt Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1088:28-1088:42	illFormedMatch Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1090:30-1090:37	layouts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1091:106-1091:113	layouts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1091:34-1091:44	spaceListL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1091:56-1091:61	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1091:63-1091:70	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1091:72-1091:94	replaceEscapedBrackets Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1091:96-1091:99	txt Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1093:34-1093:39	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1093:41-1093:48	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1093:50-1093:72	replaceEscapedBrackets Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1093:74-1093:77	txt Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1096:29-1096:36	preText Value { is_function: false } def agree-none
@@ -16716,12 +16745,16 @@ src/Compiler/Utilities/sformat.fs:1100:66-1100:69	obj Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1100:70-1100:74	prop Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1101:105-1101:106	e PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1101:38-1101:39	e PatternLocal def agree-none
+src/Compiler/Utilities/sformat.fs:1101:48-1101:53	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1101:55-1101:62	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1102:38-1102:52	alternativeObj PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1104:37-1104:52	alternativeObjL Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1105:43-1105:57	alternativeObj PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:110:36-110:41	right Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:110:9-110:13	left Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1116:52-1116:53	s PatternLocal def agree-none
+src/Compiler/Utilities/sformat.fs:1116:57-1116:61	sepL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1116:63-1116:70	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1116:71-1116:72	s PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1119:114-1119:128	alternativeObj PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1119:41-1119:45	objL Value { is_function: true } use agree-none
@@ -16738,12 +16771,19 @@ src/Compiler/Utilities/sformat.fs:1128:48-1128:56	postText Value { is_function: 
 src/Compiler/Utilities/sformat.fs:1129:47-1129:60	postTextMatch Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:112:12-112:18	layout Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1131:37-1131:47	newLayouts Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:1132:38-1132:42	sepL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1132:44-1132:51	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1132:52-1132:59	preText Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1132:61-1132:63	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1132:64-1132:79	alternativeObjL Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1132:80-1132:82	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1132:83-1132:87	sepL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1132:89-1132:96	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1132:97-1132:112	currentPostText Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1133:40-1133:47	layouts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1135:39-1135:47	postText Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1136:63-1136:71	postText Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1138:42-1138:52	spaceListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1138:63-1138:73	newLayouts Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:113:15-113:21	layout Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1140:35-1140:56	remainingPropertyText PatternLocal def agree-none
@@ -16769,8 +16809,15 @@ src/Compiler/Utilities/sformat.fs:1157:40-1157:57	strayClosingMatch Value { is_f
 src/Compiler/Utilities/sformat.fs:115:11-115:15	Leaf UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:115:22-115:24	jr PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:115:29-115:31	jr PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1163:45-1163:55	spaceListL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1165:54-1165:58	sepL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1165:60-1165:67	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1165:68-1165:75	preText Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1166:54-1166:56	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1166:57-1166:72	alternativeObjL Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1167:54-1167:56	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1167:57-1167:61	sepL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1167:63-1167:70	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1167:72-1167:94	replaceEscapedBrackets Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1167:96-1167:117	remainingPropertyText PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1168:56-1168:63	layouts Parameter use agree-none
@@ -16779,6 +16826,8 @@ src/Compiler/Utilities/sformat.fs:116:19-116:24	right PatternLocal def agree-non
 src/Compiler/Utilities/sformat.fs:116:32-116:37	right PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1176:17-1176:33	buildObjMessageL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1176:34-1176:37	txt Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1176:40-1176:45	leftL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1176:47-1176:54	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1178:13-1178:29	recdAtomicTupleL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1178:30-1178:38	depthLim Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1178:39-1178:43	recd Parameter def agree-none
@@ -16791,14 +16840,27 @@ src/Compiler/Utilities/sformat.fs:1181:29-1181:39	nestedObjL Value { is_function
 src/Compiler/Utilities/sformat.fs:1181:40-1181:48	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1181:86-1181:87	x PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1182:15-1182:18	txs PatternLocal def agree-none
+src/Compiler/Utilities/sformat.fs:1183:17-1183:22	leftL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1183:23-1183:32	leftParen Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1184:17-1184:19	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1184:20-1184:30	commaListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1184:49-1184:59	nestedObjL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1184:60-1184:68	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1184:96-1184:99	txs PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1185:17-1185:19	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1185:20-1185:26	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1185:27-1185:37	rightParen Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1187:13-1187:23	bracketIfL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1187:24-1187:28	flag Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1187:29-1187:35	basicL Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1188:16-1188:20	flag Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1189:18-1189:23	leftL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1189:24-1189:33	leftParen Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1189:35-1189:37	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1189:38-1189:44	basicL Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1189:45-1189:47	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1189:49-1189:55	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1189:56-1189:66	rightParen Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1191:17-1191:23	basicL Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1193:13-1193:24	tupleValueL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1193:25-1193:33	depthLim Parameter def agree-none
@@ -16807,6 +16869,9 @@ src/Compiler/Utilities/sformat.fs:1193:39-1193:43	vals Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1193:44-1193:53	tupleType Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1194:17-1194:23	basicL Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1195:113-1195:117	vals Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1195:17-1195:25	sepListL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1195:27-1195:33	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1195:34-1195:39	comma Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1195:52-1195:62	nestedObjL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1195:63-1195:71	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1197:17-1197:23	fields Value { is_function: false } def agree-none
@@ -16815,6 +16880,7 @@ src/Compiler/Utilities/sformat.fs:1197:38-1197:42	prec Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1197:73-1197:79	basicL Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1199:19-1199:28	tupleType Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1200:34-1200:41	structL Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1200:42-1200:44	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1200:45-1200:51	fields Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1201:38-1201:44	fields Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1203:13-1203:25	recordValueL Value { is_function: true } def agree-none
@@ -16825,6 +16891,7 @@ src/Compiler/Utilities/sformat.fs:1204:24-1204:28	name Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1204:30-1204:31	x Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1204:33-1204:35	ty Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1205:17-1205:27	countNodes Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1206:17-1206:31	tagRecordField Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1206:32-1206:36	name Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1206:38-1206:48	nestedObjL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1206:49-1206:57	depthLim Parameter use agree-none
@@ -16854,6 +16921,7 @@ src/Compiler/Utilities/sformat.fs:1217:32-1217:40	depthLim Parameter use agree-n
 src/Compiler/Utilities/sformat.fs:1217:67-1217:68	x Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1218:105-1218:107	xs Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1218:109-1218:113	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1218:24-1218:38	boundedUnfoldL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1218:40-1218:50	nestedObjL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1218:51-1218:59	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1218:87-1218:94	project Value { is_function: true } use agree-none
@@ -16862,6 +16930,8 @@ src/Compiler/Utilities/sformat.fs:121:32-121:38	Layout Type use agree-doc
 src/Compiler/Utilities/sformat.fs:1220:17-1220:26	makeListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1220:27-1220:33	itemLs Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1222:17-1222:27	countNodes Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1223:17-1223:22	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1223:24-1223:38	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1225:13-1225:28	unionCaseValueL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1225:29-1225:37	depthLim Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1225:38-1225:42	prec Parameter def agree-none
@@ -16869,11 +16939,14 @@ src/Compiler/Utilities/sformat.fs:1225:43-1225:56	unionCaseName Parameter def ag
 src/Compiler/Utilities/sformat.fs:1225:57-1225:61	recd Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1226:13-1226:23	countNodes Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1227:17-1227:25	caseName Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:1227:28-1227:33	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1227:35-1227:44	tagMethod Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1227:45-1227:58	unionCaseName Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1229:19-1229:23	recd Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1230:21-1230:29	caseName Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1231:15-1231:19	recd PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1232:18-1232:26	caseName Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1232:27-1232:30	--- Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1232:31-1232:47	recdAtomicTupleL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1232:48-1232:56	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1232:57-1232:61	recd PatternLocal use agree-none
@@ -16888,9 +16961,14 @@ src/Compiler/Utilities/sformat.fs:1236:13-1236:23	countNodes Value { is_function
 src/Compiler/Utilities/sformat.fs:1237:17-1237:21	name Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1237:24-1237:37	exceptionType Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1239:19-1239:23	recd Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1240:22-1240:27	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1240:29-1240:37	tagClass Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1240:38-1240:42	name Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1241:15-1241:19	recd PatternLocal def agree-none
+src/Compiler/Utilities/sformat.fs:1242:18-1242:23	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1242:25-1242:33	tagClass Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1242:34-1242:38	name Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1242:40-1242:43	--- Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1242:44-1242:60	recdAtomicTupleL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1242:61-1242:69	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1242:70-1242:74	recd PatternLocal use agree-none
@@ -16903,16 +16981,21 @@ src/Compiler/Utilities/sformat.fs:1246:19-1246:27	showMode Parameter use agree-n
 src/Compiler/Utilities/sformat.fs:1247:15-1247:22	ShowAll UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:1247:26-1247:32	layout Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1248:15-1248:34	ShowTopLevelBinding UnionCase use agree-none
+src/Compiler/Utilities/sformat.fs:1248:38-1248:44	emptyL Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1250:13-1250:29	functionClosureL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1250:30-1250:38	showMode Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1250:40-1250:51	closureType Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1252:13-1252:23	countNodes Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1253:13-1253:18	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1253:20-1253:27	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1253:39-1253:50	closureType Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1253:67-1253:81	showModeFilter Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1253:82-1253:90	showMode Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1255:13-1255:25	stringValueL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1255:27-1255:28	s Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1256:13-1256:23	countNodes Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1268:13-1268:18	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1268:20-1268:36	tagStringLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1268:38-1268:50	formatString Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1268:51-1268:52	s Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1271:13-1271:24	arrayValueL Value { is_function: true } def agree-none
@@ -16942,6 +17025,7 @@ src/Compiler/Utilities/sformat.fs:1283:66-1283:74	depthLim Parameter use agree-n
 src/Compiler/Utilities/sformat.fs:1285:21-1285:27	itemLs Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1286:102-1286:104	b1 Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1286:105-1286:109	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1286:21-1286:35	boundedUnfoldL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1286:37-1286:47	nestedObjL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1286:48-1286:56	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1286:84-1286:91	project Value { is_function: true } use agree-none
@@ -16953,6 +17037,8 @@ src/Compiler/Utilities/sformat.fs:128:21-128:31	TaggedText Type use agree-none
 src/Compiler/Utilities/sformat.fs:128:35-128:37	tt Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:128:9-128:15	length Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1290:25-1290:31	itemLs Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1292:25-1292:30	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1292:32-1292:39	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1292:53-1292:66	string_of_int Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1292:67-1292:69	b1 Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1292:75-1292:81	itemLs Value { is_function: false } use agree-none
@@ -16986,6 +17072,7 @@ src/Compiler/Utilities/sformat.fs:1306:21-1306:25	rowL Value { is_function: true
 src/Compiler/Utilities/sformat.fs:1306:26-1306:27	x Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1307:107-1307:109	b2 Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1307:110-1307:114	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1307:21-1307:35	boundedUnfoldL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1307:37-1307:47	nestedObjL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1307:48-1307:56	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1307:85-1307:93	project2 Value { is_function: true } use agree-none
@@ -17006,6 +17093,7 @@ src/Compiler/Utilities/sformat.fs:1311:35-1311:37	n1 Value { is_function: false 
 src/Compiler/Utilities/sformat.fs:1311:59-1311:60	x Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1311:62-1311:63	x Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1313:21-1313:26	rowsL Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:1313:29-1313:43	boundedUnfoldL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1313:44-1313:48	rowL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1313:49-1313:57	project1 Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1313:58-1313:67	stopShort Value { is_function: true } use agree-none
@@ -17015,6 +17103,8 @@ src/Compiler/Utilities/sformat.fs:1315:17-1315:28	makeArray2L Value { is_functio
 src/Compiler/Utilities/sformat.fs:1316:24-1316:26	b1 Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1316:34-1316:36	b2 Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1317:25-1317:30	rowsL Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1319:25-1319:30	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1319:32-1319:39	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1319:53-1319:66	string_of_int Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1319:67-1319:69	b1 Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:131:22-131:23	t Parameter def agree-none
@@ -17023,11 +17113,15 @@ src/Compiler/Utilities/sformat.fs:131:32-131:39	TextTag Type use agree-none
 src/Compiler/Utilities/sformat.fs:131:32-131:49	UnionCase UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:131:50-131:51	t Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:131:9-131:21	tagUnionCase Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:1320:28-1320:33	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1320:35-1320:42	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1320:56-1320:69	string_of_int Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1320:70-1320:72	b2 Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1321:28-1321:33	rowsL Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1323:15-1323:16	n PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1323:20-1323:30	makeArrayL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1323:33-1323:38	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1323:40-1323:47	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1323:59-1323:72	string_of_int Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1323:73-1323:74	n PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1325:13-1325:25	mapSetValueL Value { is_function: true } def agree-none
@@ -17076,12 +17170,16 @@ src/Compiler/Utilities/sformat.fs:134:30-134:45	Keyword UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:134:46-134:47	t Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:134:9-134:19	tagKeyword Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1350:21-1350:27	itemLs Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:1351:21-1351:35	boundedUnfoldL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1352:25-1352:42	possibleKeyValueL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1353:39-1353:41	it Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1353:63-1353:65	it Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1354:25-1354:34	stopShort Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1356:30-1356:34	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1358:18-1358:23	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1358:25-1358:33	tagClass Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1358:34-1358:38	word Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1358:40-1358:43	--- Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1358:44-1358:53	makeListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1358:54-1358:60	itemLs Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1359:20-1359:30	bracketIfL Value { is_function: true } use agree-none
@@ -17131,6 +17229,7 @@ src/Compiler/Utilities/sformat.fs:1382:43-1382:45	ty Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1382:56-1382:58	ty Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1382:86-1382:88	ty Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1385:25-1385:31	itemLs Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:1386:25-1386:39	boundedUnfoldL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1387:30-1387:40	nestedObjL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1387:41-1387:49	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1389:36-1389:38	it Value { is_function: false } use agree-none
@@ -17153,7 +17252,10 @@ src/Compiler/Utilities/sformat.fs:139:31-139:47	Property UnionCase use agree-non
 src/Compiler/Utilities/sformat.fs:139:48-139:49	t Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:139:9-139:20	tagProperty Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1401:34-1401:38	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1403:22-1403:27	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1403:29-1403:37	tagClass Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1403:38-1403:42	word Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1403:44-1403:47	--- Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1403:48-1403:57	makeListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1403:58-1403:64	itemLs Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1404:24-1404:34	bracketIfL Value { is_function: true } use agree-none
@@ -17167,6 +17269,8 @@ src/Compiler/Utilities/sformat.fs:140:29-140:36	TextTag Type use agree-none
 src/Compiler/Utilities/sformat.fs:140:29-140:43	Method UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:140:44-140:45	t Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:140:9-140:18	tagMethod Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:1414:17-1414:22	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1414:24-1414:31	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1414:44-1414:58	showModeFilter Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1414:59-1414:67	showMode Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1416:13-1416:39	objectValueWithPropertiesL Value { is_function: true } def agree-none
@@ -17218,10 +17322,13 @@ src/Compiler/Utilities/sformat.fs:1450:16-1450:30	propsAndFields Value { is_func
 src/Compiler/Utilities/sformat.fs:1450:46-1450:52	nDepth Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1451:17-1451:23	basicL Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1453:17-1453:23	basicL Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1454:17-1454:20	--- Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1454:22-1454:36	propsAndFields Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1455:40-1455:41	m Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1456:31-1456:32	m Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1457:32-1457:40	tagField Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1457:41-1457:42	m Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1459:32-1459:43	tagProperty Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1459:44-1459:45	m Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:145:17-145:31	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:145:9-145:14	comma Value { is_function: false } def agree-none
@@ -17303,6 +17410,8 @@ src/Compiler/Utilities/sformat.fs:1491:15-1491:24	NullValue UnionCase use agree-
 src/Compiler/Utilities/sformat.fs:1492:17-1492:27	countNodes Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1494:20-1494:28	depthLim Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1494:31-1494:35	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1495:21-1495:26	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:1495:28-1495:35	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1497:21-1497:26	nullL Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1499:15-1499:26	ObjectValue UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:1499:27-1499:30	obj PatternLocal def agree-none
@@ -17337,6 +17446,7 @@ src/Compiler/Utilities/sformat.fs:1511:26-1511:34	showMode Parameter use agree-n
 src/Compiler/Utilities/sformat.fs:1511:37-1511:56	ShowTopLevelBinding UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:1511:60-1511:88	typeUsesSystemObjectToString Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1511:89-1511:91	ty Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1511:95-1511:101	emptyL Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1514:21-1514:31	countNodes Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1515:33-1515:36	obj PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1517:26-1517:30	opts Parameter use agree-none
@@ -17363,6 +17473,7 @@ src/Compiler/Utilities/sformat.fs:1529:9-1529:22	leafFormatter Value { is_functi
 src/Compiler/Utilities/sformat.fs:152:18-152:29	tagOperator Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:152:9-152:15	equals Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1530:15-1530:18	obj Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1531:19-1531:29	tagKeyword Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1532:24-1532:25	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1533:17-1533:18	s Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1533:21-1533:22	d PatternLocal use agree-none
@@ -17379,6 +17490,7 @@ src/Compiler/Utilities/sformat.fs:1544:67-1544:68	c Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1544:76-1544:77	s Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1546:21-1546:22	s Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1548:21-1548:22	s Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:1550:13-1550:30	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1550:31-1550:32	t Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1552:24-1552:25	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1553:17-1553:18	t Value { is_function: false } def agree-none
@@ -17396,43 +17508,57 @@ src/Compiler/Utilities/sformat.fs:1567:51-1567:55	opts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1569:22-1569:23	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1569:33-1569:37	opts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1569:59-1569:63	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1572:13-1572:30	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1572:31-1572:32	t Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1574:25-1574:26	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1574:30-1574:31	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1574:46-1574:50	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1574:76-1574:93	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1575:24-1575:25	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1575:29-1575:30	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1575:40-1575:44	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1575:71-1575:88	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1576:23-1576:24	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1576:28-1576:29	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1576:39-1576:43	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1576:69-1576:86	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1577:23-1577:24	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1577:28-1577:29	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1577:39-1577:43	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1577:63-1577:80	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1578:24-1578:25	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1578:29-1578:30	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1578:40-1578:44	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1578:70-1578:87	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1579:23-1579:24	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1579:28-1579:29	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1579:39-1579:43	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1579:69-1579:86	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1580:24-1580:25	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1580:29-1580:30	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1580:40-1580:44	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1580:71-1580:88	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1581:23-1581:24	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1581:28-1581:29	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1581:39-1581:43	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1581:69-1581:86	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1582:22-1582:23	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1582:27-1582:28	d PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1582:38-1582:42	opts Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1582:69-1582:86	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1583:27-1583:28	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1583:32-1583:33	d PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1583:54-1583:71	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1584:28-1584:29	d PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1584:33-1584:34	d PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1584:56-1584:73	tagNumericLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1585:22-1585:23	b PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1585:31-1585:32	b PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1585:62-1585:72	tagKeyword Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1586:22-1586:23	c PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1586:34-1586:44	formatChar Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1586:50-1586:51	c PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1586:62-1586:78	tagStringLiteral Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1589:17-1589:18	t Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1591:25-1591:29	text Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:1591:32-1591:35	obj Parameter use agree-none
@@ -17441,6 +17567,7 @@ src/Compiler/Utilities/sformat.fs:1595:23-1595:27	text PatternLocal def agree-no
 src/Compiler/Utilities/sformat.fs:1595:31-1595:35	text PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:1596:22-1596:23	e PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:1599:47-1599:48	e PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:1601:13-1601:20	tagText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1601:21-1601:22	t Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:1612:23-1612:30	options Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1612:31-1612:37	layout Parameter def agree-none
@@ -17462,6 +17589,7 @@ src/Compiler/Utilities/sformat.fs:1635:12-1635:17	showL Value { is_function: tru
 src/Compiler/Utilities/sformat.fs:1635:18-1635:25	options Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:1635:28-1635:41	leafFormatter Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1635:42-1635:49	options Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:1635:54-1635:60	toText Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:1642:18-1642:38	anyToStringForPrintf Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:1642:39-1642:46	options Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:1642:48-1642:60	bindingFlags Parameter def agree-none
@@ -17481,6 +17609,7 @@ src/Compiler/Utilities/sformat.fs:272:9-272:13	objL Value { is_function: true } 
 src/Compiler/Utilities/sformat.fs:273:15-273:20	value Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:274:24-274:25	s PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:274:29-274:33	Leaf UnionCase use agree-none
+src/Compiler/Utilities/sformat.fs:274:41-274:46	mkTag Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:274:47-274:54	TextTag Type use agree-none
 src/Compiler/Utilities/sformat.fs:274:47-274:59	Text UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:274:60-274:61	s PatternLocal use agree-none
@@ -17504,6 +17633,7 @@ src/Compiler/Utilities/sformat.fs:283:22-283:26	Leaf UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:283:34-283:38	text Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:283:9-283:14	leftL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:285:18-285:22	Leaf UnionCase use agree-none
+src/Compiler/Utilities/sformat.fs:285:29-285:34	mkTag Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:285:35-285:42	TextTag Type use agree-none
 src/Compiler/Utilities/sformat.fs:285:35-285:47	Text UnionCase use agree-none
 src/Compiler/Utilities/sformat.fs:285:9-285:15	emptyL Value { is_function: false } def agree-none
@@ -17688,6 +17818,7 @@ src/Compiler/Utilities/sformat.fs:355:23-355:30	prefixL Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:355:34-355:41	prefixL Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:355:42-355:44	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:355:45-355:51	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:355:52-355:57	comma Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:355:59-355:66	layouts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:355:9-355:17	tagListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:357:19-357:26	layouts Parameter def agree-none
@@ -17696,6 +17827,7 @@ src/Compiler/Utilities/sformat.fs:358:23-358:30	prefixL Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:358:34-358:41	prefixL Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:358:42-358:44	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:358:45-358:51	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:358:52-358:61	semicolon Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:358:63-358:70	layouts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:358:9-358:17	tagListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:360:20-360:27	layouts Parameter def agree-none
@@ -17713,15 +17845,18 @@ src/Compiler/Utilities/sformat.fs:363:54-363:61	layouts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:363:9-363:17	tagListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:365:18-365:24	layout Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:365:9-365:17	bracketL Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:366:15-366:24	leftParen Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:366:25-366:27	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:366:28-366:34	layout Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:366:35-366:37	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:366:38-366:44	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:366:45-366:55	rightParen Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:366:9-366:14	leftL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:368:16-368:23	layouts Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:368:9-368:15	tupleL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:369:19-369:27	sepListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:369:29-369:33	sepL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:369:34-369:39	comma Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:369:41-369:48	layouts Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:369:9-369:17	bracketL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:371:20-371:27	layouts Parameter def agree-none
@@ -17740,35 +17875,44 @@ src/Compiler/Utilities/sformat.fs:377:26-377:31	value Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:377:9-377:16	optionL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:378:15-378:20	value Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:379:19-379:24	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:379:26-379:38	tagUnionCase Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:380:16-380:17	x PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:380:21-380:26	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:380:28-380:40	tagUnionCase Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:380:49-380:51	-- Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:380:53-380:61	selector Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:380:62-380:63	x PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:382:15-382:23	selector Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:382:24-382:29	value Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:382:9-382:14	listL Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:383:15-383:26	leftBracket Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:383:9-383:14	leftL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:384:12-384:20	sepListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:384:22-384:26	sepL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:384:27-384:36	semicolon Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:384:48-384:56	selector Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:384:57-384:62	value Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:384:9-384:11	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:385:12-385:18	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:385:19-385:31	rightBracket Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:385:9-385:11	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:387:24-387:30	layout Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:387:9-387:23	squareBracketL Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:388:15-388:26	leftBracket Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:388:27-388:29	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:388:30-388:36	layout Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:388:37-388:39	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:388:40-388:46	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:388:47-388:59	rightBracket Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:388:9-388:14	leftL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:390:16-390:22	layout Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:390:9-390:15	braceL Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:391:15-391:24	leftBrace Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:391:25-391:27	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:391:28-391:34	layout Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:391:35-391:37	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:391:38-391:44	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:391:45-391:55	rightBrace Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:391:9-391:14	leftL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:393:105-393:106	z Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:393:112-393:121	maxLength Parameter def agree-none
@@ -17783,12 +17927,14 @@ src/Compiler/Utilities/sformat.fs:395:27-395:28	z Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:396:16-396:25	stopShort Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:396:26-396:27	z Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:397:19-397:24	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:397:26-397:40	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:399:23-399:30	project Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:399:31-399:32	z Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:401:24-401:25	x PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:401:27-401:28	z PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:402:24-402:25	n Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:403:27-403:32	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:403:34-403:48	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:405:25-405:30	itemL Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:405:31-405:32	x PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:405:36-405:43	consume Value { is_function: true } use agree-none
@@ -18139,6 +18285,7 @@ src/Compiler/Utilities/sformat.fs:694:43-694:45	jl PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:694:47-694:51	text PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:694:53-694:55	jr PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:695:29-695:38	textWidth Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:695:41-695:47	length Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:695:48-695:52	text PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:697:33-697:40	fitLeaf Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:697:41-697:47	breaks Parameter def agree-none
@@ -18485,20 +18632,38 @@ src/Compiler/Utilities/sformat.fs:854:38-854:42	recd PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:854:52-854:62	unpackCons Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:854:63-854:67	recd PatternLocal use agree-none
 src/Compiler/Utilities/sformat.fs:855:15-855:29	UnionCaseValue UnionCase use agree-none
+src/Compiler/Utilities/sformat.fs:858:19-858:24	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:858:26-858:36	tagKeyword Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:858:9-858:16	structL Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:860:17-860:22	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:860:24-860:34	tagKeyword Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:860:9-860:14	nullL Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:862:17-862:22	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:862:24-862:38	tagPunctuation Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:862:9-862:14	unitL Value { is_function: false } def agree-none
 src/Compiler/Utilities/sformat.fs:864:21-864:27	nameXs Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:864:9-864:20	makeRecordL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:865:13-865:18	itemL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:865:20-865:24	name Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:865:26-865:28	xL Parameter def agree-none
+src/Compiler/Utilities/sformat.fs:865:33-865:38	wordL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:865:39-865:43	name Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:865:44-865:46	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:865:47-865:52	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:865:53-865:59	equals Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:865:61-865:63	-- Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:865:64-865:66	xL Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:867:13-867:19	braceL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:867:20-867:22	xs Parameter def agree-none
+src/Compiler/Utilities/sformat.fs:868:14-868:19	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:868:20-868:29	leftBrace Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:868:31-868:33	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:868:34-868:36	xs Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:868:37-868:39	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:868:41-868:46	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:868:47-868:57	rightBrace Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:870:28-870:33	itemL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:870:37-870:47	aboveListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:870:51-870:57	braceL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:870:9-870:15	nameXs Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:872:25-872:31	nameXs Parameter def agree-none
@@ -18507,26 +18672,68 @@ src/Compiler/Utilities/sformat.fs:873:13-873:18	itemL Value { is_function: true 
 src/Compiler/Utilities/sformat.fs:873:20-873:24	name Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:873:26-873:27	v Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:874:17-874:23	labelL Value { is_function: false } def agree-none
+src/Compiler/Utilities/sformat.fs:874:26-874:31	wordL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:874:32-874:36	name Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:876:14-876:20	labelL Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:876:21-876:23	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:876:24-876:29	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:876:30-876:36	equals Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:877:13-877:15	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:877:23-877:24	v Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:878:27-878:32	wordL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:878:33-878:45	questionMark Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:879:24-879:26	xL PatternLocal def agree-none
 src/Compiler/Utilities/sformat.fs:879:30-879:32	xL PatternLocal use agree-none
+src/Compiler/Utilities/sformat.fs:880:13-880:15	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:880:17-880:23	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:880:24-880:33	semicolon Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:882:13-882:19	braceL Value { is_function: true } def agree-none
 src/Compiler/Utilities/sformat.fs:882:20-882:22	xs Parameter def agree-none
+src/Compiler/Utilities/sformat.fs:883:14-883:19	leftL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:883:20-883:29	leftBrace Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:883:31-883:33	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:883:34-883:36	xs Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:883:37-883:39	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:883:41-883:47	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:883:48-883:58	rightBrace Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:885:17-885:27	aboveListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:885:38-885:43	itemL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:885:44-885:50	nameXs Parameter use agree-none
 src/Compiler/Utilities/sformat.fs:885:9-885:15	braceL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:887:19-887:25	itemLs Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:887:9-887:18	makeListL Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:888:10-888:15	leftL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:888:16-888:27	leftBracket Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:889:12-889:20	sepListL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:889:22-889:28	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:889:29-889:38	semicolon Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:889:40-889:46	itemLs Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:889:9-889:11	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:890:13-890:19	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:890:20-890:32	rightBracket Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:890:9-890:11	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:892:20-892:22	xs Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:892:9-892:19	makeArrayL Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:893:10-893:15	leftL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:893:17-893:31	tagPunctuation Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:894:12-894:20	sepListL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:894:22-894:28	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:894:29-894:38	semicolon Value { is_function: false } use agree-none
 src/Compiler/Utilities/sformat.fs:894:40-894:42	xs Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:894:9-894:11	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:895:13-895:19	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:895:21-895:35	tagPunctuation Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:895:9-895:11	^^ Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:897:21-897:23	xs Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:897:9-897:20	makeArray2L Value { is_function: true } def agree-none
+src/Compiler/Utilities/sformat.fs:898:15-898:26	leftBracket Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:898:27-898:29	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:898:30-898:40	aboveListL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:898:41-898:43	xs Parameter use agree-none
+src/Compiler/Utilities/sformat.fs:898:44-898:46	^^ Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:898:47-898:53	rightL Value { is_function: true } use agree-none
+src/Compiler/Utilities/sformat.fs:898:54-898:66	rightBracket Value { is_function: false } use agree-none
+src/Compiler/Utilities/sformat.fs:898:9-898:14	leftL Value { is_function: true } use agree-none
 src/Compiler/Utilities/sformat.fs:89:6-89:11	Joint Type def agree-doc
 src/Compiler/Utilities/sformat.fs:900:22-900:24	ty Parameter def agree-none
 src/Compiler/Utilities/sformat.fs:900:33-900:36	obj Parameter def agree-none
