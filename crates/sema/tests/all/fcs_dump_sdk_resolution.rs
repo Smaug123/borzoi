@@ -16,6 +16,10 @@
 //! that went past the `global.json` would resolve where nothing warns. The
 //! test pins the warning per row, so a host where the pin stops being
 //! observable fails instead of passing vacuously.
+//!
+//! Unix only: the link row needs `std::os::unix::fs::symlink`.
+
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 
