@@ -27,10 +27,11 @@
 //! `parse_fsproj_with_imports`. When discovery fails — most commonly
 //! because `$DOTNET_ROOT` isn't set and no `dotnet` is on `$PATH` — we
 //! log to stderr and fall back to evaluating the project without an SDK
-//! resolver. The msbuild evaluator surfaces an
-//! `UnsupportedConstruct` diagnostic for `<Project Sdk="...">` in that
-//! case, but evaluation still completes and the body's own
-//! `<DefineConstants>` are still collected.
+//! resolver. The msbuild evaluator reports `SdkResolverAbsent` for
+//! `<Project Sdk="...">` in that case (which the `.fsproj` buffer's
+//! diagnostics render with the discovery error, see
+//! [`crate::fsproj_diagnostics`]), but evaluation still completes and the
+//! body's own `<DefineConstants>` are still collected.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1018,15 +1019,6 @@ fn evaluated_output_name(path: &Path, evaluated: &EvaluatedProject) -> Option<St
     }
 }
 
-/// Read and evaluate `project_path`. Returns `None` on any failure
-/// (IO, XML, or evaluation) — the caller caches the `None` so we don't
-/// retry on every keystroke.
-///
-/// Builds a per-project [`SdkDiscovery`] from `env`; on
-/// [`crate::sdk_discovery::DiscoveryError`] (e.g. missing `$DOTNET_ROOT`,
-/// malformed `global.json`) we log and fall through to evaluating
-/// without a resolver, mirroring the behaviour callers had before
-/// Stage 8b.
 /// The graph builder's filesystem-backed resolver, evaluating each project
 /// **fresh** (no caching — see [`Workspace::project_graph`]):
 /// [`NodeResult::NotFound`] if the file is absent, otherwise its
@@ -1495,6 +1487,15 @@ pub(crate) fn asset_list_covers_compile(v: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case("compile") || part.eq_ignore_ascii_case("all"))
 }
 
+/// Read and evaluate `project_path`. Returns `None` on any failure
+/// (IO, XML, or evaluation) — the caller caches the `None` so we don't
+/// retry on every keystroke.
+///
+/// Builds a per-project [`SdkDiscovery`] from `env`; on
+/// [`crate::sdk_discovery::DiscoveryError`] (e.g. missing `$DOTNET_ROOT`,
+/// malformed `global.json`) we log and evaluate without a resolver. The
+/// user sees the error on the `.fsproj` buffer, whose diagnostics run their
+/// own discovery ([`crate::fsproj_diagnostics::diagnostics_for`]).
 fn evaluate_project(
     project_path: &Path,
     env: &SdkDiscoveryEnv,
@@ -5108,8 +5109,8 @@ mod tests {
         fn missing_dotnet_root_falls_back_to_body_only_defines() {
             // No DOTNET_ROOT and no PATH means `SdkDiscovery::for_project`
             // returns `MissingDotnetRoot`. We log and pass
-            // `sdk_resolver=None`. The msbuild evaluator then emits an
-            // `UnsupportedConstruct` for the `Sdk="..."` attribute but
+            // `sdk_resolver=None`. The msbuild evaluator then emits
+            // `SdkResolverAbsent` for the `Sdk="..."` attribute but
             // still walks the body — so `BODY_ONLY` survives, `FROM_SDK`
             // (which would have come from the SDK) does not.
             let tmp = TempDir::new().unwrap();

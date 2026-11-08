@@ -1484,13 +1484,12 @@ fn import_group_unsupported_condition_skips_and_flags() {
 }
 
 #[test]
-fn root_project_sdk_attribute_emits_unsupported_construct() {
+fn root_project_sdk_attribute_emits_sdk_resolver_absent() {
     // A `<Project Sdk="Microsoft.NET.Sdk">` is shorthand for two
     // implicit SDK imports the pure walker can't follow. Silently
     // ignoring the attribute would let the walker return an
     // incomplete item list with `is_partial == false`; instead we
-    // emit an UnsupportedConstruct so callers know defaults are
-    // missing.
+    // emit SdkResolverAbsent so callers know defaults are missing.
     let src = r#"<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <Compile Include="A.fs" />
@@ -1500,10 +1499,9 @@ fn root_project_sdk_attribute_emits_unsupported_construct() {
     assert!(
         p.diagnostics.iter().any(|d| matches!(
             &d.kind,
-            DiagnosticKind::UnsupportedConstruct { element }
-                if element == "Project Sdk=\"Microsoft.NET.Sdk\""
+            DiagnosticKind::SdkResolverAbsent { name } if name == "Microsoft.NET.Sdk"
         )),
-        "expected UnsupportedConstruct for root Sdk, got: {:?}",
+        "expected SdkResolverAbsent for root Sdk, got: {:?}",
         p.diagnostics
     );
     assert!(p.is_partial);

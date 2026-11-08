@@ -38,11 +38,10 @@ fn fsproj_to_csharp_metadata_e2e() {
     let fixture = make_fixture();
 
     // F# end: the fsproj is SDK-shorthand (`<Project Sdk="Microsoft.NET.Sdk">`),
-    // which phase 7a flags as `UnsupportedConstruct` while deferring SDK
-    // resolution to a later phase. Everything else about the walk should
-    // be clean: exactly one explicit Compile, exactly one
-    // ProjectReference pointing at the sibling csproj, and no other
-    // diagnostics.
+    // which the pure parser (no SDK resolver) flags as `SdkResolverAbsent`.
+    // Everything else about the walk should be clean: exactly one explicit
+    // Compile, exactly one ProjectReference pointing at the sibling csproj,
+    // and no other diagnostics.
     let fsproj_src = std::fs::read_to_string(fixture.fsproj_path()).expect("read fsproj");
     let parsed = parse_fsproj(
         &fsproj_src,
@@ -54,8 +53,8 @@ fn fsproj_to_csharp_metadata_e2e() {
     let kinds: Vec<&DiagnosticKind> = parsed.diagnostics.iter().map(|d| &d.kind).collect();
     assert_eq!(
         kinds,
-        [&DiagnosticKind::UnsupportedConstruct {
-            element: "Project Sdk=\"Microsoft.NET.Sdk\"".to_string()
+        [&DiagnosticKind::SdkResolverAbsent {
+            name: "Microsoft.NET.Sdk".to_string()
         }],
         "fsproj should parse with only the SDK-shorthand diagnostic, got {:?}",
         parsed.diagnostics,

@@ -157,11 +157,11 @@ fn import_with_sdk_attribute_reports_unsupported_construct() {
     );
     let result = parse_file(&project_path);
     let any_unsupported = result.diagnostics.iter().any(|d| {
-        matches!(d.kind, DiagnosticKind::UnsupportedConstruct { ref element } if element.contains("Sdk"))
+        matches!(d.kind, DiagnosticKind::SdkResolverAbsent { ref name } if name == "Microsoft.NET.Sdk")
     });
     assert!(
         any_unsupported,
-        "expected an UnsupportedConstruct with 'Sdk', got: {:?}",
+        "expected SdkResolverAbsent for Microsoft.NET.Sdk, got: {:?}",
         result.diagnostics
     );
     assert!(result.is_partial);

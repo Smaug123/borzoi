@@ -164,6 +164,20 @@ pub enum DiagnosticKind {
     /// the walker treats the import like a failed one. `reason` is a
     /// short human-readable description of the envelope violation.
     SdkResolutionUnsupported { name: String, reason: String },
+    /// `<Project Sdk="X">` or `<Import Sdk="X" .../>` was encountered and
+    /// the caller supplied no SDK resolver: the pure
+    /// [`crate::parse_fsproj`] never has one, and a
+    /// [`crate::parse_fsproj_with_imports`] caller passes `None` when it
+    /// could not establish where SDKs live (the LSP does so when SDK
+    /// discovery fails, and renders this with discovery's reason). `name`
+    /// is the SDK identifier as it appeared in the XML.
+    ///
+    /// Outside [`Self::hides_unseen_content`] although the SDK's content
+    /// never entered the walk: every site that emits it also records a
+    /// structural skip (`ProjectSdkUnsupported` / `ExplicitSdkUnsupported`)
+    /// at the same span, which carries all of that class's consequences.
+    /// Membership would record the one cause twice.
+    SdkResolverAbsent { name: String },
     /// One of the well-known files MSBuild implicitly imports —
     /// `Directory.Build.props`, `Directory.Build.targets`, or
     /// `Directory.Packages.props` — exists in the project's ancestor

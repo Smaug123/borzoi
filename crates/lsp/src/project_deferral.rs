@@ -839,6 +839,9 @@ fn render_diagnostic_kind(kind: &DiagnosticKind) -> String {
         DiagnosticKind::SdkResolutionUnsupported { name, reason } => {
             format!("the SDK `{name}` resolves in a way I can't reproduce exactly ({reason})")
         }
+        DiagnosticKind::SdkResolverAbsent { name } => {
+            format!("the SDK `{name}`, which I couldn't resolve because SDK discovery failed")
+        }
         DiagnosticKind::ImplicitImportPresent { path, kind } => format!(
             "a {} at {} that I don't follow",
             match kind {

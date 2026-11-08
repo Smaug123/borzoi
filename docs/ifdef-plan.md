@@ -87,7 +87,6 @@ position back into a real source offset is still unimplemented — see Q4 in
 ### SDK-discovery deferrals (Post-8b.2)
 
 - Caching `SdkDiscovery` instances across sibling projects (each project rebuilds one at evaluation time).
-- Surfacing `DiscoveryError` itself as an editor diagnostic on the `.fsproj` buffer (today it only logs to stderr and falls back to no-resolver).
 - Watching external SDK install-directory changes for invalidation (workspace/project-structure file-watch invalidation landed in `docs/completed/file-watch-invalidation-plan.md`; the SDK install dir is not watched).
 
 ## Notes

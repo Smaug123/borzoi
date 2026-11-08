@@ -93,7 +93,7 @@ project_references (0):
 package_references (0, uncertain=true):
 framework_references (0):
 diagnostics (13):
-  UnsupportedConstruct { element: "Project Sdk=\"Microsoft.NET.Sdk\"" }
+  SdkResolverAbsent { name: "Microsoft.NET.Sdk" }
   UndefinedProperty { name: "NoWarn" }
   UndefinedProperty { name: "DefineConstants" }
   UndefinedProperty { name: "OtherFlags" }

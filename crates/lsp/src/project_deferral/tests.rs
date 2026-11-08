@@ -140,6 +140,9 @@ mod properties {
                 name: "Microsoft.NET.Sdk.WorkloadAutoImportPropsLocator".to_string(),
                 reason: "workload set installed".to_string(),
             },
+            DiagnosticKind::SdkResolverAbsent {
+                name: "Microsoft.NET.Sdk".to_string(),
+            },
             DiagnosticKind::ImplicitImportPresent {
                 path: PathBuf::from("/w/Directory.Packages.props"),
                 kind: ImplicitImportKind::DirectoryPackagesProps,
@@ -404,7 +407,7 @@ mod properties {
     /// in `render_diagnostic_kind` is what will send you here.
     #[test]
     fn every_diagnostic_kind_has_a_sample() {
-        const DIAGNOSTIC_KIND_VARIANTS: usize = 14;
+        const DIAGNOSTIC_KIND_VARIANTS: usize = 15;
         let distinct = diagnostic_kinds()
             .iter()
             .map(std::mem::discriminant)

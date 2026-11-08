@@ -954,7 +954,7 @@ pub fn parse_fsproj(
 /// [`DiagnosticKind::SdkNotFound`] diagnostic is emitted and the body
 /// still gets the Directory.Build.* splice. When `sdk_resolver` itself
 /// is `None`, any `Sdk` attribute surfaces as
-/// [`DiagnosticKind::UnsupportedConstruct`] (the phase-7a behaviour).
+/// [`DiagnosticKind::SdkResolverAbsent`].
 ///
 /// **Explicit-only SDK projects.** A project using the *explicit*
 /// form `<Project><Import Sdk="X" Project="Sdk.props"/>...</Project>`
