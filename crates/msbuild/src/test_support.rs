@@ -15,10 +15,12 @@
 //! commits on it — the filesystem predicate is covered by the in-module unit
 //! tests instead.
 
-pub use crate::condition::{Eval, Outcome, evaluate};
+pub use crate::condition::{Eval, MAX_CONDITION_NESTING, Outcome, evaluate};
+pub use crate::properties::MAX_EXPRESSION_NESTING;
 pub use crate::properties::escaping::{escape, unescape};
 pub use crate::properties::path_fixup::worlds as path_fixup_worlds;
 pub use crate::properties::{Issue, PropertyMap};
+pub use crate::sdk_resolver::global_json::GLOBAL_JSON_MAX_DEPTH;
 
 /// The walker's hand-rolled stand-in for an SDK `'$(Prop)' == 'true'` gate.
 ///
