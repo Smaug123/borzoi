@@ -122,6 +122,19 @@ const CELLS: &[Cell] = &[
         expect: Expect::Gap("a module path declared twice is not decided"),
     },
     Cell {
+        label: "same-file / a namespace and a module at one path",
+        files: &["namespace {p}N.A\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n\nnamespace {p}N\n\nmodule A =\n    open M\n    let y = 2\n"],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "cross-file / a namespace and a module at one path",
+        files: &[
+            "namespace {p}N.A\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n",
+            "namespace {p}N\n\nmodule A =\n    open M\n    let y = 2\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
         label: "same-file / a module opening itself",
         files: &[
             "module {p}Top\n\n[<RequireQualifiedAccess>]\nmodule M =\n    open M\n    let x = 1\n",

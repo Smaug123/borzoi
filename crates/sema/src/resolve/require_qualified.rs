@@ -83,14 +83,22 @@ impl Resolver<'_> {
             && self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
     }
 
-    /// Whether a project module is declared at `path` or at a path `path`
-    /// runs through more than once — here twice, or here and in an earlier
-    /// file, or in two earlier files. FCS reports the duplicate and which of
-    /// the two an `open` reaches is not something the path can say.
-    fn module_path_is_duplicated(&self, path: &[String]) -> bool {
+    /// Whether `path`, or a path it runs through, names more than one project
+    /// container, so that the path cannot say which an `open` reaches: a
+    /// module declared there twice (here twice, here and in an earlier file,
+    /// or in two earlier files — FCS reports the duplicate), or a module and a
+    /// namespace both (`namespace N.A` beside `module A` in `namespace N`: an
+    /// `open M` inside the module does not reach the namespace's `M`,
+    /// FCS-graded).
+    fn module_path_is_ambiguous(&self, path: &[String]) -> bool {
         (1..=path.len()).any(|k| {
-            self.duplicated_module_paths.contains(&path[..k])
-                || self.preceding.is_duplicated_module(&path[..k])
+            let p = &path[..k];
+            let module = self.declared_module_paths.contains(p)
+                || self.preceding.is_exact_project_module(p)
+                || self.preceding.is_real_nested_module(p);
+            self.duplicated_module_paths.contains(p)
+                || self.preceding.is_duplicated_module(p)
+                || (module && self.is_project_namespace_path(p))
         })
     }
 
@@ -121,7 +129,7 @@ impl Resolver<'_> {
             return;
         };
         let names_rqa_module = candidates.iter().any(|c| {
-            !self.module_path_is_duplicated(&c.full)
+            !self.module_path_is_ambiguous(&c.full)
                 && ((c.reach.this_file && self.rqa_module_paths.contains(&c.full))
                     || (c.reach.earlier_files && self.preceding.is_certain_rqa_module(&c.full))
                     || (c.reach.assembly
