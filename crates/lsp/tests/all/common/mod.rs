@@ -128,6 +128,16 @@ pub fn ensure_fsharp_core_dll() -> PathBuf {
         .join("FSharp.Core.dll")
 }
 
+/// Path to `FSharp.Compiler.Service.dll`, from the same `tools/fcs-dump` build
+/// as [`ensure_fsharp_core_dll`]: a real assembly that script resolution never
+/// references on its own.
+pub fn ensure_fsharp_compiler_service_dll() -> PathBuf {
+    ensure_fcs_dump_built()
+        .parent()
+        .expect("fcs-dump.dll has a parent dir")
+        .join("FSharp.Compiler.Service.dll")
+}
+
 /// A real BCL `System.Runtime.dll` reference assembly — the one carrying
 /// `System.String`'s public API (its `Length` property, …). Located in the SDK's
 /// `Microsoft.NETCore.App.Ref` pack under `$DOTNET_ROOT`, honour

@@ -10,5 +10,6 @@ mod corpus;
 mod examples;
 mod generated;
 mod harness;
+mod oracle_history;
 mod project;
 mod signature;
