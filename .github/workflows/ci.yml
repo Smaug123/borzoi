@@ -1,10 +1,24 @@
 name: CI
 
+# Every commit reaches `main` through the merge queue, whose `merge_group` run
+# checks exactly the tree that lands. There is deliberately no `push: main`
+# trigger: it would repeat that run on the same tree once the queue merges it.
+#
+# The nightly `schedule` run is what refreshes the cargo caches. Each
+# rust-cache step saves only on `refs/heads/main`, which neither a PR nor a
+# merge-queue run is on, and a cache saved under the queue's
+# `gh-readonly-queue/main/…` ref is not restorable by anything else. A
+# scheduled run is on `main`, so its caches are the ones PRs and the queue
+# restore. It has no diff base, so the change detector runs every job.
+# `workflow_dispatch` from `main` does the same on demand.
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
+  merge_group:
+    types: [ checks_requested ]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 # `contents: read` covers `actions/checkout` and the cache/artifact actions;
 # change detection is plain git (no GitHub API). Declaring the block explicitly
@@ -34,8 +48,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           # Full history so the diff base is present locally for the change
-          # detector: a push diffs against `github.event.before`, a PR against
-          # `github.event.pull_request.base.sha`. checkout retries its fetch,
+          # detector: a PR diffs against `github.event.pull_request.base.sha`,
+          # a merge-queue entry against `github.event.merge_group.base_sha`
+          # (the commit it is built on). checkout retries its fetch,
           # and if the base still can't be resolved the detector fails open
           # (runs everything) rather than failing the run.
           fetch-depth: 0
@@ -43,8 +58,8 @@ jobs:
         id: filter
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
           GITHUB_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         # tools/ci/detect-changes.sh maps the changed paths to the per-job
         # filter outputs; its path prefixes mirror the job gates in this file.
         # The offline NuGet closure (`nix/**`) feeds every dotnet-driven test,
@@ -81,8 +96,9 @@ jobs:
         with:
           # Run the key-deriving/cleanup cargo+rustc calls inside the devshell so
           # the cache key reflects the Nix-pinned toolchain, not the runner's
-          # rustup default. save-if main-only: PRs restore but do not each save,
-          # keeping the per-job caches from churning the 10 GB repo quota.
+          # rustup default. save-if main-only (the nightly run; see `on:`):
+          # PRs and the merge queue restore but do not each save, keeping the
+          # per-job caches from churning the 10 GB repo quota.
           cmd-format: nix develop -c {0}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 

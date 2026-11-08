@@ -7,16 +7,20 @@
 #
 # Emits `name=true|false` for every filter to `$GITHUB_OUTPUT` (or to stdout
 # when that is unset). Change detection is an optimization, so it FAILS OPEN:
-# when the diff base can't be resolved — a force-push, a branch's first commit,
-# or a fetch that left the base commit absent — every filter is reported `true`
-# and the full suite runs. Wasted CI time is acceptable; silently skipping a
-# job that should have run is not.
+# when there is no diff base — an event other than the two below, a base
+# variable left empty, or a fetch that left the base commit absent — every
+# filter is reported `true` and the full suite runs. Wasted CI time is
+# acceptable; silently skipping a job that should have run is not.
 #
 # Environment:
-#   GITHUB_EVENT_NAME    "push" (default) or "pull_request"
-#   GITHUB_EVENT_BEFORE  pre-push tip, for push events
-#   GITHUB_PR_BASE_SHA   base commit, for pull_request events
-#   GITHUB_OUTPUT        file to append `name=value` lines to; stdout if unset
+#   GITHUB_EVENT_NAME            "pull_request" or "merge_group"; any other
+#                                value (or none) fails open
+#   GITHUB_PR_BASE_SHA           base commit, for pull_request events
+#   GITHUB_MERGE_GROUP_BASE_SHA  the commit the merge-queue entry is built on
+#                                (main, or the entry ahead of it), for
+#                                merge_group events
+#   GITHUB_OUTPUT                file to append `name=value` lines to; stdout
+#                                if unset
 #
 # Subcommand (for tests):
 #   classify   read a newline-separated changed-file list on stdin and emit the
@@ -86,17 +90,21 @@ all_true() {
 
 # Print the changed-file list for this event on stdout, or return non-zero to
 # signal "fail open" (base unresolved). A two-dot `git diff <base> HEAD`
-# compares the two tips directly: correct for fast-forward pushes and PR merge
-# refs, and safe under a force-push (where `before` is not an ancestor of HEAD),
-# where it can only over-report, never miss a changed path. A three-dot diff
-# would instead start from the merge base and silently drop files that differ
-# between the old and new tips. `--no-renames` so a file moved between crates
-# flags both its source and destination areas.
+# compares the two tips directly: correct for PR merge refs and merge-queue
+# commits, and safe should the base ever not be an ancestor of HEAD, where it
+# can only over-report, never miss a changed path. A three-dot diff would
+# instead start from the merge base and silently drop files that differ
+# between the two tips. `--no-renames` so a file moved between crates flags
+# both its source and destination areas.
 changed_files() {
   local base
-  case "${GITHUB_EVENT_NAME:-push}" in
+  case "${GITHUB_EVENT_NAME:-}" in
     pull_request) base="${GITHUB_PR_BASE_SHA:-}" ;;
-    *)            base="${GITHUB_EVENT_BEFORE:-}" ;;
+    merge_group)  base="${GITHUB_MERGE_GROUP_BASE_SHA:-}" ;;
+    *)
+      echo "detect-changes: no diff base for event '${GITHUB_EVENT_NAME:-}'; failing open." >&2
+      return 1
+      ;;
   esac
   if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
     echo "detect-changes: diff base unavailable ('${base}'); failing open." >&2
