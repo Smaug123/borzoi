@@ -302,6 +302,9 @@ impl SpawnFree {
                     DgSpecResolveDecline::PackageNamedLikeProject { .. } => {
                         "named-like-project".to_owned()
                     }
+                    DgSpecResolveDecline::DownloadUnavailable { id, .. } => {
+                        format!("download-unavailable:{}", id.as_str().to_ascii_lowercase())
+                    }
                     DgSpecResolveDecline::PromotedWarning { code, .. } => match code {
                         Some(code) => format!("promoted-warning:{code}"),
                         None => "promoted-warning:unpredicted".to_owned(),

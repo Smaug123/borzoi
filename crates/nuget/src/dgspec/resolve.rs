@@ -68,8 +68,9 @@ use super::{
 use crate::assets::content_model_framework;
 use crate::{
     AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
-    PackageReadError, ResolveDecline, ResolvedPackageClosure, list_package_files,
-    read_installed_package, resolve_offline_with_fallback, select_compile_assets,
+    PackagePaths, PackageReadError, ResolveDecline, ResolvedPackageClosure, VersionRange,
+    list_package_files, read_installed_package, resolve_offline_with_fallback,
+    select_compile_assets,
 };
 
 use std::collections::BTreeSet;
@@ -152,9 +153,6 @@ pub enum UnmodelledField {
     ProjectReferences,
     /// A framework's `packagesToPrune` (stage 5).
     PackagesToPrune,
-    /// A framework's `downloadDependencies` (stage 7b): a download missing
-    /// from the packages folder fails the restore.
-    DownloadDependencies,
     /// An `imports` list that is not an asset-target fallback (the legacy
     /// `PackageTargetFallback`).
     PackageTargetFallback,
@@ -191,7 +189,6 @@ impl UnmodelledField {
             UnmodelledField::CentralPackageManagement => "central-package-management",
             UnmodelledField::ProjectReferences => "project-references",
             UnmodelledField::PackagesToPrune => "packages-to-prune",
-            UnmodelledField::DownloadDependencies => "download-dependencies",
             UnmodelledField::PackageTargetFallback => "package-target-fallback",
             UnmodelledField::DependencyTarget => "dependency-target",
             UnmodelledField::NoFrameworks => "no-frameworks",
@@ -236,6 +233,15 @@ pub enum DgSpecResolveDecline {
         target_alias: String,
         package: Box<PackageIdentity>,
         decline: Option<Box<AssetSelectionDecline>>,
+    },
+    /// A framework's `downloadDependencies` entry that B₁ cannot show is in
+    /// the packages folder: its range is not one exact version, or that
+    /// version is not committed there. Restore fails on a missing download
+    /// (`NU1101`).
+    DownloadUnavailable {
+        target_alias: String,
+        id: PackageId,
+        range: Box<VersionRange>,
     },
     /// A package restore would read (a winner or a losing version) has a
     /// nuspec or a commit marker outside the domain B₁ admits (the nuspec's is
@@ -311,6 +317,15 @@ impl fmt::Display for DgSpecResolveDecline {
                 f,
                 "framework {target_alias:?}: package {} {}: {decline}",
                 package.id, package.version
+            ),
+            DgSpecResolveDecline::DownloadUnavailable {
+                target_alias,
+                id,
+                range,
+            } => write!(
+                f,
+                "framework {target_alias:?}: download {id} {range} is not one exact version in \
+                 the packages folder"
             ),
             DgSpecResolveDecline::PackageRead {
                 target_alias,
@@ -453,6 +468,7 @@ pub fn resolve_dgspec(
                     id: clash.identity.id.clone(),
                 });
             }
+            check_downloads(Path::new(packages_path), framework)?;
             check_metadata(
                 nuget,
                 Path::new(packages_path),
@@ -626,6 +642,46 @@ fn framework_folder(file: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// Every `downloadDependencies` entry of `framework` names one exact version
+/// that is committed in the packages folder, with its nuspec.
+///
+/// Restore only checks that a download is present: it fails on a missing one
+/// (`NU1101`) and validates nothing else about it (not its package type, its
+/// minimum client version, nor its commit marker's contents, unlike a
+/// dependency's). The SDK writes each download as an exact range; restore's
+/// handling of any other range is not modelled, so one declines.
+fn check_downloads(
+    packages: &Path,
+    framework: &TargetFrameworkInformation,
+) -> Result<(), DgSpecResolveDecline> {
+    for DownloadDependency { id, range } in &framework.download_dependencies {
+        let unavailable = || DgSpecResolveDecline::DownloadUnavailable {
+            target_alias: framework.target_alias.clone(),
+            id: id.clone(),
+            range: Box::new(range.clone()),
+        };
+        // A floating range consults the sources whatever its bounds.
+        let exact = match (range.min_version(), range.max_version()) {
+            (Some(min), Some(max))
+                if !range.is_floating()
+                    && range.is_min_inclusive()
+                    && range.is_max_inclusive()
+                    && min.eq_strict(max) =>
+            {
+                min.clone()
+            }
+            _ => return Err(unavailable()),
+        };
+        let paths = PackagePaths::new(packages, &PackageIdentity::new(id.clone(), exact));
+        let present = matches!(paths.is_committed(), Ok(true))
+            && matches!(paths.nuspec_path.try_exists(), Ok(true));
+        if !present {
+            return Err(unavailable());
+        }
+    }
+    Ok(())
 }
 
 /// Every version restore may read for `closure` ([`ResolvedPackageClosure::examined`])
@@ -876,7 +932,8 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
             // compatibility check admits only assets for the framework itself);
             // taking a dependency group through it logs nothing.
             warn: _,
-            download_dependencies,
+            // Checked for presence after resolving (`check_downloads`).
+            download_dependencies: _,
             central_package_versions,
             // A framework reference adds no package to the closure; what it
             // takes out of it is `packagesToPrune`, which declines.
@@ -918,10 +975,6 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         }
         if !imports.is_empty() && !*asset_target_fallback {
             decline(UnmodelledField::PackageTargetFallback);
-        }
-        for download in download_dependencies {
-            let DownloadDependency { id: _, range: _ } = download;
-            decline(UnmodelledField::DownloadDependencies);
         }
         for entry in central_package_versions {
             let PackageRangeEntry { id: _, range: _ } = entry;
