@@ -15,9 +15,12 @@ use std::path::{Path, PathBuf};
 use crate::csharp_sidecar::{SidecarError, SidecarHandle, start_bundled_sidecar};
 
 /// Owns the single reused sidecar process. Held on
-/// [`crate::semantic::SemanticState`]; spawned on the first C# reference
-/// encountered, never before (a project with no `.csproj` refs never pays for
-/// a sidecar). [`Default`] is the un-spawned state.
+/// [`crate::semantic::SemanticState`], which hands it to the env build only
+/// when the host opted into C# project references
+/// ([`crate::semantic::SemanticState::set_csharp_project_references_enabled`]);
+/// spawned on the first C# reference encountered then, never before (a project
+/// with no `.csproj` refs never pays for a sidecar). [`Default`] is the
+/// un-spawned state.
 #[derive(Default)]
 pub struct SidecarManager {
     /// The live sidecar, or `None` if not yet spawned / dropped after a

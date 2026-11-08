@@ -15,6 +15,16 @@
 > The retired `invalidate` JSON-RPC method (originally phase 6) remains
 > deliberately absent — D9 records why the cache-key design made it
 > unnecessary.
+>
+> The sidecar runs only when the host opts in with the
+> `enableCSharpProjectReferences` initialization option (default off).
+> Loading a csproj through `MSBuildWorkspace` (D4) is a design-time build:
+> it executes the project's MSBuild targets (its `Directory.Build.targets`
+> included), loads its analyzers and source generators in-process, and
+> writes under `obj/borzoi/csharp-sidecar/` — the same workspace-trust
+> class as `dotnet restore`, which is gated the same way. With the option
+> off the sidecar is never spawned, and each C# `<ProjectReference>` is an
+> unread reference that marks the F# project's assembly env incomplete.
 
 Design doc for a managed (.NET) sidecar process that, given a `.csproj` on
 disk, produces an up-to-date metadata-only assembly the Rust LSP can hand to

@@ -184,7 +184,10 @@ This is a Cargo workspace with nine members:
   starts as a row in that table, not a review finding.
 - `crates/lsp/` — `borzoi` (the package id is just `borzoi`, *not*
   `borzoi-lsp`; use `cargo test -p borzoi`). The LSP server (binary + library):
-  diagnostics, project-assets resolution, the C# sidecar. Depends on
+  diagnostics, project-assets resolution, the C# sidecar (run only for a host
+  that sets the `enableCSharpProjectReferences` initialization option, as
+  on-demand restore needs `enableOnDemandRestore`: both execute the workspace's
+  MSBuild targets). Depends on
   `borzoi-cst` for tokens/parse trees and `borzoi-sema` for name
   resolution. Consumes `borzoi-msbuild`
   for `.fsproj` evaluation *at runtime* — every per-file lookup evaluates
