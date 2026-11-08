@@ -1007,8 +1007,8 @@ mod tests {
         assert_eq!(see.attribute("cref"), Some("T:B"));
     }
 
-    /// `roxmltree` recurses per nested element, so a hostile file must be
-    /// refused before it is parsed at all — this one would abort the process.
+    /// The reader walks a whole file recursively, so a hostile file must be
+    /// refused before that walk — this one would abort the process.
     #[test]
     fn a_hostilely_deep_file_is_refused_rather_than_overflowing() {
         let depth = 1_000_000;

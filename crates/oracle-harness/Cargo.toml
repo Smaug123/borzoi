@@ -12,6 +12,8 @@ borzoi-spawn.workspace = true
 proc-macro2.workspace = true
 # The `nuget-oracle` protocol is JSON lines (`nuget_oracle`).
 serde_json.workspace = true
+# `xml_pump` locates the element paths it repeats.
+roxmltree.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

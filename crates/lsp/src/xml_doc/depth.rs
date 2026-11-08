@@ -1,13 +1,15 @@
 //! A pre-parse bound on XML element nesting.
 //!
-//! `roxmltree`'s tokenizer recurses once per nested element
-//! (`parse_element` → `parse_content` → `parse_element`), with no limit of its
-//! own, so a file nesting a few hundred thousand elements overflows the stack
-//! and aborts the process — the LSP, here, over a `.xml` that any NuGet package
-//! can ship. [`parse_bounded`] scans the text for its nesting depth first and
-//! only hands it to `roxmltree` when that depth is within a bound.
+//! `roxmltree` parses iteratively, but the doc-file reader walks what it
+//! parses recursively — the member scan over a whole file, and the
+//! [`super::tree::DocElement`] conversion, and everything downstream of it, over
+//! each entry — so a file nesting a few hundred thousand elements would
+//! overflow the stack and abort the process: the LSP, here, over a `.xml` that
+//! any NuGet package can ship. [`parse_bounded`] scans the text for its nesting
+//! depth first and only parses it when that depth is within a bound, which
+//! bounds every one of those walks at once.
 //!
-//! The scan must never *under*-estimate the depth `roxmltree` would recurse to;
+//! The scan must never *under*-estimate the depth of the tree `roxmltree` builds;
 //! over-estimating merely refuses a file. It follows the same lexical grammar
 //! for the constructs that decide nesting — start/end/empty-element tags,
 //! comments, CDATA, processing instructions, quoted attribute values — and
@@ -18,11 +20,9 @@
 ///
 /// The deepest shipped doc file found nests 10 levels (`doc` → `members` →
 /// `member` → `remarks` → `list` → `item` → `description` → …; measured over
-/// the .NET 10 reference pack, FSharp.Core, and 1,154 NuGet packages). The
-/// ceiling is the stack: an unoptimised `roxmltree` spends ~16 KiB of stack per
-/// level and overflows a 2 MiB test thread at ~128, an optimised one ~3,200
-/// levels. 32 is three times the deepest real file and a quarter of the
-/// tightest ceiling.
+/// the .NET 10 reference pack, FSharp.Core, and 1,154 NuGet packages). 32 is
+/// three times the deepest real file, so the bound refuses no real file while
+/// holding every recursive walk of a parsed one to a few dozen frames.
 pub const MAX_FILE_DEPTH: usize = 32;
 
 /// Why [`parse_bounded`] produced no document.
