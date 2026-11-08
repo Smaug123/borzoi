@@ -18,12 +18,19 @@
 //! wrote. Whatever MSBuild knows that bears on resolution and the spec does not
 //! carry would show up there as a difference.
 //!
+//! Stage 4 then puts the spawn-free half B to the same restore: B₁
+//! (`borzoi_nuget::dgspec::resolve_dgspec`), handed the spec and the identity
+//! of the NuGet that graded it, either declines or computes each framework's
+//! package closure exactly as the restore's assets file lists it
+//! ([`spawn_free`]).
+//!
 //! [`pinned_projects`] (`#[ignore]`d; CI runs it in the `corpus-diff` job over
 //! the pinned project corpus) does all of this for every project in
 //! `BORZOI_PROJECT_LIST`, restoring against the packages folder
-//! `BORZOI_PROJECT_PACKAGES` the corpus was restored into, and pins what the reader makes of each spec, each
-//! target of each assets file, and the identity of the `NuGet.Commands` that
-//! graded them in an exact manifest
+//! `BORZOI_PROJECT_PACKAGES` the corpus was restored into, and pins what the
+//! reader makes of each spec, each target of each assets file, B₁'s verdict on
+//! each project (the stage-4 census: which unmodelled fields block it), and the
+//! identity of the `NuGet.Commands` that graded them in an exact manifest
 //! (`tests/manifests/restore_graph_projects.txt`).
 //!
 //! Requires the .NET SDK + the vendored NuGet cache — the Nix devShell provides
@@ -36,7 +43,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use borzoi::restore::{RestoreGraph, RestoreGraphSource, ScratchDir, restore_graph};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
-use borzoi_nuget::dgspec::{DependencyGraphSpec, DgSpecDecline, PathSegment, parse_dgspec};
+use borzoi_nuget::NuGetFramework;
+use borzoi_nuget::dgspec::{
+    DependencyGraphSpec, DgSpecDecline, DgSpecResolveDecline, NuGetIdentity, PathSegment,
+    ResolvedFramework, parse_dgspec, resolve_dgspec,
+};
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use borzoi_oracle_harness::nuget_oracle::{Oracle, sdk_dir_for};
 use serde_json::{Value, json};
@@ -188,6 +199,13 @@ fn decomposes_losslessly(
             .or_insert_with(|| Oracle::spawn_on(&sdk, &[]))
             .request(&json!({"op": "restoreDgSpec", "text": text}))
     };
+    if response["ok"] == false {
+        return Err(format!(
+            "{}: NuGet threw restoring the generated spec: {}",
+            project.display(),
+            response["message"]
+        ));
+    }
     let identity = &response["nugetCommands"];
     let expected = sdk.join("NuGet.Commands.dll");
     if identity["path"].as_str() != expected.to_str() {
@@ -250,6 +268,134 @@ fn comparable_assets(mut assets: Value) -> Value {
         logs.sort_by_cached_key(|message| message.to_string());
     }
     assets
+}
+
+/// What B₁ made of a spec whose restore it was checked against.
+#[derive(Debug)]
+enum SpawnFree {
+    Committed(Vec<ResolvedFramework>),
+    Declined(DgSpecResolveDecline),
+}
+
+impl SpawnFree {
+    /// The census label: the frameworks committed, or the decline's class
+    /// (for unmodelled fields, every one present).
+    fn label(&self) -> String {
+        match self {
+            SpawnFree::Committed(frameworks) => {
+                format!("b1: committed frameworks={}", frameworks.len())
+            }
+            SpawnFree::Declined(decline) => {
+                let class = match decline {
+                    DgSpecResolveDecline::Unmodelled { fields } => fields
+                        .iter()
+                        .map(|field| field.name())
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    DgSpecResolveDecline::Resolve { decline, .. } => {
+                        let debug = format!("{decline:?}");
+                        let variant = debug.split(['(', ' ', '{']).next().unwrap_or_default();
+                        format!("resolve:{variant}")
+                    }
+                    DgSpecResolveDecline::UnverifiedNuGet { .. } => "unverified-nuget".to_owned(),
+                    DgSpecResolveDecline::ProjectNotRestored { .. } => "not-restored".to_owned(),
+                    DgSpecResolveDecline::PackageNamedLikeProject { .. } => {
+                        "named-like-project".to_owned()
+                    }
+                    DgSpecResolveDecline::CompatibilityUnproven { .. } => {
+                        "compatibility-unproven".to_owned()
+                    }
+                    DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
+                    DgSpecResolveDecline::PackageMetadata { .. } => "package-metadata".to_owned(),
+                };
+                format!("b1: declined {class}")
+            }
+        }
+    }
+}
+
+/// Stage 4: B₁, handed the spec and the identity of the NuGet that restored
+/// it, declines, or commits only where the restore succeeded and to exactly
+/// the package closure each framework's target lists.
+///
+/// Targets are matched by framework, not by name: an assets file of version 4
+/// names a target by its alias, one of version 3 by `NuGetFramework.ToString()`
+/// (`.NETStandard,Version=v2.0`), and which version restore writes moves with
+/// the spec's `SdkAnalysisLevel`.
+fn spawn_free(
+    project: &Path,
+    spec: &DependencyGraphSpec,
+    decomposition: &Decomposition,
+) -> Result<SpawnFree, String> {
+    let [entry] = spec.restore.as_slice() else {
+        return Err(format!(
+            "{}: an entry-only spec restores one project, not {}",
+            project.display(),
+            spec.restore.len()
+        ));
+    };
+    let identity = NuGetIdentity::new(&decomposition.nuget_commands);
+    let frameworks = match resolve_dgspec(&identity, spec, entry) {
+        Ok(frameworks) => frameworks,
+        Err(decline) => return Ok(SpawnFree::Declined(decline)),
+    };
+    if !decomposition.success {
+        return Err(format!(
+            "{}: B₁ committed, but the restore failed",
+            project.display()
+        ));
+    }
+    let key = |framework: &NuGetFramework| {
+        framework
+            .short_folder_name()
+            .expect("a project framework has a short folder name")
+    };
+    let theirs: BTreeMap<String, BTreeSet<(String, String)>> = decomposition.assets["targets"]
+        .as_object()
+        .expect("an assets file has targets")
+        .iter()
+        .map(|(name, libraries)| {
+            let framework = NuGetFramework::parse(name)
+                .unwrap_or_else(|e| panic!("target {name:?} names a framework: {e}"));
+            let packages = libraries
+                .as_object()
+                .expect("a target maps libraries")
+                .iter()
+                .filter(|(_, library)| library["type"] == "package")
+                .map(|(library, _)| {
+                    let (id, version) = library.split_once('/').expect("`id/version`");
+                    (id.to_ascii_lowercase(), version.to_owned())
+                })
+                .collect();
+            (key(&framework), packages)
+        })
+        .collect();
+    let ours: BTreeMap<String, BTreeSet<(String, String)>> = frameworks
+        .iter()
+        .map(|resolved| {
+            let packages = resolved
+                .closure
+                .packages
+                .iter()
+                .map(|package| {
+                    (
+                        package.identity.id.as_str().to_ascii_lowercase(),
+                        package.identity.version.to_normalized_string(),
+                    )
+                })
+                .collect();
+            (key(&resolved.framework), packages)
+        })
+        .collect();
+    if ours != theirs {
+        return Err(format!(
+            "{}: B₁'s closures are not the restore's:
+B₁: {ours:?}
+restore: {theirs:?}",
+            project.display()
+        ));
+    }
+    Ok(SpawnFree::Committed(frameworks))
 }
 
 /// One manifest label per target of an assets file: its library count, how
@@ -330,6 +476,12 @@ const LIB: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
 /// The agreed spec of `project`, read by the stage-1 reader, which must commit.
 /// The decomposition must be lossless on it too.
 fn committed_spec(project: &Path) -> DependencyGraphSpec {
+    committed_spec_and_b1(project).0
+}
+
+/// [`committed_spec`], with B₁'s verdict on it, which must agree with the
+/// restore.
+fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
     let (text, generated, restored) =
         match both_routes(project, &SdkDiscoveryEnv::from_process_env()) {
             Ok(Graphs::Agree {
@@ -340,14 +492,17 @@ fn committed_spec(project: &Path) -> DependencyGraphSpec {
             Ok(Graphs::Declined) => panic!("{}: both routes declined", project.display()),
             Err(failure) => panic!("{failure}"),
         };
-    if let Err(failure) = decomposes_losslessly(project, &text, &generated, &restored) {
-        panic!("{failure}");
-    }
+    let decomposition = decomposes_losslessly(project, &text, &generated, &restored)
+        .unwrap_or_else(|failure| panic!("{failure}"));
     assert!(
         !project.parent().unwrap().join("obj").exists(),
         "neither route may write the project's obj/"
     );
-    parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declined: {decline}"))
+    let spec =
+        parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declined: {decline}"));
+    let b1 =
+        spawn_free(project, &spec, &decomposition).unwrap_or_else(|failure| panic!("{failure}"));
+    (spec, b1)
 }
 
 #[test]
@@ -373,6 +528,56 @@ fn a_single_project_generates_the_spec_restore_reads() {
             .any(|d| d.id.as_str() == "FSharp.Core"),
         "the implicit FSharp.Core reference is in the spec"
     );
+}
+
+/// A `net10.0` project's spec carries the SDK's pruning list, which B₁ does
+/// not model (stage 5).
+#[test]
+fn b1_declines_a_net10_project_on_its_pruning_list() {
+    let root = write_tree(
+        "b1-net10",
+        &[("App.fsproj", APP), ("App.fs", "module App\n")],
+    );
+    match committed_spec_and_b1(&root.join("App.fsproj")).1 {
+        SpawnFree::Declined(DgSpecResolveDecline::Unmodelled { fields }) => assert!(
+            fields.contains(&borzoi_nuget::dgspec::UnmodelledField::PackagesToPrune),
+            "{fields:?}"
+        ),
+        other => panic!("expected a pruning decline, got {other:?}"),
+    }
+}
+
+/// A `netstandard2.0` project has no pruning list and no targeting-pack
+/// download, so B₁ resolves it, implicit references and asset-target fallback
+/// list included, to exactly the restore's closure.
+#[test]
+fn b1_resolves_a_netstandard_project_as_restore_does() {
+    let library = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"#;
+    let root = write_tree(
+        "b1-netstandard",
+        &[("Lib.fsproj", library), ("Lib.fs", "module Lib\n")],
+    );
+    match committed_spec_and_b1(&root.join("Lib.fsproj")).1 {
+        SpawnFree::Committed(frameworks) => {
+            let ids: BTreeSet<String> = frameworks[0]
+                .closure
+                .packages
+                .iter()
+                .map(|package| package.identity.id.as_str().to_ascii_lowercase())
+                .collect();
+            assert!(ids.contains("fsharp.core"), "{ids:?}");
+            assert!(ids.contains("netstandard.library"), "{ids:?}");
+        }
+        SpawnFree::Declined(decline) => panic!("B₁ must commit, but declined: {decline}"),
+    }
 }
 
 #[test]
@@ -676,7 +881,7 @@ fn committed_label(spec: &DependencyGraphSpec) -> String {
 }
 
 #[test]
-#[ignore = "stages 2 and 3 over the project corpus; run through tools/ci/project-corpus-gate.sh restore-graph"]
+#[ignore = "stages 2 to 4 over the project corpus; run through tools/ci/project-corpus-gate.sh restore-graph"]
 fn pinned_projects() {
     let Some(list) = std::env::var_os("BORZOI_PROJECT_LIST") else {
         eprintln!("BORZOI_PROJECT_LIST unset; skipping. See the module docs.");
@@ -706,12 +911,19 @@ fn pinned_projects() {
                 generated,
                 restored,
             }) => {
-                lines.push(match parse_dgspec(&text) {
-                    Ok(spec) => format!("{key} spec: {}", committed_label(&spec)),
-                    Err(decline) => format!("{key} spec: {}", decline_label(&decline)),
+                let spec = parse_dgspec(&text);
+                lines.push(match &spec {
+                    Ok(spec) => format!("{key} spec: {}", committed_label(spec)),
+                    Err(decline) => format!("{key} spec: {}", decline_label(decline)),
                 });
                 match decomposes_losslessly(project, &text, &generated, &restored) {
                     Ok(decomposition) => {
+                        if let Ok(spec) = &spec {
+                            match spawn_free(project, spec, &decomposition) {
+                                Ok(b1) => lines.push(format!("{key} {}", b1.label())),
+                                Err(failure) => failures.push(failure),
+                            }
+                        }
                         identities.insert(decomposition.nuget_commands);
                         let logs = decomposition.assets["logs"].as_array().map_or(0, Vec::len);
                         let outcome = if decomposition.success {
@@ -735,8 +947,8 @@ fn pinned_projects() {
     }
     assert!(
         failures.is_empty(),
-        "the generated spec must be the one restore reads, and NuGet over it must \
-         compute the restore's assets file:\n{}",
+        "the generated spec must be the one restore reads, NuGet over it must \
+         compute the restore's assets file, and B₁ must decline or agree with it:\n{}",
         failures.join("\n")
     );
     lines.extend(

@@ -376,6 +376,9 @@ impl OurOutcome {
                 OurOutcome::Declined("asset-filter")
             }
             ResolveDecline::DependencyWithoutRange { .. } => OurOutcome::Declined("no-range"),
+            ResolveDecline::DuplicateDependency { .. } => {
+                OurOutcome::Declined("duplicate-dependency")
+            }
             ResolveDecline::UnresolvableLosingEdge { .. } => OurOutcome::Declined("losing-edge"),
             ResolveDecline::LosingVersionNotALeaf { .. } => {
                 OurOutcome::Declined("loser-not-a-leaf")
@@ -757,6 +760,40 @@ fn case_insensitive_identity_resolves_identically() {
     assert!(
         rust && oracle_ok,
         "case-insensitive chain resolves on both sides"
+    );
+}
+
+/// A dependency group that names one package twice. NuGet keeps both edges,
+/// and the one with the lower bound pins the package below what its sibling
+/// asks for: a downgrade (`NU1605`), which fails restore under the SDK's
+/// default `WarningsAsErrors`. The `dgspec_resolve_diff` generator found it.
+#[test]
+fn a_group_naming_a_package_twice_is_a_downgrade() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "A",
+                "1.0.0",
+                vec![Dep::new("B", "[1.0.0, )"), Dep::new("B", "[2.0.0, )")],
+            ),
+            Pkg::simple("B", "1.0.0", vec![]),
+            Pkg::simple("B", "2.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("duplicate-dependency")
+    );
+    assert!(
+        comparison
+            .restore
+            .default
+            .fails_with(RestoreFailure::Downgrade),
+        "{:?}",
+        comparison.restore.default
     );
 }
 

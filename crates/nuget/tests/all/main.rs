@@ -18,6 +18,7 @@ mod compile_assets_diff;
 mod compile_assets_properties;
 mod compile_assets_restore;
 mod dgspec_diff;
+mod dgspec_resolve_diff;
 mod framework_diff;
 mod framework_exhaustive;
 mod framework_properties;

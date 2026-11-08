@@ -34,9 +34,16 @@
 
 mod json;
 mod log_code;
+mod nuspec;
+mod resolve;
 
 pub use json::JsonKind;
 pub use log_code::NuGetLogCode;
+pub use nuspec::{DESCRIPTIVE_ELEMENTS, NuspecDecline, nuspec_is_admitted};
+pub use resolve::{
+    DgSpecResolveDecline, NuGetIdentity, PackageMetadataDecline, ResolvedFramework,
+    UnmodelledField, resolve_dgspec, verified_nuget_identities,
+};
 
 use json::Json;
 

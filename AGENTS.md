@@ -125,8 +125,13 @@ This is a Cargo workspace with nine members:
   `VersionRange` / `NuGetFramework` models, global-packages-folder and
   `.nuspec` reading, the conservative offline resolver, and compile-asset
   selection (NuGet's content model), and the dependency-graph spec reader
-  (`dgspec`, `docs/nuget-dgspec-boundary-plan.md`). Everything either resolves
-  *identically* to `dotnet restore` or declines. Self-contained: depends only
+  (`dgspec`, `docs/nuget-dgspec-boundary-plan.md`) and its resolver
+  (`dgspec::resolve_dgspec`). Everything either resolves
+  *identically* to `dotnet restore` or declines. `resolve_dgspec` commits only
+  for a NuGet on its verified list (`src/dgspec/verified_nuget.txt`), which
+  `dgspec_resolve_diff` derives from the oracle, so a devshell SDK bump fails
+  that test until the list is regenerated (the failure prints the command), and
+  regenerating it is the claim that the differential has graded the new NuGet. Self-contained: depends only
   on `roxmltree` and `serde`/`serde_json`.
   Differentially tested against the real NuGet client libraries via
   `tools/nuget-oracle` — a test-only JSONL batch oracle in the same mould as

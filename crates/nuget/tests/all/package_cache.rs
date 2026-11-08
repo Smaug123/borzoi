@@ -68,6 +68,32 @@ fn global_packages_paths_use_lowercase_id_and_normalized_version() {
     );
 }
 
+/// A cache assembled from links (Nix builds one) holds its versions as
+/// symlinked folders, which restore follows.
+#[cfg(unix)]
+#[test]
+fn list_committed_package_versions_follows_symlinked_version_folders() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let id = PackageId::parse("FSharp.Core").expect("package id parses");
+    write_committed_version(&temp.path().join("store"), "FSharp.Core", "1.0.0");
+    let id_folder = temp.path().join("cache").join("fsharp.core");
+    fs::create_dir_all(&id_folder).expect("id folder");
+    std::os::unix::fs::symlink(
+        temp.path().join("store").join("fsharp.core").join("1.0.0"),
+        id_folder.join("1.0.0"),
+    )
+    .expect("symlink");
+
+    let entries = list_committed_package_versions(&temp.path().join("cache"), &id)
+        .expect("list committed versions");
+
+    let versions = entries
+        .iter()
+        .map(|entry| entry.identity.version.to_normalized_string())
+        .collect::<Vec<_>>();
+    assert_eq!(versions, ["1.0.0"]);
+}
+
 #[test]
 fn list_committed_package_versions_returns_sorted_committed_entries() {
     let temp = tempfile::tempdir().expect("tempdir");

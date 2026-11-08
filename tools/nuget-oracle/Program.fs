@@ -126,6 +126,9 @@
 ///         "nugetCommands":identity}
 ///          (`assets` is the assets file restore would write, as
 ///          `LockFileFormat` renders it)
+///      | {"ok":false,"exceptionType":s,"message":s,"nugetCommands":identity}
+///          (restore threw, as it does for a package whose minimum client
+///          version is above its own; `dotnet restore` fails then too)
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -1001,29 +1004,50 @@ let private respondRestoreDgSpec (sdkDir: string) (root: JsonElement) : string =
 
         args.PreLoadedRequestProviders.Add(DependencyGraphSpecRequestProvider(RestoreCommandProvidersCache(), dgSpec))
 
-        let requests =
-            RestoreRunner.GetRequests args |> Async.AwaitTask |> Async.RunSynchronously
+        let outcome =
+            try
+                let requests =
+                    RestoreRunner.GetRequests args |> Async.AwaitTask |> Async.RunSynchronously
 
-        let results =
-            RestoreRunner.RunWithoutCommit(requests, args)
-            |> Async.AwaitTask
-            |> Async.RunSynchronously
+                RestoreRunner.RunWithoutCommit(requests, args)
+                |> Async.AwaitTask
+                |> Async.RunSynchronously
+                |> Ok
+            with error ->
+                // Restore refuses some packages by throwing rather than by
+                // failing a result (a minimum client version above its own).
+                // `dotnet restore` fails then too.
+                let rec innermost (e: exn) =
+                    match e with
+                    | :? AggregateException as aggregate when aggregate.InnerExceptions.Count = 1 ->
+                        innermost aggregate.InnerExceptions[0]
+                    | e -> e
 
-        let format = NuGet.ProjectModel.LockFileFormat()
+                Error(innermost error)
 
-        let rendered =
-            results
-            |> Seq.map (fun pair ->
-                {| projectPath = pair.SummaryRequest.Request.Project.FilePath
-                   success = pair.Result.Success
-                   assets = format.Render pair.Result.LockFile |})
-            |> Seq.sortBy (fun r -> r.projectPath)
-            |> Seq.toArray
+        match outcome with
+        | Ok results ->
+            let format = NuGet.ProjectModel.LockFileFormat()
 
-        JsonSerializer.Serialize
-            {| ok = true
-               results = rendered
-               nugetCommands = nugetCommandsIdentity sdkDir |}
+            let rendered =
+                results
+                |> Seq.map (fun pair ->
+                    {| projectPath = pair.SummaryRequest.Request.Project.FilePath
+                       success = pair.Result.Success
+                       assets = format.Render pair.Result.LockFile |})
+                |> Seq.sortBy (fun r -> r.projectPath)
+                |> Seq.toArray
+
+            JsonSerializer.Serialize
+                {| ok = true
+                   results = rendered
+                   nugetCommands = nugetCommandsIdentity sdkDir |}
+        | Error error ->
+            JsonSerializer.Serialize
+                {| ok = false
+                   exceptionType = error.GetType().FullName
+                   message = error.Message
+                   nugetCommands = nugetCommandsIdentity sdkDir |}
     finally
         try
             File.Delete path

@@ -104,12 +104,14 @@ run_step() { # name
         -- --ignored --nocapture
       ;;
     restore-graph)
-      # Stages 2 and 3 of docs/nuget-dgspec-boundary-plan.md over the same
+      # Stages 2 to 4 of docs/nuget-dgspec-boundary-plan.md over the same
       # projects, restored offline against the packages folder their
       # materialising restores filled: the dependency-graph spec generated
       # without restoring must be exactly the one restore itself reads, NuGet
       # handed that spec must compute exactly the assets file restore wrote,
-      # and the outcome is pinned in `restore_graph_projects.txt`.
+      # B₁ must decline or compute that file's package closures, and the
+      # outcome (B₁'s declines by field among it) is pinned in
+      # `restore_graph_projects.txt`.
       nix develop --command env \
         BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
         BORZOI_PROJECT_PACKAGES="$RUNNER_TEMP/project-corpus-packages" \

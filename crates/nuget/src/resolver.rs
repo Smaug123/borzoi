@@ -135,6 +135,14 @@ pub struct ResolvedPackage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPackageClosure {
     pub packages: Vec<ResolvedPackage>,
+    /// Every installed version restore may read while resolving this closure,
+    /// sorted: each version the walk read, and the lower bound of every
+    /// dependency they declare and of every direct requirement, where that
+    /// version is installed. Restore reads the version an edge's lower bound
+    /// names (it looks in the packages folder for that exact version first),
+    /// including for edges that lose or that the walk eclipses, so a caller
+    /// that must know restore accepts every package it reads checks these.
+    pub examined: Vec<PackageIdentity>,
 }
 
 /// Why the offline resolver declined to produce a closure.
@@ -193,6 +201,14 @@ pub enum ResolveDecline {
         dependency: PackageId,
     },
     DependencyWithoutRange {
+        package: PackageIdentity,
+        dependency: PackageId,
+    },
+    /// A package's selected dependency group names one package more than once
+    /// (ignoring case). NuGet keeps every such edge, so the walk's one edge per
+    /// package does not model it; with different lower bounds, restore reads the
+    /// lower one as pinning the package below the higher one's demand (NU1605).
+    DuplicateDependency {
         package: PackageIdentity,
         dependency: PackageId,
     },
@@ -327,6 +343,16 @@ impl fmt::Display for ResolveDecline {
                     package.id, package.version
                 )
             }
+            ResolveDecline::DuplicateDependency {
+                package,
+                dependency,
+            } => {
+                write!(
+                    f,
+                    "package {} {} names dependency {dependency} more than once",
+                    package.id, package.version
+                )
+            }
             ResolveDecline::DependencyCycle { cycle } => {
                 let path = cycle
                     .iter()
@@ -392,13 +418,39 @@ pub fn resolve_offline(
     target_framework: &NuGetFramework,
     direct: &[DirectPackageRequirement],
 ) -> Result<ResolvedPackageClosure, ResolveDecline> {
-    if !target_framework.is_resolver_project_framework() {
-        return Err(ResolveDecline::UnsupportedProjectFramework {
-            framework: target_framework.clone(),
-        });
+    resolve_offline_with_fallback(global_packages_root, target_framework, &[], direct)
+}
+
+/// [`resolve_offline`] for a project whose target framework carries an
+/// asset-target fallback list (the SDK's `AssetTargetFallback`, `net461` to
+/// `net481` on every modern project).
+///
+/// The list bears on dependency-group selection: a package with no group the
+/// project's own framework can consume contributes the dependencies of the
+/// nearest group for the first fallback framework that has one. That is
+/// NuGet's `NuGetFrameworkUtility.GetNearest` over an
+/// `AssetTargetFallbackFramework`, which restore uses to pick a package's
+/// dependencies. A package with a group for the project's own framework never
+/// looks at the fallbacks, even when that group is empty.
+pub fn resolve_offline_with_fallback(
+    global_packages_root: &Path,
+    target_framework: &NuGetFramework,
+    asset_target_fallback: &[NuGetFramework],
+    direct: &[DirectPackageRequirement],
+) -> Result<ResolvedPackageClosure, ResolveDecline> {
+    for framework in std::iter::once(target_framework).chain(asset_target_fallback) {
+        if !framework.is_resolver_project_framework() {
+            return Err(ResolveDecline::UnsupportedProjectFramework {
+                framework: framework.clone(),
+            });
+        }
     }
 
-    let mut cache = PackageCache::new(global_packages_root, target_framework);
+    let mut cache = PackageCache::new(
+        global_packages_root,
+        target_framework,
+        asset_target_fallback,
+    );
     let mut selected: BTreeMap<PackageId, NuGetVersion> = BTreeMap::new();
 
     for _ in 0..MAX_ROUNDS {
@@ -447,6 +499,13 @@ fn finish(
             identity: cached.package.identity.clone(),
             paths: cached.package.paths.clone(),
         });
+    }
+
+    // A dependency group naming one package twice, on any package the walk
+    // read. The walk keeps one edge per package, so it cannot say what the
+    // second edge did, wherever it sat.
+    if let Some(decline) = cache.duplicate_dependency() {
+        return Err(decline);
     }
 
     // A dependency shape we cannot model, on a package the graph actually
@@ -549,7 +608,8 @@ fn finish(
         }
     }
 
-    Ok(ResolvedPackageClosure { packages })
+    let examined = cache.examined(direct)?;
+    Ok(ResolvedPackageClosure { packages, examined })
 }
 
 /// The envelope in which NuGet's two dependency resolvers — the legacy
@@ -1363,14 +1423,22 @@ struct CachedPackage {
 struct PackageCache<'a> {
     root: &'a Path,
     framework: &'a NuGetFramework,
+    /// Consulted in order, and only when no dependency group suits
+    /// [`Self::framework`]; see [`resolve_offline_with_fallback`].
+    asset_target_fallback: &'a [NuGetFramework],
     packages: BTreeMap<(PackageId, String), Result<CachedPackage, PackageReadError>>,
 }
 
 impl<'a> PackageCache<'a> {
-    fn new(root: &'a Path, framework: &'a NuGetFramework) -> PackageCache<'a> {
+    fn new(
+        root: &'a Path,
+        framework: &'a NuGetFramework,
+        asset_target_fallback: &'a [NuGetFramework],
+    ) -> PackageCache<'a> {
         PackageCache {
             root,
             framework,
+            asset_target_fallback,
             packages: BTreeMap::new(),
         }
     }
@@ -1382,9 +1450,14 @@ impl<'a> PackageCache<'a> {
         let key = (identity.id.clone(), identity.version_folder_name());
         if !self.packages.contains_key(&key) {
             let entry = read_installed_package(self.root, identity.clone()).map(|package| {
-                let dependencies = package
-                    .nuspec
+                let nuspec = &package.nuspec;
+                let dependencies = nuspec
                     .select_dependency_group(self.framework)
+                    .or_else(|| {
+                        self.asset_target_fallback
+                            .iter()
+                            .find_map(|fallback| nuspec.select_dependency_group(fallback))
+                    })
                     .map(|group| group.dependencies.clone())
                     .unwrap_or_default();
                 CachedPackage {
@@ -1395,6 +1468,76 @@ impl<'a> PackageCache<'a> {
             self.packages.insert(key.clone(), entry);
         }
         self.packages.get_mut(&key).expect("just inserted")
+    }
+
+    /// See [`ResolvedPackageClosure::examined`].
+    fn examined(
+        &mut self,
+        direct: &[DirectPackageRequirement],
+    ) -> Result<Vec<PackageIdentity>, ResolveDecline> {
+        let key =
+            |identity: &PackageIdentity| (identity.id.clone(), identity.version_folder_name());
+        let mut examined: BTreeMap<(PackageId, String), PackageIdentity> = self
+            .packages
+            .values()
+            .flatten()
+            .map(|cached| {
+                (
+                    key(&cached.package.identity),
+                    cached.package.identity.clone(),
+                )
+            })
+            .collect();
+        let named: Vec<PackageIdentity> = self
+            .packages
+            .values()
+            .flatten()
+            .flat_map(|cached| &cached.dependencies)
+            .filter_map(|dependency| Some((&dependency.id, dependency.version_range.as_ref()?)))
+            .chain(
+                direct
+                    .iter()
+                    .map(|requirement| (&requirement.id, &requirement.range)),
+            )
+            .filter_map(|(id, range)| {
+                Some(PackageIdentity::new(
+                    id.clone(),
+                    range.min_version()?.clone(),
+                ))
+            })
+            .collect();
+        for identity in named {
+            let paths = PackagePaths::new(self.root, &identity);
+            let committed = paths
+                .is_committed()
+                .map_err(|source| ResolveDecline::PackageRead {
+                    identity: identity.clone(),
+                    source: Box::new(PackageReadError::Io {
+                        path: paths.metadata_path.clone(),
+                        source,
+                    }),
+                })?;
+            if committed {
+                examined.insert(key(&identity), identity);
+            }
+        }
+        Ok(examined.into_values().collect())
+    }
+
+    /// The first package read whose selected dependency group names one
+    /// package more than once.
+    fn duplicate_dependency(&self) -> Option<ResolveDecline> {
+        self.packages.values().flatten().find_map(|cached| {
+            let mut seen = BTreeSet::new();
+            cached
+                .dependencies
+                .iter()
+                .find(|dependency| !seen.insert(&dependency.id))
+                .map(|dependency| ResolveDecline::DuplicateDependency {
+                    package: cached.package.identity.clone(),
+                    dependency: dependency.id.clone(),
+                })
+        })
     }
 
     /// The package, or `None` if it could not be read.

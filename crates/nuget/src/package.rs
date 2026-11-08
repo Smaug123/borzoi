@@ -428,6 +428,11 @@ impl Error for PackageReadError {
 pub enum PackageNuspecParseError {
     Xml(roxmltree::Error),
     MissingDependencyId,
+    /// A dependency id with surrounding whitespace, which NuGet keeps (and
+    /// then finds no package for) where [`PackageId::parse`] would trim it.
+    UntrimmedDependencyId {
+        raw: String,
+    },
     InvalidDependencyId {
         raw: String,
         source: PackageIdParseError,
@@ -449,6 +454,9 @@ impl fmt::Display for PackageNuspecParseError {
             PackageNuspecParseError::Xml(e) => write!(f, "invalid XML: {e}"),
             PackageNuspecParseError::MissingDependencyId => {
                 f.write_str("nuspec dependency is missing an id")
+            }
+            PackageNuspecParseError::UntrimmedDependencyId { raw } => {
+                write!(f, "dependency id {raw:?} has surrounding whitespace")
             }
             PackageNuspecParseError::InvalidDependencyId { raw, source } => {
                 write!(f, "invalid dependency id {raw:?}: {source}")
@@ -476,7 +484,8 @@ impl Error for PackageNuspecParseError {
             PackageNuspecParseError::InvalidDependencyId { source, .. } => Some(source),
             PackageNuspecParseError::InvalidDependencyVersionRange { source, .. } => Some(source),
             PackageNuspecParseError::InvalidTargetFramework { source, .. } => Some(source),
-            PackageNuspecParseError::MissingDependencyId => None,
+            PackageNuspecParseError::MissingDependencyId
+            | PackageNuspecParseError::UntrimmedDependencyId { .. } => None,
         }
     }
 }
@@ -484,8 +493,9 @@ impl Error for PackageNuspecParseError {
 /// List committed versions for one package id in a global packages root.
 ///
 /// Only canonical NuGet global-packages entries are returned:
-/// `{id-lower}/{normalised-version-lower}/.nupkg.metadata`. Invalid,
-/// non-canonical, uncommitted, or non-directory children are ignored. IO
+/// `{id-lower}/{normalised-version-lower}/.nupkg.metadata`, a version folder
+/// reached through a symlink included. Invalid, non-canonical, uncommitted, or
+/// non-directory children are ignored. IO
 /// failures reading the package-id directory or its entries are returned so a
 /// caller can conservatively decline resolution.
 pub fn list_committed_package_versions(
@@ -511,11 +521,13 @@ pub fn list_committed_package_versions(
             source,
         })?;
         let path = entry.path();
-        let file_type = entry.file_type().map_err(|source| PackageCacheError::Io {
+        // Following symlinks, as restore does: a cache assembled from links
+        // (Nix builds one) holds its versions as symlinked folders.
+        let metadata = std::fs::metadata(&path).map_err(|source| PackageCacheError::Io {
             path: path.clone(),
             source,
         })?;
-        if !file_type.is_dir() {
+        if !metadata.is_dir() {
             continue;
         }
 
@@ -730,7 +742,11 @@ fn decode_utf16(bytes: &[u8], endian: Utf16Endian) -> io::Result<String> {
     String::from_utf16(&units).map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
 }
 
-/// Parse just the dependency groups from a nuspec document.
+/// Parse the dependency and reference groups from a nuspec document.
+///
+/// This reader is lenient, as NuGet's is: it takes the elements it knows and
+/// ignores the rest. A consumer that must not misread a package holds the
+/// document to [`crate::dgspec`]'s nuspec domain first.
 pub fn parse_nuspec(text: &str) -> Result<PackageNuspec, PackageNuspecParseError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let doc = roxmltree::Document::parse(text).map_err(PackageNuspecParseError::Xml)?;
@@ -885,6 +901,11 @@ fn parse_dependency(
     let raw_id = node
         .attribute("id")
         .ok_or(PackageNuspecParseError::MissingDependencyId)?;
+    if raw_id.trim() != raw_id {
+        return Err(PackageNuspecParseError::UntrimmedDependencyId {
+            raw: raw_id.to_owned(),
+        });
+    }
     let id = PackageId::parse(raw_id).map_err(|source| {
         PackageNuspecParseError::InvalidDependencyId {
             raw: raw_id.to_owned(),

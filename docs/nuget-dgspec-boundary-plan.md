@@ -1,7 +1,9 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–3 and 8 have landed. Stage 8 chose **A₁** (see its
-> section for the numbers and the conditions). Supersedes slice 8 of
+> **Status:** stages 1–4 and 8 have landed. Stage 8 chose **A₁** (see its
+> section for the numbers and the conditions). Stage 4's census orders stages
+> 5–7: the warning policy (7c) blocks every corpus project, and targeting-pack
+> downloads (7b) a third of them. Supersedes slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -80,9 +82,11 @@ download dependencies or the warning policy. The `restore` op in
 `tools/nuget-oracle` builds a synthetic dgspec that omits framework
 references, fallback imports and pruning, on the grounds that "none of them
 names a package in the synthetic universe". Real dgspecs break that premise
-(see `System.Text.Json` above), so the resolver has never been graded on a real
-input. The resolver is not wired into the LSP, so no wrong answer is live
-today.
+(see `System.Text.Json` above). Stage 4 put the resolver behind a real spec,
+where it declines every field it does not model, and graded it against B₀ on
+real-shaped specs; doing so found a closure it committed that restore fails
+(see stage 4). The resolver is not wired into the LSP, so no wrong answer is
+live today.
 
 ## Design
 
@@ -348,45 +352,231 @@ What this does not cover:
 - **No corpus project has a project reference or prunes** (they target
   `net5.0`, `net8.0` and `netstandard2.0`). Only the fixtures cover those.
 
-### Stage 4: B₁ consumes the typed dgspec
+### Stage 4: B₁ consumes the typed dgspec — landed
 
-**Dependencies:** stages 1, 3.
-**Implements:** the B₁ row.
-- Add `resolve_dgspec(nuget, spec, project, tfm)`. It is plumbing over
-  `resolve_offline`. `nuget` is the restoring NuGet's identity (see *Per-SDK
-  drift*), checked against the verified list. There is a typed decline for an
-  unverified identity, and one for each field the resolver does not model
-  (pruning, project references, transitive pinning, download dependencies,
-  non-default warning policy).
+`borzoi_nuget::dgspec::resolve_dgspec(nuget, spec, project)` resolves every
+target framework of a project in a parsed spec, or declines. It differs from
+the signature first planned in one way: it takes no framework. Restore
+succeeds or fails per project, and the LSP reads no assets file from a failed
+restore, so committing one framework while another fails would commit where B₀
+fails. It resolves them all and commits only when every one commits.
 
-**Correctness oracle:**
-- Certain-implies-exact against B₀ running that same identity, on generated
-  dgspecs and on every corpus dgspec.
-- Absolute property: for any spec, an identity not on the verified list
-  declines.
-- The verified list is exactly the set of identities a B₀ run in CI has graded.
-  A test derives it from the oracle runs, so nothing can be added by hand.
-- A pinned census of B₁'s outcome per corpus project, giving decline counts by
-  field. Expect pruning to decline nearly every `net10.0` project; the census
-  is how stages 5–7 get ordered.
+`nuget` is the restoring NuGet's identity (`NuGetIdentity`, the informational
+version of `NuGet.Commands.dll`). Only an identity on the verified list,
+`crates/nuget/src/dgspec/verified_nuget.txt`, commits. The list is an exact
+manifest of the identity the differential's oracle runs:
+`dgspec_resolve_diff::the_verified_list_is_the_graded_nuget` fails if the
+two differ, so an identity reaches the list only by being graded, and a
+devshell SDK bump fails until the list is regenerated.
+
+Every field of the spec model has a verdict. The function that classifies them
+destructures each struct in full, so a field added to the model does not
+compile until it has one. The verdicts are:
+- **Modelled:** direct dependencies, the packages folder, and the
+  asset-target fallback list.
+- **Inert, with the reason at the point of discard:** paths and outputs
+  (beyond being present and free of control characters); `noWarn`; include
+  and suppress-parent flags; `autoReferenced`; `SdkAnalysisLevel`; framework
+  references.
+- **Declined when present, all reported at once so the census can count
+  them:** pruning, project references, central package management (all of
+  it, not only transitive pinning), download dependencies, a warning policy
+  other than `warnAsError` ⊆ {`NU1605`}, fallback folders, a source that is
+  not a local absolute path, audit not explicitly off, a lock file that is or
+  might be in use, a dependency target other than `Package`, the legacy
+  `PackageTargetFallback`, a config file outside its closed vocabulary, any
+  project or restore entry besides this one, and required metadata that is
+  absent or outside the vocabulary the SDK writes.
+
+The input domain B₁ claims is therefore narrow by design: an entry-only spec,
+in the shape `restore.rs`'s `GenerateRestoreGraphFile` writes, over a packages
+folder whose every package that restore may read is in a stated domain
+(`crates/nuget/src/dgspec/nuspec.rs` for the nuspec, `commit_marker_is_admitted`
+for the marker), with config files that only list sources. Each input is held
+to a positive domain rather than to a list of known refusals, and each has a
+sweep that grades perturbations of a committing input against B₀.
+
+Review kept finding malformed inputs no SDK writes for ten rounds. What that
+non-convergence turned out to mean: a positive domain is a closure argument
+only for the *layer* it is stated at, and a nuspec has several — bytes, the
+XML declaration, the document, the element vocabulary, the identity it states.
+The vocabulary had a domain and a single-slot text sweep; the declaration had
+neither, and twenty hand shapes at that layer found three more inputs B₁
+committed and restore threw on (`version="1.1"`, `encoding="utf-16"` over UTF-8
+bytes, an encoding `System.Xml` does not know) in ninety seconds. So the nuspec
+domain is now stated per layer, in one total walk that declines every node it
+does not name, and `every_nuspec_layer_is_held_to_its_domain` sweeps each
+layer in its own terms: every declaration and encoding form, every published
+namespace and the prefixed spellings, and eleven structural mutations
+(duplicate, foreign or namespaced attribute, foreign child, text, comment,
+processing instruction, CDATA, prefix, foreign namespace, removal) at every
+element of a committing nuspec. Each variant is classed by the stated domain
+before any code runs — in-domain variants must commit and B₀ grades the
+commit; out-of-domain ones must decline whatever B₀ does, and the ones B₀
+accepts are printed as the over-decline census; graph-changing ones are graded
+only — so a walker that forgets a node class fails the sweep, not a review.
+
+After resolving, B₁ also applies restore's compatibility check in the
+direction that can only decline (see the findings below).
+
+`tests/all/dgspec_resolve_diff.rs` holds it to certain-implies-exact against
+B₀ (`restoreDgSpec`) over specs it generates. B₀ restores straight from the
+packages folder the resolver reads, with only empty or missing folders as
+sources, as `restore.rs`'s offline restore does, and B₁ is handed the identity
+B₀ reports. The generator varies each inert field, and the sweep fails unless
+each variation, and each assets-file version, was graded on a committed spec.
+Hand cases pin the rest:
+- each unmodelled field declines by name when it is the only change to a
+  committing spec;
+- an unverified identity declines on every generated spec;
+- a promoted `NU1608` fails a restore whose closure the resolver computes,
+  which is what makes the warning-policy decline load-bearing.
+
+`restore_graph.rs` grades B₁ against the real restore as well: on a
+`netstandard2.0` fixture it commits, implicit references included, and on
+every corpus project in `pinned_projects` it must decline or agree.
+
+The differential, the probes behind it, and review turned up seven things:
+- **Asset-target fallback picks dependency groups.** A package with no
+  dependency group for `net8.0` contributes its `net461` group's dependencies
+  to a project with the SDK's fallback list. The resolver read no group, so
+  it now takes the list (`resolve_offline_with_fallback`). A group for the
+  project's own framework shadows the list even when it is empty.
+- **`resolve_offline` committed where restore fails.** A dependency group that
+  names one package twice, with different lower bounds, is a downgrade
+  (`NU1605`) to both restore engines, and the resolver committed the higher
+  one. `resolver_diff`'s generators never repeated an id within a group. The
+  resolver now declines on a repeated id in any group it reads, and
+  `resolver_diff` pins the case.
+- **The assets file's target names depend on its version.** Version 4 names a
+  target by its alias, and version 3 by `NuGetFramework.ToString()`
+  (`.NETStandard,Version=v2.0`). Restore writes version 3 when the spec has no
+  `SdkAnalysisLevel`. The closures are the same, so both differentials compare
+  by framework.
+- **Restore checks compatibility after resolving.** A package with `lib/` or
+  `ref/` assets of which none suits the framework fails restore (`NU1202`);
+  through the asset-target fallback list restore may instead take them with a
+  warning (`NU1701`). The resolver reads only nuspecs, so B₁ now reads each
+  resolved package's files and commits only for a package with no assets or
+  with compile assets for the framework. The generator's packages carry asset
+  files so that this is graded; it was found by probing, not by the first
+  generator, whose packages had none.
+- **Restore validates package metadata even from a warm cache, on every
+  version it reads.** It refuses a `DotnetTool` package in a
+  `PackageReference` project (`NU1212`), and throws on a package type with a
+  malformed version or a `minClientVersion` above its own version, losing
+  versions included (the oracle's `restoreDgSpec` reports a thrown restore as
+  a failure, as `dotnet restore` fails). It throws, too, on content-file rules
+  it rejects and on a commit marker without a content hash. Three review
+  rounds each found another such refusal, so B₁ holds every package to a
+  stated domain rather than to a list of known refusals. The nuspec's is in
+  `dgspec/nuspec.rs`, layer by layer: UTF-8 bytes; a declaration that is absent
+  or `version="1.0"` with an encoding absent or `utf-8`; a document
+  `roxmltree` parses without a DTD; a `<package>` in a published namespace or
+  none holding one `<metadata>`, both in the default namespace (NuGet's reader
+  looks for `<metadata>`'s children there, so a nuspec prefixed throughout
+  with no default namespace has no identity to it); `<metadata>` children
+  that are each descriptive (never read by restore, so their subtrees may
+  hold anything) or modelled with exactly the attributes and children `pack`
+  writes (an `id` and `version` each stated once and naming the package's
+  folder, `dependencies`, `references`, `packageTypes` naming only
+  `Dependency` without a version), or declined by name; and a
+  `minClientVersion` below the restoring NuGet's version. The commit marker
+  must be one restore reads, with no key repeated (a Nix-built cache's
+  `{ "contentHash": "" }` is one). The vocabulary was measured over the 3,910
+  nuspecs of a package cache before it was written: every one fits it except
+  for the elements it declines by name. It checks every version restore may
+  read: each version the walk read, and the installed lower bound of every
+  declared dependency and direct requirement, which the closure now reports.
+  Checking every installed version instead declined every F# project on a
+  cache holding an old FSharp.Core with `contentFiles`. The generator writes descriptive elements (malformed
+  ones included), declined ones and broken markers, and a hand case grades
+  each descriptive element alone. The vocabulary declines `frameworkAssemblies`
+  (on the corpus's `System.*` packages), `contentFiles`,
+  `frameworkReferences` and `developmentDependency` (Nerdbank.GitVersioning);
+  modelling them is coverage work for whichever stage the census next points
+  at.
+- **Restore loads the config files the spec names.** One it cannot load
+  (malformed XML, an empty package source mapping pattern) fails the restore
+  with every package in the packages folder. A valid package source mapping
+  does not filter the packages folder, but B₁ holds config files to a closed
+  vocabulary too: well-formed XML with only source lists
+  (`packageSources`, `disabledPackageSources`), which is what a default user
+  `NuGet.Config` holds. Everything those lists could change is overridden in
+  the spec.
+- **Restore requires some metadata the resolver does not read.** An absent or
+  empty project name, project path or output path, or
+  `originalTargetFrameworks` not naming exactly the frameworks, each alias
+  once, makes restore throw. After two review rounds found these and the metadata above one at a
+  time, `every_single_deletion_from_a_committing_spec_is_graded` replaced the
+  hunt: it deletes or empties each key, element and string of a committing
+  spec in turn and grades every variant the reader accepts against B₀ (102
+  variants, 52 committed). It found the empty project name on its first run.
+  Deletion cannot reach a cross-field rule (two frameworks sharing an alias),
+  so `every_substitution_of_a_committing_specs_strings_is_graded` also
+  replaces each string of a committing spec by each other string the spec
+  holds, and by adversarial transforms of them (case flipped, a path separator
+  appended, a NUL embedded): 1,408 variants, 213 committed. A single
+  substitution cannot reach a rule that needs several fields to change
+  together (an alias renamed consistently in its three places), so those
+  cases, which review found, are graded by hand: aliases differing only by
+  case (the reader refuses them), an alias with a separator (`NU1019`), a NUL
+  in a path, and a nuspec version equal to the folder's in order but not in
+  NuGet's identity (`1.0.0--0` against `1.0.0-0`). B₁ admits only aliases in
+  the characters the SDK writes, unique ignoring case, and paths without
+  control characters. The nuspec and config vocabularies get
+  the same treatment at the level of their text:
+  `every_perturbation_of_nuspec_and_config_text_is_graded` empties, blanks,
+  pads, and puts a comment beside or in place of each attribute and text value
+  of a committing nuspec and config file (107 variants, 41 committed). On its
+  first run it found that the nuspec reader trimmed a dependency id NuGet
+  keeps padded, and so finds no package for; the reader now refuses one.
+  Review found the rest of this class (an XML comment read as an element's
+  text, a whitespace-only config key, a symlinked version folder the version
+  listing skipped, a symlinked asset folder the file listing did not descend
+  into, two aliases naming one framework). Each is now declined, except the
+  symlinked folders, which the listings now follow, as restore does (a folder
+  that links back into itself declines).
+  Review also found that a relative `nuGetLockFilePath` is resolved against
+  the project; B₁ declines one.
+- **The packages folder needs no sources.** A source folder that does not
+  exist is never read, and package source mapping that maps no package to any
+  source changes nothing, when every version restore needs is in the packages
+  folder.
+
+The census, pinned in `restore_graph_projects.txt`, is the input to stages 5–7:
+
+| unmodelled field | corpus projects it blocks (of 6) |
+|---|---|
+| warning policy (`TreatWarningsAsErrors`) | 6 |
+| download dependencies (`net5.0`, `net8.0` targeting packs) | 2 |
+| pruning | 0 (no corpus project targets `net10.0`) |
+
+The four `netstandard2.0` projects are blocked by the warning policy alone.
 
 ### Stages 5–7: close the declines, ordered by stage 4's census
 
 **Dependencies:** stage 4. They are mutually independent and can run in
 parallel. Stage 8 chose A₁, under which B₁ is the half-B consumer, so they are
-not gated on it.
+not gated on it. By stage 4's census the order is **7c, 7b, then 5, 6, 7a**;
+the corpus has nothing that 5, 6 or 7a would unblock, so the order among those
+comes from stage 1's local sweep and the stage-8 fixtures, not from the census.
 
+- **7c — the warning policy.** Decline under
+  `allWarningsAsErrors`/`warnAsError` unless the resolver proves restore emits
+  no warning, which needs a per-row warning verdict from B₀ (the assets file's
+  `logs`). Every corpus project sets `TreatWarningsAsErrors`.
+- **7b — download dependencies.** A presence check in the packages folder; a
+  miss declines.
 - **5 — pruning.** Oracle: the generator emits prune lists over the synthetic
   universe, including prune ranges that cover a *direct* reference.
   Certain-implies-exact against both engines. The census moves.
 - **6 — project nodes.** Package flow through `projectReferences`, with
   `PrivateAssets`/`suppressParent`. Oracle: the generator emits multi-project
   dgspecs, graded the same way.
-- **7a — CPM transitive pinning; 7b — download dependencies** (presence check
-  only; a miss declines); **7c — the warning policy.** For 7c, decline under
-  `allWarningsAsErrors`/`warnAsError` unless the resolver proves restore emits
-  no warning, which needs a per-row warning verdict from B₀. The oracle for
-  each is generator-extended, graded the same way.
+- **7a — central package management**, transitive pinning included.
+
+The oracle for each is generator-extended, graded the same way.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 
