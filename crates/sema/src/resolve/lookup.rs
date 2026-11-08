@@ -948,7 +948,10 @@ impl<'a> Resolver<'a> {
         // has ended, so the module the written head names at the route's base
         // must be one whose has (its descendants' have too).
         let finished = &self.finished_module_paths;
-        let mut push = |full: Vec<String>, namespaces_reachable: bool, reach: CertainReach| {
+        let mut push = |full: Vec<String>,
+                        namespaces_reachable: bool,
+                        reach: CertainReach,
+                        implicit_namespace: Option<Vec<String>>| {
             let head = full.len() + 1 - written.len();
             let reach = CertainReach {
                 this_file: reach.this_file
@@ -959,6 +962,7 @@ impl<'a> Resolver<'a> {
                 full,
                 namespaces_reachable,
                 reach,
+                implicit_namespace,
             });
         };
         if !rooted {
@@ -969,7 +973,7 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                push(full, false, CertainReach::default());
+                push(full, false, CertainReach::default(), None);
             }
             // Tier 1 — explicit opens (namespace + chained module), latest first.
             // Each opened container also lends the `[<AutoOpen>]` modules it
@@ -980,11 +984,12 @@ impl<'a> Resolver<'a> {
                 for auto in self.auto_open_shortening_prefixes(prefix) {
                     let mut full = auto;
                     full.extend_from_slice(written);
-                    push(full, false, CertainReach::default());
+                    push(full, false, CertainReach::default(), None);
                 }
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                push(full, true, prefix.reach);
+                let implicit = prefix.implicit.then(|| prefix.path.clone());
+                push(full, true, prefix.reach, implicit);
             }
             // Tier 2 — implicit relative resolution, innermost first; namespaces
             // are reachable only at the enclosing-namespace base.
@@ -1000,6 +1005,7 @@ impl<'a> Resolver<'a> {
                         earlier_files: at_namespace,
                         assembly: at_namespace,
                     },
+                    None,
                 );
             }
         }
@@ -1015,6 +1021,7 @@ impl<'a> Resolver<'a> {
                 earlier_files: true,
                 assembly: true,
             },
+            None,
         );
         out
     }
@@ -1292,6 +1299,7 @@ impl<'a> Resolver<'a> {
                     earlier_files: true,
                     assembly: true,
                 },
+                implicit: false,
             });
         }
         // A project `[<AutoOpen>]` module in this namespace nests short names

@@ -606,6 +606,10 @@ pub(super) struct ShorteningPrefix {
     pub(super) namespace_reading: bool,
     pub(super) module_reading: bool,
     pub(super) reach: CertainReach,
+    /// Seeded by a referenced assembly's assembly-level `[<AutoOpen>]`, which
+    /// opens that assembly's fragment of `path` alone: what it reaches is
+    /// asked per entity ([`TierCandidate::implicit_namespace`]), not by `reach`.
+    pub(super) implicit: bool,
 }
 
 /// Which entities at a candidate path an `open` **certainly** names in FCS —
@@ -682,6 +686,10 @@ pub(super) struct TierCandidate {
     pub(super) namespaces_reachable: bool,
     /// What FCS certainly opens at `full` through this route.
     pub(super) reach: CertainReach,
+    /// For a candidate under an implicitly opened namespace, that namespace:
+    /// an assembly module at `full` is certainly opened when its own assembly
+    /// auto-opens it ([`AssemblyEnv::implicitly_opened_in`]).
+    pub(super) implicit_namespace: Option<Vec<String>>,
 }
 
 /// One interpretation of an `open <path>` clause at one base of the open's
@@ -1846,12 +1854,11 @@ pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<Shor
             path,
             namespace_reading: true,
             module_reading: false,
-            // A referenced assembly's `[<assembly: AutoOpen>]` opens that
-            // namespace in every reference, before any project file exists.
-            reach: CertainReach {
-                assembly: true,
-                ..CertainReach::default()
-            },
+            // A referenced assembly's `[<assembly: AutoOpen>]` opens its own
+            // fragment of the namespace alone, which `reach` cannot say: the
+            // candidate asks per entity instead.
+            reach: CertainReach::default(),
+            implicit: true,
         })
         .collect()
 }

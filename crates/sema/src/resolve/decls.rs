@@ -1478,6 +1478,7 @@ impl<'a> Resolver<'a> {
                                     namespace_reading: true,
                                     module_reading: false,
                                     reach: gp_reach,
+                                    implicit: false,
                                 });
                                 self.explicit_open_prefixes.push((pos, gp.clone()));
                             }
@@ -1505,6 +1506,7 @@ impl<'a> Resolver<'a> {
                                 module_reading: true,
                                 // An assembly module's children are its own.
                                 reach: gp_reach.assembly_children(),
+                                implicit: false,
                             });
                             // Only a prefix that could hide a whole nested *module*
                             // (a dropped type, an unknowable pickle) can make a
@@ -1647,6 +1649,7 @@ impl<'a> Resolver<'a> {
                                 module_reading: false,
                                 // A project module's children are the project's.
                                 reach: gp_reach.project_children(),
+                                implicit: false,
                             });
                             self.opaque_dotted_open = true;
                         }

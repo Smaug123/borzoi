@@ -40,3 +40,12 @@ namespace RqaAsm.Deep
 [<RequireQualifiedAccess>]
 module DeepStrict =
     let deepValue = 7
+
+// A module in a namespace FSharp.Core auto-opens, from an assembly that does
+// not: FCS opens FSharp.Core's fragment of the namespace alone, so the short
+// name does not reach it.
+namespace Microsoft.FSharp.Control
+
+[<RequireQualifiedAccess>]
+module RqaForeignControl =
+    let foreignValue = 13

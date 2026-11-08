@@ -950,6 +950,12 @@ pub struct AssemblyEnv {
     /// [`Self::record_assembly_auto_opens`]: module/type-shaped and
     /// nonexistent paths never land here.
     implicit_open_namespace_paths: Vec<Vec<String>>,
+    /// Which assembly's auto-open put each path in
+    /// [`Self::implicit_open_namespace_paths`]: FCS opens the contributing
+    /// assembly's fragment of the namespace alone (`AddCcuToTcEnv` derefs the
+    /// path in that CCU), so only that assembly's modules under it are
+    /// certainly opened ([`Self::implicitly_opened_in`]).
+    implicit_open_contributors: HashSet<(AssemblyId, Vec<String>)>,
     /// Handles of the **module/type-shaped** assembly-level auto-opens that
     /// [`Self::record_assembly_auto_opens`] drops from
     /// [`Self::implicit_open_namespace_paths`] (they are opened *like a module*,
@@ -1895,6 +1901,8 @@ impl AssemblyEnv {
                 {
                     self.implicit_open_namespace_paths.remove(existing);
                 }
+                self.implicit_open_contributors
+                    .insert((contributor, segments.clone()));
                 self.implicit_open_namespace_paths.push(segments);
             }
         }
@@ -2207,6 +2215,19 @@ impl AssemblyEnv {
     /// hardcoded FSharp.Core fallback.
     pub fn implicit_open_namespace_paths(&self) -> &[Vec<String>] {
         &self.implicit_open_namespace_paths
+    }
+
+    /// Whether `handle` belongs to an assembly whose own assembly-level
+    /// `[<AutoOpen>]` implicitly opens `namespace` — so the implicit open
+    /// certainly reaches it. Another assembly's entity under the same
+    /// namespace is not reached that way, and the hardcoded FSharp.Core
+    /// fallback paths ([`Self::effective_implicit_open_namespace_paths`])
+    /// reach nothing here.
+    pub(crate) fn implicitly_opened_in(&self, namespace: &[String], handle: EntityHandle) -> bool {
+        self.assembly_provenance(handle).is_some_and(|contributor| {
+            self.implicit_open_contributors
+                .contains(&(contributor, namespace.to_vec()))
+        })
     }
 
     /// FCS's hardcoded FSharp.Core implicit-open fallback — the namespaces the

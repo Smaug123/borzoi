@@ -123,7 +123,9 @@ const CELLS: &[Cell] = &[
     },
     Cell {
         label: "same-file / a namespace and a module at one path",
-        files: &["namespace {p}N.A\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n\nnamespace {p}N\n\nmodule A =\n    open M\n    let y = 2\n"],
+        files: &[
+            "namespace {p}N.A\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n\nnamespace {p}N\n\nmodule A =\n    open M\n    let y = 2\n",
+        ],
         expect: Expect::Clean,
     },
     Cell {
@@ -477,6 +479,13 @@ const CELLS: &[Cell] = &[
     Cell {
         label: "assembly / a module compiled without its signature pickle",
         files: &["module {p}P\n\nopen RqaNoSig.Strict\n"],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "assembly / another assembly's module in an implicitly opened namespace",
+        files: &[
+            "module {p}P\n\nmodule RqaForeignControl =\n    let x = 1\n\nopen RqaForeignControl\n",
+        ],
         expect: Expect::Clean,
     },
     Cell {

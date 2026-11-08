@@ -132,11 +132,15 @@ impl Resolver<'_> {
             !self.module_path_is_ambiguous(&c.full)
                 && ((c.reach.this_file && self.rqa_module_paths.contains(&c.full))
                     || (c.reach.earlier_files && self.preceding.is_certain_rqa_module(&c.full))
-                    || (c.reach.assembly
-                        && self.opened_assembly_modules(&c.full).into_iter().any(|h| {
-                            self.assemblies.is_authoritative_module(h)
-                                && self.assemblies.is_require_qualified_access(h)
-                        })))
+                    || self.opened_assembly_modules(&c.full).into_iter().any(|h| {
+                        let reached = c.reach.assembly
+                            || c.implicit_namespace
+                                .as_ref()
+                                .is_some_and(|ns| self.assemblies.implicitly_opened_in(ns, h));
+                        reached
+                            && self.assemblies.is_authoritative_module(h)
+                            && self.assemblies.is_require_qualified_access(h)
+                    }))
         });
         if names_rqa_module {
             self.diagnostics.push(SemaDiagnostic {
