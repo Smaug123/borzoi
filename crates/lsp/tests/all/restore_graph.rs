@@ -571,20 +571,22 @@ fn a_single_project_generates_the_spec_restore_reads() {
     );
 }
 
-/// A `net10.0` project's spec carries the SDK's pruning list, which B₁ does
-/// not model (stage 5).
+/// A `net10.0` project's spec carries the SDK's pruning list, a few hundred
+/// entries, which B₁ applies; its closure is exactly the restore's.
 #[test]
-fn b1_declines_a_net10_project_on_its_pruning_list() {
+fn b1_resolves_a_net10_project_with_its_pruning_list() {
     let root = write_tree(
         "b1-net10",
         &[("App.fsproj", APP), ("App.fs", "module App\n")],
     );
-    match committed_spec_and_b1(&root.join("App.fsproj")).1 {
-        SpawnFree::Declined(DgSpecResolveDecline::Unmodelled { fields }) => assert!(
-            fields.contains(&borzoi_nuget::dgspec::UnmodelledField::PackagesToPrune),
-            "{fields:?}"
-        ),
-        other => panic!("expected a pruning decline, got {other:?}"),
+    let (spec, b1) = committed_spec_and_b1(&root.join("App.fsproj"));
+    assert!(
+        spec.projects[0].frameworks[0].packages_to_prune.len() > 100,
+        "the SDK writes its pruning list"
+    );
+    match b1 {
+        SpawnFree::Committed(_) => {}
+        SpawnFree::Declined(decline) => panic!("B₁ must commit, but declined: {decline}"),
     }
 }
 
