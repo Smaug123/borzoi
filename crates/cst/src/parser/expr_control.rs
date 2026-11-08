@@ -270,24 +270,27 @@ impl<'src> Parser<'src> {
     /// declExpr`), which ends before a `;`, a `then` separator or a `: T`
     /// annotation: those belong to the enclosing sequence, so `if c then a; b`
     /// is `Sequential(IfThenElse(c, a), b)`.
+    ///
+    /// A raw keyword can still be followed by an `OBLOCKBEGIN`: a line at
+    /// column 0 inside a module header's attribute list ends the header's
+    /// context and opens a module-body block (`module [<A(if c then⏎a)>] M`).
+    /// FCS has no production for that and rejects it; the block is gathered
+    /// like an offside body, so the tree stays balanced while the enclosing
+    /// recovery reports the error.
     fn parse_if_branch_body(&mut self, branch: &str, form: KeywordForm, has_block: bool) {
-        match form {
-            KeywordForm::Offside => self.parse_if_body(branch, has_block),
-            KeywordForm::Raw => {
-                debug_assert!(!has_block, "a raw `{branch}` opens no offside block");
-                if self.peek_is_expr_start() {
-                    self.parse_expr();
-                } else {
-                    let span = self
-                        .peek()
-                        .map(|(_, s)| s.clone())
-                        .unwrap_or_else(|| self.source.len()..self.source.len());
-                    self.errors.push(ParseError {
-                        message: format!("expected expression after `{branch}`"),
-                        span,
-                    });
-                }
-            }
+        if form == KeywordForm::Offside || has_block {
+            self.parse_if_body(branch, has_block);
+        } else if self.peek_is_expr_start() {
+            self.parse_expr();
+        } else {
+            let span = self
+                .peek()
+                .map(|(_, s)| s.clone())
+                .unwrap_or_else(|| self.source.len()..self.source.len());
+            self.errors.push(ParseError {
+                message: format!("expected expression after `{branch}`"),
+                span,
+            });
         }
     }
 

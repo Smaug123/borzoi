@@ -70,22 +70,21 @@ impl<'src> Parser<'src> {
         // grammar level for the same reason `- if …` is rejected; the
         // diagnostic side would reuse `maybe_warn_keyword_after_prefix`'s
         // pattern in a follow-up if we ever care to emit it.
-        match self.peek() {
-            Some((Ok(tok), _)) => match DualKeyword::lambda_head(tok) {
-                Some(DualKeyword::Fun) => {
-                    self.parse_fun_expr();
-                    return;
-                }
-                Some(DualKeyword::Function) => {
-                    self.parse_function_expr();
-                    return;
-                }
-                Some(
-                    DualKeyword::Then | DualKeyword::Else | DualKeyword::With | DualKeyword::Do,
-                )
-                | None => {}
-            },
-            _ => {}
+        let lambda_head = match self.peek() {
+            Some((Ok(tok), _)) => DualKeyword::lambda_head(tok),
+            _ => None,
+        };
+        match lambda_head {
+            Some(DualKeyword::Fun) => {
+                self.parse_fun_expr();
+                return;
+            }
+            Some(DualKeyword::Function) => {
+                self.parse_function_expr();
+                return;
+            }
+            Some(DualKeyword::Then | DualKeyword::Else | DualKeyword::With | DualKeyword::Do)
+            | None => {}
         }
         // `do! e` — LexFilter rewrites raw `Token::DoBang` to
         // `Virtual::DoBang` and wraps the body in a SeqBlock

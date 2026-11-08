@@ -26,7 +26,7 @@ const HOLE: &str = "@";
 /// Expression constructs, each with one or more [`HOLE`]s. They span the
 /// keywords that have a raw spelling, the separators and operators whose
 /// precedence decides where a raw body ends (`;`, `,`, `then`, an infix, a type
-/// annotation), the constructs that are raw in every layout (`let … in`,
+/// annotation, an assignment, a cast, an application), the constructs that are raw in every layout (`let … in`,
 /// `lazy`, verbose `while … done`), and the loops FCS rejects without `done`.
 const CONSTRUCTS: &[&str] = &[
     "if @ then @",
@@ -45,6 +45,12 @@ const CONSTRUCTS: &[&str] = &[
     "@; @",
     "@ then @",
     "@ + @",
+    "@ |> @",
+    "@ :: @",
+    "@ <- @",
+    "@ := @",
+    "@ :> int",
+    "f @",
     "@ : int",
     "(@)",
     "let x = @ in @",
@@ -173,6 +179,52 @@ fn diff_raw_keyword_grid_in_other_header_positions() {
         }),
         &[],
     );
+}
+
+/// Continuations whose left operand FCS's grammar restricts: `<-` takes a
+/// `minusExpr`, `:=` a `declExpr`, and an infix a `declExpr` operand.
+const SUFFIXES: &[&str] = &[" <- 1", " := 1", " |> f"];
+
+/// Every grid expression followed by each of [`SUFFIXES`], in the
+/// module-header attribute. A raw construct has no closer, so where its body
+/// stops early (at a `: T` annotation, a `done`) the suffix meets the whole
+/// construct as its left operand: `fun x -> 1 : int <- 1` must not become an
+/// assignment to the lambda.
+#[test]
+fn diff_raw_keyword_grid_with_suffix() {
+    sweep(
+        "suffixed",
+        expressions().into_iter().flat_map(|e| {
+            SUFFIXES
+                .iter()
+                .map(move |suffix| format!("module [<A({e}{suffix})>] M\nlet x = 1\n"))
+        }),
+        &[],
+    );
+}
+
+/// Every leaf-filled construct with one space replaced by a line break and an
+/// indent, in the module-header attribute.
+///
+/// A line break inside the attribute list moves the lex filter: a line at
+/// column 0 leaves the module header's context and opens a module-body block,
+/// so a raw keyword can meet offside virtuals mid-construct, and an indented
+/// line may not. Each cell is held to FCS like the rest; a parser panic fails
+/// its cell.
+#[test]
+fn diff_raw_keyword_grid_line_breaks() {
+    let cells = CONSTRUCTS.iter().flat_map(|c| {
+        let e = fill_nth(c, usize::MAX, LEAF);
+        let spaces: Vec<usize> = e.match_indices(' ').map(|(i, _)| i).collect();
+        spaces.into_iter().flat_map(move |i| {
+            let e = e.clone();
+            [0, 4, 12].into_iter().map(move |indent| {
+                let broken = format!("{}\n{}{}", &e[..i], " ".repeat(indent), &e[i + 1..]);
+                format!("module [<A({broken})>] M\nlet x = 1\n")
+            })
+        })
+    });
+    sweep("line-break", cells, &[]);
 }
 
 /// Offside-layout cells that diverge from FCS independently of the raw

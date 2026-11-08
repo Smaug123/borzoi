@@ -508,11 +508,20 @@ impl<'src> Parser<'src> {
                     // sequentialExpr`) opens no block, so its RHS statements join
                     // the sequence directly.
                     Sep::Then => {
-                        self.bump_dual_keyword(DualKeyword::Then);
-                        if matches!(
-                            self.peek(),
-                            Some((Ok(FilteredToken::Virtual(Virtual::BlockBegin)), _))
-                        ) {
+                        let form = self.bump_dual_keyword(DualKeyword::Then);
+                        if let Some((Ok(FilteredToken::Virtual(Virtual::BlockBegin)), block)) =
+                            self.peek().cloned()
+                        {
+                            // A raw `THEN` meets a block only where a column-0
+                            // line ends a module header's attribute context
+                            // (`module [<A(a then⏎b)>] M`), which FCS rejects.
+                            // Gather the block anyway so the tree stays balanced.
+                            if form == Some(KeywordForm::Raw) {
+                                self.errors.push(ParseError {
+                                    message: "unexpected block after `then`".to_string(),
+                                    span: block,
+                                });
+                            }
                             self.bump_into(SyntaxKind::ERROR);
                             then_blocks += 1;
                         }
@@ -1111,19 +1120,13 @@ impl<'src> Parser<'src> {
             // `Op("*")` always reduces to the wildcard arm), and folded into the
             // `<-` gate below alongside `built_continuation`.
             let lhs_is_wildcard = p.peek_is_index_wildcard_star();
-            // Whether the bare LHS this frame is about to build is a `fixed e`
-            // (`FIXED declExpr` → `SynExpr.Fixed`). Like the `*` wildcard, a
-            // `FIXED_EXPR` is a `declExpr`, **not** a `minusExpr`, so it cannot be a
-            // `<-` assignment LHS — FCS rejects `fixed … <- v`. Captured here (a
-            // fresh Pratt head with a leading `Token::Fixed` always dispatches to
-            // [`Parser::parse_fixed`], which parses the *full* `declExpr` operand and
-            // can return with a `<-` still pending when that operand built a cast /
-            // wildcard that declined it — `fixed a :> T <- v`, `fixed * <- v`). The
-            // tighter `lazy`/`assert` never need this: their operand either folds the
-            // `<-` in itself or leaves a `built_continuation` cast in *this* frame.
-            let lhs_is_fixed = matches!(p.peek(), Some((Ok(FilteredToken::Raw(Token::Fixed)), _)));
+            // Whether the bare LHS this frame is about to build is a keyword
+            // construct that FCS's grammar has only at `declExpr` level (see
+            // [`Parser::at_decl_expr_construct_head`]). Like the `*` wildcard it is
+            // **not** a `minusExpr`, so it cannot be a `<-` assignment LHS.
+            let lhs_is_decl_construct = p.at_decl_expr_construct_head();
             p.parse_minus_expr();
-            p.continue_pratt_expr(cp, min_bp, lhs_is_wildcard, lhs_is_fixed);
+            p.continue_pratt_expr(cp, min_bp, lhs_is_wildcard, lhs_is_decl_construct);
         });
     }
 
@@ -1131,7 +1134,7 @@ impl<'src> Parser<'src> {
     /// [`Self::parse_pratt_expr`], split out so the appExpr-headed brace handler
     /// ([`Self::parse_app_head_brace`]) can resume the climb from an
     /// already-parsed `appExpr` LHS at `cp` (an `appExpr` is a `minusExpr`, so it
-    /// is a valid LHS for this loop; `lhs_is_wildcard` and `lhs_is_fixed` are
+    /// is a valid LHS for this loop; `lhs_is_wildcard` and `lhs_is_decl_construct` are
     /// `false` there).
     /// Behaviourally identical to the inline tail it replaces.
     fn continue_pratt_expr(
@@ -1139,7 +1142,7 @@ impl<'src> Parser<'src> {
         cp: rowan::Checkpoint,
         min_bp: u16,
         lhs_is_wildcard: bool,
-        lhs_is_fixed: bool,
+        lhs_is_decl_construct: bool,
     ) {
         // Tracks whether this loop built *any* continuation (infix App or
         // type-relation cast) on top of the bare `parse_minus_expr` result. FCS's
@@ -1317,9 +1320,13 @@ impl<'src> Parser<'src> {
         // (which records the "unexpected token after binding expression" error
         // and stays lossless) matches FCS. The `*` wildcard is the same case: a
         // `declExpr` leaf, so `* <- 1` leaves the `<-` for recovery (FCS error).
-        // A `fixed e` is likewise a `declExpr` (`lhs_is_fixed`): its operand may
-        // decline a trailing `<-` (`fixed a :> T <- v`, `fixed * <- v`), and FCS
-        // rejects binding it, so leave the `<-` for recovery here too.
+        // A keyword construct (`lhs_is_decl_construct`: `fixed e`, `lazy e`, `if`,
+        // `match`, `fun`, a loop, …) is likewise a `declExpr`. Its tail usually
+        // absorbs a trailing `<-` itself, but not always: `fixed a :> T <- v` and
+        // `fixed * <- v` decline it in the operand, a raw `fun x -> e : T <- v`
+        // ends its body at the annotation, and `while c do e done <- v` (or `lazy
+        // while … done <- v`) at the `done`. FCS rejects binding any of them, so
+        // leave the `<-` for recovery here too.
         //
         // Swallowed-closer gate (the same one `peek_infix_continuation`
         // applies): inside `( x )` / `{ x }` the closer is stripped from the
@@ -1333,7 +1340,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::LArrow)), _))
         ) && !built_continuation
             && !lhs_is_wildcard
-            && !lhs_is_fixed
+            && !lhs_is_decl_construct
             && !self.at_swallowed_seq_closer()
         {
             self.builder
@@ -1341,6 +1348,38 @@ impl<'src> Parser<'src> {
             self.bump_into(SyntaxKind::LARROW_TOK);
             self.parse_assign_rhs();
             self.builder.finish_node();
+        }
+    }
+
+    /// `true` if the current token heads a keyword construct that FCS's grammar
+    /// has only at `declExpr` level, never as a `minusExpr`: `fixed`, `lazy`,
+    /// `assert`, `if`, `match`/`match!`, `try`, `while`/`while!`, `for`,
+    /// `let … in`, and a lambda (`fun`/`function`, either spelling —
+    /// [`DualKeyword::lambda_head`]). Each is dispatched from
+    /// [`Self::parse_minus_expr`], so the Pratt loop would otherwise take it as
+    /// a `minusExpr` LHS.
+    pub(super) fn at_decl_expr_construct_head(&self) -> bool {
+        match self.peek() {
+            Some((Ok(tok), _)) => {
+                DualKeyword::lambda_head(tok).is_some()
+                    || matches!(
+                        tok,
+                        FilteredToken::Raw(
+                            Token::Fixed
+                                | Token::Lazy
+                                | Token::Assert
+                                | Token::If
+                                | Token::Match
+                                | Token::MatchBang
+                                | Token::Try
+                                | Token::While
+                                | Token::WhileBang
+                                | Token::For
+                                | Token::Let
+                        ) | FilteredToken::Virtual(Virtual::Let | Virtual::Lazy | Virtual::Assert)
+                    )
+            }
+            _ => false,
         }
     }
 
