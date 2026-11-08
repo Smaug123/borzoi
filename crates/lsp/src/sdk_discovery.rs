@@ -81,6 +81,16 @@ pub enum DiscoveryError {
     },
 }
 
+impl DiscoveryError {
+    /// The `global.json` this failure lies in, if it lies in one.
+    pub fn global_json_path(&self) -> Option<&Path> {
+        match self {
+            Self::GlobalJsonRead { path, .. } | Self::GlobalJsonParse { path, .. } => Some(path),
+            Self::RelativeProjectPath(_) | Self::MissingDotnetRoot => None,
+        }
+    }
+}
+
 impl std::fmt::Display for DiscoveryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -196,13 +196,12 @@ fn root_sdk_attribute_emits_unsupported_construct() {
     let has_sdk_diag = result.diagnostics.iter().any(|d| {
         matches!(
             &d.kind,
-            DiagnosticKind::UnsupportedConstruct { element }
-                if element == "Project Sdk=\"Microsoft.NET.Sdk\""
+            DiagnosticKind::SdkResolverAbsent { name } if name == "Microsoft.NET.Sdk"
         )
     });
     assert!(
         has_sdk_diag,
-        "expected UnsupportedConstruct for root Sdk attribute, got: {:?}",
+        "expected SdkResolverAbsent for root Sdk attribute, got: {:?}",
         result.diagnostics
     );
     assert!(result.is_partial);

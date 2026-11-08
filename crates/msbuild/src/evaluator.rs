@@ -123,8 +123,8 @@ pub fn walk(
     // contributions never ran.
     if let Some(sdk) = root.attribute("Sdk") {
         state.push(
-            DiagnosticKind::UnsupportedConstruct {
-                element: format!("Project Sdk={sdk:?}"),
+            DiagnosticKind::SdkResolverAbsent {
+                name: sdk.to_string(),
             },
             root.range(),
         );
@@ -175,8 +175,8 @@ fn deferred_pass_can_change_result(entry_has_sdk: bool, has_sdk_resolver: bool) 
 /// When the resolver returns `None` (SDK unknown to the caller) the
 /// walker emits [`DiagnosticKind::SdkNotFound`] and the body still
 /// gets the Directory.Build.* splice. When `sdk_resolver` is `None`,
-/// the SDK attribute surfaces as `UnsupportedConstruct` — same as
-/// the pure walker.
+/// the SDK attribute surfaces as [`DiagnosticKind::SdkResolverAbsent`] —
+/// same as the pure walker.
 ///
 /// **Directory.Build.props position (two-pass).** MSBuild imports
 /// `Directory.Build.props` exactly once, right after the *first*
@@ -649,7 +649,7 @@ fn walk_once<'r>(
 ///   * attribute present, resolver supplied and returns `Ok(paths)` →
 ///     returns those paths, no diagnostic;
 ///   * attribute present but resolver missing → emits
-///     [`DiagnosticKind::UnsupportedConstruct`] and returns `None`;
+///     [`DiagnosticKind::SdkResolverAbsent`] and returns `None`;
 ///   * attribute present and resolver returned an `Err` → emits the
 ///     diagnostic matching the [`SdkResolveError`] variant (see
 ///     [`crate::SdkResolver`] for the mapping) and returns `None`.
@@ -663,8 +663,8 @@ fn resolve_project_sdk(root: Node<'_, '_>, state: &mut State<'_>) -> Option<SdkP
     let sdk = root.attribute("Sdk")?;
     let Some(resolver) = state.sdk_resolver else {
         state.push(
-            DiagnosticKind::UnsupportedConstruct {
-                element: format!("Project Sdk={sdk:?}"),
+            DiagnosticKind::SdkResolverAbsent {
+                name: sdk.to_string(),
             },
             root.range(),
         );
@@ -1338,7 +1338,7 @@ struct State<'r> {
     /// [`resolve_project_sdk`] for the project root's `Sdk` attribute
     /// and by [`follow_explicit_import`] for `<Import Sdk="..."/>`.
     /// `None` means the caller declined to do SDK resolution; any
-    /// `Sdk` attribute then becomes an `UnsupportedConstruct`.
+    /// `Sdk` attribute then becomes a [`DiagnosticKind::SdkResolverAbsent`].
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     /// Caller-supplied glob resolver, if any. Consulted by the item
     /// walk for a `<Compile>` / `<ProjectReference>` whose `Include`
@@ -4906,13 +4906,13 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     // malformed or hostile fsproj cannot escape the SDK directory. A
     // missing-but-well-formed entry point falls through to the
     // existing IO path and surfaces as `ImportFailed::NotFound`.
-    // Without a resolver, every Sdk import is unsupported, same as
-    // phase 7a.
+    // Without a resolver, every Sdk import surfaces as
+    // `SdkResolverAbsent`.
     if let Some(sdk_name) = node.attribute("Sdk") {
         let Some(resolver) = state.sdk_resolver else {
             state.push(
-                DiagnosticKind::UnsupportedConstruct {
-                    element: format!("Import Sdk={sdk_name:?}"),
+                DiagnosticKind::SdkResolverAbsent {
+                    name: sdk_name.to_string(),
                 },
                 node.range(),
             );

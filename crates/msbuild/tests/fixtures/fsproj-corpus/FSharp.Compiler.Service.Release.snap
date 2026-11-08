@@ -418,7 +418,7 @@ package_references (7, uncertain=true):
   Include System.Runtime.CompilerServices.Unsafe version=<none>
 framework_references (0):
 diagnostics (39):
-  UnsupportedConstruct { element: "Project Sdk=\"Microsoft.NET.Sdk\"" }
+  SdkResolverAbsent { name: "Microsoft.NET.Sdk" }
   UndefinedProperty { name: "NoWarn" }
   UndefinedProperty { name: "DefineConstants" }
   UndefinedProperty { name: "DotNetBuildUseMonoRuntime" }

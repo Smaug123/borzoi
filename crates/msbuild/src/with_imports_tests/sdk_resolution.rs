@@ -118,7 +118,9 @@ fn project_sdk_resolves_and_props_seed_visible_to_body() {
     assert!(
         !result.diagnostics.iter().any(|d| matches!(
             d.kind,
-            DiagnosticKind::SdkNotFound { .. } | DiagnosticKind::UnsupportedConstruct { .. }
+            DiagnosticKind::SdkNotFound { .. }
+                | DiagnosticKind::SdkResolverAbsent { .. }
+                | DiagnosticKind::UnsupportedConstruct { .. }
         )),
         "SDK resolved cleanly, no SDK-shaped diagnostic expected: {:?}",
         result.diagnostics,
@@ -228,8 +230,8 @@ fn project_sdk_targets_run_after_body() {
 #[test]
 fn project_sdk_with_failing_resolver_emits_sdk_not_found() {
     // Resolver was supplied but couldn't locate the SDK. Diagnostic
-    // surface flips from UnsupportedConstruct (no-resolver phase 7a
-    // behaviour) to the more specific SdkNotFound. We also assert
+    // surface flips from SdkResolverAbsent (the no-resolver
+    // behaviour) to SdkNotFound. We also assert
     // *neither* Sdk.props nor Sdk.targets ran, by probing for any
     // property either might have set.
     let tmp = TempDir::new().unwrap();
@@ -257,14 +259,17 @@ fn project_sdk_with_failing_resolver_emits_sdk_not_found() {
         "expected exactly one SdkNotFound for Unknown.Sdk, got: {:?}",
         result.diagnostics,
     );
-    // No UnsupportedConstruct for the SDK either: SdkNotFound replaces
-    // it, doesn't duplicate it.
+    // No other SDK-shaped diagnostic either: SdkNotFound replaces
+    // them, doesn't duplicate them.
     assert!(
         !result.diagnostics.iter().any(|d| matches!(
             &d.kind,
             DiagnosticKind::UnsupportedConstruct { element } if element.contains("Sdk")
+        ) || matches!(
+            &d.kind,
+            DiagnosticKind::SdkResolverAbsent { .. }
         )),
-        "SdkNotFound and UnsupportedConstruct should be mutually exclusive: {:?}",
+        "SdkNotFound, SdkResolverAbsent and UnsupportedConstruct should be mutually exclusive: {:?}",
         result.diagnostics,
     );
     assert!(result.is_partial);
@@ -1293,11 +1298,11 @@ fn directory_build_targets_runs_before_sdk_targets() {
 }
 
 #[test]
-fn imported_file_with_sdk_root_without_resolver_emits_unsupported_construct() {
+fn imported_file_with_sdk_root_without_resolver_emits_sdk_resolver_absent() {
     // Without an SDK resolver in hand, an imported file's
     // `<Project Sdk="...">` root cannot be resolved any more than the
     // entry project's can — the splice machinery routes both through
-    // `resolve_project_sdk`, which emits `UnsupportedConstruct` when
+    // `resolve_project_sdk`, which emits `SdkResolverAbsent` when
     // `sdk_resolver` is `None`. The `Imported` origin distinguishes
     // the diagnostic from the entry-project case so LSP-style
     // callers can choose to suppress it.
@@ -1327,15 +1332,14 @@ fn imported_file_with_sdk_root_without_resolver_emits_unsupported_construct() {
         .filter(|d| {
             matches!(
                 &d.kind,
-                DiagnosticKind::UnsupportedConstruct { element }
-                    if element.contains("Inner.Sdk")
+                DiagnosticKind::SdkResolverAbsent { name } if name == "Inner.Sdk"
             ) && d.origin == DiagnosticOrigin::Imported
         })
         .collect();
     assert_eq!(
         imported_sdk_diags.len(),
         1,
-        "expected one UnsupportedConstruct flagging the imported file's Sdk root, got: {:?}",
+        "expected one SdkResolverAbsent flagging the imported file's Sdk root, got: {:?}",
         result.diagnostics,
     );
     assert!(result.is_partial);
@@ -1388,7 +1392,9 @@ fn explicit_import_sdk_props_runs_resolver() {
     assert!(
         !result.diagnostics.iter().any(|d| matches!(
             d.kind,
-            DiagnosticKind::UnsupportedConstruct { .. } | DiagnosticKind::SdkNotFound { .. }
+            DiagnosticKind::UnsupportedConstruct { .. }
+                | DiagnosticKind::SdkNotFound { .. }
+                | DiagnosticKind::SdkResolverAbsent { .. }
         )),
         "explicit Sdk import should resolve cleanly, got: {:?}",
         result.diagnostics,

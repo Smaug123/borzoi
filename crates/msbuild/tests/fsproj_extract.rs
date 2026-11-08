@@ -29,14 +29,14 @@ fn fcs_dump_fsproj_extracts_single_program_fs() {
         parse_fsproj(&source, &path, &HashMap::new(), &HashMap::new()).expect("well-formed XML");
 
     // The fixture is SDK-style (`<Project Sdk="Microsoft.NET.Sdk">`),
-    // so phase 7a flags the SDK shorthand as unsupported and reports
-    // the project as partial. Everything else about the walk should
+    // so the pure parser (no SDK resolver) flags the SDK shorthand as
+    // `SdkResolverAbsent` and reports the project as partial. Everything else about the walk should
     // be clean: one explicit Compile, no other diagnostics.
     let kinds: Vec<&DiagnosticKind> = project.diagnostics.iter().map(|d| &d.kind).collect();
     assert_eq!(
         kinds,
-        [&DiagnosticKind::UnsupportedConstruct {
-            element: "Project Sdk=\"Microsoft.NET.Sdk\"".to_string()
+        [&DiagnosticKind::SdkResolverAbsent {
+            name: "Microsoft.NET.Sdk".to_string()
         }],
         "expected exactly the SDK shorthand diagnostic, got: {:?}",
         project.diagnostics

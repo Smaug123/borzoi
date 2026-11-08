@@ -17,13 +17,15 @@
 //! which surfaces as a single error at the document head with the
 //! roxmltree message.
 //!
-//! Discovery errors ([`crate::sdk_discovery::DiscoveryError`]) are
-//! *not* surfaced. A missing `$DOTNET_ROOT` (sandbox without a `dotnet`
-//! install) and an unreadable/unparseable `global.json` both demote us
-//! to the no-SDK code path; the user notices because the SDK attribute
-//! then surfaces as `UnsupportedConstruct`. Pointing at an ancestor
-//! `global.json` from the fsproj buffer would be misleading — different
-//! file.
+//! A discovery error ([`DiscoveryError`]: no `.NET` install found, or an
+//! unreadable/unparseable `global.json`) demotes us to evaluating without
+//! an SDK resolver, and each SDK reference the evaluation meets then
+//! reports [`DiagnosticKind::SdkResolverAbsent`]. That diagnostic carries
+//! the discovery error's text, at the SDK reference it blocked: the
+//! buffer's `<Project Sdk=…>`, or an `<Import Sdk=…>` site. A
+//! `global.json` failure also links the file as related information,
+//! since the fix lives there rather than in the buffer. A project that
+//! names no SDK reports nothing, as it evaluates the same either way.
 //!
 //! See [`crate::position::offset_to_position`] for how byte spans (from
 //! roxmltree, by way of the msbuild parser) become UTF-16 LSP positions.
@@ -32,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use lsp_types::{Diagnostic, DiagnosticSeverity, Range};
+use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Range};
 
 use borzoi_msbuild::{
     DiagnosticKind, DiagnosticOrigin, GlobResolver, ImportFailReason, ParseError, ResolvedItem,
@@ -42,8 +44,9 @@ use borzoi_msbuild::{
 use crate::paths::lexically_normalize;
 use crate::position::offset_to_position;
 use crate::project_graph::{ProjectGraph, ProjectKind, classify};
-use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use crate::sdk_discovery::{DiscoveryError, SdkDiscovery, SdkDiscoveryEnv};
 use crate::tfm_policy;
+use crate::uri::UriExt as _;
 
 /// Translate one fsproj buffer into LSP diagnostics. See module-level
 /// docs for severity/surfacing conventions.
@@ -63,7 +66,15 @@ pub fn diagnostics_for(
     env: &SdkDiscoveryEnv,
     build_properties: &HashMap<String, String>,
 ) -> Vec<Diagnostic> {
-    match evaluate_buffer(text, project_path, env, build_properties) {
+    let discovery = SdkDiscovery::for_project(project_path, env);
+    let discovery_failure = discovery.as_ref().err();
+    match evaluate_buffer(
+        text,
+        project_path,
+        env,
+        build_properties,
+        discovery.as_ref().ok(),
+    ) {
         Ok(parsed) => {
             let mut diags: Vec<Diagnostic> = parsed
                 .diagnostics
@@ -77,7 +88,8 @@ pub fn diagnostics_for(
                 // `Microsoft.NET.Sdk` from their own `.fsproj`.
                 //
                 // Meta-import diagnostics (`ImportFailed`, `SdkNotFound`,
-                // `SdkVersionNotSatisfied`, `UnresolvedImport`) describe
+                // `SdkVersionNotSatisfied`, `SdkResolverAbsent`,
+                // `UnresolvedImport`) describe
                 // the *integrity of the import chain*. Top-level ones are
                 // already `Buffer`-origin because the walker pushes them
                 // before descending. But a *nested* import that itself
@@ -94,10 +106,11 @@ pub fn diagnostics_for(
                                 | DiagnosticKind::SdkNotFound { .. }
                                 | DiagnosticKind::SdkVersionNotSatisfied { .. }
                                 | DiagnosticKind::SdkResolutionUnsupported { .. }
+                                | DiagnosticKind::SdkResolverAbsent { .. }
                                 | DiagnosticKind::UnresolvedImport { .. }
                         )
                 })
-                .map(|d| to_lsp_diagnostic(text, &d.kind, &d.span))
+                .map(|d| to_lsp_diagnostic(text, &d.kind, &d.span, discovery_failure))
                 .collect();
             diags.extend(reference_diagnostics(text, &parsed.project_references));
             // RestoreStale (consumer #3 stage 3.2): a real, SDK-resolved project
@@ -133,11 +146,14 @@ pub fn diagnostics_for(
 /// pins the evaluation for the server's lifetime
 /// (`server::tests::fsproj_sync_does_not_pin_the_project_cache`).
 ///
+/// `disc` is the project's SDK discovery, or `None` if it failed, in which
+/// case the buffer is evaluated without an SDK resolver.
 fn evaluate_buffer(
     text: &str,
     project_path: &Path,
     env: &SdkDiscoveryEnv,
     build_properties: &HashMap<String, String>,
+    disc: Option<&SdkDiscovery>,
 ) -> Result<borzoi_msbuild::ParsedProject, ParseError> {
     // The environment the *caller* declared, not the ambient process: a
     // workspace constructed with an explicit `SdkDiscoveryEnv` has asked not to
@@ -145,22 +161,14 @@ fn evaluate_buffer(
     // `$(…)` evaluation. `SdkDiscoveryEnv::from_process_env` is what fills this
     // with the real environment for production callers.
     let environment = env.build_environment.clone();
-    let disc = SdkDiscovery::for_project(project_path, env).ok();
-    parse_buffer(
-        text,
-        project_path,
-        build_properties,
-        &environment,
-        disc.as_ref(),
-    )
-    .map(|pass1| {
+    parse_buffer(text, project_path, build_properties, &environment, disc).map(|pass1| {
         serve_chosen_tfm(
             pass1,
             text,
             project_path,
             build_properties,
             &environment,
-            disc.as_ref(),
+            disc,
         )
     })
 }
@@ -639,11 +647,29 @@ fn lsp_error_at_origin(message: String) -> Diagnostic {
     }
 }
 
+/// `discovery_failure` is why the buffer was evaluated without an SDK
+/// resolver, or `None` if it was evaluated with one.
 fn to_lsp_diagnostic(
     text: &str,
     kind: &DiagnosticKind,
     span: &std::ops::Range<usize>,
+    discovery_failure: Option<&DiscoveryError>,
 ) -> Diagnostic {
+    let related_information = match kind {
+        DiagnosticKind::SdkResolverAbsent { .. } => discovery_failure
+            .and_then(DiscoveryError::global_json_path)
+            .and_then(|path| lsp_types::Uri::from_file_path(path).ok())
+            .map(|uri| {
+                vec![DiagnosticRelatedInformation {
+                    location: Location {
+                        uri,
+                        range: Range::default(),
+                    },
+                    message: "global.json that SDK discovery could not use".to_string(),
+                }]
+            }),
+        _ => None,
+    };
     Diagnostic {
         range: Range {
             start: offset_to_position(text, span.start),
@@ -651,7 +677,8 @@ fn to_lsp_diagnostic(
         },
         severity: Some(DiagnosticSeverity::WARNING),
         source: Some("borzoi".to_string()),
-        message: message(kind),
+        message: message(kind, discovery_failure),
+        related_information,
         ..Default::default()
     }
 }
@@ -659,7 +686,7 @@ fn to_lsp_diagnostic(
 /// User-facing message per diagnostic kind. Exhaustive match: a new
 /// `DiagnosticKind` variant added to the msbuild crate must come back
 /// here, otherwise the LSP would silently drop it.
-fn message(kind: &DiagnosticKind) -> String {
+fn message(kind: &DiagnosticKind, discovery_failure: Option<&DiscoveryError>) -> String {
     match kind {
         DiagnosticKind::UnresolvedImport { path } => {
             format!(
@@ -731,6 +758,22 @@ fn message(kind: &DiagnosticKind) -> String {
                 "SDK '{name}' resolution declined — the on-disk state is \
                  outside what can be resolved exactly: {reason}"
             )
+        }
+        DiagnosticKind::SdkResolverAbsent { name } => {
+            // `diagnostics_for` passes a resolver exactly when discovery
+            // succeeded, and the evaluator reports this kind only without one.
+            // The release fallback is still true; it just cannot say why.
+            debug_assert!(
+                discovery_failure.is_some(),
+                "SdkResolverAbsent for '{name}' although a resolver was supplied"
+            );
+            let unresolved = format!(
+                "SDK '{name}' could not be resolved, so the project is evaluated without it"
+            );
+            match discovery_failure {
+                Some(err) => format!("{unresolved}: {err}"),
+                None => unresolved,
+            }
         }
         DiagnosticKind::ImplicitImportPresent { path, kind } => {
             // Should not appear via parse_fsproj_with_imports (it
@@ -1876,32 +1919,165 @@ mod tests {
         );
     }
 
-    #[test]
-    fn discovery_failure_falls_back_to_no_resolver() {
-        // No DOTNET_ROOT, no $PATH ⇒ SdkDiscovery::for_project fails
-        // with MissingDotnetRoot. We should still parse the fsproj and
-        // surface the SDK attribute as `UnsupportedConstruct` (because
-        // we passed None as the resolver), not panic.
-        let tmp = TempDir::new().unwrap();
-        let project = tmp.path().join("App.fsproj");
-        let text = r#"<Project Sdk="Microsoft.NET.Sdk">
+    /// Every [`DiscoveryError`] the LSP can hit, each with a fixture that
+    /// produces it. `RelativeProjectPath` is absent: the LSP derives the path
+    /// from a `file:` URI, which is always rooted.
+    #[derive(Debug, Clone, Copy)]
+    enum DiscoveryFailure {
+        MissingDotnetRoot,
+        GlobalJsonRead,
+        GlobalJsonParse,
+    }
+
+    impl DiscoveryFailure {
+        const ALL: [Self; 3] = [
+            Self::MissingDotnetRoot,
+            Self::GlobalJsonRead,
+            Self::GlobalJsonParse,
+        ];
+
+        /// Lay the failure out under `dir`, returning the `global.json` it
+        /// names, if any.
+        fn install(self, dir: &Path) -> Option<PathBuf> {
+            let global_json = dir.join("global.json");
+            match self {
+                Self::MissingDotnetRoot => None,
+                Self::GlobalJsonRead => {
+                    // Not UTF-8, so `read_to_string` fails whoever runs it
+                    // (permission bits do not stop root).
+                    fs::write(&global_json, [0xff, 0xfe, 0xfd]).unwrap();
+                    Some(global_json)
+                }
+                Self::GlobalJsonParse => {
+                    fs::write(&global_json, "{").unwrap();
+                    Some(global_json)
+                }
+            }
+        }
+
+        fn matches(self, err: &DiscoveryError) -> bool {
+            matches!(
+                (self, err),
+                (Self::MissingDotnetRoot, DiscoveryError::MissingDotnetRoot)
+                    | (Self::GlobalJsonRead, DiscoveryError::GlobalJsonRead { .. })
+                    | (
+                        Self::GlobalJsonParse,
+                        DiscoveryError::GlobalJsonParse { .. }
+                    )
+            )
+        }
+    }
+
+    const SDK_PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup><Compile Include="X.fs"/></ItemGroup>
 </Project>"#;
 
-        let env = env_with(|_| {}); // no dotnet_root, no search_path
-        let diags = diagnostics_for(text, &project, &env, &default_extras());
+    #[test]
+    fn discovery_failure_is_reported_at_the_sdk_reference() {
+        for failure in DiscoveryFailure::ALL {
+            let tmp = TempDir::new().unwrap();
+            let global_json = failure.install(tmp.path());
+            let project = tmp.path().join("App.fsproj");
+            let env = env_with(|_| {}); // no dotnet_root, no search_path
 
-        // The Sdk attribute survives as an UnsupportedConstruct since
-        // no resolver was wired in.
-        let unsupported: Vec<_> = diags
+            // The fixture must produce the failure it is named for, or the
+            // assertions below grade some other path.
+            let err = SdkDiscovery::for_project(&project, &env)
+                .err()
+                .unwrap_or_else(|| panic!("{failure:?}: discovery unexpectedly succeeded"));
+            assert!(
+                failure.matches(&err),
+                "{failure:?}: discovery failed with {err:?}"
+            );
+
+            let diags = diagnostics_for(SDK_PROJECT, &project, &env, &default_extras());
+            let cause = err.to_string();
+            let reported: Vec<_> = diags
+                .iter()
+                .filter(|d| d.message.contains(&cause))
+                .collect();
+            assert_eq!(
+                reported.len(),
+                1,
+                "{failure:?}: expected one diagnostic carrying {cause:?}, all diags: {diags:#?}"
+            );
+            let d = reported[0];
+            assert!(
+                d.message.contains("'Microsoft.NET.Sdk'"),
+                "{failure:?}: the diagnostic must name the SDK it could not resolve: {d:#?}"
+            );
+            assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
+            // The `<Project Sdk=…>` element, which opens the buffer.
+            assert_eq!(d.range.start, lsp_types::Position::new(0, 0), "{failure:?}");
+            let related: Vec<PathBuf> = d
+                .related_information
+                .iter()
+                .flatten()
+                .map(|r| r.location.uri.to_file_path().unwrap())
+                .collect();
+            assert_eq!(
+                related,
+                global_json.into_iter().collect::<Vec<_>>(),
+                "{failure:?}: a global.json failure links the file; no other does"
+            );
+            // The cause replaces the generic message; it does not sit beside it.
+            assert!(
+                !diags
+                    .iter()
+                    .any(|d| d.message.contains("unsupported MSBuild construct")),
+                "{failure:?}: all diags: {diags:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_failure_is_reported_at_an_imported_sdk_reference() {
+        // An `<Import Sdk>` inside `Directory.Build.props` is as much a part of
+        // the import chain as the entry's own SDK, so its failure surfaces even
+        // though the diagnostic's origin is `Imported`.
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("Directory.Build.props"),
+            r#"<Project><Import Sdk="Other.Sdk" Project="Sdk.props" /></Project>"#,
+        )
+        .unwrap();
+        let project = tmp.path().join("App.fsproj");
+        let env = env_with(|_| {});
+        let cause = SdkDiscovery::for_project(&project, &env)
+            .expect_err("no dotnet root")
+            .to_string();
+
+        let diags = diagnostics_for("<Project />", &project, &env, &default_extras());
+        let reported: Vec<_> = diags
             .iter()
-            .filter(|d| d.message.contains("unsupported MSBuild construct"))
+            .filter(|d| d.message.contains("'Other.Sdk'") && d.message.contains(&cause))
             .collect();
-        assert!(
-            !unsupported.is_empty(),
-            "expected at least one UnsupportedConstruct from the Sdk attribute, \
-             got: {diags:#?}"
-        );
+        assert_eq!(reported.len(), 1, "all diags: {diags:#?}");
+    }
+
+    #[test]
+    fn discovery_failure_is_silent_for_a_project_without_an_sdk() {
+        // Discovery only matters to an SDK reference; a project that names
+        // none evaluates identically with or without a resolver.
+        for failure in DiscoveryFailure::ALL {
+            let tmp = TempDir::new().unwrap();
+            failure.install(tmp.path());
+            let project = tmp.path().join("App.fsproj");
+            let env = env_with(|_| {});
+            let cause = SdkDiscovery::for_project(&project, &env)
+                .expect_err("fixture fails discovery")
+                .to_string();
+            let diags = diagnostics_for(
+                "<Project>\n  <ItemGroup><Compile Include=\"X.fs\"/></ItemGroup>\n</Project>",
+                &project,
+                &env,
+                &default_extras(),
+            );
+            assert!(
+                !diags.iter().any(|d| d.message.contains(&cause)),
+                "{failure:?}: all diags: {diags:#?}"
+            );
+        }
     }
 
     // ----- Stage 3.2: <ProjectReference> diagnostics -----

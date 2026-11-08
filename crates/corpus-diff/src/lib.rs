@@ -659,6 +659,9 @@ fn msbuild_diagnostic_message(kind: &DiagnosticKind) -> String {
         DiagnosticKind::SdkResolutionUnsupported { name, reason } => {
             format!("SDK '{name}' resolution declined: {reason}")
         }
+        DiagnosticKind::SdkResolverAbsent { name } => {
+            format!("SDK '{name}' evaluated without an SDK resolver")
+        }
         DiagnosticKind::ImplicitImportPresent { path, kind } => {
             format!("implicit import discovered: {kind:?} at {}", path.display())
         }
