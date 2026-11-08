@@ -400,6 +400,10 @@ pub struct ProjectItems {
     /// unsignatured files contribute: a later file sees a signatured one's
     /// modules through the signature.
     pub(super) rqa_module_paths: HashSet<Vec<String>>,
+    /// Module paths (headers and real nested modules) more than one earlier
+    /// file declares — FS0892 declines through them
+    /// (`resolve/require_qualified.rs`).
+    pub(super) duplicated_module_paths: HashSet<Vec<String>>,
     /// Qualified paths of declared project **namespaces** (`["Outer", "Inner"]`
     /// for `namespace Outer.Inner`), accumulated across files. Lets
     /// [`Resolver::open_interpretations`](super::state::Resolver::open_interpretations) resolve an `open <namespace>`
@@ -837,6 +841,12 @@ impl ProjectItems {
     /// [`Self::rqa_module_paths`]).
     pub(super) fn is_certain_rqa_module(&self, path: &[String]) -> bool {
         self.rqa_module_paths.contains(path)
+    }
+
+    /// Whether more than one earlier file declares a module at `path` (see
+    /// [`Self::duplicated_module_paths`]).
+    pub(super) fn is_duplicated_module(&self, path: &[String]) -> bool {
+        self.duplicated_module_paths.contains(path)
     }
 
     /// The latest export at `path` the reference site `site` can **access**,
@@ -1311,6 +1321,9 @@ impl ProjectItems {
             }
         };
         for module in idx.module_headers {
+            if self.module_headers.contains(&module) || self.real_nested_modules.contains(&module) {
+                self.duplicated_module_paths.insert(module.clone());
+            }
             self.module_headers.insert(module);
         }
         for nested in idx.nested_module_paths {
@@ -1320,6 +1333,9 @@ impl ProjectItems {
             self.augmentation_head_paths.insert(head);
         }
         for nested in idx.real_nested_modules {
+            if self.module_headers.contains(&nested) || self.real_nested_modules.contains(&nested) {
+                self.duplicated_module_paths.insert(nested.clone());
+            }
             self.real_nested_modules.insert(nested);
         }
         for rqa in idx.rqa_module_paths {

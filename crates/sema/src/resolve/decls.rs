@@ -1745,6 +1745,7 @@ impl<'a> Resolver<'a> {
         // FS0892's same-file half, and through the export decl its cross-file
         // half. A dotted nested name (`module A.B = …`) is not a shape whose
         // attribute's owner we decide.
+        self.note_module_declared(&qualified);
         let nm_rqa = segs.len() == 1
             && self.module_certainly_require_qualified_access(
                 nm.attributes(),

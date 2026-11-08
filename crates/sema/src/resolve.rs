@@ -459,6 +459,7 @@ pub fn resolve_file(
             r.module_paths.push(path.clone());
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
+            r.note_module_declared(path);
             let header_rqa =
                 r.module_certainly_require_qualified_access(module.attributes(), header_private);
             if header_rqa {
@@ -2293,6 +2294,8 @@ impl<'a> Resolver<'a> {
             diagnostics: Vec::new(),
             rqa_module_paths: Vec::new(),
             finished_module_paths: HashSet::new(),
+            declared_module_paths: HashSet::new(),
+            duplicated_module_paths: HashSet::new(),
             trace_opens: Vec::new(),
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),

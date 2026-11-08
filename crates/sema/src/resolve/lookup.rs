@@ -944,13 +944,21 @@ impl<'a> Resolver<'a> {
         rooted: bool,
     ) -> Vec<TierCandidate> {
         let mut out: Vec<TierCandidate> = Vec::new();
+        // This file's modules are in scope by name only once their declaration
+        // has ended, so the module the written head names at the route's base
+        // must be one whose has (its descendants' have too).
+        let finished = &self.finished_module_paths;
         let mut push = |full: Vec<String>, namespaces_reachable: bool, reach: CertainReach| {
-            let base_len = full.len() - written.len();
+            let head = full.len() + 1 - written.len();
+            let reach = CertainReach {
+                this_file: reach.this_file
+                    && full.get(..head).is_some_and(|h| finished.contains(h)),
+                ..reach
+            };
             out.push(TierCandidate {
                 full,
                 namespaces_reachable,
                 reach,
-                base_len,
             });
         };
         if !rooted {

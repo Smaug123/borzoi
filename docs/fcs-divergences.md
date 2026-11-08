@@ -371,8 +371,10 @@ recovering ~36 members per framework. It was never a feature gap. (`#711`)
   abbreviation, or while a project type or exception or a referenced
   abbreviation could impersonate it; an `open`
   inside a `rec` scope, through a module abbreviation, or through the
-  short-name prefix an `[<AutoOpen>]` module lends; any `open` in a file that
-  failed to parse. It also never reports an `open` in a signature file, nor a
+  short-name prefix an `[<AutoOpen>]` module lends; a module path declared
+  twice; any `open` in a file that failed to parse. A referenced module counts
+  only from an authoritative F# signature pickle, whose attribute verdict (not
+  the compiled class's) is the one FCS reads. It also never reports an `open` in a signature file, nor a
   later file's `open` of a module declared in a signatured file (which sees the
   signature's attributes, unread here). The cells are pinned, gaps included, by
   `open_rqa_diagnostic_diff`. Sema diagnostics are not yet published by the

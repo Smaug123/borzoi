@@ -40,8 +40,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::common::{
-    ensure_rqa_open_fixture_built, env_usize_or, fsharp_core_bytes,
-    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_file,
+    ensure_rqa_open_fixture_built, ensure_rqa_open_nosig_fixture_built, env_usize_or,
+    fsharp_core_bytes, invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_file,
 };
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
@@ -97,6 +97,29 @@ const CELLS: &[Cell] = &[
             "module {p}Top\n\nexception RequireQualifiedAccessAttribute\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n\nopen M\n",
         ],
         expect: Expect::Clean,
+    },
+    Cell {
+        label: "same-file / a prefix through the module being checked",
+        files: &[
+            "module {p}Top\n\nmodule A =\n    module B =\n        [<RequireQualifiedAccess>]\n        module C =\n            let x = 1\n\n    open A.B\n    open C\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "same-file / a duplicated container",
+        files: &[
+            "module {p}Top\n\nmodule A =\n    [<RequireQualifiedAccess>]\n    module B =\n        let x = 1\n\nmodule A =\n    module B =\n        let y = 2\n\n    open B\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "cross-file / a module path two files declare",
+        files: &[
+            "namespace {p}N\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n",
+            "namespace {p}N\n\nmodule M =\n    let y = 2\n",
+            "module {p}P\n\nopen {p}N.M\n",
+        ],
+        expect: Expect::Gap("a module path declared twice is not decided"),
     },
     Cell {
         label: "same-file / a module opening itself",
@@ -429,6 +452,21 @@ const CELLS: &[Cell] = &[
         expect: Expect::Exact,
     },
     Cell {
+        label: "assembly / implementation RQA, signature file without",
+        files: &["module {p}P\n\nopen RqaSig.ImplOnly\n"],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "assembly / signature file RQA, implementation without",
+        files: &["module {p}P\n\nopen RqaSig.SigOnly\n"],
+        expect: Expect::Exact,
+    },
+    Cell {
+        label: "assembly / a module compiled without its signature pickle",
+        files: &["module {p}P\n\nopen RqaNoSig.Strict\n"],
+        expect: Expect::Clean,
+    },
+    Cell {
         label: "assembly / internal module",
         files: &["module {p}P\n\nopen RqaAsm.HiddenStrict\n"],
         expect: Expect::Clean,
@@ -515,9 +553,12 @@ const CELLS: &[Cell] = &[
 /// references) and the fixture.
 fn env() -> AssemblyEnv {
     let fixture = std::fs::read(ensure_rqa_open_fixture_built()).expect("read rqa-open fixture");
+    let nosig =
+        std::fs::read(ensure_rqa_open_nosig_fixture_built()).expect("read rqa-open nosig fixture");
     let core = Ecma335Assembly::parse(fsharp_core_bytes()).expect("parse FSharp.Core");
     let fx = Ecma335Assembly::parse(&fixture).expect("parse rqa-open fixture");
-    AssemblyEnv::from_views(&[core, fx]).expect("build AssemblyEnv")
+    let ns = Ecma335Assembly::parse(&nosig).expect("parse rqa-open nosig fixture");
+    AssemblyEnv::from_views(&[core, fx, ns]).expect("build AssemblyEnv")
 }
 
 /// Our FS0892 ranges, per file of one project, resolving exactly its files.
@@ -568,7 +609,10 @@ const PROJECTS_PER_REQUEST: usize = 100;
 /// batched into shared projects, isolated by the names each carries, and we
 /// resolve each on its own.
 fn grade(env: &AssemblyEnv, projects: &[Vec<String>]) -> Vec<Graded> {
-    let fixture = ensure_rqa_open_fixture_built();
+    let refs = [
+        ensure_rqa_open_fixture_built(),
+        ensure_rqa_open_nosig_fixture_built(),
+    ];
     let mut out = Vec::new();
     for chunk in projects.chunks(PROJECTS_PER_REQUEST) {
         let built: Vec<Vec<(PathBuf, String)>> = chunk
@@ -582,7 +626,7 @@ fn grade(env: &AssemblyEnv, projects: &[Vec<String>]) -> Vec<Graded> {
             .collect();
         let sources: Vec<(PathBuf, String)> = built.iter().flatten().cloned().collect();
         let paths: Vec<&Path> = sources.iter().map(|(p, _)| p.as_path()).collect();
-        let json = invoke_fcs_dump_project_with_refs(&paths, &[fixture]);
+        let json = invoke_fcs_dump_project_with_refs(&paths, &refs);
         let fcs_files = parse_fcs_uses_project(&json, &sources);
         for (p, _) in &sources {
             let _ = std::fs::remove_file(p);
@@ -788,11 +832,35 @@ fn gen_modules(
     counter: &mut usize,
     mods: &mut Vec<GenModule>,
 ) {
+    let mut previous: Option<String> = None;
     for _ in 0..=t.pick(3) {
         let (attr, rqa) = gen_attribute(t);
         let access = ["", "", "internal ", "private "][t.pick(4)];
-        let name = format!("M{counter}");
-        *counter += 1;
+        // Now and then a module reuses its predecessor's name: FCS reports the
+        // duplicate, and neither declaration is certainly the one an `open`
+        // names, so the generator owes nothing for either, nor for anything
+        // under them.
+        let duplicate = match &previous {
+            Some(prev) if t.chance(6) => Some(prev.clone()),
+            _ => None,
+        };
+        let name = match &duplicate {
+            Some(prev) => prev.clone(),
+            None => {
+                let fresh = format!("M{counter}");
+                *counter += 1;
+                fresh
+            }
+        };
+        if duplicate.is_some() {
+            let mut dup = container.to_vec();
+            dup.push(name.clone());
+            for m in mods.iter_mut().filter(|m| m.path.starts_with(&dup)) {
+                m.certain = false;
+            }
+        }
+        previous = Some(name.clone());
+        let trusted = trusted && duplicate.is_none();
         if !attr.is_empty() {
             out.push_str(&format!("{indent}{attr}"));
         }

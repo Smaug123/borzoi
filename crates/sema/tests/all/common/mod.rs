@@ -1530,6 +1530,27 @@ pub fn ensure_rqa_open_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **pickle-less `[<RequireQualifiedAccess>]` open** fixture
+/// (`tests/fixtures/rqa_open_nosig_env`, `SemaRqaOpenNoSigFixture.dll`, built
+/// with `--nointerfacedata`) once per test binary and return its `.dll` path,
+/// for the FS0892 differential. Behind the shared [`BUILD_LOCK`].
+pub fn ensure_rqa_open_nosig_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rqa_open_nosig_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build rqa-open nosig fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaRqaOpenNoSigFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **unmodelled-contributor** fixture
 /// (`tests/fixtures/contributor_env`, `SemaContributorFixture.dll`) once per
 /// test binary and return its `.dll` path: referenced statics reaching bare

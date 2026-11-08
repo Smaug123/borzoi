@@ -621,9 +621,11 @@ pub(super) struct ShorteningPrefix {
 /// for them:
 ///
 /// - **this file's** modules are in scope by their short names inside the
-///   containers that declare them, and not by the name of a block still being
-///   checked: `open global.N.M` inside `namespace N` does not reach this
-///   file's `N.M` (FCS-graded);
+///   containers that declare them, once their declaration has ended, and not
+///   by the name of a block still being checked: `open global.N.M` inside
+///   `namespace N` does not reach this file's `N.M`, inside `module M` an
+///   `open M` names nothing, and inside `module A` an `open A.B` does not
+///   reach the declared `A.B` (all FCS-graded);
 /// - **earlier files'** modules are reachable from the root, and through the
 ///   enclosing namespace's implicit open;
 /// - a **referenced assembly's** modules likewise, but inside a project module
@@ -680,10 +682,6 @@ pub(super) struct TierCandidate {
     pub(super) namespaces_reachable: bool,
     /// What FCS certainly opens at `full` through this route.
     pub(super) reach: CertainReach,
-    /// How many leading segments of `full` the route supplied before the
-    /// written path: the alias target's, the prefix's, the enclosing
-    /// container's, or none from the root.
-    pub(super) base_len: usize,
 }
 
 /// One interpretation of an `open <path>` clause at one base of the open's
@@ -1738,6 +1736,12 @@ pub(super) struct Resolver<'a> {
     /// so a same-file FS0892 needs the opened path's head among these
     /// ([`Resolver::report_open_of_rqa_module`]).
     pub(super) finished_module_paths: HashSet<Vec<String>>,
+    /// The full paths of every module this file declares, headers included,
+    /// and those among them declared twice or already declared by an earlier
+    /// file ([`Resolver::note_module_declared`]): FS0892 declines through a
+    /// duplicated path.
+    pub(super) declared_module_paths: HashSet<Vec<String>>,
+    pub(super) duplicated_module_paths: HashSet<Vec<String>>,
     /// The resolution-explain trace — one [`OpenTrace`] per `open` declaration,
     /// in source order, recording the opaque-open flags it flipped. Accumulated
     /// across every top-level block (a *file*-level record, deliberately absent

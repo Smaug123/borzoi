@@ -19,9 +19,11 @@
 //!   ([`Resolver::attribute_spellings_trusted`]) and FSharp.Core declares it;
 //!   it must also be accessible from every `open` in the project, so a
 //!   `private` module or one nested in a `private` module is never recorded;
-//! - a **referenced** module carries the attribute in its metadata, which
-//!   projection reads by full name
-//!   ([`AssemblyEnv::is_require_qualified_access`](crate::AssemblyEnv::is_require_qualified_access)).
+//! - a **referenced** module counts only when its assembly's F# signature is
+//!   authoritative ([`AssemblyEnv::is_authoritative_module`](crate::AssemblyEnv::is_authoritative_module)):
+//!   FCS reads a module through that pickle, which also carries the attribute
+//!   verdict ([`AssemblyEnv::is_require_qualified_access`](crate::AssemblyEnv::is_require_qualified_access)),
+//!   and imports a module of any other assembly as a plain type.
 //!
 //! Silent wherever the file failed to parse (FCS reports no type-checking
 //! error there) and inside a `rec` scope, whose opens FCS processes ahead of
@@ -81,15 +83,26 @@ impl Resolver<'_> {
             && self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
     }
 
-    /// Whether the module the written path's head names at `c`'s base is one
-    /// of this file's whose declaration has ended. FCS enters a module into
-    /// scope only once its body is checked, so inside `module M`, `open M`
-    /// names nothing, and inside `module A`, `open A.B` does not reach the
-    /// already-declared `A.B`. A finished head's descendants are finished too.
-    fn head_is_finished_module(&self, c: &TierCandidate) -> bool {
-        c.full
-            .get(..=c.base_len)
-            .is_some_and(|head| self.finished_module_paths.contains(head))
+    /// Whether a project module is declared at `path` or at a path `path`
+    /// runs through more than once — here twice, or here and in an earlier
+    /// file, or in two earlier files. FCS reports the duplicate and which of
+    /// the two an `open` reaches is not something the path can say.
+    fn module_path_is_duplicated(&self, path: &[String]) -> bool {
+        (1..=path.len()).any(|k| {
+            self.duplicated_module_paths.contains(&path[..k])
+                || self.preceding.is_duplicated_module(&path[..k])
+        })
+    }
+
+    /// Record a module this file declares at `path` (a header's or a nested
+    /// module's full path), noting it as duplicated when this file or an
+    /// earlier one already declared one there.
+    pub(super) fn note_module_declared(&mut self, path: &[String]) {
+        let earlier = self.preceding.is_exact_project_module(path)
+            || self.preceding.is_real_nested_module(path);
+        if !self.declared_module_paths.insert(path.to_vec()) || earlier {
+            self.duplicated_module_paths.insert(path.to_vec());
+        }
     }
 
     /// Report FS0892 on a plain `open` whose path is written as `idents`, when
@@ -108,15 +121,14 @@ impl Resolver<'_> {
             return;
         };
         let names_rqa_module = candidates.iter().any(|c| {
-            (c.reach.this_file
-                && self.rqa_module_paths.contains(&c.full)
-                && self.head_is_finished_module(c))
-                || (c.reach.earlier_files && self.preceding.is_certain_rqa_module(&c.full))
-                || (c.reach.assembly
-                    && self
-                        .opened_assembly_modules(&c.full)
-                        .into_iter()
-                        .any(|h| self.assemblies.is_require_qualified_access(h)))
+            !self.module_path_is_duplicated(&c.full)
+                && ((c.reach.this_file && self.rqa_module_paths.contains(&c.full))
+                    || (c.reach.earlier_files && self.preceding.is_certain_rqa_module(&c.full))
+                    || (c.reach.assembly
+                        && self.opened_assembly_modules(&c.full).into_iter().any(|h| {
+                            self.assemblies.is_authoritative_module(h)
+                                && self.assemblies.is_require_qualified_access(h)
+                        })))
         });
         if names_rqa_module {
             self.diagnostics.push(SemaDiagnostic {
