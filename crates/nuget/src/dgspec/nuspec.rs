@@ -33,12 +33,12 @@
 //!   never reads and which may hold anything, or one of the elements restore
 //!   reads and B₁ models, each with exactly the attributes and children the
 //!   SDK's `pack` writes: `id` and `version` once each; `dependencies`,
-//!   `references` and `packageTypes` at most once (NuGet's reader takes the
+//!   `references`, `packageTypes` and `contentFiles` at most once (NuGet's reader takes the
 //!   first of each, which the lenient reader does not). Two `<group>`s for
 //!   one framework are admitted: the first wins on both sides, and the
 //!   generated sweep grades it. The elements restore reads
-//!   and B₁ does not model (`contentFiles`, `frameworkAssemblies`,
-//!   `frameworkReferences`) decline by name, as does any other.
+//!   and B₁ does not model (`frameworkAssemblies`, `frameworkReferences`)
+//!   decline by name, as does any other.
 //! - **Identity.** `<id>` and `<version>` name the folder the package is in;
 //!   every `<packageType>` is `Dependency` without a version (restore refuses
 //!   other types in a `PackageReference` project, `DotnetTool` with `NU1212`,
@@ -54,8 +54,8 @@
 //! `<group>` but `<dependency>`, and no repeated `<dependencies>` or
 //! `<group>` framework; 3,837 open with a UTF-8 byte order mark and 2 are
 //! UTF-16. What that cache has and this domain declines is
-//! `<frameworkAssemblies>` (839 nuspecs), `<frameworkReferences>` (74) and
-//! `<contentFiles>` (31): later stages.
+//! `<frameworkAssemblies>` (839 nuspecs) and `<frameworkReferences>` (74):
+//! later stages.
 
 use super::resolve::NuGetIdentity;
 use crate::{NuGetFramework, NuGetVersion, PackageId, PackageIdentity, VersionRange};
@@ -151,8 +151,7 @@ pub const DESCRIPTIVE_ELEMENTS: &[&str] = &[
 ];
 
 /// The `<metadata>` elements restore reads and B₁ does not model.
-const UNMODELLED_ELEMENTS: &[&str] =
-    &["contentFiles", "frameworkAssemblies", "frameworkReferences"];
+const UNMODELLED_ELEMENTS: &[&str] = &["frameworkAssemblies", "frameworkReferences"];
 
 /// Whether `bytes`, the nuspec of the package `identity` is installed as, is
 /// in the domain B₁ commits in under the restoring NuGet `nuget`.
@@ -431,7 +430,7 @@ fn admitted_metadata(
                     )));
                 }
             }
-            "dependencies" | "references" | "packageTypes" => {
+            "dependencies" | "references" | "packageTypes" | "contentFiles" => {
                 if !once.insert(name) {
                     return Err(vocabulary_decline("metadata", format!("a second <{name}>")));
                 }
@@ -439,7 +438,8 @@ fn admitted_metadata(
                 match name {
                     "dependencies" => admitted_dependencies(vocabulary, child, &path)?,
                     "references" => admitted_references(vocabulary, child, &path)?,
-                    _ => admitted_package_types(vocabulary, child, &path)?,
+                    "packageTypes" => admitted_package_types(vocabulary, child, &path)?,
+                    _ => admitted_content_files(vocabulary, child, &path)?,
                 }
             }
             _ => {
@@ -633,6 +633,97 @@ fn admitted_package_types(
         }
     }
     Ok(())
+}
+
+/// `<contentFiles>` holding `<files>` rules in the subset restore reads
+/// without throwing: a non-empty `include` and an optional `exclude`, both in
+/// the glob subset of [`glob_is_admitted`]; a `buildAction` among `None`,
+/// `Compile`, `Content` and `EmbeddedResource` (compared ignoring case, as
+/// restore does); and `copyToOutput` and `flatten`, if present, `true` or
+/// `false` ignoring case. Restore throws on a rule without an `include`, on a
+/// `buildAction` it does not know, and on a `copyToOutput` or `flatten` that
+/// is not a boolean.
+fn admitted_content_files(
+    vocabulary: Vocabulary<'_>,
+    content_files: Node<'_, '_>,
+    path: &str,
+) -> Result<(), NuspecDecline> {
+    let boolean =
+        |value: &str| value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false");
+    for rule in element_children(content_files, path)? {
+        let rule_path = format!("{path}/files");
+        if rule.tag_name().name() != "files" || !vocabulary.plain(rule) {
+            return Err(vocabulary_decline(
+                path,
+                format!("element {}", rule.tag_name().name()),
+            ));
+        }
+        attributes_in(
+            rule,
+            &rule_path,
+            &[
+                "include",
+                "exclude",
+                "buildAction",
+                "copyToOutput",
+                "flatten",
+            ],
+        )?;
+        if !element_children(rule, &rule_path)?.is_empty() {
+            return Err(vocabulary_decline(&rule_path, "an element inside <files>"));
+        }
+        let Some(include) = rule.attribute("include") else {
+            return Err(vocabulary_decline(&rule_path, "no include"));
+        };
+        if !glob_is_admitted(include) {
+            return Err(vocabulary_decline(
+                &rule_path,
+                format!("include {include:?}"),
+            ));
+        }
+        if let Some(exclude) = rule.attribute("exclude")
+            && !glob_is_admitted(exclude)
+        {
+            return Err(vocabulary_decline(
+                &rule_path,
+                format!("exclude {exclude:?}"),
+            ));
+        }
+        if let Some(action) = rule.attribute("buildAction")
+            && !["None", "Compile", "Content", "EmbeddedResource"]
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(action))
+        {
+            return Err(vocabulary_decline(
+                &rule_path,
+                format!("buildAction {action:?}"),
+            ));
+        }
+        for flag in ["copyToOutput", "flatten"] {
+            if let Some(value) = rule.attribute(flag)
+                && !boolean(value)
+            {
+                return Err(vocabulary_decline(&rule_path, format!("{flag} {value:?}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a content-file glob is in the subset B₁ admits: `/`-separated
+/// segments, each non-empty and drawn from ASCII letters, digits, `.`, `_`,
+/// `-` and `*`, none of them `.` or `..`. Restore throws on a `..` anywhere but
+/// the start of a pattern, and reads `\` as a separator; neither is admitted.
+fn glob_is_admitted(pattern: &str) -> bool {
+    !pattern.is_empty()
+        && pattern.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '*'))
+        })
 }
 
 /// `minClientVersion`, if present, parses without a release label and is

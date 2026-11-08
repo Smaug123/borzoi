@@ -133,7 +133,9 @@ enum Member {
     /// `int this[int i]`, the indexer `Item`.
     Indexer,
     /// `[IndexerName("Foo")] int this[int i]`, whose ID Roslyn's lookup
-    /// does not bind.
+    /// does not bind — and which `P:….Item(System.Int32)` binds, so beside
+    /// another type of the same ID with an ordinary indexer the latter's ID
+    /// is ambiguous.
     NamedIndexer,
     /// An explicit implementation of `II.this[int]`.
     ExplicitIndexer,
@@ -692,6 +694,23 @@ fn the_pinned_worlds_agree_with_roslyn() {
                 Attr::TypeIdentifier,
                 vec![Member::Method(Param::Int)],
             )],
+            fsharp_core: FSharpCore::Absent,
+        },
+        // Two `F.C`s, the first's indexer renamed: Roslyn binds
+        // `P:F.C.Item(System.Int32)` to it, not to the second's `Item`.
+        World {
+            deps: vec![
+                one(Ns::F, Shape::Class, Attr::None, vec![Member::NamedIndexer]),
+                DepSpec {
+                    name: DepName::Beta,
+                    types: vec![TypeSpec {
+                        ns: Ns::F,
+                        shape: Shape::Class,
+                        attr: Attr::None,
+                        members: vec![Member::Method(Param::None), Member::Indexer],
+                    }],
+                },
+            ],
             fsharp_core: FSharpCore::Absent,
         },
     ];

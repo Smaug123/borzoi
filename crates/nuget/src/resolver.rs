@@ -77,9 +77,9 @@
 //! are all leaves (`settle_conflicts` runs it). Those declines name the legacy
 //! engine's error; the default engine may resolve the same graph or fail it
 //! differently, so they claim nothing about it. Dependency-level
-//! `include`/`exclude` asset filters are unmodelled and decline — but only when
-//! they sit on a version the graph actually settled on, since restore does not
-//! look inside a package it rejected either.
+//! `include`/`exclude` asset filters are ignored: they decide which of a
+//! package's assets flow to the project, not which packages are in the graph
+//! (`resolver_diff`'s generators attach them, and both engines agree).
 //!
 //! A closure is committed only where *both* restore engines would write it.
 //! The engines differ in how they treat a conflict's losers and in how they
@@ -195,10 +195,6 @@ pub enum ResolveDecline {
         id: PackageId,
         selected: Box<NuGetVersion>,
         required: Box<VersionRange>,
-    },
-    DependencyAssetFilterUnsupported {
-        package: PackageIdentity,
-        dependency: PackageId,
     },
     DependencyWithoutRange {
         package: PackageIdentity,
@@ -321,16 +317,6 @@ impl fmt::Display for ResolveDecline {
                     f,
                     "package {id} is pinned to {selected} by a nearer dependency, below the \
                      {required} a deeper one needs (the legacy restore engine fails with NU1605)"
-                )
-            }
-            ResolveDecline::DependencyAssetFilterUnsupported {
-                package,
-                dependency,
-            } => {
-                write!(
-                    f,
-                    "package {} {} uses dependency asset filters on dependency {dependency}",
-                    package.id, package.version
                 )
             }
             ResolveDecline::DependencyWithoutRange {
@@ -518,12 +504,6 @@ fn finish(
         let identity = PackageIdentity::new(id.clone(), version.clone());
         let key = (identity.id.clone(), identity.version_folder_name());
         match walk.shapes.get(&key) {
-            Some(ShapeError::AssetFilter { dependency }) => {
-                return Err(ResolveDecline::DependencyAssetFilterUnsupported {
-                    package: identity,
-                    dependency: dependency.clone(),
-                });
-            }
             Some(ShapeError::NoRange { dependency }) => {
                 return Err(ResolveDecline::DependencyWithoutRange {
                     package: identity,
@@ -695,9 +675,6 @@ fn engines_agree(
                 loser: loser.identity.clone(),
                 dependency: dependency.id.clone(),
             };
-            if dependency.include.is_some() || dependency.exclude.is_some() {
-                return Err(not_a_leaf());
-            }
             let Some(range) = &dependency.version_range else {
                 return Err(not_a_leaf());
             };
@@ -980,7 +957,6 @@ struct Node {
 /// A dependency a package declares in a shape we do not model.
 #[derive(Debug, Clone)]
 enum ShapeError {
-    AssetFilter { dependency: PackageId },
     NoRange { dependency: PackageId },
 }
 
@@ -1219,15 +1195,6 @@ fn node_dependencies(
 
     let mut dependencies = Vec::with_capacity(cached.dependencies.len());
     for dependency in &cached.dependencies {
-        if dependency.include.is_some() || dependency.exclude.is_some() {
-            walk.shapes.insert(
-                key,
-                ShapeError::AssetFilter {
-                    dependency: dependency.id.clone(),
-                },
-            );
-            return Ok(Vec::new());
-        }
         let Some(range) = &dependency.version_range else {
             walk.shapes.insert(
                 key,

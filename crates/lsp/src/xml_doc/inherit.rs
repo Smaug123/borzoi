@@ -43,7 +43,7 @@
 
 use std::sync::Arc;
 
-use borzoi_assembly::doc_id::{demangle_segment, type_enc};
+use borzoi_assembly::doc_id::{demangle_segment, member_doc_id, type_enc};
 use borzoi_assembly::shape::Unshaped;
 use borzoi_assembly::{Access, DefaultMember, Member, Primitive, TypeRef};
 use borzoi_sema::{AssemblyEnv, EntityHandle, IlTypeDefinition};
@@ -165,7 +165,9 @@ pub enum CrefMiss {
     /// `Item` as "an indexer" and any other name as a non-indexer's, so an
     /// indexer's own ID under another name (`[IndexerName("Foo")]`, an
     /// explicit `I.this[]`) binds nothing, and nor does a plain property
-    /// named `Item`.
+    /// named `Item`. The converse holds too: `Item` binds an indexer of
+    /// *any* name with the ID's signature, so when another type of the
+    /// parent's ID has one, the ID is [`Self::Ambiguous`].
     NotTheIndexer,
     /// Some referenced DLL could not be read at all, and may declare a symbol
     /// of the ID too.
@@ -567,6 +569,11 @@ impl Walk<'_> {
             if matches!(member, Member::Method(m) if m.module_value.is_some()) {
                 return Err(Decline::Cref(CrefMiss::NotIl));
             }
+            // Every type of the parent's ID, in this assembly or another.
+            let parents: Vec<DocTarget> = match type_name(env, parent) {
+                Ok(name) => index.targets(&name.type_id()).to_vec(),
+                Err(_) => return Err(Decline::Cref(CrefMiss::DroppedNearby)),
+            };
             if let Member::Property(p) = member {
                 let indexer = !p.parameters.is_empty();
                 let the_indexer = indexer
@@ -576,15 +583,40 @@ impl Walk<'_> {
                 if (indexer || p.name == "Item") && !the_indexer {
                     return Err(Decline::Cref(CrefMiss::NotTheIndexer));
                 }
+                // Roslyn reads the ID's `Item` as "the indexer" of each type
+                // of the parent's ID, whatever that indexer is named
+                // (`[IndexerName("Foo")]`), and binds the first with the
+                // ID's signature; the index keys such an indexer by its own
+                // name, so the competitor is found by spelling its ID as
+                // `Item`'s.
+                let competes = |other: EntityHandle| {
+                    let Ok(name) = type_name(env, other) else {
+                        return true;
+                    };
+                    env.member_indices(other)
+                        .any(|idx| match env.member_at(other, idx) {
+                            Member::Property(q) if !q.parameters.is_empty() => {
+                                let mut as_item = q.clone();
+                                as_item.name = "Item".to_owned();
+                                as_item.xml_doc_sig = None;
+                                as_item.setter_xml_doc_sig = None;
+                                member_doc_id(&name, &Member::Property(as_item)) == cref
+                            }
+                            _ => false,
+                        })
+                };
+                if parents
+                    .iter()
+                    .map(|t| t.owner())
+                    .filter(|&other| other != parent)
+                    .any(competes)
+                {
+                    return Err(Decline::Cref(CrefMiss::Ambiguous));
+                }
             }
-            // A member dropped from any type of the parent's ID — in this
-            // assembly or another — may carry the ID too, under a name its
-            // record does not spell (a dropped property's accessor), so any
-            // drop there declines.
-            let parents: Vec<DocTarget> = match type_name(env, parent) {
-                Ok(name) => index.targets(&name.type_id()).to_vec(),
-                Err(_) => return Err(Decline::Cref(CrefMiss::DroppedNearby)),
-            };
+            // A member dropped from any type of the parent's ID may carry the
+            // ID too, under a name its record does not spell (a dropped
+            // property's accessor), so any drop there declines.
             if parents
                 .iter()
                 .any(|p| !env.entity(p.owner()).skipped_members.is_empty())
