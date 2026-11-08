@@ -751,6 +751,20 @@ jobs:
           nix develop --command cargo test -p borzoi-sema --test all \
             silent_region_sweep:: -- --ignored --nocapture
 
+      - name: Gate on the auto-open member sweep
+        if: steps.gate.outputs.run == 'true'
+        # Every ordered pair of same-named members a fragment can declare,
+        # crossed with every way its members reach a use (an `open`, a
+        # namespace fold, the fold-back), and every declaration that may follow
+        # them: each probe agrees with FCS, or is a decline pinned per probe by
+        # `crates/sema/tests/manifests/auto_open_member_sweep_*.txt`. Ignored in
+        # the ordinary suite for its length.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-sema --test all \
+            auto_open_member_sweep:: -- --ignored --nocapture
+
       - name: Gate on inferred types over the corpus
         if: steps.gate.outputs.run == 'true'
         # Every expression and binder type inference commits on a sampled
