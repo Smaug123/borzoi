@@ -152,10 +152,11 @@ impl<'src> Parser<'src> {
                 let else_form = else_form.expect("the arm's guard matched an `else`");
                 self.parse_if_branch_body("else", else_form, opened_else_block);
             }
-            // Like `else` (see [`Parser::peek_dual_keyword`]), an `elif` past a
-            // swallowed closer belongs to the enclosing construct.
+            // Like a raw `else` (see [`Parser::peek_dual_keyword`]), an `elif`
+            // after a raw `then` branch belongs to the enclosing construct when
+            // it sits past a swallowed closer.
             Some((Ok(FilteredToken::Raw(Token::Elif)), elif_span))
-                if !self.at_swallowed_seq_closer() =>
+                if !(then_form == KeywordForm::Raw && self.at_swallowed_seq_closer()) =>
             {
                 // Bare `elif` vs merged `else if` (LexFilter rewrote both
                 // into a single filtered `Token::Elif`, see
@@ -764,9 +765,10 @@ impl<'src> Parser<'src> {
             // skips trivia, so any `RightBlockEnd` drained above doesn't hide
             // the following `Bar`. A `|` past a swallowed closer belongs to an
             // enclosing clause list (`| A -> (function _ -> a) | B -> b`): a raw
-            // list has no `OEND` to stop at, so check the raw stream.
+            // list has no `OEND` to stop at, so check the raw stream. An offside
+            // list is closed by its own virtuals and needs no check.
             if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Bar)), _)))
-                && !self.at_swallowed_seq_closer()
+                && !(opener == KeywordForm::Raw && self.at_swallowed_seq_closer())
             {
                 continue;
             }
@@ -862,10 +864,11 @@ impl<'src> Parser<'src> {
         // a `Virtual::RightBlockEnd` after the body, which `parse_seq_block_body`
         // stops at (it never consumes its own close) and we drain below.
         self.parse_seq_block_body("expected expression after `try`");
-        if matches!(
+        let body_closed = matches!(
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
-        ) {
+        );
+        if body_closed {
             self.builder
                 .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
             self.pos += 1;
@@ -873,11 +876,14 @@ impl<'src> Parser<'src> {
 
         // Branch on the keyword after the body: `with` (TryWith) or `finally`
         // (TryFinally). `finally` is checked first so its raw token isn't
-        // mistaken for a missing-`with` bail.
+        // mistaken for a missing-`with` bail. A body LexFilter did not close (a
+        // raw `try`, which pushed no context) leaves a `finally` past a swallowed
+        // closer to the enclosing construct, as [`Parser::peek_dual_keyword`]
+        // does for a raw `with`.
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::Finally)), _)),
-        ) && !self.at_swallowed_seq_closer()
+        ) && !(!body_closed && self.at_swallowed_seq_closer())
         {
             // `finally` — plain raw passthrough (no relabel), then the regular
             // block finally body (the `while`/`for` `do`-body shape).

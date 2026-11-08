@@ -123,22 +123,24 @@ impl<'src> Parser<'src> {
     /// The spelling the current filtered token carries `kw` in, if it is `kw`
     /// and is this construct's to take.
     ///
-    /// A continuation keyword ([`DualKeyword::is_continuation`]) is declined
-    /// when a LexFilter-swallowed closer sits before it on the raw stream
-    /// ([`Self::at_swallowed_seq_closer`]): the filtered stream drops a paren's
-    /// `)`, so in `if a then (if b then c) else d` the inner `if` would
+    /// A raw continuation keyword ([`DualKeyword::is_continuation`]) is
+    /// declined when a LexFilter-swallowed closer sits before it on the raw
+    /// stream ([`Self::at_swallowed_seq_closer`]): the filtered stream drops a
+    /// paren's `)`, so in `if a then (if b then c) else d` the inner `if` would
     /// otherwise see the outer `else`. An offside construct is closed by its own
-    /// virtuals before the `)`; a raw one has nothing but this check. A head
-    /// keyword is never declined, so a caller that dispatched on it can rely on
-    /// consuming it.
+    /// virtuals before the `)`, so an offside keyword is never declined; there
+    /// the check would only change how malformed input recovers (a stray `)`
+    /// before an `OTHEN`). A head keyword is never declined either, so a caller
+    /// that dispatched on it can rely on consuming it.
     pub(super) fn peek_dual_keyword(&self, kw: DualKeyword) -> Option<KeywordForm> {
-        if kw.is_continuation() && self.at_swallowed_seq_closer() {
+        let form = match self.peek() {
+            Some((Ok(tok), _)) => kw.form_of(tok)?,
+            _ => return None,
+        };
+        if form == KeywordForm::Raw && kw.is_continuation() && self.at_swallowed_seq_closer() {
             return None;
         }
-        match self.peek() {
-            Some((Ok(tok), _)) => kw.form_of(tok),
-            _ => None,
-        }
+        Some(form)
     }
 
     /// Consume `kw` in either spelling, emitting its text under the keyword's
