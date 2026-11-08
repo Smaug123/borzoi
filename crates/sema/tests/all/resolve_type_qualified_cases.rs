@@ -744,26 +744,19 @@ fn cross_file_enum_type_qualified_case_resolves_through_open() {
 }
 
 #[test]
-fn cross_file_type_qualified_case_defers_through_a_module_open() {
-    // `open Lib.Pal` opens a *module*, which could carry unmodelled submodules — and
-    // a later module open *can* shadow the type qualifier: FCS resolves
-    // `open A (type Color); open B (module Color); Color.Red` to `B.Color.Red` (the
-    // later submodule member), not A's case. So while any project-module open is in
-    // scope we conservatively defer a dotted head (matching
-    // `dotted_head_through_open_module_defers`). Sound — never the wrong case; an
-    // availability gap. The fully-qualified form below resolves.
-    let proj = resolve_project(
-        &[
-            impl_file("namespace Lib\nmodule Pal =\n    type Color = Red | Blue\n"),
-            impl_file("module Client\nopen Lib.Pal\nlet x = Color.Red\n"),
-        ],
-        &AssemblyEnv::default(),
+fn cross_file_type_qualified_case_resolves_through_a_module_open() {
+    // `open Lib.Pal` opens an earlier file's *module* whose every name is
+    // enumerable, so the head `Color` is checked against what it brings rather
+    // than deferred (FCS: `Lib.Pal.Color.Red`). A later module open *can*
+    // shadow the qualifier — `open A (type Color); open B (module Color);
+    // Color.Red` is `B.Color.Red` — which is what
+    // `resolve_duplicate_case_names_diff::type_qualified_case_past_an_opened_module_never_mis_binds`
+    // grades, in both open orders, against FCS.
+    assert_cross_file_case(
+        "namespace Lib\nmodule Pal =\n    type Color = Red | Blue\n",
+        "module Client\nopen Lib.Pal\nlet x = Color.Red\n",
+        "Color.Red",
     );
-    let src1 = "module Client\nopen Lib.Pal\nlet x = Color.Red\n";
-    match proj.file(1).resolution_at(nth(src1, "Color.Red", 0)) {
-        None | Some(Resolution::Deferred(_)) => {}
-        other => panic!("`Color.Red` under a module open should defer, got {other:?}"),
-    }
 }
 
 #[test]
