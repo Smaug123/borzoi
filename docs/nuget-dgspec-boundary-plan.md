@@ -1,6 +1,6 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–5, 7a (without transitive pinning), 7b, 7c and 8 have
+> **Status:** stages 1–6, 7a (without transitive pinning), 7b, 7c and 8 have
 > landed, and so have the
 > resolver's handling of dependency asset filters, B₁'s of `<contentFiles>`, and
 > B₁'s reading of the environment restore runs under.
@@ -80,8 +80,8 @@ evaluation plus targets. In the dgspec they arrive as plain data.
 ### The gap in what has landed
 
 `borzoi_nuget::resolve_offline(root, tfm, direct)` takes direct requirements
-only. It does not model pruning, project nodes, CPM transitive pinning,
-download dependencies or the warning policy. The `restore` op in
+only. At stage 4 it modelled neither pruning, project nodes, CPM transitive
+pinning, download dependencies nor the warning policy. The `restore` op in
 `tools/nuget-oracle` builds a synthetic dgspec that omits framework
 references, fallback imports and pruning, on the grounds that "none of them
 names a package in the synthetic universe". Real dgspecs break that premise
@@ -568,9 +568,7 @@ comes from stage 1's local sweep and the stage-8 fixtures, not from the census.
 - **7c — the warning policy.** Landed; see below.
 - **7b — download dependencies.** Landed; see below.
 - **5 — pruning.** Landed; see below.
-- **6 — project nodes.** Package flow through `projectReferences`, with
-  `PrivateAssets`/`suppressParent`. Oracle: the generator emits multi-project
-  dgspecs, graded the same way.
+- **6 — project nodes.** Landed; see below.
 - **7a — central package management.** Landed without transitive pinning;
   see below.
 
@@ -811,6 +809,75 @@ restore, the oracle and B₁: each variable B₁ has a verdict on removed, and a
 home of the suite's own. Review found the caller's environment deciding what a
 case graded three times, one test at a time, before that replaced the
 per-test fixes. The census does not move.
+
+### Stage 6: project nodes — landed
+
+A project reference is a node of the graph (`borzoi_nuget::resolve_graph`,
+which `resolve_offline_in` is now the package-only case of). The entry-only
+spec `restore.rs` generates holds every project its references reach, and B₁
+walks them as NuGet does:
+
+- **The node.** A referenced project's framework nearest the entry's
+  (`PackageSpec.GetTargetFramework`) is walked. Its edges are that
+  framework's dependencies, then its project references for it, each as
+  `[version, )` of the referenced project and overriding a same-named package
+  dependency (`PackageSpecReferenceDependencyProvider`). A reference settles
+  on the referenced project's one version, so it never loses a conflict. The
+  closure holds packages only.
+- **Suppression.** A dependency or reference with `PrivateAssets="All"`, or
+  one the project's own prune list covers, is left out when the project is
+  reached as a reference (the entry's own are walked whatever they say). The
+  legacy engine still counts it as a sibling in its eclipse check; the default
+  engine leaves the name out down the whole subtree, and checks every
+  dependency for a cycle before leaving any out. So B₁ declines where they
+  can part ways: a node below the project depends on the suppressed name
+  (`SuppressedEdgeReachable`), or the suppressed edge names the project, an
+  ancestor or the root (`SuppressedCycle`, where the default engine fails
+  with `NU1108` and the legacy one walks nothing).
+- **Pruning.** The entry's prune list prunes a referenced project's package
+  edges as it prunes a package's (`ShouldPrunePackage`, default engine only,
+  as stage 5 graded); a referenced project's own list suppresses its edges;
+  a project reference is never pruned, and one the entry's list covers warns
+  `NU1511` on `net10.0`, which B₁ does not predict.
+- **Names.** A project's name is its identity in the graph: each must be a
+  package id, no two (the entry included) may share one, and no package
+  edge, in the spec or in a nuspec, may carry one (NuGet prefers the project
+  by rules the engines state differently, and an edge named like the entry
+  is a cycle). A reference to a project the spec does not hold fails restore
+  (`NU1105`); a project no framework of which is compatible with the entry's
+  itself declines, whether restore fails (`NU1201`) or selects one through
+  the fallback list. Every project of the spec is admitted on the entry's
+  terms, and one no reference reaches declines (`OtherProjects`).
+- **Warnings.** A referenced project's package edges are checked for
+  `NU1608` like a package's; a project with a suppressed edge, a dependency
+  with its own `noWarn`, or a reference the entry's prune list covers makes
+  the framework's warnings unpredicted.
+
+The oracle: two hand tables (`project_references_resolve_identically` pins
+the closure of each shape — flow, suppression at each level, chains, nearest
+framework, cousins, overriding, versions, pruning at each level, eclipsing,
+asset flags, CPM; `project_reference_declines_are_graded` pins each decline
+with restore's own verdict where it is settled), each graded against **both**
+engines (`grade_both`: the spec rendered again with
+`restoreUseLegacyDependencyResolver`, which the reader declines, for the
+oracle alone; a shape with a prune list is graded against the default engine
+only, as stage 5 grades pruning). The generator emits referenced projects in
+one spec of three, over the adversarial package universe, and a second sweep
+(`generated_project_graphs_resolve_identically_on_both_engines`) emits them
+in every spec over a clean universe (every version installed, no malformed
+metadata, no duplicate dependencies), against both engines, with a commit
+floor and a per-variation obligation (chains, each `PrivateAssets` value,
+asset flags, versions, CPM, cross-targeting on either side, pruning, a
+dependency's private assets, overriding, a project named like a package).
+The deletion and substitution sweeps perturb a referenced project's fields
+too. Two rows of the tables were wrong as first written and the oracle
+corrected them: a cycle both of whose inner edges the entry also references
+is no cycle to either engine, and `NU1605` is a warning that only the SDK's
+default `WarningsAsErrors` makes fatal.
+
+No corpus project has a project reference, so the census does not move; the
+LSP's two-project fixture (`a_project_reference_brings_its_project_into_the_spec`)
+now requires B₁ to commit.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 

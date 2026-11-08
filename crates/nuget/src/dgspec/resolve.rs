@@ -9,13 +9,16 @@
 //!
 //! # Every field has a verdict
 //!
-//! The resolver models a project's direct package references and nothing else.
-//! Every other field of the spec is in one of three classes, and
+//! The resolver models a project's direct package references, and its
+//! project references as nodes of the graph ([`project_graph`]), and nothing
+//! else. Every other field of the spec is in one of three classes, and
 //! [`unmodelled_fields`] destructures every struct the spec is made of, so a
 //! field added to the model does not compile until it has been put in one:
 //!
-//! - **Modelled.** Direct dependencies; each framework's asset-target fallback
-//!   list and packages to prune; the packages folder the resolver reads.
+//! - **Modelled.** Direct dependencies; project references, and the
+//!   referenced projects' frameworks, dependencies and references; each
+//!   framework's asset-target fallback list and packages to prune; the
+//!   packages folder the resolver reads.
 //! - **Inert.** Fields that cannot move the closure, or turn a success into a
 //!   failure, of a restore the resolver commits to. Each one's reason is
 //!   stated at the point it is discarded. The reasons the differential cannot
@@ -62,19 +65,19 @@ use super::environment::{EnvironmentDecline, check_environment};
 use super::nuspec::{NuspecDecline, nuspec_is_admitted};
 use super::{
     DependencyGraphSpec, DownloadDependency, FrameworkReference, LibraryDependency,
-    LibraryDependencyTarget, NuGetLogCode, PackageRangeEntry, PackageSpec, ProjectRestoreMetadata,
-    ProjectRestoreReference, RestoreAuditProperties, RestoreFrameworkInfo, RestoreLockProperties,
-    TargetFrameworkInformation, WarningProperties,
+    LibraryDependencyTarget, LibraryIncludeFlags, NuGetLogCode, PackageRangeEntry, PackageSpec,
+    ProjectRestoreMetadata, ProjectRestoreReference, RestoreAuditProperties, RestoreFrameworkInfo,
+    RestoreLockProperties, TargetFrameworkInformation, WarningProperties,
 };
 use crate::assets::content_model_framework;
 use crate::{
-    AssetSelectionDecline, DirectPackageRequirement, NuGetFramework, PackageId, PackageIdentity,
-    PackagePaths, PackageReadError, ResolveDecline, ResolvedPackageClosure, TargetContext,
-    VersionRange, list_package_files, read_installed_package, resolve_offline_in,
-    select_compile_assets,
+    AssetSelectionDecline, EdgeTarget, NuGetFramework, NuGetVersion, PackageId, PackageIdentity,
+    PackagePaths, PackageReadError, ProjectEdge, ProjectGraph, ProjectNode, ResolveDecline,
+    ResolvedPackageClosure, TargetContext, VersionRange, list_package_files,
+    read_installed_package, resolve_graph, select_compile_assets,
 };
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
@@ -125,8 +128,9 @@ pub fn verified_nuget_identities() -> impl Iterator<Item = &'static str> {
 /// makes [`resolve_dgspec`] decline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnmodelledField {
-    /// `restore.projectName` is absent or empty: restore requires it, and it
-    /// names the graph's root, which a package of the same name collides with.
+    /// A project's `restore.projectName` is absent or empty (restore requires
+    /// it), a referenced project's is not a package id (its identity in the
+    /// graph), or two projects of the spec share one ignoring case.
     ProjectName,
     /// `restore.packagesPath` is absent, so NuGet would find the packages
     /// folder from the environment and config files, or holds a control
@@ -154,8 +158,6 @@ pub enum UnmodelledField {
     /// or a floating central version or override (restore fails on each); without it, a
     /// centrally managed dependency, an override or a central entry.
     CentralPackageManagement,
-    /// A framework's project references (stage 6).
-    ProjectReferences,
     /// A framework's `packagesToPrune` entry without an upper bound, or a
     /// floating one, whose pruning is not modelled.
     PackagesToPrune,
@@ -176,8 +178,10 @@ pub enum UnmodelledField {
     /// A config file NuGet loads its settings from is outside the vocabulary
     /// B₁ admits (see `config_is_admitted`).
     Config,
-    /// The spec holds a project besides this one, or restores more than this
-    /// one: NuGet validates the whole graph first (stage 6).
+    /// The spec restores more than this project, or holds a project no chain
+    /// of references from this one reaches. NuGet validates the whole graph
+    /// before restoring any of it, so either can fail this project's restore
+    /// for a reason outside its own graph.
     OtherProjects,
 }
 
@@ -193,7 +197,6 @@ impl UnmodelledField {
             UnmodelledField::Audit => "audit",
             UnmodelledField::NotMicrosoftNetSdk => "not-microsoft-net-sdk",
             UnmodelledField::CentralPackageManagement => "central-package-management",
-            UnmodelledField::ProjectReferences => "project-references",
             UnmodelledField::PackagesToPrune => "packages-to-prune",
             UnmodelledField::PackageTargetFallback => "package-target-fallback",
             UnmodelledField::DependencyTarget => "dependency-target",
@@ -220,9 +223,21 @@ pub enum DgSpecResolveDecline {
         target_alias: String,
         decline: Box<ResolveDecline>,
     },
-    /// A package in a framework's closure has the project's own name, which
-    /// NuGet's graph has as its root.
-    PackageNamedLikeProject { target_alias: String, id: PackageId },
+    /// A framework's project reference (the project's own, or a referenced
+    /// project's) names a project by a unique name the spec does not hold.
+    /// Restore fails on it (`NU1105`).
+    ProjectReferenceMissing {
+        target_alias: String,
+        project: String,
+    },
+    /// No framework of a referenced project is compatible with this
+    /// framework itself. Restore fails (`NU1201`) when none is compatible
+    /// through the fallback list either, and otherwise walks the one it
+    /// selects through that list, which B₁ does not model.
+    ProjectIncompatible {
+        target_alias: String,
+        project: String,
+    },
     /// Restore would log a warning for a framework that the project's warning
     /// policy promotes to an error, so it fails; `code` is `None` when B₁
     /// cannot predict the framework's warnings exactly and the policy promotes
@@ -285,9 +300,21 @@ impl fmt::Display for DgSpecResolveDecline {
                 target_alias,
                 decline,
             } => write!(f, "framework {target_alias:?}: {decline}"),
-            DgSpecResolveDecline::PackageNamedLikeProject { target_alias, id } => write!(
+            DgSpecResolveDecline::ProjectReferenceMissing {
+                target_alias,
+                project,
+            } => write!(
                 f,
-                "framework {target_alias:?}: package {id} has the project's own name"
+                "framework {target_alias:?}: a project reference names {project:?}, which the \
+                 spec does not hold (restore fails with NU1105)"
+            ),
+            DgSpecResolveDecline::ProjectIncompatible {
+                target_alias,
+                project,
+            } => write!(
+                f,
+                "framework {target_alias:?}: no framework of the referenced project {project:?} \
+                 is compatible with it"
             ),
             DgSpecResolveDecline::PromotedWarning { target_alias, code } => match code {
                 Some(code) => write!(
@@ -429,21 +456,36 @@ pub fn resolve_dgspec(
             project: project.to_owned(),
         })?;
 
+    // Every project of the spec is admitted on the same terms: the referenced
+    // ones are restored with this one (their restore metadata is validated
+    // with its), and their frameworks are walked as nodes of its graph.
     let mut fields = unmodelled_fields(package_spec);
+    for other in spec
+        .projects
+        .iter()
+        .filter(|other| !std::ptr::eq(*other, package_spec))
+    {
+        fields.extend(unmodelled_fields(other));
+    }
     // NuGet validates the whole graph before restoring any of it, so another
-    // project, or another entry in the restore list, can fail this one's
-    // restore. The spec `restore.rs` generates is entry-only.
-    if spec.projects.len() != 1 || spec.restore.len() != 1 {
+    // entry in the restore list, or a project no reference reaches, can fail
+    // this one's restore for a reason outside its graph. The spec `restore.rs`
+    // generates restores the entry alone and holds exactly the projects its
+    // references reach.
+    if spec.restore.len() != 1 || !every_project_is_reached(spec, package_spec) {
         fields.insert(UnmodelledField::OtherProjects);
+    }
+    // A project's name is its identity in NuGet's graph: each referenced
+    // project's must be a package id (which is what the walk compares), and no
+    // two projects, the restored one included, may share one.
+    if !project_names_are_distinct_ids(spec, package_spec) {
+        fields.insert(UnmodelledField::ProjectName);
     }
     if !fields.is_empty() {
         return Err(DgSpecResolveDecline::Unmodelled { fields });
     }
-    let (Some(packages_path), Some(project_name)) = (
-        package_spec.restore.packages_path.as_deref(),
-        package_spec.restore.project_name.as_deref(),
-    ) else {
-        unreachable!("an absent packages path or project name is an unmodelled field")
+    let Some(packages_path) = package_spec.restore.packages_path.as_deref() else {
+        unreachable!("an absent packages path is an unmodelled field")
     };
 
     let not_pruned = not_pruned_warning(&package_spec.frameworks);
@@ -451,36 +493,21 @@ pub fn resolve_dgspec(
         .frameworks
         .iter()
         .map(|framework| {
-            let direct: Vec<DirectPackageRequirement> = framework
-                .dependencies
-                .iter()
-                .map(|dependency| {
-                    DirectPackageRequirement::new(dependency.id.clone(), dependency.range.clone())
-                })
-                .collect();
             let context = target_context(framework);
-            let closure = resolve_offline_in(
+            let FrameworkGraph {
+                graph,
+                warnings_predictable,
+            } = project_graph(spec, package_spec, framework, &context)?;
+            let closure = resolve_graph(
                 Path::new(packages_path),
                 &framework.framework,
                 &context,
-                &direct,
+                &graph,
             )
             .map_err(|decline| DgSpecResolveDecline::Resolve {
                 target_alias: framework.target_alias.clone(),
                 decline: Box::new(decline),
             })?;
-            if let Some(clash) = closure.packages.iter().find(|package| {
-                package
-                    .identity
-                    .id
-                    .as_str()
-                    .eq_ignore_ascii_case(project_name)
-            }) {
-                return Err(DgSpecResolveDecline::PackageNamedLikeProject {
-                    target_alias: framework.target_alias.clone(),
-                    id: clash.identity.id.clone(),
-                });
-            }
             check_downloads(Path::new(packages_path), framework)?;
             check_metadata(
                 nuget,
@@ -495,14 +522,19 @@ pub fn resolve_dgspec(
                 &context.asset_target_fallback,
                 &closure,
             )?;
-            let warnings = predicted_warnings(
-                Path::new(packages_path),
-                framework,
-                &context,
-                not_pruned,
-                &package_spec.restore.warning_properties,
-                &closure,
-            )?;
+            let warnings = if warnings_predictable {
+                predicted_warnings(
+                    Path::new(packages_path),
+                    framework,
+                    &context,
+                    not_pruned,
+                    &package_spec.restore.warning_properties,
+                    &graph,
+                    &closure,
+                )?
+            } else {
+                None
+            };
             let policy = &package_spec.restore.warning_properties;
             match &warnings {
                 Some(codes) => {
@@ -785,8 +817,9 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
 
     let PackageSpec {
         // The project's own package version: the root of the graph, which no
-        // package resolves to unless it shares the project's name, and that
-        // declines on its own (`PackageNamedLikeProject`).
+        // package resolves to unless it shares the project's name, which the
+        // resolver declines (`ResolveDecline::DependencyNamesAProject`); a
+        // referenced project's is what a reference to it settles on.
         version: _,
         is_default_version: _,
         restore,
@@ -866,8 +899,13 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     fn as_set<'a>(aliases: &[&'a str]) -> BTreeSet<&'a str> {
         aliases.iter().copied().collect()
     }
+    // The SDK writes a project's unique name as its path, an absolute one.
+    // NuGet looks projects up by unique name and by name in one table, so a
+    // unique name that is not a path could be another project's name.
     if project_unique_name.is_empty()
         || !path_admitted(project_path)
+        || project_path.as_deref() != Some(project_unique_name.as_str())
+        || !Path::new(project_unique_name).is_absolute()
         || !path_admitted(output_path)
         || !aliases_admitted(&original)
         || !aliases_admitted(&aliases)
@@ -880,6 +918,25 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
             .collect::<BTreeSet<_>>()
             .len()
             != frameworks.len()
+        // Restore validates every framework of every project in the spec
+        // as specific (`SpecValidationUtility.ValidateFrameworks`), the
+        // ones it never walks included.
+        || frameworks
+            .iter()
+            .any(|f| !f.framework.is_specific_framework())
+        || restore_frameworks
+            .iter()
+            .any(|f| !f.framework.is_specific_framework())
+        // The SDK writes each restore-metadata entry as its alias's
+        // framework. NuGet's releases select a framework's project
+        // references by alias or by framework name, which agree only then.
+        || restore_frameworks.iter().any(|restore_framework| {
+            !frameworks.iter().any(|f| {
+                f.target_alias
+                    .eq_ignore_ascii_case(&restore_framework.target_alias)
+                    && f.framework == restore_framework.framework
+            })
+        })
     {
         decline(UnmodelledField::RequiredMetadata);
     }
@@ -928,13 +985,22 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         } = restore_framework;
         for reference in project_references {
             let ProjectRestoreReference {
+                // The reference, which `project_graph` resolves to a project
+                // of the spec, or declines.
                 project_unique_name: _,
+                // The name restore gives a reference to a project the spec
+                // does not hold, which declines before it is needed.
                 project_path: _,
+                // Which of the referenced project's assets flow; not which
+                // packages are in the graph. Graded by the differential,
+                // whose generator varies them.
                 include_assets: _,
                 exclude_assets: _,
+                // `All` leaves the reference out of the graph when this
+                // project is itself reached as a reference (`project_graph`);
+                // anything else is inert like the two above.
                 private_assets: _,
             } = reference;
-            decline(UnmodelledField::ProjectReferences);
         }
     }
 
@@ -1138,12 +1204,14 @@ fn is_local_absolute_path(source: &str) -> bool {
 /// does not model which warnings those are, so a framework with one predicts
 /// `None`. The differential holds every `Some` prediction to equal the codes
 /// B₀ logs.
+#[allow(clippy::too_many_arguments)]
 fn predicted_warnings(
     packages: &Path,
     framework: &TargetFrameworkInformation,
     context: &TargetContext,
     not_pruned: NotPrunedWarning,
     policy: &WarningProperties,
+    graph: &ProjectGraph,
     closure: &ResolvedPackageClosure,
 ) -> Result<Option<BTreeSet<NuGetLogCode>>, DgSpecResolveDecline> {
     if framework
@@ -1161,6 +1229,17 @@ fn predicted_warnings(
             .find(|package| package.identity.id == *id)
             .map(|package| &package.identity.version)
     };
+    // Above the upper bound only: a version below the lower bound, which a
+    // nearer edge can also settle on, logs nothing.
+    let above = |range: &VersionRange, version: &NuGetVersion| {
+        range.max_version().is_some_and(|max| {
+            if range.is_max_inclusive() {
+                version > max
+            } else {
+                version >= max
+            }
+        })
+    };
     let mut codes = BTreeSet::new();
     for resolved in &closure.packages {
         let package =
@@ -1177,16 +1256,22 @@ fn predicted_warnings(
             else {
                 continue;
             };
-            // Above the upper bound only: a version below the lower bound,
-            // which a nearer edge can also settle on, logs nothing.
-            let above = range.max_version().is_some_and(|max| {
-                if range.is_max_inclusive() {
-                    version > max
-                } else {
-                    version >= max
-                }
-            });
-            if above {
+            if above(range, version) {
+                codes.insert(outside_constraint);
+            }
+        }
+    }
+    // A referenced project's package edges are edges of the graph too, bounded
+    // above like a package's. (The root's own are direct references, which
+    // settle on their own lower bound or fail the restore.)
+    for project in &graph.projects {
+        for edge in &project.edges {
+            if edge.target != EdgeTarget::Package || context.covers(&edge.id, &edge.range) {
+                continue;
+            }
+            if let Some(version) = selected(&edge.id)
+                && above(&edge.range, version)
+            {
                 codes.insert(outside_constraint);
             }
         }
@@ -1255,6 +1340,235 @@ fn not_pruned_warning(frameworks: &[TargetFrameworkInformation]) -> NotPrunedWar
         (true, true, _) => NotPrunedWarning::Unknown,
         _ => NotPrunedWarning::Never,
     }
+}
+
+/// One framework's graph, and whether B₁ can predict its warnings.
+struct FrameworkGraph {
+    graph: ProjectGraph,
+    /// `false` where a referenced project carries something whose warnings
+    /// B₁ does not model: a dependency with its own `noWarn`, a suppressed
+    /// edge, or a project reference the root's prune list covers (`NU1511`
+    /// on `net10.0` and later).
+    warnings_predictable: bool,
+}
+
+/// The graph `framework` of `root` resolves: the root's edges, and every
+/// project a chain of references from it reaches, each as the node NuGet
+/// walks for it.
+///
+/// NuGet walks a referenced project's framework nearest the root's
+/// (`PackageSpec.GetTargetFramework`); one it reaches only through the
+/// root's fallback list, or not at all (`NU1201`), declines. A project's edges
+/// are its dependencies for that framework, with `PrivateAssets="All"` and the
+/// ones its own prune list covers suppressed
+/// (`PackageSpecReferenceDependencyProvider.GetSpecDependencies`), then its
+/// project references for that framework, each as `[version, )` of the
+/// referenced project and overriding a same-named package dependency
+/// (`GetDependenciesFromSpecRestoreMetadata`). A reference to a project the
+/// spec does not hold declines (`NU1105`).
+fn project_graph(
+    spec: &DependencyGraphSpec,
+    root: &PackageSpec,
+    framework: &TargetFrameworkInformation,
+    context: &TargetContext,
+) -> Result<FrameworkGraph, DgSpecResolveDecline> {
+    let target_alias = &framework.target_alias;
+    let mut warnings_predictable = true;
+    // The edges of `project`'s framework `selected`, as a node of this graph.
+    let mut edges_of = |project: &PackageSpec,
+                        selected: &TargetFrameworkInformation,
+                        is_root: bool|
+     -> Result<Vec<ProjectEdge>, DgSpecResolveDecline> {
+        let own_context = target_context(selected);
+        // A referenced project's own `noWarn` suppresses warnings along the
+        // paths it brings (`TransitiveNoWarnUtils`), which B₁ does not model.
+        if !is_root && !project.restore.warning_properties.no_warn.is_empty() {
+            warnings_predictable = false;
+        }
+        let mut edges: Vec<ProjectEdge> = selected
+            .dependencies
+            .iter()
+            .map(|dependency| {
+                let suppressed = dependency.suppress_parent == LibraryIncludeFlags::ALL
+                    || own_context.covers(&dependency.id, &dependency.range);
+                if !is_root && (suppressed || !dependency.no_warn.is_empty()) {
+                    warnings_predictable = false;
+                }
+                ProjectEdge {
+                    id: dependency.id.clone(),
+                    range: dependency.range.clone(),
+                    target: EdgeTarget::Package,
+                    suppressed,
+                }
+            })
+            .collect();
+        // The references are those of the restore metadata's framework
+        // nearest `selected`'s (`PackageSpec.GetRestoreMetadataFramework`);
+        // with none compatible, NuGet adds no reference.
+        let restore_frameworks: Vec<NuGetFramework> = project
+            .restore
+            .frameworks
+            .iter()
+            .map(|candidate| candidate.framework.clone())
+            .collect();
+        let references = NuGetFramework::get_nearest(&selected.framework, &restore_frameworks)
+            .map(|nearest| &project.restore.frameworks[nearest].project_references[..])
+            .unwrap_or_default();
+        for reference in references {
+            let referenced =
+                find_project(spec, &reference.project_unique_name).ok_or_else(|| {
+                    DgSpecResolveDecline::ProjectReferenceMissing {
+                        target_alias: target_alias.clone(),
+                        project: reference.project_unique_name.clone(),
+                    }
+                })?;
+            let name = project_id(referenced).expect("admitted: a project's name is a package id");
+            let range = VersionRange::parse(&format!(
+                "[{}, )",
+                referenced.version.to_normalized_string()
+            ))
+            .expect("a normalised version opens a range");
+            let suppressed = reference.private_assets == LibraryIncludeFlags::ALL;
+            if !is_root && suppressed {
+                warnings_predictable = false;
+            }
+            if is_root && context.covers(&name, &range) {
+                warnings_predictable = false;
+            }
+            edges.retain(|edge| !(edge.target == EdgeTarget::Package && edge.id == name));
+            edges.push(ProjectEdge {
+                id: name,
+                range,
+                target: EdgeTarget::Project,
+                suppressed,
+            });
+        }
+        Ok(edges)
+    };
+
+    let direct = edges_of(root, framework, true)?;
+    let mut projects: Vec<ProjectNode> = Vec::new();
+    // A reference back to the root is an edge of the graph (the resolver
+    // declines it as a cycle), not a node to walk.
+    let referenced = |edges: &[ProjectEdge]| -> Vec<&PackageSpec> {
+        edges
+            .iter()
+            .filter(|edge| edge.target == EdgeTarget::Project)
+            .map(|edge| project_named(spec, &edge.id).expect("the edge was made from the project"))
+            .filter(|project| !std::ptr::eq(*project, root))
+            .collect()
+    };
+    let mut queue: VecDeque<&PackageSpec> = referenced(&direct).into();
+    while let Some(project) = queue.pop_front() {
+        let name = project_id(project).expect("admitted: a project's name is a package id");
+        if projects.iter().any(|node| node.name == name) {
+            continue;
+        }
+        let candidates: Vec<NuGetFramework> = project
+            .frameworks
+            .iter()
+            .map(|candidate| candidate.framework.clone())
+            .collect();
+        let nearest =
+            NuGetFramework::get_nearest(&framework.framework, &candidates).ok_or_else(|| {
+                DgSpecResolveDecline::ProjectIncompatible {
+                    target_alias: target_alias.clone(),
+                    project: project.restore.project_unique_name.clone(),
+                }
+            })?;
+        let edges = edges_of(project, &project.frameworks[nearest], false)?;
+        queue.extend(referenced(&edges));
+        projects.push(ProjectNode {
+            name,
+            version: project.version.clone(),
+            edges,
+        });
+    }
+    // The spec's other projects, which another framework reaches: restore
+    // knows them too, so a package edge may not carry their names.
+    let other_projects: Vec<PackageId> = spec
+        .projects
+        .iter()
+        .filter(|project| !std::ptr::eq(*project, root))
+        .filter_map(project_id)
+        .filter(|name| !projects.iter().any(|node| &node.name == name))
+        .collect();
+    Ok(FrameworkGraph {
+        graph: ProjectGraph {
+            root: project_id(root),
+            direct,
+            projects,
+            other_projects,
+        },
+        warnings_predictable,
+    })
+}
+
+/// The project of `spec` with unique name `unique_name`, compared as NuGet
+/// compares them (ignoring ASCII case).
+fn find_project<'a>(spec: &'a DependencyGraphSpec, unique_name: &str) -> Option<&'a PackageSpec> {
+    spec.projects.iter().find(|project| {
+        project
+            .restore
+            .project_unique_name
+            .eq_ignore_ascii_case(unique_name)
+    })
+}
+
+/// The project of `spec` whose name is `name`.
+fn project_named<'a>(spec: &'a DependencyGraphSpec, name: &PackageId) -> Option<&'a PackageSpec> {
+    spec.projects
+        .iter()
+        .find(|project| project_id(project).as_ref() == Some(name))
+}
+
+/// A project's name as a package id, or `None` when it is absent or not one.
+fn project_id(project: &PackageSpec) -> Option<PackageId> {
+    PackageId::parse(project.restore.project_name.as_deref()?).ok()
+}
+
+/// Whether every project of `spec` besides `root` is reached from `root` by a
+/// chain of project references, through any framework.
+fn every_project_is_reached(spec: &DependencyGraphSpec, root: &PackageSpec) -> bool {
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    let mut queue: VecDeque<&PackageSpec> = VecDeque::from([root]);
+    while let Some(project) = queue.pop_front() {
+        if !reached.insert(project.restore.project_unique_name.to_ascii_lowercase()) {
+            continue;
+        }
+        for restore_framework in &project.restore.frameworks {
+            for reference in &restore_framework.project_references {
+                if let Some(referenced) = find_project(spec, &reference.project_unique_name) {
+                    queue.push_back(referenced);
+                }
+            }
+        }
+    }
+    spec.projects
+        .iter()
+        .all(|project| reached.contains(&project.restore.project_unique_name.to_ascii_lowercase()))
+}
+
+/// Whether every project of `spec` is named by a package id (the root too,
+/// once the spec holds another project or any project reference, since a
+/// reference may name it), and no two share a name ignoring case.
+fn project_names_are_distinct_ids(spec: &DependencyGraphSpec, root: &PackageSpec) -> bool {
+    let references_exist = spec.projects.iter().any(|project| {
+        project
+            .restore
+            .frameworks
+            .iter()
+            .any(|framework| !framework.project_references.is_empty())
+    });
+    let root_is_a_node = spec.projects.len() > 1 || references_exist;
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    spec.projects.iter().all(|project| {
+        let Some(name) = project.restore.project_name.as_deref() else {
+            return false;
+        };
+        ((std::ptr::eq(project, root) && !root_is_a_node) || PackageId::parse(name).is_ok())
+            && names.insert(name.to_ascii_lowercase())
+    })
 }
 
 /// What a framework of the spec says about which dependencies each package

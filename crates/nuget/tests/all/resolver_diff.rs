@@ -387,6 +387,15 @@ impl OurOutcome {
                 OurOutcome::Declined("floating-comparison")
             }
             ResolveDecline::GraphTooLarge => OurOutcome::Declined("too-large"),
+            // Project nodes, which this differential's graphs do not hold
+            // (`dgspec_resolve_diff.rs` grades them).
+            ResolveDecline::DuplicateProjectName { .. }
+            | ResolveDecline::UnknownProject { .. }
+            | ResolveDecline::DependencyNamesAProject { .. }
+            | ResolveDecline::SuppressedEdgeReachable { .. }
+            | ResolveDecline::SuppressedCycle { .. } => {
+                unreachable!("a graph of packages alone has no project node: {decline}")
+            }
         }
     }
 
