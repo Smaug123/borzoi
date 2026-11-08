@@ -114,6 +114,37 @@ fn diff_filtered_module_attribute_with_paren_app_arg() {
     assert_filtered_streams_match("module [<Foo(Name = \"x\")>] M =\n    let x = 1\n");
 }
 
+/// Module-attribute arguments holding a generic type application
+/// (`typeof<int>`, a measure-annotated literal, `f<int>(1)`). Every
+/// token inside the brackets is consumed by the ModuleHead attrs arm, so
+/// — like the HPA dispatch above — the `HighPrecedenceTyApp` scan must
+/// run before the context arms, as FCS's `rulesForBothSoftWhiteAndHardWhite`
+/// does; otherwise `<`/`>` reach the parser as comparisons. The table
+/// spans the module-header forms (whole-file, named body, nested under a
+/// namespace, `rec`, `internal`), the trigger kinds (identifier, float
+/// literal), nested and fused closers (`>>`, `>>]`), a following
+/// adjacent `(`, and a spaced `x < y` control the scan must leave alone.
+#[test]
+fn diff_filtered_module_attribute_with_type_application_arg() {
+    for src in [
+        "module [<A(typeof<int>)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>)>] M =\n  let x = 1\n",
+        "namespace N\nmodule [<A(typeof<int>)>] M =\n  let x = 1\n",
+        "module [<A(typeof<List<int>>)>] M\nlet x = 1\n",
+        "module [<A(typeof<Map<int, string>>)>] M\nlet x = 1\n",
+        "module [<A(typedefof<List<_>>)>] M\nlet x = 1\n",
+        "module [<A(1.0<m>)>] M\nlet x = 1\n",
+        "module [<A(f<int>(1))>] M\nlet x = 1\n",
+        "module [<A<int>>] M\nlet x = 1\n",
+        "module [<A(x < y)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>); B(typeof<string>)>] M\nlet x = 1\n",
+        "module internal [<A(typeof<int>)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>)>] rec M\nlet x = 1\n",
+    ] {
+        assert_filtered_streams_match(src);
+    }
+}
+
 /// Dotted module path with whole-file body. Exercises the IDENT/DOT
 /// alternation in CtxtModuleHead's accept patterns.
 #[test]

@@ -1,7 +1,7 @@
 //! Pre-dispatch `hw_token_fetch` rules: token rewriting that runs before any
 //! context handler. See `super::Filter::hw_token_fetch` for the dispatch order.
 
-use super::{Filter, Pos, Step, TokenContent, TokenTup, Virtual};
+use super::{Filter, Pos, Step, TokenContent, TokenTup, Virtual, is_typar_application_trigger};
 use crate::lexer::{LexError, Span, Token};
 
 impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
@@ -200,24 +200,21 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             return Step::Restart;
         }
 
-        // Pre-dispatch HPA/HPB rules (FCS `rulesForBothSoftWhiteAndHardWhite`
-        // at LexFilter.fs:2648-2656, called from `hwTokenFetch` at L1306
+        // Pre-dispatch HPB/HPA/HPT rules (FCS `rulesForBothSoftWhiteAndHardWhite`
+        // at LexFilter.fs:2652-2681, called from `hwTokenFetch` at L1310
         // *before* any context handler runs). FCS-style:
-        // `delayToken(HPA); delayToken(tokenTup);` puts IDENT back on top
-        // with HPA underneath; the `continue;` restarts the loop, which
-        // re-pops the IDENT (now followed by HPA, not LBRACK/LPAREN, so
-        // this rule won't refire) and lets it flow through the normal
-        // context-dispatch arms below — preserving e.g. CtxtVanilla pushes
-        // and ModuleHead/attrs state updates.
+        // `delayToken(HPA); delayToken(tokenTup);` puts the trigger back on
+        // top with the inserted virtual underneath; the restart re-pops the
+        // trigger (now followed by that virtual, not `[`/`(`/`<`, so no rule
+        // here refires) and lets it flow through the normal context-dispatch
+        // arms below — preserving e.g. CtxtVanilla pushes and ModuleHead/attrs
+        // state updates.
         //
-        // Why this can't sit at the bottom of the loop (where its sibling
-        // typar trigger does): identifiers consumed by the ModuleHead
-        // attrs arm (`module [<Foo(Name = "x")>] M`) early-return before
-        // reaching the late dispatch, so the HPA virtual never gets
-        // emitted at all. The typar trigger doesn't have an analogous bug
-        // — no context arm early-returns on the typar-trigger token types
-        // (DELEGATE / numeric / IDENT) at a position where an adjacent
-        // `<` would parse as a typar list. (Codex review 2026-05.)
+        // None of the three can sit later in the dispatch chain: context arms
+        // that return early never reach it. The ModuleHead attrs arm passes
+        // every token inside `module [< … >]` straight through, so
+        // `module [<Foo(Name = "x")>] M` would lose its HPA and
+        // `module [<A(typeof<int>)>] M` its HPT.
         if let TokenContent::Real(Token::Ident(_) | Token::QuotedIdent(_)) = &tt.token {
             if self.next_token_is_adjacent_lbrack(&tt) {
                 let bracket = self
@@ -247,6 +244,36 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 self.delay_token(tt);
                 return Step::Restart;
             }
+        }
+
+        // Generic type-application disambiguation (LexFilter.fs:2671-2681).
+        // When an IDENT / DELEGATE / numeric literal is followed by an
+        // adjacent `<`, a paren-balance scan-ahead decides whether the `<`
+        // opens a typar list (`f<int>`, `1.0<m>`) or is a comparison
+        // (`a<b`). On success the candidate `<` is atop `delayed`: re-delay
+        // it as `Less(true)` with `HighPrecedenceTyApp` above it (the scan's
+        // inner smash pass leaves this outer `<` for us to canonicalise),
+        // then the trigger itself. On failure the scan has restored the
+        // stream untouched.
+        if is_typar_application_trigger(&tt.token) && self.peek_adjacent_typars(false, &tt) {
+            let less_tt = self
+                .pop_next_token_tup()
+                .expect("peek_adjacent_typars success ⇒ Less is on top of delayed");
+            debug_assert!(
+                matches!(&less_tt.token, TokenContent::Real(Token::Less(_))),
+                "peek_adjacent_typars success ⇒ the candidate opener is a `<`: {:?}",
+                less_tt.token,
+            );
+            self.delay_token(TokenTup {
+                token: TokenContent::Real(Token::Less(true)),
+                ..less_tt.clone()
+            });
+            self.delay_token(TokenTup {
+                token: TokenContent::Virtual(Virtual::HighPrecedenceTyApp),
+                ..less_tt
+            });
+            self.delay_token(tt);
+            return Step::Restart;
         }
 
         // The first rule to consult the stack for `tt`, so the version worlds

@@ -3857,6 +3857,29 @@ fn diff_ast_nested_module_after_kw_attr_rec() {
     assert_asts_match("module [<A>] rec M =\n  let x = 1\n");
 }
 
+/// An after-keyword attribute whose argument is a generic type application
+/// (`typeof<int>`, `1.0<m>`, `f<int>(1)`): FCS's lex filter marks the `<…>`
+/// as a type application inside the attribute brackets too, so these parse
+/// cleanly, in every module-header form.
+#[test]
+fn diff_ast_module_after_kw_attr_type_application_arg() {
+    for src in [
+        "module [<A(typeof<int>)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>)>] M =\n  let x = 1\n",
+        "namespace N\nmodule [<A(typeof<int>)>] M =\n  let x = 1\n",
+        "module [<A(typeof<List<int>>)>] M\nlet x = 1\n",
+        "module [<A(typeof<Map<int, string>>)>] M\nlet x = 1\n",
+        "module [<A(typedefof<List<_>>)>] M\nlet x = 1\n",
+        "module [<A(1.0<m>)>] M\nlet x = 1\n",
+        "module [<A(f<int>(1))>] M\nlet x = 1\n",
+        "module [<A(x < y)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>); B(typeof<string>)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>)>] rec M\nlet x = 1\n",
+    ] {
+        assert_asts_match(src);
+    }
+}
+
 /// Phase 10.7k — an after-keyword attribute on a module *abbreviation*
 /// (`module [<A>] M = N`) is rejected: FCS emits "Ignoring attributes on module
 /// abbreviation" and drops the decl. Our parser likewise errors and emits an
