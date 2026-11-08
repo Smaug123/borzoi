@@ -1,6 +1,7 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–5, 7b, 7c and 8 have landed, and so has the
+> **Status:** stages 1–5, 7a (without transitive pinning), 7b, 7c and 8 have
+> landed, and so has the
 > resolver's handling of dependency asset filters and B₁'s of `<contentFiles>`.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions).
 > B₁ now commits on five of the six corpus projects, exactly as the restore
@@ -569,7 +570,8 @@ comes from stage 1's local sweep and the stage-8 fixtures, not from the census.
 - **6 — project nodes.** Package flow through `projectReferences`, with
   `PrivateAssets`/`suppressParent`. Oracle: the generator emits multi-project
   dgspecs, graded the same way.
-- **7a — central package management**, transitive pinning included.
+- **7a — central package management.** Landed without transitive pinning;
+  see below.
 
 The oracle for each is generator-extended, graded the same way.
 
@@ -738,6 +740,22 @@ the generator writes prune lists, and the `net10.0` fixture in
 `restore_graph.rs`, whose spec carries the SDK's few hundred entries, now
 commits with exactly the restore's closure. No corpus project targets
 `net10.0`, so the census does not move.
+
+### Stage 7a: central package management, without transitive pinning — landed
+
+Central package management no longer declines unless it pins transitively.
+Probing restore showed it moves no closure on its own: the SDK writes each
+centrally managed dependency's range into the spec, and restore resolves
+that range, whatever the dependency's central entry says (one that differs,
+or none at all) and whatever its `versionOverride` says. What it adds is
+validation, which fails the restore: a dependency not centrally managed
+(`NU1008`), an implicit reference whether or not it is (`NU1009`; the
+generator found the managed case), and a floating central version
+(`NU1011`). B₁ declines each, and a floating override. Transitive pinning
+raises a transitive package to its central version, which changes the
+closure, and still declines. A hand case grades each shape against B₀, and
+the generator writes central package management. No corpus project uses
+it, so the census does not move.
 
 ### Stage 8: restore-cone census — landed; chose A₁
 

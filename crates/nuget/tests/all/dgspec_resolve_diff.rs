@@ -266,6 +266,9 @@ struct Shape {
     /// The contents of one config file the spec names, `{empty}` standing
     /// for the empty source folder; `None` names none.
     config: Option<&'static str>,
+    /// Central package management without pinning: every dependency centrally
+    /// managed, with a central entry carrying its range.
+    cpm: bool,
 }
 
 impl Shape {
@@ -282,6 +285,7 @@ impl Shape {
             enable_audit: Some("false"),
             lock_file: Some("false"),
             config: None,
+            cpm: false,
         }
     }
 
@@ -349,6 +353,9 @@ impl Shape {
         if let Some(value) = self.enable_audit {
             restore["restoreAuditProperties"] = json!({"enableAudit": value});
         }
+        if self.cpm {
+            restore["centralPackageVersionsManagementEnabled"] = json!(true);
+        }
         if let Some(level) = self.sdk_analysis_level {
             restore["SdkAnalysisLevel"] = json!(level);
         }
@@ -374,6 +381,9 @@ impl Shape {
                         if !dep.no_warn.is_empty() {
                             value["noWarn"] = json!(dep.no_warn);
                         }
+                        if self.cpm {
+                            value["versionCentrallyManaged"] = json!(true);
+                        }
                         (dep.id.clone(), value)
                     })
                     .collect();
@@ -387,6 +397,14 @@ impl Shape {
                         "net461", "net462", "net47", "net471", "net472", "net48", "net481"
                     ]);
                     value["assetTargetFallback"] = json!(true);
+                }
+                if self.cpm {
+                    value["centralPackageVersions"] = framework
+                        .deps
+                        .iter()
+                        .map(|dep| (dep.id.clone(), json!(dep.range)))
+                        .collect::<Map<_, _>>()
+                        .into();
                 }
                 if !framework.prune.is_empty() {
                     value["packagesToPrune"] = framework
@@ -1779,6 +1797,7 @@ fn generate(rng: &mut SplitMix64) -> Generated {
     ]);
     shape.lock_file = *rng.pick(&[Some("false"), None]);
     shape.config = *rng.pick(&[None, None, Some(SOURCES_CONFIG), Some(MAPPING_CONFIG)]);
+    shape.cpm = rng.below(4) == 0;
     if rng.below(10) == 0 {
         shape.project_name = (*rng.pick(IDS)).to_owned();
     }
@@ -1810,6 +1829,7 @@ fn features(
         format!("enable-audit={:?}", shape.enable_audit),
         format!("lock-file={:?}", shape.lock_file),
         format!("config={}", shape.config.is_some()),
+        format!("cpm={}", shape.cpm),
     ];
     for framework in &shape.frameworks {
         features.push(format!("framework={}", framework.alias));
@@ -1936,6 +1956,7 @@ fn required_features() -> BTreeSet<String> {
         "lock-file=None",
         "config=true",
         "config=false",
+        "cpm=true",
         "framework-reference",
         "include",
         "suppress-parent",
@@ -3593,4 +3614,173 @@ fn pruning_drops_transitive_edges_at_or_below_the_upper_bound() {
         "{:?}",
         graded.ours
     );
+}
+
+/// Central package management without transitive pinning moves no closure:
+/// restore resolves each centrally managed dependency's own range, whatever its
+/// central entry or `versionOverride` says, so B₁ commits. Restore fails on a
+/// dependency not centrally managed (`NU1008`), on an implicit reference
+/// whether or not it is (`NU1009`), and on a floating central version
+/// (`NU1011`), and pinning raises a
+/// transitive package to its central version; B₁ declines all three.
+#[test]
+fn central_package_management_without_pinning_commits() {
+    let mut oracle = Oracle::spawn();
+    let packages = vec![
+        Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])]),
+        Pkg::new("A", "2.0.0", vec![]),
+        Pkg::new("B", "1.0.0", vec![]),
+        Pkg::new("B", "2.0.0", vec![]),
+    ];
+    // (label, managed, auto-referenced, override, central A, central B, pinning, commits)
+    type Case = (
+        &'static str,
+        bool,
+        bool,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+        bool,
+        bool,
+    );
+    let cases: &[Case] = &[
+        (
+            "plain",
+            true,
+            false,
+            None,
+            Some("[1.0.0, )"),
+            None,
+            false,
+            true,
+        ),
+        (
+            "a central entry other than the range",
+            true,
+            false,
+            None,
+            Some("[2.0.0, )"),
+            None,
+            false,
+            true,
+        ),
+        (
+            "an unused central entry",
+            true,
+            false,
+            None,
+            Some("[1.0.0, )"),
+            Some("[2.0.0, )"),
+            false,
+            true,
+        ),
+        (
+            "no central entry",
+            true,
+            false,
+            None,
+            None,
+            None,
+            false,
+            true,
+        ),
+        (
+            "an override other than the range",
+            true,
+            false,
+            Some("[2.0.0, )"),
+            Some("[1.0.0, )"),
+            None,
+            false,
+            true,
+        ),
+        (
+            "a dependency not centrally managed",
+            false,
+            false,
+            None,
+            Some("[1.0.0, )"),
+            None,
+            false,
+            false,
+        ),
+        (
+            "an implicit one",
+            false,
+            true,
+            None,
+            Some("[1.0.0, )"),
+            None,
+            false,
+            false,
+        ),
+        (
+            "an implicit one, centrally managed",
+            true,
+            true,
+            None,
+            Some("[1.0.0, )"),
+            None,
+            false,
+            false,
+        ),
+        (
+            "a floating central version",
+            true,
+            false,
+            None,
+            Some("1.*"),
+            None,
+            false,
+            false,
+        ),
+        (
+            "transitive pinning",
+            true,
+            false,
+            None,
+            Some("[1.0.0, )"),
+            Some("[2.0.0, )"),
+            true,
+            false,
+        ),
+    ];
+    for (label, managed, implicit, version_override, central_a, central_b, pinning, commits) in
+        cases
+    {
+        let dir = tempfile::tempdir().expect("temp dir");
+        install(&dir.path().join("gp"), &packages);
+        let shape = Shape::new(vec![Framework::new(
+            "net8.0",
+            vec![Dep::new("A", "[1.0.0, )")],
+        )]);
+        let mut spec: Value = serde_json::from_str(&shape.render(dir.path())).unwrap();
+        let project = the_project(&mut spec);
+        project["restore"]["centralPackageVersionsManagementEnabled"] = json!(true);
+        if *pinning {
+            project["restore"]["CentralPackageTransitivePinningEnabled"] = json!(true);
+        }
+        let dependency = &mut project["frameworks"]["net8.0"]["dependencies"]["A"];
+        if *managed {
+            dependency["versionCentrallyManaged"] = json!(true);
+        }
+        if *implicit {
+            dependency["autoReferenced"] = json!(true);
+        }
+        if let Some(range) = version_override {
+            dependency["versionOverride"] = json!(range);
+        }
+        let mut central = Map::new();
+        if let Some(range) = central_a {
+            central.insert("A".into(), json!(range));
+        }
+        if let Some(range) = central_b {
+            central.insert("B".into(), json!(range));
+        }
+        project["frameworks"]["net8.0"]["centralPackageVersions"] = Value::Object(central);
+        let text = spec.to_string();
+        let parsed = parse_dgspec(&text).expect("the reader accepts the spec");
+        let graded = grade_spec(&mut oracle, &text, &parsed, label);
+        assert_eq!(graded.ours.is_ok(), *commits, "{label}: {:?}", graded.ours);
+    }
 }
