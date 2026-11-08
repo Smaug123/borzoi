@@ -40,9 +40,12 @@ use crate::common::{
     CensusDecl, census_resolve_uses, full_bcl_env, invoke_fcs_dump_census, invoke_fcs_dump_project,
     parse_census_jsonl, parse_fcs_uses_project, temp_fs_file, temp_fs_tree,
 };
-use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{ProjectItems, Resolution, SyntaxRecovery, resolve_file, resolve_project};
+use borzoi_cst::parser::{parse, parse_sig};
+use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
+use borzoi_sema::{
+    ProjectFile, ProjectItems, Resolution, ResolvedProject, SourceFile, SyntaxRecovery,
+    qualified_names, resolve_file, resolve_project_files,
+};
 use rowan::TextRange;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -507,21 +510,39 @@ enum CrossRoute {
     /// in a module (one namespace per using file, so the files' types do
     /// not collide).
     NamespaceSplit,
+    /// As [`Self::Qualified`], with `A.fsi` declaring every type before
+    /// `A.fs` does: a later file sees the signature's declarations.
+    Signature,
 }
 
-const CROSS_ROUTES: [CrossRoute; 5] = [
+const CROSS_ROUTES: [CrossRoute; 6] = [
     CrossRoute::Opened,
     CrossRoute::Qualified,
     CrossRoute::Namespace,
     CrossRoute::Split,
     CrossRoute::NamespaceSplit,
+    CrossRoute::Signature,
 ];
 
-/// One project: the declaring file, then one using file per [`USES`] entry,
-/// so FCS's per-file diagnostics say which uses it accepts.
+/// The signature of [`declaration`]'s type.
+fn signature_declaration(kind: Kind, arity: usize) -> String {
+    let tp = type_params(arity);
+    match kind {
+        Kind::Abbrev | Kind::Union => declaration("CT", kind, arity, ""),
+        Kind::Class => format!(
+            "type CT{tp} =\n    new : unit -> CT{tp}\n    static member Create : x: int -> int\n\
+             \x20   static member M{arity} : x: int -> int\n"
+        ),
+    }
+}
+
+/// One project: the declaring files, then one using file per [`USES`]
+/// entry, so FCS's per-file diagnostics say which uses it accepts.
 struct CrossProject {
     label: String,
     files: Vec<(String, String)>,
+    /// How many of `files` declare rather than use.
+    declaring: usize,
 }
 
 fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProject {
@@ -529,7 +550,7 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
         text.lines().map(|l| format!("{indent}{l}\n")).collect()
     };
     let (declaring, using_head, qualifier, indent, local) = match route {
-        CrossRoute::Opened | CrossRoute::Qualified | CrossRoute::Split => {
+        CrossRoute::Opened | CrossRoute::Qualified | CrossRoute::Split | CrossRoute::Signature => {
             let declared = if route == CrossRoute::Split {
                 &arities[..1]
             } else {
@@ -540,7 +561,7 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
                 a.push_str(&declaration("CT", kind, ar, ""));
             }
             let (head, qualifier) = match route {
-                CrossRoute::Qualified => ("", "A."),
+                CrossRoute::Qualified | CrossRoute::Signature => ("", "A."),
                 _ => ("open A\n", ""),
             };
             let local: String = if route == CrossRoute::Split {
@@ -573,7 +594,16 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
             (a, "", "", "    ", local)
         }
     };
-    let mut files = vec![("A.fs".to_string(), declaring)];
+    let mut files = Vec::new();
+    if route == CrossRoute::Signature {
+        let mut sig = String::from("module A\n\n");
+        for &ar in arities {
+            sig.push_str(&signature_declaration(kind, ar));
+        }
+        files.push(("A.fsi".to_string(), sig));
+    }
+    files.push(("A.fs".to_string(), declaring));
+    let declaring = files.len();
     for (i, u) in USES.iter().enumerate() {
         let body = format!("{}{qualifier}CT{}\n", u.before, u.after);
         let src = if route == CrossRoute::Namespace {
@@ -594,7 +624,44 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
     CrossProject {
         label: format!("{kind:?} {arities:?} {route:?}"),
         files,
+        declaring,
     }
+}
+
+/// Resolve `files` (Compile order, `.fsi` among them) as one project rooted
+/// at `dir`.
+fn resolve_cross(dir: &std::path::Path, files: &[(String, String)]) -> ResolvedProject {
+    let parsed: Vec<(SourceFile, SyntaxRecovery)> = files
+        .iter()
+        .map(|(name, src)| {
+            if name.ends_with(".fsi") {
+                let p = parse_sig(src);
+                assert!(p.errors.is_empty(), "{name}\n{src}\n{:?}", p.errors);
+                let recovery = SyntaxRecovery::of(&p);
+                (
+                    SourceFile::Sig(SigFile::cast(p.root).expect("sig file")),
+                    recovery,
+                )
+            } else {
+                let p = parse(src);
+                assert!(p.errors.is_empty(), "{name}\n{src}\n{:?}", p.errors);
+                let recovery = SyntaxRecovery::of(&p);
+                (
+                    SourceFile::Impl(ImplFile::cast(p.root).expect("impl file")),
+                    recovery,
+                )
+            }
+        })
+        .collect();
+    let paths: Vec<PathBuf> = files.iter().map(|(n, _)| dir.join(n)).collect();
+    let sources: Vec<SourceFile> = parsed.iter().map(|(f, _)| f.clone()).collect();
+    let qnofs = qualified_names(&sources, &paths);
+    let project: Vec<ProjectFile> = parsed
+        .into_iter()
+        .zip(qnofs)
+        .map(|((file, recovery), qnof)| ProjectFile::new(file, qnof, recovery))
+        .collect();
+    resolve_project_files(&project, full_bcl_env())
 }
 
 #[test]
@@ -627,37 +694,30 @@ fn same_named_types_of_every_arity_agree_with_fcs_across_files() {
                     written.iter().map(|(p, _)| p.as_path()).collect();
                 let fcs = parse_fcs_uses_project(&invoke_fcs_dump_project(&paths), &written);
                 let _ = std::fs::remove_dir_all(&root);
-                let asts: Vec<ImplFile> = project
-                    .files
-                    .iter()
-                    .map(|(n, s)| {
-                        let parsed = parse(s);
-                        assert!(parsed.errors.is_empty(), "{n}\n{s}\n{:?}", parsed.errors);
-                        ImplFile::cast(parsed.root).expect("impl file")
-                    })
-                    .collect();
-                let proj = resolve_project(&asts, full_bcl_env());
-                let declaring_clean = fcs
-                    .iter()
-                    .find(|f| f.path.file_name() == written[0].0.file_name())
-                    .is_some_and(|f| f.errors.is_empty());
+                let proj = resolve_cross(&root, &project.files);
+                let first_use = project.declaring;
+                let declaring_clean = written[..first_use].iter().all(|(p, _)| {
+                    fcs.iter()
+                        .find(|f| f.path.file_name() == p.file_name())
+                        .is_some_and(|f| f.errors.is_empty())
+                });
                 for (idx, (path, src)) in written.iter().enumerate() {
                     let Some(fu) = fcs.iter().find(|f| f.path.file_name() == path.file_name())
                     else {
                         panic!("FCS reported nothing for {path:?}");
                     };
                     let clean = declaring_clean && fu.errors.is_empty();
-                    clean_files += usize::from(clean && idx > 0);
+                    clean_files += usize::from(clean && idx >= first_use);
                     let rf = proj.file(idx);
                     // The earlier file's only type of the name, at the use's
                     // arity, directly in the enclosing namespace: the use must
                     // commit to it.
-                    if idx > 0
+                    if idx >= first_use
                         && clean
                         && route == CrossRoute::Namespace
                         && arities.len() == 1
-                        && USES[idx - 1].type_position
-                        && USES[idx - 1].arity == Some(arities[0])
+                        && USES[idx - first_use].type_position
+                        && USES[idx - first_use].arity == Some(arities[0])
                     {
                         must_commit_points += 1;
                         let at = src.rfind("CT").expect("the use");
@@ -669,6 +729,39 @@ fn same_named_types_of_every_arity_agree_with_fcs_across_files() {
                                 "{} {:?}\n{src}",
                                 project.label,
                                 path.file_name()
+                            ));
+                        }
+                    }
+                    // The earlier module's only union of the name, named by
+                    // its module, its signature's or its own: a case qualified
+                    // by it must commit, whatever the union's arity. (Through
+                    // `open A`, `CT.K` commits at no arity, so `Opened` has no
+                    // obligation.)
+                    if idx >= first_use
+                        && clean
+                        && kind == Kind::Union
+                        && arities.len() == 1
+                        && matches!(route, CrossRoute::Qualified | CrossRoute::Signature)
+                        && matches!(USES[idx - first_use].label, "case-expr" | "case-pattern")
+                    {
+                        must_commit_points += 1;
+                        let start = src.rfind("CT").expect("the use");
+                        let start = if route != CrossRoute::Opened {
+                            start - 2
+                        } else {
+                            start
+                        };
+                        let end = src[start..].find(".K").expect("the case") + start + 2;
+                        if !matches!(
+                            rf.resolution_at(range_of(start, end)),
+                            Some(Resolution::Item(_))
+                        ) {
+                            undercommitted.push(format!(
+                                "{} {:?}: {:?} gave {:?}\n{src}",
+                                project.label,
+                                path.file_name(),
+                                &src[start..end],
+                                rf.resolution_at(range_of(start, end))
                             ));
                         }
                     }
@@ -722,7 +815,7 @@ fn same_named_types_of_every_arity_agree_with_fcs_across_files() {
                                 &src[range],
                                 at.iter().map(|u| &u.decl).collect::<Vec<_>>()
                             ));
-                        } else if idx > 0 && &src[range] == "CT" {
+                        } else if idx >= first_use && &src[range] == "CT" {
                             committed += 1;
                         }
                     }
@@ -747,7 +840,7 @@ fn same_named_types_of_every_arity_agree_with_fcs_across_files() {
         undercommitted.join("\n")
     );
     assert!(
-        must_commit_points >= 18,
+        must_commit_points >= 30,
         "the must-commit set shrank to {must_commit_points}"
     );
 }

@@ -373,6 +373,14 @@ pub struct ProjectItems {
     /// a type an earlier file declares is the **only** project type of its
     /// name ([`Resolver::earlier_file_type`](super::state::Resolver)).
     pub(super) earlier_types: HashMap<String, Vec<Option<EarlierType>>>,
+    /// Every earlier file's type declarations' generic arities, by simple
+    /// name: `Some` for each the declaring file placed, a signature-screened
+    /// one included (a signature must declare a type at its
+    /// implementation's arity, or hide it), and `None` for each it could not
+    /// place. What lets a later file bound the arities FCS weighs a
+    /// qualifier's namesakes by
+    /// ([`Resolver::lower_arity_namesake_possible`](super::state::Resolver)).
+    pub(super) earlier_type_arities: HashMap<String, Vec<Option<usize>>>,
     /// Every earlier-file project **module**'s simple name, from each file's
     /// syntactic whole-file pre-scan
     /// ([`ResolvedFile::own_module_simple_names`]). The dotted half of the
@@ -1342,12 +1350,26 @@ impl ProjectItems {
                 .entry(name.clone())
                 .or_default()
                 .push(entry);
+            self.earlier_type_arities
+                .entry(name.clone())
+                .or_default()
+                .push(Some(t.arity));
         }
         for (name, &unplaced) in &file.unplaced_types {
             self.earlier_types
                 .entry(name.clone())
                 .or_default()
                 .extend(std::iter::repeat_n(None, unplaced));
+            let known = file
+                .unplaced_type_arities
+                .get(name)
+                .map_or(&[][..], Vec::as_slice);
+            let arities = self.earlier_type_arities.entry(name.clone()).or_default();
+            arities.extend(known.iter().map(|&a| Some(a)));
+            arities.extend(std::iter::repeat_n(
+                None,
+                unplaced.saturating_sub(known.len()),
+            ));
         }
         // The dotted half of the same shadow, fed from the same file in the
         // same call: the veto's soundness is that a name the project declares
@@ -3187,6 +3209,10 @@ pub struct ResolvedFile {
     /// signature's, one the walk never reached), so a later file can never
     /// mistake "declared here, unplaced" for "not declared".
     pub(super) unplaced_types: HashMap<String, usize>,
+    /// The generic arities of those of [`Self::unplaced_types`] whose arity
+    /// is known — a signature's types and exceptions — by name; each name's
+    /// remaining unplaced declarations are of unknown arity.
+    pub(super) unplaced_type_arities: HashMap<String, Vec<usize>>,
     /// The file's syntactic whole-file module-simple-name pre-scan (see
     /// [`Resolver::own_module_simple_names`](super::state::Resolver)), carried
     /// into [`ProjectItems::project_module_simple_names`] by the Compile-order
@@ -3436,6 +3462,7 @@ impl ResolvedFile {
                 .zip(&other.placed_types)
                 .all(|(a, b)| a.same_for_later_files(b))
             && self.unplaced_types == other.unplaced_types
+            && self.unplaced_type_arities == other.unplaced_type_arities
             && self.own_module_simple_names == other.own_module_simple_names
             && self.contributions == other.contributions
             && self.declares_core_attribute_alias == other.declares_core_attribute_alias
@@ -3481,6 +3508,7 @@ impl ResolvedFile {
             placed_types: Vec::new(),
             // Filled by the fold from the signature's own declarations.
             unplaced_types: HashMap::new(),
+            unplaced_type_arities: HashMap::new(),
             own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             contributions: FileContributions::default(),

@@ -3112,14 +3112,14 @@ impl<'a> Resolver<'a> {
         let [.., name, _] = full else {
             return false;
         };
-        let Some(decls) = self.preceding.earlier_types.get(name) else {
+        let Some(decls) = self.preceding.earlier_type_arities.get(name) else {
             return false;
         };
         let mut arities = std::collections::BTreeSet::new();
         for d in decls {
             match d {
-                Some(t) => {
-                    arities.insert(t.arity);
+                Some(a) => {
+                    arities.insert(*a);
                 }
                 None => return true,
             }
@@ -3140,11 +3140,11 @@ impl<'a> Resolver<'a> {
             .keys()
             .any(|(n, a)| n == name && *a < arity)
             || self.own_exception_simple_names.contains(name);
-        let earlier = self.preceding.earlier_types.get(name).is_some_and(|decls| {
-            decls
-                .iter()
-                .any(|d| d.as_ref().is_none_or(|t| t.arity < arity))
-        });
+        let earlier = self
+            .preceding
+            .earlier_type_arities
+            .get(name)
+            .is_some_and(|decls| decls.iter().any(|d| d.is_none_or(|a| a < arity)));
         let names = [name.to_string()];
         let assemblies = self.assemblies.manifest_auto_open_target_is_uncertain()
             || self.assemblies.contested_auto_open_is_uncertain()

@@ -1788,29 +1788,38 @@ fn signature_slot(
         surface.exports,
     );
     contributors::signature_contributions(sig, preceding, assemblies, &mut rf);
-    rf.unplaced_types = signature_type_decls(sig);
+    (rf.unplaced_types, rf.unplaced_type_arities) = signature_type_decls(sig);
     rf
 }
 
 /// A signature's type and exception names, each declaration unplaced: a
 /// later file sees the signature's type, which may not be the
-/// implementation's ([`ResolvedFile::unplaced_types`]).
-fn signature_type_decls(sig: &SigFile) -> HashMap<String, usize> {
-    let mut out: HashMap<String, usize> = HashMap::new();
-    let type_names = sig
+/// implementation's ([`ResolvedFile::unplaced_types`]). With them, each
+/// declaration's generic arity ([`ResolvedFile::unplaced_type_arities`]); an
+/// exception's is 0.
+fn signature_type_decls(sig: &SigFile) -> (HashMap<String, usize>, HashMap<String, Vec<usize>>) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut arities: HashMap<String, Vec<usize>> = HashMap::new();
+    let types = sig
         .syntax()
         .descendants()
         .filter_map(TypeDefn::cast)
-        .filter_map(|defn| defn.long_id().and_then(|li| li.idents().last()));
-    let exception_names = sig
+        .filter_map(|defn| {
+            let name = defn.long_id().and_then(|li| li.idents().last())?;
+            Some((name, defn.typar_decls().map_or(0, |t| t.typars().count())))
+        });
+    let exceptions = sig
         .syntax()
         .descendants()
         .filter_map(ExceptionDefnDecl::cast)
-        .filter_map(|exn| exn.union_case().and_then(|c| c.ident()));
-    for name in type_names.chain(exception_names) {
-        *out.entry(id_text(&name).to_string()).or_default() += 1;
+        .filter_map(|exn| exn.union_case().and_then(|c| c.ident()))
+        .map(|name| (name, 0));
+    for (name, arity) in types.chain(exceptions) {
+        let name = id_text(&name).to_string();
+        *counts.entry(name.clone()).or_default() += 1;
+        arities.entry(name).or_default().push(arity);
     }
-    out
+    (counts, arities)
 }
 
 /// The **wholesale** extension-source signal one file threads to later
@@ -2534,6 +2543,7 @@ impl<'a> Resolver<'a> {
             attribute_resolutions: self.attribute_resolutions,
             placed_types: std::mem::take(&mut self.placed_types),
             unplaced_types,
+            unplaced_type_arities: HashMap::new(),
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,

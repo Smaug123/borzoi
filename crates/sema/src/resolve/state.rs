@@ -784,6 +784,9 @@ pub(super) enum SameFileQualified {
     /// The head binds same-file but the path is contended / unresolvable —
     /// same-file-rooted, so defer **and stop** (do not try cross-file branches).
     DeferStop,
+    /// As [`Self::DeferStop`], for a named guard whose cause the path's
+    /// decline records.
+    Decline(DeclineCause),
     /// Nothing same-file claims the head (or the segment is a submodule a
     /// qualified-value branch resolves) — the caller may try cross-file branches.
     Miss,

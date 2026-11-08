@@ -52,6 +52,7 @@ decline_census.assembly.by_cause.project_path_shadow
 decline_census.assembly.by_cause.project_type_path_shadow
 decline_census.assembly.by_cause.project_type_shadow
 decline_census.assembly.by_cause.qualified_attribute
+decline_census.assembly.by_cause.qualifier_arity_namesake
 decline_census.assembly.by_cause.recursive_module_active
 decline_census.assembly.by_cause.recursive_module_head
 decline_census.assembly.by_cause.same_file_auto_open_type
@@ -357,6 +358,12 @@ decline_census.assembly.by_pair.qualified_attribute.implicit_open
 decline_census.assembly.by_pair.qualified_attribute.pre_walk
 decline_census.assembly.by_pair.qualified_attribute.root
 decline_census.assembly.by_pair.qualified_attribute.whole_walk
+decline_census.assembly.by_pair.qualifier_arity_namesake.enclosing_namespace
+decline_census.assembly.by_pair.qualifier_arity_namesake.explicit_open
+decline_census.assembly.by_pair.qualifier_arity_namesake.implicit_open
+decline_census.assembly.by_pair.qualifier_arity_namesake.pre_walk
+decline_census.assembly.by_pair.qualifier_arity_namesake.root
+decline_census.assembly.by_pair.qualifier_arity_namesake.whole_walk
 decline_census.assembly.by_pair.recursive_module_active.enclosing_namespace
 decline_census.assembly.by_pair.recursive_module_active.explicit_open
 decline_census.assembly.by_pair.recursive_module_active.implicit_open
@@ -497,6 +504,7 @@ decline_census.project.by_cause.project_path_shadow
 decline_census.project.by_cause.project_type_path_shadow
 decline_census.project.by_cause.project_type_shadow
 decline_census.project.by_cause.qualified_attribute
+decline_census.project.by_cause.qualifier_arity_namesake
 decline_census.project.by_cause.recursive_module_active
 decline_census.project.by_cause.recursive_module_head
 decline_census.project.by_cause.same_file_auto_open_type
@@ -802,6 +810,12 @@ decline_census.project.by_pair.qualified_attribute.implicit_open
 decline_census.project.by_pair.qualified_attribute.pre_walk
 decline_census.project.by_pair.qualified_attribute.root
 decline_census.project.by_pair.qualified_attribute.whole_walk
+decline_census.project.by_pair.qualifier_arity_namesake.enclosing_namespace
+decline_census.project.by_pair.qualifier_arity_namesake.explicit_open
+decline_census.project.by_pair.qualifier_arity_namesake.implicit_open
+decline_census.project.by_pair.qualifier_arity_namesake.pre_walk
+decline_census.project.by_pair.qualifier_arity_namesake.root
+decline_census.project.by_pair.qualifier_arity_namesake.whole_walk
 decline_census.project.by_pair.recursive_module_active.enclosing_namespace
 decline_census.project.by_pair.recursive_module_active.explicit_open
 decline_census.project.by_pair.recursive_module_active.implicit_open

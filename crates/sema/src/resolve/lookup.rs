@@ -4405,7 +4405,9 @@ impl<'a> Resolver<'a> {
                 // FCS tries the module's same-named types fewest generic
                 // parameters first (#323).
                 if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
-                    return Some(SameFileQualified::DeferStop);
+                    return Some(SameFileQualified::Decline(
+                        DeclineCause::QualifierArityNamesake,
+                    ));
                 }
                 return Some(SameFileQualified::Emit { type_id, case_res });
             }
@@ -4423,7 +4425,9 @@ impl<'a> Resolver<'a> {
                     && let Some(&type_id) = self.type_defs.get(&module_path).and_then(|m| m.get(ty))
                 {
                     if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
-                        return Some(SameFileQualified::DeferStop);
+                        return Some(SameFileQualified::Decline(
+                            DeclineCause::QualifierArityNamesake,
+                        ));
                     }
                     return Some(SameFileQualified::Emit {
                         type_id,
@@ -4496,6 +4500,16 @@ impl<'a> Resolver<'a> {
                 true
             }
             SameFileQualified::DeferStop => true,
+            SameFileQualified::Decline(cause) => {
+                if let Some(head_seg) = segments.first() {
+                    self.defer_with_cause(
+                        head_seg.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(cause),
+                    );
+                }
+                true
+            }
             SameFileQualified::Miss => false,
         }
     }
