@@ -7,3 +7,4 @@
 cc 5c6fa2059070e5f9aa8b34b65afc85923dd42d8b6651e8391b7653ef26c55506 # shrinks to s = "ftp:///{"
 cc 5e47796c33d05ff9089a2d912ea174dbfbd1133587f781e05bfd3fc9c987d04f # shrinks to segments = [".."]
 cc e7368a22f23884db5bdbd5561185470c20997035dd2f8d7781a77b70673b597b # shrinks to s = "ftp:///A\\%+a"
+cc 94c593bfa803663d0dc26a4ead43c38c102c812c82e42e7f899f8d72d3bee904 # shrinks to s = "x-y://`0"

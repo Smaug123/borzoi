@@ -257,8 +257,13 @@ mod tests {
         }
 
         /// Every string `url` parses becomes a URI denoting the same bytes.
+        ///
+        /// The host is compared decoded, like the path: `url` keeps a
+        /// non-special scheme's host opaque, neither decoding nor encoding
+        /// characters RFC 3986 forbids in a `reg-name`, so ``x-y://`0`` has
+        /// host `` `0 `` and its respelling `x-y://%600` has host `%600`.
         #[test]
-        fn parse_is_total_over_url(s in "(https?|file|ftp|x-y):(//[a-z0-9.@:]{0,10}/)?\\PC{0,32}") {
+        fn parse_is_total_over_url(s in "(https?|file|ftp|x-y):(//([a-z0-9.@:]|\\PC){0,10}/)?\\PC{0,32}") {
             let Ok(reference) = url::Url::parse(&s) else {
                 return Ok(());
             };
@@ -266,7 +271,7 @@ mod tests {
             prop_assert_eq!(decoded(uri.as_str()), decoded(reference.as_str()));
             let back = url::Url::parse(uri.as_str()).expect("respelling still parses");
             prop_assert_eq!(back.scheme(), reference.scheme());
-            prop_assert_eq!(back.host_str(), reference.host_str());
+            prop_assert_eq!(back.host_str().map(decoded), reference.host_str().map(decoded));
             prop_assert_eq!(back.port(), reference.port());
             prop_assert_eq!(decoded(back.path()), decoded(reference.path()));
         }
