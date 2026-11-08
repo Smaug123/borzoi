@@ -118,12 +118,17 @@ passes explicit cache roots and typed direct package inputs into the resolver.
   restore through `RestoreRunner`, under the legacy resolver and under the
   .NET 10 SDK's default `DependencyGraphResolver` (calibrated against real
   `dotnet restore` on 80 generated graphs, 40 of them ones the engines
-  disagree on). A closure is committed only where both engines write it:
-  `engines_agree` declines unless every losing version is a leaf of the legacy
-  tree and every potential downgrade is of a direct reference. That reads each
-  loser's dependency list (and nothing below it), so the "never contents"
-  property is now "only the dependency list". Cost on the generated sweeps:
-  about 1.5% of wide-vocabulary closures and 5% of multi-version ones.
+  disagree on). A closure is committed only where the default engine writes
+  it, the engine a dependency-graph spec restores under; every decline that
+  names a legacy failure is held to the legacy engine. `engines_agree`
+  declines unless every potential downgrade is of a direct reference and
+  every losing version's subtree is inert: the default engine walks a loser's
+  subtree breadth-first only until the edge that evicts it is dequeued, so a
+  loser whose evicter is no deeper than itself contributes nothing, and one
+  with a deeper evicter is read down to that depth, where nothing may demand
+  a package above what the closure settled on (`losing_subtree_is_inert`).
+  Where a loser has a subtree at all, the legacy engine may fail on it first,
+  so the walk's legacy-failure diagnoses are then reported without a claim.
 - **Slice 7** — compile-asset selection (`crates/nuget/src/assets.rs`):
   `ManagedCodeConventions` restricted to the compile patterns + the nuspec
   `<references>` allow-list. Ref-beats-lib at *group* level, `lib/any` ≠

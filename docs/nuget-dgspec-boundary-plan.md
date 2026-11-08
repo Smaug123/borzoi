@@ -709,6 +709,62 @@ The one remaining corpus decline is the resolver's own engine-agreement
 envelope (`engines_agree` in `resolver.rs`), where the legacy and default
 engines can treat a loser's subtree differently.
 
+### The resolver's closure is the default engine's — landed
+
+The resolver committed only where both of NuGet's dependency resolvers write
+the same closure, and so declined whenever a version that loses its conflict
+has any dependency: the legacy engine walks a loser's subtree before rejecting
+it and can fail on what it finds. Real graphs have such losers everywhere
+(System.Memory 4.5.5 under System.Text.Json), and WoofWare.Expect declined on
+one. A dependency-graph spec restores under the default engine alone (the key
+that selects the legacy one declines in the reader), so the contract is now
+the default engine's, and the default engine's rule for a loser's subtree is
+stateable: it walks breadth-first and starts over at every eviction, so a
+loser is chosen in every pass before the one in which its evicter is dequeued
+ahead of it, and some of its subtree is walked in each (how much depends on
+where every other eviction falls, which the walk's tree does not say).
+`losing_subtree_is_inert` holds the whole subtree inert: every version
+reachable from the loser along lower bounds is read, and none names a package
+the closure holds; otherwise it declines, since a demand above a settled
+version can evict a winner before the loser goes and leave the loser in the
+graph (the mutually dependent cousin conflicts of `resolver_diff`). A rule
+that read the subtree only to the evicter's depth in the walk's tree was
+unsound: the engine chooses a package again, deeper, when the edge that first
+chose it is evicted, so the evicter sits deeper for the engine than for the
+walk. Where a loser has a subtree, the walk's legacy-failure
+diagnoses are reported without a claim. `resolver_diff` holds every closure
+to the default engine's and every claimed legacy failure to the legacy
+engine's; the hand cases that documented the leaf rule's price (a cycle below
+a rejected version, a losing version with dependencies, an asset filter on a
+rejected version) now commit, and the cases where a loser's subtree names a
+closure package (the mutually dependent cousin conflicts, a settled version
+that falls when the loser goes) or a version the packages folder lacks (a
+missing package below a rejected version: absence from the folder is not
+absence from every source) decline as a contending subtree. `resolver_diff` also checks `examined`
+itself on every committed graph: every committed version outside it is given
+a `minClientVersion` restore refuses, which restore throws on at the read, and
+restore must still write the closure.
+
+| corpus project (6) | B₁ |
+|---|---|
+| TypeEquality, WoofWare.Incremental, WoofWare.LiangHyphenation, WoofWare.PawPrint.Domain, WoofWare.WeakHashTable | commits |
+| WoofWare.Expect | declines: System.Memory 4.5.5 loses, and its subtree names System.Numerics.Vectors at a lower bound that is not installed |
+
+The remaining corpus decline is the envelope's, and no envelope around the
+legacy tree reaches it: real graphs' losers (System.Memory, System.Buffers)
+name closure packages everywhere. Committing them needs the default engine's
+own walk — `DependencyGraphResolver`'s breadth-first passes, evictions and
+restarts — reimplemented and differentially tested, in place of the legacy
+walk plus envelope. That is the next stage of this stream. Two
+default-engine verdicts the walk gets wrong today, both found by the
+fresh-seed soak and reproduced on commits before the envelope, go with it: a
+graph whose every edge to one package carries one exact range, which the
+engine fails as a cycle (seed 1794148483370034000), and a transitive demand
+above a direct exact reference, which the legacy engine passes and the
+default engine fails with NU1605 (seed 1794151809963611000). Behind it,
+`<frameworkAssemblies>` (839 nuspecs of a developer's cache) is still outside
+B₁'s nuspec vocabulary.
+
 ### Stage 5: pruning — landed
 
 A framework's `packagesToPrune` no longer declines; the resolver applies it
