@@ -1868,6 +1868,9 @@ impl<'a> Resolver<'a> {
         self.scopes.pop();
         self.module_frames.pop();
         self.rec_contribution = saved_rec_contribution;
+        // Its declaration has ended: from here on its name is in scope.
+        self.finished_module_paths
+            .insert(self.container_path.clone());
 
         self.module_path = saved_module_path;
         self.container_path = saved_container_path;

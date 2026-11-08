@@ -82,7 +82,35 @@ const CELLS: &[Cell] = &[
         files: &[
             "[<RequireQualifiedAccessAttribute>]\nmodule {p}M =\n    let x = 1\n\nopen {p}M\n",
         ],
-        expect: Expect::Exact,
+        expect: Expect::Gap("the long spelling's first lookup name is not guarded"),
+    },
+    Cell {
+        label: "same-file / long spelling resolved to a project type",
+        files: &[
+            "module {p}Top\n\ntype RequireQualifiedAccessAttributeAttribute() =\n    inherit System.Attribute()\n\n[<RequireQualifiedAccessAttribute>]\nmodule M =\n    let x = 1\n\nopen M\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "same-file / attribute name taken by an exception",
+        files: &[
+            "module {p}Top\n\nexception RequireQualifiedAccessAttribute\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n\nopen M\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "same-file / a module opening itself",
+        files: &[
+            "module {p}Top\n\n[<RequireQualifiedAccess>]\nmodule M =\n    open M\n    let x = 1\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "same-file / a child by its parent-qualified path, inside the parent",
+        files: &[
+            "module {p}Top\n\nmodule A =\n    [<RequireQualifiedAccess>]\n    module B =\n        let x = 1\n\n    open A.B\n",
+        ],
+        expect: Expect::Clean,
     },
     Cell {
         label: "same-file / attribute among others in one list",
@@ -743,7 +771,7 @@ const ASSEMBLY_OPENS: &[(&str, bool)] = &[
 fn gen_attribute(t: &mut Tape) -> (&'static str, bool) {
     match t.pick(6) {
         0 | 1 => ("[<RequireQualifiedAccess>]\n", true),
-        2 => ("[<RequireQualifiedAccessAttribute>]\n", true),
+        2 => ("[<RequireQualifiedAccessAttribute>]\n", false),
         3 => ("[<AutoOpen>]\n", false),
         _ => ("", false),
     }
@@ -770,6 +798,9 @@ fn gen_modules(
         }
         out.push_str(&format!("{indent}module {access}{name} =\n"));
         out.push_str(&format!("{indent}    let v{counter} = 1\n"));
+        if t.chance(4) {
+            out.push_str(&format!("{indent}    open {name}\n"));
+        }
         let mut path = container.to_vec();
         path.push(name);
         let reachable = access != "private ";
@@ -788,6 +819,14 @@ fn gen_modules(
             }
             out.push_str(&format!("{inner}module {caccess}{cname} =\n"));
             out.push_str(&format!("{inner}    let v{counter} = 2\n"));
+            match t.pick(3) {
+                0 => out.push_str(&format!(
+                    "{inner}open {}.{cname}\n",
+                    path.last().expect("named")
+                )),
+                1 => out.push_str(&format!("{inner}open {cname}\n")),
+                _ => {}
+            }
             let mut cpath = path;
             cpath.push(cname);
             mods.push(GenModule {

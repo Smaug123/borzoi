@@ -945,10 +945,12 @@ impl<'a> Resolver<'a> {
     ) -> Vec<TierCandidate> {
         let mut out: Vec<TierCandidate> = Vec::new();
         let mut push = |full: Vec<String>, namespaces_reachable: bool, reach: CertainReach| {
+            let base_len = full.len() - written.len();
             out.push(TierCandidate {
                 full,
                 namespaces_reachable,
                 reach,
+                base_len,
             });
         };
         if !rooted {

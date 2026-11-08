@@ -366,8 +366,10 @@ recovering ~36 members per framework. It was never a feature gap. (`#711`)
   `crates/sema/src/resolve/require_qualified.rs`) at FCS's range, once per
   `open` where FCS reports it once per RQA module the `open` names. It stays
   silent where FCS reports it for: a `private` module or one nested in a
-  `private` module; an attribute written through an abbreviation, or while a
-  project type or a referenced abbreviation could impersonate it; an `open`
+  `private` module; an attribute spelled `RequireQualifiedAccessAttribute`
+  (looked up first as `…AttributeAttribute`), written through an
+  abbreviation, or while a project type or exception or a referenced
+  abbreviation could impersonate it; an `open`
   inside a `rec` scope, through a module abbreviation, or through the
   short-name prefix an `[<AutoOpen>]` module lends; any `open` in a file that
   failed to parse. It also never reports an `open` in a signature file, nor a

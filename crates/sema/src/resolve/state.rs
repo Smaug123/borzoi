@@ -680,6 +680,10 @@ pub(super) struct TierCandidate {
     pub(super) namespaces_reachable: bool,
     /// What FCS certainly opens at `full` through this route.
     pub(super) reach: CertainReach,
+    /// How many leading segments of `full` the route supplied before the
+    /// written path: the alias target's, the prefix's, the enclosing
+    /// container's, or none from the root.
+    pub(super) base_len: usize,
 }
 
 /// One interpretation of an `open <path>` clause at one base of the open's
@@ -1728,6 +1732,12 @@ pub(super) struct Resolver<'a> {
     /// closes. Under an anonymous root the paths are relative to the implicit
     /// file module, which is how this file's `open`s write them.
     pub(super) rqa_module_paths: Vec<Vec<String>>,
+    /// The full paths (`container_path` + name) of this file's nested modules
+    /// whose declaration has ended, keyed like [`Self::rqa_module_paths`]: FCS
+    /// enters a module into scope by its name only once its body is checked,
+    /// so a same-file FS0892 needs the opened path's head among these
+    /// ([`Resolver::report_open_of_rqa_module`]).
+    pub(super) finished_module_paths: HashSet<Vec<String>>,
     /// The resolution-explain trace — one [`OpenTrace`] per `open` declaration,
     /// in source order, recording the opaque-open flags it flipped. Accumulated
     /// across every top-level block (a *file*-level record, deliberately absent

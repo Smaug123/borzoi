@@ -7,8 +7,8 @@
 //! (`TcOpenModuleOrNamespaceDecl`), at the range of the path, and then opens
 //! them all anyway. So the diagnostic needs only one certain member of the
 //! set, not the whole set: we report it when some route FCS takes
-//! ([`CertainReach`]) reaches a module that certainly carries the attribute,
-//! and stay silent otherwise.
+//! ([`CertainReach`](super::state::CertainReach)) reaches a module that
+//! certainly carries the attribute, and stay silent otherwise.
 //!
 //! What "certainly carries the attribute" means differs by where the module
 //! lives:
@@ -46,9 +46,13 @@ impl Resolver<'_> {
     /// namespace is openable from another file of that namespace, FCS-graded).
     ///
     /// The attribute must be written with nothing that could make FCS read it
-    /// as anything else: a single-segment name (`Foo.RequireQualifiedAccess`
-    /// may name no type at all), no target (`[<assembly: …>]` decorates
-    /// something else) and no argument (no constructor takes one).
+    /// as anything else: exactly `RequireQualifiedAccess`, whose two lookup
+    /// names (`RequireQualifiedAccessAttribute`, then itself) are both names
+    /// the trust rule guards — the long spelling is looked up first as
+    /// `RequireQualifiedAccessAttributeAttribute`, which nothing guards; a
+    /// single segment (`Foo.RequireQualifiedAccess` may name no type at all);
+    /// no target (`[<assembly: …>]` decorates something else); and no argument
+    /// (no constructor takes one).
     pub(super) fn module_certainly_require_qualified_access(
         &self,
         attrs: impl Iterator<Item = AttributeList>,
@@ -66,7 +70,7 @@ impl Resolver<'_> {
                 let only = idents.next()?;
                 idents.next().is_none().then(|| id_text(&only).to_string())
             })
-            .filter(|s| s == "RequireQualifiedAccess" || s == "RequireQualifiedAccessAttribute")
+            .filter(|s| s == "RequireQualifiedAccess")
             .collect();
         let core: Vec<String> = CORE_NAMESPACE.iter().map(|s| s.to_string()).collect();
         !spellings.is_empty()
@@ -75,6 +79,17 @@ impl Resolver<'_> {
                 .lookup_type(&core, "RequireQualifiedAccessAttribute", 0)
                 .is_some()
             && self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
+    }
+
+    /// Whether the module the written path's head names at `c`'s base is one
+    /// of this file's whose declaration has ended. FCS enters a module into
+    /// scope only once its body is checked, so inside `module M`, `open M`
+    /// names nothing, and inside `module A`, `open A.B` does not reach the
+    /// already-declared `A.B`. A finished head's descendants are finished too.
+    fn head_is_finished_module(&self, c: &TierCandidate) -> bool {
+        c.full
+            .get(..=c.base_len)
+            .is_some_and(|head| self.finished_module_paths.contains(head))
     }
 
     /// Report FS0892 on a plain `open` whose path is written as `idents`, when
@@ -93,7 +108,9 @@ impl Resolver<'_> {
             return;
         };
         let names_rqa_module = candidates.iter().any(|c| {
-            (c.reach.this_file && self.rqa_module_paths.contains(&c.full))
+            (c.reach.this_file
+                && self.rqa_module_paths.contains(&c.full)
+                && self.head_is_finished_module(c))
                 || (c.reach.earlier_files && self.preceding.is_certain_rqa_module(&c.full))
                 || (c.reach.assembly
                     && self

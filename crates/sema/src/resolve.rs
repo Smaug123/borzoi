@@ -124,6 +124,16 @@ pub fn resolve_file(
     // FooAttribute` is declared before or after it, or in a sibling block.
     // Over-approximate (an augmentation target's last segment counts too),
     // which is sound: a spurious match only adds a defer.
+    // An `exception` declares a type too, which an attribute name resolves to
+    // as readily as a `type`'s.
+    if file
+        .syntax()
+        .descendants()
+        .filter_map(ExceptionDefnDecl::cast)
+        .any(|e| exception_named_like_core_attribute(&e))
+    {
+        r.declares_core_attribute_alias = true;
+    }
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
         if type_defn_renames_core_attribute(&defn) {
             r.declares_core_attribute_alias = true;
@@ -2282,6 +2292,7 @@ impl<'a> Resolver<'a> {
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             rqa_module_paths: Vec::new(),
+            finished_module_paths: HashSet::new(),
             trace_opens: Vec::new(),
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
@@ -2801,6 +2812,15 @@ pub(crate) fn collect_nested_module_names(
 /// read: using an attribute renames nothing.
 pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
     type_defn_renames_attribute(defn, crate::assembly_env::CORE_ATTRIBUTE_NAMES)
+}
+
+/// Whether an `exception` is named like a core attribute
+/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]): its type is then a
+/// candidate for the attribute's written name, so the name proves nothing.
+pub(super) fn exception_named_like_core_attribute(exn: &ExceptionDefnDecl) -> bool {
+    exn.union_case()
+        .and_then(|case| case.ident())
+        .is_some_and(|name| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(&name)))
 }
 
 /// [`type_defn_renames_core_attribute`], for the attributes written `names`.
