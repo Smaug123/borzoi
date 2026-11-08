@@ -87,10 +87,15 @@ echo b > "$repo/crates/lsp/b.rs"
 git -C "$repo" add -A
 git -C "$repo" commit -q -m c2
 
+# The detector's inputs. This suite itself runs under GitHub Actions, which
+# exports the real event's values, so every invocation below starts by
+# clearing all of them: each case's environment is exactly what it states.
+clean_env=(env -u GITHUB_OUTPUT -u GITHUB_EVENT_NAME -u GITHUB_PR_BASE_SHA -u GITHUB_MERGE_GROUP_BASE_SHA)
+
 # Run the default (CI) path inside the repo with a given environment; capture
 # only the name=value lines (logs go to stderr), normalised to sorted+joined.
 run() { # env-assignments...
-  ( cd "$repo" && env -u GITHUB_OUTPUT "$@" bash "$script" ) 2>/dev/null | sort | tr '\n' ' '
+  ( cd "$repo" && "${clean_env[@]}" "$@" bash "$script" ) 2>/dev/null | sort | tr '\n' ' '
 }
 
 assert_eq "merge_group diff (base=c1)" "$(expect lsp)" \
@@ -150,7 +155,7 @@ echo n > "$fp/crates/msbuild/new.rs"
 git -C "$fp" add -A
 git -C "$fp" commit -q -m newtip
 
-fp_run() { ( cd "$fp" && env -u GITHUB_OUTPUT "$@" bash "$script" ) 2>/dev/null | sort | tr '\n' ' '; }
+fp_run() { ( cd "$fp" && "${clean_env[@]}" "$@" bash "$script" ) 2>/dev/null | sort | tr '\n' ' '; }
 assert_eq "non-ancestor: old tip..HEAD (cst removed + msbuild added)" \
   "$(expect cst msbuild)" \
   "$(fp_run GITHUB_EVENT_NAME=merge_group GITHUB_MERGE_GROUP_BASE_SHA="$oldtip")"
@@ -159,7 +164,7 @@ assert_eq "non-ancestor: old tip..HEAD (cst removed + msbuild added)" \
 
 out="$repo/gh_output"
 : > "$out"
-( cd "$repo" && env GITHUB_OUTPUT="$out" GITHUB_EVENT_NAME=pull_request GITHUB_PR_BASE_SHA="$base" bash "$script" ) >/dev/null 2>&1
+( cd "$repo" && "${clean_env[@]}" GITHUB_OUTPUT="$out" GITHUB_EVENT_NAME=pull_request GITHUB_PR_BASE_SHA="$base" bash "$script" ) >/dev/null 2>&1
 assert_eq "writes to GITHUB_OUTPUT" "$(expect lsp)" "$(sort "$out" | tr '\n' ' ')"
 
 # --- coverage guard: every workspace crate must route to a filter ------------
