@@ -93,22 +93,40 @@ run() { # env-assignments...
   ( cd "$repo" && env -u GITHUB_OUTPUT "$@" bash "$script" ) 2>/dev/null | sort | tr '\n' ' '
 }
 
-assert_eq "push diff (before=c1)" "$(expect lsp)" \
-  "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE="$base")"
+assert_eq "merge_group diff (base=c1)" "$(expect lsp)" \
+  "$(run GITHUB_EVENT_NAME=merge_group GITHUB_MERGE_GROUP_BASE_SHA="$base")"
 assert_eq "pull_request diff (base=c1)" "$(expect lsp)" \
   "$(run GITHUB_EVENT_NAME=pull_request GITHUB_PR_BASE_SHA="$base")"
-assert_eq "fail-open: empty before" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
-  "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=)"
-assert_eq "fail-open: all-zeros before" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
-  "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=0000000000000000000000000000000000000000)"
-assert_eq "fail-open: unknown base sha" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
-  "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
+everything="$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)"
+assert_eq "fail-open: empty base" "$everything" \
+  "$(run GITHUB_EVENT_NAME=merge_group GITHUB_MERGE_GROUP_BASE_SHA=)"
+assert_eq "fail-open: all-zeros base" "$everything" \
+  "$(run GITHUB_EVENT_NAME=merge_group GITHUB_MERGE_GROUP_BASE_SHA=0000000000000000000000000000000000000000)"
+assert_eq "fail-open: unknown base sha" "$everything" \
+  "$(run GITHUB_EVENT_NAME=merge_group GITHUB_MERGE_GROUP_BASE_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
+# Each event reads only its own base variable: a base supplied under another
+# event's name must not be picked up.
+assert_eq "fail-open: PR base under merge_group" "$everything" \
+  "$(run GITHUB_EVENT_NAME=merge_group GITHUB_PR_BASE_SHA="$base")"
+assert_eq "fail-open: merge-group base under pull_request" "$everything" \
+  "$(run GITHUB_EVENT_NAME=pull_request GITHUB_MERGE_GROUP_BASE_SHA="$base")"
+# An event with no diff base of its own (a push, the nightly schedule, a manual
+# dispatch, or no event at all) runs everything, whatever base variables happen
+# to be set.
+assert_eq "fail-open: push" "$everything" \
+  "$(run GITHUB_EVENT_NAME=push GITHUB_PR_BASE_SHA="$base" GITHUB_MERGE_GROUP_BASE_SHA="$base")"
+assert_eq "fail-open: schedule" "$everything" \
+  "$(run GITHUB_EVENT_NAME=schedule GITHUB_PR_BASE_SHA="$base" GITHUB_MERGE_GROUP_BASE_SHA="$base")"
+assert_eq "fail-open: workflow_dispatch" "$everything" \
+  "$(run GITHUB_EVENT_NAME=workflow_dispatch GITHUB_PR_BASE_SHA="$base" GITHUB_MERGE_GROUP_BASE_SHA="$base")"
+assert_eq "fail-open: no event name" "$everything" \
+  "$(run GITHUB_PR_BASE_SHA="$base" GITHUB_MERGE_GROUP_BASE_SHA="$base")"
 
-# --- non-ancestor base (force-push) ------------------------------------------
-# A force-push leaves `before` pointing at a tip that is not an ancestor of
-# HEAD. The diff must compare the two tips directly (two-dot), not from their
-# merge base (three-dot) — otherwise files that differ between the old and new
-# tips are missed and their gated jobs wrongly skipped.
+# --- non-ancestor base ---------------------------------------------------------
+# Should a base ever not be an ancestor of HEAD, the diff must compare the two
+# tips directly (two-dot), not from their merge base (three-dot) — otherwise
+# files that differ between the base and HEAD are missed and their gated jobs
+# wrongly skipped.
 fp="$(mktemp -d)"
 git init -q "$fp"
 git -C "$fp" config user.email ci@test
@@ -133,15 +151,15 @@ git -C "$fp" add -A
 git -C "$fp" commit -q -m newtip
 
 fp_run() { ( cd "$fp" && env -u GITHUB_OUTPUT "$@" bash "$script" ) 2>/dev/null | sort | tr '\n' ' '; }
-assert_eq "force-push: old tip..HEAD (cst removed + msbuild added)" \
+assert_eq "non-ancestor: old tip..HEAD (cst removed + msbuild added)" \
   "$(expect cst msbuild)" \
-  "$(fp_run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE="$oldtip")"
+  "$(fp_run GITHUB_EVENT_NAME=merge_group GITHUB_MERGE_GROUP_BASE_SHA="$oldtip")"
 
 # --- $GITHUB_OUTPUT sink -----------------------------------------------------
 
 out="$repo/gh_output"
 : > "$out"
-( cd "$repo" && env GITHUB_OUTPUT="$out" GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE="$base" bash "$script" ) >/dev/null 2>&1
+( cd "$repo" && env GITHUB_OUTPUT="$out" GITHUB_EVENT_NAME=pull_request GITHUB_PR_BASE_SHA="$base" bash "$script" ) >/dev/null 2>&1
 assert_eq "writes to GITHUB_OUTPUT" "$(expect lsp)" "$(sort "$out" | tr '\n' ' ')"
 
 # --- coverage guard: every workspace crate must route to a filter ------------
