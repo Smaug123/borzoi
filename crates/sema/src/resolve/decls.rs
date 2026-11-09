@@ -880,6 +880,8 @@ impl<'a> Resolver<'a> {
                         .map(|tok| tok.text_range()),
                 );
                 if let Some(name) = ext_name.last() {
+                    // A value of the container's, for the declared-name view.
+                    self.mark_decl(name).value = true;
                     let contribution = Contribution::of_value(name.clone());
                     let pos = u32::from(ext.syntax().text_range().start());
                     self.push_contribution(&contribution, pos);
@@ -1704,8 +1706,11 @@ impl<'a> Resolver<'a> {
             // resolvable (via the alias tier of `cross_file_type_case` /
             // `qualified_value_in`), so a `P.Color.Red` head must stay a `Miss`, not a
             // same-file `DeferStop`.
+            let private = header_is_private(nm.syntax());
             let decl = self.mark_decl(first);
+            decl.module_redeclared |= decl.module;
             decl.module = true;
+            decl.module_private = private;
             // The head environment is source-ordered latest-wins across module
             // declarations and opens (see [`DeclKinds::module_pos`]); a later
             // redeclaration keeps the later position (latest wins).
@@ -1721,6 +1726,9 @@ impl<'a> Resolver<'a> {
         // abbreviations, and `extern`s share), this answers "is there a genuine
         // module at this path?" for a later file's open-target classification.
         // The same real-root guard as the shadow's cross-file half.
+        if nm_auto_open {
+            self.lexical_auto_open_paths.push(qualified.clone());
+        }
         if !self.anonymous_root {
             if nm_auto_open {
                 self.record_auto_open_module(qualified.clone(), nm_private);
@@ -2042,9 +2050,14 @@ impl Resolver<'_> {
             return;
         }
         self.opaque_binders.insert(case.text_range());
+        // A case of the container's, for the declared-name view.
+        let rqa = self.require_qualified_access(defn.attributes());
+        let decl = self.mark_decl(&id_text(&case));
+        decl.union_case |= rqa != RequireQualifiedAccess::Certain;
+        decl.qualified_case |= rqa != RequireQualifiedAccess::CertainlyNot;
         // A type that certainly requires qualified access puts no bare case
         // in scope.
-        if self.require_qualified_access(defn.attributes()) == RequireQualifiedAccess::Certain {
+        if rqa == RequireQualifiedAccess::Certain {
             return;
         }
         let contribution = Contribution {

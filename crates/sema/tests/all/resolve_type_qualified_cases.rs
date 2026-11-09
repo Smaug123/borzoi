@@ -931,6 +931,20 @@ fn module_qualified_contention_does_not_navigate_to_an_earlier_file() {
 }
 
 #[test]
+fn a_redeclared_head_module_does_not_navigate_to_an_earlier_file() {
+    // `module Pal` twice in one container is FS0037; FCS reads the first
+    // (`type_qualified_prefix_grid`), and either way the head is this file's
+    // module, so the reference must not fall through to file0's `Pal.Color.Red`.
+    let src0 = "module Pal.Color\nlet Red = 1\n";
+    let src1 = "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Pal =\n    type Color = Red | Blue\nlet x = Pal.Color.Red\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    match proj.file(1).resolution_at(nth(src1, "Pal.Color.Red", 0)) {
+        None | Some(Resolution::Deferred(_)) => {}
+        other => panic!("a redeclared same-file head must not navigate cross-file, got {other:?}"),
+    }
+}
+
+#[test]
 fn anonymous_root_module_qualified_case_wins_over_an_earlier_files_value() {
     // The same, anonymous-root: file1's nested-module case (a `Resolution::Local`, no
     // cross-file handle) must shadow file0's same-path value — never file0's `Item`.
@@ -1238,14 +1252,31 @@ fn module_qualified_case_head_walk_skips_constructor_and_type_containers() {
         // union-case constructor, pattern / expression
         "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    type T = Pal | Q\n    let f c = match c with Pal.Color.Red -> 1 | _ -> 0\n",
         "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    type T = Pal | Q\n    let x = Pal.Color.Red\n",
-        // type, pattern / expression
-        "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    type Pal = int\n    let f c = match c with Pal.Color.Red -> 1 | _ -> 0\n",
+        // type, expression (the pattern row follows the loop)
         "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    type Pal = int\n    let x = Pal.Color.Red\n",
         // active pattern, pattern / expression
         "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    let (|Pal|_|) (x: int) = if x = 0 then Some () else None\n    let f c = match c with Pal.Color.Red -> 1 | _ -> 0\n",
         "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    let (|Pal|_|) (x: int) = if x = 0 then Some () else None\n    let x = Pal.Color.Red\n",
     ] {
         assert_resolves_to_own_case("module Pal\ntype Color = Red | Blue\n", src1, 0);
+    }
+    // The type row in pattern position: FCS tries a pattern head's types
+    // first, and `int` nests no `Color`, so it binds the module's case too
+    // (probe Kpat). Which types nest one is not modelled (an abbreviation's
+    // target, a class's base), so a pattern head with a type of its name in
+    // scope declines rather than commit past a type that might nest the
+    // residual (`type_qualified_prefix_grid`'s `abbreviation-head-*` shapes
+    // are ones that do). Never the earlier file.
+    let src0 = "module Pal\ntype Color = Red | Blue\n";
+    let src1 = "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    type Pal = int\n    let f c = match c with Pal.Color.Red -> 1 | _ -> 0\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    match proj.file(1).resolution_at(nth(src1, "Pal.Color.Red", 0)) {
+        None | Some(Resolution::Deferred(_)) => {}
+        Some(res) => {
+            let (file_idx, def) = proj.item_def(res).expect("resolves to an item");
+            assert_eq!(file_idx, 1, "never the earlier file's case");
+            assert_eq!(def.range, nth(src1, "Red", 0), "→ file1's Red case");
+        }
     }
 }
 

@@ -48,7 +48,6 @@ src/Compiler/Service/FSharpParseFileResults.fs member-of-type x7
 src/Compiler/Service/FSharpProjectSnapshot.fs member-of-type x2
 src/Compiler/Service/FSharpProjectSnapshot.fs type_defn
 src/Compiler/Service/FSharpWorkspaceState.fs member-of-type x11
-src/Compiler/Service/IncrementalBuild.fs type_defn
 src/Compiler/Service/SemanticClassification.fs member-of-augmentation x415
 src/Compiler/Service/ServiceInterfaceStubGenerator.fs let_decl x3
 src/Compiler/Service/ServiceInterfaceStubGenerator.fs member-of-type x3
@@ -98,7 +97,6 @@ src/Compiler/Utilities/TaggedCollections.fs attribute x2
 src/Compiler/Utilities/TaggedCollections.fs type_defn x3
 src/Compiler/Utilities/illib.fs member-of-augmentation x47
 src/Compiler/Utilities/lib.fs member-of-augmentation x3
-src/Compiler/Utilities/range.fs member-of-type
 src/FSharp.Build/MapSourceRoots.fs type_defn x2
 src/FSharp.Compiler.LanguageServer/Common/FSharpRequestContext.fs member-of-type
 src/FSharp.Compiler.LanguageServer/FSharpLanguageServer.fs type_defn x3
@@ -290,7 +288,6 @@ tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafety
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/BaseCallByref.fs type_defn
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestBaseCall.fs type_defn
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/MethodApplicationResolution/MultiExtensionMethods01.fs member-of-augmentation x2
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/RequireQualifiedAccess/OnRecordVsUnion.fs let_decl
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/RegressionTest01.fs member-of-augmentation x15
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/AbstractMembers/E_InlineVirtualMember02.fs type_defn x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/AbstractClassMultipleConstructors01.fs type_defn x2
@@ -384,7 +381,6 @@ tests/FSharp.Compiler.ComponentTests/InteractiveSession/Misc.fs attribute x2
 tests/FSharp.Compiler.ComponentTests/Language/ComputationExpressionTests.fs attribute x4
 tests/FSharp.Compiler.ComponentTests/Language/Nullness/NullableReferenceTypesTests.fs attribute x4
 tests/FSharp.Compiler.ComponentTests/Language/SequenceExpressions/SequenceExpressionTests.fs attribute x3
-tests/FSharp.Compiler.ComponentTests/Miscellaneous/FsharpSuiteMigrated.fs let_decl
 tests/FSharp.Compiler.ComponentTests/Miscellaneous/MigratedCoreTests.fs attribute x4
 tests/FSharp.Compiler.ComponentTests/Signatures/SigGenerationRoundTripTests.fs attribute x2
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/members_basics.fs attribute x4
@@ -437,7 +433,6 @@ tests/FSharp.Compiler.Service.Tests/MultiProjectAnalysisTests.fs attribute x2
 tests/FSharp.Compiler.Service.Tests/OverloadCacheTests.fs attribute x4
 tests/FSharp.Compiler.Service.Tests/PerfTests.fs attribute x2
 tests/FSharp.Compiler.Service.Tests/ProjectAnalysisTests.fs attribute x4
-tests/FSharp.Compiler.Service.Tests/ProjectAnalysisTests.fs let_decl x15
 tests/FSharp.Compiler.Service.Tests/Symbols.fs let_decl x2
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs attribute x2
 tests/FSharp.Compiler.Service.Tests/SynExprTests.fs member-of-augmentation
@@ -464,7 +459,6 @@ tests/FSharp.Test.Utilities/Utilities.fs member-of-augmentation x14
 tests/FSharp.Test.Utilities/XunitSetup.fs attribute x5
 tests/benchmarks/CompiledCodeBenchmarks/MicroPerf/ComputedCollections/Arrays/IntegralRanges.fs attribute x88
 tests/benchmarks/CompiledCodeBenchmarks/MicroPerf/Conditions.fs attribute x3
-tests/benchmarks/FCSBenchmarks/BenchmarkComparison/HistoricalBenchmark.Runner/Runner.fs let_decl x3
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/Program.fs attribute
 tests/benchmarks/FCSBenchmarks/BenchmarkComparison/Program.fs type_defn x3
 tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/BackgroundCompilerBenchmarks.fs attribute x4
@@ -501,7 +495,6 @@ tests/fsharp/typecheck/sigs/neg12.fs obj_expr x2
 tests/fsharp/typecheck/sigs/neg121.fs member-of-augmentation x4
 tests/fsharp/typecheck/sigs/neg122.fs member-of-augmentation x4
 tests/fsharp/typecheck/sigs/neg123.fs member-of-augmentation x6
-tests/fsharp/typecheck/sigs/neg15.fs let_decl x8
 tests/fsharp/typecheck/sigs/neg16.fs let_decl x2
 tests/fsharp/typecheck/sigs/neg16.fs member-of-augmentation x2
 tests/fsharp/typecheck/sigs/neg23.fs member-of-augmentation x7
@@ -538,7 +531,7 @@ tests/service/data/SyntaxTree/OperatorName/ActivePatternIdentifierInPrivateMembe
 tests/service/data/SyntaxTree/OperatorName/OperatorInMemberDefinition.fs member-of-augmentation x2
 tests/service/data/SyntaxTree/OperatorName/PartialActivePatternAsFunction.fs top
 tests/service/data/SyntaxTree/OperatorName/PartialActivePatternDefinitionWithoutParameters.fs let_decl
-tests/service/data/TestTP/TestTP.fs type_defn x10
+tests/service/data/TestTP/TestTP.fs type_defn x2
 vsintegration/src/FSharp.Editor/AutomaticCompletion/BraceCompletionSessionProvider.fs attribute x18
 vsintegration/src/FSharp.Editor/Build/SetGlobalPropertiesForSdkProjects.fs type_defn
 vsintegration/src/FSharp.Editor/Classification/ClassificationDefinitions.fs attribute x38
@@ -636,14 +629,12 @@ vsintegration/src/FSharp.Editor/Options/EditorOptions.fs attribute x7
 vsintegration/src/FSharp.Editor/Options/EditorOptions.fs member-of-augmentation x15
 vsintegration/src/FSharp.Editor/QuickInfo/QuickInfoProvider.fs attribute x3
 vsintegration/src/FSharp.Editor/QuickInfo/WpfFactories.fs attribute x3
-vsintegration/src/FSharp.Editor/QuickInfo/WpfFactories.fs member-of-type
 vsintegration/src/FSharp.Editor/Refactor/AddExplicitTypeToParameter.fs attribute
 vsintegration/src/FSharp.Editor/Refactor/AddReturnType.fs attribute
 vsintegration/src/FSharp.Editor/Refactor/ChangeDerefToValueRefactoring.fs attribute
 vsintegration/src/FSharp.Editor/Refactor/ChangeTypeofWithNameToNameofExpression.fs attribute
 vsintegration/src/FSharp.Editor/Structure/BlockStructureService.fs attribute
 vsintegration/src/FSharp.Editor/TaskList/TaskListService.fs attribute
-vsintegration/src/FSharp.Editor/Telemetry/TelemetryReporter.fs member-of-type x2
 vsintegration/src/FSharp.LanguageService/BackgroundRequests.fs type_defn x13
 vsintegration/src/FSharp.LanguageService/FSharpSource.fs type_defn x3
 vsintegration/src/FSharp.LanguageService/IProjectSite.fs attribute

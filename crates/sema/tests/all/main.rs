@@ -122,6 +122,7 @@ mod silent_region_sweep;
 mod tier_order_diff;
 mod type_arity_route_grid;
 mod type_name_env_grid;
+mod type_qualified_prefix_grid;
 mod types_census;
 mod union_rqa_attribute_grid;
 mod unmodelled_contributor_grid;
