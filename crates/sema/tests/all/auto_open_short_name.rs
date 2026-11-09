@@ -11,13 +11,17 @@
 
 use std::path::{Path, PathBuf};
 
+use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_oracle_harness::manifest::Manifest;
-use borzoi_sema::{AssemblyEnv, resolve_project};
+use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
 use rowan::TextRange;
 
-use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
+use crate::common::{
+    ensure_autoopen_fixture_built, invoke_fcs_dump_project_with_refs, parse_fcs_uses_project,
+    temp_fs_file,
+};
 
 /// One graded shape. The probe is the last occurrence of `probe` in the last
 /// file, a name or a dotted path whose last segment is the use; FCS must bind
@@ -31,12 +35,25 @@ struct Case {
     must_commit: bool,
 }
 
+/// A [`Case`] against the auto-open fixture assembly, referenced on both
+/// sides.
+fn grade_against_fixture(case: &Case) {
+    let dll = ensure_autoopen_fixture_built();
+    let bytes = std::fs::read(dll).expect("read autoopen fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse autoopen fixture dll");
+    let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv");
+    case.check(grade_with(case.label, case.files, case.probe, &[dll], &env));
+}
+
 /// FCS's binding of a probe and ours, as `(file, declaration start)`.
 struct Graded {
     /// `Err` when FCS reports a diagnostic in any file, or binds the probe to
     /// no project declaration.
     fcs: Result<(usize, usize), String>,
-    ours: Option<(usize, usize)>,
+    /// `Ok(None)` for a decline; `Err` for an answer that names no project
+    /// declaration (a referenced assembly's member), which disagrees with
+    /// every project binding FCS can make.
+    ours: Result<Option<(usize, usize)>, String>,
     /// Our raw resolution, for messages.
     raw: String,
 }
@@ -45,18 +62,32 @@ struct Graded {
 /// dotted path whose last segment is the use. FCS reports a dotted use over
 /// the whole access, so its record is the one ending where the probe ends.
 fn grade(label: &str, files: &[&str], probe: &str) -> Graded {
+    grade_with(label, files, probe, &[], &AssemblyEnv::default())
+}
+
+/// [`grade`] with `refs` referenced on FCS's side and `env` on ours.
+fn grade_with(
+    label: &str,
+    files: &[&str],
+    probe: &str,
+    refs: &[&Path],
+    env: &AssemblyEnv,
+) -> Graded {
     let paths: Vec<PathBuf> = files
         .iter()
         .enumerate()
         .map(|(i, src)| temp_fs_file(&format!("{label}_{i}"), src))
         .collect();
-    let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    let file_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
     let sources: Vec<(PathBuf, String)> = paths
         .iter()
         .cloned()
         .zip(files.iter().map(|s| s.to_string()))
         .collect();
-    let fcs_files = parse_fcs_uses_project(&invoke_fcs_dump_project(&refs), &sources);
+    let fcs_files = parse_fcs_uses_project(
+        &invoke_fcs_dump_project_with_refs(&file_refs, refs),
+        &sources,
+    );
     let last = files.len() - 1;
     let at = files[last].rfind(probe).expect("the probe");
     let end = at + probe.len();
@@ -86,18 +117,21 @@ fn grade(label: &str, files: &[&str], probe: &str) -> Graded {
             ImplFile::cast(parsed.root).expect("impl file")
         })
         .collect();
-    let proj = resolve_project(&impls, &AssemblyEnv::default());
+    let proj = resolve_project(&impls, env);
     let segment = at + probe.rfind('.').map_or(0, |i| i + 1);
     let span = TextRange::new(
         u32::try_from(segment).unwrap().into(),
         u32::try_from(end).unwrap().into(),
     );
     let res = proj.file(last).resolution_at(span);
-    let ours = res.and_then(|res| {
-        proj.item_def(res)
+    let ours = match res {
+        None | Some(Resolution::Deferred(_)) => Ok(None),
+        Some(res) => proj
+            .item_def(res)
             .or_else(|| proj.file(last).resolved_def(res).map(|d| (last, d)))
-            .map(|(file, def)| (file, usize::from(def.range.start())))
-    });
+            .map(|(file, def)| Some((file, usize::from(def.range.start()))))
+            .ok_or_else(|| format!("{res:?}")),
+    };
     Graded {
         fcs,
         ours,
@@ -109,8 +143,11 @@ impl Case {
     /// FCS's answer is pinned, and ours must be FCS's or nothing (only
     /// FCS's, with `must_commit`).
     fn grade(&self) {
+        self.check(grade(self.label, self.files, self.probe));
+    }
+
+    fn check(&self, graded: Graded) {
         let label = self.label;
-        let graded = grade(label, self.files, self.probe);
         let fcs = graded.fcs.unwrap_or_else(|e| panic!("{label}: {e}"));
         let want_at = self.files[self.want_file]
             .rfind(self.want)
@@ -121,12 +158,13 @@ impl Case {
             "{label}: FCS binds something other than the pinned declaration"
         );
         match graded.ours {
-            Some(ours) => assert_eq!(
+            Err(other) => panic!("{label}: we bind {other} where FCS binds {:?}", self.want),
+            Ok(Some(ours)) => assert_eq!(
                 ours, fcs,
                 "{label}: we bind a different declaration from FCS ({})",
                 graded.raw
             ),
-            None => assert!(
+            Ok(None) => assert!(
                 !self.must_commit,
                 "{label}: we decline where FCS binds {:?} ({})",
                 self.want, graded.raw
@@ -364,6 +402,28 @@ fn another_fragments_descendant_is_not_entered() {
     ]);
 }
 
+/// Nor when a referenced assembly declares something at or beneath the
+/// child's path: the fixture's `Demo.Auto.Extra.ExtraShorten` sits beneath the
+/// project's `[<AutoOpen>] module Demo.Auto`'s `Extra`, so a chained `open
+/// ExtraShorten` after `open Extra` would open the assembly's too, where FCS
+/// opens only the project's, which holds no `extraShortenTarget`.
+#[test]
+fn an_assemblys_entity_beneath_the_child_keeps_it_out() {
+    grade_against_fixture(&Case {
+        label: "short_assembly_beneath",
+        files: &[
+            "namespace Demo\n\n[<AutoOpen>]\nmodule Auto =\n    module Extra =\n        \
+             module ExtraShorten =\n            let other = 1\n",
+            "module Client\n\nlet extraShortenTarget () = 99\n\nopen Demo\nopen Extra\n\
+             open ExtraShorten\n\nlet probe = extraShortenTarget ()\n",
+        ],
+        probe: "extraShortenTarget",
+        want_file: 1,
+        want: "extraShortenTarget () = 99",
+        must_commit: false,
+    });
+}
+
 /// A dotted head reaches a short name too. The walk does not follow it there
 /// yet; it must not name anything FCS does not.
 #[test]
@@ -457,6 +517,8 @@ enum Competitor {
     /// A `module N.A.Child.Grand` header file: another declaration beneath
     /// the fragment's child.
     DescendantHeaderFile,
+    /// A `namespace N.A.Child` declaring an exception `Nn`.
+    NamespaceAtTheChild,
 }
 
 impl Competitor {
@@ -468,6 +530,7 @@ impl Competitor {
         Competitor::RootFile,
         Competitor::HeaderFile,
         Competitor::DescendantHeaderFile,
+        Competitor::NamespaceAtTheChild,
     ];
 
     fn block(self) -> &'static str {
@@ -483,6 +546,7 @@ impl Competitor {
             Competitor::RootFile => "module Child\n\nlet Nn = 2\n",
             Competitor::HeaderFile => "module N.A.Child\n\nlet Nn = 2\n",
             Competitor::DescendantHeaderFile => "module N.A.Child.Grand\n\nlet Nn = 2\n",
+            Competitor::NamespaceAtTheChild => "namespace N.A.Child\n\nexception Nn of int\n",
         }
     }
 
@@ -629,15 +693,15 @@ fn every_contest_for_a_short_name_agrees_with_fcs() {
                                 skipped += 1;
                                 verdicts.push(format!("{tag}: fcs-error"));
                             }
-                            (Ok(_), None) => {
+                            (Ok(_), Ok(None)) => {
                                 declines += 1;
                                 verdicts.push(format!("{tag}: decline"));
                             }
-                            (Ok(fcs), Some(ours)) if fcs == ours => {
+                            (Ok(fcs), Ok(Some(ours))) if fcs == ours => {
                                 commits += 1;
                                 verdicts.push(format!("{tag}: commit"));
                             }
-                            (Ok(fcs), Some(ours)) => wrong.push(format!(
+                            (Ok(fcs), ours) => wrong.push(format!(
                                 "{tag}: FCS {fcs:?}, ours {ours:?} ({})",
                                 graded.raw
                             )),

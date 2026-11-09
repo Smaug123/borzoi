@@ -1685,6 +1685,22 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
+    /// Whether any referenced assembly declares something at or beneath
+    /// `full`: a namespace holding a public type there or below, an entity
+    /// at the path (top-level or nested), or a dropped type at any split.
+    fn assemblies_reach(&self, full: &[String]) -> bool {
+        let Some((last, parent)) = full.split_last() else {
+            return true;
+        };
+        self.assemblies.has_namespace(full)
+            || !self.assemblies.entities_named(parent, last).is_empty()
+            || self.opened_assembly_type(full).is_some()
+            || self.opened_assembly_module(full).is_some()
+            || self
+                .assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(full)
+    }
+
     /// Enter the modules that the module fragment `(path, file)` declares
     /// under their short names, as folding it does
     /// (`AddModuleOrNamespaceRefsToNameEnv`): a prefix restricted to those
@@ -1695,11 +1711,12 @@ impl<'a> Resolver<'a> {
     /// A child the walk cannot open as FCS does is left out, so an `open` of
     /// its short name goes opaque instead ([`Self::may_name_unlent_module`]):
     ///
-    /// - one whose path, or a path beneath it, another declaration shares (a
-    ///   plain `module A` in another file holding its own `Child`, a `module
-    ///   N.A.Child.Grand` header): the module open of `Child`, `Child.Grand`
-    ///   or a chained `Grand` folds every declaration at its path, FCS only
-    ///   the fragment's own;
+    /// - one whose path, or a path beneath it, anything but the fragment's own
+    ///   file declares (a plain `module A` in another file holding its own
+    ///   `Child`, a `module N.A.Child.Grand` header, a `namespace N.A.Child`,
+    ///   a referenced assembly's entity there): the module open of `Child`,
+    ///   `Child.Grand` or a chained `Grand` folds every declaration at its
+    ///   path, assemblies included, FCS only the fragment's own;
     /// - one whose name a direct module of `container` takes in a later
     ///   fragment: FCS enters each fragment's direct modules and then its
     ///   auto-open children's, fragment by fragment — earlier files merged
@@ -1719,16 +1736,18 @@ impl<'a> Resolver<'a> {
             .current_module_decls()
             .find(|&(p, _, _)| file == current && p == path)
             .map(|(_, pos, _)| pos);
-        // The fragment's own file declares the child once and whatever lies
-        // beneath it once each (FS0248); any other declaration is another
-        // fragment's.
+        // The positive certificate: the fragment's own file declares the
+        // child once, and whatever lies beneath it once each (FS0248), and
+        // nothing else in the project or any referenced assembly sits at or
+        // beneath its path. Any other declaration there is something a module
+        // `open` of the path (or of a path through it) would fold too.
         let owned = |full: &[String]| {
             let at = self.preceding.module_declarations(full).count()
                 + self
                     .current_module_decls()
                     .filter(|&(p, _, _)| p == full)
                     .count();
-            let elsewhere = self
+            let other_module = self
                 .preceding
                 .module_declarations_under(full)
                 .any(|g| g != file)
@@ -1736,7 +1755,12 @@ impl<'a> Resolver<'a> {
                     && self
                         .current_module_decls()
                         .any(|(p, _, _)| p.starts_with(full)));
-            at == 1 && !elsewhere
+            let namespace = self
+                .namespace_paths
+                .iter()
+                .chain(&self.preceding.namespace_paths)
+                .any(|p| p.starts_with(full));
+            at == 1 && !other_module && !namespace && !self.assemblies_reach(full)
         };
         let later_direct = |container: &[String], child: &str| {
             let mut direct = container.to_vec();
