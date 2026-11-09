@@ -105,6 +105,7 @@ impl<'src> Parser<'src> {
             // the dotted-loop and `parse_atomic_type`'s LPAREN arm.
             if p.next_non_trivia_raw_at_pos()
                 .is_some_and(|t| matches!(t, Token::RArrow))
+                && p.next_tokens_unbroken(1)
             {
                 p.builder
                     .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::FUN_TYPE));
@@ -161,6 +162,7 @@ impl<'src> Parser<'src> {
             if !self
                 .next_non_trivia_raw_at_pos()
                 .is_some_and(|t| matches!(t, Token::Op("*" | "/")))
+                || !self.next_tokens_unbroken(1)
             {
                 return;
             }
@@ -184,7 +186,8 @@ impl<'src> Parser<'src> {
             Token::Op("*") => Some(SyntaxKind::STAR_TOK),
             Token::Op("/") => Some(SyntaxKind::SLASH_TOK),
             _ => None,
-        }) {
+        }) && self.next_tokens_unbroken(1)
+        {
             self.bump_into(sep_kind);
             separators += 1;
             // After the `*` / `/`, gate the next atomic on the raw stream
@@ -374,10 +377,12 @@ impl<'src> Parser<'src> {
                     self.nth_significant_raw_at_pos(1),
                     Some(Token::Ident(_) | Token::QuotedIdent(_))
                 ) && matches!(self.nth_significant_raw_at_pos(2), Some(Token::Colon))
+                    && self.next_tokens_unbroken(3)
             }
             // `ident :` — a named parameter.
             Some(Token::Ident(_) | Token::QuotedIdent(_)) => {
                 matches!(self.nth_significant_raw_at_pos(1), Some(Token::Colon))
+                    && self.next_tokens_unbroken(2)
             }
             _ => false,
         }
@@ -762,8 +767,8 @@ impl<'src> Parser<'src> {
             if self.depth_limit_latched() {
                 break;
             }
-            // Bail at a layout virtual: `Virtual::BlockSep` /
-            // `Virtual::BlockEnd` at the filtered cursor marks a
+            // Bail at a layout virtual (`Virtual::BlockSep`,
+            // `Virtual::BlockEnd`, …): at the filtered cursor it marks a
             // structural boundary that the postfix-app / array-suffix
             // continuations must not cross. Without this gate, raw-stream
             // lookahead would skip over the virtual, see the next ident
@@ -774,15 +779,7 @@ impl<'src> Parser<'src> {
             // cross-line continuation `int\n   list` does *not* emit a
             // BlockSep here (the continuation is past the offside), so
             // legitimate multi-line postfix-apps still work.
-            if matches!(
-                self.peek(),
-                Some((
-                    Ok(FilteredToken::Virtual(
-                        Virtual::BlockSep | Virtual::BlockEnd
-                    )),
-                    _
-                )),
-            ) {
+            if self.parked_on_layout_virtual() {
                 break;
             }
             let next = self.next_non_trivia_raw_at_pos();
@@ -1681,6 +1678,7 @@ impl<'src> Parser<'src> {
                 self.next_non_trivia_raw_after(span.end),
                 Some(Token::LParen)
             )
+            && self.next_tokens_unbroken(2)
     }
 
     /// Anon-record type — FCS's

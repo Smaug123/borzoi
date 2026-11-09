@@ -78,6 +78,29 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(_)), _)) => return None,
             _ => {}
         }
+        // The item parsers bump their leading keyword run (`static member val`,
+        // `static abstract`, `override val`, …) unconditionally once
+        // classified, so the run the raw scan classifies must also be unbroken
+        // on the filtered stream: a dedent between `static` and `member` puts an
+        // `OBLOCKEND` there, which would be stamped as the `member`.
+        let raw_run = (0..)
+            .take_while(|&i| {
+                matches!(
+                    self.nth_significant_raw_at_pos(i),
+                    Some(
+                        Token::Static
+                            | Token::Member
+                            | Token::Val
+                            | Token::Abstract
+                            | Token::Default
+                            | Token::Override
+                    )
+                )
+            })
+            .count();
+        if !self.next_tokens_unbroken(raw_run) {
+            return None;
+        }
         self.classify_object_model_item_from_raw()
     }
 
@@ -459,7 +482,8 @@ impl<'src> Parser<'src> {
     /// expression, so a `#` after `(` is unambiguously inline IL there.)
     pub(super) fn peek_is_inline_il_repr_start(&self) -> bool {
         let mut sig = self.significant_raw_from_cursor();
-        matches!(sig.next(), Some(Token::LParen))
+        self.next_tokens_unbroken(3)
+            && matches!(sig.next(), Some(Token::LParen))
             && matches!(sig.next(), Some(Token::Hash))
             && matches!(
                 sig.next(),
@@ -1373,27 +1397,35 @@ impl<'src> Parser<'src> {
     /// `and` without committing to consume the prefixes.
     fn peek_is_get_set_accessor(&self) -> bool {
         let mut sig = self.significant_raw_from_cursor();
+        // Every raw token the scan reads, through the `get`/`set`: the accessor
+        // parser bumps them all, so none may have a layout virtual (a dedent's
+        // `OEND`, `and private⏎set`) in front of it on the filtered stream.
+        let mut scanned = 1;
         let mut tok = sig.next();
         loop {
             match tok {
                 // Skip an attribute list `[< … >]` (to its closing `>]`).
                 Some(Token::LBrackLess) => {
                     loop {
+                        scanned += 1;
                         match sig.next() {
                             Some(Token::GreaterRBrack) => break,
                             None => return false,
                             _ => {}
                         }
                     }
+                    scanned += 1;
                     tok = sig.next();
                 }
                 Some(Token::Private | Token::Internal | Token::Public | Token::Inline) => {
+                    scanned += 1;
                     tok = sig.next();
                 }
                 _ => break,
             }
         }
         matches!(tok.and_then(ident_token_text), Some("get") | Some("set"))
+            && self.next_tokens_unbroken(scanned)
     }
 
     /// Parse one get/set accessor `[<attrs>] [access] [inline] get[(args)] =
@@ -2085,7 +2117,7 @@ impl<'src> Parser<'src> {
             Some(Token::Base) => (true, false),
             _ => (false, false),
         };
-        if alias_present {
+        if alias_present && self.next_tokens_unbroken(1) {
             self.bump_into(SyntaxKind::IDENT_TOK);
         }
         if !valid_base_alias {

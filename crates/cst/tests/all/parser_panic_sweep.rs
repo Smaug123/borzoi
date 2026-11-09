@@ -430,6 +430,11 @@ fn the_known_virtual_stamp_witnesses_parse() {
         // `climb_pat_tail`, dispatching on the raw stream: the `OEND` before
         // the `:` became the typed pattern's `COLON_TOK` (F# 4.6).
         "function?\n:\n",
+        // The object-model item classifier: a dedent between `static` and
+        // `val` put an `OBLOCKEND` where `parse_val_field_at` bumped the `val`.
+        "type T =\n  static\nval y : int\n",
+        // `parse_namespace_header`'s bare `global` (signature file, F# 4.6).
+        "namespace\nglobal\n",
     ] {
         probe(src, &mut census);
     }

@@ -243,6 +243,7 @@ impl<'src> Parser<'src> {
     /// build stamps `ERROR` and records the internal error as a parse error,
     /// keeping the tree lossless and the file marked broken rather than
     /// handing consumers a zero-width identifier or keyword.
+    #[track_caller]
     pub(super) fn bump_into(&mut self, kind: SyntaxKind) {
         let Some((res, span)) = self.filtered_tokens.get(self.pos).cloned() else {
             return;
@@ -252,7 +253,12 @@ impl<'src> Parser<'src> {
             None => kind,
             Some(message) => {
                 if cfg!(debug_assertions) {
-                    panic!("{message} at {span:?}");
+                    // The caller's location names the production that
+                    // approved the bump (`bump_into` is `#[track_caller]`).
+                    panic!(
+                        "{message}, from {}, at {span:?}",
+                        std::panic::Location::caller()
+                    );
                 }
                 self.errors.push(ParseError {
                     message: format!("internal parser error: {message}"),
@@ -809,20 +815,29 @@ fn virtual_marker_kind(virtual_token: &Virtual) -> Option<SyntaxKind> {
     }
 }
 
-/// Whether `virtual_token` is pure layout: a block opener, closer or separator
-/// LexFilter inserts with no raw token behind it. The others either relabel a
-/// raw keyword that sits at the same span (`Let`, `Then`, `With`, …), so the
-/// raw stream still shows what comes next, or mark an adjacency just before
-/// the raw token they precede (the `HighPrecedence*` markers). Exhaustive, so
-/// a new virtual has to choose.
-fn is_layout_virtual(virtual_token: &Virtual) -> bool {
+/// What a virtual stands for, relative to the raw stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VirtualClass {
+    /// A block opener, closer or separator LexFilter inserts with no raw token
+    /// behind it.
+    Layout,
+    /// A relabel of the raw keyword at the same span (`Let`, `Then`, `With`,
+    /// …): the raw stream still shows what comes next.
+    Relabel,
+    /// An adjacency marker just before the raw token it precedes
+    /// (`HighPrecedence*`), with no raw token of its own.
+    Marker,
+}
+
+/// Exhaustive, so a new virtual has to choose.
+fn virtual_class(virtual_token: &Virtual) -> VirtualClass {
     match virtual_token {
         Virtual::BlockBegin
         | Virtual::BlockEnd
         | Virtual::DeclEnd
         | Virtual::BlockSep
         | Virtual::End
-        | Virtual::RightBlockEnd => true,
+        | Virtual::RightBlockEnd => VirtualClass::Layout,
         Virtual::Let
         | Virtual::Binder
         | Virtual::AndBang
@@ -836,11 +851,16 @@ fn is_layout_virtual(virtual_token: &Virtual) -> bool {
         | Virtual::Assert
         | Virtual::With
         | Virtual::JoinIn
-        | Virtual::InterfaceMember
-        | Virtual::HighPrecedenceParenApp
+        | Virtual::InterfaceMember => VirtualClass::Relabel,
+        Virtual::HighPrecedenceParenApp
         | Virtual::HighPrecedenceBrackApp
-        | Virtual::HighPrecedenceTyApp => false,
+        | Virtual::HighPrecedenceTyApp => VirtualClass::Marker,
     }
+}
+
+/// Whether `virtual_token` is pure layout ([`VirtualClass::Layout`]).
+fn is_layout_virtual(virtual_token: &Virtual) -> bool {
+    virtual_class(virtual_token) == VirtualClass::Layout
 }
 
 impl Parser<'_> {
@@ -853,6 +873,34 @@ impl Parser<'_> {
     /// purpose, to decide whether to consume it.
     pub(super) fn parked_on_layout_virtual(&self) -> bool {
         matches!(self.peek(), Some((Ok(FilteredToken::Virtual(v)), _)) if is_layout_virtual(v))
+    }
+
+    /// Whether the filtered cursor meets the next `n` raw tokens with no layout
+    /// virtual ([`VirtualClass::Layout`]) before any of them. A production that
+    /// approves `n` tokens through a raw-stream lookahead and then bumps them
+    /// all needs this too: the raw check proves which tokens they are (and that
+    /// no LexFilter-swallowed closer sits between), this proves no dedent or
+    /// block separator was inserted in front of one, where the bump would
+    /// stamp it instead. A relabelling virtual (`Virtual::Let`, …) stands for
+    /// its raw keyword and counts as one of the `n`; an adjacency marker
+    /// (`HighPrecedence*`) has no raw token and is passed over.
+    pub(super) fn next_tokens_unbroken(&self, n: usize) -> bool {
+        let mut met = 0;
+        for (res, _) in &self.filtered_tokens[self.pos..] {
+            if met == n {
+                return true;
+            }
+            match res {
+                Ok(FilteredToken::Raw(_)) => met += 1,
+                Ok(FilteredToken::Virtual(v)) => match virtual_class(v) {
+                    VirtualClass::Layout => return false,
+                    VirtualClass::Relabel => met += 1,
+                    VirtualClass::Marker => {}
+                },
+                Err(_) => return false,
+            }
+        }
+        met == n
     }
 }
 

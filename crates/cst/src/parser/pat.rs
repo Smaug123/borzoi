@@ -1057,6 +1057,7 @@ impl<'src> Parser<'src> {
                     while self
                         .next_non_trivia_raw_at_pos()
                         .is_some_and(|t| matches!(t, Token::Comma))
+                        && self.next_tokens_unbroken(1)
                     {
                         self.bump_into(SyntaxKind::COMMA_TOK);
                         self.drain_block_sep_after_tuple_comma();

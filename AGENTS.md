@@ -469,6 +469,7 @@ before pushing rather than discovering it in CI:
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --ignored  #  ~30 s
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_panic_sweep::fresh_seed -- --ignored  # ~10 s
+nix develop -c cargo test -p borzoi-cst  --test all layout_perturbation_sweep:: -- --ignored  # ~4 min
 nix develop -c cargo test -p borzoi-cst  --test all recovery_sweep::       -- --ignored  # ~3 min
 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
 nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored  #  ~25 s

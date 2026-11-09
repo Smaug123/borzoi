@@ -953,6 +953,7 @@ impl<'src> Parser<'src> {
                 self.next_non_trivia_raw_after(id_span.end),
                 Some(Token::Colon)
             )
+            && self.next_tokens_unbroken(2)
         {
             self.bump_into(SyntaxKind::IDENT_TOK);
             self.bump_into(SyntaxKind::COLON_TOK);

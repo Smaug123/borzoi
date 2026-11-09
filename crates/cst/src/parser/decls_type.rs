@@ -555,6 +555,7 @@ impl<'src> Parser<'src> {
             if self
                 .next_non_trivia_raw_at_pos()
                 .is_some_and(|t| matches!(t, Token::Ident(_) | Token::QuotedIdent(_)))
+                && self.next_tokens_unbroken(1)
             {
                 self.bump_into(SyntaxKind::IDENT_TOK);
             } else {
@@ -805,10 +806,12 @@ impl<'src> Parser<'src> {
         }
         // The typar name. Gate on the next non-trivia *raw* token (mirror
         // `parse_var_type`): a sigil with no following ident is a clean error,
-        // never a corrupting reach past a swallowed token.
+        // never a corrupting reach past a swallowed token — nor past a layout
+        // virtual between the sigil and the name.
         if self
             .next_non_trivia_raw_at_pos()
             .is_some_and(|t| matches!(t, Token::Ident(_) | Token::QuotedIdent(_)))
+            && self.next_tokens_unbroken(1)
         {
             self.bump_into(SyntaxKind::IDENT_TOK);
         } else {
