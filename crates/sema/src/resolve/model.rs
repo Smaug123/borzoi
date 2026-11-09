@@ -56,11 +56,33 @@ pub(super) struct ExportRecord {
     pattern_only: bool,
     /// The export's [`fold_rank`].
     rank: u8,
-    /// Where the declaration sits in its file, for a union case declared in
-    /// the implementation itself (not a signature-derived identity): the key
-    /// an `open` orders it by against a same-named type of its container
+    /// Where the declaration sits among its file's declarations
+    /// ([`decl_ordinals`]), for a union case declared in the implementation
+    /// itself (not a signature-derived identity): the key an `open` orders it
+    /// by against a same-named type of its container
     /// ([`ProjectItems::union_case_order`]). `None` for anything else.
-    union_case_pos: Option<TextSize>,
+    union_case_ordinal: Option<u32>,
+}
+
+/// Where a declaration sits in Compile order: its file, then its rank among
+/// that file's declarations ([`decl_ordinals`]).
+pub(super) type DeclOrder = (usize, u32);
+
+/// Each of `decls`' rank by source position: how many distinct positions
+/// precede its own. A rank, not the offset itself, so an edit that moves
+/// declarations without reordering them leaves a file's export indices equal
+/// and its successors' incremental reuse intact.
+fn decl_ordinals(decls: &[ExportDecl]) -> Vec<u32> {
+    let mut positions: Vec<TextSize> = decls.iter().map(|d| d.pos).collect();
+    positions.sort_unstable();
+    positions.dedup();
+    decls
+        .iter()
+        .map(|d| {
+            let rank = positions.partition_point(|p| *p < d.pos);
+            u32::try_from(rank).expect("declaration count fits in u32")
+        })
+        .collect()
 }
 
 /// Where a member sits in the order an `open` adds a module's contents to the
@@ -707,9 +729,9 @@ impl ProjectItems {
     /// in Compile order (`AddModuleOrNamespaceContentsToNameEnv`), so this
     /// orders it against [`Self::union_case_order`]. `None` when a signature
     /// screens the type, whose order is then the signature's.
-    pub(super) fn exported_type_order(&self, path: &[String]) -> Option<(usize, TextSize)> {
+    pub(super) fn exported_type_order(&self, path: &[String]) -> Option<DeclOrder> {
         let t = self.type_paths.get(path)?;
-        Some((t.file, t.pos?))
+        Some((t.file, t.ordinal?))
     }
 
     /// [`Self::exported_type_order`]'s counterpart for the earlier-file union
@@ -717,13 +739,9 @@ impl ProjectItems {
     /// adds it among the container's types. `None` when `id` is no such case:
     /// a value, an exception, an active-pattern case, a signature-derived
     /// identity, or an export at another path.
-    pub(super) fn union_case_order(
-        &self,
-        path: &[String],
-        id: ItemId,
-    ) -> Option<(usize, TextSize)> {
+    pub(super) fn union_case_order(&self, path: &[String], id: ItemId) -> Option<DeclOrder> {
         let record = self.value_exports.get(path)?.iter().find(|r| r.id == id)?;
-        Some((self.file_of(id), record.union_case_pos?))
+        Some((self.file_of(id), record.union_case_ordinal?))
     }
 
     /// The earlier-file types declared **directly** under `container` that an
@@ -1378,14 +1396,14 @@ impl ProjectItems {
         for (path, entry) in idx.type_qualified_cases {
             self.type_qualified_cases.insert(path, entry);
         }
-        for (path, (cases_enumerable, slot), pos) in idx.type_paths {
+        for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
             self.type_paths.insert(
                 path,
                 ExportedTypePath {
                     cases_enumerable,
                     slot,
                     file: file_idx,
-                    pos,
+                    ordinal,
                 },
             );
         }
@@ -1676,7 +1694,7 @@ struct FileExportIndices {
     opaque_hidden_value_modules: Vec<Vec<String>>,
     opaque_cases: Vec<(Vec<String>, bool)>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
-    type_paths: Vec<(Vec<String>, (bool, TypeSlot), Option<TextSize>)>,
+    type_paths: Vec<(Vec<String>, ExportedTypeFacts)>,
     auto_open_module_paths: Vec<Vec<String>>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
@@ -1805,7 +1823,8 @@ impl FileExportIndices {
         let screen = screened.map(|(screen, _)| screen);
         let trust_attribute_spellings = screened.is_some_and(|(_, trust)| trust);
         let mut fi = Self::default();
-        for decl in &file.export_decls {
+        let ordinals = decl_ordinals(&file.export_decls);
+        for (decl, &ordinal) in file.export_decls.iter().zip(&ordinals) {
             let anon = decl.anonymous_root;
             match &decl.kind {
                 ExportDeclKind::Item {
@@ -1849,11 +1868,11 @@ impl FileExportIndices {
                                     // pattern-only — that is the AP-case branch below.
                                     pattern_only: false,
                                     rank: fold_rank(it.case),
-                                    union_case_pos: (matches!(
+                                    union_case_ordinal: (matches!(
                                         it.case,
                                         Some(CaseKind::Union { .. })
                                     ) && matches!(it.def, ExportDef::Own(_)))
-                                    .then_some(decl.pos),
+                                    .then_some(ordinal),
                                 },
                             ));
                         }
@@ -1899,12 +1918,12 @@ impl FileExportIndices {
                             // itself stays (a defer-only shadow).
                             // Its declaration order goes with them: the
                             // signature's order is what an `open` reads.
-                            let (payload, pos) = if screen.is_some() {
-                                ((false, TypeSlot::UNKNOWN), None)
+                            let facts = if screen.is_some() {
+                                (false, TypeSlot::UNKNOWN, None)
                             } else {
-                                ((*cases_enumerable, *slot), Some(decl.pos))
+                                (*cases_enumerable, *slot, Some(ordinal))
                             };
-                            fi.type_paths.push((decl.path.clone(), payload, pos));
+                            fi.type_paths.push((decl.path.clone(), facts));
                         }
                     }
                     if *auto_open {
@@ -2038,7 +2057,7 @@ impl FileExportIndices {
                                 is_case: true,
                                 pattern_only: true,
                                 rank: ACTIVE_PATTERN_RANK,
-                                union_case_pos: None,
+                                union_case_ordinal: None,
                             },
                         ));
                         fi.case_item_ids.push(it.id);
@@ -2248,11 +2267,16 @@ pub(super) struct ExportedTypePath {
     pub(super) slot: TypeSlot,
     /// The declaring file's Compile-order index.
     pub(super) file: usize,
-    /// Where the declaration sits in its file, when the implementation is
-    /// what an `open` reads (no signature screens it): see
+    /// Where the declaration sits among its file's declarations, when the
+    /// implementation is what an `open` reads (no signature screens it): see
     /// [`ProjectItems::exported_type_order`].
-    pub(super) pos: Option<TextSize>,
+    pub(super) ordinal: Option<u32>,
 }
+
+/// What a file's index records of one exported type: whether its cases are
+/// enumerable, its [`TypeSlot`], and its declaration ordinal (see
+/// [`ExportedTypePath`]).
+type ExportedTypeFacts = (bool, TypeSlot, Option<u32>);
 
 /// One declaration a file contributes to the cross-file boundary, in source
 /// order (`docs/export-decl-model-plan.md` Stage 2). A single per-file

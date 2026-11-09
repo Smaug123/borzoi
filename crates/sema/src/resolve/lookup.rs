@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity, OpenTrace,
-    Resolution, SlotClass, TypeSlot,
+    DeclOrder, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity,
+    OpenTrace, Resolution, SlotClass, TypeSlot,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
@@ -5456,7 +5456,7 @@ impl<'a> Resolver<'a> {
         // where an earlier file declares it ([`ProjectItems::exported_type_order`])
         // — what a project case the same `open` supplied is ordered against
         // (below).
-        let mut project_type_opens: Vec<(u32, Option<(&[String], (usize, TextSize))>)> = Vec::new();
+        let mut project_type_opens: Vec<(u32, Option<OrderedTypeOpen<'_>>)> = Vec::new();
         for (pos, prefix) in open_prefixes {
             let mut path = prefix.clone();
             path.push(head.to_string());
@@ -5549,7 +5549,7 @@ impl<'a> Resolver<'a> {
         // with their cases in declaration order, fragment by fragment, so the
         // case is the later write and holds the slot (`type X()` then `type U
         // = X of unit | O` binds the case).
-        let case_follows = |prefix: &[String], type_at: (usize, TextSize)| {
+        let case_follows = |prefix: &[String], type_at: DeclOrder| {
             let Some(Resolution::Item(id)) = value_entry.map(|e| e.resolution) else {
                 return false;
             };
@@ -5974,3 +5974,8 @@ pub(super) fn is_synthesized_name(name: &str) -> bool {
     });
     generated_value || name.strip_prefix("_arg").is_some_and(digits)
 }
+
+/// An opened project type's prefix and declaration order, where an earlier
+/// file declares it: what [`Resolver::value_slot`] orders a case the same
+/// `open` brought against.
+type OrderedTypeOpen<'a> = (&'a [String], DeclOrder);

@@ -416,7 +416,7 @@ fn cell(
         Site::Implicit | Site::OwnBlock => {
             let f = &mut files.blocks;
             f.line(&format!("namespace {ns}"));
-            for (_, lines) in own {
+            if let Some((_, lines)) = own {
                 for l in lines {
                     f.line(&l);
                 }
