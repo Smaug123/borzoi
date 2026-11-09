@@ -130,6 +130,12 @@ impl Extra {
         self != Extra::PrivateFirst
     }
 
+    /// Whether a signature can leave it out: a member of its own, not a
+    /// change to a union the signature states.
+    fn hides_behind_signature(self) -> bool {
+        !matches!(self, Extra::None | Extra::PrivateFirst | Extra::RqaFirst)
+    }
+
     /// The member's line, in an implementation file or, when `sig`, in a
     /// signature.
     fn line(self, sig: bool) -> Option<&'static str> {
@@ -309,6 +315,9 @@ enum Container {
     /// An earlier file's `module GridLib` with a signature declaring the same
     /// members in the same order.
     EarlierSig,
+    /// An earlier file's `module GridLib` whose signature declares only the
+    /// unions, hiding the extra member.
+    EarlierSigHiding,
     /// `module GridLib` nested in an earlier file's `namespace GridNs`.
     EarlierNested,
     /// An earlier file's `namespace GridLib`.
@@ -326,10 +335,11 @@ enum Container {
 }
 
 impl Container {
-    const ALL: [Container; 9] = [
+    const ALL: [Container; 10] = [
         Container::Nested,
         Container::EarlierModule,
         Container::EarlierSig,
+        Container::EarlierSigHiding,
         Container::EarlierNested,
         Container::EarlierNamespace,
         Container::SplitNamespace,
@@ -358,6 +368,7 @@ impl Container {
             Container::Nested
             | Container::EarlierModule
             | Container::EarlierSig
+            | Container::EarlierSigHiding
             | Container::EarlierNamespace
             | Container::SplitNamespace
             | Container::SplitNamespaceOneFile => "GridLib".to_string(),
@@ -420,6 +431,20 @@ fn cell(k: usize, setup: &Setup, container: Container) -> Cell {
                     "module GridLib\n\n{}",
                     block(&setup.lines(1, n, true, true, true), "")
                 ),
+            ));
+            files.push((
+                "GridLib.fs".to_string(),
+                format!("module GridLib\n\n{}", block(&setup.all_lines(), "")),
+            ));
+        }
+        Container::EarlierSigHiding => {
+            let unions = Setup {
+                shapes: setup.shapes.clone(),
+                extra: Extra::None,
+            };
+            files.push((
+                "GridLib.fsi".to_string(),
+                format!("module GridLib\n\n{}", block(&unions.all_lines(), "")),
             ));
             files.push((
                 "GridLib.fs".to_string(),
@@ -543,6 +568,7 @@ fn cells() -> Vec<Cell> {
         for container in Container::ALL {
             if container.is_namespace() && !setup.extra.fits_namespace()
                 || container == Container::EarlierSig && !setup.extra.fits_signature()
+                || container == Container::EarlierSigHiding && !setup.extra.hides_behind_signature()
             {
                 continue;
             }
@@ -560,7 +586,11 @@ fn cells() -> Vec<Cell> {
 /// committed by the walk at all, and an assembly container's contested names
 /// decline.
 fn control(cell: &Cell, use_: Use) -> bool {
-    let project = !cell.container.is_assembly() && cell.container != Container::EarlierSig;
+    let project = !cell.container.is_assembly()
+        && !matches!(
+            cell.container,
+            Container::EarlierSig | Container::EarlierSigHiding
+        );
     match use_ {
         Use::TypeQual => cell.setup.extra != Extra::PrivateFirst,
         Use::QualExpr => {
@@ -721,5 +751,37 @@ fn every_qualified_case_use_agrees_with_fcs() {
         "qualified_case_precedence_grid",
         &manifest_entries,
         &regenerate("qualified_case_precedence_grid::every_qualified_case_use_agrees_with_fcs"),
+    );
+}
+
+/// A possible case (`type Hidden = GridC`) the implementation declares
+/// ahead of the union its signature exposes orders nothing: FCS reads the
+/// signature's module type, which has no `Hidden`, so `GridLib.GridC` is the
+/// signature's `GridU.GridC`, and the walk commits it.
+#[test]
+fn a_signature_hidden_possible_case_contests_nothing() {
+    let sig = "module GridLib\n\ntype GridU =\n    | GridC\n    | GridD\n";
+    let imp = "module GridLib\n\ntype Hidden = GridC\ntype GridU =\n    | GridC\n    | GridD\n";
+    let probe = "module GridProbe\n\nlet probe = GridLib.GridC\n";
+    let files = [
+        ("GridLib.fsi", sig),
+        ("GridLib.fs", imp),
+        ("GridProbe.fs", probe),
+    ];
+    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "GridLib.GridC")
+        .expect("agrees with FCS");
+    let env = env_of(&[ensure_fsharp_core_dll().as_path()]);
+    let proj = resolve_project_files(&project(&files), &env);
+    let probed = range(
+        probe.rfind("GridLib.GridC").expect("the probe"),
+        "GridLib.GridC".len(),
+    );
+    assert!(
+        matches!(
+            proj.file(2).resolution_at(probed),
+            Some(Resolution::Item(_))
+        ),
+        "the signature's case is committed: {:?}",
+        proj.file(2).decline_site(probed)
     );
 }

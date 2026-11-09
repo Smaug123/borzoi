@@ -740,7 +740,7 @@ fn every_union_rqa_cell_agrees_with_fcs() {
 /// `probed` its last occurrence of the probed text. Wherever we commit — the
 /// whole text, or a dotted text's last segment — FCS must report that very
 /// symbol; the error names the first commit it does not.
-fn project_probe_agrees(files: &[(&str, &str)], probed: &str) -> Result<(), String> {
+pub(crate) fn project_probe_agrees(files: &[(&str, &str)], probed: &str) -> Result<(), String> {
     let fsharp_core = ensure_fsharp_core_dll();
     let env = env_of(&[fsharp_core.as_path()]);
     let (root, written) = temp_fs_tree("union_rqa_probe", files);
