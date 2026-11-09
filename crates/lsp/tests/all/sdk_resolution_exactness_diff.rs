@@ -10,7 +10,9 @@
 //!   `Sdk.props` path.
 //! - We return `NotFound` / `VersionNotSatisfied` (a committed "does not
 //!   resolve") ⟹ MSBuild also fails to resolve it.
-//! - We return `UnsupportedLayout` (a pure decline) ⟹ no claim.
+//! - We return `UnsupportedLayout` (a pure decline) ⟹ no claim. A pinned
+//!   version neither the global packages folder nor the dotnet root holds is
+//!   one: NuGet would go on to its fallback folders and a download.
 //!
 //! Pin forms exercised: per-import `Sdk="Name/Version"`, `msbuild-sdks`, and
 //! both at once (per-import must win). Each may also carry a `global.json`
@@ -27,7 +29,7 @@ use std::process::Command;
 
 use crate::common;
 use crate::common::SdkDirCasing;
-use borzoi::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use borzoi::sdk_discovery::SdkDiscovery;
 use borzoi_msbuild::{SdkResolution, SdkResolveError};
 use borzoi_spawn::BoundedCommand;
 use proptest::prelude::*;
@@ -199,11 +201,7 @@ impl Harness {
 
         let theirs = self.oracle.borrow_mut().resolve(&sdk_ref, &project_path);
 
-        let env = SdkDiscoveryEnv {
-            dotnet_root: Some(self.dotnet_root.clone()),
-            nuget_packages_dir: Some(self.gpf.clone()),
-            ..SdkDiscoveryEnv::default()
-        };
+        let env = common::sdk_oracle_discovery_env(&self.gpf, self.dotnet_root.clone());
         let disc = SdkDiscovery::for_project(&project_path, &env).expect("discovery");
         let ours = disc.resolve(&sdk_ref);
 

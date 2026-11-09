@@ -793,7 +793,9 @@ fn property_arg(name: &str, value: &std::ffi::OsStr) -> std::ffi::OsString {
 /// build environment, so restore evaluates the same graph the LSP did and no
 /// host variable leaks in. The spawn-free restore
 /// (`borzoi_nuget::dgspec::resolve_dgspec`) is handed this same map, since
-/// NuGet reads some of these variables while restoring.
+/// NuGet reads some of these variables while restoring. So is SDK discovery's
+/// model of NuGet's settings ([`crate::sdk_discovery`]): MSBuild's NuGet SDK
+/// resolver reads them in the build this environment stands in for.
 ///
 /// - It is built from nothing, not from the inherited environment. Otherwise a
 ///   hermetic (`Workspace::with_env`) caller's curated env would be polluted by
