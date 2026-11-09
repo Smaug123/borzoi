@@ -205,8 +205,8 @@ impl Setup {
         };
         let rqa = (n == 1 && self.extra == Extra::RqaFirst)
             .then(|| "[<RequireQualifiedAccess>]".to_string());
-        let repr_private = (n == 1 && self.extra == Extra::PrivateReprFirst)
-            .then(|| "    private".to_string());
+        let repr_private =
+            (n == 1 && self.extra == Extra::PrivateReprFirst).then(|| "    private".to_string());
         rqa.into_iter()
             .chain([format!("type {private}GridU{n} =")])
             .chain(repr_private)
