@@ -10132,7 +10132,7 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:814:50-61 "Name"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:816:23-34 "Body"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:817:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:817:19-32 "Il"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:817:19-32 "Il"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:818:21-46 "Instructions"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:819:53-57 "IlOp"	project-deferral unbound-name qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:819:53-64 "Format"	project-deferral qualified-access project_path_shadow@enclosing_namespace
@@ -10141,30 +10141,30 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:820:34-41 "Console" handlers plain definition middle	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:820:34-51 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:821:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:821:19-42 "InternalCall"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:821:19-42 "InternalCall"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:821:46-63 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:822:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:822:19-37 "PInvoke"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:822:19-37 "PInvoke"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:822:41-58 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:823:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:823:19-45 "RuntimeProvided"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:823:19-45 "RuntimeProvided"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:823:46-62 "RuntimeBehaviour"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:824:21-38 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:825:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:825:19-45 "RuntimeProvided"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:825:19-45 "RuntimeProvided"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:825:46-62 "RuntimeBehaviour"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:826:21-38 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:827:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:827:19-45 "RuntimeProvided"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:827:19-45 "RuntimeProvided"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:827:47-63 "RuntimeBehaviour"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:829:31-41 "targetName" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:833:21-38 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:834:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:834:19-45 "RuntimeProvided"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:834:19-45 "RuntimeProvided"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:834:47-63 "RuntimeBehaviour"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:835:21-38 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:836:19-29 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:836:19-38 "Abstract"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:836:19-38 "Abstract"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:836:42-59 "WriteLine"	assembly-deferral qualified-access assembly_type_member
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:83:20-39 "IReadOnlyDictionary" handlers plain definition first	declined expected served-assembly x2
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Assembly.fs:83:20-39 "IReadOnlyDictionary" handlers plain definition last	declined expected served-assembly x2
@@ -13983,32 +13983,32 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1096:17-33 "Signature"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1100:19-30 "Body"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1101:15-25 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1101:15-28 "Il"	project-deferral unrecorded project_type_shadow@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1101:15-28 "Il"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1103:27-42 "LocalVars"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1110:33-62 "Assembly"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1110:40-53 "DeclaringType"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1115:30-37 "handles" hover-type plain	local withheld-in-file-value at first,middle,last
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:17-27 "MethodBody"	project-deferral unbound-name qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:17-30 "Il"	project-deferral qualified-access project_path_shadow@enclosing_namespace
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:17-27 "MethodBody"	project-deferral qualified-access qualifier
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:17-30 "Il"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:32-50 "MethodInstructions"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:32-63 "setLocalVars" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:15-25 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:15-38 "InternalCall"	project-deferral unrecorded project_type_shadow@pre_walk
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:42-52 "MethodBody"	project-deferral unbound-name qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:42-65 "InternalCall"	project-deferral qualified-access project_path_shadow@enclosing_namespace
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:15-38 "InternalCall"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:42-52 "MethodBody"	project-deferral qualified-access qualifier
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:42-65 "InternalCall"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:15-25 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:15-33 "PInvoke"	project-deferral unrecorded project_type_shadow@pre_walk
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:37-47 "MethodBody"	project-deferral unbound-name qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:37-55 "PInvoke"	project-deferral qualified-access project_path_shadow@enclosing_namespace
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:15-33 "PInvoke"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:37-47 "MethodBody"	project-deferral qualified-access qualifier
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:37-55 "PInvoke"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:15-25 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:15-41 "RuntimeProvided"	project-deferral unrecorded project_type_shadow@pre_walk
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:48-58 "MethodBody"	project-deferral unbound-name qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:48-74 "RuntimeProvided"	project-deferral qualified-access project_path_shadow@enclosing_namespace
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:15-41 "RuntimeProvided"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:48-58 "MethodBody"	project-deferral qualified-access qualifier
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:48-74 "RuntimeProvided"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:79-86 "concCtx" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:15-25 "MethodBody"	project-deferral unrecorded qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:15-34 "Abstract"	project-deferral unrecorded project_type_shadow@pre_walk
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:38-48 "MethodBody"	project-deferral unbound-name qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:38-57 "Abstract"	project-deferral qualified-access project_path_shadow@enclosing_namespace
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:15-34 "Abstract"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:38-48 "MethodBody"	project-deferral qualified-access qualifier
+Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:38-57 "Abstract"	project-deferral unrecorded qualifier_arity_namesake@pre_walk
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1125:13-28 "Generics"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1126:16-30 "ImmutableArray"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1126:52-82 "Item"	ambiguous-oracle-range
