@@ -418,7 +418,7 @@ fn fcs_project_batch_pool() -> &'static BatchPool {
 /// (`tests/all/uses_census.rs`); this harness ignores `HasCheckErrors` because
 /// partial results are the population that measurement intentionally counts.
 pub fn invoke_fcs_dump_census(paths: &[PathBuf]) -> String {
-    census_driver("uses-census-batch", paths, &[])
+    census_driver("uses-census-batch", Checked::EachFileAlone, paths, &[])
 }
 
 /// Like [`invoke_fcs_dump_census`], but makes `refs` (extra `.dll`s) resolvable
@@ -426,7 +426,7 @@ pub fn invoke_fcs_dump_census(paths: &[PathBuf]) -> String {
 /// kinds of a *referenced-assembly* member (`Demo.Calc.Zero`). The oracle for
 /// the cross-assembly classification differential.
 pub fn invoke_fcs_dump_census_with_refs(paths: &[PathBuf], refs: &[&Path]) -> String {
-    census_driver("uses-census-batch", paths, refs)
+    census_driver("uses-census-batch", Checked::EachFileAlone, paths, refs)
 }
 
 /// Run `fcs-dump uses-census-project` over `paths` (**Compile order**, checked as
@@ -435,7 +435,7 @@ pub fn invoke_fcs_dump_census_with_refs(paths: &[PathBuf], refs: &[&Path]) -> St
 /// (`tests/all/uses_census_project.rs`): the same files, this way vs. the batch way,
 /// expose the member accesses the isolated batch loses to unresolved siblings.
 pub fn invoke_fcs_dump_census_project(paths: &[PathBuf]) -> String {
-    census_driver("uses-census-project", paths, &[])
+    census_driver("uses-census-project", Checked::AsOneProject, paths, &[])
 }
 
 /// Run `fcs-dump types-census-batch` over `paths` (any order; **each file is
@@ -444,7 +444,7 @@ pub fn invoke_fcs_dump_census_project(paths: &[PathBuf]) -> String {
 /// oracle for the Phase-3 *type* scoping measurement (`tests/all/types_census.rs`),
 /// the type-side sibling of [`invoke_fcs_dump_census`].
 pub fn invoke_fcs_dump_types_census(paths: &[PathBuf]) -> String {
-    census_driver("types-census-batch", paths, &[])
+    census_driver("types-census-batch", Checked::EachFileAlone, paths, &[])
 }
 
 /// Run `fcs-dump script-options-batch` over `paths` and return its JSONL
@@ -452,18 +452,78 @@ pub fn invoke_fcs_dump_types_census(paths: &[PathBuf]) -> String {
 /// directory and the one made in the path's own, as
 /// `{ ResolvedAs, Shared, Direct }`. The oracle for `fcs_dump_sdk_resolution`.
 pub fn invoke_fcs_dump_script_options(paths: &[PathBuf]) -> String {
-    census_driver("script-options-batch", paths, &[])
+    census_driver("script-options-batch", Checked::AsOneProject, paths, &[])
 }
 
-/// Shared driver for the two census subcommands. The paths go to the child's
-/// stdin on a dedicated thread while both its output pipes are drained on theirs,
-/// so a large input (whose stdin exceeds the pipe buffer) cannot deadlock against
+/// How a batch subcommand checks the paths it is given, which decides whether
+/// [`census_driver`] may split them across children.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Checked {
+    /// Each file on its own: its line depends on nothing else in the batch.
+    EachFileAlone,
+    /// As one unit, so the whole batch goes to one child: a Compile order, or
+    /// answers that depend on what the child did earlier in the batch
+    /// (`script-options-batch` measures FCS's per-process resolution cache).
+    AsOneProject,
+}
+
+/// Fewest files worth a child of their own: one-shot children each pay .NET
+/// startup and FCS's warm-up, seconds against the few tens of milliseconds a
+/// small file costs.
+const MIN_FILES_PER_CENSUS_CHILD: usize = 500;
+
+/// Shared driver for the batch subcommands. The paths go to the child's stdin
+/// on a dedicated thread while both its output pipes are drained on theirs, so
+/// a large input (whose stdin exceeds the pipe buffer) cannot deadlock against
 /// the child's interleaved per-file output.
 ///
-/// A whole-corpus census is a legitimately long run — thousands of files
-/// type-checked by one child — so it gets a budget to match, rather than the
-/// per-request default sized for a single snippet.
-fn census_driver(subcommand: &'static str, paths: &[PathBuf], refs: &[&Path]) -> String {
+/// A batch of files that are each checked alone ([`Checked::EachFileAlone`])
+/// is split into contiguous runs over up to one child per core, at least
+/// [`MIN_FILES_PER_CENSUS_CHILD`] files each, and their outputs are joined in
+/// order: one child checks them one at a time, and a grid of thousands of
+/// programs on one child is a single thread that the rest of the suite
+/// finishes long before (the member-signature grid ran alone for the suite's
+/// last 75 s in CI).
+///
+/// A whole-corpus census is a legitimately long run, so each child gets a
+/// budget to match, rather than the per-request default sized for a single
+/// snippet.
+fn census_driver(
+    subcommand: &'static str,
+    checked: Checked,
+    paths: &[PathBuf],
+    refs: &[&Path],
+) -> String {
+    let children = match checked {
+        Checked::AsOneProject => 1,
+        Checked::EachFileAlone => std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .min(paths.len() / MIN_FILES_PER_CENSUS_CHILD)
+            .max(1),
+    };
+    let per_child = paths.len().div_ceil(children).max(1);
+    let outputs: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = paths
+            .chunks(per_child)
+            .map(|chunk| scope.spawn(move || census_child(subcommand, chunk, refs)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect()
+    });
+    let mut joined = String::new();
+    for out in outputs {
+        joined.push_str(&out);
+        if !joined.is_empty() && !joined.ends_with('\n') {
+            joined.push('\n');
+        }
+    }
+    joined
+}
+
+/// One `fcs-dump <subcommand>` child over `paths`, its stdout.
+fn census_child(subcommand: &'static str, paths: &[PathBuf], refs: &[&Path]) -> String {
     let mut cmd = fcs_dump_command(subcommand);
     if !refs.is_empty() {
         let joined = refs
@@ -2627,7 +2687,7 @@ pub fn parse_fcs_attrs(json: &str, source: &str) -> AttrsOracle {
 /// stdout — one `{ Path, Ok, Error, Attrs, Errors }` object per line. The
 /// resident oracle for the generative and corpus attribute differentials.
 pub fn invoke_fcs_dump_attrs_batch(paths: &[PathBuf]) -> String {
-    census_driver("attrs-batch", paths, &[])
+    census_driver("attrs-batch", Checked::EachFileAlone, paths, &[])
 }
 
 /// One `attrs-batch` line, normalised against its file's source text.
