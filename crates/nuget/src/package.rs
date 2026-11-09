@@ -225,6 +225,10 @@ impl Hash for PackageIdentity {
 pub struct PackagePaths {
     pub package_dir: PathBuf,
     pub metadata_path: PathBuf,
+    /// `{id}.{version}.nupkg.sha512`: the file older NuGet clients wrote last
+    /// when installing, which restore still accepts as the mark of an
+    /// installed version (`LocalV3FindPackageByIdResource.DoesVersionExist`).
+    pub hash_path: PathBuf,
     pub nuspec_path: PathBuf,
 }
 
@@ -232,8 +236,10 @@ impl PackagePaths {
     pub fn new(global_packages_root: &Path, identity: &PackageIdentity) -> PackagePaths {
         let package_dir = global_packages_root.join(identity.cache_relative_path());
         let id_folder = identity.id.folder_name();
+        let version_folder = identity.version_folder_name();
         PackagePaths {
             metadata_path: package_dir.join(".nupkg.metadata"),
+            hash_path: package_dir.join(format!("{id_folder}.{version_folder}.nupkg.sha512")),
             nuspec_path: package_dir.join(format!("{id_folder}.nuspec")),
             package_dir,
         }
@@ -246,11 +252,21 @@ impl PackagePaths {
     /// are returned so callers do not make decisions against an incomplete
     /// view of the cache.
     pub fn is_committed(&self) -> io::Result<bool> {
-        match std::fs::metadata(&self.metadata_path) {
-            Ok(metadata) => Ok(metadata.is_file()),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(source) => Err(source),
-        }
+        file_exists(&self.metadata_path)
+    }
+
+    /// Whether the folder holds the `.nupkg.sha512` hash file, which restore
+    /// accepts in place of the commit marker (see [`Self::hash_path`]).
+    pub fn has_hash_file(&self) -> io::Result<bool> {
+        file_exists(&self.hash_path)
+    }
+}
+
+fn file_exists(path: &Path) -> io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(source),
     }
 }
 
@@ -267,6 +283,19 @@ pub struct InstalledPackage {
 pub struct PackageCacheEntry {
     pub identity: PackageIdentity,
     pub paths: PackagePaths,
+}
+
+/// A version folder restore treats as installed: one holding the
+/// `.nupkg.metadata` commit marker, or the `.nupkg.sha512` hash file older
+/// NuGet clients wrote last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledVersion {
+    pub identity: PackageIdentity,
+    pub paths: PackagePaths,
+    /// Whether the folder holds the commit marker, which the readers here
+    /// require. A folder with the hash file alone restore repairs, writing the
+    /// marker as it reads the package.
+    pub committed: bool,
 }
 
 /// A nuspec dependency projection.
@@ -365,6 +394,14 @@ pub enum PackageReadError {
     NotInstalled {
         metadata_path: PathBuf,
     },
+    /// The folder holds the `.nupkg.sha512` hash file but no `.nupkg.metadata`
+    /// marker, as an older NuGet client left it. Restore treats it as installed
+    /// and writes the marker as it reads the package; only committed packages
+    /// are read here.
+    HashOnly {
+        hash_path: PathBuf,
+        metadata_path: PathBuf,
+    },
     MissingNuspec {
         nuspec_path: PathBuf,
     },
@@ -416,6 +453,18 @@ impl fmt::Display for PackageReadError {
                     metadata_path.display()
                 )
             }
+            PackageReadError::HashOnly {
+                hash_path,
+                metadata_path,
+            } => {
+                write!(
+                    f,
+                    "package folder holds {} but not {}, which restore treats as installed and \
+                     repairs; only committed packages are read",
+                    hash_path.display(),
+                    metadata_path.display()
+                )
+            }
             PackageReadError::MissingNuspec { nuspec_path } => {
                 write!(f, "installed package is missing {}", nuspec_path.display())
             }
@@ -434,7 +483,9 @@ impl Error for PackageReadError {
         match self {
             PackageReadError::Io { source, .. } => Some(source),
             PackageReadError::Nuspec { source, .. } => Some(source),
-            PackageReadError::NotInstalled { .. } | PackageReadError::MissingNuspec { .. } => None,
+            PackageReadError::NotInstalled { .. }
+            | PackageReadError::HashOnly { .. }
+            | PackageReadError::MissingNuspec { .. } => None,
         }
     }
 }
@@ -518,6 +569,33 @@ pub fn list_committed_package_versions(
     global_packages_root: &Path,
     id: &PackageId,
 ) -> Result<Vec<PackageCacheEntry>, PackageCacheError> {
+    Ok(list_installed_package_versions(global_packages_root, id)?
+        .into_iter()
+        .filter(|version| version.committed)
+        .map(|version| PackageCacheEntry {
+            identity: version.identity,
+            paths: version.paths,
+        })
+        .collect())
+}
+
+/// List the versions of one package id restore treats as installed in a
+/// global packages root, as restore lists them
+/// (`LocalV3FindPackageByIdResource.GetVersionsCore`): every child folder
+/// whose name parses as a version (a folder reached through a symlink
+/// included), counted when the version's *canonical* folder
+/// (`{id-lower}/{normalised-version-lower}/`) holds the `.nupkg.metadata`
+/// commit marker or the `.nupkg.sha512` hash file. A folder spelled
+/// otherwise (`1.0.0-BETA`, `1.0.0.0`) therefore counts where its canonical
+/// path reaches a marked folder: on a case-insensitive file system, itself;
+/// anywhere, a canonically spelled twin beside it, with which it is then one
+/// version. Invalid, unmarked and non-directory children are ignored. IO
+/// failures reading the package-id directory or its entries are returned so a
+/// caller can conservatively decline resolution.
+pub fn list_installed_package_versions(
+    global_packages_root: &Path,
+    id: &PackageId,
+) -> Result<Vec<InstalledVersion>, PackageCacheError> {
     let id_dir = global_packages_root.join(id.folder_name());
     let entries = match std::fs::read_dir(&id_dir) {
         Ok(entries) => entries,
@@ -530,7 +608,7 @@ pub fn list_committed_package_versions(
         }
     };
 
-    let mut versions = Vec::new();
+    let mut versions: Vec<InstalledVersion> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|source| PackageCacheError::Io {
             path: id_dir.clone(),
@@ -554,21 +632,40 @@ pub fn list_committed_package_versions(
         let Ok(version) = NuGetVersion::parse(folder_name) else {
             continue;
         };
-        if folder_name != version.to_normalized_string().to_ascii_lowercase() {
-            continue;
-        }
 
         let identity = PackageIdentity::new(id.clone(), version);
         let paths = PackagePaths::new(global_packages_root, &identity);
-        if paths
+        let committed = paths
             .is_committed()
             .map_err(|source| PackageCacheError::Io {
                 path: paths.metadata_path.clone(),
                 source,
-            })?
-        {
-            versions.push(PackageCacheEntry { identity, paths });
+            })?;
+        let hashed = paths
+            .has_hash_file()
+            .map_err(|source| PackageCacheError::Io {
+                path: paths.hash_path.clone(),
+                source,
+            })?;
+        if !(committed || hashed) {
+            continue;
         }
+        // One entry per version: the canonically spelled folder names it
+        // where there is one, since that is the folder the paths reach.
+        if let Some(existing) = versions
+            .iter_mut()
+            .find(|existing| existing.identity.version.eq_strict(&identity.version))
+        {
+            if folder_name == identity.version_folder_name() {
+                existing.identity = identity;
+            }
+            continue;
+        }
+        versions.push(InstalledVersion {
+            identity,
+            paths,
+            committed,
+        });
     }
 
     versions.sort_by(|left, right| {
@@ -597,6 +694,18 @@ pub fn read_installed_package(
             source,
         })?
     {
+        if paths
+            .has_hash_file()
+            .map_err(|source| PackageReadError::Io {
+                path: paths.hash_path.clone(),
+                source,
+            })?
+        {
+            return Err(PackageReadError::HashOnly {
+                hash_path: paths.hash_path,
+                metadata_path: paths.metadata_path,
+            });
+        }
         return Err(PackageReadError::NotInstalled {
             metadata_path: paths.metadata_path,
         });

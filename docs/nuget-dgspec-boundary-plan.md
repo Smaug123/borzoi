@@ -5,8 +5,10 @@
 > resolver's handling of dependency asset filters, B₁'s of `<contentFiles>`, and
 > B₁'s reading of the environment restore runs under.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions).
-> B₁ now commits on five of the six corpus projects, exactly as the restore
-> does. Supersedes slice 8 of
+> The resolver is NuGet's default dependency resolver reimplemented, and
+> declines on no corpus project; B₁ commits on five of the six, exactly as the
+> restore does, and the sixth waits on its nuspec vocabulary. Supersedes
+> slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >
 > **Goal:** a route away from executing `dotnet restore`
@@ -449,8 +451,9 @@ The differential, the probes behind it, and review turned up seven things:
   names one package twice, with different lower bounds, is a downgrade
   (`NU1605`) to both restore engines, and the resolver committed the higher
   one. `resolver_diff`'s generators never repeated an id within a group. The
-  resolver now declines on a repeated id in any group it reads, and
-  `resolver_diff` pins the case.
+  resolver declined on a repeated id in any group it read until it became
+  the default engine itself, which reports the downgrade; `resolver_diff`
+  pins the case.
 - **The assets file's target names depend on its version.** Version 4 names a
   target by its alias, and version 3 by `NuGetFramework.ToString()`
   (`.NETStandard,Version=v2.0`). Restore writes version 3 when the spec has no
@@ -489,8 +492,8 @@ The differential, the probes behind it, and review turned up seven things:
   `{ "contentHash": "" }` is one). The vocabulary was measured over the 3,910
   nuspecs of a package cache before it was written: every one fits it except
   for the elements it declines by name. It checks every version restore may
-  read: each version the walk read, and the installed lower bound of every
-  declared dependency and direct requirement, which the closure now reports.
+  read: the version each enqueued edge resolves to among the installed
+  ones, which the closure reports ([`examined`](../crates/nuget/src/resolver.rs)).
   Checking every installed version instead declined every F# project on a
   cache holding an old FSharp.Core with `contentFiles`. The generator writes descriptive elements (malformed
   ones included), declined ones and broken markers, and a hand case grades
@@ -582,10 +585,17 @@ after resolving rather than declined on up front. A predicted code the policy
 promotes (`warnAsError`, or `allWarningsAsErrors` unless `warnNotAsError`
 demotes it) declines as `PromotedWarning`, since restore fails; a policy that
 promotes nothing B₁ predicts commits. Within the envelope B₁ commits in, the
-one warning left is `NU1608`: a package in the closure depends on a range
-whose upper bound the version the graph settled on exceeds, because a nearer
-edge eclipsed the dependency with a higher version. (A settled version below
-a range's lower bound logs nothing; review found B₁ predicting it.) A dependency's own `noWarn` suppresses
+warnings are `NU1608`, a package in the closure depending on a range whose
+upper bound the version the graph settled on exceeds, because a nearer edge
+eclipsed the dependency with a higher version (a settled version below a
+range's lower bound logs nothing; review found B₁ predicting it), and the
+lower-bound family restore judges on the range chosen for each package of the
+final graph (`UnexpectedDependencyMessages`, which the resolver reports as
+`resolved_dependencies` since it became the default engine): `NU1602` for a
+range without an inclusive lower bound, `NU1603` for a lower bound that is not
+installed, so the package resolved to the next installed version, and
+`NU1604` for a direct reference without an inclusive lower bound, whose
+package the other two then pass over. A dependency's own `noWarn` suppresses
 warnings attributed to it, which B₁ does not model, so a framework with one
 predicts nothing exact, and declines under any promoting policy.
 
@@ -705,9 +715,9 @@ nuspec carries a rule whose four values it perturbs.
 | TypeEquality, WoofWare.Incremental, WoofWare.LiangHyphenation, WoofWare.PawPrint.Domain, WoofWare.WeakHashTable | commits |
 | WoofWare.Expect | declines: a losing version that is not a leaf of the legacy engine's tree |
 
-The one remaining corpus decline is the resolver's own engine-agreement
-envelope (`engines_agree` in `resolver.rs`), where the legacy and default
-engines can treat a loser's subtree differently.
+The one remaining corpus decline was then the resolver's own engine-agreement
+envelope, where the legacy and default engines could treat a loser's subtree
+differently; the next two sections are its history.
 
 ### The resolver's closure is the default engine's — landed
 
@@ -717,53 +727,115 @@ has any dependency: the legacy engine walks a loser's subtree before rejecting
 it and can fail on what it finds. Real graphs have such losers everywhere
 (System.Memory 4.5.5 under System.Text.Json), and WoofWare.Expect declined on
 one. A dependency-graph spec restores under the default engine alone (the key
-that selects the legacy one declines in the reader), so the contract is now
-the default engine's, and the default engine's rule for a loser's subtree is
-stateable: it walks breadth-first and starts over at every eviction, so a
-loser is chosen in every pass before the one in which its evicter is dequeued
-ahead of it, and some of its subtree is walked in each (how much depends on
-where every other eviction falls, which the walk's tree does not say).
-`losing_subtree_is_inert` holds the whole subtree inert: every version
-reachable from the loser along lower bounds is read, and none names a package
-the closure holds; otherwise it declines, since a demand above a settled
-version can evict a winner before the loser goes and leave the loser in the
-graph (the mutually dependent cousin conflicts of `resolver_diff`). A rule
-that read the subtree only to the evicter's depth in the walk's tree was
-unsound: the engine chooses a package again, deeper, when the edge that first
-chose it is evicted, so the evicter sits deeper for the engine than for the
-walk. Where a loser has a subtree, the walk's legacy-failure
-diagnoses are reported without a claim. `resolver_diff` holds every closure
-to the default engine's and every claimed legacy failure to the legacy
-engine's; the hand cases that documented the leaf rule's price (a cycle below
-a rejected version, a losing version with dependencies, an asset filter on a
-rejected version) now commit, and the cases where a loser's subtree names a
-closure package (the mutually dependent cousin conflicts, a settled version
-that falls when the loser goes) or a version the packages folder lacks (a
-missing package below a rejected version: absence from the folder is not
-absence from every source) decline as a contending subtree. `resolver_diff` also checks `examined`
-itself on every committed graph: every committed version outside it is given
-a `minClientVersion` restore refuses, which restore throws on at the read, and
-restore must still write the closure.
+that selects the legacy one declines in the reader), so the contract became
+the default engine's, first through an envelope around the legacy walker's
+tree that held every loser's whole subtree inert (readable throughout, naming
+no package the closure holds), then — since no envelope reached real graphs,
+whose losers name closure packages everywhere, and ten review rounds showed
+that positions read off the legacy tree never bound the default engine — by
+reimplementing that engine, below.
+
+### The resolver is the default engine — landed
+
+`resolver.rs` is now `DependencyGraphResolver` (the .NET 10 SDK's
+`NuGet.Commands`, 7.9) reimplemented pass for pass, in place of the legacy
+walk and the envelope around it:
+
+- **Choosing** (`ResolveDependencyGraphItemsAsync`). Items, one per edge
+  with the path of edges that reached it (each edge keyed by name and range,
+  NuGet's `LibraryRangeIndex`), are processed breadth-first from the
+  project's references. The first item of a name is chosen; a later one is
+  skipped when the chosen range is at least as high by lower bound, evicts
+  the chosen item when it demands more, and at precisely the same range
+  replaces the chosen item with its own path unless the paths share a
+  prefix. A direct package reference is never evicted. Evictions are keyed
+  by range, start the pass over when a chosen item descends from the
+  evictee, and take the evictee's own evictions with them; a lower item
+  records its parent as eclipsed, which protects the chosen item from later
+  demands below that parent. `PrivateAssets="All"` suppressions aggregate
+  down the subtree, an edge to a direct reference is never enqueued, and an
+  edge to a name already chosen at that range is not enqueued again.
+- **Flattening** (`CreateRestoreTargetGraphAsync`). The chosen items are
+  walked again, by name, over every dependency they declare, suppressed ones
+  included: a dependency named like its parent or the project, or whose
+  range lies on the parent's path, is a cycle (`NU1108`); a second visit
+  demanding more than the chosen range is a downgrade (`NU1605`) unless the
+  chosen version satisfies it or a suppression or an eclipsed parent covers
+  it; a first visit the chosen version does not satisfy is a version
+  conflict (`NU1107`), reported after cycles and before downgrades, as
+  restore reports them. The closure is the chosen packages the flattening
+  reaches, each with the range chosen for it: the `resolved_dependencies`
+  B₁'s lower-bound warnings are judged on.
+- **What restore reads.** Every edge resolves as restore's lookup does with
+  the packages folder as its only source
+  (`SourceRepositoryDependencyProvider.FindLibraryCoreAsync`): the range's
+  inclusive lower bound itself when a folder spells it, else the lowest
+  installed version satisfying it, a prerelease only where a bound is one.
+  So an edge whose lower bound is not installed resolves to the next
+  installed version (restore warns `NU1603`, judged by NuGet's version
+  identity, which compares release labels as strings where its ordering
+  compares them as numbers), and one no installed version satisfies is
+  restore's unresolved item, with no dependencies, which fails the restore
+  only if it stays in the graph; a chosen item is read in full and declines
+  on anything unreadable. Review found two folder shapes the first cut read
+  wrongly, both now declines: two installed versions that compare equal but
+  are spelled apart (`1.0.0-0`, `1.0.0--0`) with no folder spelling the
+  lower bound, where restore keeps whichever it enumerated first; and a
+  version folder with the `.nupkg.sha512` hash file but no `.nupkg.metadata`
+  marker, which restore counts as installed and repairs, and nothing here
+  can read. A third it read as absent: restore finds a version's folder by
+  its canonical path and parses every folder's name as a version, so a
+  folder spelled in another case counts on a case-insensitive file system,
+  and the reader now lists and looks up folders the same way. Every version
+  an edge resolves to is `examined`.
+  Whether a source could answer differently stays B₁'s question:
+  `check_sources` declines a folder source holding a package restore looks
+  up past the packages folder, and now one that does not exist or cannot be
+  listed, since restore consults every source for such a package and fails
+  (`NU1301`) on one it cannot read; a missing `library-packs` folder still
+  passes when every lower bound is installed. Floats decline; every other
+  range shape, exclusive and open lower bounds included, is the engine's.
+- **What the differentials hold.** `resolver_diff` holds every closure to
+  the default engine's, and every decline that names a restore failure (a
+  cycle, a conflict, a downgrade) to a failure the default engine reports;
+  the legacy engine's outcome is recorded in the census and pinned on the
+  hand cases where the engines part. Where the default engine writes a
+  closure over committed, non-floating edges, the multi-version and
+  cross-dispute sweeps require one. Both verdicts the envelope got wrong are
+  hand cases: a same-range occurrence from a cousin path that moves the
+  chosen item's path and closes a cycle the legacy walker eclipses away
+  (seed 1794148483370034000), and a deeper demand above a direct exact
+  reference, which the legacy walker eclipses through an ancestor's
+  open-lower-bound sibling edge and the default engine fails as `NU1605`
+  (seed 1794151809963611000). The former hand cases that documented the
+  envelope's price (an uninstalled version below a loser, a loser's subtree
+  reaching a winner, a missing package below a loser, a back edge at an
+  uninstalled bound) now pin the engine's verdict on each, and
+  `a_resolved_closure_reads_only_the_dependency_lists_of_the_versions_it_rejected`
+  states the read set exactly: a loser is read when the engine chooses it in
+  some pass, and not otherwise. Review found three slips, one spelling at a
+  time, where NuGet's version *identity* (release labels as strings) and its
+  *ordering* (numeric labels, so `-0` is `0`) part: the lookup's exact
+  lower bound, the engine's range keys and B₁'s `NU1603`. Twin versions
+  (`1.0.0-0` and `1.0.0--0`, one folder each) are now a generator of their
+  own (`generate_twins`, in the soak's rotation), whose parents reach the
+  twins by every spelling that tells them apart or fails to, with the
+  obligation that we resolve wherever the default engine does except on a
+  genuine tie; keying ranges by ordering again, or dropping the lookup's
+  exact lower bound, fails it within a few graphs. The wide generator's pool
+  grows twins too and the census counts them, which alone was too weak to
+  catch either.
 
 | corpus project (6) | B₁ |
 |---|---|
 | TypeEquality, WoofWare.Incremental, WoofWare.LiangHyphenation, WoofWare.PawPrint.Domain, WoofWare.WeakHashTable | commits |
-| WoofWare.Expect | declines: System.Memory 4.5.5 loses, and its subtree names System.Numerics.Vectors at a lower bound that is not installed |
+| WoofWare.Expect | declines: System.Buffers 4.5.1, a version the engine examines (System.Memory 4.5.5's edge resolves to it), declares `<frameworkAssemblies>`, outside B₁'s nuspec vocabulary |
 
-The remaining corpus decline is the envelope's, and no envelope around the
-legacy tree reaches it: real graphs' losers (System.Memory, System.Buffers)
-name closure packages everywhere. Committing them needs the default engine's
-own walk — `DependencyGraphResolver`'s breadth-first passes, evictions and
-restarts — reimplemented and differentially tested, in place of the legacy
-walk plus envelope. That is the next stage of this stream. Two
-default-engine verdicts the walk gets wrong today, both found by the
-fresh-seed soak and reproduced on commits before the envelope, go with it: a
-graph whose every edge to one package carries one exact range, which the
-engine fails as a cycle (seed 1794148483370034000), and a transitive demand
-above a direct exact reference, which the legacy engine passes and the
-default engine fails with NU1605 (seed 1794151809963611000). Behind it,
-`<frameworkAssemblies>` (839 nuspecs of a developer's cache) is still outside
-B₁'s nuspec vocabulary.
+The resolver declines on no corpus project now. The one decline left is
+B₁'s nuspec vocabulary: `<frameworkAssemblies>` (839 nuspecs of a
+developer's cache, Microsoft's `System.*` packages among them), which is the
+next item, and which must be settled for the versions restore only reads as
+well as for the closure's.
 
 ### Stage 5: pruning — landed
 
@@ -884,12 +956,12 @@ walks them as NuGet does:
   one the project's own prune list covers, is left out when the project is
   reached as a reference (the entry's own are walked whatever they say). The
   legacy engine still counts it as a sibling in its eclipse check; the default
-  engine leaves the name out down the whole subtree, and checks every
-  dependency for a cycle before leaving any out. So B₁ declines where they
-  can part ways: a node below the project depends on the suppressed name
-  (`SuppressedEdgeReachable`), or the suppressed edge names the project, an
-  ancestor or the root (`SuppressedCycle`, where the default engine fails
-  with `NU1108` and the legacy one walks nothing).
+  engine leaves the name out down the whole subtree, and its flattening
+  checks every dependency for a cycle before leaving any out. B₁ declined
+  where the two part ways until the resolver became the default engine; now
+  a node below the project depending on the suppressed name commits with the
+  edge left out, and a suppressed edge that names the project, an ancestor
+  or the root is `NU1108`.
 - **Pruning.** The entry's prune list prunes a referenced project's package
   edges as it prunes a package's (`ShouldPrunePackage`, default engine only,
   as stage 5 graded); a referenced project's own list suppresses its edges;

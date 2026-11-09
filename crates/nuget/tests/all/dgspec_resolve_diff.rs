@@ -79,6 +79,10 @@ struct Pkg {
     /// The whole nuspec as bytes, outranking [`Pkg::raw_nuspec`]: for a byte
     /// order mark or an encoding a `&str` cannot spell.
     raw_nuspec_bytes: Option<Vec<u8>>,
+    /// Installed by an older NuGet client: the `.nupkg.sha512` hash file and
+    /// no `.nupkg.metadata` marker. Restore treats the folder as installed
+    /// and writes the marker as it reads the package.
+    hash_only: bool,
 }
 
 impl Pkg {
@@ -95,6 +99,7 @@ impl Pkg {
             marker: None,
             raw_nuspec: None,
             raw_nuspec_bytes: None,
+            hash_only: false,
         }
     }
 
@@ -173,11 +178,25 @@ fn install(root: &Path, packages: &[Pkg]) {
                 .map_or_else(|| pkg.nuspec(), str::to_owned)
                 .into_bytes(),
         };
-        fs::write(&paths.nuspec_path, nuspec).expect("nuspec");
+        fs::write(&paths.nuspec_path, &nuspec).expect("nuspec");
         for file in &pkg.files {
             let path = paths.package_dir.join(file);
             fs::create_dir_all(path.parent().expect("an asset is in a folder")).expect("folder");
             fs::write(&path, b"").expect("asset");
+        }
+        if pkg.hash_only {
+            // Restore repairs the folder by rewriting the marker from the
+            // package archive, so the archive must be one it can open.
+            let folder = identity.id.folder_name();
+            let version = identity.version_folder_name();
+            let nuspec_name = format!("{}.nuspec", pkg.id);
+            fs::write(
+                paths.package_dir.join(format!("{folder}.{version}.nupkg")),
+                stored_zip(&[(&nuspec_name, &nuspec)]),
+            )
+            .expect("nupkg");
+            fs::write(&paths.hash_path, "AAAA").expect("hash file");
+            continue;
         }
         fs::write(
             &paths.metadata_path,
@@ -186,6 +205,82 @@ fn install(root: &Path, packages: &[Pkg]) {
         )
         .expect("commit marker");
     }
+}
+
+/// A zip archive of `entries`, each stored uncompressed: the shape of a
+/// `.nupkg` as far as restore reads one to repair a version folder.
+fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+    fn u16le(out: &mut Vec<u8>, value: usize) {
+        out.extend_from_slice(&u16::try_from(value).expect("fits u16").to_le_bytes());
+    }
+    fn u32le(out: &mut Vec<u8>, value: usize) {
+        out.extend_from_slice(&u32::try_from(value).expect("fits u32").to_le_bytes());
+    }
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in entries {
+        let offset = out.len();
+        let crc = crc32(data) as usize;
+        // Local file header.
+        u32le(&mut out, 0x0403_4b50);
+        u16le(&mut out, 20);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u32le(&mut out, crc);
+        u32le(&mut out, data.len());
+        u32le(&mut out, data.len());
+        u16le(&mut out, name.len());
+        u16le(&mut out, 0);
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        // Central directory header.
+        u32le(&mut central, 0x0201_4b50);
+        u16le(&mut central, 20);
+        u16le(&mut central, 20);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u32le(&mut central, crc);
+        u32le(&mut central, data.len());
+        u32le(&mut central, data.len());
+        u16le(&mut central, name.len());
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u32le(&mut central, 0);
+        u32le(&mut central, offset);
+        central.extend_from_slice(name.as_bytes());
+    }
+    let central_offset = out.len();
+    out.extend_from_slice(&central);
+    // End of central directory.
+    u32le(&mut out, 0x0605_4b50);
+    u16le(&mut out, 0);
+    u16le(&mut out, 0);
+    u16le(&mut out, entries.len());
+    u16le(&mut out, entries.len());
+    u32le(&mut out, central.len());
+    u32le(&mut out, central_offset);
+    u16le(&mut out, 0);
+    out
 }
 
 // ============================================================================
@@ -730,7 +825,11 @@ fn closure_set(framework: &ResolvedFramework) -> PackageSet {
         .map(|package| {
             (
                 package.identity.id.as_str().to_ascii_lowercase(),
-                package.identity.version.to_normalized_string(),
+                package
+                    .identity
+                    .version
+                    .to_normalized_string()
+                    .to_ascii_lowercase(),
             )
         })
         .collect()
@@ -806,7 +905,8 @@ fn restore(oracle: &mut Oracle, text: &str) -> Restored {
                         id.to_ascii_lowercase(),
                         NuGetVersion::parse(version)
                             .expect("a version")
-                            .to_normalized_string(),
+                            .to_normalized_string()
+                            .to_ascii_lowercase(),
                     )
                 })
                 .collect();
@@ -1039,7 +1139,7 @@ fn committed(graded: &Graded) -> BTreeMap<String, PackageSet> {
 fn set(packages: &[(&str, &str)]) -> PackageSet {
     packages
         .iter()
-        .map(|(id, version)| (id.to_ascii_lowercase(), (*version).to_owned()))
+        .map(|(id, version)| (id.to_ascii_lowercase(), version.to_ascii_lowercase()))
         .collect()
 }
 
@@ -1728,9 +1828,115 @@ fn a_losing_versions_metadata_is_validated_too() {
     }
 }
 
-/// A package with the project's own name declines.
+/// NuGet compares release labels as numbers (`-0` is 0) but tells versions
+/// apart by their labels as strings (`VersionComparer.Equals`), so with only
+/// `A 1.0.0-0` installed a reference to `[1.0.0--0, )` resolves to it and
+/// warns `NU1603`, the lower bound being a version no folder spells. B₁
+/// predicts the warning, and declines under a promoting policy. Found by
+/// review.
 #[test]
-fn a_package_named_like_the_project_declines() {
+fn a_lower_bound_that_compares_equal_to_the_installed_version_warns() {
+    let mut oracle = spawn_oracle();
+    let packages = [Pkg::new("A", "1.0.0-0", vec![])];
+    let mut shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0--0, )")],
+    )]);
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0-0")]));
+    assert_eq!(graded.theirs.codes, ["NU1603"]);
+    shape.all_warnings_as_errors = true;
+    let graded = grade(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(
+        matches!(
+            &graded.ours,
+            Err(DgSpecResolveDecline::PromotedWarning { code: Some(code), .. })
+                if code.as_str() == "NU1603"
+        ),
+        "{:?}",
+        graded.ours
+    );
+}
+
+/// A version folder with a `.nupkg.sha512` hash file and no `.nupkg.metadata`
+/// marker, as older NuGet clients left them: restore treats it as installed,
+/// takes it for an edge whose lower bound it spells, and writes the marker as
+/// it reads the package. The resolver reads committed packages only, so it
+/// declines on such a folder rather than take the next version. B₁ is run
+/// before B₀ here, since B₀'s restore repairs the folder. Found by review.
+#[test]
+fn a_hash_only_version_folder_declines() {
+    let mut oracle = spawn_oracle();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut legacy = Pkg::new("A", "1.0.0", vec![]);
+    legacy.hash_only = true;
+    let packages = [legacy, Pkg::new("A", "2.0.0", vec![])];
+    install(&dir.path().join("gp"), &packages);
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    let text = shape.render(dir.path());
+    let spec = parse_dgspec(&text).unwrap_or_else(|decline| panic!("{decline}"));
+    let ours = resolve_dgspec(&verified(), &spec, &project_of(&spec), &DEFAULT_ENVIRONMENT);
+    assert!(
+        matches!(
+            &ours,
+            Err(DgSpecResolveDecline::Resolve { decline, .. })
+                if matches!(
+                    decline.as_ref(),
+                    ResolveDecline::PackageRead { identity, source }
+                        if identity.id.as_str() == "A"
+                            && identity.version.to_normalized_string() == "1.0.0"
+                            && matches!(source.as_ref(), borzoi_nuget::PackageReadError::HashOnly { .. })
+                )
+        ),
+        "{ours:?}"
+    );
+    let theirs = restore(&mut oracle, &text);
+    assert!(theirs.success, "{theirs:?}");
+    assert_eq!(theirs.targets["net8.0"], set(&[("A", "1.0.0")]));
+}
+
+/// Restore finds a version's folder by its canonical path, which on a
+/// case-insensitive file system reaches a folder spelled in another case
+/// (`a/1.0.0-BETA`), and on a case-sensitive one does not. So `[1.0.0-beta, )`
+/// takes that folder as its lower bound on the first kind and the next
+/// version on the second, and `[1.0.0-alpha, )`, which no folder spells,
+/// finds it among the installed versions on the first kind only. B₁ reads
+/// the folder both ways as restore does, so the two agree on either kind of
+/// file system. Found by review.
+#[test]
+fn a_version_folder_spelled_in_another_case_counts_where_the_file_system_finds_it() {
+    let mut oracle = spawn_oracle();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let packages = [
+        Pkg::new("A", "1.0.0-beta", vec![]),
+        Pkg::new("A", "2.0.0", vec![]),
+    ];
+    install(&dir.path().join("gp"), &packages);
+    let id_dir = dir.path().join("gp").join("a");
+    fs::rename(id_dir.join("1.0.0-beta"), id_dir.join("1.0.0-BETA")).expect("rename");
+    let case_insensitive = id_dir.join("1.0.0-beta").is_dir();
+    let expected = if case_insensitive {
+        set(&[("A", "1.0.0-beta")])
+    } else {
+        set(&[("A", "2.0.0")])
+    };
+    for range in ["[1.0.0-beta, )", "[1.0.0-alpha, )"] {
+        let shape = Shape::new(vec![Framework::new("net8.0", vec![Dep::new("A", range)])]);
+        let text = shape.render(dir.path());
+        let spec = parse_dgspec(&text).unwrap_or_else(|decline| panic!("{decline}"));
+        let graded = grade_spec(&mut oracle, &text, &spec, range);
+        assert_eq!(committed(&graded)["net8.0"], expected, "{range}");
+    }
+}
+
+/// A package with the project's own name is a cycle to the root (`NU1108`):
+/// restore never enqueues the edge, and its flattening reports it.
+#[test]
+fn a_package_named_like_the_project_is_a_cycle() {
     let mut oracle = spawn_oracle();
     let packages = [Pkg::new("A", "1.0.0", vec![])];
     let mut shape = Shape::new(vec![Framework::new(
@@ -1739,11 +1945,17 @@ fn a_package_named_like_the_project_declines() {
     )]);
     shape.project_name = "a".to_owned();
     let graded = grade(&mut oracle, &packages, &shape);
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(
+        graded.theirs.codes.contains(&"NU1108".to_owned()),
+        "{:?}",
+        graded.theirs
+    );
     assert!(
         matches!(
             &graded.ours,
             Err(DgSpecResolveDecline::Resolve { decline, .. })
-                if matches!(**decline, ResolveDecline::DependencyNamesAProject { .. })
+                if matches!(**decline, ResolveDecline::DependencyCycle { .. })
         ),
         "{:?}",
         graded.ours
@@ -2252,6 +2464,10 @@ fn generate_in(rng: &mut SplitMix64, projects: Projects) -> Generated {
                         r#"{"version":2,"contentHash":"AAAA","source":"https://api.nuget.org/v3/index.json"}"#,
                     ]))
                 }
+                // A folder an older client left with the hash file alone,
+                // which restore counts and repairs and B₁ declines wherever
+                // the package is looked up.
+                13 => package.hash_only = true,
                 0 => package.min_client_version = Some(*rng.pick(&["2.12", "5.0.0", "99.0"])),
                 1 => {
                     package.package_types = vec![*rng.pick(&[
@@ -4264,33 +4480,27 @@ fn a_losing_subtrees_boundary_dependencies_are_examined() {
         "{:?}",
         graded.ours
     );
-    for minimum in [None, Some("99.0")] {
-        let graded = grade_both(&mut oracle, &packages("2.0.0", minimum), &shape);
-        assert_eq!(
-            graded.theirs.success,
-            minimum.is_none(),
-            "{:?}",
-            graded.theirs
-        );
-        assert!(
-            matches!(
-                graded.ours,
-                Err(DgSpecResolveDecline::Resolve { ref decline, .. })
-                    if matches!(**decline, ResolveDecline::LosingSubtreeContends { ref dependency, .. } if dependency.as_str() == "T")
-            ),
-            "{minimum:?}: {:?}",
-            graded.ours
-        );
-    }
+    let graded = grade_both(&mut oracle, &packages("2.0.0", None), &shape);
+    assert_eq!(committed_ids(&graded, "net8.0"), ["A", "B", "P", "Q"]);
+    let graded = grade_both(&mut oracle, &packages("2.0.0", Some("99.0")), &shape);
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PackageMetadata { ref package, .. }) if package.id.as_str() == "T"
+        ),
+        "{:?}",
+        graded.ours
+    );
 }
 
 /// A loser evicted by an edge at its own depth may be dequeued before the
 /// evicter: `A → P[1.0] → T[1.0]` and `B → P[2.0]` put both P edges at one
 /// depth, and P 1.0 is dequeued first, so T is enqueued and read, at the
-/// version its edge resolves to among what is installed. With T 1.0.0
-/// installed and demanding NuGet 99.0 the restore throws, and B₁ declines on
-/// T's metadata; with T installed only at 2.0.0, B₁ cannot name the version
-/// read, and declines whether or not T demands anything.
+/// version its edge resolves to among what is installed. With T demanding
+/// NuGet 99.0 the restore throws, and B₁ declines on T's metadata, whether
+/// the version read is the lower bound or, with T installed only at 2.0.0,
+/// the next installed version.
 #[test]
 fn a_losers_children_at_the_evicters_depth_are_examined() {
     let mut oracle = spawn_oracle();
@@ -4321,24 +4531,18 @@ fn a_losers_children_at_the_evicters_depth_are_examined() {
         "{:?}",
         graded.ours
     );
-    for minimum in [None, Some("99.0")] {
-        let graded = grade_both(&mut oracle, &packages("2.0.0", minimum), &shape);
-        assert_eq!(
-            graded.theirs.success,
-            minimum.is_none(),
-            "{:?}",
-            graded.theirs
-        );
-        assert!(
-            matches!(
-                graded.ours,
-                Err(DgSpecResolveDecline::Resolve { ref decline, .. })
-                    if matches!(**decline, ResolveDecline::LosingSubtreeContends { ref dependency, .. } if dependency.as_str() == "T")
-            ),
-            "{minimum:?}: {:?}",
-            graded.ours
-        );
-    }
+    let graded = grade_both(&mut oracle, &packages("2.0.0", None), &shape);
+    assert_eq!(committed_ids(&graded, "net8.0"), ["A", "B", "P"]);
+    let graded = grade_both(&mut oracle, &packages("2.0.0", Some("99.0")), &shape);
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PackageMetadata { ref package, .. }) if package.id.as_str() == "T"
+        ),
+        "{:?}",
+        graded.ours
+    );
 }
 
 /// B₁ over the spec at `BORZOI_DGSPEC_PATH`, printed in full: the one place
@@ -4638,6 +4842,22 @@ fn project_references_resolve_identically() {
                 )],
             ),
             &["D"],
+        ),
+        (
+            // The suppression aggregates down the project's subtree: E's own
+            // edge to A is left out too.
+            "a suppressed package is reached below the suppressing project",
+            Shape::with_projects(
+                vec![Framework::new("net8.0", vec![])],
+                vec![Project::new(
+                    "Lib",
+                    vec![Framework::new(
+                        "net8.0",
+                        vec![private_dep("A", "[1.0.0, )"), dep("E", "[1.0.0, )")],
+                    )],
+                )],
+            ),
+            &["E"],
         ),
         (
             "private assets on the entry's own reference do not",
@@ -4960,8 +5180,8 @@ fn project_reference_declines_are_graded() {
             Some(false),
         ),
         (
-            // The default engine checks every dependency for a cycle before
-            // it leaves the suppressed ones out; the legacy engine never
+            // The default engine's flattening checks every dependency for a
+            // cycle, the suppressed ones included; the legacy engine never
             // walks the edge.
             "a cycle closed by a reference with private assets",
             Shape::with_projects(
@@ -4983,7 +5203,7 @@ fn project_reference_declines_are_graded() {
                     vec![ProjectRef::private("Lib", "All")],
                 )],
             )),
-            "resolve:SuppressedCycle",
+            "resolve:DependencyCycle",
             Some(false),
         ),
         (
@@ -5121,28 +5341,6 @@ fn project_reference_declines_are_graded() {
                 vec![lib_a()],
             ),
             "resolve:DependencyNamesAProject",
-            None,
-        ),
-        (
-            "a suppressed package is reached below the suppressing project",
-            Shape::with_projects(
-                vec![Framework::new("net8.0", vec![])],
-                vec![Project::new(
-                    "Lib",
-                    vec![Framework::new(
-                        "net8.0",
-                        vec![
-                            {
-                                let mut a = dep("A", "[1.0.0, )");
-                                a.suppress_parent = Some("All");
-                                a
-                            },
-                            dep("E", "[1.0.0, )"),
-                        ],
-                    )],
-                )],
-            ),
-            "resolve:SuppressedEdgeReachable",
             None,
         ),
         (

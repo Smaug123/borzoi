@@ -49,9 +49,13 @@ The house rule ("under-resolve, never wrong") applied to restore:
   `AssemblyEnv` + the `dotnet restore` diagnostic). It must never resolve to a
   *different* closure.
 - Consequences:
-  - A non-floating version range resolves to its **lower bound** (NuGet is a
-    minimal resolver). If that exact version is not in the cache, we degrade
-    rather than substitute a nearby installed version.
+  - A non-floating version range resolves as restore's lookup does with the
+    packages folder as its only source: to the **lowest installed version
+    satisfying it** (NuGet is a minimal resolver), which is the lower bound
+    when that is installed. Whether a configured source could answer
+    differently is checked at the dgspec boundary
+    ([`check_sources`](../crates/nuget/src/dgspec/resolve.rs)), which
+    declines on a source holding the package or one restore cannot read.
   - **Floating versions** (`1.*`) resolve against feed state we can't see
     offline → always degrade.
   - Any msbuild input we couldn't evaluate confidently (an `Unsupported`
@@ -123,17 +127,15 @@ SDKs (`Sdk="Name/Version"`, `msbuild-sdks`) from, as NuGet's SDK resolver does.
   restore through `RestoreRunner`, under the legacy resolver and under the
   .NET 10 SDK's default `DependencyGraphResolver` (calibrated against real
   `dotnet restore` on 80 generated graphs, 40 of them ones the engines
-  disagree on). A closure is committed only where the default engine writes
-  it, the engine a dependency-graph spec restores under; every decline that
-  names a legacy failure is held to the legacy engine. `engines_agree`
-  declines unless every potential downgrade is of a direct reference and
-  every losing version's subtree is inert: the default engine walks a loser's
-  subtree breadth-first only until the edge that evicts it is dequeued, so a
-  loser whose evicter is no deeper than itself contributes nothing, and one
-  with a deeper evicter is read down to that depth, where nothing may demand
-  a package above what the closure settled on (`losing_subtree_is_inert`).
-  Where a loser has a subtree at all, the legacy engine may fail on it first,
-  so the walk's legacy-failure diagnoses are then reported without a claim.
+  disagree on). The contract is the default engine's, the engine a
+  dependency-graph spec restores under, and the resolver is that engine
+  reimplemented pass for pass (`resolver.rs`: breadth-first choosing with
+  evictions and restarts, then the flattening that reports cycles, conflicts
+  and downgrades), with the packages folder as restore's only source. Every
+  closure and every decline naming a restore failure is held to it; the
+  legacy engine's outcome is recorded, and pinned where the engines part
+  (`docs/nuget-dgspec-boundary-plan.md`, *The resolver is the default
+  engine*).
 - **Slice 7** — compile-asset selection (`crates/nuget/src/assets.rs`):
   `ManagedCodeConventions` restricted to the compile patterns + the nuspec
   `<references>` allow-list. Ref-beats-lib at *group* level, `lib/any` ≠

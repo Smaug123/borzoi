@@ -176,23 +176,33 @@ fn walks_transitive_dependency_groups_for_target_framework() {
     assert_eq!(package_ids(&result), ["Alpha", "Beta"]);
 }
 
+/// An edge whose lower bound is not installed resolves to the lowest installed
+/// version satisfying it, as restore's lookup does with the packages folder
+/// its only source (`resolver_diff` grades it against that restore). Whether a
+/// source could answer with the lower bound instead is the caller's question:
+/// `dgspec::resolve::check_sources` declines a source holding the package.
 #[test]
-fn exact_lower_bound_must_be_committed_even_when_higher_version_exists() {
+fn an_edge_whose_lower_bound_is_not_installed_resolves_to_the_next_installed_version() {
     let root = tempfile::tempdir().expect("root");
     write_package(root.path(), "Alpha", "2.0.0", &[]);
 
-    let err = resolve_offline(root.path(), &framework("net8.0"), &[req("Alpha", "1.0.0")])
-        .expect_err("resolver must not substitute a nearby installed version");
+    let closure = resolve_offline(root.path(), &framework("net8.0"), &[req("Alpha", "1.0.0")])
+        .expect("the next installed version satisfies the range");
 
+    assert_eq!(package_ids(&closure), ["Alpha"]);
     assert!(
-        matches!(
-            &err,
-            ResolveDecline::PackageRead { identity, source }
-                if identity.id == id("Alpha")
-                    && identity.version.eq_strict(&version("1.0.0"))
-                    && matches!(source.as_ref(), PackageReadError::NotInstalled { .. })
-        ),
-        "unexpected error: {err:?}"
+        closure.packages[0]
+            .identity
+            .version
+            .eq_strict(&version("2.0.0"))
+    );
+    assert_eq!(
+        closure
+            .examined
+            .iter()
+            .map(|identity| identity.version.to_normalized_string())
+            .collect::<Vec<_>>(),
+        ["2.0.0"]
     );
 }
 
@@ -214,8 +224,11 @@ fn uncommitted_exact_lower_bound_declines() {
     );
 }
 
+/// A floating range declines; every other range shape resolves as restore's
+/// lookup does over the packages folder, so with nothing installed an open or
+/// exclusive lower bound is a package restore cannot find (`NU1101`).
 #[test]
-fn floating_and_open_ranges_decline() {
+fn floating_ranges_decline_and_other_shapes_resolve_as_restore_does() {
     let root = tempfile::tempdir().expect("root");
 
     let floating = resolve_offline(root.path(), &framework("net8.0"), &[req("Alpha", "1.*")])
@@ -225,26 +238,33 @@ fn floating_and_open_ranges_decline() {
         "unexpected error: {floating:?}"
     );
 
-    let open = resolve_offline(
-        root.path(),
-        &framework("net8.0"),
-        &[req("Alpha", "(, 2.0]")],
-    )
-    .expect_err("open lower bounds need candidate selection");
-    assert!(
-        matches!(open, ResolveDecline::OpenLowerBound { .. }),
-        "unexpected error: {open:?}"
-    );
+    for shape in ["(, 2.0]", "(1.0, )"] {
+        let missing = resolve_offline(root.path(), &framework("net8.0"), &[req("Alpha", shape)])
+            .expect_err("nothing installed satisfies the range");
+        assert!(
+            matches!(
+                &missing,
+                ResolveDecline::PackageRead { identity, source }
+                    if identity.id == id("Alpha")
+                        && matches!(**source, borzoi_nuget::PackageReadError::NotInstalled { .. })
+            ),
+            "{shape}: unexpected error: {missing:?}"
+        );
+    }
 
-    let exclusive = resolve_offline(
+    // With a version installed above an exclusive lower bound, the edge
+    // resolves to it.
+    write_package(root.path(), "Alpha", "1.5.0", &[]);
+    let closure = resolve_offline(
         root.path(),
         &framework("net8.0"),
         &[req("Alpha", "(1.0, )")],
     )
-    .expect_err("exclusive lower bounds need candidate selection");
-    assert!(
-        matches!(exclusive, ResolveDecline::ExclusiveLowerBound { .. }),
-        "unexpected error: {exclusive:?}"
+    .expect("the next installed version satisfies the range");
+    assert_eq!(package_ids(&closure), ["Alpha"]);
+    assert_eq!(
+        closure.packages[0].identity.version.to_normalized_string(),
+        "1.5.0"
     );
 }
 

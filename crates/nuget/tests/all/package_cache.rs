@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use borzoi_nuget::{
     NuGetVersion, PackageCacheError, PackageId, PackageIdentity, PackagePaths, PackageReadError,
-    list_committed_package_versions, read_installed_package,
+    list_committed_package_versions, list_installed_package_versions, read_installed_package,
 };
 
 fn identity(id: &str, version: &str) -> PackageIdentity {
@@ -123,8 +123,15 @@ fn list_committed_package_versions_returns_sorted_committed_entries() {
     assert_eq!(entries[1].paths, second);
 }
 
+/// Restore parses every folder's name as a version and counts the version
+/// when its canonical folder is marked, so a folder spelled otherwise counts
+/// exactly where the canonical path reaches a marked folder: `1` and
+/// `1.0.0+metadata` are the version `1.0.0`, whose canonical folder exists
+/// beside them, and are one version with it; `2.0.0-BETA` is its own
+/// canonical folder on a case-insensitive file system and nothing on a
+/// case-sensitive one.
 #[test]
-fn list_committed_package_versions_requires_canonical_version_folder_spelling() {
+fn list_committed_package_versions_counts_the_folders_restore_counts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let id = PackageId::parse("FSharp.Core").expect("package id parses");
     let id_dir = temp.path().join("fsharp.core");
@@ -136,6 +143,7 @@ fn list_committed_package_versions_requires_canonical_version_folder_spelling() 
     }
     write_committed_version(temp.path(), "FSharp.Core", "1.0.0");
     write_committed_version(temp.path(), "FSharp.Core", "1.0.0-beta");
+    let case_insensitive = id_dir.join("2.0.0-beta").is_dir();
 
     let entries =
         list_committed_package_versions(temp.path(), &id).expect("list committed versions");
@@ -144,7 +152,16 @@ fn list_committed_package_versions_requires_canonical_version_folder_spelling() 
         .iter()
         .map(|entry| entry.identity.version.to_normalized_string())
         .collect::<Vec<_>>();
-    assert_eq!(versions, ["1.0.0-beta", "1.0.0"]);
+    let mut expected = vec!["1.0.0-beta", "1.0.0"];
+    if case_insensitive {
+        expected.push("2.0.0-BETA");
+    }
+    assert_eq!(versions, expected);
+    assert_eq!(
+        entries[1].paths.package_dir,
+        id_dir.join("1.0.0"),
+        "the canonically spelled folder names the version"
+    );
 }
 
 #[test]
@@ -304,4 +321,48 @@ fn read_installed_package_finds_cased_root_nuspec() {
 
     assert_eq!(package.paths.nuspec_path, cased_nuspec_path);
     assert_eq!(package.nuspec.dependency_groups.len(), 1);
+}
+
+/// A version folder holding the `.nupkg.sha512` hash file but no
+/// `.nupkg.metadata` marker, as an older NuGet client left it, is installed
+/// to restore (`LocalV3FindPackageByIdResource.DoesVersionExist` accepts
+/// either file) and uncommitted here: it is listed as installed, left out
+/// of the committed versions, and refused by the reader by name.
+#[test]
+fn a_hash_only_version_folder_is_installed_but_not_committed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let id = PackageId::parse("FSharp.Core").expect("package id parses");
+    let committed = write_committed_version(temp.path(), "FSharp.Core", "2.0.0");
+    let legacy = PackagePaths::new(temp.path(), &identity("FSharp.Core", "1.0.0"));
+    fs::create_dir_all(&legacy.package_dir).expect("package dir");
+    fs::write(&legacy.nuspec_path, nuspec_text()).expect("nuspec");
+    fs::write(&legacy.hash_path, "AAAA").expect("hash file");
+    assert_eq!(
+        legacy.hash_path.file_name().and_then(|name| name.to_str()),
+        Some("fsharp.core.1.0.0.nupkg.sha512")
+    );
+
+    let installed =
+        list_installed_package_versions(temp.path(), &id).expect("list installed versions");
+    assert_eq!(
+        installed
+            .iter()
+            .map(|version| (
+                version.identity.version.to_normalized_string(),
+                version.committed
+            ))
+            .collect::<Vec<_>>(),
+        [("1.0.0".to_owned(), false), ("2.0.0".to_owned(), true)]
+    );
+    let committed_versions =
+        list_committed_package_versions(temp.path(), &id).expect("list committed versions");
+    assert_eq!(committed_versions.len(), 1);
+    assert_eq!(committed_versions[0].paths, committed);
+
+    let error = read_installed_package(temp.path(), identity("FSharp.Core", "1.0.0"))
+        .expect_err("a hash-only folder is not read");
+    assert!(
+        matches!(error, PackageReadError::HashOnly { .. }),
+        "unexpected error: {error:?}"
+    );
 }

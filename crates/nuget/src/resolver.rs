@@ -6,104 +6,92 @@
 //!
 //! # The algorithm
 //!
-//! This is NuGet's `PackageReference` resolution as the legacy dependency
-//! resolver does it — `RemoteDependencyWalker` plus `GraphOperations.Analyze`,
-//! which `dotnet restore` runs under `RestoreUseLegacyDependencyResolver` —
-//! restricted to what a warm cache can answer, and further restricted to the
-//! graphs on which the .NET 10 SDK's default resolver (`DependencyGraphResolver`)
-//! writes the same closure (see *Correctness envelope*). Three rules, in NuGet's
-//! terms:
+//! This is NuGet's default dependency resolver, the .NET 10 SDK's
+//! `DependencyGraphResolver` (`NuGet.Commands`), which `dotnet restore` runs for
+//! a `PackageReference` project unless the `RestoreUseLegacyDependencyResolver`
+//! key selects the old walker. It is reimplemented pass for pass, with the
+//! packages folder standing in for every source restore would consult (see
+//! *What restore reads*):
 //!
-//! - **Nearest wins.** A dependency edge is *eclipsed* when an ancestor already
-//!   depends on the same package with a range whose lower bound is at least as
-//!   high: the deeper edge is dropped outright, not merged. This is what makes a
-//!   direct `PackageReference` override a transitive one.
-//! - **Cousins merge upward.** When two edges reach the same package from
-//!   neither-is-an-ancestor-of-the-other positions, both survive and the
-//!   *highest* selected version wins.
-//! - **A nearer-but-lower edge is a downgrade.** If the eclipsing ancestor's
-//!   range is *lower* than the deeper one, the deeper edge is dropped as
-//!   *potentially* downgraded, and a second pass decides: it is held to the
-//!   ancestor edge on that package that *survived* the walk (not the declared
-//!   one that marked it), and restore reports NU1605 and fails only if that
-//!   edge is lower, resolves outside the deeper range, and is the accepted
-//!   version (`downgrade_is_relevant`).
+//! 1. **Choosing** (`ResolveDependencyGraphItemsAsync`, `Engine::choose`).
+//!    An *item* is one dependency edge: a package name, a version range, and
+//!    the path of edges from the project down to the edge's parent, each edge
+//!    identified by its name and range (`RangeIndex`). Items are processed
+//!    breadth-first from the project's own references. The first item of a
+//!    name is *chosen*; a later item to a chosen name is skipped when the
+//!    chosen range is at least as high (by lower bound), *evicts* the chosen
+//!    item when it demands more, and at precisely the chosen range replaces
+//!    the chosen item with its own path unless the two paths share a prefix.
+//!    A direct package reference is never evicted. An eviction is keyed by the
+//!    evicted item's range, so every item at that range is skipped from then
+//!    on; it starts the whole pass over when a chosen item descends from the
+//!    evictee, and an evictee's own evictions go with it. An item skipped as
+//!    lower records the parent it came from as *eclipsed*, which from then on
+//!    protects the chosen item from demands below that parent.
+//!    `PrivateAssets="All"` suppressions aggregate down the subtree, a
+//!    transitive edge to a direct package reference is never enqueued, and an
+//!    edge to a name already chosen at that very range is not enqueued again.
+//! 2. **Flattening** (`CreateRestoreTargetGraphAsync`, `Engine::flatten`).
+//!    The chosen items are walked again, breadth-first by name, over every
+//!    dependency they declare: a dependency named like its parent or the
+//!    project, or whose range lies on the parent's path, is a cycle (NU1108);
+//!    a second visit to a name whose edge demands more than the chosen range
+//!    is a downgrade (NU1605, an error under the SDK's default
+//!    `WarningsAsErrors`) unless the chosen version satisfies it, a
+//!    suppression covers it, or an eclipsed parent does; a first visit whose
+//!    range the chosen version does not satisfy is a version conflict
+//!    (NU1107). Restore reports cycles before conflicts before downgrades, and
+//!    the decline here names the one it reports. The closure is the chosen
+//!    packages the flattening reaches.
 //!
-//! # What the losers cost us
+//! # What restore reads
 //!
-//! NuGet resolves each edge against a *feed* — the lowest published version
-//! satisfying the range — and then rejects the losers. Offline we have no feed,
-//! which is why slice 6a declined on every conflict.
-//!
-//! Most of that turns out to be unnecessary. Write `lb(R)` for a range's lower
-//! bound and `v(R)` for the version restore picks. For any surviving edge
-//! `lb(R) ≤ v(R)`; and if the winning version `W` satisfies `R` — which it must,
-//! or restore would have failed with a version conflict — then `v(R) ≤ W` too,
-//! since `W` is in the feed. So `W = max v(R) = max lb(R)`: **a package's
-//! selected version is the greatest lower bound among the edges that survive
-//! eclipsing**, and only the *winner's* bound has to be pinned down.
-//!
-//! What that argument does *not* buy — and an earlier version of this module
-//! wrongly assumed it did — is the right to ignore a losing edge entirely. A
-//! loser's subtree is rejected wholesale by restore, contributing nothing to the
-//! closure, and that much is true. But whether an edge *is* a loser depends on
-//! `v(R)`, and `v(R)` is only known when `lb(R)` is on disk: absent, the feed may
-//! have held nothing below `W`, in which case restore bumped the edge up to `W`
-//! and it is not a loser at all. The two possibilities are not
-//! interchangeable, because a bumped edge brings `W`'s dependencies along *its
-//! own path*, where the ancestors eclipse differently — so it can turn a
-//! downgrade restore fails on into a closure. Hence:
-//!
-//! - A losing edge's lower bound must be **committed** (its presence is the
-//!   proof that restore rejected it). Of its contents, its dependency list is
-//!   read (to know whether the legacy engine's verdict can be claimed), and
-//!   its subtree only as deep as the default engine walks it before evicting
-//!   it (see *Correctness envelope*).
-//! - Only the winner's occurrence of a package is ever expanded.
-//!
-//! This is exact, not a heuristic — `tests/all/resolver_diff.rs` diffs it against the
-//! genuine restore engine, and the over-resolution above is pinned there by
-//! `a_losing_path_does_not_contribute_its_winners_dependencies`.
+//! Restore starts a lookup of every edge it enqueues, chosen or not
+//! (`SourceRepositoryDependencyProvider.FindLibraryCoreAsync`): a range with
+//! an inclusive lower bound resolves to that very version when its folder is
+//! installed, and otherwise the range resolves to the lowest version
+//! satisfying it across the packages folder and the sources, a prerelease
+//! only where a bound of the range is one (`VersionRange.IsBetter`). With
+//! the packages folder its only source, every edge here resolves exactly so
+//! (`PackageCache::resolve`), the chosen ones included: an edge whose lower
+//! bound is not installed resolves to the next installed version, and one no
+//! installed version satisfies resolves to nothing, restore's *unresolved*
+//! item, which has no dependencies and fails the restore (NU1101) if it
+//! stays in the graph. Two installed versions that compare equal but are
+//! spelled apart (`1.0.0-0` and `1.0.0--0`) are told apart by the lower
+//! bound's spelling, and where no folder spells it restore keeps whichever
+//! it enumerated first, so the resolver declines. A version folder holding
+//! the `.nupkg.sha512` hash file but no `.nupkg.metadata` marker is
+//! installed to restore, which repairs it as it reads the package, and is
+//! unreadable here, so it declines too. Whether a source could answer
+//! differently is the caller's question: `dgspec::resolve::check_sources`
+//! declines on a source holding a package restore looks up past the packages
+//! folder. Every version an edge resolves to is listed in
+//! [`ResolvedPackageClosure::examined`], since restore reads its metadata as
+//! the edge is enqueued; a chosen item is read in full, and declines on
+//! anything unreadable, because its dependencies drive the walk.
 //!
 //! # Correctness envelope
 //!
-//! Ranges must be non-floating with an inclusive lower bound (a floating range's
-//! answer lives in feed state we cannot see). The selected version must be
-//! committed on disk, as must the lower bound of any edge that loses to it.
-//! Anything the legacy engine would *fail* on — a cycle (NU1108), a conflict
-//! its conflict pass cannot settle (NU1106), a version conflict (NU1107), a
-//! relevant downgrade (NU1605) — we decline on, because a failed restore has no
-//! closure to reproduce. Settling is not a corollary of the walk: the pass
-//! marks ambiguity by package name, so it can stall on disputes whose losers
-//! are all leaves (`settle_conflicts` runs it). Those declines name the legacy
-//! engine's error; the default engine may resolve the same graph or fail it
-//! differently, so they claim nothing about it. Dependency-level
-//! `include`/`exclude` asset filters are ignored: they decide which of a
-//! package's assets flow to the project, not which packages are in the graph
-//! (`resolver_diff`'s generators attach them, and both engines agree).
-//!
-//! A closure is committed only where the **default** engine would write it,
-//! which is the engine a dependency-graph spec restores under (the spec key
-//! that selects the legacy one declines in `dgspec`). The walk is the legacy
-//! tree's winners, which the two engines agree on except in how they
-//! adjudicate potential downgrades of transitive packages, so `engines_agree`
-//! declines unless every potential downgrade is of a direct reference. A
-//! losing version's subtree is where the engines part: the legacy engine
-//! walks it before rejecting it and can fail on what it finds (cousin
-//! conflicts that each decide the other, NU1106; a cycle below the rejected
-//! version, NU1108); the default engine restarts its breadth-first walk at
-//! every eviction and walks the loser's subtree in every pass before the one
-//! that evicts it, so the subtree is held inert as a whole: readable
-//! throughout, and naming no package the closure holds
-//! (`losing_subtree_is_inert`). The closure is the
-//! default engine's, and the legacy engine's verdict is claimed only where no
-//! loser has a subtree. `tests/all/resolver_diff.rs` holds every closure to
-//! the default engine's, and every decline that names a legacy failure to the
-//! legacy engine's.
+//! Floating ranges decline: their answer lives in feed state we cannot see,
+//! and NuGet compares them by release prefix. A dependency without a range,
+//! and a package depending on a project of the graph, decline as shapes the
+//! model does not hold. Everything else is the engine's own verdict: a closure
+//! is the one the default engine writes, and a decline that names a restore
+//! failure (a cycle, a version conflict, a downgrade) is one the default engine
+//! reports. `tests/all/resolver_diff.rs` holds both to a real restore under
+//! that engine, and `dgspec_resolve_diff.rs` holds project graphs to it. The
+//! legacy engine's verdicts are recorded there, not modelled: it walks a losing
+//! version's subtree before rejecting it and can fail on what it finds (a
+//! cycle below a rejected version, cousin conflicts its conflict pass cannot
+//! settle), and it adjudicates a potential downgrade against its ancestors'
+//! edges where the default engine adjudicates against what it chose.
+//! Dependency-level `include`/`exclude` asset filters decide which assets flow,
+//! not which packages are in the graph, and are ignored.
 
 use crate::{
-    FloatBehavior, InstalledPackage, NuGetFramework, NuGetVersion, PackageCacheError, PackageId,
-    PackageIdentity, PackagePaths, PackageReadError, VersionRange, list_committed_package_versions,
+    InstalledPackage, NuGetFramework, NuGetVersion, PackageCacheError, PackageId, PackageIdentity,
+    PackagePaths, PackageReadError, VersionRange, list_installed_package_versions,
     read_installed_package,
 };
 
@@ -111,16 +99,15 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
+use std::rc::Rc;
 
-/// The walk is a *tree*, so a pathological graph can blow it up exponentially.
-/// NuGet has the same shape and the same exposure; we bound it and decline
-/// rather than hang. Real closures are orders of magnitude below this.
-const MAX_NODES: usize = 20_000;
-
-/// Selected versions only ever rise as edges are discovered, so the fixpoint
-/// converges in a handful of rounds; the bound is a backstop against a cycle of
-/// eclipse decisions we have not thought of, not a real limit.
-const MAX_ROUNDS: usize = 64;
+/// The engine processes one item per dependency edge, and a package reached by
+/// several cousin paths at one range is chosen again for each (its children
+/// enqueued again each time), so a diamond-heavy graph grows the queue
+/// exponentially; NuGet has the same exposure. The number of items enqueued,
+/// across every pass, is bounded, and a graph past the bound declines rather
+/// than hangs. Real closures are orders of magnitude below it.
+const MAX_ITEMS: usize = 200_000;
 
 /// One direct package input after the caller has evaluated project files,
 /// Central Package Management, and package-reference metadata.
@@ -153,11 +140,12 @@ pub struct ProjectEdge {
     /// For a project reference, `[version, )` of the referenced project.
     pub range: VersionRange,
     pub target: EdgeTarget,
-    /// Whether restore leaves the edge out when it reaches the project as a
-    /// reference: `PrivateAssets="All"`, or the project's own prune list
-    /// covers it. Both engines skip it there; the legacy one still counts it
-    /// as a sibling when asking whether an ancestor eclipses a deeper edge.
-    /// The root project's edges are walked whatever this says.
+    /// Whether the edge's assets stop at the project (`PrivateAssets="All"`,
+    /// or the project's own prune list covers it): NuGet's
+    /// `SuppressParent == All`. A referenced project's such edge is left out
+    /// of the walk, and the name stays suppressed throughout its subtree; the
+    /// root project's edges are walked whatever this says, and the flag then
+    /// only exempts the edge from the downgrade and conflict checks.
     pub suppressed: bool,
 }
 
@@ -190,10 +178,10 @@ pub struct ProjectNode {
 /// every project a chain of references from it reaches.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectGraph {
-    /// The root project's name, when it is a package id: NuGet fails a
-    /// restore whose graph has an edge of that name (`NU1108`, a cycle to
-    /// the root), so no edge may carry it. A root named outside the package
-    /// id vocabulary is `None`, since no edge can carry such a name.
+    /// The root project's name, when it is a package id: a dependency of that
+    /// name anywhere in the graph is a cycle to the root (`NU1108`) if the
+    /// flattening reaches it. A root named outside the package id vocabulary
+    /// is `None`, since no edge can carry such a name.
     pub root: Option<PackageId>,
     /// The root project's edges.
     pub direct: Vec<ProjectEdge>,
@@ -231,10 +219,12 @@ impl ProjectGraph {
         self.project(id).is_some()
     }
 
-    /// Whether `id` names a project restore knows: one of the graph, the root,
-    /// or one of the spec's others. No package edge may carry such a name.
-    fn is_project_name(&self, id: &PackageId) -> bool {
-        self.is_project(id) || self.root.as_ref() == Some(id) || self.other_projects.contains(id)
+    /// Whether `id` names a referenced project restore knows: one of the
+    /// graph, or one of the spec's others. No package edge may carry such a
+    /// name. (The root's own name is not one: a dependency carrying it is a
+    /// cycle, which the engine reports.)
+    fn names_a_project(&self, id: &PackageId) -> bool {
+        self.is_project(id) || self.other_projects.contains(id)
     }
 
     /// Every package edge of the graph, the root's and each project's.
@@ -246,11 +236,11 @@ impl ProjectGraph {
             .map(|edge| (&edge.id, &edge.range))
     }
 
-    /// The shapes the walk cannot model, checked before it: a project named
+    /// The shapes the engine cannot model, checked before it: a project named
     /// twice, a project reference to no project of the graph, and a package
-    /// reference named like a project (NuGet lets a project override a
-    /// same-named package in the same list, and otherwise chooses between
-    /// them by rules the two engines state differently).
+    /// reference named like a referenced project (NuGet lets a project
+    /// override a same-named package in the same list, and otherwise chooses
+    /// between them by type-constraint rules this does not model).
     fn check(&self) -> Result<(), ResolveDecline> {
         let mut names = BTreeSet::new();
         for project in &self.projects {
@@ -266,18 +256,14 @@ impl ProjectGraph {
             .chain(self.projects.iter().flat_map(|project| &project.edges));
         for edge in edges {
             match edge.target {
-                // A reference back to the root: restore fails (`NU1108`).
-                EdgeTarget::Project if self.root.as_ref() == Some(&edge.id) => {
-                    return Err(ResolveDecline::DependencyCycle {
-                        cycle: vec![edge.id.clone()],
-                    });
-                }
-                EdgeTarget::Project if !self.is_project(&edge.id) => {
+                EdgeTarget::Project
+                    if !self.is_project(&edge.id) && self.root.as_ref() != Some(&edge.id) =>
+                {
                     return Err(ResolveDecline::UnknownProject {
                         name: edge.id.clone(),
                     });
                 }
-                EdgeTarget::Package if self.is_project_name(&edge.id) => {
+                EdgeTarget::Package if self.names_a_project(&edge.id) => {
                     return Err(ResolveDecline::DependencyNamesAProject {
                         package: None,
                         project: edge.id.clone(),
@@ -297,18 +283,35 @@ pub struct ResolvedPackage {
     pub paths: PackagePaths,
 }
 
+/// A package of the final graph as restore records it (`ResolvedDependencyKey`,
+/// made when the flattening first meets the package): the range of the item
+/// chosen for it, which is the edge that chose it, and the version it
+/// resolved to. Restore judges its lower-bound warnings on these (`NU1602`, a
+/// range without an inclusive lower bound; `NU1603`, a lower bound that is not
+/// installed, so the package resolved above it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedDependency {
+    pub id: PackageId,
+    /// The chosen item's range.
+    pub range: VersionRange,
+    pub version: NuGetVersion,
+}
+
 /// The resolved package closure, sorted by package id for deterministic output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPackageClosure {
     pub packages: Vec<ResolvedPackage>,
-    /// Every installed version restore may read while resolving this closure,
-    /// sorted: each version the walk read, and the version each dependency
-    /// they declare, and each direct requirement, resolves to among the
-    /// installed versions (the lowest that satisfies it), where there is one.
-    /// Restore starts a read of every edge it enqueues, whether or not its
-    /// package is already chosen, and the edges of a loser's subtree among
-    /// them, so a caller that must know restore accepts every package it
-    /// reads checks these.
+    /// Each package of the closure as restore records it, in the order the
+    /// flattening first met them.
+    pub resolved_dependencies: Vec<ResolvedDependency>,
+    /// Every installed version restore reads while resolving this closure,
+    /// sorted: for every edge the engine enqueues, in every pass, the
+    /// installed version the edge resolves to (the lowest satisfying it, a
+    /// prerelease only where a bound of the range is one), where there is
+    /// one. Restore reads a package's metadata as it enqueues the edge,
+    /// whether or not the edge's package is already chosen and whether or not
+    /// the item is ever dequeued, so a caller that must know restore accepts
+    /// every package it reads checks these.
     pub examined: Vec<PackageIdentity>,
 }
 
@@ -318,46 +321,37 @@ pub enum ResolveDecline {
     UnsupportedProjectFramework {
         framework: NuGetFramework,
     },
+    /// An edge of the graph floats. A float resolves against feed state we
+    /// cannot see, and NuGet compares it by its release prefix.
     FloatingRange {
         id: PackageId,
         range: Box<VersionRange>,
     },
-    OpenLowerBound {
-        id: PackageId,
-        range: Box<VersionRange>,
-    },
-    ExclusiveLowerBound {
-        id: PackageId,
-        range: Box<VersionRange>,
-    },
-    UnsatisfiedLowerBound {
-        id: PackageId,
-        range: Box<VersionRange>,
-        version: Box<NuGetVersion>,
-    },
+    /// A package the engine chose could not be read, a version folder restore
+    /// treats as installed is not committed
+    /// ([`PackageReadError::HashOnly`]), or a package no installed version
+    /// satisfies stayed in the graph (restore fails on it, `NU1101`).
     PackageRead {
         identity: PackageIdentity,
         source: Box<PackageReadError>,
     },
-    /// The legacy restore engine fails with NU1107: a surviving edge's range
-    /// does not accept the version the graph settled on. The default engine
-    /// may resolve the graph, or fail it differently.
+    /// Two or more installed versions of `id` compare equal, none is the
+    /// range's inclusive lower bound by spelling, and the range resolves to
+    /// one of them: restore keeps whichever the folder enumerated first.
+    EquivalentVersions {
+        id: PackageId,
+        range: Box<VersionRange>,
+        versions: Vec<NuGetVersion>,
+    },
+    /// Restore fails with NU1107: the first edge its flattening meets for a
+    /// package does not accept the version the engine chose.
     VersionConflict {
         id: PackageId,
         selected: Box<NuGetVersion>,
         range: Box<VersionRange>,
     },
-    /// The legacy restore engine fails with NU1106: its conflict pass cannot
-    /// settle these packages. It marks ambiguity by package *name*, so cousin
-    /// disputes that each have a node of the other's name beneath them block
-    /// one another for ever, even when every losing version is a leaf. The
-    /// default engine may resolve the graph, or fail it differently.
-    UndecidedConflict {
-        ids: Vec<PackageId>,
-    },
-    /// The legacy restore engine fails with NU1605: a nearer edge pinned the
-    /// package below what a deeper one needs. The default engine may resolve the
-    /// graph, or fail it differently.
+    /// Restore fails with NU1605: an edge demands more than the version the
+    /// engine chose for the package, which a nearer edge settled.
     Downgrade {
         id: PackageId,
         selected: Box<NuGetVersion>,
@@ -367,48 +361,14 @@ pub enum ResolveDecline {
         package: PackageIdentity,
         dependency: PackageId,
     },
-    /// A package's selected dependency group names one package more than once
-    /// (ignoring case). NuGet keeps every such edge, so the walk's one edge per
-    /// package does not model it; with different lower bounds, restore reads the
-    /// lower one as pinning the package below the higher one's demand (NU1605).
-    DuplicateDependency {
-        package: PackageIdentity,
-        dependency: PackageId,
-    },
-    /// The legacy restore engine fails with NU1108. The default engine may resolve
-    /// the graph, or fail it differently.
+    /// Restore fails with NU1108: a dependency names its own parent, the root
+    /// project, or a package on the path that reached its parent.
     DependencyCycle {
         cycle: Vec<PackageId>,
     },
-    /// An edge asks for a *lower* version than the graph settled on, and that
-    /// lower version is not on disk — so we cannot tell whether restore rejected
-    /// the edge (resolving it against a feed version below the winner) or bumped
-    /// it up to the winner itself. The two differ: a rejected edge contributes
-    /// nothing, while a bumped one contributes the winner's dependencies *along
-    /// its own path*, where the ancestors eclipse differently.
-    UnresolvableLosingEdge {
-        id: PackageId,
-        range: Box<VersionRange>,
-        selected: Box<NuGetVersion>,
-    },
-    /// Whether an edge is eclipsed turned on a floating range, which NuGet
-    /// compares by its release prefix and we do not model. A float that
-    /// survives the walk declines as [`ResolveDecline::FloatingRange`]; this
-    /// is one that only took part in an ancestor comparison.
-    FloatingRangeComparison {
-        id: PackageId,
-        range: Box<VersionRange>,
-    },
-    /// A potential downgrade of a package that is not a direct reference, which
-    /// the two restore engines adjudicate differently. See `engines_agree`.
-    TransitivePotentialDowngrade {
-        id: PackageId,
-        range: Box<VersionRange>,
-    },
-    /// The dependency tree grew past the resolver's node bound, or the selected
-    /// versions did not settle within its round bound. A pathological graph can
-    /// blow the walk up exponentially — NuGet has the same exposure — so it is
-    /// bounded, and declines rather than hangs.
+    /// The engine enqueued more items than the resolver's bound. A diamond-heavy
+    /// graph can grow the queue exponentially — NuGet has the same exposure —
+    /// so it is bounded, and declines rather than hangs.
     GraphTooLarge,
     /// Two projects of the graph share a name (ignoring case), which is a
     /// project's identity in NuGet's graph.
@@ -421,50 +381,11 @@ pub enum ResolveDecline {
         name: PackageId,
     },
     /// A package reference, or a dependency of `package` (a package of the
-    /// graph), names a project of the graph, or the root. NuGet chooses a
-    /// project over a package by rules the two engines state differently,
-    /// and fails on an edge named like the root (`NU1108`); neither is
-    /// modelled.
+    /// graph), names a referenced project. NuGet chooses a project over a
+    /// package by type-constraint rules this does not model.
     DependencyNamesAProject {
         package: Option<PackageIdentity>,
         project: PackageId,
-    },
-    /// The walk's winners show a failure the legacy engine reports (a cycle,
-    /// an unsettled conflict pass, a version conflict, a downgrade), but
-    /// `loser` loses its conflict with a subtree the legacy engine walks
-    /// before rejecting it and may fail on first, so which failure it reports
-    /// is not known. Nothing is claimed; the default engine may fail the graph
-    /// too, or resolve it.
-    LegacyVerdictUnknown {
-        loser: Box<PackageIdentity>,
-    },
-    /// The default engine walks `loser`'s subtree before evicting it, and
-    /// there `dependency` is demanded: a package the closure holds (at
-    /// `selected`), whose state in the engine is then not the winners' alone,
-    /// or one in a shape not modelled, a version restore resolves the edge to
-    /// that the walk cannot name among them. See `losing_subtree_is_inert`.
-    LosingSubtreeContends {
-        loser: Box<PackageIdentity>,
-        dependency: PackageId,
-        selected: Option<Box<NuGetVersion>>,
-    },
-    /// A referenced project leaves `id` out (`PrivateAssets="All"`, or its
-    /// prune list), and `id` names the project itself, one of its ancestors
-    /// or the root. The default engine checks every dependency for a cycle
-    /// before it leaves any out, and fails (`NU1108`); the legacy engine never
-    /// walks the edge, and may succeed.
-    SuppressedCycle {
-        project: PackageId,
-        id: PackageId,
-    },
-    /// A referenced project leaves `id` out (`PrivateAssets="All"`, or its
-    /// prune list), and a node below that project depends on `id`. The
-    /// default engine leaves every such edge out too, down the whole subtree;
-    /// the legacy engine walks it, eclipsed or not by the suppressed sibling.
-    /// Where they agree is not modelled.
-    SuppressedEdgeReachable {
-        project: PackageId,
-        id: PackageId,
     },
 }
 
@@ -481,18 +402,6 @@ impl fmt::Display for ResolveDecline {
             ResolveDecline::FloatingRange { id, range } => {
                 write!(f, "package {id} has floating range {range}")
             }
-            ResolveDecline::OpenLowerBound { id, range } => {
-                write!(f, "package {id} has no lower bound in range {range}")
-            }
-            ResolveDecline::ExclusiveLowerBound { id, range } => {
-                write!(f, "package {id} has exclusive lower bound in range {range}")
-            }
-            ResolveDecline::UnsatisfiedLowerBound { id, range, version } => {
-                write!(
-                    f,
-                    "lower-bound version {version} for package {id} does not satisfy {range}"
-                )
-            }
             ResolveDecline::PackageRead { identity, source } => {
                 write!(
                     f,
@@ -507,20 +416,8 @@ impl fmt::Display for ResolveDecline {
             } => {
                 write!(
                     f,
-                    "package {id} settled on version {selected}, which does not satisfy {range} \
-                     (the legacy restore engine fails with NU1107)"
-                )
-            }
-            ResolveDecline::UndecidedConflict { ids } => {
-                let ids = ids
-                    .iter()
-                    .map(PackageId::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(
-                    f,
-                    "the conflicts over {ids} each leave the other ambiguous (the legacy restore \
-                     engine fails with NU1106)"
+                    "package {id} resolved to version {selected}, which does not satisfy {range} \
+                     (restore fails with NU1107)"
                 )
             }
             ResolveDecline::Downgrade {
@@ -531,7 +428,24 @@ impl fmt::Display for ResolveDecline {
                 write!(
                     f,
                     "package {id} is pinned to {selected} by a nearer dependency, below the \
-                     {required} a deeper one needs (the legacy restore engine fails with NU1605)"
+                     {required} a deeper one needs (restore fails with NU1605)"
+                )
+            }
+            ResolveDecline::EquivalentVersions {
+                id,
+                range,
+                versions,
+            } => {
+                let versions = versions
+                    .iter()
+                    .map(NuGetVersion::to_normalized_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    f,
+                    "the installed versions {versions} of package {id} compare equal, and which \
+                     of them restore resolves {range} to depends on the folder's enumeration \
+                     order"
                 )
             }
             ResolveDecline::DependencyWithoutRange {
@@ -544,50 +458,19 @@ impl fmt::Display for ResolveDecline {
                     package.id, package.version
                 )
             }
-            ResolveDecline::DuplicateDependency {
-                package,
-                dependency,
-            } => {
-                write!(
-                    f,
-                    "package {} {} names dependency {dependency} more than once",
-                    package.id, package.version
-                )
-            }
             ResolveDecline::DependencyCycle { cycle } => {
                 let path = cycle
                     .iter()
                     .map(PackageId::as_str)
                     .collect::<Vec<_>>()
                     .join(" -> ");
-                write!(f, "dependency cycle detected: {path}")
-            }
-            ResolveDecline::UnresolvableLosingEdge {
-                id,
-                range,
-                selected,
-            } => {
                 write!(
                     f,
-                    "package {id} settled on {selected}, but the lower bound of the losing edge                      {range} is not on disk, so we cannot tell what restore resolved it to"
-                )
-            }
-            ResolveDecline::FloatingRangeComparison { id, range } => {
-                write!(
-                    f,
-                    "whether the edge {id} {range} is eclipsed turns on a floating range, which \
-                     NuGet compares by its release prefix"
-                )
-            }
-            ResolveDecline::TransitivePotentialDowngrade { id, range } => {
-                write!(
-                    f,
-                    "a nearer dependency may downgrade package {id} below {range}, which the \
-                     restore engines adjudicate differently"
+                    "dependency cycle detected: {path} (restore fails with NU1108)"
                 )
             }
             ResolveDecline::GraphTooLarge => {
-                f.write_str("dependency graph did not settle within the resolver's bounds")
+                f.write_str("dependency graph grew past the resolver's bounds")
             }
             ResolveDecline::DuplicateProjectName { name } => {
                 write!(f, "two projects of the graph are named {name}")
@@ -610,46 +493,6 @@ impl fmt::Display for ResolveDecline {
                     "a package reference names {project}, the name of a project of the graph"
                 ),
             },
-            ResolveDecline::SuppressedEdgeReachable { project, id } => {
-                write!(
-                    f,
-                    "project {project} leaves its dependency {id} out, and a node below it \
-                     depends on {id}, which the restore engines treat differently"
-                )
-            }
-            ResolveDecline::LegacyVerdictUnknown { loser } => {
-                write!(
-                    f,
-                    "the graph's winners fail a restore, but package {} {} loses its conflict \
-                     with a subtree the legacy restore engine walks first, so which failure it \
-                     reports is not known",
-                    loser.id, loser.version
-                )
-            }
-            ResolveDecline::LosingSubtreeContends {
-                loser,
-                dependency,
-                selected,
-            } => {
-                write!(
-                    f,
-                    "package {} {} loses its conflict, but before the default restore engine \
-                     evicts it its subtree demands {dependency}",
-                    loser.id, loser.version
-                )?;
-                match selected {
-                    Some(selected) => write!(f, ", which the graph settled on at {selected}"),
-                    None => write!(f, " in a shape the resolver does not model"),
-                }
-            }
-            ResolveDecline::SuppressedCycle { project, id } => {
-                write!(
-                    f,
-                    "project {project} leaves its dependency {id} out, which closes a cycle \
-                     (the default restore engine fails with NU1108, the legacy one does not \
-                     walk the edge)"
-                )
-            }
         }
     }
 }
@@ -698,7 +541,7 @@ pub struct TargetContext {
     /// bound, before it walks the graph; the prune range's lower bound and the
     /// inclusivity of its upper bound play no part. A project's direct
     /// references are never pruned. This is graded against the default restore
-    /// engine only (`dgspec_resolve_diff.rs`), the one a dependency-graph spec
+    /// engine (`dgspec_resolve_diff.rs`), the one a dependency-graph spec
     /// can select.
     pub prune: Vec<(PackageId, NuGetVersion)>,
 }
@@ -768,10 +611,7 @@ pub fn resolve_offline_in(
 /// framework the caller selected, less the suppressed ones
 /// ([`ProjectEdge::suppressed`]) and the package edges the root's prune list
 /// covers; a project reference settles on the referenced project's version.
-/// The closure holds packages only. Outside the envelope where the two
-/// restore engines agree on project nodes, this declines
-/// ([`ResolveDecline::SuppressedEdgeReachable`],
-/// [`ResolveDecline::DependencyNamesAProject`]).
+/// The closure holds packages only.
 pub fn resolve_graph(
     global_packages_root: &Path,
     target_framework: &NuGetFramework,
@@ -787,1202 +627,993 @@ pub fn resolve_graph(
     }
     graph.check()?;
 
-    let mut cache = PackageCache::new(global_packages_root, target_framework, context);
-    let mut selected: BTreeMap<PackageId, NuGetVersion> = BTreeMap::new();
+    let mut engine = Engine::new(global_packages_root, target_framework, context, graph);
+    let chosen = engine.choose()?;
+    let Flattened {
+        names: flattened,
+        resolved_dependencies,
+    } = engine.flatten(&chosen)?;
 
-    for _ in 0..MAX_ROUNDS {
-        let walk = walk(graph, &selected, &mut cache)?;
-
-        if walk.selected == selected {
-            return finish(walk, graph, &mut cache);
-        }
-        selected = walk.selected;
-    }
-
-    Err(ResolveDecline::GraphTooLarge)
-}
-
-/// Turn a settled walk into a closure, having first ruled out everything restore
-/// would have failed on.
-fn finish(
-    walk: Walk,
-    graph: &ProjectGraph,
-    cache: &mut PackageCache,
-) -> Result<ResolvedPackageClosure, ResolveDecline> {
-    // Reads come first, and not merely for a tidier error. A selected version
-    // that is not committed means restore resolved that edge against a feed
-    // version we cannot see — so the version is wrong, the walk expanded that
-    // node as a *leaf*, and every conclusion drawn from the resulting tree (its
-    // cycles, its conflicts, its downgrades) is untrustworthy. Adjudicating
-    // those first would report a confident diagnosis of a graph we never saw.
-    //
-    // A project node is not a package: nothing is read for it, and it is not
-    // in the closure.
-    let package_ids = || walk.edges.keys().filter(|id| !graph.is_project(id));
-    let mut packages = Vec::with_capacity(walk.selected.len());
-    for id in package_ids() {
-        let version = walk
-            .selected
-            .get(id)
-            .expect("a demanded package is selected");
-        let identity = PackageIdentity::new(id.clone(), version.clone());
-
-        let Some(cached) = cache.get(&identity) else {
-            let source = cache
-                .take_error(&identity)
-                .expect("a package that did not read has an error");
-            return Err(ResolveDecline::PackageRead {
-                identity,
-                source: Box::new(source),
-            });
-        };
-        packages.push(ResolvedPackage {
-            identity: cached.package.identity.clone(),
-            paths: cached.package.paths.clone(),
-        });
-    }
-
-    // A dependency group naming one package twice, on any package the walk
-    // read. The walk keeps one edge per package, so it cannot say what the
-    // second edge did, wherever it sat.
-    if let Some(decline) = cache.duplicate_dependency() {
-        return Err(decline);
-    }
-
-    // A dependency shape we cannot model, on a package the graph actually
-    // settled on. (On one it rejected, restore would not have looked either.)
-    for id in package_ids() {
-        let version = walk
-            .selected
-            .get(id)
-            .expect("a demanded package is selected");
-        let identity = PackageIdentity::new(id.clone(), version.clone());
-        let key = (identity.id.clone(), identity.version_folder_name());
-        match walk.shapes.get(&key) {
-            Some(ShapeError::NoRange { dependency }) => {
-                return Err(ResolveDecline::DependencyWithoutRange {
-                    package: identity,
-                    dependency: dependency.clone(),
-                });
-            }
-            Some(ShapeError::NamesAProject { dependency }) => {
-                return Err(ResolveDecline::DependencyNamesAProject {
-                    package: Some(identity),
-                    project: dependency.clone(),
-                });
-            }
-            None => {}
-        }
-    }
-
-    // An edge below the settled version is one restore *rejects*, having
-    // resolved it against a feed version lower than the winner — which we can
-    // only know if that lower bound is on disk. If it is not, restore may
-    // instead have bumped the edge up to the winner, and a bumped edge
-    // contributes the winner's dependencies along its own path. The two answers
-    // differ, so we decline rather than pick one. (Every edge to a project
-    // settles on its one version, so none loses.)
-    for (id, ranges) in &walk.edges {
-        if graph.is_project(id) {
-            continue;
-        }
-        let selected = walk
-            .selected
-            .get(id)
-            .expect("a demanded package is selected");
-        for range in ranges {
-            let lower_bound =
-                exact_lower_bound(id, range).expect("every surviving edge has a lower bound");
-            if &lower_bound == selected {
-                continue;
-            }
-            let losing = PackageIdentity::new(id.clone(), lower_bound);
-            if !cache.is_committed(&losing)? {
-                return Err(ResolveDecline::UnresolvableLosingEdge {
-                    id: id.clone(),
-                    range: Box::new(range.clone()),
-                    selected: Box::new(selected.clone()),
-                });
-            }
-        }
-    }
-
-    // Outside this envelope the default restore engine can write another
-    // closure, so neither a closure nor a diagnosis would be trustworthy.
-    engines_agree(&walk, graph, cache)?;
-
-    // The failures below are read from the winners' tree, and name the legacy
-    // engine's error. The legacy engine walks every loser's subtree before it
-    // rejects it and can fail there first (a cycle, an unsettled conflict), so
-    // where a loser has one the failure is reported without a claim.
-    let legacy_unknown: Option<PackageIdentity> = walk.losers.iter().find_map(|loser| match cache
-        .get(&loser.identity)
-    {
-        Some(cached) if cached.dependencies.is_empty() => None,
-        _ => Some(loser.identity.clone()),
-    });
-    let legacy = |decline: ResolveDecline| match &legacy_unknown {
-        Some(loser) => ResolveDecline::LegacyVerdictUnknown {
-            loser: Box::new(loser.clone()),
-        },
-        None => decline,
-    };
-
-    if let Some(cycle) = walk.cycle {
-        return Err(legacy(ResolveDecline::DependencyCycle { cycle }));
-    }
-
-    // NU1106: the legacy conflict pass must settle every node. This comes before
-    // the conflict and downgrade checks, which both assume the winners were
-    // accepted: restore reports neither against a node it left undecided.
-    settle_conflicts(&walk).map_err(legacy)?;
-
-    // NU1107: every surviving edge must accept the version the graph settled on.
-    for (id, ranges) in &walk.edges {
-        let version = walk
-            .selected
-            .get(id)
-            .expect("a demanded package is selected");
-        for range in ranges {
-            if !range.satisfies(version) {
-                return Err(legacy(ResolveDecline::VersionConflict {
-                    id: id.clone(),
-                    selected: Box::new(version.clone()),
-                    range: Box::new(range.clone()),
-                }));
-            }
-        }
-    }
-
-    // NU1605: a nearer edge that pins the package below what a deeper one needs.
-    for downgrade in &walk.downgrades {
-        // The package left the closure altogether, so nothing pins it.
-        let Some(selected) = walk.selected.get(&downgrade.id) else {
-            continue;
-        };
-        if downgrade_is_relevant(&walk, downgrade, selected) {
-            return Err(legacy(ResolveDecline::Downgrade {
-                id: downgrade.id.clone(),
-                selected: Box::new(selected.clone()),
-                required: Box::new(downgrade.range.clone()),
-            }));
-        }
-    }
-
-    let examined = cache.examined(graph.package_edges())?;
-    Ok(ResolvedPackageClosure { packages, examined })
-}
-
-/// The envelope in which the walk's closure is the one NuGet's default
-/// dependency resolver (the .NET 10 SDK's `DependencyGraphResolver`) writes,
-/// and in which the legacy failures the walk reports (`settle_conflicts`, the
-/// cycle and downgrade checks) are read from what the walk expanded.
-///
-/// - **No eclipse verdict turns on a floating range.** NuGet compares floats by
-///   their release prefix (`RemoteDependencyWalker.IsGreaterThanOrEqualTo`),
-///   which [`is_at_least`] does not model.
-/// - **Potential downgrades are of direct references only.** The legacy engine
-///   adjudicates a potential downgrade against its ancestors' edges; the
-///   default one, against whichever version its breadth-first walk chose first
-///   and may since have evicted. They agree when the package is a direct
-///   reference, which the default engine never evicts and whose root edge
-///   settles the legacy verdict.
-/// - **Project nodes.** A dependency below a referenced project on a name the
-///   project leaves out, and a suppressed edge that closes a cycle, are where
-///   the engines walk project nodes differently ([`ResolveDecline::SuppressedEdgeReachable`],
-///   [`ResolveDecline::SuppressedCycle`]).
-///
-/// - **Every losing version's subtree is inert** ([`losing_subtree_is_inert`]):
-///   the default engine walks a loser's subtree in every pass before the one
-///   that evicts it, so every version reachable from the loser is read, and
-///   none of them names a package the closure holds.
-///
-/// The legacy engine walks every loser's subtree before rejecting it, and can
-/// fail on what it finds (NU1106, NU1108) where the default engine writes the
-/// winners' closure; the closure is the default engine's, and `finish` claims
-/// no legacy failure where a loser has a subtree.
-///
-/// This envelope is empirical: `tests/all/resolver_diff.rs` sweeps generated
-/// graphs against both engines, holds every closure to the default engine's,
-/// and holds the declines that name a legacy failure to the legacy engine's.
-fn engines_agree(
-    walk: &Walk,
-    graph: &ProjectGraph,
-    cache: &mut PackageCache,
-) -> Result<(), ResolveDecline> {
-    let is_direct = |id: &PackageId| graph.direct.iter().any(|edge| &edge.id == id);
-
-    if let Some((project, id)) = &walk.suppressed_cycle {
-        return Err(ResolveDecline::SuppressedCycle {
-            project: project.clone(),
-            id: id.clone(),
-        });
-    }
-    if let Some((project, id)) = &walk.suppressed_reachable {
-        return Err(ResolveDecline::SuppressedEdgeReachable {
-            project: project.clone(),
-            id: id.clone(),
-        });
-    }
-
-    if let Some((id, range)) = &walk.float_compared {
-        return Err(ResolveDecline::FloatingRangeComparison {
-            id: id.clone(),
-            range: Box::new(range.clone()),
-        });
-    }
-
-    if let Some(downgrade) = walk.downgrades.iter().find(|d| !is_direct(&d.id)) {
-        return Err(ResolveDecline::TransitivePotentialDowngrade {
-            id: downgrade.id.clone(),
-            range: Box::new(downgrade.range.clone()),
-        });
-    }
-
-    // Every loser occurrence of one version has the same verdict.
-    let mut checked: BTreeSet<(PackageId, String)> = BTreeSet::new();
-    for loser in &walk.losers {
-        assert!(
-            !graph.is_project(&loser.identity.id),
-            "every edge to a project settles on its one version"
-        );
-        if !checked.insert((
-            loser.identity.id.clone(),
-            loser.identity.version_folder_name(),
-        )) {
-            continue;
-        }
-        losing_subtree_is_inert(walk, graph, cache, loser)?;
-    }
-
-    Ok(())
-}
-
-/// Whether the default engine can write the winners' closure with `loser` in
-/// the graph (`DependencyGraphResolver.ResolveDependencyGraphItemsAsync`).
-///
-/// The engine walks breadth-first and starts over whenever an edge it
-/// dequeues demands more than a version it chose, recording the choice as
-/// evicted. A loser is chosen in every pass before the one in which its
-/// evicter (a surviving edge demanding more) is dequeued ahead of it, and in
-/// each of those passes some of its subtree is dequeued; how much depends on
-/// where every other eviction falls, and the walk's tree does not say, since
-/// the engine chooses a package again, deeper, when the edge that first chose
-/// it is evicted. So the subtree is held inert as a whole: every version
-/// reachable from the loser along lower bounds is read (the engine reads a
-/// package's metadata as it enqueues it, so they are versions restore may
-/// read, `PackageCache::examined`), and none of them names a package the
-/// closure holds. Then no pass through the subtree touches the engine's state
-/// about the closure's packages, and the loser goes when its evicter is
-/// dequeued. A demand there above a settled version could evict a winner
-/// first and leave the loser in the graph (the mutually dependent cousin
-/// conflicts of `resolver_diff`), and one at a settled version is coalesced
-/// onto the loser's path, with the engine's downgrade bookkeeping following
-/// (`a_losers_subtree_reaching_a_winner_at_its_version_declines`).
-///
-/// A shape the walk does not model there (no lower bound, a float, a
-/// project's name) declines, and so does a version that is not installed:
-/// restore resolves that edge against its sources, and what it reads there,
-/// if anything, the walk cannot name. Absence from the packages folder is not
-/// absence from every source, so it licenses nothing.
-fn losing_subtree_is_inert(
-    walk: &Walk,
-    graph: &ProjectGraph,
-    cache: &mut PackageCache,
-    loser: &Loser,
-) -> Result<(), ResolveDecline> {
-    let contends = |dependency: &PackageId, selected: Option<&NuGetVersion>| {
-        ResolveDecline::LosingSubtreeContends {
-            loser: Box::new(loser.identity.clone()),
-            dependency: dependency.clone(),
-            selected: selected.cloned().map(Box::new),
-        }
-    };
-    let key = |identity: &PackageIdentity| (identity.id.clone(), identity.version_folder_name());
-    let mut visited: BTreeSet<(PackageId, String)> = BTreeSet::from([key(&loser.identity)]);
-    let mut frontier: VecDeque<PackageIdentity> = VecDeque::from([loser.identity.clone()]);
-    while let Some(identity) = frontier.pop_front() {
-        // The walk checked the loser's commit marker, not its contents; every
-        // descendant is read below before it is enqueued.
-        if cache.get(&identity).is_none() {
-            return Err(match cache.take_error(&identity) {
-                Some(source) => ResolveDecline::PackageRead {
-                    identity,
-                    source: Box::new(source),
-                },
-                None => contends(&identity.id, None),
-            });
-        }
-        let cached = cache.get(&identity).expect("read just now");
-        let dependencies = cached.dependencies.clone();
-        for dependency in &dependencies {
-            if graph.is_project_name(&dependency.id) {
-                return Err(ResolveDecline::DependencyNamesAProject {
-                    package: Some(identity.clone()),
-                    project: dependency.id.clone(),
-                });
-            }
-            let range = dependency
-                .version_range
-                .as_ref()
-                .ok_or_else(|| contends(&dependency.id, None))?;
-            // An edge back to the loser's own package that its version
-            // satisfies: the loser is the chosen version while its subtree
-            // is walked, so the engine records the edge and never expands
-            // it (a cycle the legacy engine fails,
-            // `a_cycle_below_a_rejected_version_fails_legacy_restore`). It
-            // is read like every edge, at its lower bound, below.
-            let back_edge =
-                dependency.id == loser.identity.id && range.satisfies(&loser.identity.version);
-            if !back_edge && let Some(selected) = walk.selected.get(&dependency.id) {
-                return Err(contends(&dependency.id, Some(selected)));
-            }
-            let bound = exact_lower_bound(&dependency.id, range)
-                .map_err(|_| contends(&dependency.id, None))?;
-            let child = PackageIdentity::new(dependency.id.clone(), bound);
-            if !visited.insert(key(&child)) {
-                continue;
-            }
-            if visited.len() > MAX_NODES {
-                return Err(ResolveDecline::GraphTooLarge);
-            }
-            if cache.get(&child).is_none() {
-                return Err(match cache.take_error(&child) {
-                    Some(PackageReadError::NotInstalled { .. }) | None => contends(&child.id, None),
-                    Some(source) => ResolveDecline::PackageRead {
-                        identity: child,
-                        source: Box::new(source),
-                    },
-                });
-            }
-            if !back_edge {
-                frontier.push_back(child);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// NuGet's `TryResolveConflicts` gives up after this many rounds
-/// (`patience = 1000`, decremented before each round).
-const CONFLICT_PASS_ROUNDS: usize = 999;
-
-/// Where the legacy conflict pass has got to with one node.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Disposition {
-    Acceptable,
-    Accepted,
-    Rejected,
-}
-
-/// The state `WalkTreeMarkAmbiguousNodes` threads from a node to its children.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AmbiguityWalk {
-    Walking,
-    Rejected,
-    Ambiguous,
-}
-
-/// One node of the tree the legacy conflict pass sees. `id` and `version` are
-/// `None` for the synthetic root.
-struct ConflictNode<'a> {
-    id: Option<&'a PackageId>,
-    version: Option<&'a NuGetVersion>,
-    children: Vec<usize>,
-}
-
-/// `GraphOperations.TryResolveConflicts`: does the legacy engine's conflict pass
-/// settle every node of the tree, or leave some `Acceptable` and fail with
-/// NU1106?
-///
-/// "Highest version wins" is the pass's *answer* when it finishes, but it does
-/// not always finish. Each round it rejects the subtrees of rejected nodes,
-/// tracks the versions of every remaining node by name, and marks a package
-/// name *ambiguous* if any node of that name sits strictly below a node whose
-/// name is disputed (tracked at more than one version). It then accepts or
-/// rejects, top down, only nodes whose name is not ambiguous. Ambiguity is by
-/// name, not by node, so a leaf loser of Y beneath the disputed winner of X,
-/// and a leaf loser of X beneath the disputed winner of Y, block both winners
-/// for ever.
-///
-/// The tree is the walk's: every expanded node at its settled version, plus
-/// each losing edge as a leaf. That is exactly the legacy tree once its cycles
-/// and potential downgrades are removed (as `CheckCycleAndNearestWins` does
-/// before this pass), given [`engines_agree`]'s guarantee that no loser has a
-/// subtree. Every round is a function of the dispositions alone, so a round
-/// that changes none is one the pass repeats until its patience runs out.
-fn settle_conflicts(walk: &Walk) -> Result<(), ResolveDecline> {
-    let mut nodes: Vec<ConflictNode<'_>> = walk
-        .nodes
+    let mut packages: Vec<ResolvedPackage> = flattened
         .iter()
-        .map(|node| ConflictNode {
-            id: node.id.as_ref(),
-            version: node.id.as_ref().map(|id| {
-                walk.selected
-                    .get(id)
-                    .expect("an expanded node's package is selected")
+        .filter_map(|name| match &chosen[name].node.kind {
+            NodeKind::Package { package } => Some(ResolvedPackage {
+                identity: package.package.identity.clone(),
+                paths: package.package.paths.clone(),
             }),
-            children: Vec::new(),
+            NodeKind::Root | NodeKind::Project { .. } | NodeKind::Unresolved { .. } => None,
         })
         .collect();
-    for (index, node) in walk.nodes.iter().enumerate() {
-        if let Some(parent) = node.parent {
-            nodes[parent].children.push(index);
-        }
-    }
-    for loser in &walk.losers {
-        nodes.push(ConflictNode {
-            id: Some(&loser.identity.id),
-            version: Some(&loser.identity.version),
-            children: Vec::new(),
-        });
-        let index = nodes.len() - 1;
-        nodes[loser.parent].children.push(index);
-    }
-
-    let mut dispositions = vec![Disposition::Acceptable; nodes.len()];
-    for _ in 0..CONFLICT_PASS_ROUNDS {
-        if !dispositions.contains(&Disposition::Acceptable) {
-            break;
-        }
-        let before = dispositions.clone();
-        conflict_round(&nodes, &mut dispositions);
-        if dispositions == before {
-            break;
-        }
-    }
-
-    let undecided: BTreeSet<&PackageId> = nodes
-        .iter()
-        .zip(&dispositions)
-        .filter(|(_, disposition)| **disposition == Disposition::Acceptable)
-        .filter_map(|(node, _)| node.id)
-        .collect();
-    if !undecided.is_empty() {
-        return Err(ResolveDecline::UndecidedConflict {
-            ids: undecided.into_iter().cloned().collect(),
-        });
-    }
-
-    // Settled, the pass accepts exactly the walk's winners and rejects its
-    // losers: every expanded node is at its package's highest tracked version,
-    // as is every ancestor of one, and every loser is below its winner.
-    for (index, disposition) in dispositions.iter().enumerate() {
-        let expected = if index < walk.nodes.len() {
-            Disposition::Accepted
-        } else {
-            Disposition::Rejected
-        };
-        assert!(
-            *disposition == expected,
-            "a settled conflict pass accepts the winners and rejects the losers"
-        );
-    }
-    Ok(())
+    packages.sort_by(|a, b| a.identity.id.cmp(&b.identity.id));
+    Ok(ResolvedPackageClosure {
+        packages,
+        resolved_dependencies,
+        examined: engine.examined.into_values().collect(),
+    })
 }
 
-/// One round of `TryResolveConflicts`. NuGet walks each pass breadth-first, but
-/// every pass reads only what the previous one wrote, so any parent-first
-/// order gives the same result.
-fn conflict_round(nodes: &[ConflictNode<'_>], dispositions: &mut [Disposition]) {
-    // `WalkTreeRejectNodesOfRejectedNodes`: reject the subtree of every
-    // rejected node, and track the versions of everything else by name.
-    let mut tracked: BTreeMap<Option<&PackageId>, Vec<Option<&NuGetVersion>>> = BTreeMap::new();
-    let mut stack = vec![(0usize, true)];
-    while let Some((index, live)) = stack.pop() {
-        let live = live && dispositions[index] != Disposition::Rejected;
-        if live {
-            let versions = tracked.entry(nodes[index].id).or_default();
-            if !versions.contains(&nodes[index].version) {
-                versions.push(nodes[index].version);
-            }
-        } else {
-            dispositions[index] = Disposition::Rejected;
-        }
-        stack.extend(nodes[index].children.iter().map(|&child| (child, live)));
-    }
-    let disputed = |id: Option<&PackageId>| tracked.get(&id).is_some_and(|v| v.len() > 1);
+/// NuGet's `LibraryDependencyIndex`: a package name, ignoring case. The root
+/// project is [`ROOT_NAME`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct NameIndex(u32);
 
-    // `WalkTreeMarkAmbiguousNodes`: every name with a node strictly below a
-    // disputed one is ambiguous.
-    let mut ambiguous: BTreeSet<Option<&PackageId>> = BTreeSet::new();
-    let mut stack = vec![(0usize, AmbiguityWalk::Walking)];
-    while let Some((index, state)) = stack.pop() {
-        let next = if dispositions[index] == Disposition::Rejected {
-            AmbiguityWalk::Rejected
-        } else if state == AmbiguityWalk::Walking && disputed(nodes[index].id) {
-            AmbiguityWalk::Ambiguous
-        } else {
-            if state == AmbiguityWalk::Ambiguous {
-                ambiguous.insert(nodes[index].id);
-            }
-            state
-        };
-        stack.extend(nodes[index].children.iter().map(|&child| (child, next)));
-    }
+/// NuGet's `LibraryRangeIndex`: a name together with a range, so that two
+/// edges to one package at one range are one index wherever they sit. Paths
+/// and evictions are made of these. The root project is [`ROOT_RANGE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct RangeIndex(u32);
 
-    // `WalkTreeAcceptOrRejectNodes`: top down through accepted nodes, decide
-    // every unambiguous one by whether it is its name's highest version.
-    let mut stack = vec![0usize];
-    while let Some(index) = stack.pop() {
-        let node = &nodes[index];
-        if dispositions[index] == Disposition::Rejected || ambiguous.contains(&node.id) {
-            continue;
-        }
-        if dispositions[index] == Disposition::Acceptable {
-            let best = tracked[&node.id].iter().all(|known| node.version >= *known);
-            dispositions[index] = if best {
-                Disposition::Accepted
-            } else {
-                Disposition::Rejected
-            };
-        }
-        if dispositions[index] == Disposition::Accepted {
-            stack.extend(&node.children);
+const ROOT_NAME: NameIndex = NameIndex(0);
+const ROOT_RANGE: RangeIndex = RangeIndex(0);
+
+/// A range under NuGet's `VersionRangeComparer.Default`, which
+/// `LibraryRangeIndex` and `VersionRangePreciseEquals` compare by: the bounds,
+/// each under NuGet's version *identity* (`VersionComparer.Equals`, release
+/// labels as case-insensitive strings, so `1.0.0-0` and `1.0.0--0` are two
+/// bounds although they order as one), and their inclusivity. (The float,
+/// which the comparer also reads, is absent: a floating edge declines before
+/// it is interned.)
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RangeKey {
+    /// The bound's normalised spelling, lower-cased: equal exactly when the
+    /// versions are one under [`NuGetVersion::eq_strict`].
+    min: Option<String>,
+    max: Option<String>,
+    min_inclusive: bool,
+    max_inclusive: bool,
+}
+
+impl RangeKey {
+    fn of(range: &VersionRange) -> RangeKey {
+        let identity = |version: &NuGetVersion| version.to_normalized_string().to_ascii_lowercase();
+        RangeKey {
+            min: range.min_version().map(identity),
+            max: range.max_version().map(identity),
+            min_inclusive: range.is_min_inclusive(),
+            max_inclusive: range.is_max_inclusive(),
         }
     }
 }
 
-/// `GraphOperations.CheckCycleAndNearestWins` plus `IsRelevantDowngrade`: does
-/// restore fail this potentially-downgraded edge with NU1605?
-///
-/// The walk marks an edge potentially downgraded on the *nearest* ancestor that
-/// declares the same package lower. Restore's verdict is a second, separate
-/// pass, and it looks at different edges: every ancestor from the parent up to
-/// the root, at the edges that *survived* the walk there (an eclipsed edge
-/// never becomes a node, so it is not a candidate), in that order, each
-/// overriding the last. An ancestor edge at least as high as this one clears
-/// it; a lower one whose own resolved version still satisfies this range leaves
-/// the verdict as it was; any other lower one makes it a downgrade *to that
-/// edge*. And the downgrade only fails restore if that edge is accepted, which
-/// is to say it settled on the winning version.
-///
-/// The order rarely matters: an edge survives only when no ancestor above it
-/// declares the same package, so an ancestor chain holds at most one surviving
-/// edge per package unless one dependency list names a package twice. The loop
-/// follows NuGet's order regardless.
-///
-/// Every surviving edge's resolved version is its lower bound: [`finish`] has
-/// already declined if that bound is not on disk, which is the only way restore
-/// could have resolved the edge higher.
-///
-/// Neither range here floats: an eclipse comparison involving a float is
-/// [`Verdict::FloatCompared`], never a potential downgrade, and a surviving edge
-/// that floats has already declined.
-fn downgrade_is_relevant(
-    walk: &Walk,
-    downgrade: &PotentialDowngrade,
-    selected: &NuGetVersion,
-) -> bool {
-    assert!(
-        !downgrade.range.is_floating(),
-        "a floating edge is never classified as a potential downgrade"
-    );
+/// The edge's `LibraryDependencyTarget`, as far as the engine reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Constraint {
+    /// A project's `PackageReference`.
+    Package,
+    /// A nuspec dependency.
+    PackageProjectExternal,
+    /// A `ProjectReference`.
+    ExternalProject,
+}
 
-    let mut held_to: Option<NuGetVersion> = None;
-    let mut ancestor = Some(downgrade.parent);
-    while let Some(index) = ancestor {
-        for (id, range) in &walk.surviving[index] {
-            if id != &downgrade.id {
-                continue;
-            }
-            if is_at_least(range, &downgrade.range) {
-                held_to = None;
-                continue;
-            }
-            let resolved =
-                exact_lower_bound(id, range).expect("every surviving edge has a lower bound");
-            if !downgrade.range.satisfies(&resolved) {
-                held_to = Some(resolved);
-            }
-        }
-        ancestor = walk.parents[index];
+impl Constraint {
+    /// `TypeConstraintAllows(LibraryDependencyTarget.Package)`.
+    fn allows_package(self) -> bool {
+        self != Constraint::ExternalProject
     }
-
-    held_to.is_some_and(|version| &version == selected)
 }
 
-/// One node of the walked dependency tree.
-#[derive(Clone)]
-struct Node {
-    /// `None` for the synthetic root: the project itself is not a package.
-    id: Option<PackageId>,
-    parent: Option<usize>,
-    /// This node's position in its parent's dependency list. NuGet excludes
-    /// *that* dependency when asking whether the parent eclipses a candidate —
-    /// it is the edge we came down, not a sibling.
-    dep_index: usize,
-}
-
-/// A dependency a package declares in a shape we do not model.
-#[derive(Debug, Clone)]
-enum ShapeError {
-    NoRange {
-        dependency: PackageId,
-    },
-    /// The dependency names a project of the graph.
-    NamesAProject {
-        dependency: PackageId,
-    },
-}
-
-/// One edge of a node's dependency list, as the walk sees it.
+/// One dependency edge, as the engine reads it: NuGet's `LibraryDependency`
+/// with its two indices.
 #[derive(Debug, Clone)]
 struct Edge {
     id: PackageId,
     range: VersionRange,
-    /// See [`ProjectEdge::suppressed`]; always `false` for a package's.
-    suppressed: bool,
+    name: NameIndex,
+    range_index: RangeIndex,
+    constraint: Constraint,
+    /// `SuppressParent == All`; see [`ProjectEdge::suppressed`].
+    suppress_parent: bool,
 }
 
-/// What one round of the walk found.
-struct Walk {
-    /// Package id → the ranges of every edge that survived eclipsing. A package
-    /// with no surviving edge is not in the closure.
-    edges: BTreeMap<PackageId, Vec<VersionRange>>,
-    /// Package id → the greatest lower bound among those edges: the version
-    /// restore settles on.
-    selected: BTreeMap<PackageId, NuGetVersion>,
-    /// Edges dropped as potential downgrades, to be adjudicated once the
-    /// selected versions are known.
-    downgrades: Vec<PotentialDowngrade>,
-    /// Node index → its parent's index, `None` for the synthetic root.
-    parents: Vec<Option<usize>>,
-    /// Node index → the edges that survived the walk there (those classified
-    /// [`Verdict::Acceptable`]), whether or not the walk then expanded them.
-    /// These are the nodes restore's tree holds below that node, and so the
-    /// candidates its downgrade check compares against.
-    surviving: Vec<Vec<(PackageId, VersionRange)>>,
-    cycle: Option<Vec<PackageId>>,
-    /// The first edge whose eclipse verdict turned on a floating range.
-    float_compared: Option<(PackageId, VersionRange)>,
-    /// Every edge that survived the walk but lost to a higher version of its
-    /// package, so was never expanded.
-    losers: Vec<Loser>,
-    /// The walked tree, for classifying a loser's dependencies in place.
-    nodes: Vec<Node>,
-    /// Packages whose dependency list we cannot model, held rather than raised:
-    /// a version that is still moving may be one restore rejects, and restore
-    /// never looks at a rejected package's dependencies either.
-    shapes: BTreeMap<(PackageId, String), ShapeError>,
-    /// The first edge found below a project node that depends on a package
-    /// the project leaves out: `(project, package)`. See
-    /// [`ResolveDecline::SuppressedEdgeReachable`].
-    suppressed_reachable: Option<(PackageId, PackageId)>,
-    /// The first suppressed edge of a project node that names the node, an
-    /// ancestor or the root: `(project, name)`. See
-    /// [`ResolveDecline::SuppressedCycle`].
-    suppressed_cycle: Option<(PackageId, PackageId)>,
+/// NuGet's `DependencyGraphItem`: an edge queued for processing, with where it
+/// sits.
+#[derive(Clone)]
+struct Item {
+    name: NameIndex,
+    range_index: RangeIndex,
+    /// `None` for the root project.
+    edge: Option<Edge>,
+    /// The range indices of the edges from the root down to this edge's
+    /// parent: `[]` for the root, `[ROOT_RANGE]` for its children.
+    path: Rc<Vec<RangeIndex>>,
+    /// The names suppressed above this item, aggregated down from the root.
+    suppressions: Rc<BTreeSet<NameIndex>>,
+    /// A package reference of the root project, which is never evicted and
+    /// eclipses every transitive edge to its name.
+    is_root_package_reference: bool,
 }
 
-/// A surviving edge whose lower bound lost to a higher version of its package.
-struct Loser {
-    identity: PackageIdentity,
-    /// The node whose dependency this edge is.
-    parent: usize,
+impl Item {
+    fn root() -> Item {
+        Item {
+            name: ROOT_NAME,
+            range_index: ROOT_RANGE,
+            edge: None,
+            path: Rc::new(Vec::new()),
+            suppressions: Rc::new(BTreeSet::new()),
+            is_root_package_reference: false,
+        }
+    }
+
+    fn range(&self) -> Option<&VersionRange> {
+        self.edge.as_ref().map(|edge| &edge.range)
+    }
+
+    fn constraint(&self) -> Option<Constraint> {
+        self.edge.as_ref().map(|edge| edge.constraint)
+    }
+
+    fn allows_package(&self) -> bool {
+        self.constraint().is_some_and(Constraint::allows_package)
+    }
 }
 
-/// An edge the walk dropped because an ancestor declares the same package lower.
-struct PotentialDowngrade {
+/// What an item resolved to: NuGet's `GraphItem<RemoteResolveResult>`.
+struct Node {
+    kind: NodeKind,
+    dependencies: Rc<Vec<Edge>>,
+}
+
+enum NodeKind {
+    Root,
+    Project {
+        version: NuGetVersion,
+    },
+    Package {
+        package: Rc<CachedPackage>,
+    },
+    /// No installed version satisfies the range: restore's `Unresolved`
+    /// library, whose version is the range's lower bound and which has no
+    /// dependencies.
+    Unresolved {
+        version: Option<NuGetVersion>,
+    },
+}
+
+impl Node {
+    /// The resolved version (`Match.Library.Version`).
+    fn version(&self) -> Option<&NuGetVersion> {
+        match &self.kind {
+            NodeKind::Root => None,
+            NodeKind::Project { version } => Some(version),
+            NodeKind::Package { package } => Some(&package.package.identity.version),
+            NodeKind::Unresolved { version } => version.as_ref(),
+        }
+    }
+}
+
+/// NuGet's `ResolvedDependencyGraphItem`: the item chosen for a name.
+struct Chosen {
+    item: Item,
+    node: Node,
+    /// The suppression sets of the occurrences coalesced here; the first is
+    /// the chosen occurrence's own.
+    suppressions: Vec<Rc<BTreeSet<NameIndex>>>,
+    /// `ParentPathsThatHaveBeenEclipsed`: the parents of the lower items this
+    /// one eclipsed from a path sharing no prefix with its own.
+    eclipsed_parents: BTreeSet<RangeIndex>,
+}
+
+impl Chosen {
+    fn new(item: Item, node: Node, suppressions: Vec<Rc<BTreeSet<NameIndex>>>) -> Chosen {
+        Chosen {
+            item,
+            node,
+            suppressions,
+            eclipsed_parents: BTreeSet::new(),
+        }
+    }
+
+    /// Whether this item carries one empty suppression set: the shape under
+    /// which a same-range occurrence coalesces onto it.
+    fn unsuppressed(&self) -> bool {
+        self.suppressions.len() == 1 && self.suppressions[0].is_empty()
+    }
+}
+
+/// One entry of the engine's eviction table, keyed by the evicted range index.
+struct Eviction {
+    /// The evicter's path, the evicter included.
+    path: Vec<RangeIndex>,
+    /// The evicted (and evicting) name.
+    name: NameIndex,
+    /// The evicted item's constraint.
+    constraint: Constraint,
+}
+
+/// What the engine does with an item whose name is already chosen.
+enum Decision {
+    /// Drop the item.
+    Skip,
+    /// Drop the item, recording its parent as eclipsed by the chosen one.
+    Eclipse(RangeIndex),
+    /// Evict the chosen item in favour of this one.
+    Evict,
+    /// Choose this item (replacing the chosen one), with these suppressions.
+    Choose(Vec<Rc<BTreeSet<NameIndex>>>),
+}
+
+/// What the flattening reached.
+struct Flattened {
+    /// The names it visited, the root first.
+    names: Vec<NameIndex>,
+    /// See [`ResolvedPackageClosure::resolved_dependencies`].
+    resolved_dependencies: Vec<ResolvedDependency>,
+}
+
+/// A record of a downgrade the flattening found, keyed by the chosen range
+/// index of the downgraded package.
+struct DowngradeRecord {
+    /// The range index of the item whose edge demanded more.
+    from: RangeIndex,
+    /// The parent of the chosen item (the last entry of its path).
+    to_parent: RangeIndex,
+    /// The downgraded package.
+    to: NameIndex,
     id: PackageId,
-    range: VersionRange,
-    /// The node whose dependency this edge is.
-    parent: usize,
+    selected: Option<NuGetVersion>,
+    required: VersionRange,
 }
 
-/// What NuGet's `CalculateDependencyResult` says about one candidate edge.
-enum Verdict {
-    Acceptable,
-    /// An ancestor already requires this package, at least as high: nearest wins,
-    /// and the deeper edge is dropped entirely.
-    Eclipsed,
-    /// An ancestor requires this package *lower* than we do.
-    PotentiallyDowngraded,
-    Cycle,
-    /// The ancestor's edge or this one floats. NuGet then decides eclipse by the
-    /// float's release prefix, which [`is_at_least`] does not model, so the
-    /// verdict is unknown.
-    FloatCompared,
+/// `DependencyGraphResolver`, over one project graph and one packages folder.
+struct Engine<'a> {
+    graph: &'a ProjectGraph,
+    cache: PackageCache<'a>,
+    /// Name index → id; `names[0]` is the root's, if it is a package id.
+    names: Vec<Option<PackageId>>,
+    name_indices: BTreeMap<PackageId, NameIndex>,
+    /// Range index → its name and range; `ranges[0]` is the root's.
+    ranges: Vec<Option<(NameIndex, RangeKey)>>,
+    range_indices: BTreeMap<(NameIndex, RangeKey), RangeIndex>,
+    root_edges: Option<Rc<Vec<Edge>>>,
+    project_edges: BTreeMap<PackageId, Rc<Vec<Edge>>>,
+    package_edges: BTreeMap<(PackageId, String), Rc<Vec<Edge>>>,
+    /// See [`ResolvedPackageClosure::examined`].
+    examined: BTreeMap<(PackageId, String), PackageIdentity>,
+    /// Items enqueued so far, across every pass.
+    enqueued: usize,
 }
 
-fn walk(
-    graph: &ProjectGraph,
-    selected: &BTreeMap<PackageId, NuGetVersion>,
-    cache: &mut PackageCache,
-) -> Result<Walk, ResolveDecline> {
-    let mut nodes: Vec<Node> = vec![Node {
-        id: None,
-        parent: None,
-        dep_index: 0,
-    }];
-    let mut walk = Walk {
-        edges: BTreeMap::new(),
-        selected: BTreeMap::new(),
-        downgrades: Vec::new(),
-        parents: Vec::new(),
-        surviving: vec![Vec::new()],
-        cycle: None,
-        float_compared: None,
-        losers: Vec::new(),
-        nodes: Vec::new(),
-        shapes: BTreeMap::new(),
-        suppressed_reachable: None,
-        suppressed_cycle: None,
-    };
+impl<'a> Engine<'a> {
+    fn new(
+        root: &'a Path,
+        framework: &'a NuGetFramework,
+        context: &'a TargetContext,
+        graph: &'a ProjectGraph,
+    ) -> Engine<'a> {
+        let mut name_indices = BTreeMap::new();
+        if let Some(root) = &graph.root {
+            name_indices.insert(root.clone(), ROOT_NAME);
+        }
+        Engine {
+            graph,
+            cache: PackageCache::new(root, framework, context),
+            names: vec![graph.root.clone()],
+            name_indices,
+            ranges: vec![None],
+            range_indices: BTreeMap::new(),
+            root_edges: None,
+            project_edges: BTreeMap::new(),
+            package_edges: BTreeMap::new(),
+            examined: BTreeMap::new(),
+            enqueued: 0,
+        }
+    }
 
-    // Versions rise as edges are discovered, so a node expanded early in a round
-    // may be expanded at a stale version; the fixpoint in `resolve_offline`
-    // re-walks until nothing moves, and only a *settled* walk is trusted.
-    let mut current = selected.clone();
-    let mut stack = vec![0usize];
+    fn name(&mut self, id: &PackageId) -> NameIndex {
+        if let Some(index) = self.name_indices.get(id) {
+            return *index;
+        }
+        let index = NameIndex(u32::try_from(self.names.len()).expect("fewer names than u32::MAX"));
+        self.names.push(Some(id.clone()));
+        self.name_indices.insert(id.clone(), index);
+        index
+    }
 
-    while let Some(node) = stack.pop() {
-        let dependencies = node_dependencies(&nodes, node, graph, &current, cache, &mut walk)?;
-
-        for (
-            dep_index,
-            Edge {
+    /// The edge for a dependency on `id` at `range`, declining on the shapes
+    /// the engine does not model. `package` is the package declaring it, if a
+    /// package does.
+    fn intern_edge(
+        &mut self,
+        id: PackageId,
+        range: VersionRange,
+        constraint: Constraint,
+        suppress_parent: bool,
+        package: Option<&PackageIdentity>,
+    ) -> Result<Edge, ResolveDecline> {
+        if range.is_floating() {
+            return Err(ResolveDecline::FloatingRange {
                 id,
-                range,
-                suppressed,
-            },
-        ) in dependencies.iter().enumerate()
-        {
-            // A referenced project's suppressed edge is not walked; the
-            // root's are walked whatever they say. The edge stays in the list
-            // (and so in every ancestor's sibling list), as it does in NuGet.
-            if *suppressed && node != 0 {
-                if walk.suppressed_cycle.is_none() && closes_a_cycle(&nodes, node, id, graph) {
-                    let project = nodes[node].id.clone().expect("a non-root node has an id");
-                    walk.suppressed_cycle = Some((project, id.clone()));
-                }
-                continue;
-            }
-            if let Some(project) = suppressing_ancestor(&nodes, node, id, graph, &current, cache)
-                && walk.suppressed_reachable.is_none()
-            {
-                walk.suppressed_reachable = Some((project, id.clone()));
-            }
-            match classify(&nodes, node, id, range, graph, &current, cache) {
-                Verdict::Eclipsed => continue,
-                Verdict::FloatCompared => {
-                    if walk.float_compared.is_none() {
-                        walk.float_compared = Some((id.clone(), range.clone()));
-                    }
-                    continue;
-                }
-                Verdict::Cycle => {
-                    if walk.cycle.is_none() {
-                        walk.cycle = Some(cycle_path(&nodes, node, id));
-                    }
-                    continue;
-                }
-                Verdict::PotentiallyDowngraded => {
-                    walk.downgrades.push(PotentialDowngrade {
-                        id: id.clone(),
-                        range: range.clone(),
-                        parent: node,
-                    });
-                    continue;
-                }
-                Verdict::Acceptable => {}
-            }
-
-            let lower_bound = exact_lower_bound(id, range)?;
-            if current
-                .get(id)
-                .is_none_or(|existing| &lower_bound > existing)
-            {
-                current.insert(id.clone(), lower_bound.clone());
-            }
-
-            walk.edges
-                .entry(id.clone())
-                .or_default()
-                .push(range.clone());
-            walk.surviving[node].push((id.clone(), range.clone()));
-
-            // Expand *only the winner's occurrence*. A node whose lower bound is
-            // below the settled version is one restore resolves to a lower
-            // version and then rejects — subtree and all — so it contributes
-            // nothing. Expanding it at the winner's version instead (as this
-            // once did) invents dependency edges along a path restore never
-            // accepts, where the ancestors eclipse differently: an
-            // over-resolution, found by review and pinned by
-            // `a_losing_path_does_not_contribute_its_winners_dependencies`.
-            let winner = current
-                .get(id)
-                .is_some_and(|version| version == &lower_bound);
-            if !winner {
-                walk.losers.push(Loser {
-                    identity: PackageIdentity::new(id.clone(), lower_bound),
-                    parent: node,
-                });
-                continue;
-            }
-
-            if nodes.len() >= MAX_NODES {
-                return Err(ResolveDecline::GraphTooLarge);
-            }
-            nodes.push(Node {
-                id: Some(id.clone()),
-                parent: Some(node),
-                dep_index,
+                range: Box::new(range),
             });
-            walk.surviving.push(Vec::new());
-            stack.push(nodes.len() - 1);
         }
-    }
-    walk.parents = nodes.iter().map(|node| node.parent).collect();
-    walk.nodes = nodes;
-
-    // The settled version is the greatest lower bound among the *surviving
-    // edges of this round*, recomputed from scratch. Carrying the previous
-    // round's map forward would let a version that should fall — because the
-    // edge that raised it has since been eclipsed away — stay high for ever.
-    walk.selected = walk
-        .edges
-        .iter()
-        .map(|(id, ranges)| {
-            let version = ranges
-                .iter()
-                .map(|range| {
-                    exact_lower_bound(id, range).expect("every surviving edge has a lower bound")
-                })
-                .max()
-                .expect("a package in the edge map has at least one edge");
-            (id.clone(), version)
-        })
-        .collect();
-
-    Ok(walk)
-}
-
-/// The edges a project of the graph contributes, in the spec's order: the
-/// root's own, or a referenced project's less the package edges the root's
-/// prune list covers (the default engine prunes a referenced project's
-/// dependencies as it prunes a package's; stage 5 graded pruning against that
-/// engine alone). Suppressed edges stay in the list, flagged.
-fn project_edges(graph: &ProjectGraph, context: &TargetContext, project: &PackageId) -> Vec<Edge> {
-    let project = graph
-        .project(project)
-        .expect("a project node is a project of the graph");
-    project
-        .edges
-        .iter()
-        .filter(|edge| edge.target == EdgeTarget::Project || !context.covers(&edge.id, &edge.range))
-        .map(|edge| Edge {
-            id: edge.id.clone(),
-            range: edge.range.clone(),
-            suppressed: edge.suppressed,
-        })
-        .collect()
-}
-
-/// The root's edges, in the spec's order.
-fn root_edges(graph: &ProjectGraph) -> Vec<Edge> {
-    graph
-        .direct
-        .iter()
-        .map(|edge| Edge {
-            id: edge.id.clone(),
-            range: edge.range.clone(),
-            suppressed: edge.suppressed,
-        })
-        .collect()
-}
-
-/// The dependencies a node contributes, in nuspec order: the root's edges for
-/// the synthetic root, a referenced project's edges for a project node, and
-/// the selected version's dependency group for a package.
-///
-/// Nothing here is fatal. A package that will not read, or whose dependency list
-/// is in a shape we do not model, becomes a *leaf* and the problem is recorded:
-/// the version may still be moving, and restore does not look at a rejected
-/// package's dependencies either. Only [`finish`], which knows what the graph
-/// settled on, decides that a recorded problem was on the answer's path.
-fn node_dependencies(
-    nodes: &[Node],
-    node: usize,
-    graph: &ProjectGraph,
-    current: &BTreeMap<PackageId, NuGetVersion>,
-    cache: &mut PackageCache,
-    walk: &mut Walk,
-) -> Result<Vec<Edge>, ResolveDecline> {
-    let Some(id) = &nodes[node].id else {
-        return Ok(root_edges(graph));
-    };
-    if graph.is_project(id) {
-        return Ok(project_edges(graph, cache.context, id));
-    }
-
-    let version = current
-        .get(id)
-        .expect("an expanded node's package has a version")
-        .clone();
-    let identity = PackageIdentity::new(id.clone(), version);
-    let key = (identity.id.clone(), identity.version_folder_name());
-
-    let Some(cached) = cache.get(&identity) else {
-        return Ok(Vec::new());
-    };
-
-    let mut dependencies = Vec::with_capacity(cached.dependencies.len());
-    for dependency in &cached.dependencies {
-        let Some(range) = &dependency.version_range else {
-            walk.shapes.insert(
-                key,
-                ShapeError::NoRange {
-                    dependency: dependency.id.clone(),
-                },
-            );
-            return Ok(Vec::new());
+        if constraint.allows_package() && self.graph.names_a_project(&id) {
+            return Err(ResolveDecline::DependencyNamesAProject {
+                package: package.cloned(),
+                project: id,
+            });
+        }
+        let name = self.name(&id);
+        let key = RangeKey::of(&range);
+        let range_index = match self.range_indices.get(&(name, key.clone())) {
+            Some(index) => *index,
+            None => {
+                let index = RangeIndex(
+                    u32::try_from(self.ranges.len()).expect("fewer ranges than u32::MAX"),
+                );
+                self.ranges.push(Some((name, key.clone())));
+                self.range_indices.insert((name, key), index);
+                index
+            }
         };
-        if graph.is_project_name(&dependency.id) {
-            walk.shapes.insert(
-                key,
-                ShapeError::NamesAProject {
-                    dependency: dependency.id.clone(),
-                },
-            );
-            return Ok(Vec::new());
-        }
-        dependencies.push(Edge {
-            id: dependency.id.clone(),
-            range: range.clone(),
-            suppressed: false,
-        });
-    }
-    Ok(dependencies)
-}
-
-/// Whether an edge from `node` to `id` closes a cycle: `id` names `node`
-/// itself, one of its ancestors, or the root. The default engine's cycle
-/// check (`DependencyGraphResolver.CreateRestoreTargetGraphAsync`) asks this
-/// of every dependency, suppressed ones included.
-fn closes_a_cycle(nodes: &[Node], node: usize, id: &PackageId, graph: &ProjectGraph) -> bool {
-    if graph.root.as_ref() == Some(id) {
-        return true;
-    }
-    let mut current = Some(node);
-    while let Some(index) = current {
-        if nodes[index].id.as_ref() == Some(id) {
-            return true;
-        }
-        current = nodes[index].parent;
-    }
-    false
-}
-
-/// The nearest strict ancestor of `node` that is a referenced project leaving
-/// `id` out, if any: the shape the two restore engines walk differently.
-fn suppressing_ancestor(
-    nodes: &[Node],
-    node: usize,
-    id: &PackageId,
-    graph: &ProjectGraph,
-    current: &BTreeMap<PackageId, NuGetVersion>,
-    cache: &mut PackageCache,
-) -> Option<PackageId> {
-    let mut ancestor = nodes[node].parent;
-    while let Some(index) = ancestor {
-        if let Some(project) = &nodes[index].id
-            && graph.is_project(project)
-            && ancestor_dependencies(nodes, index, graph, current, cache)
-                .iter()
-                .any(|edge| edge.suppressed && &edge.id == id)
-        {
-            return Some(project.clone());
-        }
-        ancestor = nodes[index].parent;
-    }
-    None
-}
-
-/// `RemoteDependencyWalker.WalkParentsAndCalculateDependencyResult`: what an
-/// ancestor already says about this candidate.
-///
-/// The chain runs from the candidate's *parent* upward to the root. At each
-/// ancestor we ask two things: is the candidate that ancestor itself (a cycle),
-/// and does that ancestor have a *sibling* dependency on the same package — one
-/// other than the edge we came down through it?
-fn classify(
-    nodes: &[Node],
-    parent: usize,
-    id: &PackageId,
-    range: &VersionRange,
-    graph: &ProjectGraph,
-    current: &BTreeMap<PackageId, NuGetVersion>,
-    cache: &mut PackageCache,
-) -> Verdict {
-    // A package depending on itself. NuGet checks this on the node being
-    // expanded, separately from the ancestor chain.
-    if nodes[parent].id.as_ref() == Some(id) {
-        return Verdict::Cycle;
-    }
-
-    // `child` is the node we reached the current ancestor through, so its
-    // `dep_index` names the edge to exclude from that ancestor's sibling list.
-    let mut child = parent;
-    let mut ancestor = nodes[parent].parent;
-
-    while let Some(index) = ancestor {
-        if nodes[index].id.as_ref() == Some(id) {
-            return Verdict::Cycle;
-        }
-
-        let siblings = ancestor_dependencies(nodes, index, graph, current, cache);
-        for (dep_index, sibling) in siblings.iter().enumerate() {
-            if dep_index == nodes[child].dep_index {
-                continue;
-            }
-            if &sibling.id != id {
-                continue;
-            }
-            let sibling_range = &sibling.range;
-            if sibling_range.is_floating() || range.is_floating() {
-                return Verdict::FloatCompared;
-            }
-            return if is_at_least(sibling_range, range) {
-                Verdict::Eclipsed
-            } else {
-                Verdict::PotentiallyDowngraded
-            };
-        }
-
-        child = index;
-        ancestor = nodes[index].parent;
-    }
-
-    Verdict::Acceptable
-}
-
-/// An ancestor's dependency list, as the eclipse check sees it. Unlike
-/// [`node_dependencies`] this cannot fail: an unreadable ancestor simply has no
-/// siblings, and the round it belongs to is not the settled one.
-fn ancestor_dependencies(
-    nodes: &[Node],
-    node: usize,
-    graph: &ProjectGraph,
-    current: &BTreeMap<PackageId, NuGetVersion>,
-    cache: &mut PackageCache,
-) -> Vec<Edge> {
-    let Some(id) = &nodes[node].id else {
-        return root_edges(graph);
-    };
-    if graph.is_project(id) {
-        return project_edges(graph, cache.context, id);
-    }
-    let Some(version) = current.get(id) else {
-        return Vec::new();
-    };
-    let identity = PackageIdentity::new(id.clone(), version.clone());
-    let Some(cached) = cache.get(&identity) else {
-        return Vec::new();
-    };
-    cached
-        .dependencies
-        .iter()
-        .map(|dependency| Edge {
-            id: dependency.id.clone(),
-            range: dependency
-                .version_range
-                .clone()
-                .unwrap_or_else(all_versions_range),
-            suppressed: false,
+        Ok(Edge {
+            id,
+            range,
+            name,
+            range_index,
+            constraint,
+            suppress_parent,
         })
-        .collect()
+    }
+
+    fn project_edge(&mut self, edge: &ProjectEdge) -> Result<Edge, ResolveDecline> {
+        let constraint = match edge.target {
+            EdgeTarget::Package => Constraint::Package,
+            EdgeTarget::Project => Constraint::ExternalProject,
+        };
+        self.intern_edge(
+            edge.id.clone(),
+            edge.range.clone(),
+            constraint,
+            edge.suppressed,
+            None,
+        )
+    }
+
+    /// The root's edges, in the spec's order.
+    fn root_edges(&mut self) -> Result<Rc<Vec<Edge>>, ResolveDecline> {
+        if let Some(edges) = &self.root_edges {
+            return Ok(edges.clone());
+        }
+        let edges: Vec<Edge> = self
+            .graph
+            .direct
+            .iter()
+            .map(|edge| self.project_edge(edge))
+            .collect::<Result<_, _>>()?;
+        let edges = Rc::new(edges);
+        self.root_edges = Some(edges.clone());
+        Ok(edges)
+    }
+
+    /// A referenced project's edges, in the spec's order, less the package
+    /// edges the root's prune list covers (the engine prunes a referenced
+    /// project's dependencies as it prunes a package's). Suppressed edges stay
+    /// in the list, flagged.
+    fn project_edges(&mut self, project: &PackageId) -> Result<Rc<Vec<Edge>>, ResolveDecline> {
+        if let Some(edges) = self.project_edges.get(project) {
+            return Ok(edges.clone());
+        }
+        let node = self
+            .graph
+            .project(project)
+            .expect("a project item names a project of the graph");
+        let context = self.cache.context;
+        let edges: Vec<Edge> = node
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.target == EdgeTarget::Project || !context.covers(&edge.id, &edge.range)
+            })
+            .map(|edge| self.project_edge(edge))
+            .collect::<Result<_, _>>()?;
+        let edges = Rc::new(edges);
+        self.project_edges.insert(project.clone(), edges.clone());
+        Ok(edges)
+    }
+
+    /// A package version's edges: its selected dependency group, in nuspec
+    /// order, less the pruned ones.
+    fn package_edges(&mut self, package: &CachedPackage) -> Result<Rc<Vec<Edge>>, ResolveDecline> {
+        let identity = &package.package.identity;
+        let key = (identity.id.clone(), identity.version_folder_name());
+        if let Some(edges) = self.package_edges.get(&key) {
+            return Ok(edges.clone());
+        }
+        let mut edges = Vec::with_capacity(package.dependencies.len());
+        for dependency in &package.dependencies {
+            let Some(range) = &dependency.version_range else {
+                return Err(ResolveDecline::DependencyWithoutRange {
+                    package: identity.clone(),
+                    dependency: dependency.id.clone(),
+                });
+            };
+            edges.push(self.intern_edge(
+                dependency.id.clone(),
+                range.clone(),
+                Constraint::PackageProjectExternal,
+                false,
+                Some(identity),
+            )?);
+        }
+        let edges = Rc::new(edges);
+        self.package_edges.insert(key, edges.clone());
+        Ok(edges)
+    }
+
+    /// What `item` resolves to: `FindLibraryCachedAsync` with the packages
+    /// folder as the only source, then the item's dependency list.
+    fn node_of(&mut self, item: &Item) -> Result<Node, ResolveDecline> {
+        let Some(edge) = &item.edge else {
+            return Ok(Node {
+                kind: NodeKind::Root,
+                dependencies: self.root_edges()?,
+            });
+        };
+        if edge.constraint == Constraint::ExternalProject {
+            let version = self
+                .graph
+                .project(&edge.id)
+                .expect("a project item names a project of the graph")
+                .version
+                .clone();
+            return Ok(Node {
+                kind: NodeKind::Project { version },
+                dependencies: self.project_edges(&edge.id)?,
+            });
+        }
+        let Some(version) = self.cache.resolve(&edge.id, &edge.range)? else {
+            return Ok(Node {
+                kind: NodeKind::Unresolved {
+                    version: edge.range.min_version().cloned(),
+                },
+                dependencies: Rc::new(Vec::new()),
+            });
+        };
+        let package = self
+            .cache
+            .read(&PackageIdentity::new(edge.id.clone(), version))?;
+        let dependencies = self.package_edges(&package)?;
+        Ok(Node {
+            kind: NodeKind::Package { package },
+            dependencies,
+        })
+    }
+
+    /// Queue `item`, starting its read: the version its edge resolves to
+    /// among the installed ones joins the examined set.
+    fn enqueue(&mut self, queue: &mut VecDeque<Item>, item: Item) -> Result<(), ResolveDecline> {
+        self.enqueued += 1;
+        if self.enqueued > MAX_ITEMS {
+            return Err(ResolveDecline::GraphTooLarge);
+        }
+        if let Some(edge) = &item.edge
+            && edge.constraint.allows_package()
+            && let Some(version) = self.cache.resolve(&edge.id, &edge.range)?
+        {
+            let identity = PackageIdentity::new(edge.id.clone(), version);
+            self.examined.insert(
+                (identity.id.clone(), identity.version_folder_name()),
+                identity,
+            );
+        }
+        queue.push_back(item);
+        Ok(())
+    }
+
+    /// `ResolveDependencyGraphItemsAsync`: the chosen item of every name.
+    fn choose(&mut self) -> Result<BTreeMap<NameIndex, Chosen>, ResolveDecline> {
+        let mut evictions: BTreeMap<RangeIndex, Eviction> = BTreeMap::new();
+        'pass: loop {
+            let mut queue: VecDeque<Item> = VecDeque::new();
+            let mut chosen: BTreeMap<NameIndex, Chosen> = BTreeMap::new();
+            let mut direct_references: BTreeSet<NameIndex> = BTreeSet::new();
+            self.enqueue(&mut queue, Item::root())?;
+
+            while let Some(current) = queue.pop_front() {
+                let is_root = current.name == ROOT_NAME;
+
+                if let Some(eviction) = evictions.get(&current.range_index) {
+                    // An evicted nuspec dependency or project reference does
+                    // not evict a project's package reference at the same
+                    // range: that is the item the engine wants.
+                    let exempt = matches!(
+                        eviction.constraint,
+                        Constraint::PackageProjectExternal | Constraint::ExternalProject
+                    ) && current.constraint() == Some(Constraint::Package);
+                    if !exempt {
+                        continue;
+                    }
+                }
+
+                let decision = match chosen.get(&current.name) {
+                    None => Decision::Choose(vec![current.suppressions.clone()]),
+                    Some(existing) => decide(existing, &current),
+                };
+                match decision {
+                    Decision::Skip => continue,
+                    Decision::Eclipse(parent) => {
+                        chosen
+                            .get_mut(&current.name)
+                            .expect("decided against the chosen item")
+                            .eclipsed_parents
+                            .insert(parent);
+                        continue;
+                    }
+                    Decision::Evict => {
+                        let existing = chosen
+                            .remove(&current.name)
+                            .expect("decided against the chosen item");
+                        let evicted = existing.item.range_index;
+                        let mut start_over = false;
+                        // The evictee's own evictions go with it, except one
+                        // of a project-shaped item of this very name, which
+                        // stays evicted in favour of the package.
+                        let stale: Vec<RangeIndex> = evictions
+                            .iter()
+                            .filter(|(_, eviction)| {
+                                eviction.path.contains(&evicted)
+                                    && !(eviction.name == current.name
+                                        && matches!(
+                                            eviction.constraint,
+                                            Constraint::ExternalProject
+                                                | Constraint::PackageProjectExternal
+                                        ))
+                            })
+                            .map(|(key, _)| *key)
+                            .collect();
+                        if !stale.is_empty() {
+                            start_over = true;
+                            for key in stale {
+                                evictions.remove(&key);
+                            }
+                        }
+                        if chosen
+                            .values()
+                            .any(|other| other.item.path.contains(&evicted))
+                        {
+                            start_over = true;
+                        }
+                        evictions.insert(
+                            evicted,
+                            Eviction {
+                                path: extended(&current.path, current.range_index),
+                                name: current.name,
+                                constraint: existing
+                                    .item
+                                    .constraint()
+                                    .expect("the root is never evicted"),
+                            },
+                        );
+                        if start_over {
+                            continue 'pass;
+                        }
+                        let node = self.node_of(&current)?;
+                        chosen.insert(
+                            current.name,
+                            Chosen::new(current.clone(), node, vec![current.suppressions.clone()]),
+                        );
+                        queue.retain(|item| !item.path.contains(&evicted));
+                    }
+                    Decision::Choose(suppressions) => {
+                        let node = self.node_of(&current)?;
+                        chosen.insert(
+                            current.name,
+                            Chosen::new(current.clone(), node, suppressions),
+                        );
+                    }
+                }
+
+                let dependencies = chosen[&current.name].node.dependencies.clone();
+                if is_root {
+                    direct_references = dependencies
+                        .iter()
+                        .filter(|dependency| dependency.constraint.allows_package())
+                        .map(|dependency| dependency.name)
+                        .collect();
+                }
+                // The names suppressed below this item: its own suppressed
+                // dependencies (not for the root, whose every reference is
+                // walked) and everything suppressed above it.
+                let suppressions: Rc<BTreeSet<NameIndex>> = if is_root {
+                    current.suppressions.clone()
+                } else {
+                    let own: BTreeSet<NameIndex> = dependencies
+                        .iter()
+                        .filter(|dependency| dependency.suppress_parent)
+                        .map(|dependency| dependency.name)
+                        .collect();
+                    if own.is_empty() {
+                        current.suppressions.clone()
+                    } else {
+                        Rc::new(own.union(&current.suppressions).copied().collect())
+                    }
+                };
+                let path = Rc::new(extended(&current.path, current.range_index));
+                for dependency in dependencies.iter() {
+                    // A dependency named like the root project is left to the
+                    // flattening, which reports it as a cycle.
+                    if dependency.name == ROOT_NAME {
+                        continue;
+                    }
+                    let is_root_package_reference =
+                        is_root && dependency.constraint.allows_package();
+                    if suppressions.contains(&dependency.name) {
+                        continue;
+                    }
+                    if !is_root_package_reference && direct_references.contains(&dependency.name) {
+                        continue;
+                    }
+                    // Chosen already at this very range, without suppressions:
+                    // its children are in the queue.
+                    if chosen.get(&dependency.name).is_some_and(|other| {
+                        other.item.range_index == dependency.range_index && other.unsuppressed()
+                    }) {
+                        continue;
+                    }
+                    self.enqueue(
+                        &mut queue,
+                        Item {
+                            name: dependency.name,
+                            range_index: dependency.range_index,
+                            edge: Some(dependency.clone()),
+                            path: path.clone(),
+                            suppressions: suppressions.clone(),
+                            is_root_package_reference,
+                        },
+                    )?;
+                }
+            }
+            return Ok(chosen);
+        }
+    }
+
+    /// `CreateRestoreTargetGraphAsync`: walk the chosen items' dependencies
+    /// for cycles, conflicts and downgrades, and return what the walk reaches.
+    fn flatten(&self, chosen: &BTreeMap<NameIndex, Chosen>) -> Result<Flattened, ResolveDecline> {
+        let mut visited: BTreeSet<NameIndex> = BTreeSet::new();
+        // `nodesById`: the range indices a node was created for.
+        let mut nodes: BTreeSet<RangeIndex> = BTreeSet::from([ROOT_RANGE]);
+        let mut queue: VecDeque<NameIndex> = VecDeque::from([ROOT_NAME]);
+        let mut flattened: Vec<NameIndex> = Vec::new();
+        let mut resolved_dependencies: Vec<ResolvedDependency> = Vec::new();
+        let mut cycle: Option<Vec<PackageId>> = None;
+        let mut conflicts: BTreeMap<RangeIndex, (PackageId, NuGetVersion, VersionRange)> =
+            BTreeMap::new();
+        let mut downgrades: BTreeMap<RangeIndex, DowngradeRecord> = BTreeMap::new();
+        let mut unresolved: Option<(PackageId, VersionRange)> = None;
+
+        while let Some(name) = queue.pop_front() {
+            let Some(item) = chosen.get(&name) else {
+                continue;
+            };
+            flattened.push(name);
+            for edge in item.node.dependencies.iter() {
+                if edge.name == name || edge.name == ROOT_NAME {
+                    cycle.get_or_insert_with(|| self.cycle_through(item, edge, None));
+                    continue;
+                }
+                let Some(child) = chosen.get(&edge.name) else {
+                    continue;
+                };
+                if !visited.insert(edge.name) {
+                    if item.item.path.contains(&edge.range_index) {
+                        cycle.get_or_insert_with(|| {
+                            self.cycle_through(item, edge, Some(edge.range_index))
+                        });
+                        continue;
+                    }
+                    let child_range = child
+                        .item
+                        .range()
+                        .expect("a chosen item that is not the root has a range");
+                    if !is_greater_or_equal(child_range, &edge.range) {
+                        if edge.suppress_parent || item.suppressions[0].contains(&edge.name) {
+                            continue;
+                        }
+                        if child
+                            .node
+                            .version()
+                            .is_some_and(|version| edge.range.satisfies(version))
+                        {
+                            continue;
+                        }
+                        if let std::collections::btree_map::Entry::Vacant(record) =
+                            downgrades.entry(child.item.range_index)
+                        {
+                            if child
+                                .eclipsed_parents
+                                .iter()
+                                .any(|parent| item.item.path.contains(parent))
+                            {
+                                continue;
+                            }
+                            record.insert(DowngradeRecord {
+                                from: item.item.range_index,
+                                to_parent: *child
+                                    .item
+                                    .path
+                                    .last()
+                                    .expect("a chosen item that is not the root has a parent"),
+                                to: edge.name,
+                                id: edge.id.clone(),
+                                selected: child.node.version().cloned(),
+                                required: edge.range.clone(),
+                            });
+                        }
+                        continue;
+                    }
+                    if conflicts.contains_key(&child.item.range_index) {
+                        nodes.insert(edge.range_index);
+                    }
+                    continue;
+                }
+                if let NodeKind::Package { package } = &child.node.kind
+                    && !conflicts.contains_key(&child.item.range_index)
+                    && !edge.suppress_parent
+                    && !edge.range.satisfies(&package.package.identity.version)
+                    && !downgrades.contains_key(&child.item.range_index)
+                {
+                    conflicts.insert(
+                        child.item.range_index,
+                        (
+                            edge.id.clone(),
+                            package.package.identity.version.clone(),
+                            edge.range.clone(),
+                        ),
+                    );
+                    continue;
+                }
+                nodes.insert(child.item.range_index);
+                queue.push_back(edge.name);
+                if let NodeKind::Package { package } = &child.node.kind {
+                    resolved_dependencies.push(ResolvedDependency {
+                        id: package.package.identity.id.clone(),
+                        range: child
+                            .item
+                            .range()
+                            .expect("a chosen item that is not the root has a range")
+                            .clone(),
+                        version: package.package.identity.version.clone(),
+                    });
+                }
+                if let NodeKind::Unresolved { .. } = child.node.kind
+                    && unresolved.is_none()
+                {
+                    let range = child
+                        .item
+                        .range()
+                        .expect("a chosen item that is not the root has a range");
+                    unresolved = Some((edge.id.clone(), range.clone()));
+                }
+            }
+        }
+
+        // A package no installed version satisfies, in the graph: restore
+        // fails (NU1101), whatever else it reports.
+        if let Some((id, range)) = unresolved {
+            let identity = PackageIdentity::new(id, lower_bound_or_zero(&range));
+            let metadata_path = PackagePaths::new(self.cache.root, &identity).metadata_path;
+            return Err(ResolveDecline::PackageRead {
+                identity,
+                source: Box::new(PackageReadError::NotInstalled { metadata_path }),
+            });
+        }
+        if let Some(cycle) = cycle {
+            return Err(ResolveDecline::DependencyCycle { cycle });
+        }
+        for (index, (id, selected, range)) in &conflicts {
+            if nodes.contains(index) {
+                return Err(ResolveDecline::VersionConflict {
+                    id: id.clone(),
+                    selected: Box::new(selected.clone()),
+                    range: Box::new(range.clone()),
+                });
+            }
+        }
+        for downgrade in downgrades.values() {
+            if nodes.contains(&downgrade.from)
+                && nodes.contains(&downgrade.to_parent)
+                && chosen.contains_key(&downgrade.to)
+            {
+                return Err(ResolveDecline::Downgrade {
+                    id: downgrade.id.clone(),
+                    selected: Box::new(
+                        downgrade
+                            .selected
+                            .clone()
+                            .expect("a downgraded item that is in the graph resolved to a version"),
+                    ),
+                    required: Box::new(downgrade.required.clone()),
+                });
+            }
+        }
+        Ok(Flattened {
+            names: flattened,
+            resolved_dependencies,
+        })
+    }
+
+    /// The cycle an edge of `item` closes, as the ids along `item`'s path
+    /// (from `from`, when the cycle starts there), then `item`'s, then the
+    /// edge's.
+    fn cycle_through(
+        &self,
+        item: &Chosen,
+        edge: &Edge,
+        from: Option<RangeIndex>,
+    ) -> Vec<PackageId> {
+        let start = from
+            .and_then(|index| item.item.path.iter().position(|entry| *entry == index))
+            .unwrap_or(0);
+        let mut cycle: Vec<PackageId> = item.item.path[start..]
+            .iter()
+            .filter_map(|index| self.range_id(*index))
+            .collect();
+        if let Some(own) = &item.item.edge {
+            cycle.push(own.id.clone());
+        }
+        cycle.push(edge.id.clone());
+        cycle
+    }
+
+    /// The id a range index is of, if its name is a package id.
+    fn range_id(&self, index: RangeIndex) -> Option<PackageId> {
+        let (name, _) = self.ranges[index.0 as usize].as_ref()?;
+        self.names[name.0 as usize].clone()
+    }
 }
 
-fn all_versions_range() -> VersionRange {
-    VersionRange::parse("(, )").expect("literal all-versions range parses")
+/// What the engine does with `current`, whose name `existing` is chosen for.
+fn decide(existing: &Chosen, current: &Item) -> Decision {
+    // A direct package reference is chosen whatever a transitive edge says.
+    if existing.item.is_root_package_reference {
+        return Decision::Skip;
+    }
+    let existing_range = existing
+        .item
+        .range()
+        .expect("a chosen item that is not the root has a range");
+    let current_range = current
+        .range()
+        .expect("an item of a chosen name is not the root");
+
+    if !is_greater_or_equal(existing_range, current_range) {
+        // The current item demands more. Between packages, it does not evict
+        // from within the chosen item's own branch, nor from below a parent
+        // the chosen item has already eclipsed.
+        if existing.item.allows_package() && current.allows_package() {
+            if has_common_ancestor(&existing.item.path, &current.path) {
+                return Decision::Skip;
+            }
+            if existing
+                .eclipsed_parents
+                .iter()
+                .any(|parent| current.path.contains(parent))
+            {
+                return Decision::Skip;
+            }
+        }
+        return Decision::Evict;
+    }
+
+    if !precisely_equal(existing_range, current_range) {
+        // The current item is lower (or merely bounded differently above).
+        return if has_common_ancestor(&existing.item.path, &current.path) {
+            Decision::Skip
+        } else {
+            Decision::Eclipse(
+                *current
+                    .path
+                    .last()
+                    .expect("an item of a chosen name has a parent"),
+            )
+        };
+    }
+
+    // The very same range. A second occurrence from another branch replaces
+    // the chosen one, path and all, and its children are enqueued again
+    // (those already chosen at their range are not).
+    if existing.unsuppressed() && has_common_ancestor(&existing.item.path, &current.path) {
+        return Decision::Skip;
+    }
+    if current.suppressions.is_empty() {
+        return Decision::Choose(vec![current.suppressions.clone()]);
+    }
+    if existing
+        .suppressions
+        .iter()
+        .any(|suppressions| current.suppressions.is_superset(suppressions))
+    {
+        return Decision::Skip;
+    }
+    let mut suppressions = vec![current.suppressions.clone()];
+    suppressions.extend(existing.suppressions.iter().cloned());
+    Decision::Choose(suppressions)
 }
 
 /// `RemoteDependencyWalker.IsGreaterThanOrEqualTo` for non-floating ranges: is
-/// the *nearer* edge's lower bound at least the deeper one's? NuGet compares a
-/// floating range by its release prefix instead; [`classify`] reports that case
-/// as [`Verdict::FloatCompared`] rather than calling this.
-fn is_at_least(nearer: &VersionRange, deeper: &VersionRange) -> bool {
-    let Some(near_min) = nearer.min_version() else {
-        // No lower bound at all accepts everything the deeper edge could want.
-        return true;
-    };
-    let Some(deep_min) = deeper.min_version() else {
-        return false;
-    };
-    near_min >= deep_min
+/// the *nearer* range's lower bound at least the deeper one's? Inclusivity
+/// plays no part.
+fn is_greater_or_equal(near: &VersionRange, far: &VersionRange) -> bool {
+    debug_assert!(
+        !near.is_floating() && !far.is_floating(),
+        "a floating edge declines before it is compared"
+    );
+    match (near.min_version(), far.min_version()) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(near), Some(far)) => near >= far,
+    }
 }
 
-fn cycle_path(nodes: &[Node], node: usize, id: &PackageId) -> Vec<PackageId> {
-    let mut path = Vec::new();
-    let mut current = Some(node);
-    while let Some(index) = current {
-        if let Some(id) = &nodes[index].id {
-            path.push(id.clone());
-        }
-        current = nodes[index].parent;
-    }
-    path.reverse();
-
-    let start = path
-        .iter()
-        .position(|candidate| candidate == id)
-        .unwrap_or(0);
-    let mut cycle = path[start..].to_vec();
-    cycle.push(id.clone());
-    cycle
+/// `DependencyGraphResolver.VersionRangePreciseEquals`: the bounds (by
+/// NuGet's version identity) and their inclusivity (and the float, absent
+/// here) agree.
+fn precisely_equal(a: &VersionRange, b: &VersionRange) -> bool {
+    RangeKey::of(a) == RangeKey::of(b)
 }
 
-fn exact_lower_bound(id: &PackageId, range: &VersionRange) -> Result<NuGetVersion, ResolveDecline> {
-    if range.is_floating() {
-        return Err(ResolveDecline::FloatingRange {
-            id: id.clone(),
-            range: Box::new(range.clone()),
-        });
-    }
-    let Some(version) = range.min_version() else {
-        return Err(ResolveDecline::OpenLowerBound {
-            id: id.clone(),
-            range: Box::new(range.clone()),
-        });
-    };
-    if !range.is_min_inclusive() {
-        return Err(ResolveDecline::ExclusiveLowerBound {
-            id: id.clone(),
-            range: Box::new(range.clone()),
-        });
-    }
-    if !range.satisfies(version) {
-        return Err(ResolveDecline::UnsatisfiedLowerBound {
-            id: id.clone(),
-            range: Box::new(range.clone()),
-            version: Box::new(version.clone()),
-        });
-    }
-    Ok(version.clone())
+/// `DependencyGraphResolver.HasCommonAncestor`: one path is a prefix of the
+/// other.
+fn has_common_ancestor(left: &[RangeIndex], right: &[RangeIndex]) -> bool {
+    left.iter().zip(right).all(|(left, right)| left == right)
 }
 
-/// An installed package as the walk needs it: where it lives, and the
+/// `DependencyGraphItemIndexer.CreatePathToRef`.
+fn extended(path: &[RangeIndex], index: RangeIndex) -> Vec<RangeIndex> {
+    let mut extended = Vec::with_capacity(path.len() + 1);
+    extended.extend_from_slice(path);
+    extended.push(index);
+    extended
+}
+
+/// A range's lower bound, or `0.0.0` for one without: the version a decline
+/// names for an edge that resolved to nothing.
+fn lower_bound_or_zero(range: &VersionRange) -> NuGetVersion {
+    range
+        .min_version()
+        .cloned()
+        .unwrap_or_else(|| NuGetVersion::parse("0.0.0").expect("a literal version"))
+}
+
+/// An installed package as the engine needs it: where it lives, and the
 /// dependencies its nuspec declares for the project's target framework.
 struct CachedPackage {
     package: InstalledPackage,
     dependencies: Vec<crate::PackageDependency>,
 }
 
-/// Reads each installed package once, keeping the error for the ones that would
-/// not read.
-///
-/// A read failure is never raised from the walk. A version that is still moving
-/// may fail to read and then never be asked for again — that is the ordinary
-/// cousin case, where restore resolved the losing edge against a feed version it
-/// never installed. Only [`finish`], looking at the versions the graph actually
-/// settled on, decides that a failure was fatal.
+/// The packages folder, as restore's only source: which versions of each
+/// package are installed, and each package read once.
 struct PackageCache<'a> {
     root: &'a Path,
     framework: &'a NuGetFramework,
     /// Which dependencies each package contributes; see [`TargetContext`].
     context: &'a TargetContext,
-    packages: BTreeMap<(PackageId, String), Result<CachedPackage, PackageReadError>>,
+    packages: BTreeMap<(PackageId, String), Rc<CachedPackage>>,
+    installed: BTreeMap<PackageId, Vec<NuGetVersion>>,
 }
 
 impl<'a> PackageCache<'a> {
@@ -1996,162 +1627,136 @@ impl<'a> PackageCache<'a> {
             framework,
             context,
             packages: BTreeMap::new(),
+            installed: BTreeMap::new(),
         }
     }
 
-    fn entry(
+    /// The versions of `id` restore treats as installed, every one committed.
+    /// A folder that will not list declines, naming `range`'s lower bound, and
+    /// so does a version folder holding the hash file but no commit marker:
+    /// restore counts it and would repair it, and nothing here can read it.
+    fn installed(
         &mut self,
-        identity: &PackageIdentity,
-    ) -> &mut Result<CachedPackage, PackageReadError> {
-        let key = (identity.id.clone(), identity.version_folder_name());
-        if !self.packages.contains_key(&key) {
-            let entry = read_installed_package(self.root, identity.clone()).map(|package| {
-                let dependencies = self.context.dependencies(&package.nuspec, self.framework);
-                CachedPackage {
-                    package,
-                    dependencies,
+        id: &PackageId,
+        range: &VersionRange,
+    ) -> Result<&[NuGetVersion], ResolveDecline> {
+        if !self.installed.contains_key(id) {
+            let mut versions = Vec::new();
+            let listed = list_installed_package_versions(self.root, id).map_err(|error| {
+                let PackageCacheError::Io { path, source } = error;
+                ResolveDecline::PackageRead {
+                    identity: PackageIdentity::new(id.clone(), lower_bound_or_zero(range)),
+                    source: Box::new(PackageReadError::Io { path, source }),
                 }
-            });
-            self.packages.insert(key.clone(), entry);
+            })?;
+            for installed in listed {
+                if !installed.committed {
+                    return Err(ResolveDecline::PackageRead {
+                        identity: installed.identity,
+                        source: Box::new(PackageReadError::HashOnly {
+                            hash_path: installed.paths.hash_path,
+                            metadata_path: installed.paths.metadata_path,
+                        }),
+                    });
+                }
+                versions.push(installed.identity.version);
+            }
+            self.installed.insert(id.clone(), versions);
         }
-        self.packages.get_mut(&key).expect("just inserted")
+        Ok(&self.installed[id])
     }
 
-    /// See [`ResolvedPackageClosure::examined`]. `edges` are the graph's
-    /// package edges, the root's and every referenced project's.
-    fn examined<'e>(
+    /// The version restore's lookup resolves an edge to with the packages
+    /// folder its only source (`SourceRepositoryDependencyProvider.
+    /// FindLibraryCoreAsync`): the range's inclusive lower bound itself when
+    /// its canonical folder is installed (`DoesPackageExistAsync`, whether or
+    /// not the bound satisfies the range; on a case-insensitive file system
+    /// that path reaches a folder spelled in another case), and otherwise the
+    /// lowest installed version satisfying the range, a prerelease only where
+    /// a bound of the range is one (`VersionRange.IsBetter`); `None` where
+    /// there is none. Installed versions that compare equal are one folder
+    /// each, spelled apart; restore's best match keeps whichever it enumerated
+    /// first, so a tie declines.
+    fn resolve(
         &mut self,
-        edges: impl Iterator<Item = (&'e PackageId, &'e VersionRange)>,
-    ) -> Result<Vec<PackageIdentity>, ResolveDecline> {
-        let key =
-            |identity: &PackageIdentity| (identity.id.clone(), identity.version_folder_name());
-        let mut examined: BTreeMap<(PackageId, String), PackageIdentity> = self
-            .packages
-            .values()
-            .flatten()
-            .map(|cached| {
-                (
-                    key(&cached.package.identity),
-                    cached.package.identity.clone(),
-                )
-            })
-            .collect();
-        let mut named: Vec<(PackageId, VersionRange)> = self
-            .packages
-            .values()
-            .flatten()
-            .flat_map(|cached| &cached.dependencies)
-            .filter_map(|dependency| {
-                Some((dependency.id.clone(), dependency.version_range.clone()?))
-            })
-            .collect();
-        named.extend(edges.map(|(id, range)| (id.clone(), range.clone())));
-        // The versions installed of each package named, listed once.
-        let mut installed: BTreeMap<PackageId, Vec<NuGetVersion>> = BTreeMap::new();
-        for (id, range) in &named {
-            if !installed.contains_key(id) {
-                let versions = list_committed_package_versions(self.root, id)
-                    .map_err(|error| {
-                        // The folder of every version of `id` failed to list;
-                        // the decline names the edge's lower bound, or 0.0.0
-                        // for an edge without one.
-                        let PackageCacheError::Io { path, source } = error;
-                        let version = range.min_version().cloned().unwrap_or_else(|| {
-                            NuGetVersion::parse("0.0.0").expect("a literal version")
-                        });
-                        ResolveDecline::PackageRead {
-                            identity: PackageIdentity::new(id.clone(), version),
-                            source: Box::new(PackageReadError::Io { path, source }),
-                        }
-                    })?
-                    .into_iter()
-                    .map(|entry| entry.identity.version)
-                    .collect();
-                installed.insert(id.clone(), versions);
+        id: &PackageId,
+        range: &VersionRange,
+    ) -> Result<Option<NuGetVersion>, ResolveDecline> {
+        debug_assert!(
+            !range.is_floating(),
+            "a floating edge declines before it resolves"
+        );
+        let root = self.root;
+        let installed = self.installed(id, range)?;
+        if let Some(bound) = range.min_version()
+            && range.is_min_inclusive()
+        {
+            let identity = PackageIdentity::new(id.clone(), bound.clone());
+            let paths = PackagePaths::new(root, &identity);
+            let io = |path: &Path| {
+                let path = path.to_path_buf();
+                move |source| ResolveDecline::PackageRead {
+                    identity: PackageIdentity::new(id.clone(), bound.clone()),
+                    source: Box::new(PackageReadError::Io { path, source }),
+                }
+            };
+            let committed = paths.is_committed().map_err(io(&paths.metadata_path))?;
+            if committed {
+                return Ok(Some(bound.clone()));
             }
-            // The lowest installed version satisfying the edge, a prerelease
-            // only where a bound of the edge is one (`VersionRange.IsBetter`):
-            // what restore's lookup resolves the edge to with the packages
-            // folder its only source.
-            let prerelease_bounds = range.min_version().is_some_and(NuGetVersion::is_prerelease)
-                || range.max_version().is_some_and(NuGetVersion::is_prerelease)
-                || matches!(
-                    range.float_behavior(),
-                    Some(
-                        FloatBehavior::Prerelease
-                            | FloatBehavior::PrereleaseRevision
-                            | FloatBehavior::PrereleasePatch
-                            | FloatBehavior::PrereleaseMinor
-                            | FloatBehavior::PrereleaseMajor
-                            | FloatBehavior::AbsoluteLatest
-                    )
-                );
-            if let Some(version) = installed[id]
-                .iter()
-                .filter(|version| prerelease_bounds || !version.is_prerelease())
-                .filter(|version| range.satisfies(version))
-                .min()
-            {
-                let identity = PackageIdentity::new(id.clone(), version.clone());
-                examined.insert(key(&identity), identity);
+            if paths.has_hash_file().map_err(io(&paths.hash_path))? {
+                return Err(ResolveDecline::PackageRead {
+                    identity,
+                    source: Box::new(PackageReadError::HashOnly {
+                        hash_path: paths.hash_path,
+                        metadata_path: paths.metadata_path,
+                    }),
+                });
             }
         }
-        Ok(examined.into_values().collect())
-    }
-
-    /// The first package read whose selected dependency group names one
-    /// package more than once.
-    fn duplicate_dependency(&self) -> Option<ResolveDecline> {
-        self.packages.values().flatten().find_map(|cached| {
-            let mut seen = BTreeSet::new();
-            cached
-                .dependencies
-                .iter()
-                .find(|dependency| !seen.insert(&dependency.id))
-                .map(|dependency| ResolveDecline::DuplicateDependency {
-                    package: cached.package.identity.clone(),
-                    dependency: dependency.id.clone(),
-                })
-        })
-    }
-
-    /// The package, or `None` if it could not be read.
-    fn get(&mut self, identity: &PackageIdentity) -> Option<&CachedPackage> {
-        self.entry(identity).as_ref().ok()
-    }
-
-    /// Is this exact version committed on disk?
-    ///
-    /// Only the marker is consulted, never the package's contents: a version the
-    /// graph rejected is one restore never looks inside either. What we need
-    /// from it is only that it *exists*, which is what tells us restore resolved
-    /// the losing edge to it rather than bumping the edge up to the winner.
-    fn is_committed(&mut self, identity: &PackageIdentity) -> Result<bool, ResolveDecline> {
-        if self.get(identity).is_some() {
-            return Ok(true);
+        let prerelease_bounds = range.min_version().is_some_and(NuGetVersion::is_prerelease)
+            || range.max_version().is_some_and(NuGetVersion::is_prerelease);
+        let candidates: Vec<&NuGetVersion> = installed
+            .iter()
+            .filter(|version| prerelease_bounds || !version.is_prerelease())
+            .filter(|version| range.satisfies(version))
+            .collect();
+        let Some(best) = candidates.iter().copied().min() else {
+            return Ok(None);
+        };
+        let equivalent: Vec<NuGetVersion> = candidates
+            .iter()
+            .filter(|version| **version == best)
+            .map(|version| (*version).clone())
+            .collect();
+        if equivalent.len() > 1 {
+            return Err(ResolveDecline::EquivalentVersions {
+                id: id.clone(),
+                range: Box::new(range.clone()),
+                versions: equivalent,
+            });
         }
-        PackagePaths::new(self.root, identity)
-            .is_committed()
-            .map_err(|source| ResolveDecline::PackageRead {
-                identity: identity.clone(),
-                source: Box::new(PackageReadError::Io {
-                    path: PackagePaths::new(self.root, identity).metadata_path,
-                    source,
-                }),
-            })
+        Ok(Some(best.clone()))
     }
 
-    /// Why the package could not be read, taken out of the cache so the caller
-    /// can own it; a later read of the version repeats the attempt.
-    fn take_error(&mut self, identity: &PackageIdentity) -> Option<PackageReadError> {
+    /// The package, read once; a package that will not read declines.
+    fn read(&mut self, identity: &PackageIdentity) -> Result<Rc<CachedPackage>, ResolveDecline> {
         let key = (identity.id.clone(), identity.version_folder_name());
-        match self.packages.remove(&key) {
-            Some(Err(error)) => Some(error),
-            Some(entry) => {
-                self.packages.insert(key, entry);
-                None
-            }
-            None => None,
+        if let Some(cached) = self.packages.get(&key) {
+            return Ok(cached.clone());
         }
+        let package = read_installed_package(self.root, identity.clone()).map_err(|source| {
+            ResolveDecline::PackageRead {
+                identity: identity.clone(),
+                source: Box::new(source),
+            }
+        })?;
+        let dependencies = self.context.dependencies(&package.nuspec, self.framework);
+        let cached = Rc::new(CachedPackage {
+            package,
+            dependencies,
+        });
+        self.packages.insert(key, cached.clone());
+        Ok(cached)
     }
 }

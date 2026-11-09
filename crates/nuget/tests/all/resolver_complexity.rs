@@ -1,17 +1,17 @@
-//! Complexity / DoS-resistance of the offline resolver's graph walk.
+//! Complexity / DoS-resistance of the offline resolver's walk.
 //!
-//! `resolve_offline`'s walk is a *tree*: nearest-wins is path-dependent (a
-//! package's eclipse outcome depends on which ancestors pin a competing version
-//! of it), so a package reached via N cousin paths is walked N times and cannot
-//! be deduplicated by `(id, version)` without changing the answer. NuGet's own
-//! `RemoteDependencyWalker` has the same shape. That means a pathological
-//! diamond-heavy graph is genuinely exponential — the resolver bounds it
-//! (`MAX_NODES`) and **declines** (`GraphTooLarge`) rather than hang.
+//! `resolve_offline` is NuGet's default dependency resolver: a package reached
+//! at one range by N cousin paths is chosen N times over (each later occurrence
+//! from a path sharing no prefix with the chosen one replaces it and enqueues
+//! its children again), so a diamond-heavy graph grows the queue exponentially.
+//! NuGet's `DependencyGraphResolver` has the same shape. The resolver bounds
+//! the number of items it enqueues (`MAX_ITEMS`) and **declines**
+//! (`GraphTooLarge`) rather than hang.
 //!
 //! These tests pin both ends of that behaviour:
 //!
 //! - A diamond *chain* (each level's package reached via twice as many paths as
-//!   the last) exceeds the node bound and declines — *quickly*, verified with a
+//!   the last) exceeds the bound and declines — *quickly*, verified with a
 //!   wall-clock deadline so a regression that dropped the bound would fail here
 //!   (as a timeout) instead of hanging the suite.
 //! - A realistic-shaped closure (a wide-but-shallow diamond, dozens of packages)
@@ -19,8 +19,8 @@
 //!
 //! The expensive per-`(id, version)` work (reading and parsing each nuspec off
 //! disk) is memoised in the resolver's package cache, so even the bounded
-//! pathological walk does no repeated I/O; only cheap in-memory node bookkeeping
-//! grows, and it stops at the bound.
+//! pathological walk does no repeated I/O; only cheap in-memory item
+//! bookkeeping grows, and it stops at the bound.
 
 use std::fs;
 use std::path::Path;
@@ -108,7 +108,7 @@ fn package_ids(closure: &ResolvedPackageClosure) -> Vec<String> {
 /// `a{i+1}`. The number of distinct root→`a{i}` paths doubles every level, so at
 /// `depth` levels the walk faces `2^depth` paths through only `3*depth+1`
 /// packages — the exact DAG-vs-paths blow-up. With `depth` well past
-/// `log2(MAX_NODES)` the walk must hit the node bound.
+/// `log2(MAX_ITEMS)` the walk must hit the item bound.
 fn write_diamond_chain(root: &Path, depth: usize) {
     for level in 0..depth {
         write_package(
@@ -128,15 +128,15 @@ fn write_diamond_chain(root: &Path, depth: usize) {
 fn a_pathological_diamond_chain_declines_quickly_instead_of_hanging() {
     let cache = tempfile::TempDir::new().expect("tempdir");
     // 2^40 paths through ~121 packages. Chosen so the walk is intractable
-    // *without* the bound (~10^12 nodes ⇒ a genuine hang), while *with* it the
-    // walk stops after MAX_NODES (20_000) cheap expansions in well under a
+    // *without* the bound (~10^12 items ⇒ a genuine hang), while *with* it the
+    // walk stops after MAX_ITEMS (200_000) cheap enqueues in well under a
     // second. So both failure modes are covered: dropping the bound trips the
     // deadline below (a hang), and mis-sizing it so the graph resolves trips the
     // GraphTooLarge assertion.
     write_diamond_chain(cache.path(), 40);
 
     // Run the resolve on a worker thread with a wall-clock deadline. Completion
-    // proves it declined rather than hung; if a change dropped the node bound
+    // proves it declined rather than hung; if a change dropped the item bound
     // this would time out here (and fail) rather than wedge the whole suite.
     let root = cache.path().to_path_buf();
     let (tx, rx) = mpsc::channel();
@@ -151,13 +151,13 @@ fn a_pathological_diamond_chain_declines_quickly_instead_of_hanging() {
             worker.join().expect("worker thread panicked");
             assert!(
                 declined_as_too_large,
-                "a diamond chain past the node bound must decline with GraphTooLarge"
+                "a diamond chain past the item bound must decline with GraphTooLarge"
             );
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
             panic!(
                 "resolve_offline did not finish within the deadline on a pathological \
-                 graph — the node bound is not stopping the exponential walk"
+                 graph — the item bound is not stopping the exponential walk"
             );
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -173,7 +173,7 @@ fn a_realistic_shallow_closure_resolves_well_under_the_bound() {
     // A wide-but-shallow closure with genuine diamonds: an app with ten direct
     // dependencies, each pulling two shared libraries, which share a common
     // runtime leaf. Every shared node is reached via many cousin paths — the
-    // same shape as the pathological case, but bounded in depth, so the node
+    // same shape as the pathological case, but bounded in depth, so the item
     // count stays in the low hundreds rather than exploding.
     let direct: Vec<String> = (0..10).map(|i| format!("app.dep{i}")).collect();
     for dep in &direct {
@@ -186,7 +186,7 @@ fn a_realistic_shallow_closure_resolves_well_under_the_bound() {
     let requirements: Vec<DirectPackageRequirement> =
         direct.iter().map(|dep| req(dep, "1.0.0")).collect();
     let closure = resolve_offline(cache.path(), &framework("net8.0"), &requirements)
-        .expect("a realistic shallow closure must resolve well under the node bound");
+        .expect("a realistic shallow closure must resolve well under the item bound");
 
     let mut got = package_ids(&closure);
     got.sort();
