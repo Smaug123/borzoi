@@ -1952,7 +1952,10 @@ impl FileExportIndices {
                     }
                 }
                 ExportDeclKind::OpaqueCase => {
-                    if !anon {
+                    // A paired signature states the container's surface, so
+                    // the implementation's own possible case orders nothing
+                    // (the signature's contested names have no value path).
+                    if !anon && screen.is_none() {
                         fi.union_cases.push((
                             decl.path.clone(),
                             UnionCaseEntry {
