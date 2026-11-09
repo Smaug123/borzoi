@@ -770,11 +770,12 @@ fn segments(src: &str, span: TextRange) -> Vec<TextRange> {
 
 // ---- grading ---------------------------------------------------------------
 
-/// FCS's records over the part of `path` that ends where `ours` ends: at
-/// exactly `ours` if FCS has one there, else the longest one inside `path`.
+/// FCS's records for the segment `seg` of `path`: at exactly `seg` if FCS
+/// has one there, else the longest one inside `path` ending where `seg` ends.
 /// FCS records a qualified name over the path that reaches it
 /// (`AlLib.WidgetX.Make`), where we record it at its own segment.
-fn fcs_records(fu: &FileUses, path: TextRange, ours: TextRange) -> Vec<&NormalisedProjectUse> {
+fn fcs_records(fu: &FileUses, path: TextRange, seg: TextRange) -> Vec<&NormalisedProjectUse> {
+    let ours = seg;
     let inside: Vec<&NormalisedProjectUse> = fu
         .uses
         .iter()
@@ -1125,15 +1126,20 @@ fn every_alias_use_agrees_with_fcs_under_every_reference_set() {
                         None | Some((_, Resolution::Deferred(_) | Resolution::Unresolved)) => {
                             Verdict::Decline
                         }
+                        // Graded against FCS's record for the segment under
+                        // the cursor, never the one the served range picks:
+                        // an answer recorded over `WidgetX.Make` is what a
+                        // cursor on `WidgetX` is shown, and must be FCS's
+                        // reading of `AlLib.WidgetX`.
                         Some((at, res)) => {
-                            let recs = fcs_records(fu, path, at);
+                            let recs = &theirs;
                             let names: Vec<_> = recs.iter().map(|u| &u.full_name).collect();
                             if names.windows(2).any(|w| w[0] != w[1]) {
                                 failures.push(format!(
                                     "  {site} [AMBIGUOUS] FCS records several symbols: {recs:?}"
                                 ));
                             }
-                            if recs.is_empty() && !clean && at.end() != path.end() {
+                            if recs.is_empty() && !clean && seg.end() != path.end() {
                                 Verdict::Ungraded
                             } else if !path.contains_range(at) {
                                 Verdict::Wrong(format!(
