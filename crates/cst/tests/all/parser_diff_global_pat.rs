@@ -19,8 +19,7 @@
 //! errors FS0010), so it is deliberately *not* tested here as an accept case —
 //! see the `pat.rs` unit tests for the reject side.
 //!
-//! FCS's sibling `UNDERSCORE DOT pathOp` (`_.M`) is gated on the F# 4.7
-//! `SingleUnderscorePattern` feature and lands with that gate in a later slice.
+//! FCS's sibling `UNDERSCORE DOT pathOp` (`_.M`) is `parser_diff_underscore_pat.rs`.
 
 use crate::common::assert_asts_match;
 

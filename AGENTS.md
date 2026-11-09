@@ -126,7 +126,10 @@ This is a Cargo workspace with nine members:
   `.nuspec` reading, the conservative offline resolver, and compile-asset
   selection (NuGet's content model), and the dependency-graph spec reader
   (`dgspec`, `docs/nuget-dgspec-boundary-plan.md`) and its resolver
-  (`dgspec::resolve_dgspec`). Everything either resolves
+  (`dgspec::resolve_dgspec`), and NuGet's settings as far as the global
+  packages folder they choose (`settings::global_packages_folder`, which the
+  LSP's on-demand restore pins its package folder to; graded by
+  `settings_diff`). Everything either resolves
   *identically* to `dotnet restore` or declines. `resolve_dgspec` commits only
   for a NuGet on its verified list (`src/dgspec/verified_nuget.txt`), which
   `dgspec_resolve_diff` derives from the oracle, so a devshell SDK bump fails

@@ -35,7 +35,7 @@
 mod environment;
 mod json;
 mod log_code;
-mod nuspec;
+pub(crate) mod nuspec;
 mod resolve;
 #[cfg(test)]
 mod xml_nesting_pump;

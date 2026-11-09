@@ -2319,18 +2319,36 @@ fn bare_global_pattern_is_rejected() {
     }
 }
 
-/// `_.M` — FCS's `UNDERSCORE DOT pathOp` — is gated on the F# 4.7
-/// `SingleUnderscorePattern` feature and is deferred here (it lands with its
-/// language-version gate in a later slice), so a bare `_` stays the wildcard and
-/// the dotted `_.M` form is a clean lossless parse error rather than a wrong
-/// tree — the recorded boundary for a future implementation to flip.
+/// `_.M` — FCS's `UNDERSCORE DOT pathOp` — is a `LONG_IDENT_PAT` whose first
+/// segment is the bare `_`, while a `_` with no dotted tail stays the wildcard.
+/// Cross-checked against FCS, at every version band, in
+/// `tests/all/parser_diff_underscore_pat.rs`.
 #[test]
-fn underscore_rooted_pat_is_deferred_error() {
+fn underscore_rooted_pat_is_long_ident() {
     let source = "match x with\n| _.M -> 1\n| _ -> 2\n";
     let parse = parse(source);
-    assert!(
-        !parse.errors.is_empty(),
-        "`_.M` is deferred — expected a parse error, got a clean parse",
-    );
     assert_lossless(source, &parse);
+    assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
+    let heads: Vec<Vec<String>> = parse
+        .root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::LONG_IDENT_PAT)
+        .map(|n| {
+            n.descendants_with_tokens()
+                .filter_map(|e| e.into_token())
+                .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                .map(|t| t.text().to_string())
+                .collect()
+        })
+        .collect();
+    assert_eq!(heads, vec![vec!["_".to_string(), "M".to_string()]]);
+    assert_eq!(
+        parse
+            .root
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::WILDCARD_PAT)
+            .count(),
+        1,
+        "the second clause's bare `_` stays the wildcard",
+    );
 }

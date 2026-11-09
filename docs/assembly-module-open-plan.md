@@ -6,7 +6,7 @@
 > active-pattern / nested-type surface the way FCS folds it, precedence falling out
 > of push order (latest-wins). Outstanding: submodule **dotted heads** (Slice B),
 > option-B bare-name **slot eviction** (§8) for exceptions and values (union cases have
-> it), **value-binding accessibility**, the remaining §5a over-conservative cell, and the
+> it), the remaining §5a over-conservative cell, and the
 > implicit-open placement of everything but union cases. Reference-order merges stay
 > declined by design (§4c). Leave in `docs/` until those close.
 
@@ -239,26 +239,30 @@ whoever picks this up starts by removing the `#[ignore]` and watching it fail.
   rounds 5–12. Its own slice with its own oracle work. Pinned by `resolve_assembly.rs:2772`
   (`#[ignore]`, `a_newer_definite_prefix_outranks_an_incomplete_one`).
 
-### Value-binding accessibility (§7 residual debt — own feature)
+### Value-binding accessibility (closed)
 
-The project-half fold surfaced several places where value-binding accessibility has **no
-model anywhere in `borzoi-sema`**, so these apply to the pre-existing plain `open M`
-path too, not just the new recursion:
+Both halves are FCS-graded by `crates/sema/tests/all/value_access_open_grid.rs`:
 
-- **`let private Secret`** in a project module is exported with a `qualified` path exactly
-  like a public binding (`Resolver::qualified_export_path` only excludes an anonymous-root
-  file; `prepare_binding` never inspects an accessibility modifier), so any `open` that
-  reaches it brings it into scope.
-- **A same-file `private` project type** remains an accessible contestant for descendants
-  of its enclosing namespace, but `direct_project_type_contestants` reuses the cross-file
-  (privacy-downgraded) `SlotClass`, wrongly treating it as a non-contestant. Needs a
-  same-file, non-downgraded, accessibility-aware slot-class lookup that does not exist yet.
+- **Values.** Exports carry an access root (`ExportedItem::access_root_len`, the
+  deepest `private` among the binding's own and its enclosing modules'), and every
+  open, qualified path and child lookup selects the latest export accessible from
+  the reference site. The grid crosses accessibility × container (plain, nested,
+  `module private` at either depth, `[<AutoOpen>]`) × site (same module, enclosing
+  module, sibling, descendant and unrelated namespace, same file and later file) ×
+  route (open, qualified, bare, namespace open), plus signature-restricted
+  exports, and finds no wrong commit.
+- **Type contestants.** A type's export keeps its slot class beside its access root
+  (`TypeSlot`), and each reader asks from its own site: an `open` brings a
+  `type private C` only where it is accessible, and from there it evicts a
+  same-named value as a public type does. The namespace fold interleaves the
+  namespace's own types with its fragments by file, so a type of a later file
+  evicts an earlier file's `[<AutoOpen>]` value. One defect outside this subject
+  stays pinned in the grid (`SAME_FILE_LATER_BLOCK_HEADS`): a dotted head written in
+  a later `namespace` block of the file that declares the type commits that type,
+  as if the earlier block's types were lexically in scope.
 
-Closing these needs an accessibility flag on `ExportedItem`, threaded through
-`ProjectItems::by_qualified_path` / `direct_value_children` and filtered in
-`open_module_values` — its own feature, not a namespace-fold patch. (`extern` bindings are
-separately, deliberately never interned as usable bare-name values — a pre-existing gap
-that also predates this work.)
+(`extern` bindings are separately, deliberately never interned as usable bare-name
+values — a pre-existing gap.)
 
 ### 8. Bare-name slot eviction — option B (recovery slice, not started)
 

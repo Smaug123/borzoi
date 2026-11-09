@@ -47,8 +47,12 @@ fn the_census_globals_are_the_ones_restore_rs_generates_the_graph_with() {
     recording_dotnet(&dotnet_root, &record);
     let cache = root.join("packages");
     std::fs::create_dir_all(&cache).unwrap();
+    // A home, so the on-demand restore knows which user config NuGet loads
+    // (.NET hands NuGet `HOME` only if it can read it).
+    std::fs::create_dir_all(root.join("home")).unwrap();
     let env = SdkDiscoveryEnv {
         nuget_packages_dir: Some(cache.clone()),
+        home_dir: Some(root.join("home")),
         ..SdkDiscoveryEnv::default()
     };
 

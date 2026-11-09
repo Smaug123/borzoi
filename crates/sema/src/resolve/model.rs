@@ -582,7 +582,7 @@ pub struct ProjectItems {
     /// [`SlotClass`], so a later
     /// file can decide whether `open`ing this type's container EVICTS a
     /// same-named local value from FCS's unqualified slot (probes M20h–M20o).
-    pub(super) type_paths: HashMap<Vec<String>, (bool, SlotClass)>,
+    pub(super) type_paths: HashMap<Vec<String>, ExportedTypePath>,
     /// The **signature screens** of earlier `.fsi` files, in Compile order
     /// (`docs/fsi-signature-restriction-plan.md` Stage 1). Each records the
     /// module roots a signature constrains and an over-approximation of every
@@ -685,23 +685,26 @@ impl ProjectItems {
     /// Whether an earlier file exports a **type** at exactly `path`, and if so
     /// whether its case set is fully indexed (see [`Self::type_paths`]).
     pub(super) fn exported_type_at(&self, path: &[String]) -> Option<bool> {
-        self.type_paths.get(path).map(|(cases, _)| *cases)
+        self.type_paths.get(path).map(|t| t.cases_enumerable)
     }
 
-    /// The [`SlotClass`] of the earlier-file type exported at exactly `path`,
-    /// if any — whether its name enters FCS's unqualified slot when brought
-    /// into scope by an `open` (probes M20h–M20o).
-    pub(super) fn exported_type_slot_class(&self, path: &[String]) -> Option<SlotClass> {
-        self.type_paths.get(path).map(|(_, slot)| *slot)
+    /// The [`TypeSlot`] of the earlier-file type exported at exactly `path`,
+    /// if any — whether its name enters FCS's unqualified slot when an `open`
+    /// brings it into scope (probes M20h–M20o).
+    pub(super) fn exported_type_slot(&self, path: &[String]) -> Option<TypeSlot> {
+        self.type_paths.get(path).map(|t| t.slot)
     }
 
-    /// The names of earlier-file types declared **directly** under `container`
-    /// whose [`SlotClass`] is not [`SlotClass::Keeps`] — a class/struct/enum
-    /// (`Evicts`) or an abbreviation/delegate/undecidable-kind (`Unknown`), the
-    /// same construction-capable set `type_name_is_value_slot_contestant`'s
-    /// referenced-assembly mirror tests. `Keeps` types (unions, records,
-    /// interfaces) never enter FCS's unqualified constructor slot, so they are
-    /// never contestants. Feeds
+    /// The earlier-file types declared **directly** under `container` that an
+    /// `open` written in `site` brings into FCS's unqualified slot, each with
+    /// its declaring file: those whose [`SlotClass`] seen from `site`
+    /// ([`TypeSlot::class_at`]) is not [`SlotClass::Keeps`] — a
+    /// class/struct/enum (`Evicts`) or an abbreviation/delegate/undecidable-kind
+    /// (`Unknown`), the same construction-capable set
+    /// `type_name_is_value_slot_contestant`'s referenced-assembly mirror tests.
+    /// `Keeps` types (unions, records, interfaces) never enter FCS's unqualified
+    /// constructor slot, and an `open` brings no type inaccessible where it is
+    /// written, so neither is a contestant. Feeds
     /// [`Resolver::project_namespace_contestant_names`](super::state::Resolver) —
     /// codex review of §7's machinery slice: a project namespace's own
     /// constructible type can evict a same-named value from a DIFFERENT
@@ -709,15 +712,19 @@ impl ProjectItems {
     /// assembly namespace's constructible types already do
     /// ([`crate::assembly_env::AssemblyEnv::open_namespace_fold_surfaces`]),
     /// so it must join the fold's `contestant_names`, not be left uncounted.
-    pub(super) fn direct_type_contestants(&self, container: &[String]) -> Vec<String> {
+    pub(super) fn direct_type_contestants(
+        &self,
+        container: &[String],
+        site: &[String],
+    ) -> Vec<(String, usize)> {
         self.type_paths
             .iter()
-            .filter(|(p, (_, slot))| {
+            .filter(|(p, t)| {
                 p.len() == container.len() + 1
                     && p.starts_with(container)
-                    && *slot != SlotClass::Keeps
+                    && t.slot.class_at(p, site) != SlotClass::Keeps
             })
-            .map(|(p, _)| p.last().expect("non-empty qualified path").clone())
+            .map(|(p, t)| (p.last().expect("non-empty qualified path").clone(), t.file))
             .collect()
     }
 
@@ -1340,8 +1347,15 @@ impl ProjectItems {
         for (path, entry) in idx.type_qualified_cases {
             self.type_qualified_cases.insert(path, entry);
         }
-        for (path, info) in idx.type_paths {
-            self.type_paths.insert(path, info);
+        for (path, (cases_enumerable, slot)) in idx.type_paths {
+            self.type_paths.insert(
+                path,
+                ExportedTypePath {
+                    cases_enumerable,
+                    slot,
+                    file: file_idx,
+                },
+            );
         }
         // The attribute resolution's cross-file project-type guard
         // ([`Resolver::project_type_named`](super::state::Resolver)): a bare
@@ -1630,7 +1644,7 @@ struct FileExportIndices {
     opaque_hidden_value_modules: Vec<Vec<String>>,
     opaque_cases: Vec<(Vec<String>, bool)>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
-    type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
+    type_paths: Vec<(Vec<String>, (bool, TypeSlot))>,
     auto_open_module_paths: Vec<Vec<String>>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
@@ -1847,7 +1861,7 @@ impl FileExportIndices {
                             // turn a defer into a wrong commit. The path
                             // itself stays (a defer-only shadow).
                             let payload = if screen.is_some() {
-                                (false, SlotClass::Unknown)
+                                (false, TypeSlot::UNKNOWN)
                             } else {
                                 (*cases_enumerable, *slot)
                             };
@@ -2110,6 +2124,92 @@ pub(super) enum SlotClass {
     Unknown,
 }
 
+/// An exported type's claim on FCS's unqualified slot, as seen from wherever
+/// an `open` of its container is written.
+///
+/// FCS's `open` adds only the types accessible at the `open`
+/// (`AddModuleOrNamespaceContentsToNameEnv` filters them by
+/// `IsEntityAccessible`), so a `type private C` evicts a same-named value from
+/// a site under its container and from nowhere else. The class is therefore
+/// stored as declared, with the access root beside it, and each reader asks
+/// from its own site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TypeSlot {
+    /// The class the type has wherever it is accessible.
+    pub(super) class: SlotClass,
+    /// The type's access root as a prefix length of its own path, as
+    /// [`ExportedItem::access_root_len`]: `None` when public or `internal`,
+    /// `Some(k)` when a `private` (its own, or an enclosing module's) confines
+    /// it to code under `path[..k]`.
+    pub(super) access_root_len: Option<usize>,
+}
+
+impl TypeSlot {
+    /// A slot nothing is known about: undecidable class, accessible everywhere.
+    pub(super) const UNKNOWN: TypeSlot = TypeSlot {
+        class: SlotClass::Unknown,
+        access_root_len: None,
+    };
+
+    /// Whether an `open` written in `site` brings the type exported at `path`
+    /// into scope.
+    pub(super) fn accessible_from(self, path: &[String], site: &[String]) -> bool {
+        self.access_root_len.is_none_or(|k| {
+            debug_assert!(
+                k < path.len(),
+                "an access root is a proper prefix of the type's path"
+            );
+            site.starts_with(&path[..k])
+        })
+    }
+
+    /// The class an `open` written in `site` sees: [`SlotClass::Keeps`] when
+    /// that `open` does not bring the type at all.
+    pub(super) fn class_at(self, path: &[String], site: &[String]) -> SlotClass {
+        if self.accessible_from(path, site) {
+            self.class
+        } else {
+            SlotClass::Keeps
+        }
+    }
+
+    /// The class an `open` in scope at `site` sees when where it was written
+    /// is not recorded. Every such `open` was written in `site` or one of its
+    /// ancestors no shallower than `namespace` (the enclosing namespace), so a
+    /// type accessible from `namespace` is seen by any of them and one
+    /// inaccessible from `site` by none; in between it depends on the `open`,
+    /// and a contest against it is undecidable.
+    pub(super) fn class_through_scoped_open(
+        self,
+        path: &[String],
+        namespace: &[String],
+        site: &[String],
+    ) -> SlotClass {
+        debug_assert!(
+            site.starts_with(namespace),
+            "a site lies in its enclosing namespace"
+        );
+        if self.class == SlotClass::Keeps || self.accessible_from(path, namespace) {
+            self.class
+        } else if !self.accessible_from(path, site) {
+            SlotClass::Keeps
+        } else {
+            SlotClass::Unknown
+        }
+    }
+}
+
+/// An earlier file's exported type, as [`ProjectItems::type_paths`] holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExportedTypePath {
+    /// Whether every case the type owns is indexed (see
+    /// [`ProjectItems::type_paths`]).
+    pub(super) cases_enumerable: bool,
+    pub(super) slot: TypeSlot,
+    /// The declaring file's Compile-order index.
+    pub(super) file: usize,
+}
+
 /// One declaration a file contributes to the cross-file boundary, in source
 /// order (`docs/export-decl-model-plan.md` Stage 2). A single per-file
 /// `Vec<ExportDecl>` is the currency [`ProjectItems::extend_with`] folds; every
@@ -2169,7 +2269,7 @@ pub(super) enum ExportDeclKind {
     /// nested-module shadow. `auto_open` marks a `[<AutoOpen>]` type, whose
     /// container is hidden.
     Type {
-        info: Option<(bool, SlotClass)>,
+        info: Option<(bool, TypeSlot)>,
         auto_open: bool,
     },
     /// A `type … with` **augmentation** head. `path` = container + the head's

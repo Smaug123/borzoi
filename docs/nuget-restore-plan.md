@@ -68,10 +68,14 @@ The house rule ("under-resolve, never wrong") applied to restore:
   only consumes compile-asset paths, package folders, and framework-reference
   names).
 
-The crate is self-contained (`borzoi-nuget`, depends only on `roxmltree`)
-and never discovers environment/config state itself: `$NUGET_PACKAGES`,
-`$HOME`, `NuGet.config`, and SDK discovery stay in the LSP/host shell, which
-passes explicit cache roots and typed direct package inputs into the resolver.
+The crate is self-contained (`borzoi-nuget`, depends only on `roxmltree` and
+`serde`) and never reads the process environment: the LSP/host shell owns SDK
+discovery and hands the crate explicit roots, typed inputs and, where NuGet
+reads it, the environment as a map. `borzoi_nuget::settings` reads the
+`NuGet.Config` hierarchy that way to find the global packages folder NuGet
+would use for a project (`$NUGET_PACKAGES`, else the configured
+`globalPackagesFolder`, else `~/.nuget/packages`), which the on-demand restore
+pins its package folder to.
 
 ## Landed slices (one line each)
 

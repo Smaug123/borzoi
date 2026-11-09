@@ -93,6 +93,7 @@ mod parser_diff_typar_intersection;
 mod parser_diff_type_app_expr;
 mod parser_diff_type_relation;
 mod parser_diff_types;
+mod parser_diff_underscore_pat;
 mod parser_diff_when_constraints;
 mod parser_ifdef;
 mod parser_panic_sweep;
