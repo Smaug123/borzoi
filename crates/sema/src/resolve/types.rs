@@ -410,13 +410,14 @@ impl<'a> Resolver<'a> {
             // exported, so it stays a `Local` and its module is marked hidden.
             let res = if require_qualified {
                 // FCS still reads `Container.Case` as the case — with an error,
-                // when the union requires qualified access — so that path must
-                // not fall through past it to anything else of the name, here
-                // or in a later file.
+                // when the union requires qualified access — so in a later file
+                // that path must not fall through past it to anything else of
+                // the name. The case puts no bare name in scope, so nothing
+                // shadows the bare `Case` (a qualifier such as `System` in
+                // `System.String`).
                 let mut path = self.container_path.clone();
                 path.push(name.clone());
                 self.push_export_decl(path, range.start(), ExportDeclKind::QualifiedOnlyCase);
-                self.record_project_name_shadow(vec![name.clone()]);
                 // Reachable only as `T.Case`: give it a cross-file handle via the
                 // type-qualified index (no value-namespace export) and use that
                 // `Item` everywhere — one identity, like a non-RQA case.

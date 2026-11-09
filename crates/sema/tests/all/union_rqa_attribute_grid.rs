@@ -852,10 +852,7 @@ fn a_namespace_qualified_case_through_an_undecided_union() {
             "[<Microsoft.FSharp.Core.RequireQualifiedAccess>]",
             Some("#472"),
         ),
-        (
-            "[<RequireQualifiedAccess(); NoComparison>]",
-            Some("#472"),
-        ),
+        ("[<RequireQualifiedAccess(); NoComparison>]", Some("#472")),
         ("[<GridRqa>]", None),
         ("[<NoComparison>]", None),
     ];
@@ -877,4 +874,37 @@ fn a_namespace_qualified_case_through_an_undecided_union() {
             ),
         ]
     });
+}
+
+/// A qualified-only case named like a module puts no bare name in scope, so
+/// it hides no qualified path that module heads: `List.map` after
+/// `[<RequireQualifiedAccess>] type T = | List | Other` is FSharp.Core's, in
+/// the case's own file and in a later one.
+#[test]
+fn a_qualified_only_case_hides_no_bare_qualifier() {
+    let lib = "module GridLib\n\n[<RequireQualifiedAccess>]\ntype T =\n    | List\n    | Other\n\nlet here = List.map id [ 1 ]\n";
+    let later = "module GridProbe\n\nlet there = GridLib.here, List.map id [ 1 ]\n";
+    let files = [("GridLib.fs", lib), ("GridProbe.fs", later)];
+    let env = env_of(&[ensure_fsharp_core_dll().as_path()]);
+    let proj = resolve_project_files(&project(&files), &env);
+    for (idx, (_, src)) in files.iter().enumerate() {
+        let start = src.rfind("List.map").expect("the probe");
+        let end = start + "List.map".len();
+        let span = |from: usize| {
+            TextRange::new(
+                u32::try_from(from).unwrap().into(),
+                u32::try_from(end).unwrap().into(),
+            )
+        };
+        let commits = [span(start), span(start + "List.".len())]
+            .into_iter()
+            .filter_map(|r| proj.file(idx).resolution_at(r))
+            .any(|r| matches!(r, Resolution::Member { .. } | Resolution::Entity(_)));
+        assert!(
+            commits,
+            "file {idx}: `List.map` is not committed: {:?}",
+            [span(start), span(start + "List.".len())].map(|r| proj.file(idx).decline_site(r))
+        );
+    }
+    project_probe_agrees(&files, "List.map").expect("the later file agrees with FCS");
 }
