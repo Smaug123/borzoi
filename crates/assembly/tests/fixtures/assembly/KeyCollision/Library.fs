@@ -1,10 +1,11 @@
-// F# fixture for the **lossy projected key** in `apply_union_case_names`.
-//
-// The pickle overlay finds an ECMA row by `(strip_arity(clr_name),
-// generic_parameters.len())`, which is not injective. F# forbids two types of
-// one name and arity in a namespace, so an ordinary program never collides —
-// but a `[<CompiledName>]` that fabricates a backtick-arity name does, and it
-// compiles with no warning. Both collisions below are legal F#.
+// F# fixture for rows that collide on the **projected key**
+// `(strip_arity(clr_name), generic_parameters.len())` — the key the pickle
+// overlays once matched rows by, and which is not injective. F# forbids two
+// types of one name and arity in a namespace, so an ordinary program never
+// collides — but a `[<CompiledName>]` that fabricates a backtick-arity name
+// does, and it compiles with no warning. Both collisions below are legal F#.
+// The overlays reach a row by its exact metadata name now
+// (`crates/assembly/src/pickle_join.rs`), and these are the shapes that show it.
 //
 // `U` — a **class** sitting at a pickled union's key. Selecting it would hand a
 // class another type's cases and, since the property retention is destructive,
@@ -15,8 +16,8 @@
 // `V` — **two unions** at one key. The pickle's case list and published-member
 // list belong to one of them and fit the other as readily, so neither can be
 // applied to a row chosen by the key alone. The `_unique_<case>` backing fields
-// fsc emits are what let a test say *which* source type a projected row is,
-// since the CLR names no longer distinguish them.
+// fsc emits are what let a test say *which* source type a projected row is
+// without reading the metadata name the overlays themselves match by.
 
 namespace KeyCollision
 

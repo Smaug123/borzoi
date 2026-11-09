@@ -66,6 +66,10 @@ use crate::model::{
     Obsolete, ReadValFacts, SkippedMember, TypeParameter, TypeRef, UnionCase, UnionCases,
     ValMeasures,
 };
+use crate::pickle_join::{
+    Container, ContainerRows, ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE, JoinVerdict, PickleJoin,
+    RowPath, visit_rows_mut,
+};
 use std::collections::HashMap;
 
 /// The `ValFlags.IsExtensionMember` bit. FCS tests it as
@@ -74,13 +78,6 @@ use std::collections::HashMap;
 /// so it survives verbatim into [`crate::fsharp_pickle::model::PickledVal::flags`].
 const VAL_FLAGS_IS_EXTENSION_MEMBER: i64 = 0b1_0000_0000;
 
-/// The `EntityFlags.IsModuleOrNamespace` bit (`TypedTree.fs` `EntityFlags`).
-/// Verified empirically against real fixture pickles: **set** for every F#
-/// module (plain and `…WithSuffix`) and every namespace, **clear** for every
-/// type — union, record, class, struct, exception, `[<Measure>]`, an
-/// abbreviation, and a signature-hidden union. So `flags & this == 0`
-/// positively identifies a *type* node, distinct from a module / namespace.
-const ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE: i64 = 0b1;
 
 /// Depth-first pre-order walk of the pickled entity tree, invoking `visit`
 /// once per entity with its *container* ECMA position: the namespace prefix
@@ -213,11 +210,11 @@ fn walk_entity_tree(
 // Source-name overlay (Stream-2 PR1)
 // ---------------------------------------------------------------------------
 
-/// Where one entity lives in the ECMA tree, plus the two host-pickle facts the
-/// entity overlay carries onto it: its F# source name and its declaration
-/// range. Module *member* source names are no longer this overlay's business:
-/// the pickle-driven member list ([`apply_module_member_projection`]) sets them
-/// per claimed member.
+/// One entity the entity overlay stamps, plus the two host-pickle facts it
+/// carries onto its row: its F# source name and its declaration range. Module
+/// *member* source names are not this overlay's business: the pickle-driven
+/// member list ([`apply_module_member_projection`]) sets them per claimed
+/// member.
 ///
 /// The two facts have **different participation**. Source-name stamping records
 /// only module/type entities and always assigns (clearing a stale name is
@@ -225,11 +222,11 @@ fn walk_entity_tree(
 /// `[<Measure>] type m` pickles with an `IsType::Namespace` body, so it is a
 /// type-chain *leaf* the module/type predicate misses — and a measure leaf's
 /// `entity_source_name` is `None`, so letting it flow through source-name
-/// stamping could *clear* a legitimately-set name on an arity-name-colliding
-/// row. [`Self::is_module_or_type`] gates the source-name half accordingly.
+/// stamping would clear a name it has no business clearing.
+/// [`Self::is_module_or_type`] gates the source-name half accordingly.
 struct EntityOverlayTarget {
-    namespace: Vec<String>,
-    type_chain: Vec<String>,
+    /// The entity's stamp, by which [`PickleJoin`] finds its row.
+    stamp: u32,
     /// The entity's F# `DisplayName` when it differs from its CLR name —
     /// `Some("Suffixed")` for the `SuffixedModule` module-suffix class,
     /// `Some("Bar")` for a `[<CompiledName("Foo")>] type Bar`, else `None`.
@@ -243,10 +240,6 @@ struct EntityOverlayTarget {
     /// The entity's `entity_range`, resolved to a source range. `None` on a bad
     /// file index or the degenerate `"unknown"` file.
     definition_range: Option<FsharpSourceRange>,
-    /// The leaf's CLR generic arity ([`pickled_clr_arity`]) — its pickled typars
-    /// minus the erased `[<Measure>]` ones. `None` only when a typar index does
-    /// not resolve, where a count would be a guess.
-    arity: Option<usize>,
 }
 
 /// Apply the two per-entity host-pickle facts to the ECMA tree: each entity's
@@ -264,33 +257,26 @@ struct EntityOverlayTarget {
 ///
 /// **Definition range** carries the pickled `entity_range` so go-to-definition
 /// can navigate a method-less or sequence-point-less entity (a value-only
-/// module, a measure, an enum, an interface). Two guards separate it from the
-/// source-name half:
+/// module, a measure, an enum, an interface). Measure leaves are collected for
+/// the range only: a standalone `[<Measure>] type m` pickles with an
+/// `IsType::Namespace` body — a type-chain leaf the module/type predicate
+/// misses — so the range collector also records the measure-leaf predicate
+/// from [`merge_measure_entities`] (`typar_kind == Measure` with a backing
+/// `FSharpObjectModel` repr), and [`EntityOverlayTarget::is_module_or_type`]
+/// keeps it out of source-name stamping.
 ///
-/// - **Measure leaves are collected for the range only.** A standalone
-///   `[<Measure>] type m` pickles with an `IsType::Namespace` body — a type-chain
-///   leaf the module/type predicate misses — so the range collector also records
-///   the measure-leaf predicate from [`merge_measure_entities`]
-///   (`typar_kind == Measure` with a backing `FSharpObjectModel` repr). Its
-///   `entity_source_name` is `None`, so it must not flow through source-name
-///   stamping (which would clear a legitimately-set name on an arity-name-
-///   colliding row); [`EntityOverlayTarget::is_module_or_type`] gates that.
-/// - **Arity-ambiguous FQNs are declined.** `find_entity_mut` matches by name
-///   alone, and `type A` / `type A<'T>` both project to the ECMA name `A`
-///   (backtick-arity stripped on both sides). Range stamping commits only when
-///   the correspondence is unambiguous in *both* directions: at most one
-///   collected target per FQN key, and — via [`find_entity_unique_mut`] — at
-///   most one ECMA sibling matching the addressed name at each chain step. An
-///   ambiguous FQN under-sets (D5); the twins keep their sequence-point
-///   navigation. (Source-name stamping keeps its pre-existing name-only lookup,
-///   where the lossiness is harmless — arity twins share their source name.)
+/// Both facts land only on the row [`PickleJoin`] certifies as the entity's
+/// own, so twins whose CLR names strip alike (FSharp.Core's `FSharpExpr` and
+/// ``FSharpExpr`1``) each get their own, and a row the join cannot attribute
+/// keeps its sequence-point navigation and IL name.
 ///
-/// Same per-module FQN scoping ([`find_entity_mut`]) and single-CCU restriction
-/// as [`apply_module_member_projection`] — the caller gates on the host pickle
-/// describing the whole image (see `enumerate_type_defs`).
+/// Same single-CCU restriction as [`apply_module_member_projection`] — the
+/// caller gates on the host pickle describing the whole image (see
+/// `enumerate_type_defs`).
 pub(crate) fn apply_entity_overlay(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
     let mut targets = Vec::new();
     let mut path = Vec::new();
@@ -301,16 +287,16 @@ pub(crate) fn apply_entity_overlay(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, is_root, namespace, type_chain| {
+        &mut |stamp, entity, is_root, _namespace, _type_chain| {
             if is_root {
                 return Ok(());
             }
-            // A module/type extends the type chain and participates in both
-            // facts. A measure leaf (`typar_kind == Measure` + a backing
-            // TypeDef) is *not* a module/type — it pickles an `IsType::Namespace`
-            // body — but is still a type-chain leaf keyed by the same FQN, so it
-            // contributes a range-only target. The two are disjoint (a measure
-            // never has a module/type body), so an entity is at most one kind.
+            // A module/type participates in both facts. A measure leaf
+            // (`typar_kind == Measure` + a backing TypeDef) is *not* a
+            // module/type — it pickles an `IsType::Namespace` body — but has a
+            // row of its own, so it contributes a range-only target. The two are
+            // disjoint (a measure never has a module/type body), so an entity is
+            // at most one kind.
             let is_module_or_type = matches!(
                 entity.module_type.is_type,
                 IsType::ModuleOrType | IsType::FSharpModuleWithSuffix
@@ -318,11 +304,8 @@ pub(crate) fn apply_entity_overlay(
             let is_measure_leaf = entity.typar_kind == TyparKind::Measure
                 && matches!(entity.repr, PickledTyconRepr::FSharpObjectModel(_));
             if is_module_or_type || is_measure_leaf {
-                let mut chain = type_chain.to_vec();
-                chain.push(clr_name(entity));
                 targets.push(EntityOverlayTarget {
-                    namespace: namespace.to_vec(),
-                    type_chain: chain,
+                    stamp,
                     entity_source_name: if is_module_or_type {
                         entity_source_name(entity)
                     } else {
@@ -330,98 +313,39 @@ pub(crate) fn apply_entity_overlay(
                     },
                     is_module_or_type,
                     definition_range: resolve_entity_range(pickled, entity),
-                    arity: pickled_clr_arity(pickled, entity),
                 });
             }
             Ok(())
         },
     )?;
-    // Source-name half: module/type targets only, and the leaf is keyed by
-    // **arity** as well as by name.
-    //
-    // The arity-stripped CLR name is not injective, and the collision is
-    // ordinary in real F#: FSharp.Core declares both `Expr` and `Expr<'T>`,
-    // compiled ``FSharpExpr`` and ``FSharpExpr`1``. Keyed by name alone the two
-    // targets reach one row — assigned twice, its twin never — so a twin keeps
-    // its IL name. For a `[<CompiledName>]`-renamed type that IL name is one no
-    // F# source can write (`Microsoft.FSharp.Quotations.FSharpExpr<int>` is
-    // FS0039 against the real compiler, while `Expr<int>` binds), and a consumer
-    // reading `source_name.unwrap_or(name)` as "what a user writes" then
-    // resolves a name F# rejects.
-    //
-    // A `[<Measure>]` typar is erased individually, so a measure-bearing entity
-    // still has a CLR arity — counting the non-measure typars gives it. Skipping
-    // such an entity would strip a legitimately renamed measure type of its
-    // source name, which is the very failure this is fixing. Only an unresolvable
-    // typar index declines, where the count would be a guess.
-    for target in &targets {
-        let (true, Some(arity)) = (target.is_module_or_type, target.arity) else {
+    for target in targets {
+        let Some(ecma) = join.entity_mut(entities, target.stamp) else {
             continue;
         };
-        if let Some(ecma) =
-            find_entity_at_arity_mut(entities, &target.namespace, &target.type_chain, arity)
-        {
-            ecma.source_name = target.entity_source_name.clone();
+        if target.is_module_or_type {
+            ecma.source_name = target.entity_source_name;
         }
-    }
-    // Range half: decline arity-ambiguous FQNs in both directions. First the
-    // collected-target side — how many targets share each full FQN key.
-    let mut fqn_target_counts: HashMap<(&[String], &[String]), usize> = HashMap::new();
-    for target in &targets {
-        *fqn_target_counts
-            .entry((target.namespace.as_slice(), target.type_chain.as_slice()))
-            .or_insert(0) += 1;
-    }
-    for target in &targets {
-        let Some(range) = &target.definition_range else {
-            continue;
-        };
-        if fqn_target_counts[&(target.namespace.as_slice(), target.type_chain.as_slice())] != 1 {
-            continue; // Two source entities collapse onto this ECMA name.
-        }
-        if let Some(ecma) = find_entity_unique_mut(entities, &target.namespace, &target.type_chain)
-        {
-            ecma.definition_range = Some(range.clone());
+        if let Some(range) = target.definition_range {
+            ecma.definition_range = Some(range);
         }
     }
     Ok(())
 }
 
-/// One entity's F#-constraint readings, located by the ECMA row they attach to.
-///
-/// The key carries the **arity** alongside the name because the arity-stripped
-/// name alone is not injective, and the collision is ordinary in real F#:
-/// FSharp.Core pickles both `type List<'T>` (compiled ``FSharpList`1``) and a
-/// nullary companion compiled `FSharpList`, which strip to one name. Keying by
-/// name alone would decline both — the entity overlay's range half does exactly
-/// that — which would cost `'T list` and `Set<'T>` their readings for no reason,
-/// since a measure-free entity's pickled typar count *is* its CLR arity and
-/// separates them exactly.
-/// A [`TyparConstraintTarget`]'s identity: namespace, enclosing type chain,
-/// lookup name, arity, and whether it is an abbreviation. Borrowed from the
-/// target, so it is only a lookup key. It carries everything `matches_key`
-/// discriminates on, so that two targets counted as duplicates really are
-/// indistinguishable — an alias and a real type at one name are not.
-type TyparConstraintKey<'a> = (&'a [String], &'a [String], &'a str, usize, bool);
-
+/// One entity's F#-constraint readings, and how its row is found.
 struct TyparConstraintTarget {
-    namespace: Vec<String>,
-    /// The enclosing type chain, outermost first; empty for a top-level entity.
-    containers: Vec<String>,
-    /// The name the ECMA row is looked up by: the owned `Entity::name` (the CLR
-    /// name with its arity suffix stripped) for a real type, and the F# *source*
-    /// name for an abbreviation — which is how [`apply_abbreviation_markers`]
-    /// keys the very rows an abbreviation target can match. Two aliases may
-    /// legally share one `[<CompiledName>]` and still be distinct source types,
-    /// so keying an alias by its CLR name would collapse a pair the marker pass
-    /// deliberately kept apart.
-    name: String,
-    /// One reading per typar, in declaration order. Its length is the key's
-    /// arity.
+    /// The entity's stamp: [`PickleJoin`] finds a real type's row by it, and
+    /// the container an abbreviation's marker hangs in.
+    stamp: u32,
+    /// For a type **abbreviation**, the name its marker is keyed by: the F#
+    /// *source* name, which is how [`apply_abbreviation_markers`] keys the very
+    /// rows an abbreviation target can match. Two aliases may legally share one
+    /// `[<CompiledName>]` and still be distinct source types, so keying an alias
+    /// by its CLR name would collapse a pair the marker pass deliberately kept
+    /// apart. `None` for a real type.
+    abbreviation_name: Option<String>,
+    /// One reading per typar, in declaration order.
     readings: Vec<FSharpConstraints>,
-    /// Whether the pickled entity is a type **abbreviation**, which decides
-    /// which ECMA rows it may claim. See [`apply_typar_constraints`].
-    is_abbreviation: bool,
 }
 
 /// Attach each F# entity's pickled typar constraints to its ECMA row
@@ -429,33 +353,29 @@ struct TyparConstraintTarget {
 ///
 /// Every typar of an F#-authored assembly was blanked to
 /// [`FSharpConstraints::Unknowable`] before this runs, so this pass only ever
-/// *licenses* a conclusion: a row it does not reach, or reaches ambiguously,
-/// keeps the reading that concludes nothing. That is what makes a marker-only
-/// assembly, a decode failure and a foreign CCU all decline without any of them
-/// being special-cased here.
+/// *licenses* a conclusion: a row it does not reach keeps the reading that
+/// concludes nothing. That is what makes a marker-only assembly, a decode
+/// failure and a foreign CCU all decline without any of them being
+/// special-cased here.
 ///
-/// Ambiguity is counted on **both** sides, like [`apply_union_cases`]: two
-/// pickled entities at one key cannot say which row they describe, and two ECMA
-/// rows at one key cannot say which pickle entry describes them. Either way the
-/// constraint fact is withheld rather than attached to whichever the search
-/// reached first — a misattached `comparison` would silently license an
-/// application F# rejects.
+/// A real type's row is the one [`PickleJoin`] certifies as its own; a
+/// misattached `comparison` would silently license an application F# rejects.
 ///
-/// **Abbreviation-ness is part of the key**, for the same reason
-/// [`apply_union_cases`] makes the ECMA *kind* part of its own. An abbreviation
-/// is erased from IL, so it has no row of its own and the only row it may claim
-/// is the name-only marker [`apply_abbreviation_markers`] synthesised for it. A
-/// row that already existed at that key is therefore somebody *else's* — in a
-/// `--standalone` image, a copied dependency's TypeDef — and the marker pass,
-/// which suppresses a marker whose name is taken, leaves exactly that shape
-/// behind: one pickled alias, one foreign row, both ambiguity counts at 1. An
-/// unconstrained alias would then report the foreign type's constrained
-/// parameters as `Free`. Two types cannot share an FQN within one assembly, so
-/// a *non*-abbreviation target has no such twin; the check is symmetric anyway,
-/// since a real type has no business claiming a marker either.
+/// An **abbreviation** is erased from IL, so it has no row of its own and the
+/// only row it may claim is the name-only marker [`apply_abbreviation_markers`]
+/// synthesised for it, found among the rows of the abbreviation's own container
+/// by the marker's key — kind, source name and arity. A row that already
+/// existed at that key is somebody *else's* (in a `--standalone` image, a
+/// copied dependency's TypeDef), which is why the kind is part of the key: the
+/// marker pass, which suppresses a marker whose name is taken, leaves exactly
+/// that shape behind, and an unconstrained alias would otherwise report the
+/// foreign type's constrained parameters as `Free`. Ambiguity is counted on
+/// both sides: two aliases at one key in one container, or two markers there,
+/// and neither is stamped.
 pub(crate) fn apply_typar_constraints(
-    entities: &mut [Entity],
+    entities: &mut Vec<Entity>,
     pickled: &PickledCcu,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
     let mut targets: Vec<TyparConstraintTarget> = Vec::new();
     let mut path = Vec::new();
@@ -466,7 +386,7 @@ pub(crate) fn apply_typar_constraints(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, is_root, namespace, type_chain| {
+        &mut |stamp, entity, is_root, _namespace, _type_chain| {
             if is_root
                 || !matches!(
                     entity.module_type.is_type,
@@ -476,66 +396,60 @@ pub(crate) fn apply_typar_constraints(
                 return Ok(());
             }
             if let Some(readings) = pickled_typar_constraints(pickled, entity) {
-                let is_abbreviation = entity.type_abbrev.is_some();
                 targets.push(TyparConstraintTarget {
-                    namespace: namespace.to_vec(),
-                    containers: type_chain.to_vec(),
-                    name: if is_abbreviation {
-                        abbreviation_lookup_name(entity)
-                    } else {
-                        clr_name(entity)
-                    },
+                    stamp,
+                    abbreviation_name: entity
+                        .type_abbrev
+                        .is_some()
+                        .then(|| abbreviation_lookup_name(entity)),
                     readings,
-                    is_abbreviation,
                 });
             }
             Ok(())
         },
     )?;
-    fn key(t: &TyparConstraintTarget) -> TyparConstraintKey<'_> {
-        (
-            t.namespace.as_slice(),
-            t.containers.as_slice(),
-            t.name.as_str(),
-            t.readings.len(),
-            t.is_abbreviation,
-        )
+    /// An abbreviation's marker key: its container, source name and arity.
+    fn abbreviation_key<'t>(
+        join: &PickleJoin,
+        t: &'t TyparConstraintTarget,
+    ) -> Option<(Option<Container>, &'t str, usize)> {
+        t.abbreviation_name
+            .as_deref()
+            .map(|name| (join.container(t.stamp).cloned(), name, t.readings.len()))
     }
-    let mut key_counts: HashMap<TyparConstraintKey<'_>, usize> = HashMap::new();
+    let mut abbreviation_counts: HashMap<_, usize> = HashMap::new();
     for target in &targets {
-        *key_counts.entry(key(target)).or_insert(0) += 1;
-    }
-    for target in &targets {
-        if key_counts[&key(target)] != 1 {
-            continue; // Two pickled entities collapse onto this key.
+        if let Some(key) = abbreviation_key(join, target) {
+            *abbreviation_counts.entry(key).or_default() += 1;
         }
-        let matches_key = |e: &Entity| {
-            let row_name = if target.is_abbreviation {
-                e.source_name.as_deref().unwrap_or(&e.name)
-            } else {
-                e.name.as_str()
-            };
-            row_name == target.name
-                && e.generic_parameters.len() == target.readings.len()
-                && (e.kind == EntityKind::Abbreviation) == target.is_abbreviation
-        };
-        let rows: &mut [Entity] = if target.containers.is_empty() {
-            entities
-        } else {
-            match find_entity_mut(entities, &target.namespace, &target.containers) {
-                Some(container) => &mut container.nested_types,
-                None => continue,
+    }
+    for target in &targets {
+        let row = match &target.abbreviation_name {
+            None => join
+                .entity_mut(entities, target.stamp)
+                .filter(|e| e.generic_parameters.len() == target.readings.len()),
+            Some(name) => {
+                if abbreviation_key(join, target).is_none_or(|key| abbreviation_counts[&key] != 1) {
+                    continue; // Two aliases at this key in this container.
+                }
+                let Some(ContainerRows { namespace, rows }) =
+                    join.container_rows_mut(entities, target.stamp)
+                else {
+                    continue;
+                };
+                let is_marker = |e: &Entity| {
+                    namespace.as_ref().is_none_or(|ns| e.namespace == *ns)
+                        && e.kind == EntityKind::Abbreviation
+                        && e.source_name.as_deref().unwrap_or(&e.name) == name
+                        && e.generic_parameters.len() == target.readings.len()
+                };
+                if rows.iter().filter(|e| is_marker(e)).count() != 1 {
+                    continue; // Two rows at this key, or none.
+                }
+                rows.iter_mut().find(|e| is_marker(e))
             }
         };
-        // A top-level row is keyed by its namespace too; a nested one carries an
-        // empty namespace of its own (the path lives on the outermost type).
-        let in_scope = |e: &Entity| {
-            matches_key(e) && (!target.containers.is_empty() || e.namespace == target.namespace)
-        };
-        if rows.iter().filter(|e| in_scope(e)).count() != 1 {
-            continue; // Two ECMA rows at this key, or none.
-        }
-        if let Some(ecma) = rows.iter_mut().find(|e| in_scope(e)) {
+        if let Some(ecma) = row {
             for (typar, reading) in ecma.generic_parameters.iter_mut().zip(&target.readings) {
                 typar.fsharp_constraints = *reading;
             }
@@ -678,30 +592,22 @@ fn entity_source_name(entity: &PickledEntity) -> Option<String> {
 /// fact, which is exact per projected member rather than keyed by name (a module
 /// may hold both a `let M` and an augmentation `M`; only the latter is hidden).
 ///
-/// Scoped to the declaring module exactly as the other overlays are: the
-/// pickle walk finds each module's ECMA TypeDef by FQN before attaching. A
-/// module whose ECMA row was filtered out is skipped (nothing to attach to);
-/// like the extension flag, this list is an annotation, not a structural claim,
-/// so a missing row under-populates rather than hard-errors. The list's
-/// *completeness across the assembly* is bounded by
+/// Scoped to the declaring module exactly as the other overlays are: each
+/// module's row is the one [`PickleJoin`] certifies as its own. A module whose
+/// row the join cannot reach (filtered out, dropped, or not attributable) is
+/// skipped; like the extension flag, this list is an annotation, not a
+/// structural claim, so a missing row under-populates rather than hard-errors.
+/// The list's *completeness across the assembly* is bounded by
 /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`](crate::AssemblyProjectionSkips::fsharp_abbreviations_unknowable)
 /// — a foreign-CCU or undecodable image may declare extension members in modules
 /// the host pickle never describes, which the consumer treats as unknowable.
-/// One module's extension-name index, located by the ECMA entity it attaches to:
-/// its namespace, its nested-type chain (outermost first), and the two name lists
-/// — instance extensions and static ones (EX-0).
-struct ExtensionIndexTarget {
-    namespace: Vec<String>,
-    type_chain: Vec<String>,
-    instance: Vec<String>,
-    statics: Vec<String>,
-}
-
 pub(crate) fn apply_extension_member_index(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
-    let mut targets: Vec<ExtensionIndexTarget> = Vec::new();
+    // Each module's stamp, with its instance and static extension names (EX-0).
+    let mut targets: Vec<(u32, Vec<String>, Vec<String>)> = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
         pickled,
@@ -710,7 +616,7 @@ pub(crate) fn apply_extension_member_index(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, is_root, namespace, type_chain| {
+        &mut |stamp, entity, is_root, _namespace, _type_chain| {
             if !is_root
                 && matches!(
                     entity.module_type.is_type,
@@ -722,23 +628,16 @@ pub(crate) fn apply_extension_member_index(
                 let statics =
                     module_extension_member_names(pickled, &entity.module_type.vals, false)?;
                 if !instance.is_empty() || !statics.is_empty() {
-                    let mut chain = type_chain.to_vec();
-                    chain.push(clr_name(entity));
-                    targets.push(ExtensionIndexTarget {
-                        namespace: namespace.to_vec(),
-                        type_chain: chain,
-                        instance,
-                        statics,
-                    });
+                    targets.push((stamp, instance, statics));
                 }
             }
             Ok(())
         },
     )?;
-    for t in targets {
-        if let Some(ecma) = find_entity_mut(entities, &t.namespace, &t.type_chain) {
-            ecma.extension_member_names = t.instance;
-            ecma.static_extension_member_names = t.statics;
+    for (stamp, instance, statics) in targets {
+        if let Some(ecma) = join.entity_mut(entities, stamp) {
+            ecma.extension_member_names = instance;
+            ecma.static_extension_member_names = statics;
         }
     }
     Ok(())
@@ -770,19 +669,18 @@ pub(crate) fn apply_extension_member_index(
 /// list (`tcaug.adhoc`, as [`retain_published_union_properties`] reads it for a
 /// union) decides: each record or exception row the pickle describes keeps the
 /// properties it vouches for. Every other record or exception row — with no
-/// pickle (`pickled` is `None`, or not authoritative), or one the lossy key
-/// `(namespace, containers, name, arity)` cannot attribute (two pickled types,
-/// or two rows, at one key; a measure-parameterised type) — keeps none: a
-/// decline, exactly what the projection surfaced before these were candidates.
-/// A field-backed property is a [`Member::Field`] and is not touched.
+/// pickle (`pickled` is `None`, or not authoritative), one [`PickleJoin`] cannot
+/// attribute, or a measure-parameterised type — keeps none: a decline, exactly
+/// what the projection surfaced before these were candidates. A field-backed
+/// property is a [`Member::Field`] and is not touched.
 pub(crate) fn settle_record_properties(
     entities: &mut [Entity],
-    pickled: Option<&PickledCcu>,
+    pickled: Option<(&PickledCcu, &PickleJoin)>,
 ) -> Result<(), ImportError> {
-    type Key = (Vec<String>, Vec<String>, String, usize);
-    // The published names per key; `None` once a second pickled type claims it.
-    let mut published: HashMap<Key, Option<Vec<String>>> = HashMap::new();
-    if let Some(pickled) = pickled {
+    // The published names of each record or exception row the pickle vouches
+    // for, by the row's identity.
+    let mut published: HashMap<RowPath, Vec<String>> = HashMap::new();
+    if let Some((pickled, join)) = pickled {
         let mut path = Vec::new();
         walk_entity_tree(
             pickled,
@@ -791,7 +689,7 @@ pub(crate) fn settle_record_properties(
             &[],
             &[],
             &mut path,
-            &mut |_stamp, entity, is_root, namespace, type_chain| {
+            &mut |stamp, entity, is_root, _namespace, _type_chain| {
                 let is_record_or_exception = matches!(entity.repr, PickledTyconRepr::Record(_))
                     || matches!(entity.exn_repr, PickledExnRepr::Fresh(_))
                     || matches!(
@@ -802,86 +700,25 @@ pub(crate) fn settle_record_properties(
                 if is_root || !is_record_or_exception || !is_measure_free(pickled, entity) {
                     return Ok(());
                 }
-                let key = (
-                    namespace.to_vec(),
-                    type_chain.to_vec(),
-                    clr_name(entity),
-                    entity.typars.len(),
-                );
-                let names: Vec<String> = entity
-                    .tcaug
-                    .adhoc
-                    .iter()
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                published
-                    .entry(key)
-                    .and_modify(|e| *e = None)
-                    .or_insert(Some(names));
+                if let Some(row) = join.joined_path(stamp) {
+                    let names = entity
+                        .tcaug
+                        .adhoc
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                    published.insert(row.clone(), names);
+                }
                 Ok(())
             },
         )?;
     }
-    // Rows per key in the ECMA tree; a key two rows share settles neither.
-    fn count_rows(
-        entities: &[Entity],
-        namespace: &[String],
-        chain: &mut Vec<String>,
-        counts: &mut HashMap<Key, usize>,
-    ) {
-        for e in entities {
-            let ns = if chain.is_empty() {
-                e.namespace.clone()
-            } else {
-                namespace.to_vec()
-            };
-            *counts
-                .entry((
-                    ns.clone(),
-                    chain.clone(),
-                    e.name.clone(),
-                    e.generic_parameters.len(),
-                ))
-                .or_default() += 1;
-            chain.push(e.name.clone());
-            count_rows(&e.nested_types, &ns, chain, counts);
-            chain.pop();
+    visit_rows_mut(entities, &mut |row, e| {
+        if matches!(e.kind, EntityKind::Record | EntityKind::Exception) {
+            let vouched = row.and_then(|row| published.get(row));
+            retain_published_union_properties(e, vouched.map_or(&[], Vec::as_slice));
         }
-    }
-    fn settle(
-        entities: &mut [Entity],
-        namespace: &[String],
-        chain: &mut Vec<String>,
-        counts: &HashMap<Key, usize>,
-        published: &HashMap<Key, Option<Vec<String>>>,
-    ) {
-        for e in entities {
-            let ns = if chain.is_empty() {
-                e.namespace.clone()
-            } else {
-                namespace.to_vec()
-            };
-            if matches!(e.kind, EntityKind::Record | EntityKind::Exception) {
-                let key = (
-                    ns.clone(),
-                    chain.clone(),
-                    e.name.clone(),
-                    e.generic_parameters.len(),
-                );
-                let vouched = match (counts.get(&key), published.get(&key)) {
-                    (Some(1), Some(Some(names))) => names.as_slice(),
-                    _ => &[],
-                };
-                retain_published_union_properties(e, vouched);
-            }
-            chain.push(e.name.clone());
-            settle(&mut e.nested_types, &ns, chain, counts, published);
-            chain.pop();
-        }
-    }
-    let mut counts = HashMap::new();
-    count_rows(entities, &[], &mut Vec::new(), &mut counts);
-    settle(entities, &[], &mut Vec::new(), &counts, &published);
+    });
     Ok(())
 }
 
@@ -929,24 +766,18 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 /// measure-free *type* nodes (never modules / namespaces / abbreviations /
 /// exceptions / measure-parameterised types).
 ///
-/// Both passes match by (namespace, container chain, name, `typars.len()`) — the
-/// mangled arity. That projected key is not injective (distinct metadata rows
-/// like `U` and `U`0`, or a measure-erased `U`1`, collapse onto it), so the seal
-/// (second loop) commits ONLY when the key names exactly one ECMA row in the
-/// container — a collision declines.
+/// Both passes reach a union's row through [`PickleJoin`], so the cases and
+/// members land only on the row the union compiled to — never on a sibling
+/// whose CLR name strips alike (``[<CompiledName("U`0")>]`` beside `U`), nor on
+/// a surviving squatter when the union's own row was dropped. The real-case
+/// pass (first loop) additionally requires the row to be an
+/// `EntityKind::Union`, since the pickle says it is one and a row that
+/// disagrees is not one this overlay can describe; that matters because the
+/// property retention is destructive.
 ///
-/// The real-case pass (first loop) additionally requires the ECMA row to be an
-/// `EntityKind::Union`, so a class or record sharing the key is never selected —
-/// which matters because the property retention is destructive: mis-selecting a
-/// row there would strip members the row genuinely publishes.
-///
-/// When two union rows *do* sit at one key, the pass declines **both** halves of
-/// the entry it cannot attribute: no case names and no retained properties. The
-/// pickled lists describe one of those rows and fit the other as readily, and
-/// the key cannot say which, so committing either half to whichever row the
-/// search reached first would put one union's cases and members on another. The
-/// general repair — a key that distinguishes the rows, for every overlay here at
-/// once — is the injective-key work (#145).
+/// A measure-parameterised union is left alone by both passes: its case fields
+/// may mention an erased `[<Measure>]` typar, which has no CLR generic
+/// parameter to line up with.
 ///
 /// The real-case pass (the first loop) is a host-CCU fact, so it runs even when
 /// the source-name overlay is non-authoritative (foreign pickles present) — like
@@ -955,32 +786,20 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`](crate::AssemblyProjectionSkips::fsharp_abbreviations_unknowable):
 /// a foreign-CCU union keeps an empty list, which consumers must read as
 /// *unknowable* (a union has at least one case by construction). A union
-/// whose ECMA row was filtered out is skipped — an annotation, not a
+/// whose ECMA row the join cannot reach is skipped — an annotation, not a
 /// structural claim, exactly as the extension index treats a missing row.
 pub(crate) fn apply_union_cases(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
-    // (namespace, container chain, union name, union generic arity, cases).
-    // The union's own segment is matched by (name, arity): F# legally
-    // arity-overloads type names (`type Foo = A` beside `type Foo<'T> = B of
-    // 'T`), and both CLR paths strip to `Foo` — a name-only match hands one
-    // union the other's cases (codex round 24).
-    #[allow(clippy::type_complexity)]
-    let mut targets: Vec<(
-        Vec<String>,
-        Vec<String>,
-        String,
-        usize,
-        Vec<UnionCase>,
-        Vec<String>,
-    )> = Vec::new();
+    // (stamp, cases, published members) per union-repr entity.
+    let mut targets: Vec<(u32, Vec<UnionCase>, Vec<String>)> = Vec::new();
     // A union whose representation is HIDDEN BY A SIGNATURE pickles as `NoRepr`
     // (see the second loop below) — the union-repr match above never reaches it.
-    // Collect every `NoRepr` entity's identity so a still-`None` ECMA `Union` at
-    // that path can be sealed to a knowably-empty case list.
-    #[allow(clippy::type_complexity)]
-    let mut hidden_repr: Vec<(Vec<String>, Vec<String>, String, usize, Vec<String>)> = Vec::new();
+    // Collect every opaque type's stamp so a still-unknowable ECMA `Union` row
+    // of its own can be sealed to a knowably-empty case list.
+    let mut hidden_repr: Vec<(u32, Vec<String>)> = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
         pickled,
@@ -989,171 +808,84 @@ pub(crate) fn apply_union_cases(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, is_root, namespace, type_chain| {
+        &mut |stamp, entity, is_root, _namespace, _type_chain| {
             let cases = match &entity.repr {
                 PickledTyconRepr::Union(cases) => Some(cases),
                 PickledTyconRepr::UnionWithStaticFields { cases, .. } => Some(cases),
                 _ => None,
             };
             // The CCU wrapper (`is_root`) is never a target on either side.
-            if !is_root {
-                if let Some(cases) = cases {
-                    targets.push((
-                        namespace.to_vec(),
-                        type_chain.to_vec(),
-                        clr_name(entity),
-                        // The MANGLED arity (`U`1` for a one-typar union), which
-                        // is how `Entity::generic_parameters.len()` is keyed for a
-                        // *non-measure* union; a measure-parameterised union's real
-                        // cases are lost here (its `U`1` row has zero CLR generic
-                        // parameters — a pre-existing completeness gap), never
-                        // misattached, since no ECMA row carries its `typars.len()`.
-                        entity.typars.len(),
-                        cases
-                            .iter()
-                            // Only `TAccess []` (public) cases: a private
-                            // representation (`type U = private | Hidden`) pickles
-                            // each case with a restricted access path, and a
-                            // cross-assembly consumer can never name it — listing
-                            // it would let a hidden case wrongly shadow a
-                            // same-named earlier binding FCS resolves (codex
-                            // round 21). Filtering can leave the list EMPTY,
-                            // which is a real observation ("knowably zero
-                            // accessible cases"), distinct from the absent-pickle
-                            // `None`.
-                            .enumerate()
-                            .filter(|(_, c)| c.access.is_empty())
-                            .map(|(i, c)| UnionCase {
-                                name: c.ident.name.clone(),
-                                // The pickle lists every case, accessible or
-                                // not, in declaration order: the position fsc
-                                // writes on the case's maker.
-                                declaration_index: u32::try_from(i)
-                                    .expect("a union has fewer than 2^32 cases"),
-                                fields: case_fields(pickled, c),
-                            })
-                            .collect(),
-                        // The entity's PUBLISHED members, by the name each is
-                        // pickled under — an accessor's own (`get_IsOne`), not
-                        // its property's. This is what FCS reads to answer
-                        // `x.IsOne` (`MembersOfFSharpTyconSorted`), and it is the
-                        // only place the answer exists: fsc emits the `Is<Case>`
-                        // metadata properties whether or not the language version
-                        // publishes them, identically attributed either way.
-                        entity
-                            .tcaug
-                            .adhoc
-                            .iter()
-                            .map(|(name, _)| name.clone())
-                            .collect(),
-                    ));
-                } else if entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE == 0
-                    && entity.type_abbrev.is_none()
-                    && matches!(entity.exn_repr, PickledExnRepr::None)
-                    && matches!(entity.repr, PickledTyconRepr::NoRepr)
-                    && is_measure_free(pickled, entity)
-                {
-                    // An OPAQUE, MEASURE-FREE TYPE: a *type* (the
-                    // `IsModuleOrNamespace` flag bit is clear — so not a module or
-                    // namespace), not an abbreviation, not an exception (`exn_repr`
-                    // is `None` — an `exception U = …` alias emits no TypeDef of its
-                    // own), whose representation is `NoRepr`, and with no erased
-                    // `[<Measure>]` typar (so its `typars.len()` IS its CLR arity —
-                    // the key names its own ECMA row, not a measure-erased sibling).
-                    // A signature-hidden union is exactly this shape (a hidden class
-                    // / record lands here too, but its ECMA kind is not `Union`, so
-                    // the second loop's filter skips it). The second loop seals only
-                    // when the projected key names EXACTLY ONE ECMA row — see there.
-                    hidden_repr.push((
-                        namespace.to_vec(),
-                        type_chain.to_vec(),
-                        clr_name(entity),
-                        entity.typars.len(),
-                        // Hiding the REPRESENTATION does not hide the members: a
-                        // `.fsi` that exposes `type U` opaquely may still publish
-                        // `member IsFoo: bool`, and FCS binds `x.IsFoo` against it.
-                        // So the published list is read here exactly as on the
-                        // case-bearing path — what the seal knows is that zero
-                        // *cases* are accessible, not that zero members are.
-                        entity
-                            .tcaug
-                            .adhoc
-                            .iter()
-                            .map(|(name, _)| name.clone())
-                            .collect(),
-                    ));
-                }
+            if is_root || !is_measure_free(pickled, entity) {
+                return Ok(());
+            }
+            // The entity's PUBLISHED members, by the name each is pickled under
+            // — an accessor's own (`get_IsOne`), not its property's. This is
+            // what FCS reads to answer `x.IsOne` (`MembersOfFSharpTyconSorted`),
+            // and it is the only place the answer exists: fsc emits the
+            // `Is<Case>` metadata properties whether or not the language version
+            // publishes them, identically attributed either way. Hiding the
+            // REPRESENTATION does not hide the members: a `.fsi` that exposes
+            // `type U` opaquely may still publish `member IsFoo: bool`, and FCS
+            // binds `x.IsFoo` against it — so the opaque path reads it too.
+            let published = || {
+                entity
+                    .tcaug
+                    .adhoc
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            };
+            if let Some(cases) = cases {
+                targets.push((
+                    stamp,
+                    cases
+                        .iter()
+                        // Only `TAccess []` (public) cases: a private
+                        // representation (`type U = private | Hidden`) pickles
+                        // each case with a restricted access path, and a
+                        // cross-assembly consumer can never name it — listing it
+                        // would let a hidden case wrongly shadow a same-named
+                        // earlier binding FCS resolves (codex round 21).
+                        // Filtering can leave the list EMPTY, which is a real
+                        // observation ("knowably zero accessible cases"),
+                        // distinct from the absent-pickle `None`.
+                        .enumerate()
+                        .filter(|(_, c)| c.access.is_empty())
+                        .map(|(i, c)| UnionCase {
+                            name: c.ident.name.clone(),
+                            // The pickle lists every case, accessible or not, in
+                            // declaration order: the position fsc writes on the
+                            // case's maker.
+                            declaration_index: u32::try_from(i)
+                                .expect("a union has fewer than 2^32 cases"),
+                            fields: case_fields(pickled, c),
+                        })
+                        .collect(),
+                    published(),
+                ));
+            } else if entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE == 0
+                && entity.type_abbrev.is_none()
+                && matches!(entity.exn_repr, PickledExnRepr::None)
+                && matches!(entity.repr, PickledTyconRepr::NoRepr)
+            {
+                // An OPAQUE TYPE: a *type* (the `IsModuleOrNamespace` flag bit is
+                // clear — so not a module or namespace), not an abbreviation, not
+                // an exception, whose representation is `NoRepr`. A
+                // signature-hidden union is exactly this shape (a hidden class or
+                // record lands here too, but its ECMA kind is not `Union`, so the
+                // second loop's filter skips it).
+                hidden_repr.push((stamp, published()));
             }
             Ok(())
         },
     )?;
-    for (namespace, containers, name, arity, names, published) in targets {
-        // The ECMA **kind** is part of the key, not merely a property of whatever
-        // the key finds. `(strip_arity(name), generic_parameters.len())` is not
-        // injective, and a collision here is legal F#: `type U() = member _.P = 1`
-        // beside ``[<CompiledName("U`0")>] type Other = A | B`` puts a class at the
-        // pickled union's key. Selecting that class would hand it another type's
-        // cases *and* — since the property retention below is destructive — strip
-        // its own public members.
-        let matches_union = |e: &Entity| {
-            e.kind == EntityKind::Union && e.name == name && e.generic_parameters.len() == arity
-        };
-        let (target, ambiguous) = if containers.is_empty() {
-            let count = entities
-                .iter()
-                .filter(|e| e.namespace == namespace && matches_union(e))
-                .count();
-            (
-                entities
-                    .iter_mut()
-                    .find(|e| e.namespace == namespace && matches_union(e)),
-                count > 1,
-            )
-        } else {
-            match find_entity_mut(entities, &namespace, &containers) {
-                Some(container) => {
-                    let count = container
-                        .nested_types
-                        .iter()
-                        .filter(|e| matches_union(e))
-                        .count();
-                    (
-                        container.nested_types.iter_mut().find(|e| matches_union(e)),
-                        count > 1,
-                    )
-                }
-                None => (None, false),
-            }
-        };
-        if let Some(ecma) = target {
-            // Two union rows at one key: this pickle entry describes one of them
-            // and fits the other as readily, and the key cannot say which. So
-            // neither half of it may be applied to the row the search happened
-            // to reach first.
-            //
-            // Committing instead would put another type's cases behind
-            // `AssemblyEnv::authoritative_union_case` and into the bare-name
-            // surface an `open` imports — a wrong go-to-definition target with a
-            // source location attached.
-            //
-            // `UnionCases::Unknowable` is the *same* state a foreign CCU or an
-            // undecodable signature resource produces, so this adds a route to it
-            // rather than a new condition. Be aware of one reading that does not
-            // yet honour it: sema's qualified tail cedes a path whose tail it
-            // cannot find to a lower reading, and a nullary case is invisible to
-            // that search (no carrier type, and its getter is a property the union
-            // projection drops) — so an unenumerable union answers "not a member"
-            // where the honest answer is "cannot say". That is a defect on the
-            // reading side, live for every unenumerable union today and tracked
-            // separately; this decline is not what makes it reachable.
-            //
-            // Only a `[<CompiledName>]` fabricating a backtick-arity name can
-            // reach this, since F# forbids two types of one name and arity in a
-            // namespace; the general repair is the injective key (#145).
-            if !ambiguous {
-                ecma.union_cases = UnionCases::Known(names);
-            }
-            retain_published_union_properties(ecma, if ambiguous { &[] } else { &published });
+    for (stamp, names, published) in targets {
+        if let Some(ecma) = join
+            .entity_mut(entities, stamp)
+            .filter(|e| e.kind == EntityKind::Union)
+        {
+            ecma.union_cases = UnionCases::Known(names);
+            retain_published_union_properties(ecma, &published);
         }
     }
     // Signature-hidden unions. `type Teq<'a,'b>` exposed opaquely in a `.fsi`
@@ -1167,65 +899,23 @@ pub(crate) fn apply_union_cases(
     // hidden cases" and defers every dotted head over (a bare `List.replicate`
     // where a file-local union case `List` forces the dotted-path branch). A
     // representation hidden by the signature exposes ZERO accessible cases, so
-    // the honest answer is a knowably-empty `UnionCases::Known(vec![])`, exactly like the
-    // private-case filter above.
+    // the honest answer is a knowably-empty `UnionCases::Known(vec![])`, exactly
+    // like the private-case filter above.
     //
-    // **Decline any projected-key collision** — the load-bearing soundness guard
-    // (codex review, six rounds). The seal matches a pickle candidate to its ECMA
-    // row by the projected key `(strip_arity(name), generic_parameters.len())`,
-    // which is NOT injective: distinct metadata TypeDefs collapse onto one key
-    // whenever fsc erases or mangles the difference — a `--staticlink` foreign
-    // `U`0` beside a host `U`, a measure-erased `U`1` beside a non-generic `U`, a
-    // `[<CompiledName("U`0")>]`. Enumerating those sources is a losing game (each
-    // review round surfaced a new one, and the pre-existing overlays share the
-    // same latent ambiguity). Instead, seal ONLY when the key names EXACTLY ONE
-    // ECMA row in the candidate's container. `is_measure_free` (above) makes the
-    // candidate's `typars.len()` equal its own CLR arity, so its own row IS at
-    // the key; if that row is the SOLE one there, the row we seal is provably
-    // that own row, never a collision. Any collapse (≥ 2 rows at the key)
-    // declines — the union keeps `None` (unknowable, the safe direction). Sound
-    // without trusting `authoritative`, which a `--nointerfacedata` dependency
-    // defeats (its copied TypeDefs bring no signature resource, so
-    // `foreign_signature_data_present` misses them).
-    //
-    // TWO residual holes remain, shared with the other lossy-key overlays (the
-    // first loop, the measure and source-name overlays) and tracked as the
-    // project-wide soundness item (#145): the uniqueness check covers the leaf
-    // only, not each ambiguous CONTAINER segment; and a DROPPED own row lets a
-    // surviving foreign sibling look unique. Both need pathological
-    // `[<CompiledName>]` / an undecodable type — never ordinary F#. The proper
-    // fix is an injective projection key (retain the exact metadata identity),
-    // which #145 closes for every overlay at once.
-    for (namespace, containers, name, arity, published) in hidden_repr {
-        let matches_key = |e: &Entity| e.name == name && e.generic_parameters.len() == arity;
-        let is_target = |e: &Entity| {
-            matches_key(e) && e.kind == EntityKind::Union && e.union_cases == UnionCases::Unknowable
-        };
-        if containers.is_empty() {
-            let count = entities
-                .iter()
-                .filter(|e| e.namespace == namespace && matches_key(e))
-                .count();
-            if count == 1
-                && let Some(ecma) = entities
-                    .iter_mut()
-                    .find(|e| e.namespace == namespace && is_target(e))
-            {
-                ecma.union_cases = UnionCases::Known(Vec::new());
-                retain_published_union_properties(ecma, &published);
-            }
-        } else if let Some(container) = find_entity_mut(entities, &namespace, &containers) {
-            let count = container
-                .nested_types
-                .iter()
-                .filter(|e| matches_key(e))
-                .count();
-            if count == 1
-                && let Some(ecma) = container.nested_types.iter_mut().find(|e| is_target(e))
-            {
-                ecma.union_cases = UnionCases::Known(Vec::new());
-                retain_published_union_properties(ecma, &published);
-            }
+    // The row sealed is the one the join certifies as the opaque type's own.
+    // That is what is load-bearing here: the seal concludes "no accessible
+    // cases", and on any other row — a `--staticlink` foreign union at a name
+    // that strips alike, or a squatter beside a dropped own row — that is a
+    // wrong answer, not a decline. It is sound without trusting
+    // `authoritative`, which a `--nointerfacedata` dependency defeats (its
+    // copied TypeDefs bring no signature resource), because the join counts
+    // every row of the image, foreign ones included.
+    for (stamp, published) in hidden_repr {
+        if let Some(ecma) = join.entity_mut(entities, stamp).filter(|e| {
+            e.kind == EntityKind::Union && e.union_cases == UnionCases::Unknowable
+        }) {
+            ecma.union_cases = UnionCases::Known(Vec::new());
+            retain_published_union_properties(ecma, &published);
         }
     }
     Ok(())
@@ -1350,8 +1040,14 @@ fn curried_args(v: &PickledVal, receiver: ReceiverAt) -> Option<CurriedArgs> {
 /// missing-module policy needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleMemberTarget {
+    /// The module's stamp — its index into the pickle's OSGN tycon table
+    /// ([`PickledCcu`]`.tables.tycons`) — by which the projector finds the
+    /// module's own row.
+    pub stamp: u32,
     /// The entity's namespace prefix, from the pickle walk's namespace vs.
-    /// type-chain split (see `walk_entity_tree`).
+    /// type-chain split (see `walk_entity_tree`). Together with
+    /// [`Self::type_chain`] a readable label, not an identity: CLR names that
+    /// strip alike share it.
     pub namespace: Vec<String>,
     /// The CLR type-nesting chain; the final segment is this entity's own
     /// arity-stripped CLR name.
@@ -1531,7 +1227,7 @@ pub fn collect_module_member_targets(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, is_root, namespace, type_chain| {
+        &mut |stamp, entity, is_root, namespace, type_chain| {
             if !is_root
                 && matches!(
                     entity.module_type.is_type,
@@ -1542,6 +1238,7 @@ pub fn collect_module_member_targets(
                 let mut chain = type_chain.to_vec();
                 chain.push(clr_name(entity));
                 targets.push(ModuleMemberTarget {
+                    stamp,
                     namespace: namespace.to_vec(),
                     type_chain: chain,
                     vals,
@@ -2514,10 +2211,11 @@ fn rebuild_module_member_list(
 pub(crate) fn apply_module_member_projection(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
     physical: &PhysicalMethods,
 ) -> Result<(), ImportError> {
     for target in collect_module_member_targets(pickled)? {
-        let Some(ecma) = find_entity_mut(entities, &target.namespace, &target.type_chain) else {
+        let Some(ecma) = join.entity_mut(entities, target.stamp) else {
             continue;
         };
         if !matches!(ecma.kind, EntityKind::Module) {
@@ -2526,22 +2224,6 @@ pub(crate) fn apply_module_member_projection(
         rebuild_module_member_list(ecma, &target, physical);
     }
     Ok(())
-}
-
-/// Where a pickled measure entity lives in the ECMA tree. The pickle's
-/// flat dotted path doesn't tell us where the namespace stops and the
-/// CLR type-nesting begins — but the pickle entity tree does: namespace
-/// fragments carry [`IsType::Namespace`] on their `module_type`, while
-/// modules/types carry [`IsType::ModuleOrType`] /
-/// [`IsType::FSharpModuleWithSuffix`]. Namespaces always nest outside
-/// modules, so the path splits cleanly into a namespace prefix and a
-/// non-empty type chain. `type_chain[0]` names the top-level ECMA
-/// entity (in `namespace`); `type_chain[1..]` are successive
-/// `nested_types` descents (each carrying an empty namespace of its
-/// own, per the ECMA model contract).
-struct MeasureTarget {
-    namespace: Vec<String>,
-    type_chain: Vec<String>,
 }
 
 /// Merge the F# signature pickle's measure-type information onto the
@@ -2562,15 +2244,22 @@ struct MeasureTarget {
 /// `[<Measure>] type m` (no body) that fsc compiles to an `extends
 /// System.Object` TypeDef with the
 /// `[CompilationMappingAttribute(SourceConstructFlags.Measure)]` marker —
-/// that's the only shape with a merge target. The measure leaf's own CLR name
-/// is appended to the container type chain by the visitor (a `[<Measure>]
-/// type` pickles with an `IsType::Namespace` `module_type`, so
-/// [`walk_entity_tree`] does not fold it in — see that function's docs).
+/// that's the only shape with a merge target.
+///
+/// ## Which disagreements are fatal
+///
+/// The row is the one [`PickleJoin`] certifies as the measure's own. A measure
+/// with **no row at all** in the image ([`JoinVerdict::NoRow`]), or whose own
+/// row is not a class, is a disagreement between two successfully read sources
+/// and fails the parse (D6.5). A measure whose row the join cannot attribute —
+/// another row or another pickled entity at its path — or whose row the
+/// projector dropped is not a disagreement but an absence, and is left alone.
 pub(crate) fn merge_measure_entities(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
-    let mut measure_targets: Vec<MeasureTarget> = Vec::new();
+    let mut measures: Vec<(u32, String)> = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
         pickled,
@@ -2579,40 +2268,34 @@ pub(crate) fn merge_measure_entities(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, _is_root, namespace, type_chain| {
-            // Record a target for every entity that is *both*
-            // `typar_kind == Measure` AND carries the standalone-form repr
-            // (`FSharpObjectModel`), which confirms a backing ECMA TypeDef
-            // exists — a measure abbreviation / `MeasureAnnotatedAbbreviation`
-            // has `Measure` kind but no TypeDef, so it is skipped. The synthetic
-            // root is `typar_kind == Type` and filtered out by the kind check.
-            // The measure leaf appends its own CLR name to the container's type
-            // chain, regardless of its `module_type.is_type` (a `[<Measure>]
-            // type` pickles as `IsType::Namespace` yet is a type-chain leaf).
+        &mut |stamp, entity, _is_root, namespace, type_chain| {
+            // Record every entity that is *both* `typar_kind == Measure` AND
+            // carries the standalone-form repr (`FSharpObjectModel`), which
+            // confirms a backing ECMA TypeDef exists — a measure abbreviation /
+            // `MeasureAnnotatedAbbreviation` has `Measure` kind but no TypeDef,
+            // so it is skipped. The synthetic root is `typar_kind == Type` and
+            // filtered out by the kind check.
             let entity_has_ecma_typedef =
                 matches!(entity.repr, PickledTyconRepr::FSharpObjectModel(_));
             if entity.typar_kind == TyparKind::Measure && entity_has_ecma_typedef {
-                let mut chain = type_chain.to_vec();
-                chain.push(clr_name(entity));
-                measure_targets.push(MeasureTarget {
-                    namespace: namespace.to_vec(),
-                    type_chain: chain,
-                });
+                let mut segments = namespace.to_vec();
+                segments.extend(type_chain.iter().cloned());
+                segments.push(clr_name(entity));
+                measures.push((stamp, segments.join(".")));
             }
             Ok(())
         },
     )?;
 
-    for target in &measure_targets {
-        let ecma =
-            find_entity_mut(entities, &target.namespace, &target.type_chain).ok_or_else(|| {
-                ImportError::FsharpPickleMergeMismatch {
-                    detail: format!(
-                        "pickled measure entity {} has no matching ECMA TypeDef",
-                        fqn_display(target)
-                    ),
-                }
-            })?;
+    for (stamp, display) in &measures {
+        if join.verdict(*stamp) == Some(JoinVerdict::NoRow) {
+            return Err(ImportError::FsharpPickleMergeMismatch {
+                detail: format!("pickled measure entity {display} has no matching ECMA TypeDef"),
+            });
+        }
+        let Some(ecma) = join.entity_mut(entities, *stamp) else {
+            continue;
+        };
         match ecma.kind {
             EntityKind::Class => {
                 ecma.kind = EntityKind::Measure;
@@ -2625,8 +2308,7 @@ pub(crate) fn merge_measure_entities(
             other => {
                 return Err(ImportError::FsharpPickleMergeMismatch {
                     detail: format!(
-                        "pickled measure entity {} has ECMA kind {other:?}, expected Class",
-                        fqn_display(target)
+                        "pickled measure entity {display} has ECMA kind {other:?}, expected Class"
                     ),
                 });
             }
@@ -2668,8 +2350,9 @@ pub(crate) fn merge_measure_entities(
 pub(crate) fn apply_measure_overlay(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
-    merge_measure_entities(entities, pickled)
+    merge_measure_entities(entities, pickled, join)
 }
 
 // ---------------------------------------------------------------------------
@@ -2687,16 +2370,18 @@ pub(crate) fn apply_measure_overlay(
 /// unaffected: the test normaliser sorts entity lists.
 ///
 /// Entities the pickle does not name (compiler-generated startup classes,
-/// `<PrivateImplementationDetails>`, …) keep their relative metadata order
-/// after the pickled ones (stable sort with an infinite rank).
+/// `<PrivateImplementationDetails>`, …), and rows [`PickleJoin`] cannot
+/// attribute to a pickled entity, keep their relative metadata order after the
+/// pickled ones (stable sort with an infinite rank).
 pub(crate) fn apply_declaration_order(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
-    // Pickle-order ranks: top-level `(namespace, name)` pairs, and per
-    // container `(namespace, type_chain)` the ordered child names.
-    let mut top_rank: HashMap<(Vec<String>, String), usize> = HashMap::new();
-    let mut child_order: HashMap<(Vec<String>, Vec<String>), Vec<String>> = HashMap::new();
+    // Each joined row's position in a pre-order walk of the pickle. Siblings
+    // are visited in declaration order, so within any one list of sibling rows
+    // the ranks are in declaration order too.
+    let mut rank: HashMap<RowPath, usize> = HashMap::new();
     let mut path = Vec::new();
     walk_entity_tree(
         pickled,
@@ -2705,93 +2390,33 @@ pub(crate) fn apply_declaration_order(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, is_root, namespace, type_chain| {
-            // This entity's own position in the ECMA tree (empty for the
-            // synthetic root / namespace fragments, whose module/type
-            // children are TOP-LEVEL ECMA entities).
-            let own_chain: Vec<String> =
-                if is_root || matches!(entity.module_type.is_type, IsType::Namespace) {
-                    type_chain.to_vec()
-                } else {
-                    let mut c = type_chain.to_vec();
-                    c.push(clr_name(entity));
-                    c
-                };
-            let own_namespace: Vec<String> = if is_root {
-                namespace.to_vec()
-            } else if matches!(entity.module_type.is_type, IsType::Namespace) {
-                let mut ns = namespace.to_vec();
-                ns.push(entity.logical_name.clone());
-                ns
-            } else {
-                namespace.to_vec()
-            };
-            for &child_stamp in &entity.module_type.entities {
-                let child = pickled.tables.tycons.get(child_stamp as usize).ok_or(
-                    ImportError::OsgnIndexOutOfRange {
-                        kind: "tycon (declaration order)",
-                        index: child_stamp,
-                        max: pickled.tables.tycons.len(),
-                    },
-                )?;
-                // Namespace fragments are not ECMA entities; only module/type
-                // children materialise as TypeDef rows.
-                if !matches!(
-                    child.module_type.is_type,
-                    IsType::ModuleOrType | IsType::FSharpModuleWithSuffix
-                ) && child.type_abbrev.is_none()
-                {
-                    continue;
-                }
-                let name = clr_name(child);
-                if own_chain.is_empty() {
-                    let rank = top_rank.len();
-                    top_rank
-                        .entry((own_namespace.clone(), name))
-                        .or_insert(rank);
-                } else {
-                    child_order
-                        .entry((own_namespace.clone(), own_chain.clone()))
-                        .or_default()
-                        .push(name);
-                }
+        &mut |stamp, _entity, _is_root, _namespace, _type_chain| {
+            if let Some(row) = join.joined_path(stamp) {
+                let next = rank.len();
+                rank.insert(row.clone(), next);
             }
             Ok(())
         },
     )?;
-
-    // Top-level: stable-sort so pickled entities take declaration order and
-    // unpickled ones keep their relative metadata order at the end.
-    let unranked = top_rank.len();
-    // Avoid cloning keys per comparison: compute each entity's rank once.
-    let ranks: Vec<usize> = entities
-        .iter()
-        .map(|e| {
-            top_rank
-                .get(&(e.namespace.clone(), e.name.clone()))
-                .copied()
-                .unwrap_or(unranked)
-        })
-        .collect();
-    let mut order: Vec<usize> = (0..entities.len()).collect();
-    order.sort_by_key(|&i| ranks[i]);
-    apply_permutation(entities, &order);
-
-    // Nested: reorder each pickled container's children the same way.
-    for ((namespace, chain), names) in &child_order {
-        if let Some(container) = find_entity_mut(entities, namespace, chain) {
-            let rank_of = |e: &Entity| {
-                names
-                    .iter()
-                    .position(|n| n == &e.name)
-                    .unwrap_or(names.len())
-            };
-            let ranks: Vec<usize> = container.nested_types.iter().map(rank_of).collect();
-            let mut order: Vec<usize> = (0..container.nested_types.len()).collect();
-            order.sort_by_key(|&i| ranks[i]);
-            apply_permutation(&mut container.nested_types, &order);
+    fn reorder(rows: &mut [Entity], paths: Vec<Option<RowPath>>, rank: &HashMap<RowPath, usize>) {
+        let ranks: Vec<usize> = paths
+            .iter()
+            .map(|p| p.as_ref().and_then(|p| rank.get(p)).copied().unwrap_or(usize::MAX))
+            .collect();
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        order.sort_by_key(|&i| ranks[i]);
+        apply_permutation(rows, &order);
+        for (row, &i) in rows.iter_mut().zip(&order) {
+            let children = row
+                .nested_types
+                .iter()
+                .map(|child| paths[i].as_ref().and_then(|p| p.child(child)))
+                .collect();
+            reorder(&mut row.nested_types, children, rank);
         }
     }
+    let top = entities.iter().map(RowPath::of_top_level).collect();
+    reorder(entities, top, &rank);
     Ok(())
 }
 
@@ -2967,10 +2592,9 @@ fn has_auto_open_attribute(pickled: &PickledCcu, attribs: &[PickledAttribute]) -
 /// the entity walk, then placed in a second (a marker's container may be walked
 /// after the marker's own site).
 struct AbbrevMarkerSite {
-    namespace: Vec<String>,
-    /// The *container* type-nesting chain — empty for a namespace-level
-    /// abbreviation, `["Auto"]` for one declared inside `module Auto`.
-    type_chain: Vec<String>,
+    /// The abbreviation's stamp, by which [`PickleJoin`] finds the container
+    /// its marker hangs in: its namespace, or its enclosing module's row.
+    stamp: u32,
     name: String,
     source_name: Option<String>,
     typar_names: Vec<String>,
@@ -3292,6 +2916,7 @@ fn decode_nonlocal_named(
 pub(crate) fn apply_abbreviation_markers(
     entities: &mut Vec<Entity>,
     pickled: &PickledCcu,
+    join: &PickleJoin,
     assembly: &AssemblyIdentity,
 ) -> Result<(), ImportError> {
     // Built before the site walk: a `Local` abbreviation target may reference a
@@ -3307,7 +2932,7 @@ pub(crate) fn apply_abbreviation_markers(
         &[],
         &[],
         &mut path,
-        &mut |_stamp, entity, is_root, namespace, type_chain| {
+        &mut |stamp, entity, is_root, _namespace, _type_chain| {
             if is_root || !entity.access.is_empty() {
                 return Ok(());
             }
@@ -3321,8 +2946,7 @@ pub(crate) fn apply_abbreviation_markers(
                 PickledExnRepr::Abbrev(_) | PickledExnRepr::Asm(_)
             ) {
                 targets.push(AbbrevMarkerSite {
-                    namespace: namespace.to_vec(),
-                    type_chain: type_chain.to_vec(),
+                    stamp,
                     name: clr_name(entity),
                     source_name: None,
                     typar_names: Vec::new(),
@@ -3374,8 +2998,7 @@ pub(crate) fn apply_abbreviation_markers(
             let abbreviation_target =
                 decode_abbreviation_target(pickled, entity, abbrev_ty, &local_fqns)?;
             targets.push(AbbrevMarkerSite {
-                namespace: namespace.to_vec(),
-                type_chain: type_chain.to_vec(),
+                stamp,
                 name: clr_name(entity),
                 source_name,
                 typar_names,
@@ -3408,22 +3031,23 @@ pub(crate) fn apply_abbreviation_markers(
                 && e.source_name.as_deref().unwrap_or(&e.name) == target_lookup_name
                 && e.generic_parameters.len() == target.typar_names.len()
         };
-        if target.type_chain.is_empty() {
-            if !entities
-                .iter()
-                .any(|e| e.namespace == target.namespace && same_key(e))
-            {
-                let marker = abbreviation_marker(assembly, target.namespace.clone(), target);
-                entities.push(marker);
-            }
-        } else if let Some(container) =
-            find_entity_mut(entities, &target.namespace, &target.type_chain)
-            && !container.nested_types.iter().any(same_key)
+        // The container is the abbreviation's namespace, or the row of its
+        // enclosing module as [`PickleJoin`] certifies it; a module row the
+        // join cannot reach has nowhere to hang the marker.
+        let Some(container) = join.container_rows_mut(entities, target.stamp) else {
+            continue;
+        };
+        if !container
+            .rows
+            .iter()
+            .any(|e| container.contains(e) && same_key(e))
         {
-            // Nested entities carry an empty namespace of their own — the
-            // path lives on the outermost type (see `find_entity_mut`).
-            let marker = abbreviation_marker(assembly, Vec::new(), target);
-            container.nested_types.push(marker);
+            // A nested entity carries an empty namespace of its own — the
+            // path lives on the outermost type.
+            let namespace = container.namespace.clone().unwrap_or_default();
+            container
+                .rows
+                .push(abbreviation_marker(assembly, namespace, target));
         }
     }
     Ok(())
@@ -3482,7 +3106,7 @@ fn abbreviation_marker(
         is_struct: false,
         is_auto_open: target.is_auto_open,
         is_require_qualified_access: false,
-        metadata_arity_suffix: None,
+        metadata_name: None,
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,
@@ -3519,15 +3143,17 @@ fn abbreviation_marker(
 }
 
 /// The CLR TypeDef name for a pickled module/type entity, **arity-stripped**
-/// to match how the ECMA projector keys the owned tree. FCS's
-/// `Entity.CompiledName` is `entity_compiled_name` when set, else `LogicalName`
-/// (so a `[<CompiledName("Metre")>] [<Measure>] type m` is `Metre`, not `m`),
-/// but the projector stores `Entity::name = strip_arity(td.name.name)` — so a
-/// *generic* entity whose CLR name carries the arity suffix (`FSharpChoice`2`)
-/// is keyed as `FSharpChoice`. We strip the same suffix here, otherwise
-/// [`find_entity_mut`] could not locate a generic entity by FQN. The
-/// `"Module"` suffix of a `[<CompilationRepresentation(ModuleSuffix)>]` module
-/// lives in `logical_name` and is not an arity, so it survives the strip.
+/// as the projector strips [`Entity::name`]. FCS's `Entity.CompiledName` is
+/// `entity_compiled_name` when set, else `LogicalName` (so a
+/// `[<CompiledName("Metre")>] [<Measure>] type m` is `Metre`, not `m`), and a
+/// *generic* entity's carries the arity suffix (`FSharpChoice`2`), which this
+/// strips to `FSharpChoice`. The `"Module"` suffix of a
+/// `[<CompilationRepresentation(ModuleSuffix)>]` module lives in
+/// `logical_name` and is not an arity, so it survives the strip.
+///
+/// A name for display and for the name-keyed readings (an abbreviation
+/// marker's name, a local tycon's logical path) — never a row's identity, which
+/// strips alike for distinct rows. A row is reached through [`PickleJoin`].
 fn clr_name(entity: &PickledEntity) -> String {
     let raw = entity
         .compiled_name
@@ -3538,19 +3164,16 @@ fn clr_name(entity: &PickledEntity) -> String {
 
 /// Whether a pickled type has **no erased `[<Measure>]` type parameter**. A
 /// measure typar carries no CLR metadata, so a measure-parameterised type's
-/// mangled name and its CLR generic arity disagree: `type U<[<Measure>] 'u>`
-/// emits `U`1` with **zero** CLR generic parameters, which the projector strips
-/// to `name = "U"`, `generic_parameters = []` — indistinguishable from a
-/// non-generic `type U` and from a same-name foreign union. The hidden-union
-/// seal declines such a type (it keeps `None`, unknowable — the safe direction)
-/// rather than match its `typars.len()` against the wrong ECMA row. A
-/// measure-FREE type's `typars.len()` **is** its CLR arity, so `(name, arity)`
-/// names its own TypeDef unambiguously.
+/// pickled typars outnumber its row's generic parameters, and position `i`
+/// names different typars on the two sides. An overlay that lines the two up
+/// by position (constraints, case fields, member slots) declines such a type —
+/// it keeps what it had, unknowable, the safe direction. A measure-FREE type's
+/// typars and its row's generic parameters correspond one to one.
 ///
 /// FCS `TyparFlags.Kind` (`TypedTree.fs`): a typar is a measure iff
 /// `flags &&& 0b00001000100000000 == 0b00000000100000000`. An unknown typar
 /// index is treated as a measure — declining (the safe direction) rather than
-/// trusting a `typars.len()` match we cannot validate.
+/// trusting a correspondence we cannot validate.
 fn is_measure_free(pickled: &PickledCcu, entity: &PickledEntity) -> bool {
     entity.typars.iter().all(|&ti| {
         pickled
@@ -3567,142 +3190,6 @@ fn is_measure_typar(flags: i64) -> bool {
     const TYPAR_KIND_MASK: i64 = 0b00001000100000000;
     const TYPAR_KIND_MEASURE: i64 = 0b00000000100000000;
     flags & TYPAR_KIND_MASK == TYPAR_KIND_MEASURE
-}
-
-/// The entity's **CLR generic arity**: its pickled typars minus the
-/// `[<Measure>]` ones, which are erased individually and emit no
-/// `GenericParam` row. `type U<[<Measure>] 'u>` is arity 0; `type V<'T,
-/// [<Measure>] 'u>` is arity 1.
-///
-/// `None` when a typar index does not resolve — the count would be a guess, and
-/// a wrong arity here addresses the wrong row.
-///
-/// Distinct from [`is_measure_free`], which asks whether `typars.len()` may be
-/// *trusted as* the arity. A caller that only needs to address the right ECMA
-/// row wants this: a measure-bearing entity still has one, and declining it
-/// would strip a legitimately renamed type of its source name.
-fn pickled_clr_arity(pickled: &PickledCcu, entity: &PickledEntity) -> Option<usize> {
-    let mut arity = 0;
-    for &ti in &entity.typars {
-        let typar = pickled.tables.typars.get(ti as usize)?;
-        if !is_measure_typar(typar.flags) {
-            arity += 1;
-        }
-    }
-    Some(arity)
-}
-
-/// Render an FQN for error-message formatting. Matches the
-/// dot-separated convention the rest of the assembly crate uses.
-fn fqn_display(target: &MeasureTarget) -> String {
-    let mut segments = target.namespace.clone();
-    segments.extend(target.type_chain.iter().cloned());
-    segments.join(".")
-}
-
-/// Find a mutable reference to the entity at the given path: a
-/// top-level entity matched by `(namespace, type_chain[0])`, then a
-/// descent through `nested_types` for each remaining segment of
-/// `type_chain`. Nested entities carry an empty namespace of their own
-/// (the path lives on the outermost type), so the descent matches on
-/// `name` only. Returns `None` if any segment is missing.
-fn find_entity_mut<'a>(
-    entities: &'a mut [Entity],
-    namespace: &[String],
-    type_chain: &[String],
-) -> Option<&'a mut Entity> {
-    let (head, rest) = type_chain.split_first()?;
-    let mut current = entities
-        .iter_mut()
-        .find(|e| e.namespace.as_slice() == namespace && e.name == *head)?;
-    for segment in rest {
-        current = current
-            .nested_types
-            .iter_mut()
-            .find(|e| e.name == *segment)?;
-    }
-    Some(current)
-}
-
-/// Like [`find_entity_mut`], but the **leaf** must also match `arity`, and must
-/// be the only row that does.
-///
-/// The arity-stripped CLR name is not injective — `type A` and `type A<'T>` both
-/// project to the name `A` — so a name-only walk reaches whichever twin comes
-/// first, and a caller that *assigns* through it writes one row twice and the
-/// other never. A measure-free entity's pickled typar count is its CLR arity and
-/// separates them exactly.
-///
-/// Container steps stay name-keyed, matching [`find_entity_mut`]: an arity twin
-/// *containing* the addressed leaf would need the same treatment, but the
-/// collected target does not carry its containers' pickled arities.
-fn find_entity_at_arity_mut<'a>(
-    entities: &'a mut [Entity],
-    namespace: &[String],
-    type_chain: &[String],
-    arity: usize,
-) -> Option<&'a mut Entity> {
-    let (leaf, containers) = type_chain.split_last()?;
-    let rows: &mut [Entity] = if containers.is_empty() {
-        entities
-    } else {
-        &mut find_entity_mut(entities, namespace, containers)?.nested_types
-    };
-    // A top-level row is keyed by its namespace too; a nested one carries an
-    // empty namespace of its own (the path lives on the outermost type).
-    let matches = |e: &Entity| {
-        e.name == *leaf
-            && e.generic_parameters.len() == arity
-            && (!containers.is_empty() || e.namespace.as_slice() == namespace)
-    };
-    if rows.iter().filter(|e| matches(e)).count() != 1 {
-        return None;
-    }
-    rows.iter_mut().find(|e| matches(e))
-}
-
-/// Like [`find_entity_mut`], but returns `None` unless the addressed name is
-/// **unambiguous at every chain step** — exactly one entity matches at the top
-/// level and exactly one nested type matches each subsequent segment. This is
-/// the ECMA-side half of the range overlay's arity-decline: `type A` and
-/// `type A<'T>` both strip to the metadata name `A`, so two ECMA rows can carry
-/// the name a single collected target addresses; stamping either would navigate
-/// to the wrong twin, so we decline (D5). `find_entity_mut`, which takes the
-/// first match, stays for source-name stamping, where the name-only lossiness
-/// is harmless (twins share their source name).
-fn find_entity_unique_mut<'a>(
-    entities: &'a mut [Entity],
-    namespace: &[String],
-    type_chain: &[String],
-) -> Option<&'a mut Entity> {
-    let (head, rest) = type_chain.split_first()?;
-    if entities
-        .iter()
-        .filter(|e| e.namespace.as_slice() == namespace && e.name == *head)
-        .count()
-        != 1
-    {
-        return None;
-    }
-    let mut current = entities
-        .iter_mut()
-        .find(|e| e.namespace.as_slice() == namespace && e.name == *head)?;
-    for segment in rest {
-        if current
-            .nested_types
-            .iter()
-            .filter(|e| e.name == *segment)
-            .count()
-            != 1
-        {
-            return None;
-        }
-        current = current
-            .nested_types
-            .iter_mut()
-            .find(|e| e.name == *segment)?;
-    }
-    Some(current)
 }
 
 // ---------------------------------------------------------------------------
@@ -4143,14 +3630,16 @@ fn occupies(member: &Member, slot: &DocSlot) -> bool {
     }
 }
 
-/// One pickled F# type's member vals, located by FQN in the ECMA tree.
+/// One pickled F# type's member vals.
 struct TypeMemberTarget {
+    /// The type's stamp, by which [`PickleJoin`] finds its row.
+    stamp: u32,
+    /// The type's namespace, arity-stripped CLR type chain and pickled arity:
+    /// how a member signature spells the type itself when it names it
+    /// ([`leads_with_receiver`]).
     namespace: Vec<String>,
     type_chain: Vec<String>,
     arity: usize,
-    /// The type's own TypeDef name, arity suffix and all (`C`1`): what the
-    /// row the lossy key finds must physically be called.
-    il_name: String,
     /// Each member val's (or `val` field's) slot and pickled key, in pickle
     /// order. A slot can repeat: same-name, same-arity overloads share one.
     keys: Vec<DocKey>,
@@ -4213,21 +3702,27 @@ enum SlotRole {
 /// method its sibling's key would show the sibling's documentation — and keep
 /// their computed IDs.
 ///
-/// The type is located by `(namespace, containers, name, arity)` and must be
-/// the only row at that key ([`locate_type_row`]). A type with an erased
-/// `[<Measure>]` parameter is skipped: its pickled arity is not its CLR arity,
-/// so the key cannot name its row. Skipping costs coverage only — a member left
-/// unstamped keeps its computed ID, and one left unshaped keeps its IL shape.
+/// The type's row is the one [`PickleJoin`] certifies as its own. A type with
+/// an erased `[<Measure>]` parameter is skipped: its member vals' slots are
+/// matched by arity, and IL counts no erased parameter. Skipping costs coverage
+/// only — a member left unstamped keeps its computed ID, and one left unshaped
+/// keeps its IL shape.
 pub(crate) fn apply_type_member_overlays(
     entities: &mut [Entity],
     pickled: &PickledCcu,
+    join: &PickleJoin,
     physical: &PhysicalMethods,
 ) -> Result<(), ImportError> {
     for target in type_member_targets(pickled)? {
         if target.keys.is_empty() {
             continue;
         }
-        let Some(ecma) = locate_type_row(entities, &target, physical) else {
+        // The type's own row, as the join certifies it; a pickled type never
+        // compiles to a module's row.
+        let Some(ecma) = join
+            .entity_mut(entities, target.stamp)
+            .filter(|e| e.kind != EntityKind::Module)
+        else {
             continue;
         };
         overlay_type_row(ecma, &target, physical);
@@ -4339,13 +3834,10 @@ fn type_member_targets(pickled: &PickledCcu) -> Result<Vec<TypeMemberTarget>, Im
                 stamp,
                 (
                     TypeMemberTarget {
+                        stamp,
                         namespace: namespace.to_vec(),
                         type_chain: chain,
                         arity: entity.typars.len(),
-                        il_name: entity
-                            .compiled_name
-                            .clone()
-                            .unwrap_or_else(|| entity.logical_name.clone()),
                         keys,
                     },
                     compiles_instance_members_as_static(&fslib, entity),
@@ -4435,53 +3927,6 @@ fn member_doc_key(
             SlotRole::Plain
         },
     })
-}
-
-/// The projected row of a pickled type, or `None` when the lossy key
-/// `(namespace, containers, stripped name, arity)` cannot name it: no row, or
-/// more than one ([`find_entity_at_arity_mut`]; the containers must each be
-/// unique by name too), a module, or a row whose methods are not physically
-/// declared on a TypeDef of the type's IL name.
-fn locate_type_row<'a>(
-    entities: &'a mut [Entity],
-    target: &TypeMemberTarget,
-    physical: &PhysicalMethods,
-) -> Option<&'a mut Entity> {
-    let (leaf, containers) = target
-        .type_chain
-        .split_last()
-        .expect("a target's chain ends in its own name");
-    let ecma = if containers.is_empty() {
-        find_entity_at_arity_mut(
-            entities,
-            &target.namespace,
-            &target.type_chain,
-            target.arity,
-        )
-    } else {
-        find_entity_unique_mut(entities, &target.namespace, containers).and_then(|container| {
-            find_entity_at_arity_mut(
-                &mut container.nested_types,
-                &[],
-                std::slice::from_ref(leaf),
-                target.arity,
-            )
-        })
-    }?;
-    if ecma.kind == EntityKind::Module {
-        return None;
-    }
-    // The key `(namespace, containers, stripped name, arity)` is lossy
-    // (#145): with this type's own row dropped from the projection, a
-    // `[<CompiledName("C`2")>] type D<'T>` sits at `C<'T>`'s key. The
-    // physical TypeDef name, arity suffix included, tells them apart.
-    let declared_here = !ecma.method_def_tokens.is_empty()
-        && ecma.method_def_tokens.iter().all(|t| {
-            physical
-                .get(t)
-                .is_some_and(|m| m.declaring_type == target.il_name)
-        });
-    declared_here.then_some(ecma)
 }
 
 /// Give each member fsc compiled under another staticness than F# declares
@@ -4842,8 +4287,6 @@ fn stamp_arg_groups(
 /// member list cannot show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PhysicalMethod {
-    /// The declaring TypeDef's own name, arity suffix included (`C`1`).
-    pub(crate) declaring_type: String,
     pub(crate) name: String,
     /// `None` when the signature does not decode: the method may then occupy a
     /// slot of any arity.
@@ -5196,23 +4639,17 @@ impl MeasureScan {
 /// declares: its `let` values and functions, and any extension members, all of
 /// which compile onto its class.
 ///
-/// The row is located the way [`apply_type_member_overlays`] locates it, under
-/// the same guards: an unambiguous `(namespace, containers, name, arity)` key
-/// whose physical methods are declared on a TypeDef of the pickled IL name, and
-/// which is a module exactly when the pickled entity is. A
-/// measure-parameterised type is never stamped — its pickled arity is not its
-/// CLR arity, so the key cannot name its row. Anything not stamped keeps the
+/// The row is the one [`PickleJoin`] certifies as the entity's own, and must be
+/// a module exactly when the pickled entity is. A measure-parameterised type is
+/// never stamped: its own typar is one IL erases, so `Unknowable` is the
+/// reading that claims nothing about it. Anything not stamped keeps the
 /// `Unknowable` the projector blanked it to.
 pub(crate) fn apply_member_measures(
     entities: &mut [Entity],
     pickled: &PickledCcu,
-    physical: &PhysicalMethods,
+    join: &PickleJoin,
 ) -> Result<(), ImportError> {
     struct Target {
-        namespace: Vec<String>,
-        type_chain: Vec<String>,
-        arity: usize,
-        il_name: String,
         is_module: bool,
         scan: MeasureScan,
     }
@@ -5229,7 +4666,7 @@ pub(crate) fn apply_member_measures(
         &[],
         &[],
         &mut path,
-        &mut |stamp, entity, is_root, namespace, type_chain| {
+        &mut |stamp, entity, is_root, _namespace, _type_chain| {
             for &vi in &entity.module_type.vals {
                 let v = pickled.tables.vals.get(vi as usize).ok_or(
                     ImportError::OsgnIndexOutOfRange {
@@ -5268,18 +4705,9 @@ pub(crate) fn apply_member_measures(
                     let v = &pickled.tables.vals[vi as usize];
                     scan.scan(pickled, &local_fqns, &v.ty, v.access.is_empty())?;
                 }
-                let mut chain = type_chain.to_vec();
-                chain.push(clr_name(entity));
                 targets.insert(
                     stamp,
                     Target {
-                        namespace: namespace.to_vec(),
-                        type_chain: chain,
-                        arity: 0,
-                        il_name: entity
-                            .compiled_name
-                            .clone()
-                            .unwrap_or_else(|| entity.logical_name.clone()),
                         is_module: true,
                         scan,
                     },
@@ -5322,18 +4750,9 @@ pub(crate) fn apply_member_measures(
             for field in fields {
                 scan.field(pickled, &local_fqns, field)?;
             }
-            let mut chain = type_chain.to_vec();
-            chain.push(clr_name(entity));
             targets.insert(
                 stamp,
                 Target {
-                    namespace: namespace.to_vec(),
-                    type_chain: chain,
-                    arity: entity.typars.len(),
-                    il_name: entity
-                        .compiled_name
-                        .clone()
-                        .unwrap_or_else(|| entity.logical_name.clone()),
                     is_module: false,
                     scan,
                 },
@@ -5384,46 +4803,13 @@ pub(crate) fn apply_member_measures(
             .scan
             .scan(pickled, &local_fqns, &v.ty, v.access.is_empty())?;
     }
-    for target in targets.into_values() {
-        let (leaf, containers) = target
-            .type_chain
-            .split_last()
-            .expect("a target's chain ends in its own name");
-        let ecma = if containers.is_empty() {
-            find_entity_at_arity_mut(
-                entities,
-                &target.namespace,
-                &target.type_chain,
-                target.arity,
-            )
-        } else {
-            find_entity_unique_mut(entities, &target.namespace, containers).and_then(|container| {
-                find_entity_at_arity_mut(
-                    &mut container.nested_types,
-                    &[],
-                    std::slice::from_ref(leaf),
-                    target.arity,
-                )
-            })
-        };
-        let Some(ecma) = ecma else {
+    for (stamp, target) in targets {
+        let Some(ecma) = join.entity_mut(entities, stamp) else {
             continue;
         };
-        // A module and a type are told apart by their ECMA row too: a pickled
-        // module whose key reached a non-module row, or the reverse, is the
-        // wrong row.
+        // The pickle and the row agree on whether this is a module, or the
+        // reading describes members of some other shape than the row holds.
         if (ecma.kind == EntityKind::Module) != target.is_module {
-            continue;
-        }
-        // The lossy-key guard of `apply_type_member_overlays` (#145): the row
-        // the key found must physically be this type's.
-        let declared_here = !ecma.method_def_tokens.is_empty()
-            && ecma.method_def_tokens.iter().all(|t| {
-                physical
-                    .get(t)
-                    .is_some_and(|m| m.declaring_type == target.il_name)
-            });
-        if !declared_here {
             continue;
         }
         ecma.member_measures = target.scan.reading();
@@ -5456,6 +4842,80 @@ mod tests {
         MethodSignature, Nullability, Parameter, Primitive, TypeRef, Version,
     };
     use proptest::prelude::*;
+
+    /// The join a projection certifies when `entities` is the image's whole
+    /// `TypeDef` table: every row the tree holds, nothing dropped.
+    fn join_for(entities: &[Entity], ccu: &PickledCcu) -> Result<PickleJoin, ImportError> {
+        fn rows(entities: &[Entity], parent: Option<&RowPath>, out: &mut Vec<RowPath>) {
+            for e in entities {
+                let path = match parent {
+                    None => RowPath::of_top_level(e),
+                    Some(p) => p.child(e),
+                };
+                if let Some(path) = &path {
+                    out.push(path.clone());
+                    rows(&e.nested_types, Some(path), out);
+                }
+            }
+        }
+        let mut table = Vec::new();
+        rows(entities, None, &mut table);
+        PickleJoin::certify(ccu, &table)
+    }
+
+    // The overlays as a projection runs them, joined against the tree they are
+    // handed (`join_for`), so a test reads as the tree it builds.
+
+    fn apply_entity_overlay(entities: &mut [Entity], ccu: &PickledCcu) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::apply_entity_overlay(entities, ccu, &join)
+    }
+
+    fn apply_typar_constraints(
+        entities: &mut Vec<Entity>,
+        ccu: &PickledCcu,
+    ) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::apply_typar_constraints(entities, ccu, &join)
+    }
+
+    fn apply_union_cases(entities: &mut [Entity], ccu: &PickledCcu) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::apply_union_cases(entities, ccu, &join)
+    }
+
+    fn apply_module_member_projection(
+        entities: &mut [Entity],
+        ccu: &PickledCcu,
+        physical: &PhysicalMethods,
+    ) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::apply_module_member_projection(entities, ccu, &join, physical)
+    }
+
+    fn merge_measure_entities(entities: &mut [Entity], ccu: &PickledCcu) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::merge_measure_entities(entities, ccu, &join)
+    }
+
+    fn apply_measure_overlay(entities: &mut [Entity], ccu: &PickledCcu) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::apply_measure_overlay(entities, ccu, &join)
+    }
+
+    fn apply_declaration_order(entities: &mut [Entity], ccu: &PickledCcu) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::apply_declaration_order(entities, ccu, &join)
+    }
+
+    fn apply_abbreviation_markers(
+        entities: &mut Vec<Entity>,
+        ccu: &PickledCcu,
+        assembly: &AssemblyIdentity,
+    ) -> Result<(), ImportError> {
+        let join = join_for(entities, ccu)?;
+        super::apply_abbreviation_markers(entities, ccu, &join, assembly)
+    }
 
     fn dummy_assembly() -> AssemblyIdentity {
         AssemblyIdentity {
@@ -5531,12 +4991,21 @@ mod tests {
         make_entity_kinded(logical_name, repr, modul_typ, TyparKind::Type)
     }
 
+    /// A pickled entity. One with a namespace body, no representation and an
+    /// ordinary kind is a namespace fragment, and carries the
+    /// `IsModuleOrNamespace` flag a real one does; anything else built here
+    /// starts without it (a measure, or an abbreviation once
+    /// [`make_abbreviation`] gives it a target, is a *type* with a namespace
+    /// body).
     fn make_entity_kinded(
         logical_name: &str,
         repr: PickledTyconRepr,
         modul_typ: PickledModulType,
         typar_kind: TyparKind,
     ) -> PickledEntity {
+        let is_namespace_fragment = modul_typ.is_type == IsType::Namespace
+            && matches!(repr, PickledTyconRepr::NoRepr)
+            && typar_kind == TyparKind::Type;
         PickledEntity {
             typars: Vec::new(),
             logical_name: logical_name.to_string(),
@@ -5550,7 +5019,11 @@ mod tests {
             type_abbrev: None,
             tcaug: empty_tcaug(),
             typar_kind,
-            flags: 0,
+            flags: if is_namespace_fragment {
+                ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE
+            } else {
+                0
+            },
             cpath: None,
             module_type: modul_typ,
             exn_repr: PickledExnRepr::None,
@@ -5583,7 +5056,7 @@ mod tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
-            metadata_arity_suffix: Some(0),
+            metadata_name: Some(name.to_string()),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -7669,7 +7142,6 @@ mod tests {
                 (
                     i as u32,
                     PhysicalMethod {
-                        declaring_type: "M".to_string(),
                         name: name.to_string(),
                         params: Some(*params),
                         is_static: true,
@@ -7843,7 +7315,6 @@ mod tests {
                     (
                         i as u32,
                         PhysicalMethod {
-                            declaring_type: "T".to_string(),
                             name: format!("M{}", item.name),
                             params: Some(item.params.len()),
                             is_static: item.is_static,
@@ -8135,7 +7606,6 @@ mod tests {
                     (
                         k as u32,
                         PhysicalMethod {
-                            declaring_type: "T".to_string(),
                             name: format!("M{}", item.name),
                             params: Some(il_arity(item)),
                             is_static: item.is_static,
@@ -8200,7 +7670,7 @@ mod tests {
                 namespace: vec!["N".to_string()],
                 type_chain: vec!["T".to_string()],
                 arity: 0,
-                il_name: "T".to_string(),
+                stamp: 0,
                 keys,
             };
             overlay_type_row(&mut entity, &target, &physical);
@@ -8552,12 +8022,14 @@ mod tests {
                 vals: Vec::new(),
             },
         };
-        // The projector stores `Entity::name` arity-stripped.
+        // The projector stores `Entity::name` arity-stripped, and the row's own
+        // name in `metadata_name`.
         let mut owned = vec![make_ecma_entity(
             vec!["N"],
             "FSharpChoice",
             EntityKind::Class,
         )];
+        owned[0].metadata_name = Some("FSharpChoice`2".to_string());
         apply_entity_overlay(&mut owned, &ccu).unwrap();
         assert_eq!(owned[0].source_name.as_deref(), Some("Choice"));
     }
@@ -8676,6 +8148,7 @@ mod tests {
     fn make_abbreviation(logical_name: &str) -> PickledEntity {
         let mut e = make_entity(logical_name, PickledTyconRepr::NoRepr, empty_modul_typ());
         e.type_abbrev = some_abbrev_target();
+        e.flags = 0;
         e
     }
 
@@ -9032,9 +8505,16 @@ mod tests {
     /// `IsModuleOrNamespace` flag (like the namespace and the root) — the merge
     /// must seal only the *type*. Slot 0 is the CCU wrapper, 1 the namespace,
     /// 2 `Teq`, 3 `Helpers`.
+    /// An opaque *type* — a signature-hidden representation — pickled with a
+    /// namespace body: `NoRepr`, and `IsModuleOrNamespace` clear.
+    fn opaque_type(name: &str) -> PickledEntity {
+        let mut e = make_entity(name, PickledTyconRepr::NoRepr, empty_modul_typ());
+        e.flags = 0;
+        e
+    }
+
     fn ccu_with_hidden_union() -> PickledCcu {
-        // A TYPE: `IsModuleOrNamespace` clear (`make_entity` defaults `flags` to 0).
-        let teq = make_entity("Teq", PickledTyconRepr::NoRepr, empty_modul_typ());
+        let teq = opaque_type("Teq");
         let mut helpers = make_entity(
             "Helpers",
             PickledTyconRepr::NoRepr,
@@ -9173,7 +8653,7 @@ mod tests {
         // must keep it out of `hidden_repr`, leaving that foreign union `None`.
         // (`Fresh` here stands in for any non-`None` `exn_repr`; the exclusion is
         // identical for the `Abbrev` alias that is the realistic collision.)
-        let mut u = make_entity("U", PickledTyconRepr::NoRepr, empty_modul_typ());
+        let mut u = opaque_type("U");
         u.exn_repr = PickledExnRepr::Fresh(Vec::new());
         let mut collision = empty_modul_typ();
         collision.entities = vec![2];
@@ -9205,44 +8685,6 @@ mod tests {
             constraints: Vec::new(),
             xmldoc: PickledXmlDoc { lines: Vec::new() },
         }
-    }
-
-    /// A `[<Measure>]` typar is erased from IL *individually*, so an entity that
-    /// has one still has a CLR arity — and still needs its source name.
-    ///
-    /// `[<CompiledName("ClrQ")>] type SourceQ<[<Measure>] 'u>` is the shape:
-    /// arity 0 in metadata, renamed, and perfectly ordinary F#. Keying the
-    /// source-name overlay on "is this measure-free?" would skip it and leave
-    /// the row spelled `ClrQ`, a name F# rejects — the same defect the arity
-    /// keying exists to fix, reintroduced at a different door.
-    #[test]
-    fn a_renamed_measure_type_still_gets_its_source_name() {
-        let mut ccu = make_ccu(Vec::new(), Vec::new(), 0);
-        ccu.tables.typars = vec![make_typar(MEASURE_TYPAR_FLAGS), make_typar(0)];
-
-        let mut measure_only = make_entity("A", PickledTyconRepr::NoRepr, empty_modul_typ());
-        measure_only.typars = vec![0];
-        assert_eq!(
-            pickled_clr_arity(&ccu, &measure_only),
-            Some(0),
-            "a lone measure typar emits no GenericParam row"
-        );
-
-        let mut mixed = make_entity("B", PickledTyconRepr::NoRepr, empty_modul_typ());
-        mixed.typars = vec![1, 0];
-        assert_eq!(
-            pickled_clr_arity(&ccu, &mixed),
-            Some(1),
-            "only the non-measure typar counts"
-        );
-
-        let mut dangling = make_entity("C", PickledTyconRepr::NoRepr, empty_modul_typ());
-        dangling.typars = vec![99];
-        assert_eq!(
-            pickled_clr_arity(&ccu, &dangling),
-            None,
-            "an unresolvable typar declines rather than guessing a count"
-        );
     }
 
     /// End to end: the renamed measure type's ECMA row takes its source name.
@@ -9307,9 +8749,9 @@ mod tests {
         // seal the wrong entity. The seal declines a measure-parameterised
         // candidate (it keeps `None`), while a measure-free hidden union `V` at
         // the same namespace is still sealed.
-        let mut u = make_entity("U", PickledTyconRepr::NoRepr, empty_modul_typ());
+        let mut u = opaque_type("U");
         u.typars = vec![0]; // one MEASURE typar
-        let v = make_entity("V", PickledTyconRepr::NoRepr, empty_modul_typ()); // measure-free
+        let v = opaque_type("V"); // measure-free
         let mut ns_modul = empty_modul_typ();
         ns_modul.entities = vec![2, 3];
         let mut ns = make_entity("Ns", PickledTyconRepr::NoRepr, ns_modul);
@@ -9339,18 +8781,16 @@ mod tests {
     }
 
     #[test]
-    fn a_projected_key_collision_declines_the_seal() {
-        // codex round 6: borzoi's projected key `(strip_arity(name),
+    fn the_seal_never_reaches_a_union_whose_name_strips_alike() {
+        // codex round 6: the projected key `(strip_arity(name),
         // generic_parameters.len())` is not injective. A legal `type U` (opaque
         // sealed class) beside `[<CompiledName("U`0")>] type Other = A | B` yields
         // distinct metadata rows `U` and `U`0` that BOTH project to
-        // `(name = "U", arity = 0)` — as do a measure-erased `U`1` beside a
-        // non-generic `U`, and a `--staticlink` foreign union. Rather than
-        // enumerate every such source (each review round found a new one), the
-        // seal commits only when the key names EXACTLY ONE ECMA row; two rows
-        // decline, leaving the real union's cases intact (`None` here — the row a
-        // blind seal would have overwritten).
-        let opaque = make_entity("U", PickledTyconRepr::NoRepr, empty_modul_typ());
+        // `(name = "U", arity = 0)`. The opaque type's row is the one named
+        // exactly `U` — a class, so nothing is sealed — and the union at `U`0`
+        // keeps its unknowable cases (the row a seal keyed by name would have
+        // overwritten).
+        let opaque = opaque_type("U");
         let mut ns_modul = empty_modul_typ();
         ns_modul.entities = vec![2];
         let mut ns = make_entity("Ns", PickledTyconRepr::NoRepr, ns_modul);
@@ -9361,15 +8801,18 @@ mod tests {
         root.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
         let pickled = make_ccu(vec![root, ns, opaque], Vec::new(), 0);
         // Two ECMA rows collapse onto (Ns, "U", 0): the opaque class and a union.
+        let mut renamed_union = make_ecma_entity(vec!["Ns"], "U", EntityKind::Union);
+        renamed_union.metadata_name = Some("U`0".to_string());
         let mut entities = vec![
             make_ecma_entity(vec!["Ns"], "U", EntityKind::Class),
-            make_ecma_entity(vec!["Ns"], "U", EntityKind::Union),
+            renamed_union,
         ];
         apply_union_cases(&mut entities, &pickled).expect("apply union case names");
+        assert_eq!(entities[0].union_cases, UnionCases::Unknowable, "a class is not sealed");
         assert_eq!(
             entities[1].union_cases,
             UnionCases::Unknowable,
-            "a projected-key collision must decline, leaving the union's cases intact"
+            "another type's union must keep its cases unknowable"
         );
     }
 
@@ -9416,8 +8859,13 @@ mod tests {
     /// An ECMA row with `arity` generic parameters, every one blanked to
     /// `Unknowable` — the state an F# assembly's rows are in when the overlay
     /// runs.
+    /// A class row of `arity` type parameters, named as fsc names one: `name`,
+    /// with the arity suffix in its metadata name when it is generic.
     fn ecma_generic(namespace: Vec<&str>, name: &str, arity: usize) -> Entity {
         let mut e = make_ecma_entity(namespace, name, EntityKind::Class);
+        if arity > 0 {
+            e.metadata_name = Some(format!("{name}`{arity}"));
+        }
         e.generic_parameters = (0..arity)
             .map(|i| TypeParameter {
                 name: format!("T{i}"),
@@ -9450,8 +8898,9 @@ mod tests {
 
     #[test]
     fn a_pickled_constraint_reaches_its_ecma_typar() {
-        // stamps: root(0), N(1), A(2)
-        let a = typed_entity_with_typars("A", vec![0, 1]);
+        // stamps: root(0), N(1), A(2). A generic type's logical name carries
+        // its arity suffix, as FCS mangles it.
+        let a = typed_entity_with_typars("A`2", vec![0, 1]);
         let [root, ns] = root_and_namespace(vec![2]);
         let mut ccu = make_ccu(vec![root, ns, a], Vec::new(), 0);
         ccu.tables.typars = vec![typar_spec("K", true), typar_spec("V", false)];
@@ -9469,10 +8918,10 @@ mod tests {
         // Two pickled types whose CLR names and arities coincide: neither can
         // say which describes the row, and the row's own name cannot say
         // either.
-        let mut a1 = typed_entity_with_typars("A", vec![0]);
-        a1.compiled_name = Some("A".to_string());
-        let mut a2 = typed_entity_with_typars("Other", vec![1]);
-        a2.compiled_name = Some("A".to_string());
+        let mut a1 = typed_entity_with_typars("A`1", vec![0]);
+        a1.compiled_name = Some("A`1".to_string());
+        let mut a2 = typed_entity_with_typars("Other`1", vec![1]);
+        a2.compiled_name = Some("A`1".to_string());
         let [root, ns] = root_and_namespace(vec![2, 3]);
         let mut ccu = make_ccu(vec![root, ns, a1, a2], Vec::new(), 0);
         ccu.tables.typars = vec![typar_spec("T", true), typar_spec("T", false)];
@@ -9708,22 +9157,28 @@ mod tests {
     }
 
     #[test]
-    fn range_declines_when_two_targets_collapse_onto_one_fqn() {
-        // Collected-target-side guard, isolated: two pickle entities whose CLR
-        // names both strip to `A` (`A`, and `[<CompiledName("A`1")>] B`), but a
-        // *single* ECMA row `A` (so `find_entity_unique_mut` would happily hit
-        // it). The stamp must still decline — two source types cannot both own
-        // the one row. stamps: root(0), N(1), A(2), B(3).
+    fn each_range_lands_on_the_row_that_bears_its_entitys_compiled_name() {
+        // Two pickle entities whose CLR names both strip to `A` (`A`, and
+        // `[<CompiledName("A`1")>] B`), and their two rows, which strip alike
+        // too. Each row is the one whose metadata name is its entity's compiled
+        // name, so each takes its own entity's range. stamps: root(0), N(1),
+        // A(2), B(3).
         let a = typed_entity_with_range("A", None, 0, 1, 0);
         let b = typed_entity_with_range("B", Some("A`1"), 0, 2, 0);
         let [root, ns] = root_and_namespace(vec![2, 3]);
         let ccu = ccu_with_strings(vec![root, ns, a, b], vec!["Lib.fs".to_string()]);
+        let mut renamed = make_ecma_entity(vec!["N"], "A", EntityKind::Class);
+        renamed.metadata_name = Some("A`1".to_string());
+        let mut owned = vec![renamed, make_ecma_entity(vec!["N"], "A", EntityKind::Class)];
+        apply_entity_overlay(&mut owned, &ccu).unwrap();
+        let line = |e: &Entity| e.definition_range.as_ref().map(|r| r.start_line);
+        assert_eq!(line(&owned[0]), Some(2), "``A`1`` is B's row");
+        assert_eq!(line(&owned[1]), Some(1), "`A` is A's row");
+
+        // With B's row absent, A's row is still A's alone: B names another row.
         let mut owned = vec![make_ecma_entity(vec!["N"], "A", EntityKind::Class)];
         apply_entity_overlay(&mut owned, &ccu).unwrap();
-        assert_eq!(
-            owned[0].definition_range, None,
-            "two collected targets on one FQN must decline"
-        );
+        assert_eq!(line(&owned[0]), Some(1));
     }
 
     #[test]
@@ -9907,7 +9362,6 @@ mod tests {
                     (
                         i as u32,
                         PhysicalMethod {
-                            declaring_type: "T".to_string(),
                             name: format!("M{}", item.name),
                             params: Some(item.params.len()),
                             is_static: item.is_static,
@@ -9963,7 +9417,7 @@ mod tests {
                 namespace: vec!["N".to_string()],
                 type_chain: vec!["T".to_string()],
                 arity: 0,
-                il_name: "T".to_string(),
+                stamp: 0,
                 keys,
             };
             let before = entity.members.clone();
@@ -10037,7 +9491,6 @@ mod tests {
         let physical: PhysicalMethods = [(
             0,
             PhysicalMethod {
-                declaring_type: "T".to_string(),
                 name: "M".to_string(),
                 params: Some(2),
                 is_static: true,
@@ -10050,7 +9503,7 @@ mod tests {
             namespace: vec!["N".to_string()],
             type_chain: vec!["T".to_string()],
             arity: 0,
-            il_name: "T".to_string(),
+            stamp: 0,
             keys: vec![DocKey {
                 slot: DocSlot::Method {
                     name: "M".to_string(),
@@ -10124,7 +9577,6 @@ mod tests {
             role: SlotRole::Plain,
         };
         let physical_method = |params: usize, is_static: bool| PhysicalMethod {
-            declaring_type: "T".to_string(),
             name: "M".to_string(),
             params: Some(params),
             is_static,
@@ -10151,7 +9603,7 @@ mod tests {
                 namespace: vec!["N".to_string()],
                 type_chain: vec!["T".to_string()],
                 arity: 0,
-                il_name: "T".to_string(),
+                stamp: 0,
                 keys: vec![
                     key(Compiled::StaticWithReceiver, groups(&[&["a"], &["b"]])),
                     key(Compiled::AsDeclared, groups(&[&["x", "y"]])),
@@ -10166,6 +9618,318 @@ mod tests {
                 ArgGroups::Read(Box::new(groups(&[&["x", "y"]]))),
                 "the member keeps its own val's grouping"
             );
+        }
+    }
+
+    /// [`PickleJoin`] against a model of what fsc writes: every pickled module
+    /// or type gets its own `TypeDef` row, named and placed as FCS's
+    /// `CompiledRepresentation` and the IL writer's last-`.` split place it;
+    /// foreign rows (a `--staticlink` dependency's, a signature-hidden type's)
+    /// land anywhere; and the projector drops some rows.
+    ///
+    /// The names are drawn from an alphabet chosen to collide under every lossy
+    /// reading — ``U`` / ``U`0`` / ``U`1`` / ``U`01`` strip alike, ``A.U`` in
+    /// namespace `N` is the full name of `U` in namespace `N.A`, `M` and
+    /// ``M`1`` are module names that contain namesakes — and each row carries
+    /// its own index as a tag, so a test can say whose row a lookup reached.
+    mod pickle_join_properties {
+        use super::*;
+        use crate::ecma335_assembly::strip_arity;
+
+        const NAMESPACES: [&[&str]; 3] = [&[], &["N"], &["N", "A"]];
+        const NAMES: [&str; 8] = ["U", "U`0", "U`1", "U`01", "M", "M`1", "A.U", "A"];
+
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Kind {
+            Module,
+            Type,
+            /// No row of its own.
+            Abbreviation,
+        }
+
+        /// One pickled declaration: its namespace, the earlier declaration it
+        /// is nested in (honoured only when that is a module of the same
+        /// namespace), its compiled name, and its kind.
+        #[derive(Debug, Clone)]
+        struct Decl {
+            ns: usize,
+            parent: Option<usize>,
+            name: usize,
+            kind: Kind,
+        }
+
+        /// One `TypeDef` row: its enclosing row, its namespace and name columns,
+        /// and whether the projector drops it.
+        #[derive(Debug, Clone)]
+        struct Row {
+            parent: Option<usize>,
+            ns_col: String,
+            name_col: String,
+            dropped: bool,
+        }
+
+        /// The IL writer's split of a full type name at its last `.`.
+        fn columns(full: &str) -> (String, String) {
+            match full.rfind('.') {
+                Some(i) => (full[..i].to_string(), full[i + 1..].to_string()),
+                None => (String::new(), full.to_string()),
+            }
+        }
+
+        fn decls() -> impl Strategy<Value = Vec<Decl>> {
+            prop::collection::vec(
+                (
+                    0..NAMESPACES.len(),
+                    prop::option::of(0..8usize),
+                    0..NAMES.len(),
+                    prop_oneof![
+                        3 => Just(Kind::Module),
+                        3 => Just(Kind::Type),
+                        1 => Just(Kind::Abbreviation),
+                    ],
+                ),
+                0..9,
+            )
+            .prop_map(|raw| {
+                let mut out: Vec<Decl> = Vec::new();
+                for (ns, parent, name, kind) in raw {
+                    let parent = parent.filter(|&p| {
+                        p < out.len() && out[p].kind == Kind::Module && out[p].ns == ns
+                    });
+                    out.push(Decl {
+                        ns,
+                        parent,
+                        name,
+                        kind,
+                    });
+                }
+                out
+            })
+        }
+
+        /// Foreign rows: an enclosing row pick (resolved against the rows that
+        /// exist by then), a namespace and a name.
+        fn foreign() -> impl Strategy<Value = Vec<(Option<usize>, usize, usize)>> {
+            prop::collection::vec(
+                (
+                    prop::option::of(0..12usize),
+                    0..NAMESPACES.len(),
+                    0..NAMES.len(),
+                ),
+                0..4,
+            )
+        }
+
+        /// Where a declaration's row is, or would be: its enclosing row (its
+        /// module's) and its columns.
+        fn placement(decls: &[Decl], own_row: &[Option<usize>], i: usize) -> (Option<usize>, String, String) {
+            let d = &decls[i];
+            let name = NAMES[d.name];
+            match d.parent {
+                Some(p) => {
+                    let (ns_col, name_col) = columns(name);
+                    (own_row[p], ns_col, name_col)
+                }
+                None => {
+                    let ns = NAMESPACES[d.ns].join(".");
+                    let full = if ns.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{ns}.{name}")
+                    };
+                    let (ns_col, name_col) = columns(&full);
+                    (None, ns_col, name_col)
+                }
+            }
+        }
+
+        fn row_path(rows: &[Row], i: usize) -> RowPath {
+            let r = &rows[i];
+            match r.parent {
+                None => RowPath::top_level(&r.ns_col, &r.name_col),
+                Some(p) => row_path(rows, p).nested(&r.ns_col, &r.name_col),
+            }
+        }
+
+        fn pickled_entity(name: &str, kind: Kind, children: Vec<u32>) -> PickledEntity {
+            match kind {
+                Kind::Module => {
+                    let mut e = make_entity(name, PickledTyconRepr::NoRepr, module_modul_typ(children));
+                    e.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+                    e
+                }
+                Kind::Type => make_entity(
+                    name,
+                    PickledTyconRepr::Union(Vec::new()),
+                    module_modul_typ(Vec::new()),
+                ),
+                Kind::Abbreviation => make_abbreviation(name),
+            }
+        }
+
+        /// The pickle: the root (stamp 0), the namespace fragments `N` (1) and
+        /// `N.A` (2), then declaration `i` at stamp `3 + i`.
+        fn pickle(decls: &[Decl]) -> PickledCcu {
+            let stamp = |i: usize| (3 + i) as u32;
+            let top_in = |ns: usize| {
+                (0..decls.len())
+                    .filter(|&i| decls[i].parent.is_none() && decls[i].ns == ns)
+                    .map(stamp)
+                    .collect::<Vec<_>>()
+            };
+            let fragment = |name: &str, mut children: Vec<u32>, extra: Vec<u32>| {
+                children.extend(extra);
+                let mut modul = empty_modul_typ();
+                modul.entities = children;
+                make_entity(name, PickledTyconRepr::NoRepr, modul)
+            };
+            let mut tycons = vec![
+                fragment("Root", vec![1], top_in(0)),
+                fragment("N", vec![2], top_in(1)),
+                fragment("A", Vec::new(), top_in(2)),
+            ];
+            for (i, d) in decls.iter().enumerate() {
+                let children = (0..decls.len())
+                    .filter(|&j| decls[j].parent == Some(i))
+                    .map(stamp)
+                    .collect();
+                tycons.push(pickled_entity(NAMES[d.name], d.kind, children));
+            }
+            make_ccu(tycons, Vec::new(), 0)
+        }
+
+        /// The projected tree: every row not dropped (nor under a dropped row),
+        /// tagged with its own index in `method_def_tokens`.
+        fn tree(rows: &[Row]) -> Vec<Entity> {
+            fn build(rows: &[Row], parent: Option<usize>) -> Vec<Entity> {
+                (0..rows.len())
+                    .filter(|&i| rows[i].parent == parent && !rows[i].dropped)
+                    .map(|i| {
+                        let r = &rows[i];
+                        let namespace: Vec<&str> = if r.ns_col.is_empty() {
+                            Vec::new()
+                        } else {
+                            r.ns_col.split('.').collect()
+                        };
+                        let mut e = make_ecma_entity(namespace, strip_arity(&r.name_col), EntityKind::Class);
+                        e.metadata_name = Some(r.name_col.clone());
+                        e.method_def_tokens = vec![i as u32];
+                        e.nested_types = build(rows, Some(i));
+                        e
+                    })
+                    .collect()
+            }
+            build(rows, None)
+        }
+
+        fn present(rows: &[Row], i: usize) -> bool {
+            !rows[i].dropped && rows[i].parent.is_none_or(|p| present(rows, p))
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(4096))]
+
+            /// Every pickled entity reaches exactly its own row, or nothing; it
+            /// reaches nothing exactly when its row is shared — with another row
+            /// or another entity's path — or dropped; and the join is total
+            /// exactly when no row-bearing entity's row is shared.
+            #[test]
+            fn every_entity_reaches_its_own_row_or_declines(
+                decls in decls(),
+                foreign in foreign(),
+                drops in prop::collection::vec(prop::bool::weighted(0.15), 16),
+            ) {
+                // Each module or type's own row, in declaration order; a nested
+                // declaration's row sits in its module's.
+                let mut rows: Vec<Row> = Vec::new();
+                let mut own_row: Vec<Option<usize>> = Vec::new();
+                for i in 0..decls.len() {
+                    if decls[i].kind == Kind::Abbreviation {
+                        own_row.push(None);
+                        continue;
+                    }
+                    let (parent, ns_col, name_col) = placement(&decls, &own_row, i);
+                    own_row.push(Some(rows.len()));
+                    rows.push(Row { parent, ns_col, name_col, dropped: false });
+                }
+                for (parent, ns, name) in foreign {
+                    let parent = parent.filter(|&p| p < rows.len());
+                    let full = match parent {
+                        Some(_) => NAMES[name].to_string(),
+                        None => {
+                            let ns = NAMESPACES[ns].join(".");
+                            if ns.is_empty() { NAMES[name].to_string() } else { format!("{ns}.{}", NAMES[name]) }
+                        }
+                    };
+                    let (ns_col, name_col) = columns(&full);
+                    rows.push(Row { parent, ns_col, name_col, dropped: false });
+                }
+                for (row, &dropped) in rows.iter_mut().zip(&drops) {
+                    row.dropped = dropped;
+                }
+
+                let ccu = pickle(&decls);
+                let table: Vec<RowPath> = (0..rows.len()).map(|i| row_path(&rows, i)).collect();
+                let join = PickleJoin::certify(&ccu, &table).expect("the model pickle walks");
+                let mut entities = tree(&rows);
+
+                // The path each declaration claims, row or not.
+                let claims: Vec<RowPath> = (0..decls.len())
+                    .map(|i| {
+                        let (parent, ns_col, name_col) = placement(&decls, &own_row, i);
+                        match parent {
+                            None => RowPath::top_level(&ns_col, &name_col),
+                            Some(p) => row_path(&rows, p).nested(&ns_col, &name_col),
+                        }
+                    })
+                    .collect();
+                // Whether no other row shares the identity of row `r` or of any
+                // row enclosing it.
+                let alone = |r: usize| {
+                    let mut at = Some(r);
+                    while let Some(a) = at {
+                        if table.iter().filter(|p| **p == table[a]).count() != 1 {
+                            return false;
+                        }
+                        at = rows[a].parent;
+                    }
+                    true
+                };
+                let mut total = true;
+                for i in 0..decls.len() {
+                    let stamp = (3 + i) as u32;
+                    let reached = join
+                        .entity_mut(&mut entities, stamp)
+                        .map(|e| e.method_def_tokens.clone());
+                    let Some(r) = own_row[i] else {
+                        prop_assert_eq!(reached, None, "an abbreviation reached a row");
+                        continue;
+                    };
+                    let claims_at = claims.iter().filter(|p| **p == claims[i]).count();
+                    let unique = alone(r) && claims_at == 1;
+                    total &= unique;
+                    let expected = (unique && present(&rows, r)).then(|| vec![r as u32]);
+                    prop_assert_eq!(
+                        reached,
+                        expected,
+                        "declaration {} ({:?}): alone {}, claims {}",
+                        i,
+                        &decls[i],
+                        alone(r),
+                        claims_at
+                    );
+                }
+                prop_assert_eq!(join.is_total(), total);
+
+                // The tree-side identity is the table's.
+                let mut seen = Vec::new();
+                visit_rows_mut(&mut entities, &mut |path, e| {
+                    seen.push((path.cloned(), e.method_def_tokens[0] as usize));
+                });
+                for (path, tag) in seen {
+                    prop_assert_eq!(path.as_ref(), Some(&table[tag]));
+                }
+            }
         }
     }
 }

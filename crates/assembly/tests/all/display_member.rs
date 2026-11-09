@@ -71,7 +71,7 @@ fn entity(name: &str, kind: EntityKind, typars: &[&str]) -> Entity {
         is_struct: false,
         is_auto_open: false,
         is_require_qualified_access: false,
-        metadata_arity_suffix: Some(0),
+        metadata_name: Some(name.to_string()),
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,

@@ -2426,7 +2426,7 @@ impl AssemblyEnv {
         e.namespace.len() == 1
             && e.namespace[0] == "System"
             && e.name == "Object"
-            && e.metadata_arity_suffix == Some(0)
+            && e.metadata_arity_suffix() == Some(0)
             && e.generic_parameters.is_empty()
             && e.kind == EntityKind::Class
             && !e.is_struct
@@ -2442,7 +2442,7 @@ impl AssemblyEnv {
             let e = self.entity(h);
             e.namespace.len() == 1
                 && e.namespace[0] == "System"
-                && e.metadata_arity_suffix == Some(0)
+                && e.metadata_arity_suffix() == Some(0)
                 && e.generic_parameters.is_empty()
                 && e.access == borzoi_assembly::Access::Public
         };
@@ -7704,7 +7704,7 @@ pub(crate) mod from_views_tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
-            metadata_arity_suffix: Some(0),
+            metadata_name: Some(name.to_string()),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -9031,12 +9031,12 @@ pub(crate) mod from_views_tests {
         let compiled = Entity {
             kind: EntityKind::Class,
             generic_parameters: vec![type_parameter(0)],
-            metadata_arity_suffix: Some(2),
+            metadata_name: Some("C`2".to_string()),
             ..module_entity("Lib", &["N"], "C")
         };
         let marker = Entity {
             kind: EntityKind::Exception,
-            metadata_arity_suffix: None,
+            metadata_name: None,
             ..module_entity("Lib", &["N"], "Alias")
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
@@ -9077,7 +9077,7 @@ pub(crate) mod from_views_tests {
     fn il_type_definition_declines_a_name_a_suffixless_type_shares() {
         let suffixless = |name: &str| Entity {
             kind: EntityKind::Class,
-            metadata_arity_suffix: None,
+            metadata_name: Some(format!("{name}`0")),
             ..module_entity("Lib", &["N"], name)
         };
         let plain = |name: &str| Entity {
@@ -9122,7 +9122,7 @@ pub(crate) mod from_views_tests {
     #[test]
     fn primitive_binds_only_to_a_suffixless_metadata_name() {
         let suffixed = |e: Entity| Entity {
-            metadata_arity_suffix: None,
+            metadata_name: Some(format!("{}`0", e.name)),
             ..e
         };
         let int32 = || Entity {

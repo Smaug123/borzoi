@@ -34,6 +34,7 @@ mod model;
 pub mod modifier_metamorphic;
 pub mod op_name;
 pub mod pdb;
+mod pickle_join;
 mod reader;
 pub mod shape;
 #[cfg(feature = "test-support")]
@@ -51,6 +52,7 @@ pub use ecma335_assembly::Ecma335Assembly;
 pub use error::ImportError;
 pub use fsharp_pickle::{CcuRef, PickledCcu, PickledHeader, PickledNleRef, unpickle_signature};
 pub use fsharp_pickle_merge::{ModuleMemberTarget, ModuleMemberVal, collect_module_member_targets};
+pub use pickle_join::{JoinCensus, JoinVerdict};
 pub use model::{
     AbbreviationTarget, Access, AccessorSlot, ArgGroup, ArgGroups, AssemblyIdentity,
     AssemblyProjectionSkips, Augmentation, CaseFields, CompilerFeatureRequired, CompilerMessage,

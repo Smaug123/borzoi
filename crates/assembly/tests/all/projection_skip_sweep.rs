@@ -530,6 +530,134 @@ fn report(results: &[(PathBuf, Outcome)], projected: usize) {
     }
 }
 
+/// How the host pickle of every F# assembly under `BORZOI_DLL_SWEEP_ROOT` joins
+/// to its `TypeDef` rows (`borzoi_assembly::JoinVerdict`), next to how many of
+/// its projected rows share the projected key `(namespace, stripped type chain,
+/// generic arity)` the overlays used to match by.
+///
+/// A row-bearing entity that is not joined makes its image's pickle
+/// non-authoritative, so every such image costs the projection its F#-specific
+/// readings; the census names each one, and **fails** on any, since fsc writes
+/// one row per such entity and refuses two rows of one full name — an unjoined
+/// entity in real output means the join's model of fsc is wrong. Prints usage
+/// and returns green when the variable is unset.
+#[test]
+#[ignore = "needs a populated local package cache; run explicitly"]
+fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
+    use borzoi_assembly::{Entity, JoinVerdict};
+
+    let Some(roots) = std::env::var_os("BORZOI_DLL_SWEEP_ROOT") else {
+        eprintln!("set BORZOI_DLL_SWEEP_ROOT to a package-cache root to run this census");
+        return;
+    };
+    let mut found = Found::default();
+    let mut visited = BTreeSet::new();
+    for root in std::env::split_paths(&roots).filter(|p| p.as_os_str() != "") {
+        collect_assemblies(&root, &mut found, &mut visited);
+    }
+    let files: Vec<PathBuf> = found.assemblies.into_values().collect();
+
+    /// Rows sharing the projected key with another row of the same image.
+    fn key_collisions(entities: &[Entity]) -> usize {
+        fn walk(
+            entities: &[Entity],
+            namespace: &[String],
+            chain: &mut Vec<String>,
+            keys: &mut BTreeMap<(Vec<String>, Vec<String>, usize), usize>,
+        ) {
+            for e in entities {
+                let ns = if chain.is_empty() {
+                    e.namespace.clone()
+                } else {
+                    namespace.to_vec()
+                };
+                chain.push(e.name.clone());
+                *keys
+                    .entry((ns.clone(), chain.clone(), e.generic_parameters.len()))
+                    .or_default() += 1;
+                walk(&e.nested_types, &ns, chain, keys);
+                chain.pop();
+            }
+        }
+        let mut keys = BTreeMap::new();
+        walk(entities, &[], &mut Vec::new(), &mut keys);
+        keys.values().filter(|&&n| n > 1).sum()
+    }
+
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let chunks: Vec<&[PathBuf]> = files.chunks(files.len().div_ceil(threads).max(1)).collect();
+    type Row = (PathBuf, BTreeMap<JoinVerdict, usize>, usize, usize);
+    let rows: Vec<Row> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    for path in chunk.iter() {
+                        let Ok(bytes) = std::fs::read(path) else {
+                            continue;
+                        };
+                        let probed = catch_unwind_silent(|| {
+                            let asm = Ecma335Assembly::parse(&bytes).ok()?;
+                            let census = asm.pickle_join_census().ok()??;
+                            let (entities, skips) = asm.enumerate_type_defs_with_skips().ok()?;
+                            Some((
+                                census.verdicts,
+                                key_collisions(&entities),
+                                skips.dropped_types.len(),
+                            ))
+                        });
+                        if let Ok(Some((verdicts, collisions, dropped))) = probed {
+                            out.push((path.clone(), verdicts, collisions, dropped));
+                        }
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect()
+    });
+
+    let mut totals: BTreeMap<JoinVerdict, usize> = BTreeMap::new();
+    let mut unjoined: Vec<(&Path, Vec<(JoinVerdict, usize)>)> = Vec::new();
+    let (mut colliding_rows, mut colliding_images, mut dropped) = (0, 0, 0);
+    for (path, verdicts, collisions, drops) in &rows {
+        for (v, n) in verdicts {
+            *totals.entry(*v).or_default() += n;
+        }
+        let bad: Vec<_> = verdicts
+            .iter()
+            .filter(|(v, _)| !matches!(v, JoinVerdict::Joined | JoinVerdict::NoOwnTypeDef))
+            .map(|(v, n)| (*v, *n))
+            .collect();
+        if !bad.is_empty() {
+            unjoined.push((path.as_path(), bad));
+        }
+        colliding_rows += collisions;
+        colliding_images += usize::from(*collisions > 0);
+        dropped += drops;
+    }
+    eprintln!(
+        "[join-census] {} F# assemblies with a host pickle | verdicts {totals:?}",
+        rows.len()
+    );
+    eprintln!(
+        "[join-census] rows sharing a projected key: {colliding_rows} in {colliding_images} \
+         assemblies | dropped rows: {dropped}"
+    );
+    for (path, bad) in &unjoined {
+        eprintln!("[join-census] unjoined {bad:?} in {}", path.display());
+    }
+    assert!(
+        unjoined.is_empty(),
+        "{} F# assemblies have pickled entities the join cannot attribute to a row",
+        unjoined.len()
+    );
+}
+
 /// The gate's own moving parts, pinned hermetically: a sweep that can only run
 /// against a package cache is a sweep whose *failure* path never executes.
 #[test]
