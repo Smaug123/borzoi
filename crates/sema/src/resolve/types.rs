@@ -1833,7 +1833,7 @@ impl<'a> Resolver<'a> {
     /// It is sound but deliberately incomplete (records nothing, a sound deferral
     /// D5) when an `open` could bring an *unmodelled type* into scope that might
     /// shadow the name ([`Self::unmodelled_open_active`] — an opened assembly module
-    /// / `open type`; [`Self::opaque_dotted_open`] — an opened project module), or
+    /// / `open type`; [`Self::dotted_opacity`] — an opened project module), or
     /// the path is project-shadowed. The `resolve_assembly_diff.rs` completeness
     /// property measures the remaining gap.
     pub(super) fn resolve_type_path(&mut self, segs: &[SyntaxToken], arity: usize) {
@@ -1968,9 +1968,9 @@ impl<'a> Resolver<'a> {
         // shadows this name — defer rather than risk a wrong target (D5). All three
         // opaque-open flags matter for *types*: `unmodelled_open_active` (an opened
         // assembly module / `open type` whose nested types we don't enumerate),
-        // `opaque_dotted_open` (an opened project module whose submodules/types we
+        // `dotted_opacity` (an opened project module whose submodules/types we
         // don't model), and `opaque_value_open` — which is *not* always implied by
-        // `opaque_dotted_open` (the `open_imports_project_values` fallback sets only
+        // `dotted_opacity` (the `open_imports_project_values` fallback sets only
         // the former), yet an opened project module with unenumerable contents can
         // still supply a shadowing type.
         if self.unmodelled_open_active || self.dotted_opacity.any() || self.opaque_value_open {
