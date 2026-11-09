@@ -439,6 +439,12 @@ fn the_known_virtual_stamp_witnesses_parse() {
         // inside an accessor's attribute list left an `OEND` where the `get`
         // was bumped.
         "type C() =\n    member x.Foo\n       with [<property: System.Obsolete\n(\"foo\")>] get() = 1\n       and set(v) = ()\n",
+        // `peek_is_record_repr_start`: a dedent between the access modifier
+        // and the `{` put an `OBLOCKEND` where the record's `{` was bumped.
+        "type T = private\n { X : int }\nlet unaffected = 42\n",
+        // `parse_trait_call_expr`: a line break before the member signature's
+        // `(` put an `OBLOCKSEP` where the `(` was bumped (F# 4.6).
+        "let testFunc (a : ^x) =\n    (^x : \n     (static member someFunc : unit -> ^x) ())\n",
     ] {
         probe(src, &mut census);
     }

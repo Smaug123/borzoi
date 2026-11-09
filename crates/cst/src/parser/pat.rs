@@ -1093,6 +1093,7 @@ impl<'src> Parser<'src> {
                     while self
                         .next_non_trivia_raw_at_pos()
                         .is_some_and(|t| matches!(t, Token::Amp))
+                        && self.next_tokens_unbroken(1)
                     {
                         self.bump_into(SyntaxKind::AMP_TOK);
                         // Reuse the comma run's `Virtual::BlockSep` drain for a
@@ -1444,6 +1445,7 @@ impl<'src> Parser<'src> {
         if self
             .next_non_trivia_raw_at_pos()
             .is_some_and(|t| matches!(t, Token::Colon))
+            && self.next_tokens_unbroken(1)
         {
             self.builder
                 .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPED_PAT));

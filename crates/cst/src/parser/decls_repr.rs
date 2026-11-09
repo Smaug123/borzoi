@@ -17,10 +17,12 @@ impl<'src> Parser<'src> {
             Some((
                 Ok(FilteredToken::Raw(Token::Internal | Token::Private | Token::Public)),
                 span,
-            )) => matches!(
-                self.next_non_trivia_raw_after(span.end),
-                Some(Token::LBrace)
-            ),
+            )) => {
+                matches!(
+                    self.next_non_trivia_raw_after(span.end),
+                    Some(Token::LBrace)
+                ) && self.next_tokens_unbroken(2)
+            }
             _ => false,
         }
     }

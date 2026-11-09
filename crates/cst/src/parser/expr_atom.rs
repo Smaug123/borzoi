@@ -4406,8 +4406,27 @@ impl<'src> Parser<'src> {
         } else {
             self.parse_var_type(SyntaxKind::HAT_TOK);
         }
-        self.bump_into(SyntaxKind::COLON_TOK);
-        self.bump_into(SyntaxKind::LPAREN_TOK);
+        // `at_trait_call_body` saw `: (` on the raw stream; a layout virtual in
+        // front of either (a line broken inside the head) means the filtered
+        // cursor is not on it, so stop rather than stamp the virtual.
+        for (token, kind) in [
+            (Token::Colon, SyntaxKind::COLON_TOK),
+            (Token::LParen, SyntaxKind::LPAREN_TOK),
+        ] {
+            if !matches!(self.peek(), Some((Ok(FilteredToken::Raw(t)), _)) if *t == token) {
+                let span = self
+                    .peek()
+                    .map(|(_, span)| span.clone())
+                    .unwrap_or_else(|| self.source.len()..self.source.len());
+                self.errors.push(ParseError {
+                    message: "expected `: (member …)` in a trait call".to_string(),
+                    span,
+                });
+                self.builder.finish_node();
+                return;
+            }
+            self.bump_into(kind);
+        }
         self.parse_member_sig();
         self.bump_swallowed_closer(
             SyntaxKind::RPAREN_TOK,

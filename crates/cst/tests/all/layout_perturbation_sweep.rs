@@ -11,14 +11,17 @@
 //! only by chance; real files put every production in front of it.
 //!
 //! So: for every corpus file, at [`POSITIONS_PER_FILE`] token starts drawn
-//! evenly through it, insert a newline, and parse at the oldest and the newest
+//! evenly through it, break the line there — the token landing at column 0,
+//! column 1, or one column past its own line's indentation ([`line_breaks`]:
+//! offside of nearly everything, of all but the outermost context, or of only
+//! the innermost ones) — and parse at the oldest and the newest
 //! language versions (the offside rules differ across them). No parse may
 //! panic or drop bytes. Failures are bucketed by panic message, each with the
 //! first witness: the file, the byte offset of the inserted newline, and the
 //! version.
 //!
 //! `#[ignore]`d: it walks the pinned corpus (`BORZOI_CORPUS`, set under
-//! `nix develop`), a few minutes in a debug build.
+//! `nix develop`), about ten minutes in a debug build.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -59,58 +62,88 @@ fn insertion_points(src: &str) -> Vec<usize> {
 struct Witness {
     file: PathBuf,
     offset: usize,
+    line_break: String,
     lang: LanguageVersion,
     count: usize,
 }
 
-/// Parse `src` with a newline at each insertion point, at each version,
-/// recording each failure under its cause.
+/// Parse `src` with each line break at each insertion point, recording each
+/// failure under its cause.
 fn sweep_file(file: &Path, src: &str, failures: &Mutex<BTreeMap<String, Witness>>) {
     let kind = if file.extension().is_some_and(|e| e == "fsi") {
         FileKind::Sig
     } else {
         FileKind::Impl
     };
-    let symbols = std::collections::HashSet::new();
     for offset in insertion_points(src) {
-        let damaged = format!("{}\n{}", &src[..offset], &src[offset..]);
-        for lang in VERSIONS {
-            let parsed = catch_unwind_silent(|| {
-                parse_with_options(
-                    &damaged,
-                    ParseOptions {
-                        file_kind: kind,
-                        symbols: &symbols,
-                        lang,
-                    },
-                )
-            });
-            let cause = match parsed {
-                Ok(parse) if parse.root.text() == damaged.as_str() => continue,
-                Ok(_) => "lossless round-trip violated".to_string(),
-                Err(_) => {
-                    let message = take_silenced_panic().map_or_else(String::new, |p| p.message);
-                    // The stamp check appends the span; the cause is the rest.
-                    let message = message.split(" at ").next().unwrap_or_default();
-                    format!("panic: {message}")
-                }
-            };
-            let mut failures = failures.lock().expect("no poisoning: panics are caught");
-            failures
-                .entry(cause)
-                .or_insert_with(|| Witness {
-                    file: file.to_path_buf(),
-                    offset,
-                    lang,
-                    count: 0,
-                })
-                .count += 1;
+        for line_break in line_breaks(src, offset) {
+            let damaged = format!("{}{line_break}{}", &src[..offset], &src[offset..]);
+            sweep_damaged(file, kind, &damaged, offset, &line_break, failures);
         }
     }
 }
 
+/// The line breaks inserted before the token at `offset`: a newline then the
+/// token at column 0, at column 1, and one column past the indentation of the
+/// line it was on (when that is another column again).
+fn line_breaks(src: &str, offset: usize) -> Vec<String> {
+    let line_start = src[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let indent = src[line_start..].bytes().take_while(|&b| b == b' ').count();
+    let mut breaks = vec!["\n".to_string(), "\n ".to_string()];
+    if indent > 0 {
+        breaks.push(format!("\n{}", " ".repeat(indent + 1)));
+    }
+    breaks
+}
+
+/// Parse one damaged source at each version, recording each failure under its
+/// cause.
+fn sweep_damaged(
+    file: &Path,
+    kind: FileKind,
+    damaged: &str,
+    offset: usize,
+    line_break: &str,
+    failures: &Mutex<BTreeMap<String, Witness>>,
+) {
+    let symbols = std::collections::HashSet::new();
+    for lang in VERSIONS {
+        let parsed = catch_unwind_silent(|| {
+            parse_with_options(
+                damaged,
+                ParseOptions {
+                    file_kind: kind,
+                    symbols: &symbols,
+                    lang,
+                },
+            )
+        });
+        let cause = match parsed {
+            Ok(parse) if parse.root.text() == damaged => continue,
+            Ok(_) => "lossless round-trip violated".to_string(),
+            Err(_) => {
+                let message = take_silenced_panic().map_or_else(String::new, |p| p.message);
+                // The stamp check appends the span; the cause is the rest.
+                let message = message.split(" at ").next().unwrap_or_default();
+                format!("panic: {message}")
+            }
+        };
+        let mut failures = failures.lock().expect("no poisoning: panics are caught");
+        failures
+            .entry(cause)
+            .or_insert_with(|| Witness {
+                file: file.to_path_buf(),
+                offset,
+                line_break: line_break.to_string(),
+                lang,
+                count: 0,
+            })
+            .count += 1;
+    }
+}
+
 #[test]
-#[ignore = "walks the pinned corpus; a few minutes"]
+#[ignore = "walks the pinned corpus; about ten minutes"]
 fn a_line_break_before_any_token_parses_without_panicking() {
     let root = corpus_root();
     let files = collect_fsharp_corpus_files(&root).expect("walk the corpus");
@@ -136,9 +169,10 @@ fn a_line_break_before_any_token_parses_without_panicking() {
         .iter()
         .map(|(cause, w)| {
             format!(
-                "{cause} ({} cases)\n    first seen: {} with a newline at byte {}, {:?}",
+                "{cause} ({} cases)\n    first seen: {} with {:?} inserted at byte {}, {:?}",
                 w.count,
                 w.file.display(),
+                w.line_break,
                 w.offset,
                 w.lang
             )
