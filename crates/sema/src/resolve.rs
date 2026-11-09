@@ -427,6 +427,7 @@ pub fn resolve_file(
         // They enter this block at its start, outranking every declaration
         // of an earlier block.
         let block_start = u32::from(module.syntax().text_range().start());
+        r.block_starts.push(block_start);
         r.auto_open_type_shadow_names = block_auto_open_type_shadows
             .get(&block_key)
             .map(|shadows: &HashMap<String, state::AutoOpenTypeShadow>| {
@@ -2325,6 +2326,7 @@ impl<'a> Resolver<'a> {
             augmentation_names_unknowable: false,
             latest_open_pos: 0,
             block_type_defs: HashSet::new(),
+            block_starts: Vec::new(),
             augmentable_types: HashSet::new(),
             module_aliases: HashMap::new(),
             unmodelled_open_active: false,

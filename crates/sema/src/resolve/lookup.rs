@@ -47,6 +47,43 @@ enum HeadSlot {
     Unordered,
 }
 
+/// How an in-file type filed under a prefix of the container path reaches
+/// the current position ([`Resolver::in_file_type_reach`]).
+///
+/// FCS checks each top-level block of a file afresh
+/// (`CheckDeclarations.fs`, `SynModuleDecl.NamespaceFragment`): a block
+/// starts from the environment the previous block ended with, which has the
+/// earlier blocks' root namespaces registered but none of their contents,
+/// and then opens its own namespace (`ImplicitlyOpenOwnNamespace`) and
+/// nothing else. So only the current block's declarations are lexical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TypeReach {
+    /// Declared in the current block: in scope from its declaration.
+    Lexical,
+    /// Declared at the enclosing namespace by an earlier block: in scope
+    /// through the block's implicit open of the namespace, at the block's
+    /// start. That open adds the namespace's fragments in order (earlier
+    /// files', then this file's earlier blocks'), each fragment's types
+    /// before its `[<AutoOpen>]` modules' contents.
+    NamespaceOpen,
+    /// Declared at the root by an earlier `namespace global` block: added to
+    /// the environment when that block ends (`AddLocalRootModuleOrNamespace`
+    /// adds a root fragment's types), so in scope at the block's start, but
+    /// in an order against the block's implicit open that positions do not
+    /// record.
+    Boundary,
+    /// Declared by an earlier block anywhere else, an ancestor namespace
+    /// included: not in scope without an `open`.
+    Hidden,
+}
+
+impl TypeReach {
+    /// Whether the type is in scope at all without an `open`.
+    fn visible(self) -> bool {
+        self != TypeReach::Hidden
+    }
+}
+
 /// The [`SlotClass`] of a **referenced-assembly** type, from FCS's
 /// `mayHaveConstruction = isClassTy || isStructTy || isDelegateTy`
 /// (`AddPartsOfTyconRefToNameEnv`), the same predicate the project-side
@@ -3182,7 +3219,7 @@ impl<'a> Resolver<'a> {
             && !self.unmodelled_open_active
             && !head_staled
             && !self.head_contested_by_project_module(first, case_seg)
-            && let Some((type_id, case_res)) = self.type_case_path(first, case_seg)
+            && let Some((type_id, case_res, reach)) = self.type_case_path(first, case_seg)
         {
             // The value-vs-type qualifier rule differs by case kind (FCS, expression
             // position): an *enum* case wins the qualifier unless a value of that
@@ -3213,7 +3250,7 @@ impl<'a> Resolver<'a> {
                 // So does an unmodelled binder in scope (an instance member's
                 // `` ``base`` `` receiver): it has no position to order, and
                 // FCS binds it over any enum of the name.
-                Some(DefKind::EnumCase) => {
+                Some(DefKind::EnumCase) if reach == TypeReach::Lexical => {
                     head_is_value
                         && match self.value_slot_position(head) {
                             Some(vp) => vp > self.defs[type_id.index()].range.start(),
@@ -3222,10 +3259,24 @@ impl<'a> Resolver<'a> {
                             }),
                         }
                 }
+                // An earlier block's enum entered at the block's start, so
+                // the slot orders it against the value
+                // ([`Self::head_value_slot`]).
+                Some(DefKind::EnumCase) => {
+                    head_is_value && !matches!(self.head_value_slot(head), HeadSlot::Evicted)
+                }
                 // A union case loses the qualifier to *any* definite non-case value.
                 _ => head_is_value,
             };
             if !value_takes_qualifier {
+                if let Some(cause) = self.reached_type_contested(head, reach) {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(cause),
+                    );
+                    return;
+                }
                 if self.lower_arity_namesake_possible(head, type_id, None) {
                     self.defer_with_cause(
                         first.text_range(),
@@ -3252,15 +3303,21 @@ impl<'a> Resolver<'a> {
             && !self.unmodelled_open_active
             && !head_staled
             && !self.head_contested_by_project_module(first, member_seg)
-            && let Some((type_id, member_def)) =
+            && let Some((type_id, member_def, reach)) =
                 self.type_member_path(first, member_seg, first.text_range().start())
         {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
+            // Where the type entered the slot: its declaration, or the
+            // block's start for an earlier block's.
+            let type_pos = Self::reached_type_slot_pos(
+                reach,
+                u32::from(self.defs[type_id.index()].range.start()),
+            );
             let type_takes_qualifier = !head_is_value
                 || self
                     .value_slot_position(head)
-                    .is_some_and(|vr| vr <= self.defs[type_id.index()].range.start());
+                    .is_some_and(|vr| u32::from(vr) <= type_pos);
             if type_takes_qualifier && self.lower_arity_namesake_possible(head, type_id, None) {
                 self.defer_with_cause(
                     first.text_range(),
@@ -3276,7 +3333,6 @@ impl<'a> Resolver<'a> {
                 // it back (M2c), and a record or union never takes it. The
                 // qualifier then goes to the latest type of the name, which
                 // an `open` may have brought after this one.
-                let type_pos = u32::from(self.defs[type_id.index()].range.start());
                 match self.head_value_slot(head) {
                     // Member access on the value — the intra-file fallback
                     // below resolves the head to it.
@@ -3290,6 +3346,14 @@ impl<'a> Resolver<'a> {
                         return;
                     }
                     HeadSlot::Evicted => {
+                        if let Some(cause) = self.reached_type_contested(head, reach) {
+                            self.defer_with_cause(
+                                first.text_range(),
+                                segments,
+                                DeclineSite::pre_walk(cause),
+                            );
+                            return;
+                        }
                         self.record_type_qualifier(
                             first,
                             member_seg,
@@ -3310,6 +3374,14 @@ impl<'a> Resolver<'a> {
                     }
                 }
             } else {
+                if let Some(cause) = self.reached_type_contested(head, reach) {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(cause),
+                    );
+                    return;
+                }
                 self.record_type_qualifier(
                     first,
                     member_seg,
@@ -4087,9 +4159,17 @@ impl<'a> Resolver<'a> {
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
     ) -> bool {
-        let Some((type_id, case_res)) = self.type_case_path(type_seg, case_seg) else {
+        let Some((type_id, case_res, reach)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
+        if let Some(cause) = self.reached_type_contested(&id_text(type_seg), reach) {
+            self.defer_with_cause(
+                type_seg.text_range(),
+                &[type_seg.clone(), case_seg.clone()],
+                DeclineSite::pre_walk(cause),
+            );
+            return true;
+        }
         if self.lower_arity_namesake_possible(&id_text(type_seg), type_id, None) {
             self.defer_with_cause(
                 type_seg.text_range(),
@@ -5166,11 +5246,16 @@ impl<'a> Resolver<'a> {
     /// nested module sees an enclosing namespace's enum, but an inner non-enum
     /// `Color` (or a module `Color`) shadowing an enclosing enum `Color` makes
     /// `Color.Red` defer. Cross-file `A.Color.Red` is a later slice.
+    ///
+    /// A type an earlier top-level block declared is skipped unless it is in
+    /// scope at all ([`Self::in_file_type_reach`]), and the reach of the one
+    /// found is returned with it, for the caller to order it where it entered
+    /// the environment ([`Self::reached_type_slot_pos`]).
     pub(super) fn type_case_path(
         &self,
         type_name: &SyntaxToken,
         case_name: &SyntaxToken,
-    ) -> Option<(DefId, Resolution)> {
+    ) -> Option<(DefId, Resolution, TypeReach)> {
         let tname = &*id_text(type_name);
         let cname = &*id_text(case_name);
         for k in (0..=self.container_path.len()).rev() {
@@ -5190,6 +5275,10 @@ impl<'a> Resolver<'a> {
             let Some(&type_id) = self.type_defs.get(prefix).and_then(|m| m.get(tname)) else {
                 continue; // no `Color` of any kind here — try the enclosing container
             };
+            let reach = self.in_file_type_reach_of(k, type_id);
+            if !reach.visible() {
+                continue;
+            }
             // Innermost type of this name: it shadows enclosing ones, so resolve
             // only when it is the type whose case this is (else the path defers).
             let case_res = self
@@ -5198,7 +5287,7 @@ impl<'a> Resolver<'a> {
                 .and_then(|m| m.get(tname))
                 .and_then(|c| c.get(cname))
                 .copied();
-            return case_res.map(|cres| (type_id, cres));
+            return case_res.map(|cres| (type_id, cres, reach));
         }
         None
     }
@@ -5222,11 +5311,88 @@ impl<'a> Resolver<'a> {
     /// blocks the fall-through.
     fn same_file_type_owns_case(&self, tname: &str, cname: &str) -> bool {
         (0..=self.container_path.len()).rev().any(|k| {
-            self.type_cases
-                .get(&self.container_path[..k])
+            let prefix = &self.container_path[..k];
+            self.type_defs
+                .get(prefix)
                 .and_then(|m| m.get(tname))
-                .is_some_and(|c| c.contains_key(cname))
+                .is_some_and(|&id| self.in_file_type_reach_of(k, id).visible())
+                && self
+                    .type_cases
+                    .get(prefix)
+                    .and_then(|m| m.get(tname))
+                    .is_some_and(|c| c.contains_key(cname))
         })
+    }
+
+    /// How an in-file type filed under `self.container_path[..k]` and
+    /// declared at `pos` reaches the current position ([`TypeReach`]).
+    ///
+    /// Only the current block's declarations are lexical. An earlier block's
+    /// type is in scope through the current block's implicit open when it
+    /// sits at the enclosing namespace, and from the block boundary when it
+    /// sits at the root (a `namespace global` block's); anywhere else, an
+    /// ancestor namespace of the current block's included, it is not in
+    /// scope without an `open`.
+    pub(super) fn in_file_type_reach(&self, k: usize, pos: u32) -> TypeReach {
+        let block_start = self.block_starts.last().copied().unwrap_or(0);
+        if pos >= block_start {
+            debug_assert!(
+                k >= self.enclosing_namespace().len(),
+                "the current block files its types under its own namespace"
+            );
+            return TypeReach::Lexical;
+        }
+        let namespace = self.enclosing_namespace().len();
+        if k == namespace && namespace > 0 {
+            TypeReach::NamespaceOpen
+        } else if k == 0 {
+            TypeReach::Boundary
+        } else {
+            TypeReach::Hidden
+        }
+    }
+
+    /// [`Self::in_file_type_reach`] for the in-file type `id`.
+    pub(super) fn in_file_type_reach_of(&self, k: usize, id: DefId) -> TypeReach {
+        self.in_file_type_reach(k, u32::from(self.defs[id.index()].range.start()))
+    }
+
+    /// Where an in-file type declared at `pos` and reached as `reach` entered
+    /// FCS's unqualified slot: its declaration when it is lexical, and
+    /// otherwise the block's start, position 0, where everything the block's
+    /// implicit open adds sits too.
+    pub(super) fn reached_type_slot_pos(reach: TypeReach, pos: u32) -> u32 {
+        match reach {
+            TypeReach::Lexical => pos,
+            TypeReach::NamespaceOpen | TypeReach::Boundary | TypeReach::Hidden => 0,
+        }
+    }
+
+    /// Why a qualifier `name` that reaches an earlier block's type as `reach`
+    /// may instead name another type that entered the slot at the block's
+    /// start, in an order the walk does not record; `None` when it cannot:
+    ///
+    /// - a [`TypeReach::Boundary`] type is ordered against nothing the
+    ///   implicit open adds;
+    /// - a [`TypeReach::NamespaceOpen`] type comes in with its block's
+    ///   fragment, and that fragment's `[<AutoOpen>]` modules' types follow
+    ///   it, as do a later block's
+    ///   ([`Self::auto_open_type_shadow_names`] holds every same-file one
+    ///   re-entering at the block's start). An earlier file's fragment
+    ///   precedes it, so an earlier file's types lose to it.
+    pub(super) fn reached_type_contested(
+        &self,
+        name: &str,
+        reach: TypeReach,
+    ) -> Option<DeclineCause> {
+        match reach {
+            TypeReach::Lexical => None,
+            TypeReach::Boundary | TypeReach::Hidden => Some(DeclineCause::EarlierBlockRootType),
+            TypeReach::NamespaceOpen => self
+                .auto_open_type_shadow_names
+                .contains_key(name)
+                .then_some(DeclineCause::SameFileAutoOpenType),
+        }
     }
 
     /// Whether the cross-file type-qualified-case index must stand down for the
@@ -5412,6 +5578,10 @@ impl<'a> Resolver<'a> {
             SlotClass::Unknown => unknown_pos = Some(unknown_pos.map_or(pos, |p| p.max(pos))),
             SlotClass::Keeps => {}
         };
+        // An earlier block's type entered the slot at the block's start
+        // ([`TypeReach`]), where the value may have entered too; it is
+        // ordered once the value's position is known.
+        let mut at_block_start: Vec<(u32, SlotClass, TypeReach)> = Vec::new();
         for k in 0..=self.container_path.len() {
             let prefix = &self.container_path[..k];
             for &(pos, class) in self
@@ -5421,7 +5591,11 @@ impl<'a> Resolver<'a> {
                 .into_iter()
                 .flatten()
             {
-                note(pos, class);
+                match self.in_file_type_reach(k, pos) {
+                    TypeReach::Lexical => note(pos, class),
+                    TypeReach::Hidden => {}
+                    reach => at_block_start.push((pos, class, reach)),
+                }
             }
         }
         // Namespace opens AND project module opens both import *project* types
@@ -5455,6 +5629,11 @@ impl<'a> Resolver<'a> {
         // entered it — the positions a project case the same `open` supplied
         // cannot be ordered against (below).
         let mut project_type_opens: Vec<u32> = Vec::new();
+        // Where an `open` brought a type this file declares, with the type's
+        // declaration: the open adds this file's earlier blocks one fragment
+        // at a time, so which block the type sits in orders it against a
+        // value the same `open` supplied (below).
+        let mut same_file_type_opens: Vec<(u32, u32)> = Vec::new();
         for (pos, prefix) in open_prefixes {
             let mut path = prefix.clone();
             path.push(head.to_string());
@@ -5474,7 +5653,17 @@ impl<'a> Resolver<'a> {
             let class = if let Some((_, _, slot)) =
                 self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
             {
-                Some(seen(*slot))
+                let class = seen(*slot);
+                if class != SlotClass::Keeps
+                    && let Some(&id) = self
+                        .type_defs
+                        .get(prefix.as_slice())
+                        .and_then(|m| m.get(head))
+                {
+                    same_file_type_opens
+                        .push((*pos, u32::from(self.defs[id.index()].range.start())));
+                }
+                Some(class)
             } else {
                 self.preceding.exported_type_slot(&path).map(seen)
             };
@@ -5541,6 +5730,34 @@ impl<'a> Resolver<'a> {
         if enclosing_type.is_some() && value_from_open && value_pos == Some(0) {
             return HeadSlot::Unordered;
         }
+        // An earlier block's type entered at the block's start; so did a value
+        // the block's implicit open supplied, and an earlier block's own
+        // namespace-level binding (a union or exception case), which the
+        // block re-takes at its declaration. The fragments' order decides
+        // between them ([`Self::block_start_type_is_later`]); a value the
+        // block writes or opens itself follows them all.
+        let block_start = self.block_starts.last().copied().unwrap_or(0);
+        let (mut evicted_at_start, mut unordered_at_start) = (false, false);
+        for &(type_pos, class, reach) in &at_block_start {
+            let later = match (value_entry, value_pos) {
+                (_, None) => {
+                    note(0, class);
+                    continue;
+                }
+                (_, Some(v)) if v >= block_start && v > 0 => Some(false),
+                (Some(entry), Some(_)) => self.block_start_type_is_later(entry, type_pos, reach),
+                (None, Some(_)) => None,
+            };
+            match later {
+                Some(true) => match class {
+                    SlotClass::Evicts => evicted_at_start = true,
+                    SlotClass::Unknown => unordered_at_start = true,
+                    SlotClass::Keeps => {}
+                },
+                Some(false) => {}
+                None => unordered_at_start |= class != SlotClass::Keeps,
+            }
+        }
         match value_pos {
             Some(value_pos) => {
                 // An EQUAL position means one `open` supplied both the value
@@ -5562,12 +5779,32 @@ impl<'a> Resolver<'a> {
                     && value_is_case
                     && value_from_open
                     && project_type_opens.contains(&value_pos);
-                if evictor_pos.is_some_and(|p| p > value_pos) {
+                // Nor does the fold order a value against a type of this file
+                // from another fragment: an `open` adds this file's earlier
+                // blocks one at a time, so a type a later block declares
+                // follows a value an earlier one's `[<AutoOpen>]` module
+                // supplies, and one an earlier file supplies.
+                let value_block = value_entry
+                    .and_then(|e| self.value_resolution_def_range(e.resolution))
+                    .map(|r| {
+                        self.block_starts
+                            .partition_point(|&s| s <= u32::from(r.start()))
+                    });
+                let fragment_tie = bare
+                    && value_from_open
+                    && same_file_type_opens.iter().any(|&(open, type_pos)| {
+                        open == value_pos
+                            && value_block
+                                != Some(self.block_starts.partition_point(|&s| s <= type_pos))
+                    });
+                if evictor_pos.is_some_and(|p| p > value_pos) || evicted_at_start {
                     HeadSlot::Evicted
                 } else if unknown_pos.is_some_and(|p| p > value_pos)
                     || evictor_pos.is_some_and(same_open_tie)
                     || unknown_pos.is_some_and(same_open_tie)
                     || case_tie
+                    || fragment_tie
+                    || unordered_at_start
                 {
                     HeadSlot::Unordered
                 } else {
@@ -5581,9 +5818,58 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether the in-file type defined at `type_pos` is the latest type named
-    /// `head` in scope, of any slot class and from any source: an earlier or
-    /// enclosing block's, an opened project path's, an opened assembly
+    /// Whether an earlier block's type declared at `type_pos`, reached as
+    /// `reach`, entered the slot after the value `entry`, which entered at the
+    /// block's start too; `None` when the walk cannot say.
+    ///
+    /// The implicit open adds the namespace's fragments in order, earlier
+    /// files' before this file's earlier blocks', and within a fragment its
+    /// types, union and exception cases in declaration order, then its
+    /// `[<AutoOpen>]` modules' contents (`AddModuleOrNamespaceContentsToNameEnv`).
+    /// So against a [`TypeReach::NamespaceOpen`] type:
+    ///
+    /// - a value an earlier file supplies is earlier;
+    /// - a case an earlier block declares is earlier exactly when it is
+    ///   declared before the type, whether the open folded it or the block
+    ///   re-took it from the namespace's frame;
+    /// - a value an earlier block's `[<AutoOpen>]` module supplies is later
+    ///   exactly when its block is not before the type's.
+    ///
+    /// A [`TypeReach::Boundary`] type, a contributor mark and a value the
+    /// frame does not tie to a declaration are not ordered.
+    fn block_start_type_is_later(
+        &self,
+        entry: &ScopeEntry,
+        type_pos: u32,
+        reach: TypeReach,
+    ) -> Option<bool> {
+        if reach != TypeReach::NamespaceOpen || entry.mark.is_some() {
+            return None;
+        }
+        let def = self
+            .value_resolution_def_range(entry.resolution)
+            .map(|r| u32::from(r.start()));
+        let is_case = matches!(entry.resolution, Resolution::Item(id) if self.item_is_case(id));
+        match (entry.from_open, def) {
+            (true, Some(def)) if is_case => Some(def < type_pos),
+            (true, Some(def)) => {
+                let block = |pos: u32| self.block_starts.partition_point(|&s| s <= pos);
+                Some(block(def) < block(type_pos))
+            }
+            (true, None) => match entry.resolution {
+                Resolution::Item(id) => (id.index() < self.item_base as usize).then_some(true),
+                _ => None,
+            },
+            // A namespace-level binding of an earlier block, re-taken.
+            (false, Some(def)) if is_case => Some(def < type_pos),
+            (false, _) => None,
+        }
+    }
+
+    /// Whether the in-file type that entered the slot at `type_pos` is the
+    /// latest type named `head` in scope, of any slot class and from any
+    /// source: an enclosing container's, an earlier block's (position 0,
+    /// [`TypeReach`]), an opened project path's, an opened assembly
     /// namespace's, or the enclosing namespace's (position 0). A later one
     /// takes a type-qualified path from it.
     fn lexical_type_is_latest(&self, head: &str, type_pos: u32) -> bool {
@@ -5593,7 +5879,12 @@ impl<'a> Resolver<'a> {
                 .and_then(|m| m.get(head))
                 .into_iter()
                 .flatten()
-                .map(|&(pos, _)| pos)
+                .filter_map(move |&(pos, _)| {
+                    let reach = self.in_file_type_reach(k, pos);
+                    reach
+                        .visible()
+                        .then(|| Self::reached_type_slot_pos(reach, pos))
+                })
         });
         let opened = self
             .explicit_open_prefixes
@@ -5743,16 +6034,16 @@ impl<'a> Resolver<'a> {
     /// The 2-segment static-member analogue of [`type_case_path`](Self::type_case_path):
     /// resolve `Color.Red` where `Color` is an in-file type and `Red` an
     /// emit-eligible static member, walking the container chain innermost-first
-    /// with the same module-like shadowing rule. Returns the type's def and the
-    /// member's def. The innermost type of the name owns the segment: when it
-    /// lacks an emittable member the path declines (defers downstream) rather
-    /// than trying an enclosing type.
+    /// with the same module-like shadowing rule. Returns the type's def, the
+    /// member's def and how the type is in scope. The innermost type of the
+    /// name in scope owns the segment: when it lacks an emittable member the
+    /// path declines (defers downstream) rather than trying an enclosing type.
     fn type_member_path(
         &self,
         type_name: &SyntaxToken,
         member_name: &SyntaxToken,
         use_pos: TextSize,
-    ) -> Option<(DefId, DefId)> {
+    ) -> Option<(DefId, DefId, TypeReach)> {
         let tname = &*id_text(type_name);
         let mname = &*id_text(member_name);
         for k in (0..=self.container_path.len()).rev() {
@@ -5767,9 +6058,13 @@ impl<'a> Resolver<'a> {
             let Some(&type_id) = self.type_defs.get(prefix).and_then(|m| m.get(tname)) else {
                 continue;
             };
+            let reach = self.in_file_type_reach_of(k, type_id);
+            if !reach.visible() {
+                continue;
+            }
             return self
                 .emittable_type_member(prefix, tname, mname, use_pos)
-                .map(|member_def| (type_id, member_def));
+                .map(|member_def| (type_id, member_def, reach));
         }
         None
     }

@@ -883,12 +883,15 @@ pub(super) struct Resolver<'a> {
     /// only from type-syntactic positions ([`Self::resolve_type`]) — never the
     /// value [`Self::lookup`] — and so a type `T` and a value `T` never collide.
     ///
-    /// **Container-scoped, not module-block-scoped**: a use sees the types
-    /// declared under its *own* container, across however many source blocks
-    /// that container is split into. F# treats two `namespace N` blocks as one
-    /// namespace, so a later block's `type B = A` resolves `A` to the earlier
-    /// block's `type A`; two *distinct* containers (`namespace A` vs
-    /// `namespace B`) stay isolated because their keys differ. Within a
+    /// **Container-scoped, not module-block-scoped**: the map holds the types
+    /// declared under a container across however many source blocks that
+    /// container is split into, but a walk over it must ask how each one
+    /// reaches the use ([`Resolver::in_file_type_reach`]): only the current
+    /// block's are lexical. A later `namespace N` block's `type B = A` still
+    /// resolves `A` to an earlier block's `type A`, through the block's
+    /// implicit open of `N`; a `namespace N.Sub` block does not see it at
+    /// all. Two *distinct* containers (`namespace A` vs `namespace B`) stay
+    /// isolated because their keys differ. Within a
     /// container, a later type may reference an earlier one, and a whole
     /// `type … and …` group is interned before any of its RHSs is resolved, so
     /// the group is mutually recursive. Cross-file type resolution (`A.T` from
@@ -1470,6 +1473,11 @@ pub(super) struct Resolver<'a> {
     /// block: a namespace reopened in a later block, `namespace global`
     /// included, makes an augmentation there an extension to FCS.
     pub(super) block_type_defs: HashSet<DefId>,
+    /// The start of every top-level block walked so far, the current one
+    /// last. An in-file type declared before the current block's start is
+    /// not lexically in scope: FCS checks each block afresh
+    /// ([`Resolver::in_file_type_reach`]).
+    pub(super) block_starts: Vec<u32>,
     /// The in-file types an augmentation of which may be walked
     /// ([`Resolver::member_scope_of`]): non-generic, of a kind the scope
     /// tables cover (a class, a union or a record), and certainly not

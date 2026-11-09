@@ -2620,6 +2620,10 @@ pub enum DeclineCause {
     /// contest with a type of the same name, so the path may be read as
     /// module/type-qualified rather than as member access.
     HeadSlotUnordered,
+    /// A qualifier naming a type an earlier `namespace global` block of the
+    /// file declared: FCS adds it when that block ends, in an order against
+    /// the current block's implicit open that the walk does not record.
+    EarlierBlockRootType,
     /// A type qualifying a member or case with no type arguments written
     /// (`T.M`, `T.Case`), where a namesake of lower generic arity may be in
     /// scope: FCS tries same-named types fewest-generic-parameters first, so
@@ -2783,6 +2787,7 @@ impl DeclineCause {
         DeclineCause::AttributeOpaqueLeaf,
         DeclineCause::OpaqueValueHead,
         DeclineCause::HeadSlotUnordered,
+        DeclineCause::EarlierBlockRootType,
         DeclineCause::QualifierArityNamesake,
         DeclineCause::CaseQualifierHead,
         DeclineCause::GlobalMarkerHead,
@@ -2851,6 +2856,7 @@ impl DeclineCause {
             DeclineCause::AttributeOpaqueLeaf => "attribute_opaque_leaf",
             DeclineCause::OpaqueValueHead => "opaque_value_head",
             DeclineCause::HeadSlotUnordered => "head_slot_unordered",
+            DeclineCause::EarlierBlockRootType => "earlier_block_root_type",
             DeclineCause::QualifierArityNamesake => "qualifier_arity_namesake",
             DeclineCause::CaseQualifierHead => "case_qualifier_head",
             DeclineCause::GlobalMarkerHead => "global_marker_head",
