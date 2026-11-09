@@ -5681,6 +5681,60 @@ impl<'a> Resolver<'a> {
         })
     }
 
+    /// Whether `head` names nothing a dotted head could reach but one earlier
+    /// file's type: the positive domain of
+    /// [`Self::type_qualified_case_past_project_opens`].
+    ///
+    /// Kind-blind and position-blind by design. FCS searches every module and
+    /// namespace of an expression head before any of its types, whichever tier
+    /// brings it, and picks among same-named types by position and arity, so
+    /// instead of ranking the contenders this asks that there be none:
+    ///
+    /// - this file declares no type, exception or module of the name, and no
+    ///   namespace, module header or container it has entered so far has it as
+    ///   a segment;
+    /// - earlier files declare exactly one type or exception of the name
+    ///   ([`ProjectItems::earlier_types`](super::model::ProjectItems::earlier_types)
+    ///   counts placed and unplaced declarations, arities apart), and no module
+    ///   or namespace of it
+    ///   ([`ProjectItems::may_name_module_or_namespace`](super::model::ProjectItems::may_name_module_or_namespace));
+    /// - no referenced assembly could supply it — a namespace, an entity, an
+    ///   `[<AutoOpen>]` child or a value — at the root, at any container prefix,
+    ///   or through any open, implicit opens included.
+    fn head_names_only_the_owner(&self, head: &str) -> bool {
+        let segment_is_head = |p: &Vec<String>| p.iter().any(|s| s == head);
+        let this_file_names_it = self.own_type_simple_names.contains(head)
+            || self.own_module_simple_names.contains(head)
+            || self.container_path.iter().any(|s| s == head)
+            || self.export_decls.iter().any(|d| segment_is_head(&d.path));
+        let earlier_files_name_it_otherwise = self.preceding.may_name_module_or_namespace(head)
+            || self.preceding.earlier_types.get(head).map_or(0, Vec::len) != 1;
+        let assemblies_may_name_it = self
+            .assemblies
+            .assembly_bare_value_surface_could_supply(head)
+            || self
+                .open_reading_prefixes()
+                .map(|(_, prefix)| prefix)
+                .chain((0..=self.container_path.len()).map(|k| &self.container_path[..k]))
+                .any(|prefix| {
+                    let mut below = prefix.to_vec();
+                    below.push(head.to_string());
+                    self.assemblies.has_namespace(&below)
+                        || !self
+                            .assemblies
+                            .public_entities_named(prefix, head)
+                            .is_empty()
+                        || self
+                            .assemblies
+                            .auto_open_modules_in_namespace_shadow_type_named(prefix, head)
+                        || self
+                            .assemblies
+                            .namespace_value_surface(prefix)
+                            .could_supply(head)
+                });
+        !this_file_names_it && !earlier_files_name_it_otherwise && !assemblies_may_name_it
+    }
+
     /// The earlier-file case a two-segment `Type.Case` reads as while the only
     /// opens that make dotted heads opaque are enumerable project modules
     /// ([`DottedOpacity`](super::state::DottedOpacity)) — the one channel that
@@ -5689,20 +5743,13 @@ impl<'a> Resolver<'a> {
     ///
     /// The case is found by the same tiered walk as every type-qualified case
     /// ([`Self::cross_file_type_case_located`]), and committed only when
-    /// nothing else could take the head `Type`: no opened project module
+    /// nothing else could take the head `Type`
+    /// ([`Self::head_names_only_the_owner`]), no opened project module
     /// supplies the name but as that very type
-    /// ([`Self::opened_project_modules_leave_head`]), this file declares no
-    /// type or module of it, no earlier file declares a module or namespace
-    /// of it anywhere
-    /// ([`ProjectItems::may_name_module_or_namespace`](super::model::ProjectItems::may_name_module_or_namespace):
-    /// FCS searches every module of an expression head before its types,
-    /// whatever tier brings the module), the found type is the only earlier
-    /// declaration of its simple name (a `U<'T>` beside `U` shares the
-    /// case index's path, and FCS picks between them by position), no
-    /// explicitly opened referenced-assembly
-    /// namespace has an entity of it, and the guards of the ordinary channel
-    /// (the signature screen, a same-file type owning the case) are clear.
-    /// The caller has ruled out a value or a staled entry taking the head.
+    /// ([`Self::opened_project_modules_leave_head`]), and the guards of the
+    /// ordinary channel (the signature screen, a same-file type owning the
+    /// case) are clear. The caller has ruled out a value or a staled entry
+    /// taking the head.
     fn type_qualified_case_past_project_opens(&self, written: &[String]) -> Option<ItemId> {
         let [head, _case] = written else {
             return None;
@@ -5710,11 +5757,7 @@ impl<'a> Resolver<'a> {
         if self.dotted_opacity.beyond_project_modules()
             || self.opaque_value_open
             || self.unmodelled_open_active
-            || self.own_type_simple_names.contains(head)
-            || self.own_module_simple_names.contains(head)
-            || self.preceding.may_name_module_or_namespace(head)
-            || self.preceding.earlier_types.get(head).map_or(0, Vec::len) != 1
-            || self.assembly_case_head_contends_at_an_open(head)
+            || !self.head_names_only_the_owner(head)
             || self.sig_screens_case_reading_of(written)
             || self.cross_file_case_shadowed_same_file(written)
         {
