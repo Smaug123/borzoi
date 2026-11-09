@@ -326,11 +326,38 @@ type Dropped<[<ParamMarker>] 'T>() =
     /// A method of the dropped type.
     member _.Corner(a: int[,]) = a.[0, 0]
 
-// Undocumented, and compiled so that its stripped name and arity collide with
-// `Dropped<'T>`'s: the dropped type's keys must not land on it.
+/// Compiled so that its stripped name and arity collide with `Dropped<'T>`'s:
+/// the dropped type's keys must not land on it. fsc keys it by its compiled
+/// name, ``Dropped`2``. Its member is undocumented, so it has no key of its own.
 [<CompiledName("Dropped`2")>]
 type Squatter<'T>() =
     member _.Corner(a: int[,]) = a.[0, 0] + 1
+
+/// A generic type whose compiled name carries no arity suffix: fsc keys it
+/// `Bare`, not ``Bare`1``.
+[<CompiledName("Bare")>]
+type GenericBare<'T>() =
+    class
+    end
+
+/// A non-generic type whose compiled name carries a suffix: fsc keys it
+/// ``Suffixed`3``.
+[<CompiledName("Suffixed`3")>]
+type NonGenericSuffixed() =
+    class
+    end
+
+/// A non-generic type whose compiled name carries a non-canonical suffix: fsc
+/// keys it ``Zero`0``.
+[<CompiledName("Zero`0")>]
+type ZeroSuffixed() =
+    class
+    end
+
+/// A type abbreviation renamed with a suffix that does not count its
+/// parameters: fsc keys it ``Alias`3``.
+[<CompiledName("Alias`3")>]
+type Aliased<'a> = 'a list
 
 /// Two getters renamed to one IL property name: fsc emits one `Shared`
 /// property (backed by `get_First`) and a bare `get_Second` method.

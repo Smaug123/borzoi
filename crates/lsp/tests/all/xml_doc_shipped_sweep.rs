@@ -377,7 +377,7 @@ fn doc_keys_are_injective_over_a_real_env() {
                     );
                     fsharp_members += 1;
                 }
-                Err(e @ (KeyError::Unplaced | KeyError::DialectUnknown)) => {
+                Err(e @ (KeyError::Unplaced | KeyError::DialectUnknown | KeyError::Unnamed)) => {
                     panic!("{target:?}: {e:?} in a real env")
                 }
             }

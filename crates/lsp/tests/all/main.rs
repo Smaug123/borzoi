@@ -60,6 +60,7 @@ mod xml_doc_inheritdoc_sweep;
 mod xml_doc_inheritdoc_xpath_diff;
 mod xml_doc_shipped_sweep;
 mod xml_doc_source_diff;
+mod xml_doc_type_id_diff;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is
 /// silently never compiled or run. See the module for why that is worth a test.

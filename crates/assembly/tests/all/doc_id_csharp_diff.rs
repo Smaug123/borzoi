@@ -67,7 +67,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use borzoi_assembly::doc_id::{TypeDocName, member_doc_id, type_doc_name, walk_doc_ids};
+use borzoi_assembly::doc_id::{
+    DocIdDialect, TypeDocName, member_doc_id, type_doc_name, walk_doc_ids,
+};
 use borzoi_assembly::{Access, Ecma335Assembly, EcmaView, Entity, Member};
 use borzoi_oracle_harness::manifest::{self, Manifest};
 
@@ -468,7 +470,8 @@ impl Ours {
             enclosing: Option<&TypeDocName>,
             dropped: &mut HashSet<(String, String)>,
         ) {
-            let decl = type_doc_name(e, enclosing);
+            let decl =
+                type_doc_name(e, enclosing, DocIdDialect::Metadata).expect("a row has a name");
             for m in &e.skipped_members {
                 let escaped = m.name.replace('.', "#").replace('<', "{").replace('>', "}");
                 dropped.insert((decl.full().to_string(), escaped));
@@ -480,7 +483,9 @@ impl Ours {
         let mut ids: BTreeMap<String, usize> = BTreeMap::new();
         let mut dropped_members = HashSet::new();
         for e in entities {
-            walk_doc_ids(e, None, &mut |id| *ids.entry(id).or_default() += 1);
+            walk_doc_ids(e, None, DocIdDialect::Metadata, &mut |id| {
+                *ids.entry(id).or_default() += 1
+            });
             walk(e, None, &mut dropped_members);
         }
         let mut by_decl: HashMap<String, Vec<Sibling>> = HashMap::new();
@@ -869,7 +874,7 @@ fn explicit_interface_ids_belong_to_non_public_members() {
         violations: Vec<String>,
     }
     fn walk(e: &Entity, enclosing: Option<&TypeDocName>, tally: &mut Tally) {
-        let decl = type_doc_name(e, enclosing);
+        let decl = type_doc_name(e, enclosing, DocIdDialect::Metadata).expect("a row has a name");
         for m in &e.members {
             let id = member_doc_id(&decl, m);
             let key = Key::parse(&id).unwrap_or_else(|| panic!("our ID does not parse: {id}"));

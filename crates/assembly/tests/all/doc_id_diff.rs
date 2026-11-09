@@ -30,9 +30,10 @@ fn our_ids_with_duplicates(dll: &std::path::Path) -> Vec<String> {
     let bytes = std::fs::read(dll).expect("read fixture dll");
     let view = Ecma335Assembly::parse(&bytes).expect("parse fixture dll");
     let types = view.enumerate_type_defs().expect("enumerate fixture types");
+    let dialect = view.doc_id_dialect().expect("read the fixture's dialect");
     let mut ids = Vec::new();
     for entity in &types {
-        walk_doc_ids(entity, None, &mut |id| {
+        walk_doc_ids(entity, None, dialect, &mut |id| {
             ids.push(id);
         });
     }

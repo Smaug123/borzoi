@@ -944,6 +944,7 @@ impl Ecma335Assembly {
                 "AutoOpenAttribute",
             )?,
             metadata_name: Some(td.name.name.clone()),
+            marker_compiled_name: None,
             is_require_qualified_access: self.has_attribute(
                 &td.attributes,
                 "Microsoft.FSharp.Core",

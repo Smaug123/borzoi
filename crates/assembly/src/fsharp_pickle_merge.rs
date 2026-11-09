@@ -2607,6 +2607,8 @@ struct AbbrevMarkerSite {
     /// its marker hangs in: its namespace, or its enclosing module's row.
     stamp: u32,
     name: String,
+    /// [`Entity::marker_compiled_name`]: the pickled compiled name, unstripped.
+    compiled_name: String,
     source_name: Option<String>,
     typar_names: Vec<String>,
     /// `true` for an **exception** abbreviation (`exception Alias = Original`,
@@ -2959,6 +2961,7 @@ pub(crate) fn apply_abbreviation_markers(
                 targets.push(AbbrevMarkerSite {
                     stamp,
                     name: clr_name(entity),
+                    compiled_name: compiled_name(entity),
                     source_name: None,
                     typar_names: Vec::new(),
                     is_exception: true,
@@ -3011,6 +3014,7 @@ pub(crate) fn apply_abbreviation_markers(
             targets.push(AbbrevMarkerSite {
                 stamp,
                 name: clr_name(entity),
+                compiled_name: compiled_name(entity),
                 source_name,
                 typar_names,
                 is_exception: false,
@@ -3119,6 +3123,7 @@ fn abbreviation_marker(
         is_auto_open: target.is_auto_open,
         is_require_qualified_access: false,
         metadata_name: None,
+        marker_compiled_name: Some(target.compiled_name.clone()),
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,
@@ -3167,11 +3172,16 @@ fn abbreviation_marker(
 /// marker's name, a local tycon's logical path) — never a row's identity, which
 /// strips alike for distinct rows. A row is reached through [`PickleJoin`].
 fn clr_name(entity: &PickledEntity) -> String {
-    let raw = entity
+    strip_arity(&compiled_name(entity)).to_string()
+}
+
+/// FCS's `Entity.CompiledName`: the `[<CompiledName>]` string verbatim, else
+/// the logical name, which for a generic type carries `` `n ``.
+fn compiled_name(entity: &PickledEntity) -> String {
+    entity
         .compiled_name
         .clone()
-        .unwrap_or_else(|| entity.logical_name.clone());
-    strip_arity(&raw).to_string()
+        .unwrap_or_else(|| entity.logical_name.clone())
 }
 
 /// Whether a pickled type has **no erased `[<Measure>]` type parameter**. A
@@ -5077,6 +5087,7 @@ mod tests {
             is_auto_open: false,
             is_require_qualified_access: false,
             metadata_name: Some(name.to_string()),
+            marker_compiled_name: None,
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,

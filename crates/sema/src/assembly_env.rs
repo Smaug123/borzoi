@@ -7705,6 +7705,7 @@ pub(crate) mod from_views_tests {
             is_auto_open: false,
             is_require_qualified_access: false,
             metadata_name: Some(name.to_string()),
+            marker_compiled_name: None,
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -9032,11 +9033,13 @@ pub(crate) mod from_views_tests {
             kind: EntityKind::Class,
             generic_parameters: vec![type_parameter(0)],
             metadata_name: Some("C`2".to_string()),
+            marker_compiled_name: None,
             ..module_entity("Lib", &["N"], "C")
         };
         let marker = Entity {
             kind: EntityKind::Exception,
             metadata_name: None,
+            marker_compiled_name: None,
             ..module_entity("Lib", &["N"], "Alias")
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
@@ -9078,6 +9081,7 @@ pub(crate) mod from_views_tests {
         let suffixless = |name: &str| Entity {
             kind: EntityKind::Class,
             metadata_name: Some(format!("{name}`0")),
+            marker_compiled_name: None,
             ..module_entity("Lib", &["N"], name)
         };
         let plain = |name: &str| Entity {
@@ -9123,6 +9127,7 @@ pub(crate) mod from_views_tests {
     fn primitive_binds_only_to_a_suffixless_metadata_name() {
         let suffixed = |e: Entity| Entity {
             metadata_name: Some(format!("{}`0", e.name)),
+            marker_compiled_name: None,
             ..e
         };
         let int32 = || Entity {
