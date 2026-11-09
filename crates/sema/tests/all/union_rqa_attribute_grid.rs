@@ -824,16 +824,16 @@ fn assert_rows(
 /// too: FCS reads the first union's case (`TryFindTypeWithUnionCase`),
 /// whatever the later union's attribute. The grid keeps its fallback out of
 /// the container for this probe (see [`FALLBACK`]), so the shape is graded
-/// here. A union exported with a value path takes the path from the earlier
-/// one, the walk's latest-wins reading of a module-qualified case (#469).
+/// here. The walk declines a name the module declares twice, so no row
+/// commits the later union's case.
 #[test]
 fn a_module_qualified_case_through_an_undecided_union() {
     let rows = [
         ("[<RequireQualifiedAccess>]", None),
         ("[<Microsoft.FSharp.Core.RequireQualifiedAccess>]", None),
         ("[<RequireQualifiedAccess(); NoComparison>]", None),
-        ("[<GridRqa>]", Some("#469")),
-        ("[<NoComparison>]", Some("#469")),
+        ("[<GridRqa>]", None),
+        ("[<NoComparison>]", None),
     ];
     assert_rows(&rows, "GridLib.GridC", |attr| {
         vec![
@@ -853,17 +853,15 @@ fn a_module_qualified_case_through_an_undecided_union() {
 
 /// `N.GridC` where two earlier files' fragments of `namespace N` each declare
 /// a union with the case: FCS reads the later fragment's, whatever its
-/// attribute. A union exported qualified-only leaves the path to the earlier
-/// fragment's case (#472).
+/// attribute. The walk declines a name declared in more than one fragment,
+/// so no row commits the earlier fragment's case; committing FCS's reading
+/// is #472.
 #[test]
 fn a_namespace_qualified_case_through_an_undecided_union() {
     let rows = [
-        ("[<RequireQualifiedAccess>]", Some("#472")),
-        (
-            "[<Microsoft.FSharp.Core.RequireQualifiedAccess>]",
-            Some("#472"),
-        ),
-        ("[<RequireQualifiedAccess(); NoComparison>]", Some("#472")),
+        ("[<RequireQualifiedAccess>]", None),
+        ("[<Microsoft.FSharp.Core.RequireQualifiedAccess>]", None),
+        ("[<RequireQualifiedAccess(); NoComparison>]", None),
         ("[<GridRqa>]", None),
         ("[<NoComparison>]", None),
     ];
