@@ -18153,8 +18153,6 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Membe
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:9:17-9:36	TypeMethodSignature Type cross-file-use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:9:37-9:45	TypeDefn Type cross-file-use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:9:7-9:13	Method UnionCase def agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1000:17-1000:27	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1000:17-1000:35	PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1001:18-1001:27	implAttrs Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1002:21-1002:30	behaviour Value { is_function: false } def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1003:24-1003:47	declaringTypeIsDelegate Value { is_function: true } use agree-doc
@@ -18171,12 +18169,8 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Metho
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1009:25-1009:41	RuntimeBehaviour Type use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1009:25-1009:54	Unrecognised UnionCase use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1009:55-1009:65	methodName Value { is_function: false } use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1011:17-1011:27	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1011:17-1011:43	RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1011:44-1011:53	behaviour Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1012:18-1012:29	methodAttrs Value { is_function: false } use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1013:17-1013:27	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1013:17-1013:36	Abstract UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1015:23-1015:37	readMethodBody Value { is_function: true } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1015:38-1015:46	peReader Parameter use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1015:47-1015:61	metadataReader Parameter use agree-none
@@ -18192,15 +18186,11 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Metho
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1020:38-1020:41	raw PatternLocal use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1021:37-1021:40	raw PatternLocal use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1022:44-1022:47	raw PatternLocal use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1024:24-1024:34	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1024:24-1024:37	Il UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1033:27-1033:48	tryReadUnsafeAccessor Value { is_function: true } use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1033:49-1033:63	metadataReader Parameter use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1033:64-1033:73	methodDef Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1034:29-1034:33	kind PatternLocal def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1034:35-1034:45	targetName PatternLocal def agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1035:25-1035:35	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1035:25-1035:51	RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1035:53-1035:69	RuntimeBehaviour Type use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1035:53-1035:84	UnsafeAccessor UnionCase use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:1035:86-1035:90	kind PatternLocal use agree-none
@@ -18410,18 +18400,8 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Metho
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:228:82-228:93	'methodVars TypeParam use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:228:9-228:14	tryIl Value { is_function: true } def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:229:15-229:19	body Parameter use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:230:11-230:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:230:11-230:24	Il UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:230:25-230:30	instr PatternLocal def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:230:39-230:44	instr PatternLocal use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:231:11-231:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:231:11-231:34	InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:232:11-232:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:232:11-232:29	PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:233:11-233:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:233:11-233:37	RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:234:11-234:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:234:11-234:30	Abstract UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:236:23-236:25	'a TypeParam def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:236:27-236:29	'b TypeParam def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:236:9-236:22	mapMethodVars Value { is_function: true } def agree-none
@@ -18436,31 +18416,11 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Metho
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:239:11-239:21	MethodBody Type use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:239:22-239:24	'b TypeParam use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:241:15-241:19	body Parameter use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:242:11-242:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:242:11-242:24	Il UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:242:25-242:30	instr PatternLocal def agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:242:34-242:44	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:242:34-242:47	Il UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:242:49-242:50	f Parameter use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:242:51-242:56	instr PatternLocal use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:243:11-243:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:243:11-243:34	InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:243:38-243:48	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:243:38-243:61	InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:244:11-244:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:244:11-244:29	PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:244:33-244:43	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:244:33-244:51	PInvoke UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:245:11-245:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:245:11-245:37	RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:245:38-245:40	rb PatternLocal def agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:245:44-245:54	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:245:44-245:70	RuntimeProvided UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:245:71-245:73	rb PatternLocal use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:246:11-246:21	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:246:11-246:30	Abstract UnionCase use declined QualifierArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:246:34-246:44	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:246:34-246:53	Abstract UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:252:17-252:30	'typeGenerics TypeParam def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:252:32-252:47	'methodGenerics TypeParam def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:252:49-252:60	'methodVars TypeParam def agree-none
@@ -19552,8 +19512,6 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj Metho
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:996:20-996:30	MethodBody Type use agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:996:31-996:39	TypeDefn Type cross-file-use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:997:16-997:25	implAttrs Value { is_function: false } use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:998:17-998:27	MethodBody Type use declined ArityMismatch fcs-doc
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:998:17-998:40	InternalCall UnionCase use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodInfo.fs:999:18-999:29	methodAttrs Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:11:6-11:16	MethodSpec Type def agree-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MethodSpec.fs:16:18-16:31	MetadataToken Type cross-file-use agree-doc
@@ -20172,23 +20130,18 @@ WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeC
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1113:33-1113:37	vars PatternLocal use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1115:30-1115:37	handles Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1115:39-1115:42	ctx Value { is_function: false } use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:17-1117:30	Il UnionCase cross-file-use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:32-1117:63	setLocalVars Value { is_function: true } cross-file-use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:64-1117:70	locals Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:71-1117:76	instr PatternLocal use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1117:79-1117:89	updatedCtx Value { is_function: false } use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:42-1118:65	InternalCall UnionCase cross-file-use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1118:67-1118:74	concCtx Value { is_function: false } use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:37-1119:55	PInvoke UnionCase cross-file-use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1119:57-1119:64	concCtx Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:111:11-111:29	ConcreteTypeHandle Type use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:111:11-111:38	Concrete UnionCase use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:111:39-111:41	id PatternLocal def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:42-1120:44	rb PatternLocal def agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:48-1120:74	RuntimeProvided UnionCase cross-file-use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:75-1120:77	rb PatternLocal use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1120:79-1120:86	concCtx Value { is_function: false } use agree-none
-WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:38-1121:57	Abstract UnionCase cross-file-use declined QualifierArityMismatch fcs-doc
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1121:59-1121:66	concCtx Value { is_function: false } use agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1124:13-1124:27	genericHandles Value { is_function: false } def agree-none
 WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj TypeConcretisation.fs:1125:13-1125:19	method Parameter use agree-none
