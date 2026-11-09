@@ -1978,6 +1978,30 @@ pub fn ensure_module_value_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **container precedence** fixture
+/// (`tests/fixtures/container_precedence_env`, generated from
+/// [`crate::assembly_container_precedence_grid`]'s setups) once per test binary
+/// and return its `.dll` path.
+pub fn ensure_container_precedence_fixture_built() -> &'static Path {
+    use crate::assembly_container_precedence_grid::{FIXTURE_ASM, fixture_source};
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/container_precedence_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(project.join("Generated.fs"), fixture_source())
+                .expect("write container-precedence Generated.fs");
+            dotnet_build(&project, "dotnet build container-precedence fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join(format!("{FIXTURE_ASM}.dll"))
+        })
+        .as_path()
+}
+
 /// Build the module-value fixture's **twin** (`tests/fixtures/module_value_twin_env`,
 /// `SemaModuleValueTwin.dll`), which declares a type of the same name as one
 /// the fixture declares, once per test binary and return its `.dll` path.

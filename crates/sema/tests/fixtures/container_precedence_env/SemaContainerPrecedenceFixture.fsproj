@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The fixture behind the assembly container precedence grid
+       (tests/all/assembly_container_precedence_grid.rs): modules and
+       namespaces declaring several members named `GridC`, in several orders.
+
+       `Generated.fs` is NOT checked in: it is emitted from the grid's setups
+       before this project is built, so the fixture and the probes cannot
+       drift apart. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaContainerPrecedenceFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>

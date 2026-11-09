@@ -4,7 +4,7 @@ use borzoi_assembly::EntityKind;
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::TextRange;
 
-use crate::assembly_env::{EntityHandle, StaticLookup};
+use crate::assembly_env::{AheadOfType, EntityHandle, StaticLookup};
 
 use super::id_text;
 use super::model::{DeclineCause, DeclineSite, DeclineTier, DeferredReason, Resolution};
@@ -498,6 +498,24 @@ impl<'a> Resolver<'a> {
     ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
         let n = names.len();
 
+        // A rooting reached through a namespace qualifier the source writes is
+        // a name FCS looks up *in* that namespace
+        // (`ResolveExprLongIdentInModuleOrNamespace`), which reads an exception
+        // or a union case of the name ahead of a type or module — see
+        // [`AheadOfType`]. (A rooting at the written head is looked up in the
+        // environment instead, where a type or module goes first.)
+        let mut rqa_case_fallback = false;
+        if k > base {
+            match self
+                .assemblies
+                .namespace_reads_ahead_of_type(&names[..k], &names[k], type_handle)
+            {
+                AheadOfType::Nothing => {}
+                AheadOfType::RqaCaseFallback => rqa_case_fallback = true,
+                AheadOfType::Possible => return Self::owned_deferral(segments, Vec::new()),
+            }
+        }
+
         // A type-abbreviation marker: the name binds, and FCS chases the
         // abbreviation to its target (`S.Format` where `type S = System.String`
         // resolves `Format` on `System.String`). Resolve *through* a resolvable
@@ -584,6 +602,38 @@ impl<'a> Resolver<'a> {
                 recs.push((whole, case));
                 i += 1;
                 break;
+            }
+            // A module searches its own contents in FCS's in-container order
+            // ([`AheadOfType`]): a value first, so a uniquely-selectable `let`
+            // of the name is the reading even beside a type of it; then an
+            // exception or union case of the name, ahead of the child type or
+            // module the descent below would take.
+            if self.assemblies.is_authoritative_module(parent) {
+                if let StaticLookup::Resolved(idx) =
+                    self.assemblies.static_lookup(parent, &names[i])
+                {
+                    let whole =
+                        TextRange::new(segments[0].text_range().start(), src.text_range().end());
+                    recs.push((whole, Resolution::Member { parent, idx }));
+                    i += 1;
+                    break;
+                }
+                if let Some(child) = self
+                    .assemblies
+                    .nested(parent, &names[i], 0)
+                    .filter(|&h| self.assemblies.is_public(h))
+                {
+                    match self
+                        .assemblies
+                        .module_reads_ahead_of_type(parent, &names[i], child)
+                    {
+                        AheadOfType::Nothing => {}
+                        AheadOfType::RqaCaseFallback => rqa_case_fallback = true,
+                        AheadOfType::Possible => {
+                            return Self::owned_deferral(&segments[(i - base)..], recs);
+                        }
+                    }
+                }
             }
             if let Some(child) = self
                 .assemblies
@@ -702,9 +752,35 @@ impl<'a> Resolver<'a> {
         for seg in &segments[(i - base)..] {
             recs.push((seg.text_range(), deferred));
         }
+        // A `[<RequireQualifiedAccess>]` case of a name the walk read past is
+        // FCS's reading whenever the type (or module) reading supplies
+        // nothing: a tail it lacks, or a bare name that is not a value. FCS
+        // reads the case there rather than going on elsewhere, so the path is
+        // owned, but not by anything this reading names.
+        if rqa_case_fallback && (!owns_path || self.reading_stops_on_a_non_value(segments, &recs)) {
+            return Self::owned_deferral(segments, Vec::new());
+        }
         AssemblyPath::Resolved {
             payload: recs,
             owns_path,
+        }
+    }
+
+    /// A reading that **owns** the path but names no target in `rest`: the
+    /// records already made, then `rest`'s segments deferred.
+    fn owned_deferral(
+        rest: &[SyntaxToken],
+        mut recs: Vec<(TextRange, Resolution)>,
+    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
+        recs.extend(rest.iter().map(|seg| {
+            (
+                seg.text_range(),
+                Resolution::Deferred(DeferredReason::QualifiedAccess),
+            )
+        }));
+        AssemblyPath::Resolved {
+            payload: recs,
+            owns_path: true,
         }
     }
 

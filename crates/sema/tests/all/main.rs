@@ -8,6 +8,7 @@
 mod common;
 
 mod abbreviation_case_diff;
+mod assembly_container_precedence_grid;
 mod assembly_env;
 mod assembly_union_case_table;
 mod attr_resolution_diff;

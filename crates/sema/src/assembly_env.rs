@@ -319,6 +319,31 @@ pub enum StaticLookup {
     Uncertain,
 }
 
+/// What FCS's **in-container** expression search can read for a name ahead of
+/// the container's own type or module of that name —
+/// [`AssemblyEnv::module_reads_ahead_of_type`] and
+/// [`AssemblyEnv::namespace_reads_ahead_of_type`].
+///
+/// `ResolveExprLongIdentInModuleOrNamespace` (NameResolution.fs) asks a module
+/// or namespace for an accessible value, then an accessible exception, then
+/// the case of the first union declaring the name, and only then for a type —
+/// then, with a tail, a module — of the name. A
+/// `[<RequireQualifiedAccess>]` union's case is the exception to that order:
+/// FCS keeps it and reads it last, only when the type and module searches read
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AheadOfType {
+    /// Provably nothing: FCS's search reaches the type.
+    Nothing,
+    /// Only `[<RequireQualifiedAccess>]` unions declare a case of the name:
+    /// FCS reaches the type, but reads such a case if the type (and, with a
+    /// tail, the module) supplies nothing.
+    RqaCaseFallback,
+    /// A value, an exception or an ordinary union case of the name may be read
+    /// first, or the container's members of that name cannot be enumerated.
+    Possible,
+}
+
 /// The complete-or-opaque bare-name surface an `open <assembly module>` folds
 /// into scope — [`AssemblyEnv::open_fold_surface`], the fold's per-container
 /// unit (`docs/assembly-module-open-plan.md`, "the fold").
@@ -6183,6 +6208,132 @@ impl AssemblyEnv {
                         && self.presence_of(level, m, Channel::Qualified) != Presence::Absent
                 })
         })
+    }
+
+    /// What FCS's in-module expression search can read for `name` in module
+    /// `module` ahead of its child `child` of that name — see [`AheadOfType`].
+    ///
+    /// `module` must be an authoritative module
+    /// ([`Self::is_authoritative_module`]): a non-authoritative one is a plain
+    /// type to FCS, searched by the type rules instead.
+    ///
+    /// The answer is an exhaustive negation: [`AheadOfType::Nothing`] only when
+    /// the module provably declares no public value, no public exception other
+    /// than `child`, and no public union with a case of the name. A module whose
+    /// members cannot be enumerated (an undecodable member of the name, an
+    /// unknowable pickle, a dropped type in its namespace that could be a child
+    /// union) is [`AheadOfType::Possible`].
+    ///
+    /// A non-public value, exception or union never answers: FCS checks the
+    /// first two for accessibility, and while `TryFindTypeWithUnionCase` stops at
+    /// the first union declaring the case whatever its accessibility, it then
+    /// reads the case only if the representation is accessible — so when every
+    /// union declaring the case is non-public, whichever comes first, the search
+    /// goes on to the type. A union whose representation is `private` lists no
+    /// cases, which is the same answer for the same reason; beside a public
+    /// union declaring the case it may come first, but the public one already
+    /// makes the answer [`AheadOfType::Possible`].
+    pub(crate) fn module_reads_ahead_of_type(
+        &self,
+        module: EntityHandle,
+        name: &str,
+        child: EntityHandle,
+    ) -> AheadOfType {
+        debug_assert!(self.is_authoritative_module(module));
+        if self.has_skipped_member(module, name)
+            || matches!(
+                self.module_extension_members(module),
+                ExtensionMembers::Unknowable
+            )
+            || self.namespace_has_dropped_type(&self.nodes[module.index()].owning_namespace)
+        {
+            return AheadOfType::Possible;
+        }
+        if self
+            .entity(module)
+            .members
+            .iter()
+            .any(|m| member_name(m) == name && member_is_public(m))
+        {
+            return AheadOfType::Possible;
+        }
+        self.entities_read_ahead_of_type(self.children(module), name, child)
+    }
+
+    /// What FCS's in-namespace expression search can read for `name` in
+    /// `namespace` ahead of `entity`, a top-level entity of that name there —
+    /// see [`AheadOfType`] and [`Self::module_reads_ahead_of_type`], whose rule
+    /// this is with no values (a namespace declares none).
+    ///
+    /// Every referenced assembly's types in the namespace are asked, not just
+    /// `entity`'s: FCS resolves a namespace path in each assembly that declares
+    /// the namespace and takes whichever reading its reference order decides,
+    /// which sema does not model, so a case of the name in any of them may be
+    /// the one read. A namespace with a dropped type is
+    /// [`AheadOfType::Possible`]: the dropped type could be such a union.
+    pub(crate) fn namespace_reads_ahead_of_type(
+        &self,
+        namespace: &[String],
+        name: &str,
+        entity: EntityHandle,
+    ) -> AheadOfType {
+        if self.namespace_has_dropped_type(namespace) {
+            return AheadOfType::Possible;
+        }
+        self.entities_read_ahead_of_type(self.types_in_namespace(namespace), name, entity)
+    }
+
+    /// The exception and union half of [`Self::module_reads_ahead_of_type`] and
+    /// [`Self::namespace_reads_ahead_of_type`], over one container's entities.
+    ///
+    /// When `entity` is itself the exception of the name, FCS reads it at the
+    /// exception step, ahead of any union case of its own assembly, so only
+    /// another assembly's members of a namespace can come first.
+    /// A union in an assembly whose F# signature is not authoritative is a
+    /// possible reader whatever cases its IL appears to declare: its case list
+    /// is a heuristic, and so is its `[<RequireQualifiedAccess>]` exemption.
+    fn entities_read_ahead_of_type(
+        &self,
+        entities: &[EntityHandle],
+        name: &str,
+        entity: EntityHandle,
+    ) -> AheadOfType {
+        let is_exception = self.entity(entity).kind == EntityKind::Exception;
+        let mut rqa_case = false;
+        for &e in entities {
+            if !self.is_public(e) || is_exception && self.distinct_dlls(&[e, entity]) == 1 {
+                continue;
+            }
+            let ent = self.entity(e);
+            match ent.kind {
+                EntityKind::Exception
+                    if ent.source_name.as_deref().unwrap_or(&ent.name) == name =>
+                {
+                    return AheadOfType::Possible;
+                }
+                EntityKind::Union => {
+                    let unreliable = self.fsharp_signature_unreliable(e);
+                    let declares = unreliable
+                        || match &ent.union_cases {
+                            UnionCases::Unknowable => true,
+                            UnionCases::Known(cases) => cases.iter().any(|c| c.name == name),
+                        };
+                    if !declares {
+                        continue;
+                    }
+                    if unreliable || !ent.is_require_qualified_access {
+                        return AheadOfType::Possible;
+                    }
+                    rqa_case = true;
+                }
+                _ => {}
+            }
+        }
+        if rqa_case {
+            AheadOfType::RqaCaseFallback
+        } else {
+            AheadOfType::Nothing
+        }
     }
 
     /// Whether FCS's **module-qualified lookup** could find `name` in module
