@@ -4,11 +4,10 @@
 //! per source fingerprint (the content-bearing-marker scheme the other oracle
 //! harnesses use).
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LockResult, Mutex, MutexGuard, OnceLock, TryLockError};
+use std::sync::{LockResult, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use borzoi_oracle_harness::BatchChild;
@@ -133,8 +132,36 @@ pub struct Oracle {
 /// read stale. libtest runs each test on a thread of its own, so pinning the
 /// thread keeps a test's write-then-read sequences on one child; what tests
 /// share is written once (behind a `OnceLock`) before anyone reads it.
+///
+/// A thread claims the child with the fewest live claimants, and gives the
+/// claim back when it exits. Whether a child is *locked* says nothing about
+/// whether it is taken: a thread holds its child's lock only for a request,
+/// and keeps the child between requests.
 pub struct OraclePool {
     slots: Vec<Mutex<Oracle>>,
+    /// Per child, how many live threads have claimed it.
+    claims: Mutex<Vec<usize>>,
+}
+
+/// A thread's claim on one child of a pool, given back when the thread exits.
+struct Claim {
+    pool: &'static OraclePool,
+    slot: usize,
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let mut claims = self
+            .pool
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        claims[self.slot] -= 1;
+    }
+}
+
+thread_local! {
+    static CLAIM: RefCell<Option<Claim>> = const { RefCell::new(None) };
 }
 
 /// How many children the pool may hold: one per core, at most four by default
@@ -154,14 +181,20 @@ pub fn oracle() -> &'static OraclePool {
     static POOL: OnceLock<OraclePool> = OnceLock::new();
     POOL.get_or_init(|| {
         let bin = ensure_built().to_path_buf();
+        OraclePool::new(pool_size(), move || Command::new(&bin))
+    })
+}
+
+impl OraclePool {
+    /// `n` children, each spawned by `make` on its first request.
+    fn new(n: usize, make: impl Fn() -> Command + Clone + Send + 'static) -> Self {
         OraclePool {
-            slots: (0..pool_size())
+            slots: (0..n)
                 .map(|_| {
-                    let bin = bin.clone();
-                    let factory = move || Command::new(&bin);
+                    let make = make.clone();
                     Mutex::new(Oracle {
                         child: BatchChild::with_factory(
-                            Box::new(factory),
+                            Box::new(make),
                             "inheritdoc-oracle",
                             REQUEST_TIMEOUT,
                             2,
@@ -169,37 +202,38 @@ pub fn oracle() -> &'static OraclePool {
                     })
                 })
                 .collect(),
+            claims: Mutex::new(vec![0; n]),
         }
-    })
-}
+    }
 
-impl OraclePool {
-    /// This thread's child, locked. A thread's first call picks an idle child
-    /// if there is one (else the next in turn) and keeps it from then on.
+    /// Claim the child with the fewest live claimants (the lowest of equals).
+    fn claim(&'static self) -> Claim {
+        let mut claims = self
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = (0..claims.len())
+            .min_by_key(|&i| claims[i])
+            .expect("a pool has a child");
+        claims[slot] += 1;
+        Claim { pool: self, slot }
+    }
+
+    /// This thread's child, locked: the one it claimed on its first call.
     pub fn lock(&'static self) -> LockResult<MutexGuard<'static, Oracle>> {
-        thread_local! {
-            static SLOT: Cell<Option<usize>> = const { Cell::new(None) };
-        }
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        if let Some(i) = SLOT.get() {
-            return self.slots[i].lock();
-        }
-        for (i, slot) in self.slots.iter().enumerate() {
-            match slot.try_lock() {
-                Ok(guard) => {
-                    SLOT.set(Some(i));
-                    return Ok(guard);
+        let slot = CLAIM.with(|cell| {
+            let mut claim = cell.borrow_mut();
+            match &*claim {
+                Some(c) if std::ptr::eq(c.pool, self) => c.slot,
+                _ => {
+                    let c = self.claim();
+                    let slot = c.slot;
+                    *claim = Some(c);
+                    slot
                 }
-                Err(TryLockError::Poisoned(poisoned)) => {
-                    SLOT.set(Some(i));
-                    return Err(poisoned);
-                }
-                Err(TryLockError::WouldBlock) => {}
             }
-        }
-        let i = NEXT.fetch_add(1, Ordering::Relaxed) % self.slots.len();
-        SLOT.set(Some(i));
-        self.slots[i].lock()
+        });
+        self.slots[slot].lock()
     }
 }
 
@@ -394,4 +428,45 @@ pub struct AssemblyRefPatch {
     pub token: Option<&'static str>,
     /// Whether to clear the token to the empty blob.
     pub drop_token: bool,
+}
+
+/// Threads that ask the pool at the same time get different children, even
+/// when each has finished its first request before the next asks: a thread
+/// keeps its child between requests, so a child that is merely unlocked at
+/// that moment may still be another live thread's.
+#[test]
+fn concurrent_threads_are_spread_over_every_child() {
+    // A pool of its own, whose children are never spawned: nothing here sends
+    // a request.
+    let pool: &'static OraclePool = Box::leak(Box::new(OraclePool::new(4, || {
+        Command::new("borzoi-test-never-spawned")
+    })));
+    let n = pool.slots.len();
+    let barrier = std::sync::Barrier::new(n);
+    let children: std::collections::BTreeSet<usize> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n)
+            .map(|_| {
+                scope.spawn(|| {
+                    // Each thread takes its child and lets go before the next
+                    // one asks, as a test between two requests does.
+                    let child = {
+                        let guard = pool.lock().expect("an unpoisoned child");
+                        std::ptr::from_ref::<Oracle>(&guard) as usize
+                    };
+                    barrier.wait();
+                    child
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a pool thread"))
+            .collect()
+    });
+    assert_eq!(
+        children.len(),
+        n,
+        "{n} live threads share {} of {n} children",
+        children.len()
+    );
 }
