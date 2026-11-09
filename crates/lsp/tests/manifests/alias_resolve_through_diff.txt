@@ -4,14 +4,14 @@
 base PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 base PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 base PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-base PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+base PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 base PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 base PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 base PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 base PointX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree
 base PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
 base PointX Ctor	erroring | AlLib=- ours decline; PointX=- ours decline
-base PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours decline
+base PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours agree
 base PointX OpenAnnot	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree
 base PointX OpenStatic	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
 base PointX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
@@ -50,77 +50,77 @@ base ShapeX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Shap
 base WidgetChain Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 base WidgetChain Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 base WidgetChain Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-base WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+base WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 base WidgetChain OpenAnnot	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 base WidgetChain OpenStatic	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 base WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 base WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 base WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 base WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-base WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+base WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 base WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 base WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 base WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 base WidgetCompX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 base WidgetCompX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 base WidgetCompX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-base WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+base WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 base WidgetCompX OpenAnnot	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 base WidgetCompX OpenStatic	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:module ours agree; Make=SemaAliasLib:AlLib.WidgetCompX.Make:member ours agree
 base WidgetCompX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 base WidgetHit Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 base WidgetHit Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 base WidgetHit Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-base WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+base WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 base WidgetHit OpenAnnot	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 base WidgetHit OpenStatic	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 base WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 base WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 base WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 base WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-base WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+base WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 base WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 base WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 base WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 base WidgetN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 base WidgetN Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 base WidgetN Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-base WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+base WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 base WidgetN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 base WidgetN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 base WidgetN Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 base WidgetNX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 base WidgetNX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 base WidgetNX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-base WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+base WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 base WidgetNX OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 base WidgetNX OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 base WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 base WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 base WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 base WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-base WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+base WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 base WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 base WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 base WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 base WidgetX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 base WidgetX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 base WidgetX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-base WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+base WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 base WidgetX OpenAnnot	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 base WidgetX OpenStatic	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 base WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-after PointL Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 collide-after PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 collide-after PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-collide-after PointL Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+collide-after PointL Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 collide-after PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 collide-after PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 collide-after PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 collide-after PointX Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree
 collide-after PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
 collide-after PointX Ctor	erroring | AlLib=- ours decline; PointX=- ours decline
-collide-after PointX Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours decline
+collide-after PointX Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours agree
 collide-after PointX OpenAnnot	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree
 collide-after PointX OpenStatic	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
 collide-after PointX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
@@ -159,21 +159,21 @@ collide-after ShapeX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decl
 collide-after WidgetChain Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 collide-after WidgetChain Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 collide-after WidgetChain Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-collide-after WidgetChain Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+collide-after WidgetChain Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 collide-after WidgetChain OpenAnnot	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 collide-after WidgetChain OpenStatic	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-after WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-after WidgetComp Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 collide-after WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 collide-after WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-collide-after WidgetComp Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+collide-after WidgetComp Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 collide-after WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 collide-after WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 collide-after WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 collide-after WidgetCompX Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 collide-after WidgetCompX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 collide-after WidgetCompX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-collide-after WidgetCompX Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+collide-after WidgetCompX Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 collide-after WidgetCompX OpenAnnot	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 collide-after WidgetCompX OpenStatic	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:module ours agree; Make=SemaAliasLib:AlLib.WidgetCompX.Make:member ours agree
 collide-after WidgetCompX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
@@ -187,7 +187,7 @@ collide-after WidgetHit Static	clean | AlLib=SemaAliasCollide:AlLib:namespace ou
 collide-after WidgetL Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 collide-after WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 collide-after WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-collide-after WidgetL Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+collide-after WidgetL Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 collide-after WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 collide-after WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 collide-after WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -208,28 +208,28 @@ collide-after WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours de
 collide-after WidgetOver Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 collide-after WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 collide-after WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-collide-after WidgetOver Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+collide-after WidgetOver Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 collide-after WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 collide-after WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 collide-after WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 collide-after WidgetX Annot	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 collide-after WidgetX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 collide-after WidgetX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-collide-after WidgetX Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+collide-after WidgetX Instance	clean | AlLib=SemaAliasCollide:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 collide-after WidgetX OpenAnnot	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 collide-after WidgetX OpenStatic	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-after WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-before PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 collide-before PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 collide-before PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-collide-before PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+collide-before PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 collide-before PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 collide-before PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 collide-before PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 collide-before PointX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree
 collide-before PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
 collide-before PointX Ctor	erroring | AlLib=- ours decline; PointX=- ours decline
-collide-before PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours decline
+collide-before PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours agree
 collide-before PointX OpenAnnot	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree
 collide-before PointX OpenStatic	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
 collide-before PointX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
@@ -268,21 +268,21 @@ collide-before ShapeX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours dec
 collide-before WidgetChain Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 collide-before WidgetChain Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 collide-before WidgetChain Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-collide-before WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+collide-before WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 collide-before WidgetChain OpenAnnot	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 collide-before WidgetChain OpenStatic	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-before WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-before WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 collide-before WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 collide-before WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-collide-before WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+collide-before WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 collide-before WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 collide-before WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 collide-before WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 collide-before WidgetCompX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 collide-before WidgetCompX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 collide-before WidgetCompX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-collide-before WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+collide-before WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 collide-before WidgetCompX OpenAnnot	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 collide-before WidgetCompX OpenStatic	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:module ours agree; Make=SemaAliasLib:AlLib.WidgetCompX.Make:member ours agree
 collide-before WidgetCompX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
@@ -296,7 +296,7 @@ collide-before WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours 
 collide-before WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 collide-before WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 collide-before WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-collide-before WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+collide-before WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 collide-before WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 collide-before WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 collide-before WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -317,14 +317,14 @@ collide-before WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours d
 collide-before WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 collide-before WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 collide-before WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-collide-before WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+collide-before WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 collide-before WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 collide-before WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 collide-before WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 collide-before WidgetX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 collide-before WidgetX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 collide-before WidgetX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-collide-before WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+collide-before WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 collide-before WidgetX OpenAnnot	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 collide-before WidgetX OpenStatic	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 collide-before WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
@@ -440,14 +440,14 @@ il-only WidgetX Static	erroring | AlLib=- ours decline; WidgetX=- ours decline; 
 lib-first PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 lib-first PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 lib-first PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-lib-first PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+lib-first PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 lib-first PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 lib-first PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 lib-first PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 lib-first PointX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree
 lib-first PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
 lib-first PointX Ctor	erroring | AlLib=- ours decline; PointX=- ours decline
-lib-first PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours decline
+lib-first PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours agree
 lib-first PointX OpenAnnot	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree
 lib-first PointX OpenStatic	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
 lib-first PointX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
@@ -486,77 +486,77 @@ lib-first ShapeX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline;
 lib-first WidgetChain Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 lib-first WidgetChain Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 lib-first WidgetChain Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-lib-first WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+lib-first WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 lib-first WidgetChain OpenAnnot	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 lib-first WidgetChain OpenStatic	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 lib-first WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 lib-first WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 lib-first WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 lib-first WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-lib-first WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+lib-first WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 lib-first WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 lib-first WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 lib-first WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 lib-first WidgetCompX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 lib-first WidgetCompX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 lib-first WidgetCompX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-lib-first WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+lib-first WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 lib-first WidgetCompX OpenAnnot	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 lib-first WidgetCompX OpenStatic	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:module ours agree; Make=SemaAliasLib:AlLib.WidgetCompX.Make:member ours agree
 lib-first WidgetCompX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 lib-first WidgetHit Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 lib-first WidgetHit Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 lib-first WidgetHit Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-lib-first WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+lib-first WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 lib-first WidgetHit OpenAnnot	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 lib-first WidgetHit OpenStatic	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 lib-first WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 lib-first WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 lib-first WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 lib-first WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-lib-first WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+lib-first WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 lib-first WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 lib-first WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 lib-first WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 lib-first WidgetN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 lib-first WidgetN Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 lib-first WidgetN Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-lib-first WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+lib-first WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 lib-first WidgetN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 lib-first WidgetN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 lib-first WidgetN Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 lib-first WidgetNX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 lib-first WidgetNX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 lib-first WidgetNX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-lib-first WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+lib-first WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 lib-first WidgetNX OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 lib-first WidgetNX OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 lib-first WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 lib-first WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 lib-first WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 lib-first WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-lib-first WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+lib-first WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 lib-first WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 lib-first WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 lib-first WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 lib-first WidgetX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 lib-first WidgetX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 lib-first WidgetX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-lib-first WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+lib-first WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 lib-first WidgetX OpenAnnot	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 lib-first WidgetX OpenStatic	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 lib-first WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 merge PointL Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 merge PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 merge PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-merge PointL Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+merge PointL Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 merge PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 merge PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 merge PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 merge PointX Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree
 merge PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
 merge PointX Ctor	erroring | AlLib=- ours decline; PointX=- ours decline
-merge PointX Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours decline
+merge PointX Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours agree
 merge PointX OpenAnnot	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree
 merge PointX OpenStatic	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
 merge PointX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
@@ -595,35 +595,35 @@ merge ShapeX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Sha
 merge WidgetChain Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 merge WidgetChain Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 merge WidgetChain Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-merge WidgetChain Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+merge WidgetChain Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 merge WidgetChain OpenAnnot	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 merge WidgetChain OpenStatic	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 merge WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 merge WidgetComp Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 merge WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 merge WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-merge WidgetComp Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+merge WidgetComp Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 merge WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 merge WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 merge WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 merge WidgetCompX Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 merge WidgetCompX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 merge WidgetCompX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-merge WidgetCompX Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+merge WidgetCompX Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 merge WidgetCompX OpenAnnot	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 merge WidgetCompX OpenStatic	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:module ours agree; Make=SemaAliasLib:AlLib.WidgetCompX.Make:member ours agree
 merge WidgetCompX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 merge WidgetHit Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 merge WidgetHit Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 merge WidgetHit Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-merge WidgetHit Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+merge WidgetHit Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 merge WidgetHit OpenAnnot	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 merge WidgetHit OpenStatic	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 merge WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 merge WidgetL Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 merge WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 merge WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-merge WidgetL Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+merge WidgetL Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 merge WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 merge WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 merge WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -644,21 +644,21 @@ merge WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; N
 merge WidgetOver Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 merge WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 merge WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-merge WidgetOver Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+merge WidgetOver Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 merge WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 merge WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 merge WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 merge WidgetX Annot	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 merge WidgetX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 merge WidgetX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-merge WidgetX Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+merge WidgetX Instance	clean | AlLib=SemaAliasMerge:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 merge WidgetX OpenAnnot	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 merge WidgetX OpenStatic	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 merge WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 rootless-equal PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 rootless-equal PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 rootless-equal PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-rootless-equal PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+rootless-equal PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 rootless-equal PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 rootless-equal PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 rootless-equal PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
@@ -711,7 +711,7 @@ rootless-equal WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace our
 rootless-equal WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 rootless-equal WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-equal WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-equal WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-equal WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-equal WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 rootless-equal WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 rootless-equal WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
@@ -732,14 +732,14 @@ rootless-equal WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours 
 rootless-equal WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 rootless-equal WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-equal WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-equal WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-equal WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-equal WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 rootless-equal WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-equal WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-equal WidgetN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 rootless-equal WidgetN Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-equal WidgetN Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-equal WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-equal WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-equal WidgetN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 rootless-equal WidgetN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 rootless-equal WidgetN Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -753,7 +753,7 @@ rootless-equal WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours d
 rootless-equal WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 rootless-equal WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-equal WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-equal WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-equal WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-equal WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 rootless-equal WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-equal WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -767,7 +767,7 @@ rootless-equal WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours de
 rootless-higher PointL Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 rootless-higher PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 rootless-higher PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-rootless-higher PointL Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+rootless-higher PointL Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 rootless-higher PointL OpenAnnot	erroring | PointL=- ours WRONG (#514) SemaAliasLib:AlLib.PointL:type
 rootless-higher PointL OpenStatic	erroring | PointL=- ours ungraded SemaAliasLib:AlLib.PointL:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LPoint.Make:member
 rootless-higher PointL Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
@@ -820,7 +820,7 @@ rootless-higher WidgetChain Static	erroring | AlLib=- ours decline; WidgetChain=
 rootless-higher WidgetComp Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 rootless-higher WidgetComp Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetComp Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-higher WidgetComp Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-higher WidgetComp Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-higher WidgetComp OpenAnnot	erroring | WidgetComp=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetComp:type
 rootless-higher WidgetComp OpenStatic	erroring | WidgetComp=- ours ungraded SemaAliasLib:AlLib.WidgetComp:module; Make=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetComp.Make:member
 rootless-higher WidgetComp Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
@@ -841,14 +841,14 @@ rootless-higher WidgetHit Static	erroring | AlLib=- ours decline; WidgetHit=- ou
 rootless-higher WidgetL Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 rootless-higher WidgetL Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetL Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-higher WidgetL Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-higher WidgetL Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-higher WidgetL OpenAnnot	erroring | WidgetL=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetL:type
 rootless-higher WidgetL OpenStatic	erroring | WidgetL=- ours ungraded SemaAliasLib:AlLib.WidgetL:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LWidget.Make:member
 rootless-higher WidgetL Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-higher WidgetN Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 rootless-higher WidgetN Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetN Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-higher WidgetN Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-higher WidgetN Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-higher WidgetN OpenAnnot	erroring | Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; WidgetN=- ours WRONG (#514) SemaAliasLib:AlLib.Nest.WidgetN:type
 rootless-higher WidgetN OpenStatic	erroring | Nest=- ours decline; WidgetN=- ours decline; Make=- ours decline
 rootless-higher WidgetN Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -862,7 +862,7 @@ rootless-higher WidgetNX Static	erroring | AlLib=- ours decline; Nest=- ours dec
 rootless-higher WidgetOver Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 rootless-higher WidgetOver Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetOver Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-higher WidgetOver Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-higher WidgetOver Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-higher WidgetOver OpenAnnot	erroring | WidgetOver=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetOver:type
 rootless-higher WidgetOver OpenStatic	erroring | WidgetOver=- ours ungraded SemaAliasLib:AlLib.WidgetOver:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LWidget.Make:member
 rootless-higher WidgetOver Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -876,14 +876,14 @@ rootless-higher WidgetX Static	erroring | AlLib=- ours decline; WidgetX=- ours d
 rootless-lower PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 rootless-lower PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 rootless-lower PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-rootless-lower PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+rootless-lower PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 rootless-lower PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 rootless-lower PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 rootless-lower PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 rootless-lower PointX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree
 rootless-lower PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
 rootless-lower PointX Ctor	erroring | AlLib=- ours decline; PointX=- ours decline
-rootless-lower PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours decline
+rootless-lower PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours agree
 rootless-lower PointX OpenAnnot	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree
 rootless-lower PointX OpenStatic	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
 rootless-lower PointX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
@@ -922,63 +922,63 @@ rootless-lower ShapeX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours dec
 rootless-lower WidgetChain Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 rootless-lower WidgetChain Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 rootless-lower WidgetChain Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-rootless-lower WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+rootless-lower WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 rootless-lower WidgetChain OpenAnnot	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 rootless-lower WidgetChain OpenStatic	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 rootless-lower WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 rootless-lower WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 rootless-lower WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-lower WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-lower WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-lower WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-lower WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 rootless-lower WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 rootless-lower WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 rootless-lower WidgetCompX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 rootless-lower WidgetCompX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 rootless-lower WidgetCompX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-rootless-lower WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+rootless-lower WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 rootless-lower WidgetCompX OpenAnnot	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 rootless-lower WidgetCompX OpenStatic	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:module ours agree; Make=SemaAliasLib:AlLib.WidgetCompX.Make:member ours agree
 rootless-lower WidgetCompX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 rootless-lower WidgetHit Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 rootless-lower WidgetHit Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 rootless-lower WidgetHit Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-rootless-lower WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+rootless-lower WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 rootless-lower WidgetHit OpenAnnot	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 rootless-lower WidgetHit OpenStatic	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 rootless-lower WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 rootless-lower WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 rootless-lower WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-lower WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-lower WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-lower WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-lower WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 rootless-lower WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-lower WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-lower WidgetN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 rootless-lower WidgetN Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-lower WidgetN Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-lower WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-lower WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-lower WidgetN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 rootless-lower WidgetN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 rootless-lower WidgetN Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-lower WidgetNX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 rootless-lower WidgetNX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 rootless-lower WidgetNX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-rootless-lower WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+rootless-lower WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 rootless-lower WidgetNX OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 rootless-lower WidgetNX OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 rootless-lower WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 rootless-lower WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 rootless-lower WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-lower WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-rootless-lower WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+rootless-lower WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 rootless-lower WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 rootless-lower WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-lower WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-lower WidgetX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 rootless-lower WidgetX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 rootless-lower WidgetX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-rootless-lower WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+rootless-lower WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 rootless-lower WidgetX OpenAnnot	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 rootless-lower WidgetX OpenStatic	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 rootless-lower WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
@@ -1094,7 +1094,7 @@ sibling-lib WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decli
 sibling-target PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 sibling-target PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 sibling-target PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-sibling-target PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+sibling-target PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 sibling-target PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 sibling-target PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 sibling-target PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
@@ -1147,7 +1147,7 @@ sibling-target WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace our
 sibling-target WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 sibling-target WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 sibling-target WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-sibling-target WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+sibling-target WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 sibling-target WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 sibling-target WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 sibling-target WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
@@ -1168,14 +1168,14 @@ sibling-target WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours 
 sibling-target WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 sibling-target WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 sibling-target WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-sibling-target WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+sibling-target WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 sibling-target WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 sibling-target WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 sibling-target WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 sibling-target WidgetN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 sibling-target WidgetN Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 sibling-target WidgetN Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-sibling-target WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+sibling-target WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 sibling-target WidgetN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 sibling-target WidgetN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 sibling-target WidgetN Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -1189,7 +1189,7 @@ sibling-target WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours d
 sibling-target WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 sibling-target WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 sibling-target WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-sibling-target WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+sibling-target WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 sibling-target WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 sibling-target WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 sibling-target WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -1312,7 +1312,7 @@ skipped WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; 
 target-missing PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 target-missing PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 target-missing PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-target-missing PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+target-missing PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 target-missing PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 target-missing PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 target-missing PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
@@ -1365,7 +1365,7 @@ target-missing WidgetChain Static	erroring | AlLib=- ours decline; WidgetChain=-
 target-missing WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 target-missing WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 target-missing WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-target-missing WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+target-missing WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 target-missing WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 target-missing WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 target-missing WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
@@ -1386,14 +1386,14 @@ target-missing WidgetHit Static	erroring | AlLib=- ours decline; WidgetHit=- our
 target-missing WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 target-missing WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 target-missing WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-target-missing WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+target-missing WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 target-missing WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 target-missing WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 target-missing WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 target-missing WidgetN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 target-missing WidgetN Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 target-missing WidgetN Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-target-missing WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+target-missing WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 target-missing WidgetN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 target-missing WidgetN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 target-missing WidgetN Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -1407,7 +1407,7 @@ target-missing WidgetNX Static	erroring | AlLib=- ours decline; Nest=- ours decl
 target-missing WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 target-missing WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 target-missing WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-target-missing WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+target-missing WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 target-missing WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 target-missing WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 target-missing WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
@@ -1421,14 +1421,14 @@ target-missing WidgetX Static	erroring | AlLib=- ours decline; WidgetX=- ours de
 twin-target PointL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree
 twin-target PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decline
 twin-target PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
-twin-target PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
+twin-target PointL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours agree
 twin-target PointL OpenAnnot	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree
 twin-target PointL OpenStatic	clean | PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 twin-target PointL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 twin-target PointX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree
 twin-target PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
 twin-target PointX Ctor	erroring | AlLib=- ours decline; PointX=- ours decline
-twin-target PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours decline
+twin-target PointX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Point.Ping:member ours agree
 twin-target PointX OpenAnnot	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree
 twin-target PointX OpenStatic	clean | PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
 twin-target PointX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours agree; Make=SemaAliasTarget:AtTarget.Point.Make:member ours agree
@@ -1467,63 +1467,63 @@ twin-target ShapeX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours declin
 twin-target WidgetChain Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 twin-target WidgetChain Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 twin-target WidgetChain Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-twin-target WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+twin-target WidgetChain Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 twin-target WidgetChain OpenAnnot	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree
 twin-target WidgetChain OpenStatic	clean | WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 twin-target WidgetChain Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetChain=SemaAliasLib:AlLib.WidgetChain:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 twin-target WidgetComp Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 twin-target WidgetComp Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 twin-target WidgetComp Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
-twin-target WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+twin-target WidgetComp Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 twin-target WidgetComp OpenAnnot	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree
 twin-target WidgetComp OpenStatic	clean | WidgetComp=SemaAliasLib:AlLib.WidgetComp:module ours agree; Make=SemaAliasLib:AlLib.WidgetComp.Make:member ours agree
 twin-target WidgetComp Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 twin-target WidgetCompX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 twin-target WidgetCompX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 twin-target WidgetCompX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-twin-target WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+twin-target WidgetCompX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 twin-target WidgetCompX OpenAnnot	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours agree
 twin-target WidgetCompX OpenStatic	clean | WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:module ours agree; Make=SemaAliasLib:AlLib.WidgetCompX.Make:member ours agree
 twin-target WidgetCompX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 twin-target WidgetHit Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 twin-target WidgetHit Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 twin-target WidgetHit Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-twin-target WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+twin-target WidgetHit Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 twin-target WidgetHit OpenAnnot	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree
 twin-target WidgetHit OpenStatic	clean | WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 twin-target WidgetHit Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 twin-target WidgetL Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 twin-target WidgetL Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 twin-target WidgetL Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
-twin-target WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+twin-target WidgetL Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 twin-target WidgetL OpenAnnot	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree
 twin-target WidgetL OpenStatic	clean | WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 twin-target WidgetL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 twin-target WidgetN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 twin-target WidgetN Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 twin-target WidgetN Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
-twin-target WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+twin-target WidgetN Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 twin-target WidgetN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 twin-target WidgetN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 twin-target WidgetN Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 twin-target WidgetNX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 twin-target WidgetNX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 twin-target WidgetNX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-twin-target WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+twin-target WidgetNX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 twin-target WidgetNX OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree
 twin-target WidgetNX OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours decline; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours decline
 twin-target WidgetNX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 twin-target WidgetOver Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 twin-target WidgetOver Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 twin-target WidgetOver Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
-twin-target WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
+twin-target WidgetOver Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours agree
 twin-target WidgetOver OpenAnnot	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree
 twin-target WidgetOver OpenStatic	clean | WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 twin-target WidgetOver Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 twin-target WidgetX Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 twin-target WidgetX Bare	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
 twin-target WidgetX Ctor	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasTarget:AtTarget..ctor:ctor ours decline
-twin-target WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours decline
+twin-target WidgetX Instance	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; x=local:x:member ours agree; Ping=SemaAliasTarget:AtTarget.Widget.Ping:member ours agree
 twin-target WidgetX OpenAnnot	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree
 twin-target WidgetX OpenStatic	clean | WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree
 twin-target WidgetX Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours agree; Make=SemaAliasTarget:AtTarget.Widget.Make:member ours agree

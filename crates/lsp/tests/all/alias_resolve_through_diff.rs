@@ -954,6 +954,11 @@ const MUST_COMMIT: &[&str] = &[
     "base ShapeN Case Dot@0",
     "base WidgetX Annot WidgetX@0",
     "base WidgetN OpenAnnot WidgetN@0",
+    // An instance member inferred through a parameter of the alias's type.
+    "base WidgetX Instance Ping@1",
+    "base PointL Instance Ping@1",
+    "base WidgetN Instance Ping@1",
+    "collide-after WidgetX Instance Ping@1",
     "lib-first WidgetX Static Make@0",
     "collide-before WidgetX Static Make@0",
     "merge WidgetHit Static Make@0",
@@ -988,20 +993,29 @@ const KNOWN_WRONG: &[(&str, &str)] = &[
     ("rootless-higher WidgetOver OpenStatic Make@0", "#514"),
 ];
 
+/// The fold input, each file carrying its parse's [`SyntaxRecovery`] as the
+/// LSP's does: inference reads it before trusting an annotation, so without
+/// it an instance member through an annotated parameter is never inferred.
 fn project_files(written: &[(PathBuf, String)]) -> Vec<ProjectFile> {
-    let srcs: Vec<SourceFile> = written
+    let parsed: Vec<(SourceFile, SyntaxRecovery)> = written
         .iter()
         .map(|(_, src)| {
             let p = parse(src);
             assert!(p.errors.is_empty(), "{src}\n{:?}", p.errors);
-            SourceFile::Impl(ImplFile::cast(p.root).expect("impl file"))
+            let recovery = SyntaxRecovery::of(&p);
+            (
+                SourceFile::Impl(ImplFile::cast(p.root).expect("impl file")),
+                recovery,
+            )
         })
         .collect();
     let paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
+    let srcs: Vec<SourceFile> = parsed.iter().map(|(f, _)| f.clone()).collect();
     let qnofs = qualified_names(&srcs, &paths);
-    srcs.into_iter()
+    parsed
+        .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
+        .map(|((file, recovery), qnof)| ProjectFile::new(file, qnof, recovery))
         .collect()
 }
 
