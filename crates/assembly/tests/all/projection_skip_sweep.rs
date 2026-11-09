@@ -611,9 +611,7 @@ fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
                 verdicts: census.verdicts,
                 projected: asm
                     .enumerate_type_defs_with_skips()
-                    .map(|(entities, skips)| {
-                        (key_collisions(&entities), skips.dropped_types.len())
-                    })
+                    .map(|(entities, skips)| (key_collisions(&entities), skips.dropped_types.len()))
                     .map_err(|e| e.to_string()),
             },
         }

@@ -78,7 +78,6 @@ use std::collections::HashMap;
 /// so it survives verbatim into [`crate::fsharp_pickle::model::PickledVal::flags`].
 const VAL_FLAGS_IS_EXTENSION_MEMBER: i64 = 0b1_0000_0000;
 
-
 /// Depth-first pre-order walk of the pickled entity tree, invoking `visit`
 /// once per entity with its *container* ECMA position: the namespace prefix
 /// and CLR type-nesting chain that precede it, **not** including its own name.
@@ -318,8 +317,9 @@ pub(crate) fn apply_entity_overlay(
             Ok(())
         },
     )?;
+    let rows = join.rows(entities);
     for target in targets {
-        let Some(ecma) = join.entity_mut(entities, target.stamp) else {
+        let Some(ecma) = rows.entity_mut(entities, target.stamp) else {
             continue;
         };
         if target.is_module_or_type {
@@ -423,9 +423,10 @@ pub(crate) fn apply_typar_constraints(
             *abbreviation_counts.entry(key).or_default() += 1;
         }
     }
+    let rows = join.rows(entities);
     for target in &targets {
         let row = match &target.abbreviation_name {
-            None => join
+            None => rows
                 .entity_mut(entities, target.stamp)
                 .filter(|e| e.generic_parameters.len() == target.readings.len()),
             Some(name) => {
@@ -433,7 +434,7 @@ pub(crate) fn apply_typar_constraints(
                     continue; // Two aliases at this key in this container.
                 }
                 let Some(ContainerRows { namespace, rows }) =
-                    join.container_rows_mut(entities, target.stamp)
+                    rows.container_rows_mut(entities, target.stamp)
                 else {
                     continue;
                 };
@@ -634,8 +635,9 @@ pub(crate) fn apply_extension_member_index(
             Ok(())
         },
     )?;
+    let rows = join.rows(entities);
     for (stamp, instance, statics) in targets {
-        if let Some(ecma) = join.entity_mut(entities, stamp) {
+        if let Some(ecma) = rows.entity_mut(entities, stamp) {
             ecma.extension_member_names = instance;
             ecma.static_extension_member_names = statics;
         }
@@ -879,8 +881,9 @@ pub(crate) fn apply_union_cases(
             Ok(())
         },
     )?;
+    let rows = join.rows(entities);
     for (stamp, names, published) in targets {
-        if let Some(ecma) = join
+        if let Some(ecma) = rows
             .entity_mut(entities, stamp)
             .filter(|e| e.kind == EntityKind::Union)
         {
@@ -911,9 +914,10 @@ pub(crate) fn apply_union_cases(
     // copied TypeDefs bring no signature resource), because the join counts
     // every row of the image, foreign ones included.
     for (stamp, published) in hidden_repr {
-        if let Some(ecma) = join.entity_mut(entities, stamp).filter(|e| {
-            e.kind == EntityKind::Union && e.union_cases == UnionCases::Unknowable
-        }) {
+        if let Some(ecma) = rows
+            .entity_mut(entities, stamp)
+            .filter(|e| e.kind == EntityKind::Union && e.union_cases == UnionCases::Unknowable)
+        {
             ecma.union_cases = UnionCases::Known(Vec::new());
             retain_published_union_properties(ecma, &published);
         }
@@ -2214,8 +2218,9 @@ pub(crate) fn apply_module_member_projection(
     join: &PickleJoin,
     physical: &PhysicalMethods,
 ) -> Result<(), ImportError> {
+    let rows = join.rows(entities);
     for target in collect_module_member_targets(pickled)? {
-        let Some(ecma) = join.entity_mut(entities, target.stamp) else {
+        let Some(ecma) = rows.entity_mut(entities, target.stamp) else {
             continue;
         };
         if !matches!(ecma.kind, EntityKind::Module) {
@@ -2287,13 +2292,14 @@ pub(crate) fn merge_measure_entities(
         },
     )?;
 
+    let rows = join.rows(entities);
     for (stamp, display) in &measures {
         if join.verdict(*stamp) == Some(JoinVerdict::NoRow) {
             return Err(ImportError::FsharpPickleMergeMismatch {
                 detail: format!("pickled measure entity {display} has no matching ECMA TypeDef"),
             });
         }
-        let Some(ecma) = join.entity_mut(entities, *stamp) else {
+        let Some(ecma) = rows.entity_mut(entities, *stamp) else {
             continue;
         };
         match ecma.kind {
@@ -2401,7 +2407,12 @@ pub(crate) fn apply_declaration_order(
     fn reorder(rows: &mut [Entity], paths: Vec<Option<RowPath>>, rank: &HashMap<RowPath, usize>) {
         let ranks: Vec<usize> = paths
             .iter()
-            .map(|p| p.as_ref().and_then(|p| rank.get(p)).copied().unwrap_or(usize::MAX))
+            .map(|p| {
+                p.as_ref()
+                    .and_then(|p| rank.get(p))
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            })
             .collect();
         let mut order: Vec<usize> = (0..rows.len()).collect();
         order.sort_by_key(|&i| ranks[i]);
@@ -3012,6 +3023,7 @@ pub(crate) fn apply_abbreviation_markers(
             Ok(())
         },
     )?;
+    let rows = join.rows(entities);
     for target in &targets {
         // The already-has-an-ECMA-row check is keyed exactly like the source
         // lookup a consumer performs: the F# *source* name
@@ -3034,7 +3046,7 @@ pub(crate) fn apply_abbreviation_markers(
         // The container is the abbreviation's namespace, or the row of its
         // enclosing module as [`PickleJoin`] certifies it; a module row the
         // join cannot reach has nowhere to hang the marker.
-        let Some(container) = join.container_rows_mut(entities, target.stamp) else {
+        let Some(container) = rows.container_rows_mut(entities, target.stamp) else {
             continue;
         };
         if !container
@@ -3713,13 +3725,14 @@ pub(crate) fn apply_type_member_overlays(
     join: &PickleJoin,
     physical: &PhysicalMethods,
 ) -> Result<(), ImportError> {
+    let rows = join.rows(entities);
     for target in type_member_targets(pickled)? {
         if target.keys.is_empty() {
             continue;
         }
         // The type's own row, as the join certifies it; a pickled type never
         // compiles to a module's row.
-        let Some(ecma) = join
+        let Some(ecma) = rows
             .entity_mut(entities, target.stamp)
             .filter(|e| e.kind != EntityKind::Module)
         else {
@@ -4803,8 +4816,9 @@ pub(crate) fn apply_member_measures(
             .scan
             .scan(pickled, &local_fqns, &v.ty, v.access.is_empty())?;
     }
+    let rows = join.rows(entities);
     for (stamp, target) in targets {
-        let Some(ecma) = join.entity_mut(entities, stamp) else {
+        let Some(ecma) = rows.entity_mut(entities, stamp) else {
             continue;
         };
         // The pickle and the row agree on whether this is a module, or the
@@ -4893,7 +4907,10 @@ mod tests {
         super::apply_module_member_projection(entities, ccu, &join, physical)
     }
 
-    fn merge_measure_entities(entities: &mut [Entity], ccu: &PickledCcu) -> Result<(), ImportError> {
+    fn merge_measure_entities(
+        entities: &mut [Entity],
+        ccu: &PickledCcu,
+    ) -> Result<(), ImportError> {
         let join = join_for(entities, ccu)?;
         super::merge_measure_entities(entities, ccu, &join)
     }
@@ -4903,7 +4920,10 @@ mod tests {
         super::apply_measure_overlay(entities, ccu, &join)
     }
 
-    fn apply_declaration_order(entities: &mut [Entity], ccu: &PickledCcu) -> Result<(), ImportError> {
+    fn apply_declaration_order(
+        entities: &mut [Entity],
+        ccu: &PickledCcu,
+    ) -> Result<(), ImportError> {
         let join = join_for(entities, ccu)?;
         super::apply_declaration_order(entities, ccu, &join)
     }
@@ -8808,7 +8828,11 @@ mod tests {
             renamed_union,
         ];
         apply_union_cases(&mut entities, &pickled).expect("apply union case names");
-        assert_eq!(entities[0].union_cases, UnionCases::Unknowable, "a class is not sealed");
+        assert_eq!(
+            entities[0].union_cases,
+            UnionCases::Unknowable,
+            "a class is not sealed"
+        );
         assert_eq!(
             entities[1].union_cases,
             UnionCases::Unknowable,
@@ -9722,7 +9746,11 @@ mod tests {
 
         /// Where a declaration's row is, or would be: its enclosing row (its
         /// module's) and its columns.
-        fn placement(decls: &[Decl], own_row: &[Option<usize>], i: usize) -> (Option<usize>, String, String) {
+        fn placement(
+            decls: &[Decl],
+            own_row: &[Option<usize>],
+            i: usize,
+        ) -> (Option<usize>, String, String) {
             let d = &decls[i];
             let name = NAMES[d.name];
             match d.parent {
@@ -9754,7 +9782,8 @@ mod tests {
         fn pickled_entity(name: &str, kind: Kind, children: Vec<u32>) -> PickledEntity {
             match kind {
                 Kind::Module => {
-                    let mut e = make_entity(name, PickledTyconRepr::NoRepr, module_modul_typ(children));
+                    let mut e =
+                        make_entity(name, PickledTyconRepr::NoRepr, module_modul_typ(children));
                     e.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
                     e
                 }
@@ -9811,7 +9840,11 @@ mod tests {
                         } else {
                             r.ns_col.split('.').collect()
                         };
-                        let mut e = make_ecma_entity(namespace, strip_arity(&r.name_col), EntityKind::Class);
+                        let mut e = make_ecma_entity(
+                            namespace,
+                            strip_arity(&r.name_col),
+                            EntityKind::Class,
+                        );
                         e.metadata_name = Some(r.name_col.clone());
                         e.method_def_tokens = vec![i as u32];
                         e.nested_types = build(rows, Some(i));
@@ -9896,9 +9929,10 @@ mod tests {
                     true
                 };
                 let mut total = true;
+                let joined = join.rows(&entities);
                 for i in 0..decls.len() {
                     let stamp = (3 + i) as u32;
-                    let reached = join
+                    let reached = joined
                         .entity_mut(&mut entities, stamp)
                         .map(|e| e.method_def_tokens.clone());
                     let Some(r) = own_row[i] else {

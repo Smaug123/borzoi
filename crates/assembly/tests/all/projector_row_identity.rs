@@ -8,8 +8,7 @@
 //! the join it is testing.
 
 use borzoi_assembly::{
-    AssemblyProjectionSkips, Ecma335Assembly, EcmaView, Entity, EntityKind, JoinVerdict,
-    UnionCases,
+    AssemblyProjectionSkips, Ecma335Assembly, EcmaView, Entity, EntityKind, JoinVerdict, UnionCases,
 };
 
 use crate::common::ensure_row_identity_built;
@@ -69,7 +68,12 @@ fn every_entity_of_one_compilation_is_joined_to_its_row() {
         .collect();
     assert!(unjoined.is_empty(), "unjoined entities: {unjoined:?}");
     assert!(
-        census.verdicts.get(&JoinVerdict::Joined).copied().unwrap_or(0) >= 9,
+        census
+            .verdicts
+            .get(&JoinVerdict::Joined)
+            .copied()
+            .unwrap_or(0)
+            >= 9,
         "the fixture's types and module are all counted: {census:?}"
     );
 

@@ -52,7 +52,6 @@ pub use ecma335_assembly::Ecma335Assembly;
 pub use error::ImportError;
 pub use fsharp_pickle::{CcuRef, PickledCcu, PickledHeader, PickledNleRef, unpickle_signature};
 pub use fsharp_pickle_merge::{ModuleMemberTarget, ModuleMemberVal, collect_module_member_targets};
-pub use pickle_join::{JoinCensus, JoinVerdict};
 pub use model::{
     AbbreviationTarget, Access, AccessorSlot, ArgGroup, ArgGroups, AssemblyIdentity,
     AssemblyProjectionSkips, Augmentation, CaseFields, CompilerFeatureRequired, CompilerMessage,
@@ -65,4 +64,5 @@ pub use model::{
     SplitParams, TypeForwarder, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCase,
     UnionCaseMaker, UnionCases, ValFacts, ValMeasures, Variance, Version,
 };
+pub use pickle_join::{JoinCensus, JoinVerdict};
 pub use view::{EcmaView, FSharpResource, ResourceKind};

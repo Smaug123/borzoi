@@ -8,7 +8,6 @@
 use crate::ImportError;
 use crate::doc_id::DocIdDialect;
 use crate::fsharp_pickle::model::PickledCcu;
-use crate::pickle_join::{PickleJoin, RowPath};
 use crate::fsharp_resource::{
     b_stream_signature_resource_for_host, classify_fsharp_resource, decompress_deflate,
     foreign_signature_data_present, is_compressed_kind, primary_signature_resource_for_host,
@@ -23,6 +22,7 @@ use crate::model::{
     SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCaseMaker,
     UnionCases, ValFacts, Variance, Version,
 };
+use crate::pickle_join::{PickleJoin, RowPath};
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
     AssemblyRefId, CallConv, Constant, CustomMod, DeclSemantics, DecodedAttribute,
@@ -307,15 +307,15 @@ impl Ecma335Assembly {
         // Which row each pickled entity compiled to, certified against every
         // `TypeDef` row of the image. Every overlay below reaches a row through
         // this and nothing else.
-        let decoded: Option<(String, Result<(PickledCcu, PickleJoin), ImportError>)> =
-            match decoded {
-                Some((name, Ok(ccu))) => {
-                    let join = PickleJoin::certify(&ccu, &self.type_def_row_paths())?;
-                    Some((name, Ok((ccu, join))))
-                }
-                Some((name, Err(error))) => Some((name, Err(error))),
-                None => None,
-            };
+        type Joined = Result<(PickledCcu, PickleJoin), ImportError>;
+        let decoded: Option<(String, Joined)> = match decoded {
+            Some((name, Ok(ccu))) => {
+                let join = PickleJoin::certify(&ccu, &self.type_def_row_paths())?;
+                Some((name, Ok((ccu, join))))
+            }
+            Some((name, Err(error))) => Some((name, Err(error))),
+            None => None,
+        };
 
         // The host pickle is authoritative for source-name and F#-native
         // extension overlays only when it decoded, it describes the whole
@@ -512,7 +512,9 @@ impl Ecma335Assembly {
                     // abbreviation markers, so it runs even on the
                     // non-authoritative path; its cross-assembly completeness is
                     // bounded by `fsharp_abbreviations_unknowable` (set above).
-                    crate::fsharp_pickle_merge::apply_extension_member_index(&mut out, &ccu, &join)?;
+                    crate::fsharp_pickle_merge::apply_extension_member_index(
+                        &mut out, &ccu, &join,
+                    )?;
                     // Union case names (module-open plan, Slice B): each
                     // union's case names from the pickle — the ECMA
                     // projection cannot see them, and the module-open fold
@@ -621,8 +623,8 @@ impl Ecma335Assembly {
         out
     }
 
-    /// How the host pickle's entities join to this image's `TypeDef` rows
-    /// ([`crate::pickle_join`]): `None` when the image has no decodable host
+    /// How the host pickle's entities join to this image's `TypeDef` rows (the
+    /// `pickle_join` module): `None` when the image has no decodable host
     /// pickle. Test-support only — the census the projection-skip sweep reports.
     #[cfg(feature = "test-support")]
     pub fn pickle_join_census(&self) -> Result<Option<crate::JoinCensus>, ImportError> {

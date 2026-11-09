@@ -44,7 +44,7 @@
 //! (abbreviations and other row-less entities included) is the conservative
 //! direction: an extra claimant can only cost a join, never misplace one.
 //!
-//! [`PickleJoin::entity_mut`] then walks the projected tree to the joined row
+//! [`JoinedRows::entity_mut`] then walks the projected tree to the joined row
 //! by the same identity, reading each projected row's raw name off
 //! [`Entity::metadata_name`]. A row the projector dropped is simply not found:
 //! the overlay declines.
@@ -63,7 +63,9 @@
 use std::collections::HashMap;
 
 use crate::error::ImportError;
-use crate::fsharp_pickle::model::{IsType, PickledCcu, PickledEntity, PickledExnRepr, PickledTyconRepr};
+use crate::fsharp_pickle::model::{
+    IsType, PickledCcu, PickledEntity, PickledExnRepr, PickledTyconRepr,
+};
 use crate::model::Entity;
 
 /// The `EntityFlags.IsModuleOrNamespace` bit (`TypedTree.fs` `EntityFlags`).
@@ -247,36 +249,13 @@ impl PickleJoin {
         self.sites.get(&stamp).map(|s| &s.container)
     }
 
-    /// The projected row the entity at `stamp` compiled to, or `None` when the
-    /// entity is not [`JoinVerdict::Joined`] or its row is not in the projected
-    /// tree (the projector dropped it).
-    pub(crate) fn entity_mut<'a>(
-        &self,
-        entities: &'a mut [Entity],
-        stamp: u32,
-    ) -> Option<&'a mut Entity> {
-        locate_mut(entities, self.joined_path(stamp)?)
-    }
-
-    /// The rows directly in the container of the entity at `stamp`, as the
-    /// list a row would be added to: the top-level list for a namespace-level
-    /// entity (whose rows the caller filters by `namespace`), or the enclosing
-    /// module row's nested types. `None` when the enclosing module's row cannot
-    /// be reached.
-    pub(crate) fn container_rows_mut<'a>(
-        &self,
-        entities: &'a mut Vec<Entity>,
-        stamp: u32,
-    ) -> Option<ContainerRows<'a>> {
-        match self.container(stamp)? {
-            Container::Namespace(namespace) => Some(ContainerRows {
-                namespace: Some(namespace.clone()),
-                rows: entities,
-            }),
-            Container::Entity(module) => Some(ContainerRows {
-                namespace: None,
-                rows: &mut self.entity_mut(entities, *module)?.nested_types,
-            }),
+    /// Index the projected tree `entities` for lookups by stamp
+    /// ([`JoinedRows`]): one walk, so an overlay pays for its lookups in
+    /// proportion to its targets rather than to the tree's width.
+    pub(crate) fn rows(&self, entities: &[Entity]) -> JoinedRows<'_> {
+        JoinedRows {
+            join: self,
+            positions: positions(entities),
         }
     }
 
@@ -300,7 +279,128 @@ impl PickleJoin {
     }
 }
 
-/// The rows of one container, as [`PickleJoin::container_rows_mut`] returns
+/// A [`PickleJoin`] with the position of every projected row it can reach, as
+/// [`PickleJoin::rows`] indexed them.
+///
+/// The positions are those of the tree as indexed. Every lookup re-checks the
+/// identity of each row on the way down, so a tree reordered since answers
+/// `None` rather than another row; adding rows at the end of a list, as the
+/// marker pass does, moves no position.
+pub(crate) struct JoinedRows<'j> {
+    join: &'j PickleJoin,
+    positions: HashMap<RowPath, Vec<usize>>,
+}
+
+impl JoinedRows<'_> {
+    /// The projected row the entity at `stamp` compiled to, or `None` when the
+    /// entity is not [`JoinVerdict::Joined`] or its row is not in the projected
+    /// tree (the projector dropped it).
+    pub(crate) fn entity_mut<'a>(
+        &self,
+        entities: &'a mut [Entity],
+        stamp: u32,
+    ) -> Option<&'a mut Entity> {
+        let path = self.join.joined_path(stamp)?;
+        let position = self.positions.get(path)?;
+        let (&first, rest) = position.split_first()?;
+        let mut current = entities.get_mut(first)?;
+        let mut segments = path.segments().iter();
+        if !full_name_is(current, segments.next()?) {
+            return None;
+        }
+        for (&i, segment) in rest.iter().zip(segments) {
+            current = current.nested_types.get_mut(i)?;
+            if !full_name_is(current, segment) {
+                return None;
+            }
+        }
+        Some(current)
+    }
+
+    /// The rows directly in the container of the entity at `stamp`, as the
+    /// list a row would be added to: the top-level list for a namespace-level
+    /// entity (whose rows the caller filters by `namespace`), or the enclosing
+    /// module row's nested types. `None` when the enclosing module's row cannot
+    /// be reached.
+    pub(crate) fn container_rows_mut<'a>(
+        &self,
+        entities: &'a mut Vec<Entity>,
+        stamp: u32,
+    ) -> Option<ContainerRows<'a>> {
+        match self.join.container(stamp)? {
+            Container::Namespace(namespace) => Some(ContainerRows {
+                namespace: Some(namespace.clone()),
+                rows: entities,
+            }),
+            Container::Entity(module) => Some(ContainerRows {
+                namespace: None,
+                rows: &mut self.entity_mut(entities, *module)?.nested_types,
+            }),
+        }
+    }
+}
+
+/// Whether a projected row's full name is `full`, compared without building
+/// it.
+fn full_name_is(entity: &Entity, full: &str) -> bool {
+    let Some(name) = entity.metadata_name.as_deref() else {
+        return false;
+    };
+    let mut rest = full;
+    for part in &entity.namespace {
+        match rest
+            .strip_prefix(part.as_str())
+            .and_then(|r| r.strip_prefix('.'))
+        {
+            Some(r) => rest = r,
+            None => return false,
+        }
+    }
+    rest == name
+}
+
+/// The position of every projected row a lookup may reach: one whose identity,
+/// and each enclosing row's, no other projected row shares.
+///
+/// The join certified that the `TypeDef` table holds exactly one row at a
+/// joined path and at each of its prefixes, and every projected row reads back
+/// as its own row's identity, so the tree cannot hold two. The count is checked
+/// anyway: it costs nothing over the walk, and a tree assembled some other way
+/// (a test's) is then held to the same answer.
+fn positions(entities: &[Entity]) -> HashMap<RowPath, Vec<usize>> {
+    fn walk(
+        entities: &[Entity],
+        parent: Option<(&RowPath, &[usize])>,
+        out: &mut Vec<(RowPath, Vec<usize>)>,
+    ) {
+        for (i, e) in entities.iter().enumerate() {
+            let (path, position) = match parent {
+                None => (RowPath::of_top_level(e), vec![i]),
+                Some((p, pos)) => (p.child(e), [pos, &[i]].concat()),
+            };
+            if let Some(path) = path {
+                walk(&e.nested_types, Some((&path, &position)), out);
+                out.push((path, position));
+            }
+        }
+    }
+    let mut all = Vec::new();
+    walk(entities, None, &mut all);
+    let mut counts: HashMap<&RowPath, usize> = HashMap::new();
+    for (path, _) in &all {
+        *counts.entry(path).or_default() += 1;
+    }
+    let alone = |path: &RowPath| {
+        (1..=path.0.len()).all(|k| counts.get(&RowPath(path.0[..k].to_vec())) == Some(&1))
+    };
+    let keep: Vec<bool> = all.iter().map(|(path, _)| alone(path)).collect();
+    all.into_iter()
+        .zip(keep)
+        .filter_map(|(entry, keep)| keep.then_some(entry))
+        .collect()
+}
+
+/// The rows of one container, as [`JoinedRows::container_rows_mut`] returns
 /// them.
 pub(crate) struct ContainerRows<'a> {
     /// `Some(namespace)` when `rows` is the top-level list, of which only the
@@ -313,7 +413,9 @@ pub(crate) struct ContainerRows<'a> {
 impl ContainerRows<'_> {
     /// Whether `row`, an element of [`Self::rows`], is in the container.
     pub(crate) fn contains(&self, row: &Entity) -> bool {
-        self.namespace.as_ref().is_none_or(|ns| row.namespace == *ns)
+        self.namespace
+            .as_ref()
+            .is_none_or(|ns| row.namespace == *ns)
     }
 }
 
@@ -321,30 +423,6 @@ impl ContainerRows<'_> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinCensus {
     pub verdicts: std::collections::BTreeMap<JoinVerdict, usize>,
-}
-
-/// The projected row at `path`, if the tree holds exactly one.
-///
-/// The join already certified that the `TypeDef` table holds exactly one row at
-/// `path`, and every projected row reads back as its own row's identity, so the
-/// tree cannot hold two. The count is checked anyway: it costs one pass over a
-/// sibling list, and a tree assembled some other way (a test's) is then held to
-/// the same answer.
-fn locate_mut<'a>(entities: &'a mut [Entity], path: &RowPath) -> Option<&'a mut Entity> {
-    let (top, nested) = path.segments().split_first()?;
-    let is_top = |e: &Entity| projected_full_name(e).as_ref() == Some(top);
-    if entities.iter().filter(|e| is_top(e)).count() != 1 {
-        return None;
-    }
-    let mut current = entities.iter_mut().find(|e| is_top(e))?;
-    for segment in nested {
-        let is_segment = |e: &Entity| projected_full_name(e).as_ref() == Some(segment);
-        if current.nested_types.iter().filter(|e| is_segment(e)).count() != 1 {
-            return None;
-        }
-        current = current.nested_types.iter_mut().find(|e| is_segment(e))?;
-    }
-    Some(current)
 }
 
 /// Visit every projected entity with its row's identity — `None` for an entity
@@ -441,15 +519,16 @@ fn walk(
     if descent.contains(&stamp) {
         return Err(ImportError::PickleEntityCycle { stamp });
     }
-    let entity = pickled
-        .tables
-        .tycons
-        .get(stamp as usize)
-        .ok_or(ImportError::OsgnIndexOutOfRange {
-            kind: "tycon (pickle join)",
-            index: stamp,
-            max: pickled.tables.tycons.len(),
-        })?;
+    let entity =
+        pickled
+            .tables
+            .tycons
+            .get(stamp as usize)
+            .ok_or(ImportError::OsgnIndexOutOfRange {
+                kind: "tycon (pickle join)",
+                index: stamp,
+                max: pickled.tables.tycons.len(),
+            })?;
     let inner = match &at {
         Walk::Root => Walk::Namespace(Vec::new()),
         _ if is_namespace(entity) => match &at {

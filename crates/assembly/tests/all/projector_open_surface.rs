@@ -393,14 +393,8 @@ fn two_unions_at_one_projected_key_keep_their_own_cases() {
         .find(|e| case_marker_fields(e) == ["R", "S"])
         .expect("a row whose singleton fields are _unique_R / _unique_S — source W");
 
-    assert_eq!(
-        case_names(v),
-        Some(vec!["X".to_string(), "Y".to_string()])
-    );
-    assert_eq!(
-        case_names(w),
-        Some(vec!["R".to_string(), "S".to_string()])
-    );
+    assert_eq!(case_names(v), Some(vec!["X".to_string(), "Y".to_string()]));
+    assert_eq!(case_names(w), Some(vec!["R".to_string(), "S".to_string()]));
 }
 
 /// A **class** at a pickled union's key keeps the members it declares.
