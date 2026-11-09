@@ -2549,9 +2549,16 @@ impl<'a> Gen<'a> {
     /// binding nests inside another *walked* binding's RHS — the sequential-solve
     /// invariant. A `debug_assert` pins it (a `LET_DECL` descendant of a binding's
     /// RHS would break the ordering assumption).
+    ///
+    /// A `let` FCS drops unchecked, directly in a namespace
+    /// ([`crate::resolve::dropped_in_namespace`]), is not walked: FCS types
+    /// nothing in it.
     fn walk(&mut self, file: &ImplFile) {
+        let dropped = crate::resolve::dropped_in_namespace(file);
         for node in file.syntax().descendants() {
-            if let Some(let_decl) = LetDecl::cast(node) {
+            if let Some(let_decl) = LetDecl::cast(node)
+                && !dropped.contains(&let_decl.syntax().text_range())
+            {
                 self.let_binding(&let_decl);
             }
         }

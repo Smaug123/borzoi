@@ -424,7 +424,10 @@ impl Resolver<'_> {
         &self,
         decls: impl Iterator<Item = ModuleDecl>,
     ) -> Contribution {
-        let decls: Vec<ModuleDecl> = decls.collect();
+        // A declaration FCS drops puts nothing anywhere.
+        let decls: Vec<ModuleDecl> = decls
+            .filter(|decl| !self.dropped_decls.contains(&decl.syntax().text_range()))
+            .collect();
         // The block's own types and exceptions that may be `[<AutoOpen>]`: an
         // intrinsic augmentation of one adds to the statics its fold brings.
         // An augmentation of any other type adds nothing bare: an intrinsic
