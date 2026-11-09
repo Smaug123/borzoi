@@ -653,7 +653,9 @@ fn known_wrong(cell: &Cell, use_: Use) -> Option<&'static str> {
         // The open of a namespace orders a union case against a later type
         // of its name only for modules.
         (
-            Container::EarlierNamespace | Container::SplitNamespace | Container::SplitNamespaceOneFile,
+            Container::EarlierNamespace
+            | Container::SplitNamespace
+            | Container::SplitNamespaceOneFile,
             Use::BareExpr,
         ) => Some("#497"),
         // An assembly container's `M.C` takes the type over the case.
@@ -910,13 +912,15 @@ fn the_namespace_block_being_walked_is_not_read() {
     let first = "namespace N\n\ntype A =\n    | C of int\n    | D\n";
     let probe = "namespace N\n\ntype B =\n    | C of string\n    | E\n\nmodule Test =\n    let probe = N.C\n";
     let files = [("A.fs", first), ("B.fs", probe)];
-    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "N.C")
-        .expect("agrees with FCS");
+    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "N.C").expect("agrees with FCS");
     let env = env_of(&[ensure_fsharp_core_dll().as_path()]);
     let proj = resolve_project_files(&project(&files), &env);
     let probed = range(probe.rfind("N.C").expect("the probe"), "N.C".len());
     assert!(
-        matches!(proj.file(1).resolution_at(probed), Some(Resolution::Item(_))),
+        matches!(
+            proj.file(1).resolution_at(probed),
+            Some(Resolution::Item(_))
+        ),
         "the earlier file's case is committed: {:?}",
         proj.file(1).decline_site(probed)
     );

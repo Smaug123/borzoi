@@ -2677,7 +2677,11 @@ impl<'a> Resolver<'a> {
     /// container ([`read_fragment`](super::model::read_fragment)); with
     /// `completed_blocks_only`, among those of the file's completed top-level
     /// blocks ([`Self::block_start`]).
-    fn same_file_qualified_read(&self, full: &[String], completed_blocks_only: bool) -> QualifiedRead {
+    fn same_file_qualified_read(
+        &self,
+        full: &[String],
+        completed_blocks_only: bool,
+    ) -> QualifiedRead {
         let (items, decls) = if completed_blocks_only {
             (
                 &self.items[..self.block_start.0],
