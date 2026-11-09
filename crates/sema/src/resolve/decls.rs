@@ -10,6 +10,7 @@ use crate::def::{DefId, DefKind};
 use super::contributors::{Contribution, RequireQualifiedAccess};
 use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
+    TypeSlot,
 };
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
@@ -18,11 +19,10 @@ use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_l
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
 /// Color` — the `ACCESS_TOK` *before* the name's `LONG_IDENT`). FCS does not
-/// import a private type at an `open` from outside its declaration group
-/// (probe M20r, codex round 4), so [`Resolver::export_type_path`]
-/// downgrades its slot class to [`SlotClass::Keeps`]; within its own
-/// container the type is fully visible and still evicts (probe M20s), so
-/// [`Resolver::define_type`]'s class is untouched. The *after-name* slot
+/// import a private type at an `open` from outside its container (probe M20r,
+/// codex round 4), but does from under it (probe M20s, and an `open` of the
+/// namespace from a descendant one), so the export carries the type's access
+/// root beside its class ([`TypeSlot`]). The *after-name* slot
 /// (`type C private = …`, an `ACCESS_TOK` after the `LONG_IDENT`) is
 /// FCS-discarded — the type stays public — and must not count; a ctor's or
 /// repr's modifier nests inside its own node and never appears as a direct
@@ -301,7 +301,7 @@ impl<'a> Resolver<'a> {
     /// live on its target, which sema does not chase cross-file, so it passes
     /// `false` (present, but case-opaque). Skipped in an anonymous-root file (no
     /// real cross-file container path), like [`Self::export_case`].
-    pub(super) fn export_type_path(&mut self, name: &str, cases_enumerable: bool, slot: SlotClass) {
+    pub(super) fn export_type_path(&mut self, name: &str, cases_enumerable: bool, slot: TypeSlot) {
         if self.anonymous_root {
             return;
         }
@@ -621,15 +621,13 @@ impl<'a> Resolver<'a> {
                                     | TypeDefnRepr::Delegate(_)
                             )
                         );
-                        // A `private` type is invisible to an `open` from
-                        // outside its declaration group (probe M20r), so the
-                        // cross-file export provably keeps the slot; the
-                        // in-container class (`define_type` above) is
-                        // untouched — the type still evicts locally (M20s).
-                        let export_slot = if type_header_is_private(defn) {
-                            SlotClass::Keeps
-                        } else {
-                            slot
+                        // An `open` brings a `private` type only where it is
+                        // accessible (probes M20r/M20s): the export keeps its
+                        // class and carries the access root each reader asks
+                        // from its own site.
+                        let export_slot = TypeSlot {
+                            class: slot,
+                            access_root_len: type_access_root,
                         };
                         self.export_type_path(&id_text(&name), cases_enumerable, export_slot);
                         // The export-decl-list twin: a genuine `Type` decl feeding

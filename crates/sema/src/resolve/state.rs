@@ -17,7 +17,7 @@ use crate::diagnostics::SemaDiagnostic;
 use super::contributors::{FileContributions, RecBlock};
 use super::model::{
     DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
-    ItemId, OpenTrace, ProjectItems, Resolution, SlotClass,
+    ItemId, OpenTrace, ProjectItems, Resolution, SlotClass, TypeSlot,
 };
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
@@ -1121,9 +1121,9 @@ pub(super) struct Resolver<'a> {
     /// ([`Resolver::open_contests_candidate`](Self::open_contests_candidate)).
     /// Source-ordered ([`define_type`](Self::define_type)'s last-wins carries
     /// over); empty for an anonymous-root file (no cross-file path). Each
-    /// entry also carries the type's [`SlotClass`], consumed by
+    /// entry also carries the type's [`TypeSlot`], consumed by
     /// [`head_value_slot`](Self::head_value_slot) to decide eviction.
-    pub(super) type_path_exports: Vec<(Vec<String>, bool, SlotClass)>,
+    pub(super) type_path_exports: Vec<(Vec<String>, bool, TypeSlot)>,
     /// Opened namespace reading-groups in scope, **one [`OpenGroup`] per
     /// `open`**, in source order — F#'s implicit auto-opens first, then the
     /// file's explicit `open` decls (an `open` is in scope for the decls after
