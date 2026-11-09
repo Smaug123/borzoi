@@ -7458,7 +7458,6 @@ mod tests {
                     (
                         t,
                         PhysicalMethod {
-                            declaring_type: "T".to_string(),
                             name: "M".to_string(),
                             params: Some(arity),
                             is_static: true,
@@ -9653,9 +9652,10 @@ mod tests {
     ///
     /// The names are drawn from an alphabet chosen to collide under every lossy
     /// reading — ``U`` / ``U`0`` / ``U`1`` / ``U`01`` strip alike, ``A.U`` in
-    /// namespace `N` is the full name of `U` in namespace `N.A`, `M` and
-    /// ``M`1`` are module names that contain namesakes — and each row carries
-    /// its own index as a tag, so a test can say whose row a lookup reached.
+    /// namespace `N` is the full name of `U` in namespace `N.A` (and a row the
+    /// join must call displaced), `M` and ``M`1`` are module names that contain
+    /// namesakes — and each row carries its own index as a tag, so a test can
+    /// say whose row a lookup reached.
     mod pickle_join_properties {
         use super::*;
         use crate::ecma335_assembly::strip_arity;
@@ -9928,6 +9928,12 @@ mod tests {
                     }
                     true
                 };
+                // Whether a declaration's compiled name, or an enclosing
+                // module's, carries a `.`: its row is then not at its F# path.
+                fn displaced(decls: &[Decl], i: usize) -> bool {
+                    NAMES[decls[i].name].contains('.')
+                        || decls[i].parent.is_some_and(|p| displaced(decls, p))
+                }
                 let mut total = true;
                 let joined = join.rows(&entities);
                 for i in 0..decls.len() {
@@ -9940,7 +9946,7 @@ mod tests {
                         continue;
                     };
                     let claims_at = claims.iter().filter(|p| **p == claims[i]).count();
-                    let unique = alone(r) && claims_at == 1;
+                    let unique = alone(r) && claims_at == 1 && !displaced(&decls, i);
                     total &= unique;
                     let expected = (unique && present(&rows, r)).then(|| vec![r as u32]);
                     prop_assert_eq!(

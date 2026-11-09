@@ -11,7 +11,7 @@ use borzoi_assembly::{
     AssemblyProjectionSkips, Ecma335Assembly, EcmaView, Entity, EntityKind, JoinVerdict, UnionCases,
 };
 
-use crate::common::ensure_row_identity_built;
+use crate::common::{ensure_row_identity_built, ensure_row_identity_dotted_built};
 
 fn assembly() -> Ecma335Assembly {
     let bytes = std::fs::read(ensure_row_identity_built()).expect("read fixture dll");
@@ -73,7 +73,7 @@ fn every_entity_of_one_compilation_is_joined_to_its_row() {
             .get(&JoinVerdict::Joined)
             .copied()
             .unwrap_or(0)
-            >= 9,
+            >= 8,
         "the fixture's types and module are all counted: {census:?}"
     );
 
@@ -95,7 +95,6 @@ fn every_union_keeps_its_own_cases() {
         (NS, &["V`0"], vec!["R", "S"]),
         // Beside the dropped ``Dr`1``, whose cases must not move in.
         (NS, &["Dr`2"], vec!["SqA", "SqB"]),
-        (&["RowIdentity", "Inner"][..], &["Dotted"], vec!["DA", "DB"]),
         (NS, &["M`1"], vec!["V", "Other"]),
         (NS, &["M", "V"], vec!["MA", "MB"]),
     ] {
@@ -117,7 +116,6 @@ fn every_renamed_type_keeps_its_own_source_name() {
         (NS, &["V"][..], None),
         (NS, &["V`0"], Some("W")),
         (NS, &["Dr`2"], Some("Squatter")),
-        (&["RowIdentity", "Inner"][..], &["Dotted"], Some("Dotted")),
         (NS, &["M`1"], Some("Q")),
         (NS, &["M"], None),
         (NS, &["M", "V"], None),
@@ -126,4 +124,36 @@ fn every_renamed_type_keeps_its_own_source_name() {
         assert_eq!(e.source_name.as_deref(), source, "{path:?}");
         assert!(e.definition_range.is_some(), "{path:?} has its range");
     }
+}
+
+/// A dotted compiled name puts the type's row in another namespace than its F#
+/// path (`RowIdentityDotted`): the row is the entity's own, but nothing may make
+/// it read as an F# entity — `RowIdentityDotted.Inner.Dotted.DA` is not a path
+/// fsc accepts. The entity is displaced rather than joined, so the image's
+/// pickle is not authoritative, and every completeness flag says so.
+#[test]
+fn a_displaced_row_takes_no_overlay_and_the_image_is_not_authoritative() {
+    let bytes = std::fs::read(ensure_row_identity_dotted_built()).expect("read fixture dll");
+    let assembly = Ecma335Assembly::parse(&bytes).expect("parse fixture dll");
+    let census = assembly
+        .pickle_join_census()
+        .expect("read the pickle")
+        .expect("the fixture has a host pickle");
+    assert_eq!(
+        census.verdicts.get(&JoinVerdict::Displaced),
+        Some(&1),
+        "{census:?}"
+    );
+
+    let (entities, skips) = assembly
+        .enumerate_type_defs_with_skips()
+        .expect("enumerate fixture types");
+    assert!(skips.fsharp_signature_non_authoritative);
+    assert!(skips.fsharp_abbreviations_unknowable);
+    assert!(skips.fsharp_extension_index_unknowable);
+
+    let dotted = row(&entities, &["RowIdentityDotted", "Inner"], &["Dotted"]);
+    assert_eq!(dotted.union_cases, UnionCases::Unknowable);
+    assert_eq!(dotted.source_name, None);
+    assert_eq!(dotted.definition_range, None);
 }

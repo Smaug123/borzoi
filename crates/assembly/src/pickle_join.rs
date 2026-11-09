@@ -22,7 +22,13 @@
 //! the two columns at its last `.`, so the join is what puts it back. Nothing
 //! is stripped or counted: a row named ``U`0`` and one named `U` are different
 //! rows, as are ``M`1`` and `M` containing a namesake, and a
-//! `[<CompiledName("A.B")>]` type is found in namespace `….A`.
+//! `[<CompiledName("A.B")>]` type's row is found in namespace `….A`.
+//!
+//! That last row is the entity's own, but it is not where F# names the entity:
+//! F# writes `N.Source`, not `N.A.B`. An overlay that made the row read as an
+//! F# entity — a source name, union cases — would have a consumer resolve
+//! `N.A.Source` or `N.A.B.Case`, which fsc rejects. Such an entity is
+//! [`JoinVerdict::Displaced`] instead of joined.
 //!
 //! ## What the join certifies
 //!
@@ -34,6 +40,8 @@
 //! - the entity is one fsc certainly emits a `TypeDef` for
 //!   ([`has_own_type_def`]); an abbreviation, say, has none, so the row at its
 //!   path is somebody else's;
+//! - neither its compiled name nor an enclosing module's carries a `.`, which
+//!   would put its row somewhere other than its F# path;
 //! - no other pickled entity claims the same path; and
 //! - exactly one row of the table has the path, and exactly one has each
 //!   enclosing path — a row under one of two rows named `M` is reached through
@@ -145,6 +153,10 @@ pub enum JoinVerdict {
     /// abbreviation, an inline-IL representation, an exception abbreviation),
     /// so a row at its path is not its own.
     NoOwnTypeDef,
+    /// The entity's compiled name, or an enclosing module's, carries a `.`, so
+    /// the IL writer put its row in another namespace than its F# path: the
+    /// row is its own, but no reading of it is an F# name.
+    Displaced,
     /// Another pickled entity claims the same path.
     SharedWithAnotherEntity,
     /// No row of the table has this path.
@@ -183,7 +195,7 @@ impl PickleJoin {
     /// identity of every `TypeDef` row of the image (in any order, dropped and
     /// skipped rows included).
     pub(crate) fn certify(pickled: &PickledCcu, rows: &[RowPath]) -> Result<Self, ImportError> {
-        let mut claimants: Vec<(u32, bool, RowPath, Container)> = Vec::new();
+        let mut claimants: Vec<Claimant> = Vec::new();
         walk(
             pickled,
             pickled.root_entity,
@@ -196,13 +208,22 @@ impl PickleJoin {
             *row_counts.entry(row).or_default() += 1;
         }
         let mut claim_counts: HashMap<&RowPath, usize> = HashMap::new();
-        for (_, _, path, _) in &claimants {
-            *claim_counts.entry(path).or_default() += 1;
+        for claimant in &claimants {
+            *claim_counts.entry(&claimant.path).or_default() += 1;
         }
         let mut sites = HashMap::new();
-        for (stamp, own_row, path, container) in &claimants {
+        for Claimant {
+            stamp,
+            own_row,
+            displaced,
+            path,
+            container,
+        } in &claimants
+        {
             let verdict = if !own_row {
                 JoinVerdict::NoOwnTypeDef
+            } else if *displaced {
+                JoinVerdict::Displaced
             } else if claim_counts[path] > 1 {
                 JoinVerdict::SharedWithAnotherEntity
             } else if !row_counts.contains_key(path) {
@@ -498,12 +519,27 @@ enum Walk {
     Root,
     /// Inside a namespace (its fragments so far, outermost first) and no module.
     Namespace(Vec<String>),
-    /// Inside the module at `stamp`, whose row is at `path`.
-    Module { stamp: u32, path: RowPath },
+    /// Inside the module at `stamp`, whose row is at `path`; `displaced` when
+    /// that module's row, or an enclosing one's, is not at its F# path.
+    Module {
+        stamp: u32,
+        path: RowPath,
+        displaced: bool,
+    },
 }
 
-/// Collect `(stamp, has_own_type_def, path, container)` for every claimant
-/// under `stamp`, depth-first.
+/// One pickled entity that may own a row, as the walk found it.
+struct Claimant {
+    stamp: u32,
+    /// [`has_own_type_def`].
+    own_row: bool,
+    /// See [`JoinVerdict::Displaced`].
+    displaced: bool,
+    path: RowPath,
+    container: Container,
+}
+
+/// Collect every claimant under `stamp`, depth-first.
 ///
 /// The cycle guard is [`crate::fsharp_pickle_merge`]'s: a corrupt pickle can
 /// link an ancestor as its own descendant, and the walk runs on the caller's
@@ -514,7 +550,7 @@ fn walk(
     stamp: u32,
     at: Walk,
     descent: &mut Vec<u32>,
-    out: &mut Vec<(u32, bool, RowPath, Container)>,
+    out: &mut Vec<Claimant>,
 ) -> Result<(), ImportError> {
     if descent.contains(&stamp) {
         return Err(ImportError::PickleEntityCycle { stamp });
@@ -546,19 +582,36 @@ fn walk(
                 .compiled_name
                 .as_deref()
                 .unwrap_or(&entity.logical_name);
-            let (path, container) = match &at {
+            let (path, container, enclosing_displaced) = match &at {
                 Walk::Namespace(ns) => (
                     RowPath::top_level(&ns.join("."), name),
                     Container::Namespace(ns.clone()),
+                    false,
                 ),
-                Walk::Module { stamp, path } => (
+                Walk::Module {
+                    stamp,
+                    path,
+                    displaced,
+                } => (
                     path.nested_full(name.to_string()),
                     Container::Entity(*stamp),
+                    *displaced,
                 ),
                 Walk::Root => unreachable!("the root arm is matched first"),
             };
-            out.push((stamp, has_own_type_def(entity), path.clone(), container));
-            Walk::Module { stamp, path }
+            let displaced = enclosing_displaced || name.contains('.');
+            out.push(Claimant {
+                stamp,
+                own_row: has_own_type_def(entity),
+                displaced,
+                path: path.clone(),
+                container,
+            });
+            Walk::Module {
+                stamp,
+                path,
+                displaced,
+            }
         }
     };
     descent.push(stamp);

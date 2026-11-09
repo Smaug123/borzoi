@@ -43,12 +43,6 @@ type Dr<[<ParamMarker>] 'T> =
     | DrA
     | DrB of 'T
 
-/// Row `Dotted` in namespace `RowIdentity.Inner`: the IL writer splits a type
-/// name at its last `.`.
-[<CompiledName("Inner.Dotted")>]
-type Dotted =
-    | DA
-    | DB
 
 /// Row ``M`1``, which strips to the name of module `M` below. Its case `V`
 /// carries a field, so fsc nests a case class named `V` in it — a namesake of

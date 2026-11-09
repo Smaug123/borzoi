@@ -520,12 +520,23 @@ pub fn ensure_key_collision_built() -> &'static Path {
 ///
 /// RowIdentity puts pairs of rows at one stripped name every way a single fsc
 /// compilation can — a fabricated arity suffix, a squatter beside a dropped
-/// row, a dotted compiled name, a type row beside a module row — for the
-/// pickle-to-row join (`projector_row_identity`).
+/// row, a type row beside a module row — for the pickle-to-row join
+/// (`projector_row_identity`).
 pub fn ensure_row_identity_built() -> &'static Path {
     static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
     BUILT
         .get_or_init(|| build_fixture("RowIdentity", "RowIdentity.dll"))
+        .1
+        .as_path()
+}
+
+/// Build the RowIdentityDotted F# fixture once and return the path to the
+/// produced `.dll`: a dotted compiled name, whose row the IL writer puts in
+/// another namespace than the type's F# path (`projector_row_identity`).
+pub fn ensure_row_identity_dotted_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("RowIdentityDotted", "RowIdentityDotted.dll"))
         .1
         .as_path()
 }
