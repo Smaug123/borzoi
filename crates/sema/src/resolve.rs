@@ -76,6 +76,7 @@ mod decls;
 mod exprs;
 mod lookup;
 mod model;
+mod require_qualified;
 mod state;
 mod types;
 
@@ -123,6 +124,16 @@ pub fn resolve_file(
     // FooAttribute` is declared before or after it, or in a sibling block.
     // Over-approximate (an augmentation target's last segment counts too),
     // which is sound: a spurious match only adds a defer.
+    // An `exception` declares a type too, which an attribute name resolves to
+    // as readily as a `type`'s.
+    if file
+        .syntax()
+        .descendants()
+        .filter_map(ExceptionDefnDecl::cast)
+        .any(|e| exception_named_like_core_attribute(&e))
+    {
+        r.declares_core_attribute_alias = true;
+    }
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
         if type_defn_renames_core_attribute(&defn) {
             r.declares_core_attribute_alias = true;
@@ -448,6 +459,12 @@ pub fn resolve_file(
             r.module_paths.push(path.clone());
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
+            r.note_module_declared(path);
+            let header_rqa =
+                r.module_certainly_require_qualified_access(module.attributes(), header_private);
+            if header_rqa {
+                r.rqa_module_paths.push(path.clone());
+            }
             if header_auto_open && !r.anonymous_root {
                 r.record_auto_open_module(path.clone(), header_private);
             }
@@ -464,6 +481,7 @@ pub fn resolve_file(
                     header: true,
                     auto_open: header_auto_open,
                     private: header_private,
+                    require_qualified_access: header_rqa,
                 },
             );
         }
@@ -2274,6 +2292,11 @@ impl<'a> Resolver<'a> {
             excluded_param_ranges: HashSet::new(),
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
+            rqa_module_paths: Vec::new(),
+            finished_module_paths: HashSet::new(),
+            declared_module_paths: HashSet::new(),
+            declared_name_counts: HashMap::new(),
+            duplicated_module_paths: HashSet::new(),
             trace_opens: Vec::new(),
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
@@ -2795,6 +2818,15 @@ pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
     type_defn_renames_attribute(defn, crate::assembly_env::CORE_ATTRIBUTE_NAMES)
 }
 
+/// Whether an `exception` is named like a core attribute
+/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]): its type is then a
+/// candidate for the attribute's written name, so the name proves nothing.
+pub(super) fn exception_named_like_core_attribute(exn: &ExceptionDefnDecl) -> bool {
+    exn.union_case()
+        .and_then(|case| case.ident())
+        .is_some_and(|name| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(&name)))
+}
+
 /// [`type_defn_renames_core_attribute`], for the attributes written `names`.
 pub(super) fn type_defn_renames_attribute(defn: &TypeDefn, names: &[&str]) -> bool {
     let spelled_core = |t: &SyntaxToken| names.contains(&&*id_text(t));
@@ -3225,6 +3257,7 @@ mod export_decl_tests {
                     header: true,
                     auto_open: true,
                     private: true,
+                    ..
                 }
             )),
             "expected a private auto-open header decl: {:?}",
@@ -3249,6 +3282,7 @@ mod export_decl_tests {
                     header: true,
                     auto_open: true,
                     private: false,
+                    ..
                 }
             )),
             "expected a non-private auto-open header decl: {:?}",

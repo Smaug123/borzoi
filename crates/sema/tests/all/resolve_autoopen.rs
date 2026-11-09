@@ -1550,7 +1550,7 @@ fn a_require_qualified_access_module_open_still_imports_its_values() {
     // So the values resolve. Dropping the module from the walk instead would be a wrong
     // target, not a deferral: with `open Prefix` in scope, `open M` where `Prefix.M` is
     // RQA and a root `M` exists would bind the root's values where FCS binds
-    // `Prefix.M`'s. (Reporting FS0892 is a Phase-4 concern.)
+    // `Prefix.M`'s. (The open's FS0892 is graded in `open_rqa_diagnostic_diff`.)
     let env = fixture_env();
     let src = "open Demo.ModuleOpen.Rqa\nlet t () = rqaOpened ()\n";
     let rf = resolve(src, &env);

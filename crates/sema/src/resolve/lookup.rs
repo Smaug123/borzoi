@@ -17,8 +17,9 @@ use super::model::{
     Resolution, SlotClass,
 };
 use super::state::{
-    ActivePatternShape, AssemblyPath, CaseTier, MarkReach, OpenInterpretation, Resolver,
-    SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
+    ActivePatternShape, AssemblyPath, CaseTier, CertainReach, MarkReach, OpenInterpretation,
+    Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TierCandidate,
+    TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -911,7 +912,59 @@ impl<'a> Resolver<'a> {
         written: &[String],
         rooted: bool,
     ) -> Vec<(Vec<String>, bool)> {
-        let mut out: Vec<(Vec<String>, bool)> = Vec::new();
+        self.open_tier_candidates_reached(written, rooted)
+            .into_iter()
+            .map(|c| (c.full, c.namespaces_reachable))
+            .collect()
+    }
+
+    /// [`Self::open_tier_candidates`] with each candidate's [`CertainReach`]:
+    /// which entities at it FCS certainly opens through the route that built
+    /// it. The one enumeration both read, so the certain routes are a subset
+    /// of the routes by construction.
+    ///
+    /// - the **alias** tier claims nothing: FCS binds an abbreviation to every
+    ///   module its target resolves to, and the alias table keeps one;
+    /// - an **explicit open** passes on what the open that pushed the prefix
+    ///   certainly reached ([`ShorteningPrefix::reach`]); the `[<AutoOpen>]`
+    ///   modules it lends claim nothing, because the candidate built under one
+    ///   is resolved against every assembly exposing the path while FCS
+    ///   recurses through the auto-open entity alone;
+    /// - the **enclosing** tier reaches this file's modules at every depth,
+    ///   but an earlier file's or a referenced assembly's only at the
+    ///   enclosing namespace, which FCS opens by path: inside a project module,
+    ///   an assembly module of the same path is a different entity, and its
+    ///   children are not in scope;
+    /// - the **root** reaches every earlier file's and referenced assembly's
+    ///   module at the path, as FCS's table holds every root module and
+    ///   namespace; this file's only under an anonymous root.
+    pub(super) fn open_tier_candidates_reached(
+        &self,
+        written: &[String],
+        rooted: bool,
+    ) -> Vec<TierCandidate> {
+        let mut out: Vec<TierCandidate> = Vec::new();
+        // This file's modules are in scope by name only once their declaration
+        // has ended, so the module the written head names at the route's base
+        // must be one whose has (its descendants' have too).
+        let finished = &self.finished_module_paths;
+        let mut push = |full: Vec<String>,
+                        namespaces_reachable: bool,
+                        reach: CertainReach,
+                        implicit_namespace: Option<Vec<String>>| {
+            let head = full.len() + 1 - written.len();
+            let reach = CertainReach {
+                this_file: reach.this_file
+                    && full.get(..head).is_some_and(|h| finished.contains(h)),
+                ..reach
+            };
+            out.push(TierCandidate {
+                full,
+                namespaces_reachable,
+                reach,
+                implicit_namespace,
+            });
+        };
         if !rooted {
             // Tier 0 — a module alias as the bare head (`open Alias[.rest]` →
             // `Target[.rest]`); the alias is a module, never a namespace.
@@ -920,7 +973,7 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                out.push((full, false));
+                push(full, false, CertainReach::default(), None);
             }
             // Tier 1 — explicit opens (namespace + chained module), latest first.
             // Each opened container also lends the `[<AutoOpen>]` modules it
@@ -931,22 +984,45 @@ impl<'a> Resolver<'a> {
                 for auto in self.auto_open_shortening_prefixes(prefix) {
                     let mut full = auto;
                     full.extend_from_slice(written);
-                    out.push((full, false));
+                    push(full, false, CertainReach::default(), None);
                 }
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                out.push((full, true));
+                let implicit = prefix.implicit.then(|| prefix.path.clone());
+                push(full, true, prefix.reach, implicit);
             }
             // Tier 2 — implicit relative resolution, innermost first; namespaces
             // are reachable only at the enclosing-namespace base.
             for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
-                out.push((full, k == self.namespace_depth));
+                let at_namespace = k == self.namespace_depth;
+                push(
+                    full,
+                    at_namespace,
+                    CertainReach {
+                        this_file: true,
+                        earlier_files: at_namespace,
+                        assembly: at_namespace,
+                    },
+                    None,
+                );
             }
         }
         // Tier 3 — the as-written root, kept *in addition* to any relative match.
-        out.push((written.to_vec(), true));
+        // This file's modules are reached from it only under an anonymous root,
+        // whose implicit file module is the container every declaration sits
+        // in, and never behind `global.`.
+        push(
+            written.to_vec(),
+            true,
+            CertainReach {
+                this_file: self.anonymous_root && !rooted,
+                earlier_files: true,
+                assembly: true,
+            },
+            None,
+        );
         out
     }
 
@@ -1215,6 +1291,15 @@ impl<'a> Resolver<'a> {
                 path: namespace.clone(),
                 namespace_reading: true,
                 module_reading: !handles.is_empty(),
+                // FCS opens the enclosing namespace by its path, every
+                // reference's fragment and every earlier file's alike. This
+                // file's modules in it are reached by the enclosing tier.
+                reach: CertainReach {
+                    this_file: false,
+                    earlier_files: true,
+                    assembly: true,
+                },
+                implicit: false,
             });
         }
         // A project `[<AutoOpen>]` module in this namespace nests short names

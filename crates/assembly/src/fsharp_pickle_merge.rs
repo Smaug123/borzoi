@@ -1374,6 +1374,12 @@ pub struct ModuleMemberTarget {
     /// only signature-level matching (through
     /// [`val_index`](ModuleMemberVal::val_index)) can tell apart.
     pub vals: Vec<ModuleMemberVal>,
+    /// Whether the pickle marks the module `[<RequireQualifiedAccess>]` —
+    /// FSharp.Core's attribute, as FCS's `EntityHasWellKnownAttribute` reads
+    /// it. The pickle is the module as F# sees it: a signature file that
+    /// omits the attribute leaves it on the compiled class but not here, and
+    /// one that adds it puts it here alone.
+    pub require_qualified_access: bool,
 }
 
 /// What module member projection needs from one pickled val: the flags bit
@@ -1521,6 +1527,7 @@ impl ModuleMemberVal {
 pub fn collect_module_member_targets(
     pickled: &PickledCcu,
 ) -> Result<Vec<ModuleMemberTarget>, ImportError> {
+    let fslib = FslibAttributes::new(pickled)?;
     let mut targets = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
@@ -1544,6 +1551,9 @@ pub fn collect_module_member_targets(
                     namespace: namespace.to_vec(),
                     type_chain: chain,
                     vals,
+                    require_qualified_access: fslib
+                        .find(&entity.attribs, "RequireQualifiedAccessAttribute")
+                        .is_some(),
                 });
             }
             Ok(())
@@ -2471,6 +2481,9 @@ pub(crate) fn apply_module_member_projection(
         if !matches!(ecma.kind, EntityKind::Module) {
             continue;
         }
+        // The pickle's verdict, not the compiled class's attribute: FCS reads
+        // the module through the pickle.
+        ecma.is_require_qualified_access = target.require_qualified_access;
         rebuild_module_member_list(ecma, &target, physical);
     }
     Ok(())

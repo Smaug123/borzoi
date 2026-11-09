@@ -11,8 +11,9 @@
 > generics/static/indexer/unit-return coverage, inherited dot-completion, SRTP,
 > computation expressions, units of measure, and the interface walk's optional
 > IW-3 tail (re-declaration hiding, qualified-path precision).
-> Phase 4 type-error diagnostics have not started, except for the separate
-> always-sound `use rec` semantic diagnostic. This document is the design; the
+> Phase 4 type-error diagnostics have not started, except for two separate
+> certain-only semantic diagnostics: `use rec` (FS0821) and an `open` of a
+> `[<RequireQualifiedAccess>]` module (FS0892). This document is the design; the
 > staged implementation breakdowns (each stage on its own branch, with an FCS
 > oracle) live in
 > [`completed/sema-phase1-impl-plan.md`](completed/sema-phase1-impl-plan.md) and

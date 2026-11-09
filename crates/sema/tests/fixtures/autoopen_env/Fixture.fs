@@ -678,7 +678,7 @@ module Later =
     let plainOpened (x: int) = x + 100
 
 // `[<RequireQualifiedAccess>]`: FCS makes the `open` itself an error (FS0892) and
-// imports nothing, so its values must NOT resolve bare (Q5).
+// still imports the module's values, so they resolve bare (Q5).
 [<RequireQualifiedAccess>]
 module Rqa =
     let rqaOpened () = 30

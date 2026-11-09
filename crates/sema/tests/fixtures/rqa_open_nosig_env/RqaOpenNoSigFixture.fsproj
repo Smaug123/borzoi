@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's FS0892 differential
+       (tests/all/open_rqa_diagnostic_diff.rs): an F# library compiled
+       without its signature pickle (fsc nointerfacedata), so FCS imports its
+       `[<RequireQualifiedAccess>]` module through IL, as a plain type an
+       `open` cannot name. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaRqaOpenNoSigFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <OtherFlags>$(OtherFlags) --nointerfacedata</OtherFlags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

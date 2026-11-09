@@ -359,8 +359,30 @@ recovering ~36 members per framework. It was never a feature gap. (`#711`)
     where FCS reads a constant pattern (literal-ness is undetectable in
     general — Q17; the expression position binds it exactly).
   An `[<RequireQualifiedAccess>]` module is imported like any other (FCS reports
-  FS0892 on the `open` and binds its contents regardless); we do not yet *emit*
-  that diagnostic.
+  FS0892 on the `open` and binds its contents regardless).
+- **FS0892 is reported only where certain** — sema reports an `open` of a
+  `[<RequireQualifiedAccess>]` module
+  (`SemaDiagnosticKind::OpenOfRequireQualifiedAccessModule`,
+  `crates/sema/src/resolve/require_qualified.rs`) at FCS's range, once per
+  `open` where FCS reports it once per RQA module the `open` names. It stays
+  silent where FCS reports it for: a `private` module or one nested in a
+  `private` module; an attribute spelled `RequireQualifiedAccessAttribute`
+  (looked up first as `…AttributeAttribute`), written through an
+  abbreviation, or while a project type or exception or a referenced
+  abbreviation could impersonate it; an `open`
+  inside a `rec` scope, through a module abbreviation, or through the
+  short-name prefix an `[<AutoOpen>]` module lends, or through an implicitly
+  opened namespace another referenced assembly also declares; a module path
+  declared twice, or naming a namespace too; a module another declaration
+  shares its name with (the `type M` + `module M` companion pair included);
+  an `open` inside a duplicated module's body; any `open` in a file that
+  failed to parse. A referenced module counts
+  only from an authoritative F# signature pickle, whose attribute verdict (not
+  the compiled class's) is the one FCS reads. It also never reports an `open` in a signature file, nor a
+  later file's `open` of a module declared in a signatured file (which sees the
+  signature's attributes, unread here). The cells are pinned, gaps included, by
+  `open_rqa_diagnostic_diff`. Sema diagnostics are not yet published by the
+  LSP.
 
 ## MSBuild / fsproj
 

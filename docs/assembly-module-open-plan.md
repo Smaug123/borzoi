@@ -118,7 +118,7 @@ referenced by number from code and other sections.
 | Q2b | …and does a later `open` of `M` shadow an earlier open's same-named type? | **yes** — latest open wins |
 | Q3 | …its **exception** constructors? | **yes** (`MyErr 3`) |
 | Q4 | …its **active patterns**, in pattern position? | **yes** (`match 4 with Even -> …`) |
-| Q5 | `[<RequireQualifiedAccess>]` **module**: values bare after `open`? | **YES — and the `open` is *also* an error (FS0892).** FCS reports the error and still enters the module's contents. Dropping the module from the walk is a *wrong target*, not a deferral. Emitting FS0892 is a Phase-4 follow-up. |
+| Q5 | `[<RequireQualifiedAccess>]` **module**: values bare after `open`? | **YES — and the `open` is *also* an error (FS0892).** FCS reports the error and still enters the module's contents. Dropping the module from the walk is a *wrong target*, not a deferral. The resolver reports the FS0892 where it is certain (`crates/sema/src/resolve/require_qualified.rs`). |
 | Q6 | `[<RequireQualifiedAccess>]` **union** nested in an opened module: cases bare? | **no** (FS0039) |
 | Q7 | A transitive `[<AutoOpen>]` submodule of an *explicitly* opened module — opened too? | **yes** (`innerVal ()`) |
 | Q8 | Precedence between two module opens with a colliding value name? | **latest open wins** |

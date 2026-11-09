@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's FS0892 differential
+       (tests/all/open_rqa_diagnostic_diff.rs): referenced-assembly modules an
+       `open` may name, `[<RequireQualifiedAccess>]` and not, reached by every
+       route the differential grades — a namespace, a nested module, a
+       suffixed companion module, an `[<AutoOpen>]` module's child, an
+       internal module, a root-namespace module, and modules whose signature
+       file and implementation disagree about the attribute. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaRqaOpenFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+    <Compile Include="Root.fs" />
+    <Compile Include="Signatured.fsi" />
+    <Compile Include="Signatured.fs" />
+  </ItemGroup>
+
+</Project>
