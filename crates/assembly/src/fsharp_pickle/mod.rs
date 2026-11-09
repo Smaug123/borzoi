@@ -94,8 +94,8 @@ const PICKLE_WALK_STACK_BYTES: usize = 64 * 1024 * 1024;
 /// fallback at `TypedTreePickle.fs:370-371`).
 ///
 /// Phase 6b4 returns a fully-walked `PickledCcu`: the phase-2 header is
-/// decoded, the phase-1 body is then walked depth-first against three
-/// OSGN tables (`tycons` / `typars` / `vals`), and every reserved stamp
+/// decoded, the phase-1 body is then walked depth-first against four
+/// OSGN tables (`tycons` / `typars` / `vals` / `anoninfos`), and every reserved stamp
 /// slot must end up linked. The caller receives dense
 /// `PickledOsgnTables` plus the root entity index, the CCU's mangled
 /// name, and the `usesQuotations` flag.

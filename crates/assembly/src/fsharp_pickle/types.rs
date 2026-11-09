@@ -26,7 +26,7 @@
 //! | 6   | `TType_measure m`                    | supported      |
 //! | 7   | `TType_ucase(uc, args)`              | supported      |
 //! | 8   | `TType_tuple(tupInfoStruct, _)`      | supported      |
-//! | 9   | `TType_anon(anonInfo, args)`         | **deferred** (no MiniLibFs fixture trips it) |
+//! | 9   | `TType_anon(anonInfo, args)`         | supported      |
 //!
 //! The four B-stream tags per nullness-bearing variant project as the
 //! plan describes: tagB 0 (B-absent fallback) and the canonical
@@ -36,11 +36,11 @@
 use crate::error::ImportError;
 use crate::fsharp_pickle::measure::read_measure_expr;
 use crate::fsharp_pickle::model::{
-    Nullness, PickledTcRef, PickledType, PickledUCaseRef, TupleKind,
+    Nullness, PickledAnonInfo, PickledTcRef, PickledType, PickledUCaseRef, TupleKind,
 };
 use crate::fsharp_pickle::osgn::PhaseOneState;
 use crate::fsharp_pickle::reader::PickleReader;
-use crate::fsharp_pickle::typar::read_tyar_specs;
+use crate::fsharp_pickle::typar::{read_ident, read_tyar_specs};
 
 /// Project a B-stream tag for `TType_app`-from-simpletyp (tag 1) onto a
 /// `Nullness`. The "0" value here is the B-absent fallback; the others
@@ -269,10 +269,11 @@ fn read_ty_body(state: &mut PhaseOneState<'_>) -> Result<PickledType, ImportErro
                 elems,
             })
         }
-        9 => Err(ImportError::UnsupportedPickleTag {
-            context: "u_ty tag 9 (Anon — no MiniLibFs fixture exercises it)",
-            tag: 9,
-        }),
+        9 => {
+            let info = read_anon_info(state)?;
+            let args = read_tys(state)?;
+            Ok(PickledType::Anon { info, args })
+        }
         other => Err(ImportError::UnsupportedPickleTag {
             context: "u_ty tag",
             tag: u32::from(other),
@@ -280,10 +281,62 @@ fn read_ty_body(state: &mut PhaseOneState<'_>) -> Result<PickledType, ImportErro
     }
 }
 
+/// `u_anonInfo` (`TypedTreePickle.fs:2174-2175`): an OSGN declaration in
+/// the anon-info table, whose data `u_anonInfo_data` (`:2170-2172`) reads as
+/// `u_tup3 u_ccuref u_bool (u_array u_ident)`. Returns the slot index.
+///
+/// fsc re-declares an anon type at every mention, under the one slot its
+/// stamp selects. The stamp hashes the CCU, the struct flag and the field
+/// names, but not the field identifiers' ranges, so two mentions written at
+/// different source sites re-declare a slot with different ranges; FCS's
+/// `LinkNode` overwrites, and so does this. Any other difference cannot come
+/// from fsc and is a conflicting re-link.
+///
+/// `AnonRecdTypeInfo.Create` sorts the identifiers by name (F#'s ordinal
+/// string comparison, on UTF-16 code units), so they are sorted here too;
+/// fsc pickles them sorted already. Two identifiers of one name, which FCS
+/// would order arbitrarily and fsc never writes, are malformed.
+pub(crate) fn read_anon_info(state: &mut PhaseOneState<'_>) -> Result<u32, ImportError> {
+    let idx = state.reader.read_uint32("u_anonInfo osgn index")?;
+    state.ianoninfos.check_index_in_range(idx)?;
+    let ccu = state.reader.read_uint32("u_anonInfo_data u_ccuref")?;
+    if ccu as usize >= state.ccu_refs_len {
+        return Err(ImportError::DanglingPickleRef {
+            kind: "ccuref",
+            index: ccu,
+        });
+    }
+    let is_struct = state.reader.read_bool("u_anonInfo_data struct flag")?;
+    let mut sorted_ids = state.reader.read_array("u_anonInfo_data ids", read_ident)?;
+    sorted_ids.sort_by(|a, b| a.name.encode_utf16().cmp(b.name.encode_utf16()));
+    if sorted_ids.windows(2).any(|w| w[0].name == w[1].name) {
+        return Err(ImportError::MalformedPickleHeader {
+            detail: format!("u_anonInfo_data: anon-info {idx} repeats a field name"),
+        });
+    }
+    let info = PickledAnonInfo {
+        ccu,
+        is_struct,
+        sorted_ids,
+    };
+    state
+        .ianoninfos
+        .link_overwriting(idx, info, |existing, info| {
+            existing.ccu == info.ccu
+                && existing.is_struct == info.is_struct
+                && existing
+                    .sorted_ids
+                    .iter()
+                    .map(|id| &id.name)
+                    .eq(info.sorted_ids.iter().map(|id| &id.name))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fsharp_pickle::model::Measure;
+    use crate::fsharp_pickle::osgn::OsgnTable;
 
     /// Helper: build a one-byte literal compressed-int encoding.
     fn b(v: u8) -> u8 {
@@ -651,21 +704,6 @@ mod tests {
     }
 
     #[test]
-    fn tag_9_anon_is_deferred() {
-        let bytes = [b(9)];
-        let mut s = empty_state(&bytes);
-        match read_ty(&mut s) {
-            Err(ImportError::UnsupportedPickleTag { context, tag: 9 }) => {
-                assert!(
-                    context.contains("Anon"),
-                    "context should name Anon: {context}"
-                );
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[test]
     fn unknown_top_level_tag_errors() {
         let bytes = [b(42)];
         let mut s = empty_state(&bytes);
@@ -731,5 +769,140 @@ mod tests {
             }) => {}
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    /// `u_anonInfo` bytes: slot `idx`, CCU `ccu`, the struct flag, then one
+    /// `u_ident` per name (a string index, and a range in file 0 on `line`).
+    fn anon_info_bytes(idx: u8, ccu: u8, is_struct: bool, names: &[u8], line: u8) -> Vec<u8> {
+        let mut out = vec![idx, ccu, u8::from(is_struct), names.len() as u8];
+        for &n in names {
+            out.extend_from_slice(&[n, 0, line, 0, line, 1]);
+        }
+        out
+    }
+
+    fn anon_state<'a>(bytes: &'a [u8], strings: &'a [String], slots: usize) -> PhaseOneState<'a> {
+        let mut r = PickleReader::new(bytes);
+        r.attach_tables(strings, &[]);
+        let mut s = PhaseOneState::with_capacities(r, 0, 0, 0);
+        s.ianoninfos = OsgnTable::new("anoninfos", slots);
+        s.ccu_refs_len = 1;
+        s
+    }
+
+    fn anon_strings() -> Vec<String> {
+        ["f.fs", "B", "A", "C"].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn tag_9_anon_declares_its_info_and_keeps_its_args_in_order() {
+        // `{| B: int; A: string |}` written at two sites: each mention
+        // re-declares slot 0, the second with other ranges, which overwrite.
+        let strings = anon_strings();
+        let mut bytes = vec![9];
+        bytes.extend(anon_info_bytes(0, 0, false, &[2, 1], 7));
+        bytes.extend([2, 1, 0, 1, 1]); // u_tys: [AppSimple 0; AppSimple 1]
+        bytes.push(9);
+        bytes.extend(anon_info_bytes(0, 0, false, &[2, 1], 9));
+        bytes.extend([2, 1, 0, 1, 1]);
+        let mut s = anon_state(&bytes, &strings, 1);
+        let first = read_ty(&mut s).unwrap();
+        let second = read_ty(&mut s).unwrap();
+        assert!(s.reader.is_eof());
+        let simple = |i| PickledType::AppSimple {
+            simpletyp_index: i,
+            nullness: Nullness::Ambivalent,
+        };
+        let expected = PickledType::Anon {
+            info: 0,
+            args: vec![simple(0), simple(1)],
+        };
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+        let info = s.ianoninfos.get(0).unwrap();
+        assert_eq!((info.ccu, info.is_struct), (0, false));
+        let names: Vec<_> = info.sorted_ids.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["A", "B"]);
+        assert_eq!(
+            info.sorted_ids[0].range.start.line, 9,
+            "the last declaration wins"
+        );
+    }
+
+    #[test]
+    fn anon_info_sorts_its_ids_ordinally() {
+        // `AnonRecdTypeInfo.Create` sorts whatever order the ids arrive in.
+        let strings = anon_strings();
+        let bytes = anon_info_bytes(0, 0, true, &[3, 1, 2], 1);
+        let mut s = anon_state(&bytes, &strings, 1);
+        assert_eq!(read_anon_info(&mut s).unwrap(), 0);
+        let info = s.ianoninfos.get(0).unwrap();
+        let names: Vec<_> = info.sorted_ids.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["A", "B", "C"]);
+        assert!(info.is_struct);
+    }
+
+    #[test]
+    fn anon_info_redeclared_with_other_names_is_a_conflict() {
+        let strings = anon_strings();
+        let mut bytes = anon_info_bytes(0, 0, false, &[1], 1);
+        bytes.extend(anon_info_bytes(0, 0, false, &[2], 1));
+        let mut s = anon_state(&bytes, &strings, 1);
+        read_anon_info(&mut s).unwrap();
+        match read_anon_info(&mut s) {
+            Err(ImportError::OsgnConflictingRelink {
+                kind: "anoninfos",
+                index: 0,
+            }) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anon_info_redeclared_with_the_other_struct_flag_is_a_conflict() {
+        let strings = anon_strings();
+        let mut bytes = anon_info_bytes(0, 0, false, &[1], 1);
+        bytes.extend(anon_info_bytes(0, 0, true, &[1], 1));
+        let mut s = anon_state(&bytes, &strings, 1);
+        read_anon_info(&mut s).unwrap();
+        assert!(matches!(
+            read_anon_info(&mut s),
+            Err(ImportError::OsgnConflictingRelink { .. })
+        ));
+    }
+
+    #[test]
+    fn anon_info_rejects_a_dangling_ccu_and_slot() {
+        let strings = anon_strings();
+        let bytes = anon_info_bytes(0, 1, false, &[1], 1);
+        let mut s = anon_state(&bytes, &strings, 1);
+        assert!(matches!(
+            read_anon_info(&mut s),
+            Err(ImportError::DanglingPickleRef {
+                kind: "ccuref",
+                index: 1
+            })
+        ));
+        let bytes = anon_info_bytes(1, 0, false, &[1], 1);
+        let mut s = anon_state(&bytes, &strings, 1);
+        assert!(matches!(
+            read_anon_info(&mut s),
+            Err(ImportError::OsgnIndexOutOfRange {
+                kind: "anoninfos",
+                index: 1,
+                max: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn anon_info_rejects_a_repeated_field_name() {
+        let strings = anon_strings();
+        let bytes = anon_info_bytes(0, 0, false, &[1, 1], 1);
+        let mut s = anon_state(&bytes, &strings, 1);
+        assert!(matches!(
+            read_anon_info(&mut s),
+            Err(ImportError::MalformedPickleHeader { .. })
+        ));
     }
 }

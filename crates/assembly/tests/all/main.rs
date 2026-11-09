@@ -21,6 +21,7 @@ mod doc_id_fsharp_overload_diff;
 mod explicit_interface;
 mod fact_matrix_diff;
 mod fail_loud;
+mod fsharp_anon_records;
 mod fsharp_core_arg_groups;
 mod fsharp_pickle_diff;
 mod fsharp_pickle_fail_loud;

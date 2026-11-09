@@ -1519,7 +1519,9 @@ impl ValMeasureScan {
                 self.scan(pickled, domain)?;
                 self.scan(pickled, range)?;
             }
-            PickledType::Tuple { elems, .. } => {
+            // An anonymous record names no type a measure could hide behind;
+            // its field types can carry one.
+            PickledType::Tuple { elems, .. } | PickledType::Anon { args: elems, .. } => {
                 for elem in elems {
                     self.scan(pickled, elem)?;
                 }
@@ -2765,9 +2767,12 @@ fn decode_abbreviation_target(
                 None => Ok(None),
             }
         }
-        // Measure and union-case targets stay unmodelled — a fail-closed decline;
-        // so does a degenerate (<2-element) tuple.
-        PickledType::Measure(_) | PickledType::UCase { .. } | PickledType::Tuple { .. } => Ok(None),
+        // Measure, union-case and anonymous-record targets stay unmodelled — a
+        // fail-closed decline; so does a degenerate (<2-element) tuple.
+        PickledType::Measure(_)
+        | PickledType::UCase { .. }
+        | PickledType::Anon { .. }
+        | PickledType::Tuple { .. } => Ok(None),
     }
 }
 
@@ -4594,7 +4599,9 @@ impl MeasureScan {
                 self.scan(pickled, local_fqns, domain, collect_heads)?;
                 self.scan(pickled, local_fqns, range, collect_heads)?;
             }
-            PickledType::Tuple { elems, .. } => {
+            // An anonymous record names no type a measure could hide behind;
+            // its field types can carry one.
+            PickledType::Tuple { elems, .. } | PickledType::Anon { args: elems, .. } => {
                 for elem in elems {
                     self.scan(pickled, local_fqns, elem, collect_heads)?;
                 }
@@ -5164,6 +5171,7 @@ mod tests {
                 tycons: vec![root, minilibfs, m, kg],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         }
     }
@@ -5236,6 +5244,7 @@ mod tests {
                 tycons: vec![root, demo, point],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         }
     }
@@ -5451,6 +5460,11 @@ mod tests {
                 kind: TupleKind::Struct,
                 elems: vec![good()],
             },
+            // An anonymous record, whose fields all decode.
+            PickledType::Anon {
+                info: 0,
+                args: vec![good()],
+            },
         ];
         for ty in declined {
             assert_eq!(
@@ -5583,6 +5597,8 @@ mod tests {
                     kind: TupleKind::Reference,
                     elems
                 }),
+                (0u32..2000, prop::collection::vec(inner.clone(), 0..3))
+                    .prop_map(|(info, args)| PickledType::Anon { info, args }),
                 (prop::collection::vec(0u32..2000, 0..3), inner).prop_map(|(typars, body)| {
                     PickledType::Forall {
                         typars,
@@ -5731,6 +5747,7 @@ mod tests {
                 tycons: vec![root, ns, m, kg],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         };
 
@@ -5816,6 +5833,7 @@ mod tests {
                 tycons: vec![root, myapp, units, m],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         };
 
@@ -5878,6 +5896,7 @@ mod tests {
                 tycons: vec![root, ns, units, m],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         };
 
@@ -5933,6 +5952,7 @@ mod tests {
                 tycons: vec![root, ns, m],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         };
 
@@ -6005,6 +6025,7 @@ mod tests {
                 tycons: vec![root, minilibfs, record],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         };
 
@@ -6129,6 +6150,7 @@ mod tests {
                 tycons,
                 typars: Vec::new(),
                 vals,
+                anoninfos: Vec::new(),
             },
         }
     }
@@ -8039,6 +8061,7 @@ mod tests {
                 tycons: vec![root, ns, generic],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         };
         // The projector stores `Entity::name` arity-stripped, and the row's own
@@ -8570,6 +8593,7 @@ mod tests {
                 tycons: vec![root, ns, teq, helpers],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         }
     }
@@ -8651,6 +8675,7 @@ mod tests {
                 tycons: vec![root, collision, u],
                 typars: Vec::new(),
                 vals: Vec::new(),
+                anoninfos: Vec::new(),
             },
         };
         // The copied foreign union at `Collision.U` — unknowable, `None`.

@@ -18,8 +18,8 @@
 //!   no-op (matching FCS) and hard-erroring only on a *conflicting* re-link.
 //!   `read_ref` is the pure-index variant — callers store the index and
 //!   either dereference post-walk via `finalize` or chase via `get`.
-//! - `PhaseOneState` wraps `PickleReader` plus the three tables
-//!   (`itycons`, `itypars`, `ivals`). Walker entry points
+//! - `PhaseOneState` wraps `PickleReader` plus the four tables
+//!   (`itycons`, `itypars`, `ivals`, `ianoninfos`). Walker entry points
 //!   (`read_entity_spec`, `read_val`, `read_tyar_spec`) thread
 //!   `&mut PhaseOneState`; everything reachable from `read_ty` is also
 //!   state-aware because `u_ty` tag 5 (`Forall`) recurses through
@@ -27,7 +27,8 @@
 
 use crate::error::ImportError;
 use crate::fsharp_pickle::model::{
-    PickledEntity, PickledHeader, PickledOsgnTables, PickledTyparSpecData, PickledVal,
+    PickledAnonInfo, PickledEntity, PickledHeader, PickledOsgnTables, PickledTyparSpecData,
+    PickledVal,
 };
 use crate::fsharp_pickle::reader::PickleReader;
 
@@ -84,19 +85,30 @@ impl<T> OsgnTable<T> {
     where
         T: PartialEq,
     {
+        self.link_overwriting(idx, body, |existing, body| existing == body)
+    }
+
+    /// [`Self::link`] for a node whose re-declarations may differ in detail
+    /// FCS's stamp does not cover: a re-link `same` accepts **overwrites** the
+    /// slot, as FCS's `LinkNode` does, so the last declaration's data wins;
+    /// one it rejects is [`ImportError::OsgnConflictingRelink`].
+    pub(crate) fn link_overwriting(
+        &mut self,
+        idx: u32,
+        body: T,
+        same: impl FnOnce(&T, &T) -> bool,
+    ) -> Result<u32, ImportError> {
         self.check_index_in_range(idx)?;
         let slot = &mut self.slots[idx as usize];
-        match slot {
-            Some(existing) if *existing != body => {
-                return Err(ImportError::OsgnConflictingRelink {
-                    kind: self.kind,
-                    index: idx,
-                });
-            }
-            // Idempotent re-link with identical data — a no-op, as in FCS.
-            Some(_) => {}
-            None => *slot = Some(body),
+        if let Some(existing) = slot
+            && !same(existing, &body)
+        {
+            return Err(ImportError::OsgnConflictingRelink {
+                kind: self.kind,
+                index: idx,
+            });
         }
+        *slot = Some(body);
         Ok(idx)
     }
 
@@ -165,6 +177,10 @@ pub(crate) struct PhaseOneState<'a> {
     pub(crate) itycons: OsgnTable<PickledEntity>,
     pub(crate) itypars: OsgnTable<PickledTyparSpecData>,
     pub(crate) ivals: OsgnTable<PickledVal>,
+    pub(crate) ianoninfos: OsgnTable<PickledAnonInfo>,
+    /// Length of the phase-2 `ccu_refs` table, so an anon-record info's
+    /// `u_ccuref` is bounds-checked at decode time.
+    pub(crate) ccu_refs_len: usize,
     /// Length of the phase-2 `nlerefs` table, so a body-encoded
     /// `ERefNonLocal` index is bounds-checked at decode time (matching
     /// how OSGN stamps are handled) instead of storing a dangling index
@@ -181,8 +197,8 @@ impl<'a> PhaseOneState<'a> {
     /// phase-1 body length to reject malformed signatures that would
     /// otherwise pre-allocate huge tables before any consistency check
     /// fires. Every linked slot must be reached by a body byte from
-    /// the phase-1 stream, so `ntycons + ntypars + nvals` cannot
-    /// exceed the stream's length.
+    /// the phase-1 stream, so `ntycons + ntypars + nvals + nanoninfos`
+    /// cannot exceed the stream's length.
     pub(crate) fn new(
         reader: PickleReader<'a>,
         header: &PickledHeader,
@@ -192,6 +208,7 @@ impl<'a> PhaseOneState<'a> {
             ("ntycons", header.ntycons),
             ("ntypars", header.ntypars),
             ("nvals", header.nvals),
+            ("nanoninfos", header.nanoninfos),
         ] {
             if count as usize > cap {
                 return Err(ImportError::MalformedPickleHeader {
@@ -203,7 +220,8 @@ impl<'a> PhaseOneState<'a> {
         }
         let total = (header.ntycons as usize)
             .saturating_add(header.ntypars as usize)
-            .saturating_add(header.nvals as usize);
+            .saturating_add(header.nvals as usize)
+            .saturating_add(header.nanoninfos as usize);
         if total > cap {
             return Err(ImportError::MalformedPickleHeader {
                 detail: format!(
@@ -216,6 +234,8 @@ impl<'a> PhaseOneState<'a> {
             itycons: OsgnTable::new("tycons", header.ntycons as usize),
             itypars: OsgnTable::new("typars", header.ntypars as usize),
             ivals: OsgnTable::new("vals", header.nvals as usize),
+            ianoninfos: OsgnTable::new("anoninfos", header.nanoninfos as usize),
+            ccu_refs_len: header.ccu_refs.len(),
             nlerefs_len: header.nlerefs.len(),
             simpletys_len: header.simpletys.len(),
         })
@@ -224,7 +244,7 @@ impl<'a> PhaseOneState<'a> {
     /// Test-only constructor: build a state with explicit table
     /// capacities. Production code uses `new(reader, header)`; tests
     /// for isolated decoders use this to skip the header decode. The
-    /// `nlerefs`/`simpletys` lengths default to the same generous
+    /// `ccu_refs`/`nlerefs`/`simpletys` lengths default to the same generous
     /// headroom as the fixtures' hand-coded indices assume; bounds
     /// tests override the fields directly.
     #[cfg(test)]
@@ -239,6 +259,10 @@ impl<'a> PhaseOneState<'a> {
             itycons: OsgnTable::new("tycons", ntycons),
             itypars: OsgnTable::new("typars", ntypars),
             ivals: OsgnTable::new("vals", nvals),
+            // Empty, so a walk that finalises stays complete; an anon-record
+            // test sizes the table itself.
+            ianoninfos: OsgnTable::new("anoninfos", 0),
+            ccu_refs_len: 256,
             nlerefs_len: 256,
             simpletys_len: 256,
         }
@@ -306,13 +330,14 @@ impl<'a> PhaseOneState<'a> {
         Ok(out)
     }
 
-    /// Finalise the three tables into dense vectors. Errors if any
+    /// Finalise the four tables into dense vectors. Errors if any
     /// slot was never linked.
     pub(crate) fn finalize(self) -> Result<PickledOsgnTables, ImportError> {
         Ok(PickledOsgnTables {
             tycons: self.itycons.finalize()?,
             typars: self.itypars.finalize()?,
             vals: self.ivals.finalize()?,
+            anoninfos: self.ianoninfos.finalize()?,
         })
     }
 }

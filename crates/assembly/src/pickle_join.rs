@@ -264,6 +264,14 @@ impl PickleJoin {
             .map(|s| &s.path)
     }
 
+    /// Whether some pickled entity fsc emits a row for names `row` as that row,
+    /// whatever its verdict.
+    pub(crate) fn claims_row(&self, row: &RowPath) -> bool {
+        self.sites
+            .values()
+            .any(|s| s.verdict != JoinVerdict::NoOwnTypeDef && s.path == *row)
+    }
+
     /// Where the row of the entity at `stamp` sits — joined or not, since a
     /// marker for a row-less entity is hung in the same place.
     pub(crate) fn container(&self, stamp: u32) -> Option<&Container> {

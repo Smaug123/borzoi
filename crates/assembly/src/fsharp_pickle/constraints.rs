@@ -41,7 +41,7 @@ use crate::fsharp_pickle::expr::read_expr;
 use crate::fsharp_pickle::il::{read_il_method_ref, read_il_type_ref};
 use crate::fsharp_pickle::model::{FSharpTyparConstraint, PickledTrait};
 use crate::fsharp_pickle::osgn::PhaseOneState;
-use crate::fsharp_pickle::types::{read_ty, read_tys};
+use crate::fsharp_pickle::types::{read_anon_info, read_ty, read_tys};
 use crate::fsharp_pickle::val::read_member_flags;
 use crate::fsharp_pickle::vrefs::read_vref;
 
@@ -74,9 +74,9 @@ pub(crate) fn read_trait(state: &mut PhaseOneState<'_>) -> Result<PickledTrait, 
 
 /// `u_trait_sln` (`TypedTreePickle.fs:2144-2168`). Eight arms; decoded for
 /// stream alignment only — the resolved trait solution is not part of the
-/// cross-CCU view. Arms 4/5 (`FSRecdFieldSln` / `FSAnonRecdFieldSln`) need
-/// `u_rfref` / `u_anonInfo`, which the signature unpickler does not yet
-/// port, so they stay loud-on-unknown (no fixture has tripped one).
+/// cross-CCU view. Arm 4 (`FSRecdFieldSln`) needs `u_rfref`, which the
+/// signature unpickler does not yet port, so it stays loud-on-unknown (no
+/// fixture has tripped one).
 fn read_trait_sln(state: &mut PhaseOneState<'_>) -> Result<(), ImportError> {
     let tag = state.reader.read_byte("u_trait_sln tag")?;
     match tag {
@@ -115,6 +115,15 @@ fn read_trait_sln(state: &mut PhaseOneState<'_>) -> Result<(), ImportError> {
             read_ty(state)?;
             Ok(())
         }
+        // FSAnonRecdFieldSln(anonInfo, tys, int)
+        5 => {
+            read_anon_info(state)?;
+            read_tys(state)?;
+            state
+                .reader
+                .read_uint32("u_trait_sln FSAnonRecdFieldSln index")?;
+            Ok(())
+        }
         // FSMethSln(ty, vref, tys, Some ty)
         7 => {
             read_ty(state)?;
@@ -124,7 +133,7 @@ fn read_trait_sln(state: &mut PhaseOneState<'_>) -> Result<(), ImportError> {
             Ok(())
         }
         other => Err(ImportError::UnsupportedPickleTag {
-            context: "u_trait_sln tag (arms 4/5 need u_rfref/u_anonInfo — port when FSharp.Core trips one)",
+            context: "u_trait_sln tag (arm 4 needs u_rfref — port when FSharp.Core trips one)",
             tag: u32::from(other),
         }),
     }
@@ -544,5 +553,25 @@ mod tests {
             }
             other => panic!("expected MalformedPickleHeader, got {other:?}"),
         }
+    }
+
+    /// `FSAnonRecdFieldSln` (arm 5): an anon-record info, the type
+    /// instantiation, then the field index.
+    #[test]
+    fn trait_sln_anon_record_field_consumes_its_payload() {
+        let strings = vec!["f.fs".to_string(), "A".to_string()];
+        let mut bytes = vec![5u8];
+        // slot 0, ccu 0, not struct, one ident: name 1, range file 0 (1,0)-(1,1).
+        bytes.extend([0u8, 0, 0, 1, 1, 0, 1, 0, 1, 1]);
+        bytes.push(0); // u_tys: empty
+        bytes.push(0); // field index
+        let mut r = PickleReader::new(&bytes);
+        r.attach_tables(&strings, &[]);
+        let mut s = PhaseOneState::with_capacities(r, 0, 0, 0);
+        s.ianoninfos = crate::fsharp_pickle::osgn::OsgnTable::new("anoninfos", 1);
+        s.ccu_refs_len = 1;
+        read_trait_sln(&mut s).unwrap();
+        assert!(s.reader.is_eof());
+        assert!(s.ianoninfos.get(0).is_ok());
     }
 }

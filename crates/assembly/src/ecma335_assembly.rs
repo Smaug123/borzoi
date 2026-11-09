@@ -362,6 +362,19 @@ impl Ecma335Assembly {
             if is_skipped_type(td) {
                 continue;
             }
+            // fsc compiles every anonymous record type to a public class of its
+            // own, which no pickled entity describes. FCS reads an assembly
+            // carrying the interface-data marker through its pickle, so it sees
+            // none of them. A type declared in source under such a name is a
+            // pickled entity, and keeps its row; with no decoded pickle to say
+            // so, the row is hidden like the generated ones.
+            if self.fsharp_marker && is_anon_record_class(td) {
+                let claimed = matches!(&decoded, Some((_, Ok((_, join))))
+                    if join.claims_row(&RowPath::top_level(&td.name.namespace, &td.name.name)));
+                if !claimed {
+                    continue;
+                }
+            }
             // A top-level type whose own shape is undecodable is dropped and
             // recorded rather than propagated — bounding the blast radius to the
             // one type instead of the whole assembly (the reader plan's "bound
@@ -4792,6 +4805,21 @@ fn array_rank(rank: u32, sizes: &[u32], lower_bounds: &[i32]) -> Result<u8, Impo
 fn is_skipped_type(td: &TypeDef) -> bool {
     (td.name.namespace.is_empty() && td.name.name == "<Module>")
         || td.name.namespace.starts_with("<StartupCode$")
+}
+
+/// Whether `td` has the name fsc gives an anonymous record type's class: FCS's
+/// `AnonRecdTypeInfo.ILTypeRef`, `<>f__AnonymousType` then a decimal hash
+/// (prefixed `1000` for the struct form) and a backtick arity, top-level in
+/// the global namespace.
+fn is_anon_record_class(td: &TypeDef) -> bool {
+    let Some(rest) = td.name.name.strip_prefix("<>f__AnonymousType") else {
+        return false;
+    };
+    let Some((hash, arity)) = rest.split_once('`') else {
+        return false;
+    };
+    let decimal = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    td.name.namespace.is_empty() && decimal(hash) && decimal(arity)
 }
 
 /// Whether a nested type stays attached to its parent. F# unions emit a

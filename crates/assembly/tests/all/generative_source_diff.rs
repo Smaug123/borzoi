@@ -68,6 +68,12 @@ enum Ty {
     /// tuples add no new projection machinery (both sides render
     /// `System.Tuple`/`ValueTuple`-free F# tuples structurally).
     Pair(Box<Ty>, Box<Ty>),
+    /// An anonymous record, `{| A0: t0; … |}` or its struct form. Field names
+    /// are positional, so two of one record never collide.
+    Anon {
+        fields: Vec<Ty>,
+        is_struct: bool,
+    },
 }
 
 /// One `let` binding inside a generated module.
@@ -206,6 +212,17 @@ fn render_ty(ty: &Ty) -> String {
         Ty::List(t) => format!("{} list", render_ty(t)),
         Ty::Array(t) => format!("{}[]", render_ty(t)),
         Ty::Pair(a, b) => format!("({} * {})", render_ty(a), render_ty(b)),
+        // Parenthesised, like a tuple, so `struct` binds to the record alone.
+        Ty::Anon { fields, is_struct } => {
+            let fields = fields
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("A{i}: {}", render_ty(t)))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let prefix = if *is_struct { "struct " } else { "" };
+            format!("({prefix}{{| {fields} |}})")
+        }
     }
 }
 
@@ -524,6 +541,13 @@ fn smoke_full_vocabulary_agrees() {
                 (Ty::Int, false),
                 (Ty::Option(Box::new(Ty::String)), true),
                 (Ty::Pair(Box::new(Ty::Float), Box::new(Ty::Bool)), false),
+                (
+                    Ty::Anon {
+                        fields: vec![Ty::Int, Ty::List(Box::new(Ty::String))],
+                        is_struct: false,
+                    },
+                    false,
+                ),
             ],
             is_struct: false,
         },
@@ -658,6 +682,12 @@ fn smoke_full_vocabulary_agrees() {
         Decl::Module {
             bindings: vec![
                 Binding::Value { ty: Ty::Int },
+                Binding::Value {
+                    ty: Ty::Option(Box::new(Ty::Anon {
+                        fields: vec![Ty::Bool],
+                        is_struct: true,
+                    })),
+                },
                 Binding::MutableValue { ty: Ty::String },
                 Binding::Function {
                     params: vec![Ty::Int, Ty::Bool],
@@ -706,7 +736,9 @@ fn ty_strategy() -> impl Strategy<Value = Ty> {
             inner.clone().prop_map(|t| Ty::Option(Box::new(t))),
             inner.clone().prop_map(|t| Ty::List(Box::new(t))),
             inner.clone().prop_map(|t| Ty::Array(Box::new(t))),
-            (inner.clone(), inner).prop_map(|(a, b)| Ty::Pair(Box::new(a), Box::new(b))),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| Ty::Pair(Box::new(a), Box::new(b))),
+            (prop::collection::vec(inner, 1..3), any::<bool>())
+                .prop_map(|(fields, is_struct)| Ty::Anon { fields, is_struct }),
         ]
     })
 }
