@@ -19,8 +19,8 @@
 //!   an earlier file), one named like the short spelling, an `exception` named
 //!   like it, an abbreviation renaming the name to another attribute;
 //! - **location** ([`Location`]): the union in the probe's own module, in a
-//!   nested module the probe opens, in an earlier file (with and without a
-//!   signature), or in a referenced assembly;
+//!   nested module the probe opens, in an earlier file's module (with and
+//!   without a signature) or namespace, or in a referenced assembly;
 //! - **use** ([`Use`]): after an `open` of the union's container, the case's
 //!   bare name in an expression and in a pattern, and `GridU.GridC`; without
 //!   one, `GridLib.GridC` and `GridLib.GridU.GridC`.
@@ -39,7 +39,8 @@ use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    ensure_fsharp_core_dll, ensure_rqa_double_suffix_fixture_built, ensure_rqa_union_fixture_built,
+    ensure_fsharp_core_dll, ensure_rqa_collision_fixture_built,
+    ensure_rqa_double_suffix_fixture_built, ensure_rqa_union_fixture_built,
     invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
     unmodelled_project_binder_failures,
 };
@@ -230,6 +231,9 @@ enum Fixture {
     /// `rqa_double_suffix_env`: a type named like the long spelling's first
     /// lookup, alone.
     DoubleSuffix,
+    /// `rqa_collision_env`: a class `GridLib.GridC`, at the path a case of a
+    /// union in a project `namespace GridLib` is named by.
+    Collision,
 }
 
 /// The union in a referenced assembly: the fixture's namespace for it.
@@ -263,6 +267,10 @@ enum Location {
     EarlierFile,
     /// An earlier file's `module GridLib` with a signature.
     EarlierSig,
+    /// An earlier file's `namespace GridLib`, which a referenced assembly
+    /// also declares, with a class named like the case
+    /// ([`Fixture::Collision`]).
+    EarlierNamespace,
     /// A referenced assembly's namespace.
     Assembly(AssemblyUnion),
 }
@@ -272,9 +280,10 @@ impl Location {
     fn open(self) -> Option<String> {
         match self {
             Location::SameModule => None,
-            Location::Nested | Location::EarlierFile | Location::EarlierSig => {
-                Some("open GridLib".to_string())
-            }
+            Location::Nested
+            | Location::EarlierFile
+            | Location::EarlierSig
+            | Location::EarlierNamespace => Some("open GridLib".to_string()),
             Location::Assembly(u) => Some(format!("open RqaFix.{u:?}")),
         }
     }
@@ -325,7 +334,10 @@ impl Use {
         !self.names_container()
             || matches!(
                 location,
-                Location::Nested | Location::EarlierFile | Location::EarlierSig
+                Location::Nested
+                    | Location::EarlierFile
+                    | Location::EarlierSig
+                    | Location::EarlierNamespace
             )
     }
 }
@@ -412,6 +424,14 @@ fn cell(spelling: Spelling, env: Env, location: Location, use_: Use) -> Cell {
             files.push(("GridLib.fs".to_string(), lib));
             String::new()
         }
+        Location::EarlierNamespace => {
+            let lib = format!(
+                "namespace GridLib\n\n{}",
+                union_block(spelling, env, in_container, "")
+            );
+            files.push(("GridLib.fs".to_string(), lib));
+            String::new()
+        }
         Location::Assembly(_) => String::new(),
     };
     let body = match location.open() {
@@ -436,7 +456,7 @@ fn cell(spelling: Spelling, env: Env, location: Location, use_: Use) -> Cell {
                     Use::ModuleQualified => spelling == Spelling::Absent,
                 }
         }
-        Location::EarlierSig => false,
+        Location::EarlierSig | Location::EarlierNamespace => false,
         Location::Assembly(_) => true,
     };
     let label = match location {
@@ -450,6 +470,7 @@ fn cell(spelling: Spelling, env: Env, location: Location, use_: Use) -> Cell {
         control,
         fixture: match location {
             Location::Assembly(_) => Fixture::Union,
+            Location::EarlierNamespace => Fixture::Collision,
             _ => env.fixture(),
         },
     }
@@ -504,6 +525,13 @@ fn cells() -> Vec<Cell> {
                 out.push(cell(spelling, env, Location::EarlierSig, use_));
             }
         }
+        // The namespace's cells reference the collision fixture, so an
+        // environment with an assembly of its own is not crossed with them.
+        if env.fixture() == Fixture::None {
+            for use_ in Use::ALL {
+                out.push(cell(spelling, env, Location::EarlierNamespace, use_));
+            }
+        }
     }
     for u in AssemblyUnion::ALL {
         for use_ in Use::ALL {
@@ -524,22 +552,29 @@ fn every_union_rqa_cell_agrees_with_fcs() {
     let fsharp_core = ensure_fsharp_core_dll();
     let union_dll = ensure_rqa_union_fixture_built();
     let double_suffix_dll = ensure_rqa_double_suffix_fixture_built();
+    let collision_dll = ensure_rqa_collision_fixture_built();
     let refs_for = |fixture: Fixture| -> Vec<&Path> {
         match fixture {
             Fixture::None => vec![],
             Fixture::Union => vec![union_dll],
             Fixture::DoubleSuffix => vec![double_suffix_dll],
+            Fixture::Collision => vec![collision_dll],
         }
     };
-    let envs: Vec<(Fixture, AssemblyEnv)> = [Fixture::None, Fixture::Union, Fixture::DoubleSuffix]
-        .into_iter()
-        .map(|f| {
-            let dlls: Vec<&Path> = std::iter::once(fsharp_core.as_path())
-                .chain(refs_for(f))
-                .collect();
-            (f, env_of(&dlls))
-        })
-        .collect();
+    let envs: Vec<(Fixture, AssemblyEnv)> = [
+        Fixture::None,
+        Fixture::Union,
+        Fixture::DoubleSuffix,
+        Fixture::Collision,
+    ]
+    .into_iter()
+    .map(|f| {
+        let dlls: Vec<&Path> = std::iter::once(fsharp_core.as_path())
+            .chain(refs_for(f))
+            .collect();
+        (f, env_of(&dlls))
+    })
+    .collect();
     let env_for = |cell: &Cell| -> &AssemblyEnv {
         &envs
             .iter()
@@ -641,6 +676,31 @@ fn every_union_rqa_cell_agrees_with_fcs() {
                 "decline"
             }
         };
+        // A dotted probe's last segment carries a record of its own, which a
+        // decline of the whole path does not withdraw: it must name FCS's
+        // symbol too (FCS keys the access by the whole path).
+        let probe_src = &cell.files.last().expect("the probe file").1;
+        let probe_text = &probe_src[usize::from(cell.probe.start())..usize::from(cell.probe.end())];
+        if let Some(dot) = probe_text.rfind('.') {
+            let leaf = TextRange::new(
+                cell.probe.start() + rowan::TextSize::from(u32::try_from(dot + 1).unwrap()),
+                cell.probe.end(),
+            );
+            let at_leaf = fcs_at(fu, leaf).or(theirs);
+            if let Some(res) = proj
+                .file(probe_idx)
+                .resolution_at(leaf)
+                .filter(|r| !matches!(r, Resolution::Deferred(_) | Resolution::Unresolved))
+                && !at_leaf.is_some_and(|u| agrees(env, &proj, &file_paths, probe_idx, res, u))
+            {
+                failures.push(format!(
+                    "  {} [WRONG LEAF]\n    FCS:  {}\n    ours: {res:?}\n    errors: {errors:?}\n    files: {:?}",
+                    cell.label,
+                    render_fcs(at_leaf),
+                    cell.files
+                ));
+            }
+        }
         let clean = if errors.is_empty() {
             "clean"
         } else {

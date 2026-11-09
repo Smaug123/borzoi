@@ -828,10 +828,6 @@ impl Resolver<'_> {
         };
         self.push_contribution(&cases, group_start);
         self.record_open_contribution(&cases, false);
-        // Nor does `M.C` fall through past them to anything else of the name.
-        for name in cases.names {
-            self.record_project_name_shadow(vec![name]);
-        }
     }
 
     /// Entering a `rec` block's module: everything it declares is in scope

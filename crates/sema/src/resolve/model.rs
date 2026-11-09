@@ -1866,6 +1866,11 @@ impl FileExportIndices {
                         fi.nested_module_paths.push(decl.path.clone());
                     }
                 }
+                ExportDeclKind::QualifiedOnlyCase => {
+                    if !anon {
+                        fi.nested_module_paths.push(decl.path.clone());
+                    }
+                }
                 ExportDeclKind::OpaqueCase => {
                     let superseded =
                         superseded_by_a_value(&file.export_decls, &file.exports.items, decl);
@@ -2148,6 +2153,13 @@ pub(super) enum ExportDeclKind {
     /// position always and in expression position unless a value of the name
     /// outranks it ([`superseded_by_a_value`]).
     OpaqueCase,
+    /// A union case the walk exports qualified-only (its union certainly or
+    /// possibly requires qualified access), which FCS still reads
+    /// `Container.Case` as: with an error under the attribute, cleanly without
+    /// it. `path` = container + case. A later file's qualified path rooted at
+    /// it defers ([`ProjectItems::nested_module_paths`]) rather than falling
+    /// through to anything else of the name.
+    QualifiedOnlyCase,
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
     /// A module-level active-pattern case (Stage 3a). `path` = container + case

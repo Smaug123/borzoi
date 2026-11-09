@@ -1627,6 +1627,28 @@ pub fn ensure_rqa_double_suffix_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **case-path collision** fixture
+/// (`tests/fixtures/rqa_collision_env`, `SemaRqaCollisionFixture.dll`) once
+/// per test binary and return its `.dll` path: a class `GridLib.GridC`
+/// (`tests/all/union_rqa_attribute_grid.rs`). Behind the shared
+/// [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_rqa_collision_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rqa_collision_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build case-path collision fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaRqaCollisionFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **attribute-alias** fixture (`tests/fixtures/attribute_alias_env`,
 /// `SemaAttributeAliasFixture.dll`) once per test binary and return its
 /// `.dll` path: abbreviations of `AutoOpenAttribute` and
