@@ -563,7 +563,9 @@ const CELLS: &[Cell] = &[
     Cell {
         label: "fsharp-core / FSharp.Collections.List",
         files: &["module {p}P\n\nopen FSharp.Collections.List\n"],
-        expect: Expect::Exact,
+        expect: Expect::Gap(
+            "the `Microsoft` implicit open is contested: the fixture declares `Microsoft.FSharp.Control` too",
+        ),
     },
     Cell {
         label: "fsharp-core / open Checked",
