@@ -324,6 +324,38 @@ fn config_global_packages_folder_inside_the_project_declines() {
 }
 
 #[test]
+fn config_global_packages_folder_inside_the_repository_declines() {
+    // A repository-root config choosing a folder beside it, for a project in
+    // a subfolder: the folder is outside the project's directory but inside
+    // the tree the config governs. Decline, writing nothing there.
+    let repository = scratch_folder("config-gpf-repository");
+    let root = repository.join("src");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        repository.join("nuget.config"),
+        "<configuration><config>\
+         <add key=\"globalPackagesFolder\" value=\".packages\" />\
+         </config></configuration>\n",
+    )
+    .unwrap();
+    let home = scratch_folder("config-gpf-repository-home");
+    let outcome = restore_hazard(
+        "config-gpf-repository",
+        &root,
+        &project("", &fsharp_core_ref()),
+        &[],
+        env_choosing_the_folder_by_config(&home),
+    );
+    assert_outcome("config-gpf-repository", Expect::Declines, &outcome);
+    assert!(
+        !repository.join(".packages").exists(),
+        "the restore must not create the repository's package folder"
+    );
+    std::fs::remove_dir_all(&repository).ok();
+    std::fs::remove_dir_all(&home).ok();
+}
+
+#[test]
 fn config_global_packages_folder_is_the_folder_restore_reads() {
     // With no `NUGET_PACKAGES`, the restore reads the folder the config names,
     // and only that one: every package assembly resolves from it.

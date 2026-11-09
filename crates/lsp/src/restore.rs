@@ -45,10 +45,15 @@
 //!
 //!   The pin masks a project's own `RestorePackagesPath` (residual: such a
 //!   project restores from the settings' folder, not its own). A folder inside
-//!   the project's directory declines: the SDK's `library-packs` sources
+//!   the project's directory, or inside the directory of the project-tree
+//!   config file that chose it, declines: the SDK's `library-packs` sources
 //!   survive the source override below (its targets name
 //!   `RestoreAdditionalProjectSources` in `TreatAsLocalProperty`), so restore
-//!   can extract into the folder, and the project's tree is not ours to write.
+//!   can extract into the folder, and the source tree is not ours to write.
+//!   (Residual: a folder a config chooses elsewhere in a repository, through
+//!   `..` past its own directory, or one the user config or `NUGET_PACKAGES`
+//!   puts inside a repository, is written to as a cache.) So does a folder
+//!   whose path MSBuild would not read verbatim from a `-p:` argument.
 //!   After the restore, the config files its spec records must be the ones the
 //!   folder was computed from, or the result is discarded: MSBuild's settings
 //!   task loads them itself, so this catches a `RestoreConfigFile`, a
@@ -105,7 +110,7 @@ use std::time::Duration;
 
 use borzoi_spawn::BoundedCommand;
 
-use borzoi_nuget::settings::{GlobalPackagesFolder, global_packages_folder};
+use borzoi_nuget::settings::{FolderOrigin, GlobalPackagesFolder, global_packages_folder};
 
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
@@ -335,11 +340,31 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
             return None;
         }
     };
-    if is_within(&packages.folder, directory) {
+    // The tree the folder must stay out of: the project's directory, or the
+    // directory of the project-tree config file that chose the folder, which
+    // is an ancestor of it (`repo/NuGet.Config` choosing `repo/.packages` for
+    // `repo/src/App.fsproj`).
+    let tree = match &packages.origin {
+        FolderOrigin::Config { file } => file
+            .parent()
+            .filter(|folder| is_within(directory, folder))
+            .unwrap_or(directory),
+        FolderOrigin::Environment | FolderOrigin::Default => directory,
+    };
+    if is_within(&packages.folder, tree) {
         tracing::info!(
             project = %project.display(),
             folder = %packages.folder.display(),
-            "on-demand restore declined: the global packages folder is inside the project's directory"
+            tree = %tree.display(),
+            "on-demand restore declined: the global packages folder is inside the project's source tree"
+        );
+        return None;
+    }
+    if !passes_through_a_property_argument(&packages.folder) {
+        tracing::info!(
+            project = %project.display(),
+            folder = %packages.folder.display(),
+            "on-demand restore declined: the global packages folder cannot be passed to MSBuild verbatim"
         );
         return None;
     }
@@ -371,6 +396,24 @@ fn is_within(path: &Path, directory: &Path) -> bool {
     };
     let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
     under(&real.join(rest), &real_directory)
+}
+
+/// Whether `path`, as the value of a `-p:Name=value` argument, reaches MSBuild
+/// verbatim: MSBuild splits the value at `;` and `,`, unescapes `%XX`, and
+/// treats `$`, `@`, quotes and the wildcard characters specially, so a path
+/// holding any of them (or a backslash, which MSBuild may read as a separator,
+/// a control character, or bytes that are not UTF-8)
+/// would pin some other folder.
+fn passes_through_a_property_argument(path: &Path) -> bool {
+    path.to_str().is_some_and(|text| {
+        !text.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    c,
+                    ';' | ',' | '%' | '$' | '@' | '\'' | '"' | '*' | '?' | '\\'
+                )
+        })
+    })
 }
 
 /// Where a restore whose output is redirected to `scratch` writes the
@@ -827,6 +870,33 @@ mod tests {
                 pair("Path", "inherited"),
             ]
         );
+    }
+
+    #[test]
+    fn a_folder_with_an_msbuild_separator_is_not_passed_as_a_property() {
+        use super::passes_through_a_property_argument;
+        use std::path::Path;
+        assert!(passes_through_a_property_argument(Path::new(
+            "/home/u/.nuget/packages"
+        )));
+        assert!(passes_through_a_property_argument(Path::new(
+            "/a b/c-d_e.f+g~h=i"
+        )));
+        for bad in [
+            "/tmp/cache,Marker=value",
+            "/tmp/a;b",
+            "/tmp/a%3bb",
+            "/tmp/$(X)",
+            "/tmp/@(X)",
+            "/tmp/'a'",
+            "/tmp/\"a\"",
+            "/tmp/*",
+            "/tmp/a?",
+            "/tmp/a\\\\b",
+            "/tmp/a\nb",
+        ] {
+            assert!(!passes_through_a_property_argument(Path::new(bad)), "{bad}");
+        }
     }
 
     #[test]
