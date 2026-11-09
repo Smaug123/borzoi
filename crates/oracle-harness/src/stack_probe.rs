@@ -24,18 +24,28 @@
 //!
 //! and the parent calls [`run_case`] with that test's path. Run from the
 //! parent's own sweep (`--ignored`), the entry finds no variable and returns.
+//!
+//! A case that may exhaust memory or time instead of the stack runs through
+//! [`run_case_limited`]: the child bounds its own memory with
+//! [`alloc_limit`](crate::alloc_limit) (whose allocator the test binary
+//! installs), the parent bounds its time, and both show up as outcomes.
 
 use std::io::Write;
 use std::process::Command;
 use std::time::Duration;
 
-use borzoi_spawn::BoundedCommand;
+use borzoi_spawn::{BoundedCommand, ChildFailure};
 
 /// The prefix of the one stdout line a child reports its case's facts on.
 const REPORT_PREFIX: &str = "stack-probe-report: ";
 
 /// What Rust's runtime prints on a stack overflow, just before it aborts.
 const OVERFLOW_MESSAGE: &str = "has overflowed its stack";
+
+/// What Rust's runtime prints when an allocation fails, just before it
+/// aborts: `memory allocation of N bytes failed`.
+const ALLOC_FAILURE_PREFIX: &str = "memory allocation of ";
+const ALLOC_FAILURE_SUFFIX: &str = " bytes failed";
 
 /// How long one child may take. A case walks a deep input in a debug build,
 /// typically beside a sibling on every core, and takes seconds when the
@@ -50,6 +60,22 @@ pub enum Outcome {
     Survived(String),
     /// The case overflowed its stack.
     Overflowed,
+}
+
+/// How a case run under a time and memory limit ([`run_case_limited`])
+/// ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Limited {
+    /// The case ran to the end and reported this.
+    Survived(String),
+    /// The case overflowed its stack.
+    Overflowed,
+    /// An allocation failed: past the limit the child set with
+    /// [`alloc_limit::limit_live_bytes`](crate::alloc_limit::limit_live_bytes),
+    /// or past what the machine would give.
+    OutOfMemory,
+    /// The case was still running when its time ran out, and was killed.
+    TimedOut,
 }
 
 /// In a child: the case this process was spawned to run, as the parent spelled
@@ -83,6 +109,24 @@ pub fn report(facts: &str) {
 /// without a [`report`] (a `child_test` that names no test runs nothing and
 /// exits cleanly, so a missing report is how a wrong path shows up).
 pub fn run_case(child_test: &str, var: &str, case: &str) -> Outcome {
+    match run_case_limited(child_test, var, case, CHILD_TIMEOUT) {
+        Limited::Survived(facts) => Outcome::Survived(facts),
+        Limited::Overflowed => Outcome::Overflowed,
+        other => panic!("stack probe {child_test} case {case}: {other:?}"),
+    }
+}
+
+/// [`run_case`] for a case that may also exhaust its memory or its time: the
+/// child is killed after `timeout`, and an allocation failure (past a limit
+/// the child set itself with
+/// [`alloc_limit::limit_live_bytes`](crate::alloc_limit::limit_live_bytes))
+/// is an outcome rather than a failure.
+///
+/// # Panics
+///
+/// Panics if the child fails in any other way, or exits without a
+/// [`report`].
+pub fn run_case_limited(child_test: &str, var: &str, case: &str, timeout: Duration) -> Limited {
     let exe = std::env::current_exe().expect("locate the running test binary");
     let mut cmd = Command::new(exe);
     cmd.args([
@@ -93,14 +137,22 @@ pub fn run_case(child_test: &str, var: &str, case: &str) -> Outcome {
         "--test-threads=1",
     ])
     .env(var, case);
-    let out = BoundedCommand::new(cmd)
-        .timeout(CHILD_TIMEOUT)
-        .run()
-        .unwrap_or_else(|e| panic!("stack probe {child_test} case {case}: {e}"));
+    let out = match BoundedCommand::new(cmd).timeout(timeout).run() {
+        Ok(out) => out,
+        Err(ChildFailure::Wedged { .. }) => return Limited::TimedOut,
+        Err(e) => panic!("stack probe {child_test} case {case}: {e}"),
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if stderr.contains(OVERFLOW_MESSAGE) && !out.status.success() {
-        return Outcome::Overflowed;
+    if !out.status.success() {
+        if stderr.contains(OVERFLOW_MESSAGE) {
+            return Limited::Overflowed;
+        }
+        if stderr.lines().any(|line| {
+            line.contains(ALLOC_FAILURE_PREFIX) && line.trim_end().ends_with(ALLOC_FAILURE_SUFFIX)
+        }) {
+            return Limited::OutOfMemory;
+        }
     }
     // libtest prints `test <name> ... ` without a newline before the test
     // runs, so the report may share its line.
@@ -108,7 +160,7 @@ pub fn run_case(child_test: &str, var: &str, case: &str) -> Outcome {
         .lines()
         .find_map(|line| line.split_once(REPORT_PREFIX).map(|(_, facts)| facts));
     match report {
-        Some(facts) if out.status.success() => Outcome::Survived(facts.to_string()),
+        Some(facts) if out.status.success() => Limited::Survived(facts.to_string()),
         _ => panic!(
             "stack probe {child_test} case {case} neither reported nor overflowed \
              ({}):\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
@@ -168,6 +220,38 @@ mod tests {
         // 1 + 2 + … + 10: each level adds its own depth.
         assert_eq!(run_case(CHILD, VAR, "10"), Outcome::Survived("55".into()));
         assert_eq!(run_case(CHILD, VAR, "100000"), Outcome::Overflowed);
+    }
+
+    const ALLOC_VAR: &str = "BORZOI_STACK_PROBE_ALLOC_SELF_TEST";
+    const ALLOC_CHILD: &str = "stack_probe::tests::alloc_child";
+
+    /// Child entry: allocate as many MiB as the case says, under a 64 MiB
+    /// allowance — or, for `sleep`, outlive the parent's patience.
+    #[test]
+    #[ignore = "child-process entry for the run_case_limited self-test"]
+    fn alloc_child() {
+        let Some(case) = requested_case(ALLOC_VAR) else {
+            return;
+        };
+        if case == "sleep" {
+            std::thread::sleep(Duration::from_secs(600));
+        }
+        let mib: usize = case.parse().expect("a size");
+        crate::alloc_limit::limit_live_bytes(crate::alloc_limit::live_bytes() + (64 << 20));
+        crate::alloc_limit::reset_peak();
+        let block = std::hint::black_box(vec![1u8; mib << 20]);
+        report(&(block.len() >> 20).to_string());
+    }
+
+    #[test]
+    fn a_limited_case_reports_runs_out_of_memory_or_times_out() {
+        let run = |case| run_case_limited(ALLOC_CHILD, ALLOC_VAR, case, Duration::from_secs(60));
+        assert_eq!(run("16"), Limited::Survived("16".into()));
+        assert_eq!(run("128"), Limited::OutOfMemory);
+        assert_eq!(
+            run_case_limited(ALLOC_CHILD, ALLOC_VAR, "sleep", Duration::from_secs(2)),
+            Limited::TimedOut
+        );
     }
 
     #[test]

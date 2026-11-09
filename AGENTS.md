@@ -197,6 +197,14 @@ This is a Cargo workspace with nine members:
   `resolve_corpus_diff` and the whole-project gate run the same check on
   every cell and file. A binding construct the walk does not know about
   starts as a row in that table, not a review finding.
+  Inferred types are not bounded by the tree (each line of `let gK x =
+  g(K-1) (g(K-1) x)` doubles one), so every walk of the unification table
+  counts against a type budget (`MAX_TYPE_NODES`, `MAX_TYPE_DEPTH`), and a
+  file whose inference reaches it publishes no inferred type at all
+  (`InferredFile::type_budget_exceeded`). `tests/all/infer_type_budget.rs`
+  runs the growth families under a memory, time and stack limit
+  (`borzoi_oracle_harness::alloc_limit`, `stack_probe::run_case_limited`);
+  `infer_corpus_diff` fails if real code comes within a factor of 8 of it.
   Resolution and inference recurse once per level of the tree, so what
   bounds their stack is the parser's `MAX_TREE_HEIGHT`: `WALK_STACK_BYTES`
   is the stack they need for any tree it returns, the LSP's request thread

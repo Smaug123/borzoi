@@ -33,6 +33,7 @@
 //! `borzoi-corpus-diff`, which is itself an unpublished test shell whose gate
 //! runs in its binary — never of shipping code.
 
+pub mod alloc_limit;
 pub mod corpus_key;
 pub mod fcs_position;
 pub mod manifest;
@@ -44,6 +45,12 @@ pub mod repetition_shapes;
 pub mod restore_globals;
 pub mod stack_probe;
 pub mod xml_pump;
+
+// The library's own tests include `stack_probe`'s, whose memory-limit
+// self-test needs the counting allocator to be this binary's.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: alloc_limit::LimitedAlloc = alloc_limit::LimitedAlloc;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
