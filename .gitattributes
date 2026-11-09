@@ -10,6 +10,7 @@ crates/msbuild/tests/manifests/restore_cone_fixtures.txt merge=borzoi-manifest
 crates/msbuild/tests/manifests/restore_cone_projects.txt merge=borzoi-manifest
 crates/sema/tests/manifests/infer_corpus_diff.txt merge=borzoi-manifest
 crates/sema/tests/manifests/resolve_corpus_diff.txt merge=borzoi-manifest
+crates/lsp/tests/manifests/alias_resolve_through_diff.txt merge=borzoi-manifest
 crates/lsp/tests/manifests/xml_doc_source_corpus.txt merge=borzoi-manifest
 crates/lsp/tests/manifests/xml_doc_source_projects.txt merge=borzoi-manifest
 crates/cst/tests/manifests/parser_corpus.txt merge=borzoi-manifest

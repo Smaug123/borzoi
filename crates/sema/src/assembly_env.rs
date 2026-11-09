@@ -5299,12 +5299,16 @@ impl AssemblyEnv {
     /// `module List`). `parent` is the alias's enclosing type when it is nested,
     /// `None` when it is top-level (the siblings are then the top-level set).
     ///
-    /// FCS resolves a *member access* `Alias.Member` to the companion module's
-    /// member, not the abbreviation *target*'s static — even when both define the
-    /// name (fcs-verified). We do not model that module-over-target member
-    /// precedence, so a resolve-through must **defer** a member access through an
-    /// alias that has a companion module rather than commit the target's member
-    /// (codex review). Matched by the F#-source name (a suffixed module's
+    /// Reached through an `open` of its namespace, FCS resolves a *member
+    /// access* `Alias.Member` to the companion module's member, not the
+    /// abbreviation *target*'s static — even when both define the name. Written
+    /// in full (`Ns.Alias.Member`) it reads the target's static instead: the
+    /// namespace is searched for a type of the name before a module of it
+    /// (both measured by `alias_resolve_through_diff` in the LSP's tests). We do
+    /// not model which of the two a walk is in, so a resolve-through must
+    /// **defer** a member access through an alias that has a companion module
+    /// rather than commit the target's member (codex review); the fully
+    /// written form is a gap, not a wrong answer. Matched by the F#-source name (a suffixed module's
     /// `source_name`) and namespace, public only — the surface a consumer sees.
     pub fn alias_has_companion_module(
         &self,

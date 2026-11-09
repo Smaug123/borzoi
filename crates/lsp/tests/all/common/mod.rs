@@ -428,6 +428,8 @@ struct RawUse {
     full_name: Option<String>,
     #[serde(rename = "GenericArity", default)]
     generic_arity: Option<usize>,
+    #[serde(rename = "SymbolKind", default)]
+    symbol_kind: Option<String>,
     #[serde(rename = "DeclaringPath", default)]
     declaring_path: Option<Vec<RawDeclaringSegment>>,
     #[serde(rename = "DeclaringNamespace", default)]
@@ -552,6 +554,16 @@ pub struct NormalisedProjectUse {
     /// declaration with no rendering in it, so a comparator can certify it
     /// against our own resolution. See [`StructuralName`].
     pub structural: Option<StructuralName>,
+    /// FCS's symbol kind (`type`, `module`, `member`, `unioncase`, …), or
+    /// `None`. A type and its companion module share a full name, as do a
+    /// module value and a class beside it, so only the kind says which one a
+    /// use bound.
+    pub kind: Option<String>,
+    /// Whether the use is a constructor call, which FCS names by the
+    /// constructed type.
+    pub is_constructor: bool,
+    /// An entity's generic arity, or `None` for anything else.
+    pub generic_arity: Option<usize>,
 }
 
 /// One error-severity diagnostic the oracle reported for a project file. A
@@ -683,6 +695,9 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         assembly: u.assembly,
                         full_name,
                         structural,
+                        kind: u.symbol_kind,
+                        is_constructor: u.is_constructor.unwrap_or(false),
+                        generic_arity: u.generic_arity,
                     }
                 })
                 .collect();
