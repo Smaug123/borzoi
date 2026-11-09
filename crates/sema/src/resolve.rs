@@ -418,6 +418,7 @@ pub fn resolve_file(
         r.open_generation = 0;
         r.latest_open_pos = 0;
         r.block_type_defs = HashSet::new();
+        r.block_start = (r.items.len(), r.export_decls.len());
         r.pattern_suppressed_case_ids = HashSet::new();
         r.unmodelled_open_active = false;
         r.opaque_value_open = false;
@@ -2352,7 +2353,8 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
-            repr_private_cases: HashSet::new(),
+            block_start: (0, 0),
+            case_caveats: HashMap::new(),
         }
     }
 
@@ -2638,7 +2640,7 @@ impl<'a> Resolver<'a> {
             },
             decline_sites: self.decline_sites,
             export_decls: self.export_decls,
-            repr_private_cases: self.repr_private_cases,
+            case_caveats: self.case_caveats,
             sig_screen: None,
             sig_exports: Vec::new(),
             recovery: self.recovery.clone(),

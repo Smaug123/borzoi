@@ -16,7 +16,8 @@ use crate::diagnostics::SemaDiagnostic;
 
 use super::contributors::{FileContributions, RecBlock};
 use super::model::{
-    DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
+    CaseCaveats, DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl,
+    ExportedItem,
     ItemId, OpenTrace, ProjectItems, Resolution, SlotClass, TypeSlot,
 };
 
@@ -1717,11 +1718,15 @@ pub(super) struct Resolver<'a> {
     /// from this list; a decl is appended at the same program point each legacy
     /// export writer fires, so the derivations reproduce today's ordering.
     pub(super) export_decls: Vec<ExportDecl>,
-    /// The cases of every union in this file whose representation is
-    /// `private` (`type U = private X | Y`): out of reach outside the
-    /// union's container even though the type is not, so a qualified read
-    /// treats them as restricted there ([`ProjectItems::qualified_read`](super::model::ProjectItems::qualified_read)).
-    pub(super) repr_private_cases: HashSet<ItemId>,
+    /// Where the top-level block being walked starts in [`Self::items`] and
+    /// [`Self::export_decls`]: what precedes is the file's completed blocks,
+    /// which FCS has published to a qualified namespace read by now, and what
+    /// follows it has not ([`Self::same_file_qualified_read`]).
+    pub(super) block_start: (usize, usize),
+    /// What a qualified read must know about this file's union cases beyond
+    /// their exports ([`CaseCaveats`](super::model::CaseCaveats)), for the
+    /// cases that have any.
+    pub(super) case_caveats: HashMap<ItemId, CaseCaveats>,
     /// What the parser had to recover from in the file being walked, moved into
     /// [`ResolvedFile::recovery`](super::model::ResolvedFile). Set by
     /// [`resolve_file`](super::resolve_file) from its caller's parse;

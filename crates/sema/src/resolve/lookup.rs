@@ -2666,7 +2666,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn qualified_value_in(&self, module_path: &[String], value: &str) -> QualifiedRead {
         let mut full = module_path.to_vec();
         full.push(value.to_string());
-        match self.same_file_qualified_read(&full) {
+        match self.same_file_qualified_read(&full, false) {
             QualifiedRead::Miss => self.preceding.qualified_read(&full, &self.container_path),
             read => read,
         }
@@ -2674,22 +2674,30 @@ impl<'a> Resolver<'a> {
 
     /// What a qualified expression path `full` (container + name) reads
     /// among this file's members so far, the newest fragment of the
-    /// container ([`read_fragment`](super::model::read_fragment)).
-    fn same_file_qualified_read(&self, full: &[String]) -> QualifiedRead {
+    /// container ([`read_fragment`](super::model::read_fragment)); with
+    /// `completed_blocks_only`, among those of the file's completed top-level
+    /// blocks ([`Self::block_start`]).
+    fn same_file_qualified_read(&self, full: &[String], completed_blocks_only: bool) -> QualifiedRead {
+        let (items, decls) = if completed_blocks_only {
+            (
+                &self.items[..self.block_start.0],
+                &self.export_decls[..self.block_start.1],
+            )
+        } else {
+            (&self.items[..], &self.export_decls[..])
+        };
         // `self.items` is source-ordered. An accessibility gate as the
         // cross-file read's: a `let private` value is invisible to a *sibling*
         // module (FCS FS1094), and a public value under a later inaccessible
         // `private` one is still recovered.
-        let exports: Vec<(ItemId, Option<usize>, u8)> = self
-            .items
+        let exports: Vec<(ItemId, Option<usize>, u8)> = items
             .iter()
             .filter(|i| i.qualified.as_deref() == Some(full))
             .map(|i| (i.id, i.access_root_len, super::model::fold_rank(i.case)))
             .collect();
         // The first union case declared at the path, qualified-only and
         // possible ones included: the export decls list them in source order.
-        let first_union = self
-            .export_decls
+        let first_union = decls
             .iter()
             .filter(|d| !d.anonymous_root && d.path == full)
             .find_map(|d| match d.kind {
@@ -2697,14 +2705,8 @@ impl<'a> Resolver<'a> {
                     item: Some(idx), ..
                 } => {
                     let it = &self.items[idx];
-                    matches!(it.case, Some(CaseKind::Union { .. })).then(|| UnionCaseEntry {
-                        plain: it.qualified.is_some().then_some(it.id),
-                        access_root_len: super::model::case_access(
-                            it,
-                            full,
-                            &self.repr_private_cases,
-                        ),
-                    })
+                    matches!(it.case, Some(CaseKind::Union { .. }))
+                        .then(|| super::model::union_case_entry(it, full, &self.case_caveats))
                 }
                 ExportDeclKind::OpaqueCase => Some(UnionCaseEntry {
                     plain: None,
@@ -2713,7 +2715,7 @@ impl<'a> Resolver<'a> {
                 _ => None,
             });
         // A member the read does not model, declared here too.
-        let unread = self.export_decls.iter().any(|d| {
+        let unread = decls.iter().any(|d| {
             matches!(d.kind, ExportDeclKind::Extern { .. })
                 && d.member_path(&self.items, false).as_deref() == Some(full)
         });
@@ -3461,11 +3463,13 @@ impl<'a> Resolver<'a> {
             // resolution above rejects a self/ancestor head — FCS's project oracle
             // resolves it. No name-shortening, so no head-guard; the relative
             // resolution above already handles the common cross-file shapes, so this
-            // only adds the enclosing-namespace-qualified case. This file's own
-            // fragment of the container is the newest, so it is read first (a
-            // namespace reopened later in the file reads its earlier block's
-            // case); a member only this file declares declines, since the
-            // namespace's own name may not be in scope yet (FS0039).
+            // only adds the enclosing-namespace-qualified case. This file's
+            // completed blocks are the container's newest fragment, so they are
+            // read first (a namespace reopened later in the file reads its
+            // earlier block's case); the block being walked is not published
+            // yet, so FCS does not see its members here. A member only this file
+            // declares declines, since the namespace's own name may not be in
+            // scope yet (FS0039).
             // (The root-qualified form `global.Demo.Target.foo` does not
             // parse in expression position yet — see the parser's
             // `global_headed_app_source_does_not_panic` — so it never reaches here;
@@ -3474,7 +3478,7 @@ impl<'a> Resolver<'a> {
                 let earlier = self
                     .preceding
                     .qualified_read(&written_path, &self.container_path);
-                let read = match (self.same_file_qualified_read(&written_path), earlier) {
+                let read = match (self.same_file_qualified_read(&written_path, true), earlier) {
                     (QualifiedRead::Miss, earlier) => earlier,
                     (_, QualifiedRead::Miss) => QualifiedRead::Decline,
                     (here, _) => here,

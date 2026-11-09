@@ -26,7 +26,8 @@
 //! - an **extra** member of the name: a value ahead of the unions, an
 //!   exception ahead of or behind them, an active pattern `(|C|_|)` ahead of
 //!   or behind them, an abbreviation of the first union behind them, a
-//!   possible case `type A = C` ahead of them, an `extern` behind them, or
+//!   possible case `type A = C` ahead of them, an `extern` or a class
+//!   behind them, or
 //!   the first union `private`,
 //!   with a `private` representation, or `[<RequireQualifiedAccess>]`;
 //! - the **container**: a nested module of the probe file, an earlier file's
@@ -101,6 +102,9 @@ pub(crate) enum Extra {
     /// An `extern` of the name behind the unions: a value FCS reads first,
     /// which the walk interns no identity for.
     ExternLast,
+    /// A class of the name behind the unions: FCS reads a union's case
+    /// ahead of a type, unless the union requires qualified access.
+    ClassLast,
     /// The first union is `[<RequireQualifiedAccess>]`.
     RqaFirst,
     /// `type GridA = GridC` ahead of the unions: a union with the nullary
@@ -110,7 +114,7 @@ pub(crate) enum Extra {
 }
 
 impl Extra {
-    const ALL: [Extra; 11] = [
+    const ALL: [Extra; 12] = [
         Extra::ValueFirst,
         Extra::ExnFirst,
         Extra::ExnLast,
@@ -120,6 +124,7 @@ impl Extra {
         Extra::PrivateFirst,
         Extra::PrivateReprFirst,
         Extra::ExternLast,
+        Extra::ClassLast,
         Extra::RqaFirst,
         Extra::AbbrevCaseFirst,
     ];
@@ -143,7 +148,7 @@ impl Extra {
     fn fits_signature(self) -> bool {
         !matches!(
             self,
-            Extra::PrivateFirst | Extra::PrivateReprFirst | Extra::ExternLast
+            Extra::PrivateFirst | Extra::PrivateReprFirst | Extra::ExternLast | Extra::ClassLast
         )
     }
 
@@ -167,6 +172,7 @@ impl Extra {
             Extra::ApFirst | Extra::ApLast => Some("let (|GridC|_|) (_: obj) : unit option = None"),
             Extra::AbbrevLast => Some("type GridA = GridU1"),
             Extra::AbbrevCaseFirst => Some("type GridA = GridC"),
+            Extra::ClassLast => Some("type GridC() = class end"),
             Extra::ExternLast => Some(
                 "[<System.Runtime.InteropServices.DllImport(\"grid\")>] extern int GridC(int x)",
             ),
@@ -636,6 +642,26 @@ fn control(cell: &Cell, use_: Use) -> bool {
     }
 }
 
+/// Pre-existing wrong commits the grid found outside the qualified read,
+/// pinned against the issue tracking each, so a fix fails the grid until its
+/// pin is emptied.
+fn known_wrong(cell: &Cell, use_: Use) -> Option<&'static str> {
+    if cell.setup.extra != Extra::ClassLast {
+        return None;
+    }
+    match (cell.container, use_) {
+        // The open of a namespace orders a union case against a later type
+        // of its name only for modules.
+        (
+            Container::EarlierNamespace | Container::SplitNamespace | Container::SplitNamespaceOneFile,
+            Use::BareExpr,
+        ) => Some("#497"),
+        // An assembly container's `M.C` takes the type over the case.
+        (Container::AssemblyModule | Container::AssemblyNamespace, Use::QualExpr) => Some("#498"),
+        _ => None,
+    }
+}
+
 /// Every use in the grid agrees with FCS wherever we commit, and every
 /// control use commits.
 #[test]
@@ -726,7 +752,9 @@ fn every_qualified_case_use_agrees_with_fcs() {
                     probe.end(),
                 ));
             }
+            let known = known_wrong(cell, use_);
             let mut verdict = "decline";
+            let mut wrong = false;
             for range in ranges {
                 let Some(res) = committed(range) else {
                     continue;
@@ -743,14 +771,27 @@ fn every_qualified_case_use_agrees_with_fcs() {
                         committed_earlier_union += 1;
                     }
                 } else {
-                    verdict = "WRONG";
-                    failures.push(format!(
-                        "  {label} [WRONG]\n    FCS:  {}\n    ours: {res:?}\n    errors: {errors:?}\n    files: {:?}",
-                        render_fcs(at),
-                        cell.files
-                    ));
+                    wrong = true;
+                    if known.is_none() {
+                        failures.push(format!(
+                            "  {label} [WRONG]\n    FCS:  {}\n    ours: {res:?}\n    errors: {errors:?}\n    files: {:?}",
+                            render_fcs(at),
+                            cell.files
+                        ));
+                    }
                 }
             }
+            if wrong {
+                verdict = "WRONG";
+            } else if let Some(issue) = known {
+                failures.push(format!(
+                    "  {label} [NOW AGREES]: {issue} may be fixed; empty its pin in `known_wrong`"
+                ));
+            }
+            let verdict = match known {
+                Some(issue) if wrong => format!("{verdict} ({issue})"),
+                _ => verdict.to_string(),
+            };
             if verdict == "decline" && control(cell, use_) {
                 failures.push(format!(
                     "  {label} [MUST COMMIT]\n    FCS:  {rendered}\n    ours: {:?}\n    files: {:?}",
@@ -859,4 +900,37 @@ fn a_namespace_only_this_file_declares_commits_nothing() {
         "committed {:?}",
         proj.file(1).resolution_at(probed)
     );
+}
+
+/// `N.C` in the block of `namespace N` that declares a case of the name
+/// itself: the block being checked is not published to a qualified read yet,
+/// so FCS reads the earlier file's case, and the walk commits it.
+#[test]
+fn the_namespace_block_being_walked_is_not_read() {
+    let first = "namespace N\n\ntype A =\n    | C of int\n    | D\n";
+    let probe = "namespace N\n\ntype B =\n    | C of string\n    | E\n\nmodule Test =\n    let probe = N.C\n";
+    let files = [("A.fs", first), ("B.fs", probe)];
+    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "N.C")
+        .expect("agrees with FCS");
+    let env = env_of(&[ensure_fsharp_core_dll().as_path()]);
+    let proj = resolve_project_files(&project(&files), &env);
+    let probed = range(probe.rfind("N.C").expect("the probe"), "N.C".len());
+    assert!(
+        matches!(proj.file(1).resolution_at(probed), Some(Resolution::Item(_))),
+        "the earlier file's case is committed: {:?}",
+        proj.file(1).decline_site(probed)
+    );
+}
+
+/// A first union whose attribute may be FSharp.Core's
+/// `[<RequireQualifiedAccess>]` (an abbreviation of it): if it is, FCS reads
+/// the class `C` of the module ahead of the case, so the walk commits
+/// neither union's case.
+#[test]
+fn an_undecided_require_qualified_first_union_commits_no_case() {
+    let lib = "module Lib\n\ntype RqaAlias = RequireQualifiedAccessAttribute\n\n[<RqaAlias>]\ntype U1 =\n    | C\n    | D\n\ntype U2 =\n    | C\n    | E\n\ntype C() =\n    class\n    end\n";
+    let probe = "module Use\n\nlet probe = Lib.C\n";
+    let files = [("Lib.fs", lib), ("Use.fs", probe)];
+    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "Lib.C")
+        .expect("agrees with FCS");
 }

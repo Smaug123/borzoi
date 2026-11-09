@@ -452,8 +452,14 @@ impl<'a> Resolver<'a> {
                     }
                 }
             };
-            if repr_private && let Resolution::Item(item) = res {
-                self.repr_private_cases.insert(item);
+            let caveats = super::model::CaseCaveats {
+                repr_private,
+                rqa_undecided: matches!(rqa, RequireQualifiedAccess::Unknown { .. }),
+            };
+            if caveats != super::model::CaseCaveats::default()
+                && let Resolution::Item(item) = res
+            {
+                self.case_caveats.insert(item, caveats);
             }
             // Every union case is reachable type-qualified (`Color.Red`, RQA or
             // not), so file its *resolution* in the container-scoped

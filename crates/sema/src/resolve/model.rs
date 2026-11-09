@@ -99,17 +99,39 @@ pub(super) struct UnionCaseEntry {
     pub(super) access_root_len: Option<usize>,
 }
 
-/// The accessibility a qualified read gives the union case `it` at `path`:
-/// its own, or, under a `private` representation, its container's.
-pub(super) fn case_access(
+/// What a qualified read must know about a union case beyond its export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct CaseCaveats {
+    /// The union's representation is `private` (`type U = private X | Y`):
+    /// the case is out of reach outside the union's container, though the
+    /// type is not.
+    pub(super) repr_private: bool,
+    /// Whether the union requires qualified access is undecided
+    /// ([`RequireQualifiedAccess::Unknown`](super::contributors::RequireQualifiedAccess)):
+    /// if it does, FCS reads a type or module of the case's name first.
+    pub(super) rqa_undecided: bool,
+}
+
+/// The union case `it`, exported at `path`, as a qualified read sees it:
+/// committable only with a value path and a decided "not
+/// require-qualified", and restricted to its container under a `private`
+/// representation.
+pub(super) fn union_case_entry(
     it: &ExportedItem,
     path: &[String],
-    repr_private_cases: &HashSet<ItemId>,
-) -> Option<usize> {
-    if repr_private_cases.contains(&it.id) {
-        Some(path.len() - 1)
-    } else {
-        it.access_root_len
+    caveats: &HashMap<ItemId, CaseCaveats>,
+) -> UnionCaseEntry {
+    let caveat = caveats.get(&it.id).copied().unwrap_or_default();
+    UnionCaseEntry {
+        plain: it
+            .qualified_path()
+            .filter(|_| !caveat.rqa_undecided)
+            .map(|_| it.id),
+        access_root_len: if caveat.repr_private {
+            Some(path.len() - 1)
+        } else {
+            it.access_root_len
+        },
     }
 }
 
@@ -1951,14 +1973,7 @@ impl FileExportIndices {
                         if !anon && matches!(it.case, Some(CaseKind::Union { .. })) {
                             fi.union_cases.push((
                                 decl.path.clone(),
-                                UnionCaseEntry {
-                                    plain: it.qualified_path().map(|_| it.id),
-                                    access_root_len: case_access(
-                                        it,
-                                        &decl.path,
-                                        &file.repr_private_cases,
-                                    ),
-                                },
+                                union_case_entry(it, &decl.path, &file.case_caveats),
                             ));
                         }
                         if let Some(path) = it.qualified_path() {
@@ -3690,11 +3705,10 @@ pub struct ResolvedFile {
     /// [`ProjectItems::extend_with`] folds (`docs/export-decl-model-plan.md`
     /// Stage 2). Every cross-file index derives from this list.
     pub(super) export_decls: Vec<ExportDecl>,
-    /// The cases of every union in this file whose representation is
-    /// `private` (`type U = private X | Y`): out of reach outside the
-    /// union's container even though the type is not, so a qualified read
-    /// treats them as restricted there ([`ProjectItems::qualified_read`]).
-    pub(super) repr_private_cases: HashSet<ItemId>,
+    /// What a qualified read must know about this file's union cases beyond
+    /// their exports ([`CaseCaveats`]), for the
+    /// cases that have any.
+    pub(super) case_caveats: HashMap<ItemId, CaseCaveats>,
     /// `Some` iff this is a `.fsi` **signature file**
     /// (`docs/fsi-signature-restriction-plan.md`): its screen. A signature
     /// slot owns no `ItemId` range and records no resolutions; its arena
@@ -3903,7 +3917,7 @@ impl ResolvedFile {
             resolution_trace: ResolutionTrace::default(),
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
-            repr_private_cases: HashSet::new(),
+            case_caveats: HashMap::new(),
             sig_screen: Some(screen),
             sig_exports,
             // A signature file's slot contributes a screen and exports, never
