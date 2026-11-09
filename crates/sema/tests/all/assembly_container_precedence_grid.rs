@@ -48,14 +48,14 @@ use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    FileUses, ensure_container_precedence_fixture_built,
+    FileUses, NormalisedProjectUse, ensure_container_precedence_fixture_built,
     ensure_container_precedence_il_only_fixture_built, ensure_fsharp_core_dll,
     invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
 };
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
 use borzoi_oracle_harness::manifest::Manifest;
-use borzoi_sema::{Resolution, resolve_project_files};
+use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
 use rowan::{TextRange, TextSize};
 
 /// The fixture assembly's simple name.
@@ -484,6 +484,34 @@ fn rendered_is(rendered: &str, k: usize, setup: &Setup, reading: Reading) -> boo
     }
 }
 
+/// Whether our committed `res` is the same *kind* of symbol as FCS's record
+/// `u`. [`agrees`] compares an entity or member by assembly and full name,
+/// which a module value `GridC` shares with a class `GridC` beside it — the
+/// very pair this grid orders — so the kind must agree too: an entity is a
+/// type FCS names (or constructs), or a module (one FCS reads as a module:
+/// without F# signature data a module is a class); a member is a value or
+/// member.
+fn same_kind(env: &AssemblyEnv, res: Resolution, u: &NormalisedProjectUse) -> bool {
+    match res {
+        Resolution::Entity(h) => {
+            let module = env.is_authoritative_module(h);
+            if u.is_constructor {
+                !module
+            } else {
+                match u.kind.as_deref() {
+                    Some("module") => module,
+                    Some("type") => !module,
+                    _ => false,
+                }
+            }
+        }
+        Resolution::Member { .. } => {
+            !u.is_constructor && matches!(u.kind.as_deref(), Some("member" | "field"))
+        }
+        _ => true,
+    }
+}
+
 /// One probe file: its path, source, and the span of the written name.
 struct Probe {
     setup: usize,
@@ -600,10 +628,18 @@ const IL_ONLY_KNOWN_WRONG: &[(&str, &str)] = &[
     ("S5 Module [SelfUnion] / Fallback", "#505"),
     ("S6 Module [Record] / Fallback", "#505"),
     ("S11 Module [Union(Unary), Record] / Fallback", "#505"),
+    ("S15 Module [Val, Class] / Qual", "#505"),
+    ("S15 Module [Val, Class] / OpenQual", "#505"),
+    ("S15 Module [Val, Class] / Fallback", "#505"),
     ("S15 Module [Val, Class] / Tail", "#505"),
     ("S15 Module [Val, Class] / Bare", "#505"),
+    ("S16 Module [Class, Val] / Qual", "#505"),
+    ("S16 Module [Class, Val] / OpenQual", "#505"),
+    ("S16 Module [Class, Val] / Fallback", "#505"),
     ("S16 Module [Class, Val] / Tail", "#505"),
     ("S16 Module [Class, Val] / Bare", "#505"),
+    ("S17 Module [Val, SubModule] / Qual", "#505"),
+    ("S17 Module [Val, SubModule] / OpenQual", "#505"),
     ("S17 Module [Val, SubModule] / Tail", "#505"),
     ("S17 Module [Val, SubModule] / Bare", "#505"),
     ("S17 Module [Val, SubModule] / Fallback", "#505"),
@@ -741,7 +777,9 @@ fn grade(build: Build) {
                 }
             });
             match at {
-                Some(u) if agrees(&env, &proj, &file_paths, idx, res, u) => {
+                Some(u)
+                    if same_kind(&env, res, u) && agrees(&env, &proj, &file_paths, idx, res, u) =>
+                {
                     if names_the_reading && verdict != "WRONG" {
                         verdict = "commit";
                     }
