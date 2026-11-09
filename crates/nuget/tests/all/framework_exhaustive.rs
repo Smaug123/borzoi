@@ -162,10 +162,19 @@ fn gen_tfms() -> Vec<String> {
             out.push(format!("portable{ver}-{members}"));
         }
     }
-    // `netportable` is an accepted alias for the `portable` prefix.
-    out.push("netportable-profile7".to_owned());
-    out.push("netportable45-profile7".to_owned());
-    out.push("netportable-net45+win8".to_owned());
+    // Every identifier spelling NuGet canonicalises to `.NETPortable` is
+    // a portable prefix: `netportable`, `NETPortable` and `.NETPortable`
+    // alongside `portable`, each case-insensitively.
+    for prefix in ["netportable", "NETPortable", ".NETPortable", ".netportable"] {
+        for ver in ["", "45", "4.10"] {
+            out.push(format!("{prefix}{ver}-profile7"));
+            out.push(format!("{prefix}{ver}-net45+win8"));
+            out.push(format!("{prefix}{ver}-net40+sl5+win8+wp8"));
+            // A member carrying a profile throws under every spelling.
+            out.push(format!("{prefix}{ver}-net45-client"));
+            out.push(format!("{prefix}{ver}"));
+        }
+    }
     for (id, vs) in [
         ("NETFramework", &["v4.5", "v4"][..]),
         ("NETPortable", &["v4.5"][..]),
