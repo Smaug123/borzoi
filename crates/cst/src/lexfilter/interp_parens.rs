@@ -1,16 +1,12 @@
 //! Interpolated-string and paren-balancing rules, plus the tail dispatch
-//! (dummy drop, OBLOCKBEGIN passthrough, typar trigger, CtxtVanilla push).
+//! (dummy drop, OBLOCKBEGIN passthrough, CtxtVanilla push).
 
-use super::{
-    AddBlockEnd, Context, Filter, Opener, Step, TokenContent, TokenTup, Virtual,
-    is_typar_application_trigger,
-};
+use super::{AddBlockEnd, Context, Filter, Opener, Step, TokenContent, TokenTup, Virtual};
 use crate::lexer::{InterpKind, LexError, Span, Token};
 
 impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
     /// Interpolated-string fill scopes, paren openers/closers, the dummy drop,
-    /// the OBLOCKBEGIN passthrough, the typar-application trigger, and the
-    /// catch-all CtxtVanilla push.
+    /// the OBLOCKBEGIN passthrough, and the catch-all CtxtVanilla push.
     pub(super) fn interp_and_paren(&mut self, tt: TokenTup<'a>) -> Step<'a> {
         // INTERP_STRING_BEGIN_PART (FCS LexFilter.fs:2280-2287, folded
         // into the same arm as TokenLExprParen/SIG). The fill body is a
@@ -242,47 +238,6 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // OBLOCKBEGIN with the block rule disabled is a passthrough.
         // (LexFilter.fs:2600)
         if matches!(&tt.token, TokenContent::Virtual(Virtual::BlockBegin)) {
-            return Step::Emit(tt);
-        }
-
-        // HPA/HPB ran as pre-dispatch above (mirror of FCS
-        // `rulesForBothSoftWhiteAndHardWhite`); only the typar trigger
-        // sits here. The two arms are FCS-siblings (LexFilter.fs:2650-2668)
-        // but typars doesn't need the early-dispatch treatment — see the
-        // comment on the HPA block above for why.
-        //
-        // Generic type-application disambiguation (FCS LexFilter.fs:2659-2668).
-        // When an IDENT / DELEGATE / numeric literal is followed by an
-        // adjacent `<`, run a paren-balance scan-ahead to decide whether
-        // the `<` opens a typar list (`f<int>`, `list<string>`) or is
-        // ordinary comparison (`a < b`). On success, inject
-        // `HighPrecedenceTyApp` between `tt` and the rewritten
-        // `Less(true)`; on failure the scan idempotently restores the
-        // original stream and we fall through to the default passthrough.
-        if is_typar_application_trigger(&tt.token) && self.peek_adjacent_typars(false, &tt) {
-            // The candidate `<` is now atop `delayed` as `Less(_)`; FCS
-            // re-pops and re-emits it as `Less(true)`, and inserts
-            // `HighPrecedenceTyApp` at the `<`'s location. We do the
-            // same — the inner smash pass deliberately leaves the
-            // outer `Less` untouched so this site can canonicalise it.
-            let less_tt = self
-                .pop_next_token_tup()
-                .expect("peek_adjacent_typars success ⇒ Less is on top of delayed");
-            let less_span = less_tt.span.clone();
-            let less_start = less_tt.start;
-            let less_end = less_tt.end;
-            self.delay_token(TokenTup {
-                token: TokenContent::Real(Token::Less(true)),
-                span: less_span.clone(),
-                start: less_start,
-                end: less_end,
-            });
-            self.delay_token(TokenTup {
-                token: TokenContent::Virtual(Virtual::HighPrecedenceTyApp),
-                span: less_span,
-                start: less_start,
-                end: less_end,
-            });
             return Step::Emit(tt);
         }
 
