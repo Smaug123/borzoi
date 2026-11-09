@@ -37,7 +37,7 @@ use borzoi_sema::test_support::{
 };
 use borzoi_sema::{
     AssemblyEnv, DeclineCause, DeclineTier, Def, DeferredReason, InferredFile, InferredProject,
-    OpenOpacity, PrecedingTypes, Resolution, ResolvedFile, ResolvedProject, infer_file,
+    OpenOpacity, PrecedingTypes, Resolution, ResolvedFile, ResolvedProject, infer_named_file,
     infer_project,
 };
 
@@ -3896,11 +3896,12 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             (inferred, loaded.parses.files[file_idx].file.as_impl())
         {
             comparison.inference_census.record(inferred);
-            comparison.inference_census_per_file.record(&infer_file(
+            comparison.inference_census_per_file.record(&infer_named_file(
                 impl_file,
                 rf,
                 &loaded.assembly_env,
                 &PrecedingTypes::default(),
+                &loaded.parses.files[file_idx].qnof,
             ));
         }
         let shape = oracle_shape(file_uses);

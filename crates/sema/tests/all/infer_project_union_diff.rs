@@ -7,9 +7,10 @@
 //! parameters. The grid crosses union declarations (plain, generic,
 //! recursive, named fields, `[<RequireQualifiedAccess>]`, struct, a field of
 //! tuple type, a measured field, an error-obsolete case, a constrained
-//! parameter, …) with where the union is declared (the using file, an earlier
-//! file reached by an `open`, an earlier file reached by module-qualified
-//! paths, an earlier file with a signature) and with the positions a case
+//! parameter, …) with where the union is declared (the using file, the using
+//! file with no header, an earlier file reached by an `open`, an earlier file
+//! reached by module-qualified paths, an earlier file with a signature) and
+//! with the positions a case
 //! sits in. Every node and binder inference types in any file must be FCS's;
 //! each modelled cell FCS checks cleanly must commit, so the grid cannot pass
 //! by declining. The ill-typed family puts cases where FCS rejects them.
@@ -435,6 +436,9 @@ const MATCH_CONTEXTS: &[(&str, &str, bool)] = &[
 enum Placement {
     /// Above its uses, in the using file.
     InFile,
+    /// Above its uses, in a using file with no header, whose contents FCS
+    /// puts in an implicit module named after the file.
+    Headerless,
     /// In an earlier file, `open`ed.
     EarlierOpened,
     /// In an earlier file, every name qualified by its module.
@@ -446,6 +450,7 @@ enum Placement {
 
 const PLACEMENTS: &[Placement] = &[
     Placement::InFile,
+    Placement::Headerless,
     Placement::EarlierOpened,
     Placement::EarlierQualified,
     Placement::EarlierSignatured,
@@ -478,6 +483,9 @@ impl Placement {
         }
         match self {
             Placement::InFile => true,
+            // The resolver resolves no name through a headerless file's
+            // nested module but a type-qualified case.
+            Placement::Headerless => !text.contains("Inner.") || text.contains("Inner.I."),
             Placement::EarlierSignatured => false,
             Placement::EarlierOpened => !annotated && !text.contains('.'),
             Placement::EarlierQualified => !annotated,
@@ -504,6 +512,7 @@ fn module_qualified(text: &str) -> bool {
 fn files(union: &Union, placement: Placement, body: &str) -> Vec<(String, String)> {
     match placement {
         Placement::InFile => vec![("Use.fs".into(), format!("module M\n{}{body}", union.decl))],
+        Placement::Headerless => vec![("Use.fs".into(), format!("{}{body}", union.decl))],
         Placement::EarlierOpened | Placement::EarlierQualified => {
             let open = if placement == Placement::EarlierOpened {
                 "open Lib\n"
@@ -543,6 +552,7 @@ fn files(union: &Union, placement: Placement, body: &str) -> Vec<(String, String
 fn header_lines(union: &Union, placement: Placement) -> u32 {
     match placement {
         Placement::InFile => 1 + union.decl.matches('\n').count() as u32,
+        Placement::Headerless => union.decl.matches('\n').count() as u32,
         Placement::EarlierOpened | Placement::EarlierSignatured => 2,
         Placement::EarlierQualified => 1,
     }

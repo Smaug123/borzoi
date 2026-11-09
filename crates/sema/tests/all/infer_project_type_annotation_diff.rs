@@ -30,7 +30,9 @@ use std::path::Path;
 use crate::common::{GradedDumps, full_bcl_env, invoke_fcs_dump_types_project, temp_fs_tree};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{ProjectItems, SyntaxRecovery, infer_file, resolve_file};
+use borzoi_sema::{
+    ProjectItems, SourceFile, SyntaxRecovery, infer_named_file, qualified_names, resolve_file,
+};
 
 /// A type declaration and how a use spells it. `{T}` in `decl` and `spell`
 /// stands for the type's name, and `{P}` in `spell` for the qualifier a
@@ -233,7 +235,7 @@ const POSITIONS: &[Position] = &[
         "",
         false,
     ),
-    p("headerless", "{DECL}\n\n{USES}", 0, 0, "", false),
+    p("headerless", "{DECL}\n\n{USES}", 0, 0, "", true),
     p(
         "top-module-suffix",
         "[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]\nmodule Top\n\n{DECL}\n\n{USES}",
@@ -346,11 +348,18 @@ fn grade(programs: &[(String, String)], expect_errors: bool) -> Graded {
             continue;
         }
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-        let inferred = infer_file(
+        let name = qualified_names(
+            &[SourceFile::Impl(file.clone())],
+            &[written[0].0.clone()],
+        )
+        .pop()
+        .expect("one name per file");
+        let inferred = infer_named_file(
             &file,
             &resolved,
             env,
             &borzoi_sema::PrecedingTypes::default(),
+            &name,
         );
         let line_of = |at: usize| src[..at].matches('\n').count() + 1;
         for (range, ty) in inferred.types() {

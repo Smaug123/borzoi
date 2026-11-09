@@ -1,5 +1,5 @@
 //! Inference soundness sweep over the corpus: every expression type and binder
-//! type [`borzoi_sema::infer_file`] commits, checked against FCS's typed tree —
+//! type [`borzoi_sema::infer_named_file`] commits, checked against FCS's typed tree —
 //! the inference counterpart of `resolve_corpus_diff.rs`.
 //!
 //! The per-construct differentials (`infer_*_diff.rs`) grade the shapes someone
@@ -129,8 +129,8 @@ use borzoi_cst::syntax::{AstNode, ImplFile, LetDecl};
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use borzoi_sema::{
-    AssemblyEnv, MAX_TYPE_DEPTH, MAX_TYPE_NODES, ProjectItems, SyntaxRecovery, TypeWalks,
-    infer_file, resolve_file,
+    AssemblyEnv, MAX_TYPE_DEPTH, MAX_TYPE_NODES, ProjectItems, SourceFile, SyntaxRecovery,
+    TypeWalks, infer_named_file, qualified_names, resolve_file,
 };
 
 use crate::common::corpus_manifest::{
@@ -375,11 +375,17 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root.clone())?;
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-        let inferred = infer_file(
+        // FCS checks the file under its own path, so a headerless file's
+        // implicit module is named after it.
+        let name = qualified_names(&[SourceFile::Impl(file.clone())], &[path.to_path_buf()])
+            .pop()
+            .expect("one name per file");
+        let inferred = infer_named_file(
             &file,
             &resolved,
             env,
             &borzoi_sema::PrecedingTypes::default(),
+            &name,
         );
         let exprs: Vec<((usize, usize), String)> = inferred
             .types()

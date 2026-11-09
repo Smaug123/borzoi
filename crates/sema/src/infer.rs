@@ -512,6 +512,7 @@ use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
+use crate::qnof::QualifiedNameOfFile;
 use crate::resolve::{CaseKind, ItemId, Resolution, ResolvedFile};
 use crate::ty::{MAX_TYPE_DEPTH, Ty, TyVid, TypeBudgetExceeded};
 use crate::unify::{InferTable, TypeWalks};
@@ -958,9 +959,19 @@ pub(crate) struct CaseKey {
 enum UnionId {
     /// A referenced assembly's union.
     Assembly(EntityHandle),
-    /// A union the project declares, named by its first case's item, which
-    /// no other union shares.
-    Project(ItemId),
+    /// A union the project declares, named by its first case, which no other
+    /// union shares.
+    Project(OwnCase),
+}
+
+/// How the resolver names a case of a union the project declares: by its
+/// item, or, in a file with no header (whose cases have no cross-file
+/// handle, so the resolver reads each use as the case's definition), by its
+/// definition. Only an item's case is ever published to a later file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum OwnCase {
+    Item(ItemId),
+    Def(DefId),
 }
 
 /// A case of a union the project declares, as inference types its uses
@@ -1001,6 +1012,11 @@ impl ProjectRecord {
     pub(crate) fn publishable(&self) -> bool {
         self.scope.is_none()
     }
+
+    /// The record, applied to its own parameters.
+    pub(crate) fn record(&self) -> &Ty {
+        &self.record
+    }
 }
 
 /// A type definition whose declared fields inference reads.
@@ -1013,6 +1029,11 @@ impl ProjectCase {
     /// Whether a later file may read the case.
     pub(crate) fn publishable(&self) -> bool {
         self.scope.is_none()
+    }
+
+    /// The case's union, applied to its own parameters.
+    pub(crate) fn union(&self) -> &Ty {
+        &self.scheme.union
     }
 }
 
@@ -1250,17 +1271,56 @@ impl SuspendedMember {
 /// the type budget ([`crate::MAX_TYPE_NODES`], [`crate::MAX_TYPE_DEPTH`]) and
 /// stops at it, and a file whose inference reaches it publishes no inferred
 /// type ([`InferredFile::type_budget_exceeded`]), never a truncated one.
+///
+/// The file's name is unknown here, so the types a headerless file declares,
+/// which FCS names after the file ([`infer_named_file`]), are not bridged.
 pub fn infer_file(
     file: &ImplFile,
     resolved: &ResolvedFile,
     env: &AssemblyEnv,
     preceding: &PrecedingTypes,
 ) -> InferredFile {
+    infer_file_in(file, resolved, env, preceding, None)
+}
+
+/// [`infer_file`] for a file whose [`QualifiedNameOfFile`] is `name`. A
+/// file with no `module` or `namespace` header puts its contents in an
+/// implicit module FCS names after the file (`Program.fs` is `Program`), so
+/// the types it declares are named under that module. Only a name whose
+/// every dot-separated segment is ASCII letters, digits and `_` is read; a
+/// headerless file of any other name bridges none of its types. For any other
+/// file the name changes nothing.
+pub fn infer_named_file(
+    file: &ImplFile,
+    resolved: &ResolvedFile,
+    env: &AssemblyEnv,
+    preceding: &PrecedingTypes,
+    name: &QualifiedNameOfFile,
+) -> InferredFile {
+    let anonymous_module = if is_headerless(file) {
+        name.anonymous_module_segments()
+    } else {
+        None
+    };
+    infer_file_in(file, resolved, env, preceding, anonymous_module)
+}
+
+/// [`infer_file`], with the path of the implicit module the file's contents
+/// live under when it is headerless and that path is known.
+fn infer_file_in(
+    file: &ImplFile,
+    resolved: &ResolvedFile,
+    env: &AssemblyEnv,
+    preceding: &PrecedingTypes,
+    anonymous_module: Option<Vec<String>>,
+) -> InferredFile {
     let ext_scope = ExtensionScope::of(resolved, env);
     let mut cx = Gen::new(resolved, env, ext_scope, preceding);
+    cx.anonymous_module = anonymous_module;
     cx.rejected_defs = cx.rejected_use_defs(file);
     cx.project_types = cx.project_type_paths(file);
     (cx.project_cases, cx.project_records) = cx.project_type_schemes(file);
+    cx.sealed_project_types = cx.sealed_project_types();
     cx.walk(file);
     cx.solve();
     cx.finish()
@@ -1615,23 +1675,34 @@ struct Gen<'a> {
     /// ([`Self::project_type_paths`]); a type absent here is not bridged.
     /// Computed once in [`infer_file`].
     project_types: HashMap<DefId, (Vec<String>, usize)>,
+    /// The path of the implicit module a headerless file's contents live
+    /// under, when the file's name is known and FCS's spelling of it is
+    /// modelled ([`infer_named_file`]); `None` for any other file.
+    anonymous_module: Option<Vec<String>>,
     /// The cases of the file's own unions whose fields are all bridged, by
-    /// the case's item ([`Self::project_type_schemes`]). Computed once in
-    /// [`infer_file`].
-    project_cases: HashMap<ItemId, ProjectCase>,
+    /// how the resolver names the case ([`Self::project_type_schemes`]).
+    /// Computed once in [`infer_file`].
+    project_cases: HashMap<OwnCase, ProjectCase>,
     /// How many constructor-like declarations of each name the file makes
     /// ([`constructor_names`]). Computed once in [`infer_file`].
     constructor_names: HashMap<String, usize>,
     /// The file's own records whose fields inference reads
     /// ([`Self::project_type_schemes`]). Computed once in [`infer_file`].
     project_records: ProjectRecords,
-    /// Every case of the file's own unions, typed or not, by its item
-    /// ([`Self::own_union_case_at`]). Computed once in [`infer_file`].
+    /// Every case of the file's own unions, typed or not, that has an item
+    /// ([`Self::own_case_at`]; a headerless file's cases have none). Computed
+    /// once in [`infer_file`].
     own_union_cases: HashSet<ItemId>,
     /// The declared type parameters of the type definition whose case fields
     /// [`Self::project_type_schemes`] is reading, by name, each the
     /// [`Ty::Param`] of its position. Empty everywhere else.
     decl_typars: HashMap<String, u32>,
+    /// The project's unions and records inference knows of, by path, each
+    /// with its arities: this file's ([`Self::project_cases`],
+    /// [`Self::project_records`]) and those earlier files published. F#
+    /// seals both, so no type coerces into one ([`Self::no_subsumption_ty`]).
+    /// Computed once in [`infer_file`].
+    sealed_project_types: HashMap<Vec<String>, HashSet<usize>>,
     /// The defining ranges of the in-file binders a use of which F# may reject
     /// for their attributes ([`Self::rejected_use_defs`]); computed once in
     /// [`infer_file`].
@@ -1765,11 +1836,13 @@ impl<'a> Gen<'a> {
             binding_params: Vec::new(),
             rejected_defs: HashSet::new(),
             project_types: HashMap::new(),
+            anonymous_module: None,
             project_cases: HashMap::new(),
             own_union_cases: HashSet::new(),
             constructor_names: HashMap::new(),
             project_records: HashMap::new(),
             decl_typars: HashMap::new(),
+            sealed_project_types: HashMap::new(),
             dropped: Vec::new(),
             eq_failures: 0,
             bounded_flex: Vec::new(),
@@ -2088,8 +2161,10 @@ impl<'a> Gen<'a> {
     ///   reject a use ([`Self::rejects_use`]), or an enclosing module may carry
     ///   `[<CompilationRepresentation>]` or such an attribute — by the
     ///   resolver's verdict on each attribute ([`Self::attribute_may_be`]);
-    /// - an enclosing module shares its name with any type the file declares;
-    /// - the file has no `module` or `namespace` header, or is
+    /// - an enclosing module shares its name with any type the file declares
+    ///   (a headerless file's implicit module included);
+    /// - the file has no `module` or `namespace` header and its implicit
+    ///   module's path is not known ([`Self::anonymous_module`]), or is
     ///   `namespace global`;
     /// - the type is declared twice: another definition in its container has
     ///   its name and arity (FS0037), or an earlier file published its path
@@ -2176,22 +2251,28 @@ impl<'a> Gen<'a> {
                     }
                     path.splice(0..0, segs);
                 } else if let Some(m) = ModuleOrNamespace::cast(anc.clone()) {
-                    let header = match m.kind() {
-                        ModuleOrNamespaceKind::DeclaredNamespace => m.long_id(),
-                        ModuleOrNamespaceKind::NamedModule if !renames_module(&anc) => {
-                            m.long_id().filter(|li| {
-                                li.idents()
-                                    .last()
-                                    .is_some_and(|t| !type_names.contains(&ident_text(&t)))
-                            })
-                        }
+                    let header: Option<Vec<String>> = match m.kind() {
+                        ModuleOrNamespaceKind::DeclaredNamespace => m
+                            .long_id()
+                            .map(|li| li.idents().map(|t| ident_text(&t)).collect()),
+                        ModuleOrNamespaceKind::NamedModule if !renames_module(&anc) => m
+                            .long_id()
+                            .map(|li| li.idents().map(|t| ident_text(&t)).collect()),
+                        // A headerless file's implicit module carries no
+                        // attribute to rename it.
+                        ModuleOrNamespaceKind::Anon => self.anonymous_module.clone(),
                         _ => None,
                     };
-                    let Some(li) = header else {
+                    let module_named_like_a_type = m.kind() != ModuleOrNamespaceKind::DeclaredNamespace
+                        && header
+                            .as_ref()
+                            .and_then(|segs| segs.last())
+                            .is_some_and(|last| type_names.contains(last));
+                    let Some(segs) = header.filter(|_| !module_named_like_a_type) else {
                         provable = false;
                         break;
                     };
-                    path.splice(0..0, li.idents().map(|t| ident_text(&t)));
+                    path.splice(0..0, segs);
                     break;
                 }
             }
@@ -2260,10 +2341,11 @@ impl<'a> Gen<'a> {
     }
 
     /// The scheme of each case of the file's own unions whose type is read
-    /// exactly, by the case's item: its fields' written types, read in the
-    /// union's own type-parameter scope ([`Self::decl_typars`]), and the
-    /// union ([`Ty::Project`]) applied to its parameters. Records every case
-    /// of the file's unions in [`Self::own_union_cases`] as it goes.
+    /// exactly, by how the resolver names the case ([`OwnCase`]): its fields'
+    /// written types, read in the union's own type-parameter scope
+    /// ([`Self::decl_typars`]), and the union ([`Ty::Project`]) applied to its
+    /// parameters. Records every case of the file's unions that has an item in
+    /// [`Self::own_union_cases`] as it goes.
     ///
     /// A union contributes only when [`Self::project_type_paths`] holds its
     /// path (which already leaves out a constrained or attributed parameter,
@@ -2290,14 +2372,14 @@ impl<'a> Gen<'a> {
     fn project_type_schemes(
         &mut self,
         file: &ImplFile,
-    ) -> (HashMap<ItemId, ProjectCase>, ProjectRecords) {
+    ) -> (HashMap<OwnCase, ProjectCase>, ProjectRecords) {
         let exports = self.resolved.exports();
         self.own_union_cases = exports
             .iter()
             .filter(|e| matches!(e.case_kind(), Some(CaseKind::Union { .. })))
             .map(|e| e.id())
             .collect();
-        self.constructor_names = constructor_names(file, exports);
+        self.constructor_names = constructor_names(file, self.resolved);
         let mut out = HashMap::new();
         let mut records: ProjectRecords = HashMap::new();
         let recovery = self.resolved.recovery();
@@ -2411,22 +2493,22 @@ impl<'a> Gen<'a> {
         repr: &UnionRepr,
         union: Ty,
         scope: Option<TextRange>,
-        out: &mut HashMap<ItemId, ProjectCase>,
+        out: &mut HashMap<OwnCase, ProjectCase>,
     ) {
         {
             let cases: Vec<_> = repr.cases().collect();
-            let items: Vec<Option<ItemId>> = cases
+            let items: Vec<Option<OwnCase>> = cases
                 .iter()
                 .map(|c| {
                     let tok = c.ident()?;
-                    match self.resolved.resolution_at(tok.text_range())? {
-                        Resolution::Item(id) if self.own_union_cases.contains(&id) => Some(id),
-                        _ => None,
-                    }
+                    self.own_case_at(tok.text_range()).filter(|case| match case {
+                        OwnCase::Item(_) => true,
+                        OwnCase::Def(def) => self.resolved.def(*def).range == tok.text_range(),
+                    })
                 })
                 .collect();
-            // The union's identity is its first case's item: without one,
-            // two of its patterns could not be told to be one union's.
+            // The union's identity is its first case: without one, two of its
+            // patterns could not be told to be one union's.
             let Some(Some(first)) = items.first().copied() else {
                 return;
             };
@@ -4446,6 +4528,7 @@ impl<'a> Gen<'a> {
             {
                 return self.case_use(at);
             }
+            Some(Resolution::Local(_)) if self.own_union_case_at(at) => return self.case_use(at),
             Some(Resolution::Item(id)) if !self.resolved.owns_item(id) => {
                 let ty = self
                     .preceding
@@ -4537,8 +4620,11 @@ impl<'a> Gen<'a> {
         let whole = TextRange::new(head.text_range().start(), last.text_range().end());
         // A qualified case of a project union (`U.A`, `Lib.A`, `Lib.U.B`),
         // whose head may be the union's own type.
-        if let Some(Resolution::Item(id)) = self.resolved.resolution_at(whole)
-            && (self.own_union_cases.contains(&id) || self.preceding.case(id).is_some())
+        if self.own_union_case_at(whole)
+            || matches!(
+                self.resolved.resolution_at(whole),
+                Some(Resolution::Item(id)) if self.preceding.case(id).is_some()
+            )
         {
             return Some(whole);
         }
@@ -5299,16 +5385,19 @@ impl<'a> Gen<'a> {
     /// - a **sealed BCL primitive** — the numeric primitives plus `Boolean`,
     ///   `String`, `Char`, and `Decimal` (the same set [`literal_ty`] produces);
     /// - a **tuple** whose elements are all no-subsumption (recursively);
+    /// - a sealed generic application, and a **project union or record**
+    ///   ([`Self::sealed_project_types`]), which F# seals;
     /// - an **unbound root that is a scheme-instantiation variable of ours**
     ///   ([`Self::scheme_inst_vars`], checked against union-find roots) — a
     ///   quantified typar of one of our own schemes admits no coercion.
     ///
     /// Deliberately **excluded** (conservative — silence over a wrong type, D5):
-    /// `System.Object` (subsumption target for every type), arbitrary named types
-    /// (we cannot cheaply prove sealedness), and arrays. Each leaves the
-    /// `ArgCheck` undischarged, so the application defers rather than grounding
-    /// to a possibly-wrong type. A function type is the other domain a check
-    /// discharges against ([`Self::function_domain`]).
+    /// `System.Object` (subsumption target for every type), named types not
+    /// shown sealed, any other project type (a class may have subtypes), and
+    /// arrays. Each leaves the `ArgCheck` undischarged, so the application
+    /// defers rather than grounding to a possibly-wrong type. A function type
+    /// is the other domain a check discharges against
+    /// ([`Self::function_domain`]).
     fn no_subsumption_domain(&mut self, dom: TyVid) -> bool {
         let resolved = self.table.resolve(&Ty::Var(dom));
         self.no_subsumption_ty(&resolved)
@@ -5333,10 +5422,16 @@ impl<'a> Gen<'a> {
             // An implicitly scoped type variable is an ordinary inference
             // variable while unbound, so the equality FCS tries first holds.
             Ty::Var(v) => self.is_scheme_inst_root(*v) || self.is_head_typar_root(*v),
+            // A project union or record is sealed, and relates as a sealed
+            // generic application does; any other project type may be a class
+            // with subtypes.
+            Ty::Project { path, args } => self
+                .sealed_project_types
+                .get(path.as_slice())
+                .is_some_and(|arities| arities.contains(&args.len())),
             // Arrays, functions, and quantified `Param`s (never bound into the
-            // table) are all excluded, and so is a project type, which may be a
-            // class with subtypes.
-            Ty::Array { .. } | Ty::Fun { .. } | Ty::Param(_) | Ty::Project { .. } => false,
+            // table) are all excluded.
+            Ty::Array { .. } | Ty::Fun { .. } | Ty::Param(_) => false,
         }
     }
 
@@ -5826,9 +5921,10 @@ impl<'a> Gen<'a> {
             // (`None`) is that case, applied to nothing.
             Pat::Named(named)
                 if site == PatSite::Match
-                    && named
-                        .ident()
-                        .is_some_and(|tok| self.def_at(tok.text_range()).is_none()) =>
+                    && named.ident().is_some_and(|tok| {
+                        self.def_at(tok.text_range()).is_none()
+                            || self.own_union_case_at(tok.text_range())
+                    }) =>
             {
                 let tok = named.ident().ok_or(Incomplete::Recovery)?;
                 self.case_pattern(tok.text_range(), None)
@@ -6032,14 +6128,27 @@ impl<'a> Gen<'a> {
                 };
                 Ok((key, scheme))
             }
-            Some(Resolution::Item(id)) => self
-                .project_case(id)
-                .filter(|pc| pc.scope.is_none_or(|scope| scope.contains_range(at)))
-                .filter(|pc| self.uncontested_case_name(&pc.name))
-                .map(|pc| (pc.key, pc.scheme.clone()))
-                .ok_or(Incomplete::NotInFileValue),
+            Some(Resolution::Item(id)) => self.read_project_case(at, self.project_case(id)),
+            Some(Resolution::Local(_)) => {
+                let case = self.own_case_at(at).ok_or(Incomplete::NotInFileValue)?;
+                self.read_project_case(at, self.project_cases.get(&case))
+            }
             _ => Err(Incomplete::NotInFileValue),
         }
+    }
+
+    /// The key and scheme of the project case `case` a use at `at` reads,
+    /// when the use is in its scope and nothing else declares its name
+    /// ([`Self::uncontested_case_name`]).
+    fn read_project_case(
+        &self,
+        at: TextRange,
+        case: Option<&ProjectCase>,
+    ) -> Result<(CaseKey, UnionCaseScheme), Incomplete> {
+        case.filter(|pc| pc.scope.is_none_or(|scope| scope.contains_range(at)))
+            .filter(|pc| self.uncontested_case_name(&pc.name))
+            .map(|pc| (pc.key, pc.scheme.clone()))
+            .ok_or(Incomplete::NotInFileValue)
     }
 
     /// Whether the project declares nothing else a use of the case name
@@ -6066,20 +6175,61 @@ impl<'a> Gen<'a> {
     /// earlier file declaring it published ([`PrecedingTypes::case`]).
     fn project_case(&self, id: ItemId) -> Option<&ProjectCase> {
         if self.resolved.owns_item(id) {
-            self.project_cases.get(&id)
+            self.project_cases.get(&OwnCase::Item(id))
         } else {
             self.preceding.case(id)
         }
     }
 
     /// Whether the resolver reads a case of one of this file's own unions at
-    /// `at`. Such a use resolves to the case's item, whose def is the case's
-    /// declaration: it is a case, never a value binder's use.
+    /// `at` ([`Self::own_case_at`]): it is a case, never a value binder's use.
     fn own_union_case_at(&self, at: TextRange) -> bool {
-        matches!(
-            self.resolved.resolution_at(at),
-            Some(Resolution::Item(id)) if self.own_union_cases.contains(&id)
-        )
+        self.own_case_at(at).is_some()
+    }
+
+    /// The case of one of this file's own unions the resolver reads at `at`,
+    /// typed or not: the case's item, or, in a headerless file, its
+    /// definition ([`OwnCase`]). Either way the use's def is the case's
+    /// declaration.
+    fn own_case_at(&self, at: TextRange) -> Option<OwnCase> {
+        match self.resolved.resolution_at(at)? {
+            Resolution::Item(id) if self.own_union_cases.contains(&id) => Some(OwnCase::Item(id)),
+            Resolution::Local(def) if self.resolved.def(def).kind == DefKind::UnionCase => {
+                Some(OwnCase::Def(def))
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::sealed_project_types`]: every union a case inference reads
+    /// belongs to, and every record whose fields it reads, in this file or an
+    /// earlier one.
+    fn sealed_project_types(&self) -> HashMap<Vec<String>, HashSet<usize>> {
+        let own_unions = self.project_cases.values().map(|pc| &pc.scheme.union);
+        let own_records = self.project_records.values().map(|r| &r.record);
+        let mut out: HashMap<Vec<String>, HashSet<usize>> = HashMap::new();
+        for ty in own_unions
+            .chain(own_records)
+            .chain(self.preceding.sealed_types())
+        {
+            if let Ty::Project { path, args } = ty {
+                out.entry(path.clone()).or_default().insert(args.len());
+            }
+        }
+        out
+    }
+
+    /// The cases [`Self::project_cases`] holds by item, which are what the
+    /// file publishes ([`InferredFile::project_cases`]); a case named by its
+    /// definition has no handle a later file could use.
+    fn take_item_cases(&mut self) -> HashMap<ItemId, ProjectCase> {
+        std::mem::take(&mut self.project_cases)
+            .into_iter()
+            .filter_map(|(case, pc)| match case {
+                OwnCase::Item(id) => Some((id, pc)),
+                OwnCase::Def(_) => None,
+            })
+            .collect()
     }
 
     /// Whether the resolver reads a case at `at` whose fields FCS eta-expands
@@ -7469,7 +7619,7 @@ impl<'a> Gen<'a> {
             receiver_types,
             module_values,
             project_types: std::mem::take(&mut self.project_types),
-            project_cases: std::mem::take(&mut self.project_cases),
+            project_cases: self.take_item_cases(),
             constructor_names: std::mem::take(&mut self.constructor_names),
             project_records: std::mem::take(&mut self.project_records),
             deepest_expr_depth: self.deepest_expr_depth,
@@ -7506,7 +7656,7 @@ impl<'a> Gen<'a> {
             receiver_types: HashMap::new(),
             module_values,
             project_types: std::mem::take(&mut self.project_types),
-            project_cases: std::mem::take(&mut self.project_cases),
+            project_cases: self.take_item_cases(),
             constructor_names: std::mem::take(&mut self.constructor_names),
             project_records: std::mem::take(&mut self.project_records),
             deepest_expr_depth: self.deepest_expr_depth,
@@ -8476,19 +8626,45 @@ fn literal_kind_ty(kind: SyntaxKind) -> Option<Ty> {
     }
 }
 
+/// Whether `file` has no `module` or `namespace` header: its one fragment is
+/// the implicit module FCS names after the file.
+fn is_headerless(file: &ImplFile) -> bool {
+    matches!(
+        &file.modules().collect::<Vec<_>>()[..],
+        [only] if only.kind() == ModuleOrNamespaceKind::Anon
+    )
+}
+
 /// How many declarations in `file` could be what a use of each name means
 /// where a union case of that name is expected: every top-level export (a
 /// value, a union or `exception` case, an active pattern's case) and every
 /// type definition that can construct — anything but an unattributed union
 /// or record, whose own name is no constructor (an enum and a struct have a
 /// default one) — at any depth.
-fn constructor_names(
-    file: &ImplFile,
-    exports: &crate::resolve::ExportedItems,
-) -> HashMap<String, usize> {
+///
+/// A file with no header exports only its top-level values: its cases, its
+/// `exception` constructors, its active patterns' cases and its nested
+/// modules' values have no cross-file handle. So there every definition of
+/// those kinds counts, and every value's, local ones included, which can only
+/// make a name contested.
+fn constructor_names(file: &ImplFile, resolved: &ResolvedFile) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for e in exports.iter() {
+    for e in resolved.exports().iter() {
         *counts.entry(e.name().to_string()).or_default() += 1;
+    }
+    if is_headerless(file) {
+        for def in resolved.defs() {
+            if matches!(
+                def.kind,
+                DefKind::Value { .. }
+                    | DefKind::UnionCase
+                    | DefKind::ExceptionCase
+                    | DefKind::ActivePatternCase
+                    | DefKind::EnumCase
+            ) {
+                *counts.entry(def.name.clone()).or_default() += 1;
+            }
+        }
     }
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
         // A union's or record's own name constructs nothing, unless it is a

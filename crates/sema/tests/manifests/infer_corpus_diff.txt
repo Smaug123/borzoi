@@ -255,7 +255,11 @@ src/Compiler/Utilities/sformat.fs:283:22-283:45 expr	agree
 src/Compiler/Utilities/sformat.fs:285:18-285:57 expr	agree
 src/Compiler/Utilities/sformat.fs:285:9-285:15 binder	agree
 src/Compiler/Utilities/sformat.fs:289:22-289:23 binder	agree
+src/Compiler/Utilities/sformat.fs:308:18-308:22 binder	agree
+src/Compiler/Utilities/sformat.fs:308:23-308:27 binder	agree
+src/Compiler/Utilities/sformat.fs:308:28-308:34 binder	agree
 src/Compiler/Utilities/sformat.fs:308:37-308:61 expr	agree
+src/Compiler/Utilities/sformat.fs:308:9-308:17 binder	agree
 src/Compiler/Utilities/sformat.fs:379:19-379:46 expr	agree
 src/Compiler/Utilities/sformat.fs:461:22-461:24 binder	agree
 src/Compiler/Utilities/sformat.fs:461:9-461:20 binder	agree
@@ -1989,6 +1993,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/SimpleConstant/type_int.fs:8:14-8:18 expr	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Tuple/W_IncompleteMatches01.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/E_UnionPattern05.fs	compared
+tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/E_UnionPattern05.fs:7:12-7:14 expr	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/PatternMatching/Union/unionPattern04.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/PseudoCustomAttributes/AssemblyVersion_002.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/TypeForwarding/NegativeCases/Class_NG_TurnToStruct.fs	compared
@@ -1998,6 +2003,10 @@ tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/NoClashMember
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/RecordTypes/TypeInference02.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/testFiles/BasicTests.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs	compared
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs:10:5-10:6 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs:10:9-10:26 expr	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs:12:5-12:6 binder	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/E_UnionConstructorBadFieldName.fs:12:9-12:21 expr	agree
 tests/FSharp.Compiler.ComponentTests/Conformance/Types/UnionTypes/Overload_ToString.fs	compared
 tests/FSharp.Compiler.ComponentTests/Conformance/UnitsOfMeasure/Parsing/Parsing.fs	compared
 tests/FSharp.Compiler.ComponentTests/Diagnostics/NONTERM.fs	compared
@@ -2215,6 +2224,7 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeCon
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/TypeParameterDefinitions/E_LazyInType02.fs	our-parse-errors
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_FormattingStringBadPrecision01.fs	compared
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_Multiline01.fs	compared
+tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_Multiline01.fs:10:15-10:38 expr	agree
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_UnexpectedSymbol01.fs	our-parse-errors
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_HashOfSealedType01.fs	compared
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/W_OverrideImplementationInAugmentation03a.fs	compared
@@ -2700,7 +2710,9 @@ vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:199:13-222:8 e
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:29:36-29:37 binder	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:33:9-33:84 expr	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:36:9-36:55 expr	agree
+vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:38:16-38:22 binder	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:38:25-38:48 expr	agree
+vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:38:9-38:15 binder	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:40:20-40:33 expr	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:40:9-40:17 binder	agree
 vsintegration/tests/FSharp.Editor.Tests/QuickInfoProviderTests.fs:42:17-88:53 unconverted-decl	"tooltipElementToExpected"
