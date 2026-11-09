@@ -6,7 +6,7 @@ S0 Module [Class] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S0
 S0 Module [Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S0.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S0.GridLib.GridC:ctor (clean) | ours commit
 S0 Module [Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S0.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S0.GridLib.GridC:ctor (clean) | ours commit
 S0 Module [Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S0.GridLib.GridC.Make:member / - (clean) | ours commit
-S1 Module [Val] / Bare | fcs - / - (erroring) | ours WRONG (#505)
+S1 Module [Val] / Bare | fcs - / - (erroring) | ours decline
 S1 Module [Val] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S1.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S1.GridLib.GridC:member (clean) | ours commit
 S1 Module [Val] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S1.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S1.GridLib.GridC:member (clean) | ours commit
 S1 Module [Val] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S1.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S1.GridLib.GridC:member (clean) | ours commit
@@ -17,7 +17,7 @@ S10 Module [Class, Union(Unary)] / OpenQual | fcs SemaContainerPrecedenceIlOnlyF
 S10 Module [Class, Union(Unary)] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S10.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S10.GridLib.GridC:ctor (clean) | ours commit
 S10 Module [Class, Union(Unary)] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S10.GridLib.GridC.Make:member / - (clean) | ours commit
 S11 Module [Union(Unary), Record] / Bare | fcs - / - (erroring) | ours decline
-S11 Module [Union(Unary), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor (clean) | ours WRONG (#505)
+S11 Module [Union(Unary), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor (clean) | ours commit
 S11 Module [Union(Unary), Record] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor (clean) | ours commit
 S11 Module [Union(Unary), Record] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC:ctor (clean) | ours commit
 S11 Module [Union(Unary), Record] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S11.GridLib.GridC.Make:member / - (clean) | ours commit
@@ -36,27 +36,27 @@ S14 Module [SubModule, Union(Nullary)] / Fallback | fcs SemaContainerPrecedenceI
 S14 Module [SubModule, Union(Nullary)] / OpenQual | fcs - / - (erroring) | ours entity on error
 S14 Module [SubModule, Union(Nullary)] / Qual | fcs - / - (erroring) | ours entity on error
 S14 Module [SubModule, Union(Nullary)] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S14.GridLib.GridC.Make:member / - (clean) | ours commit
-S15 Module [Val, Class] / Bare | fcs - / - (erroring) | ours WRONG (#505)
-S15 Module [Val, Class] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (clean) | ours WRONG (#505)
-S15 Module [Val, Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (clean) | ours WRONG (#505)
-S15 Module [Val, Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (clean) | ours WRONG (#505)
-S15 Module [Val, Class] / Tail | fcs - / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (erroring) | ours WRONG (#505)
-S16 Module [Class, Val] / Bare | fcs - / - (erroring) | ours WRONG (#505)
-S16 Module [Class, Val] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (clean) | ours WRONG (#505)
-S16 Module [Class, Val] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (clean) | ours WRONG (#505)
-S16 Module [Class, Val] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (clean) | ours WRONG (#505)
-S16 Module [Class, Val] / Tail | fcs - / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (erroring) | ours WRONG (#505)
-S17 Module [Val, SubModule] / Bare | fcs - / - (erroring) | ours WRONG (#505)
-S17 Module [Val, SubModule] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (clean) | ours WRONG (#505)
-S17 Module [Val, SubModule] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (clean) | ours WRONG (#505)
-S17 Module [Val, SubModule] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (clean) | ours WRONG (#505)
-S17 Module [Val, SubModule] / Tail | fcs - / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (erroring) | ours WRONG (#505)
-S18 Module [Val, Union(Nullary)] / Bare | fcs - / - (erroring) | ours WRONG (#505)
+S15 Module [Val, Class] / Bare | fcs - / - (erroring) | ours decline
+S15 Module [Val, Class] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (clean) | ours commit
+S15 Module [Val, Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (clean) | ours commit
+S15 Module [Val, Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (clean) | ours commit
+S15 Module [Val, Class] / Tail | fcs - / SemaContainerPrecedenceIlOnlyFixture:AqFix.S15.GridLib.GridC:member (erroring) | ours commit
+S16 Module [Class, Val] / Bare | fcs - / - (erroring) | ours decline
+S16 Module [Class, Val] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (clean) | ours commit
+S16 Module [Class, Val] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (clean) | ours commit
+S16 Module [Class, Val] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (clean) | ours commit
+S16 Module [Class, Val] / Tail | fcs - / SemaContainerPrecedenceIlOnlyFixture:AqFix.S16.GridLib.GridC:member (erroring) | ours commit
+S17 Module [Val, SubModule] / Bare | fcs - / - (erroring) | ours decline
+S17 Module [Val, SubModule] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (clean) | ours commit
+S17 Module [Val, SubModule] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (clean) | ours commit
+S17 Module [Val, SubModule] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (clean) | ours commit
+S17 Module [Val, SubModule] / Tail | fcs - / SemaContainerPrecedenceIlOnlyFixture:AqFix.S17.GridLib.GridC:member (erroring) | ours commit
+S18 Module [Val, Union(Nullary)] / Bare | fcs - / - (erroring) | ours decline
 S18 Module [Val, Union(Nullary)] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S18.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S18.GridLib.GridC:member (clean) | ours commit
 S18 Module [Val, Union(Nullary)] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S18.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S18.GridLib.GridC:member (clean) | ours commit
 S18 Module [Val, Union(Nullary)] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S18.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S18.GridLib.GridC:member (clean) | ours commit
 S18 Module [Val, Union(Nullary)] / Tail | fcs - / SemaContainerPrecedenceIlOnlyFixture:AqFix.S18.GridLib.GridC:member (erroring) | ours commit
-S19 Module [Union(Unary), Val] / Bare | fcs - / - (erroring) | ours WRONG (#505)
+S19 Module [Union(Unary), Val] / Bare | fcs - / - (erroring) | ours decline
 S19 Module [Union(Unary), Val] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S19.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S19.GridLib.GridC:member (clean) | ours commit
 S19 Module [Union(Unary), Val] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S19.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S19.GridLib.GridC:member (clean) | ours commit
 S19 Module [Union(Unary), Val] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S19.GridLib.GridC:member / SemaContainerPrecedenceIlOnlyFixture:AqFix.S19.GridLib.GridC:member (clean) | ours commit
@@ -122,7 +122,7 @@ S3 Module [Union(Unary)] / OpenQual | fcs - / - (erroring) | ours decline
 S3 Module [Union(Unary)] / Qual | fcs - / - (erroring) | ours decline
 S3 Module [Union(Unary)] / Tail | fcs - / - (erroring) | ours decline
 S30 Module [Union(Rqa), Record] / Bare | fcs - / - (erroring) | ours decline
-S30 Module [Union(Rqa), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor (clean) | ours WRONG (#505)
+S30 Module [Union(Rqa), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor (clean) | ours commit
 S30 Module [Union(Rqa), Record] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor (clean) | ours commit
 S30 Module [Union(Rqa), Record] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC:ctor (clean) | ours commit
 S30 Module [Union(Rqa), Record] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S30.GridLib.GridC.Make:member / - (clean) | ours commit
@@ -152,12 +152,12 @@ S35 Module [Union(Private), Union(Nullary), Class] / OpenQual | fcs SemaContaine
 S35 Module [Union(Private), Union(Nullary), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S35.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S35.GridLib.GridC:ctor (clean) | ours commit
 S35 Module [Union(Private), Union(Nullary), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S35.GridLib.GridC.Make:member / - (clean) | ours commit
 S36 Module [Union(PrivateRepr), Union(Nullary), Record] / Bare | fcs - / - (erroring) | ours decline
-S36 Module [Union(PrivateRepr), Union(Nullary), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor (clean) | ours WRONG (#505)
+S36 Module [Union(PrivateRepr), Union(Nullary), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor (clean) | ours commit
 S36 Module [Union(PrivateRepr), Union(Nullary), Record] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor (clean) | ours commit
 S36 Module [Union(PrivateRepr), Union(Nullary), Record] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC:ctor (clean) | ours commit
 S36 Module [Union(PrivateRepr), Union(Nullary), Record] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S36.GridLib.GridC.Make:member / - (clean) | ours commit
 S37 Module [Union(Private), Union(Nullary), Record] / Bare | fcs - / - (erroring) | ours decline
-S37 Module [Union(Private), Union(Nullary), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor (clean) | ours WRONG (#505)
+S37 Module [Union(Private), Union(Nullary), Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor (clean) | ours commit
 S37 Module [Union(Private), Union(Nullary), Record] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor (clean) | ours commit
 S37 Module [Union(Private), Union(Nullary), Record] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC:ctor (clean) | ours commit
 S37 Module [Union(Private), Union(Nullary), Record] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S37.GridLib.GridC.Make:member / - (clean) | ours commit
@@ -169,7 +169,7 @@ S39 Namespace [SubModule] / Bare | fcs - / - (erroring) | ours decline
 S39 Namespace [SubModule] / OpenQual | fcs - / - (erroring) | ours entity on error
 S39 Namespace [SubModule] / Qual | fcs - / - (erroring) | ours entity on error
 S39 Namespace [SubModule] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S39.GridC.Make:member / - (clean) | ours commit
-S4 Module [Exn] / Bare | fcs - / - (erroring) | ours WRONG (#505)
+S4 Module [Exn] / Bare | fcs - / - (erroring) | ours decline
 S4 Module [Exn] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S4.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S4.GridLib.GridC:ctor (clean) | ours commit
 S4 Module [Exn] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S4.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S4.GridLib.GridC:ctor (clean) | ours commit
 S4 Module [Exn] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S4.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S4.GridLib.GridC:ctor (clean) | ours commit
@@ -178,69 +178,69 @@ S40 Namespace [Union(Unary)] / Bare | fcs - / - (erroring) | ours decline
 S40 Namespace [Union(Unary)] / OpenQual | fcs - / - (erroring) | ours decline
 S40 Namespace [Union(Unary)] / Qual | fcs - / - (erroring) | ours decline
 S40 Namespace [Union(Unary)] / Tail | fcs - / - (erroring) | ours decline
-S41 Namespace [Exn] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor (clean) | ours decline
-S41 Namespace [Exn] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor (clean) | ours decline
-S41 Namespace [Exn] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor (clean) | ours decline
-S41 Namespace [Exn] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC.Make:member / - (clean) | ours decline
+S41 Namespace [Exn] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor (clean) | ours commit
+S41 Namespace [Exn] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor (clean) | ours commit
+S41 Namespace [Exn] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC:ctor (clean) | ours commit
+S41 Namespace [Exn] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S41.GridC.Make:member / - (clean) | ours commit
 S42 Namespace [SelfUnion] / Bare | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours decline
 S42 Namespace [SelfUnion] / OpenQual | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours decline
 S42 Namespace [SelfUnion] / Qual | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours decline
-S42 Namespace [SelfUnion] / Tail | fcs - / - (erroring) | ours decline
-S43 Namespace [Union(Unary), Union(Nullary), Class] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor (clean) | ours decline
-S43 Namespace [Union(Unary), Union(Nullary), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor (clean) | ours decline
-S43 Namespace [Union(Unary), Union(Nullary), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor (clean) | ours decline
-S43 Namespace [Union(Unary), Union(Nullary), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC.Make:member / - (clean) | ours decline
-S44 Namespace [Class, Union(Unary)] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor (clean) | ours decline
-S44 Namespace [Class, Union(Unary)] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor (clean) | ours decline
-S44 Namespace [Class, Union(Unary)] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor (clean) | ours decline
-S44 Namespace [Class, Union(Unary)] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC.Make:member / - (clean) | ours decline
-S45 Namespace [Union(Unary), Record] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor (clean) | ours decline
-S45 Namespace [Union(Unary), Record] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor (clean) | ours decline
-S45 Namespace [Union(Unary), Record] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor (clean) | ours decline
-S45 Namespace [Union(Unary), Record] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC.Make:member / - (clean) | ours decline
+S42 Namespace [SelfUnion] / Tail | fcs - / - (erroring) | ours entity on error
+S43 Namespace [Union(Unary), Union(Nullary), Class] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor (clean) | ours commit
+S43 Namespace [Union(Unary), Union(Nullary), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor (clean) | ours commit
+S43 Namespace [Union(Unary), Union(Nullary), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC:ctor (clean) | ours commit
+S43 Namespace [Union(Unary), Union(Nullary), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S43.GridC.Make:member / - (clean) | ours commit
+S44 Namespace [Class, Union(Unary)] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor (clean) | ours commit
+S44 Namespace [Class, Union(Unary)] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor (clean) | ours commit
+S44 Namespace [Class, Union(Unary)] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC:ctor (clean) | ours commit
+S44 Namespace [Class, Union(Unary)] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S44.GridC.Make:member / - (clean) | ours commit
+S45 Namespace [Union(Unary), Record] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor (clean) | ours commit
+S45 Namespace [Union(Unary), Record] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor (clean) | ours commit
+S45 Namespace [Union(Unary), Record] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC:ctor (clean) | ours commit
+S45 Namespace [Union(Unary), Record] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S45.GridC.Make:member / - (clean) | ours commit
 S46 Namespace [Union(Unary), Abbrev] / Bare | fcs - / - (erroring) | ours decline
 S46 Namespace [Union(Unary), Abbrev] / OpenQual | fcs - / - (erroring) | ours decline
 S46 Namespace [Union(Unary), Abbrev] / Qual | fcs - / - (erroring) | ours decline
 S46 Namespace [Union(Unary), Abbrev] / Tail | fcs - / - (erroring) | ours decline
 S47 Namespace [Union(Unary), SubModule] / Bare | fcs - / - (erroring) | ours decline
-S47 Namespace [Union(Unary), SubModule] / OpenQual | fcs - / - (erroring) | ours decline
-S47 Namespace [Union(Unary), SubModule] / Qual | fcs - / - (erroring) | ours decline
-S47 Namespace [Union(Unary), SubModule] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S47.GridC.Make:member / - (clean) | ours decline
-S48 Namespace [Union(Unary), Exn] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor (clean) | ours decline
-S48 Namespace [Union(Unary), Exn] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor (clean) | ours decline
-S48 Namespace [Union(Unary), Exn] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor (clean) | ours decline
-S48 Namespace [Union(Unary), Exn] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC.Make:member / - (clean) | ours decline
-S49 Namespace [Exn, GenericClass] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor (clean) | ours decline
+S47 Namespace [Union(Unary), SubModule] / OpenQual | fcs - / - (erroring) | ours entity on error
+S47 Namespace [Union(Unary), SubModule] / Qual | fcs - / - (erroring) | ours entity on error
+S47 Namespace [Union(Unary), SubModule] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S47.GridC.Make:member / - (clean) | ours commit
+S48 Namespace [Union(Unary), Exn] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor (clean) | ours commit
+S48 Namespace [Union(Unary), Exn] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor (clean) | ours commit
+S48 Namespace [Union(Unary), Exn] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC:ctor (clean) | ours commit
+S48 Namespace [Union(Unary), Exn] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S48.GridC.Make:member / - (clean) | ours commit
+S49 Namespace [Exn, GenericClass] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor (clean) | ours commit
 S49 Namespace [Exn, GenericClass] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor (clean) | ours decline
 S49 Namespace [Exn, GenericClass] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC:ctor (clean) | ours decline
 S49 Namespace [Exn, GenericClass] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S49.GridC.Make:member / - (clean) | ours decline
 S5 Module [SelfUnion] / Bare | fcs - / - (erroring) | ours decline
-S5 Module [SelfUnion] / Fallback | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours WRONG (#505)
-S5 Module [SelfUnion] / OpenQual | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours WRONG (#505)
-S5 Module [SelfUnion] / Qual | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours WRONG (#505)
+S5 Module [SelfUnion] / Fallback | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours decline
+S5 Module [SelfUnion] / OpenQual | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours decline
+S5 Module [SelfUnion] / Qual | fcs AqProbe54Bare::? / AqProbe54Bare::? (erroring) | ours decline
 S5 Module [SelfUnion] / Tail | fcs - / - (erroring) | ours entity on error
-S50 Namespace [GenericClass, Exn] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor (clean) | ours decline
+S50 Namespace [GenericClass, Exn] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor (clean) | ours commit
 S50 Namespace [GenericClass, Exn] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor (clean) | ours decline
 S50 Namespace [GenericClass, Exn] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC:ctor (clean) | ours decline
 S50 Namespace [GenericClass, Exn] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S50.GridC.Make:member / - (clean) | ours decline
 S51 Namespace [Union(Rqa), Class] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor (clean) | ours commit
-S51 Namespace [Union(Rqa), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor (clean) | ours decline
-S51 Namespace [Union(Rqa), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor (clean) | ours decline
-S51 Namespace [Union(Rqa), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC.Make:member / - (clean) | ours decline
-S52 Namespace [Union(Rqa), Union(Nullary), Class] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor (clean) | ours decline
-S52 Namespace [Union(Rqa), Union(Nullary), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor (clean) | ours decline
-S52 Namespace [Union(Rqa), Union(Nullary), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor (clean) | ours decline
-S52 Namespace [Union(Rqa), Union(Nullary), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC.Make:member / - (clean) | ours decline
+S51 Namespace [Union(Rqa), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor (clean) | ours commit
+S51 Namespace [Union(Rqa), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC:ctor (clean) | ours commit
+S51 Namespace [Union(Rqa), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S51.GridC.Make:member / - (clean) | ours commit
+S52 Namespace [Union(Rqa), Union(Nullary), Class] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor (clean) | ours commit
+S52 Namespace [Union(Rqa), Union(Nullary), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor (clean) | ours commit
+S52 Namespace [Union(Rqa), Union(Nullary), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC:ctor (clean) | ours commit
+S52 Namespace [Union(Rqa), Union(Nullary), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S52.GridC.Make:member / - (clean) | ours commit
 S53 Namespace [Union(Rqa), SubModule] / Bare | fcs - / - (erroring) | ours decline
-S53 Namespace [Union(Rqa), SubModule] / OpenQual | fcs - / - (erroring) | ours decline
-S53 Namespace [Union(Rqa), SubModule] / Qual | fcs - / - (erroring) | ours decline
-S53 Namespace [Union(Rqa), SubModule] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S53.GridC.Make:member / - (clean) | ours decline
-S54 Namespace [Union(PrivateRepr), Class] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor (clean) | ours decline
-S54 Namespace [Union(PrivateRepr), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor (clean) | ours decline
-S54 Namespace [Union(PrivateRepr), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor (clean) | ours decline
-S54 Namespace [Union(PrivateRepr), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC.Make:member / - (clean) | ours decline
+S53 Namespace [Union(Rqa), SubModule] / OpenQual | fcs - / - (erroring) | ours entity on error
+S53 Namespace [Union(Rqa), SubModule] / Qual | fcs - / - (erroring) | ours entity on error
+S53 Namespace [Union(Rqa), SubModule] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S53.GridC.Make:member / - (clean) | ours commit
+S54 Namespace [Union(PrivateRepr), Class] / Bare | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor (clean) | ours commit
+S54 Namespace [Union(PrivateRepr), Class] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor (clean) | ours commit
+S54 Namespace [Union(PrivateRepr), Class] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC:ctor (clean) | ours commit
+S54 Namespace [Union(PrivateRepr), Class] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S54.GridC.Make:member / - (clean) | ours commit
 S6 Module [Record] / Bare | fcs - / - (erroring) | ours decline
-S6 Module [Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor (clean) | ours WRONG (#505)
+S6 Module [Record] / Fallback | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor (clean) | ours commit
 S6 Module [Record] / OpenQual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor (clean) | ours commit
 S6 Module [Record] / Qual | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor / SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC:ctor (clean) | ours commit
 S6 Module [Record] / Tail | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.S6.GridLib.GridC.Make:member / - (clean) | ours commit

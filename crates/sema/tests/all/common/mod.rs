@@ -2028,6 +2028,43 @@ pub fn ensure_container_precedence_il_only_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// A copy of the container precedence fixture whose F# signature data the
+/// projection **cannot read**, though FCS can: the assembly keeps its
+/// `FSharpInterfaceDataVersionAttribute`, so FCS imports it as F#, but every
+/// signature resource is renamed out of the `FSharpSignature*` families, so
+/// the projection finds no host pickle and takes its heuristic path. The
+/// copy keeps the assembly's identity and file name, so FCS's answers over
+/// the original grade it.
+pub fn container_precedence_unread_fixture() -> &'static Path {
+    use crate::assembly_container_precedence_grid::FIXTURE_ASM;
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let mut bytes = std::fs::read(ensure_container_precedence_fixture_built())
+                .expect("read the container precedence fixture");
+            let (from, to) = (b"FSharpSignature", b"FSharpSignaturf");
+            let mut renamed = 0;
+            let mut i = 0;
+            while i + from.len() <= bytes.len() {
+                if &bytes[i..i + from.len()] == from {
+                    bytes[i..i + from.len()].copy_from_slice(to);
+                    renamed += 1;
+                    i += from.len();
+                } else {
+                    i += 1;
+                }
+            }
+            assert!(renamed > 0, "the fixture names no signature resource");
+            let dir =
+                PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("container_precedence_unread");
+            std::fs::create_dir_all(&dir).expect("create the unread fixture's directory");
+            let path = dir.join(format!("{FIXTURE_ASM}.dll"));
+            std::fs::write(&path, bytes).expect("write the unread fixture");
+            path
+        })
+        .as_path()
+}
+
 /// Build the module-value fixture's **twin** (`tests/fixtures/module_value_twin_env`,
 /// `SemaModuleValueTwin.dll`), which declares a type of the same name as one
 /// the fixture declares, once per test binary and return its `.dll` path.
