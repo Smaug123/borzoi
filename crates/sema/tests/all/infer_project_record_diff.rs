@@ -12,8 +12,9 @@
 //! struct, a function-typed field, two records sharing a field name, a
 //! measured field, an obsolete field, a private representation, members, a
 //! class with a property) with where the record is declared (the using
-//! file, an earlier file reached by an `open`, by module-qualified paths,
-//! behind a signature) and with how the receiver is typed (an annotated
+//! file, the using file with no header, an earlier file reached by an
+//! `open`, by module-qualified paths, behind a signature) and with how the
+//! receiver is typed (an annotated
 //! parameter, an earlier annotated value, a case's payload). Every node and
 //! binder inference types in any file must be FCS's; each modelled cell FCS
 //! checks cleanly must commit, and nothing may commit on a line FCS rejects.
@@ -200,6 +201,9 @@ const RECORDS: &[Record] = &[
 enum Placement {
     /// Above its uses, in the using file.
     InFile,
+    /// Above its uses, in a using file with no header, whose contents FCS
+    /// puts in an implicit module named after the file.
+    Headerless,
     /// In an earlier file, `open`ed.
     EarlierOpened,
     /// In an earlier file, every name qualified by its module.
@@ -211,6 +215,7 @@ enum Placement {
 
 const PLACEMENTS: &[Placement] = &[
     Placement::InFile,
+    Placement::Headerless,
     Placement::EarlierOpened,
     Placement::EarlierQualified,
     Placement::EarlierSignatured,
@@ -276,7 +281,7 @@ impl Placement {
     /// (`Lib.r0.A`).
     fn obligates(self, cid: &str, annotated: bool) -> bool {
         match self {
-            Placement::InFile => true,
+            Placement::InFile | Placement::Headerless => true,
             Placement::EarlierSignatured => false,
             Placement::EarlierOpened => !annotated,
             Placement::EarlierQualified => !annotated && !matches!(cid, "payload" | "bareValue"),
@@ -288,6 +293,7 @@ fn files(record: &Record, placement: Placement, body: &str) -> Vec<(String, Stri
     let decls = format!("{}{}", record.decl, support(record));
     match placement {
         Placement::InFile => vec![("Use.fs".into(), format!("module M\n{decls}{body}"))],
+        Placement::Headerless => vec![("Use.fs".into(), format!("{decls}{body}"))],
         Placement::EarlierOpened | Placement::EarlierQualified => {
             let open = if placement == Placement::EarlierOpened {
                 "open Lib\n"
@@ -317,6 +323,9 @@ fn header_lines(record: &Record, placement: Placement) -> u32 {
                 .matches('\n')
                 .count() as u32
         }
+        Placement::Headerless => format!("{}{}", record.decl, support(record))
+            .matches('\n')
+            .count() as u32,
         Placement::EarlierOpened | Placement::EarlierSignatured => 2,
         Placement::EarlierQualified => 1,
     }

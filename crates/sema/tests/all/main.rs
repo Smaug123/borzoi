@@ -53,6 +53,7 @@ mod infer_cross_file_diff;
 mod infer_dropped_namespace_perturbation;
 mod infer_equality_constraints_diff;
 mod infer_fsharp_core_abbreviation_diff;
+mod infer_headerless_type_diff;
 mod infer_literals_diff;
 mod infer_local_let_diff;
 mod infer_match_diff;

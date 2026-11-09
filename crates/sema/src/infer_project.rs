@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
-use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_file};
+use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_named_file};
 use crate::resolve::{ItemId, ProjectFile, ResolvedFile, ResolvedProject, signature_partners};
 use crate::ty::Ty;
 
@@ -145,6 +145,15 @@ impl PrecedingTypes {
     /// that file would not type either.
     pub(crate) fn case(&self, id: ItemId) -> Option<&ProjectCase> {
         self.cases.get(&id)
+    }
+
+    /// The union of each case and the record of each record the earlier
+    /// files published: project types F# seals.
+    pub(crate) fn sealed_types(&self) -> impl Iterator<Item = &Ty> + '_ {
+        self.cases
+            .values()
+            .map(ProjectCase::union)
+            .chain(self.records.values().map(ProjectRecord::record))
     }
 
     /// How many constructor-like declarations of `name` the earlier files
@@ -341,10 +350,15 @@ pub fn infer_project_reusing(
         let inferred = if idx < reuse {
             prev.files[idx].clone()
         } else {
-            files[idx]
-                .file
-                .as_impl()
-                .map(|impl_file| Arc::new(infer_file(impl_file, rf, env, &published)))
+            files[idx].file.as_impl().map(|impl_file| {
+                Arc::new(infer_named_file(
+                    impl_file,
+                    rf,
+                    env,
+                    &published,
+                    &files[idx].qnof,
+                ))
+            })
         };
         // An implementation's partner is the signature screening it; a
         // signature slot exports nothing of its own.
