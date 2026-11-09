@@ -4,7 +4,7 @@ use borzoi_assembly::EntityKind;
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::TextRange;
 
-use crate::assembly_env::{EntityHandle, StaticLookup};
+use crate::assembly_env::{AheadOfType, EntityHandle, StaticLookup};
 
 use super::id_text;
 use super::model::{DeclineCause, DeclineSite, DeclineTier, DeferredReason, Resolution};
@@ -486,8 +486,10 @@ impl<'a> Resolver<'a> {
     ///
     /// `names` is the full prefix-plus-segments path, `base` the prefix length
     /// and `k` the index of the rooting segment (`names[k]`, source token
-    /// `segments[k - base]`). Never returns [`AssemblyPath::NoMatch`]: the
-    /// rooting is given, so the reading at minimum matches partially.
+    /// `segments[k - base]`). The rooting is given, so the reading at minimum
+    /// matches partially — unless FCS's in-namespace search reads a sibling
+    /// exception of the name instead ([`AheadOfType::SiblingException`]), when
+    /// this candidate is no reading at all: [`AssemblyPath::NoMatch`].
     fn assembly_path_records_from_root(
         &self,
         names: &[String],
@@ -497,6 +499,33 @@ impl<'a> Resolver<'a> {
         type_handle: EntityHandle,
     ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
         let n = names.len();
+
+        // A rooting reached through a namespace qualifier the source writes is
+        // a name FCS looks up *in* that namespace
+        // (`ResolveExprLongIdentInModuleOrNamespace`), which reads an exception
+        // or a union case of the name ahead of a type or module — see
+        // [`AheadOfType`]. (A rooting at the written head is looked up in the
+        // environment instead, where a type or module goes first.)
+        //
+        // An exception it reads is the whole reading: FCS takes the exception
+        // constructor and goes no further, whatever tail follows.
+        let mut rqa_case_fallback = false;
+        if k > base {
+            match self
+                .assemblies
+                .namespace_reads_ahead_of_type(&names[..k], &names[k], type_handle)
+            {
+                AheadOfType::Nothing => {}
+                AheadOfType::RqaCaseFallback => rqa_case_fallback = true,
+                // The exception is a candidate at this rooting too, and its
+                // own reading is the one FCS takes.
+                AheadOfType::SiblingException => return AssemblyPath::NoMatch,
+                AheadOfType::Possible => return Self::owned_deferral(segments),
+            }
+            if self.assemblies.is_authoritative_exception(type_handle) {
+                return Self::exception_reading(segments, k - base, type_handle);
+            }
+        }
 
         // A type-abbreviation marker: the name binds, and FCS chases the
         // abbreviation to its target (`S.Format` where `type S = System.String`
@@ -584,6 +613,41 @@ impl<'a> Resolver<'a> {
                 recs.push((whole, case));
                 i += 1;
                 break;
+            }
+            // A module searches its own contents in FCS's in-container order
+            // ([`AheadOfType`]): a value first, so a uniquely-selectable `let`
+            // of the name is the reading even beside a type of it; then an
+            // exception or union case of the name, ahead of the child type or
+            // module the descent below would take.
+            if self.assemblies.is_authoritative_module(parent) {
+                if let StaticLookup::Resolved(idx) =
+                    self.assemblies.static_lookup(parent, &names[i])
+                {
+                    let whole =
+                        TextRange::new(segments[0].text_range().start(), src.text_range().end());
+                    recs.push((whole, Resolution::Member { parent, idx }));
+                    i += 1;
+                    break;
+                }
+                if let Some(child) = self
+                    .assemblies
+                    .nested(parent, &names[i], 0)
+                    .filter(|&h| self.assemblies.is_public(h))
+                {
+                    match self
+                        .assemblies
+                        .module_reads_ahead_of_type(parent, &names[i], child)
+                    {
+                        AheadOfType::Nothing => {}
+                        AheadOfType::RqaCaseFallback => rqa_case_fallback = true,
+                        AheadOfType::SiblingException | AheadOfType::Possible => {
+                            return Self::owned_deferral(segments);
+                        }
+                    }
+                    if self.assemblies.is_authoritative_exception(child) {
+                        return Self::exception_reading(segments, i - base, child);
+                    }
+                }
             }
             if let Some(child) = self
                 .assemblies
@@ -702,9 +766,67 @@ impl<'a> Resolver<'a> {
         for seg in &segments[(i - base)..] {
             recs.push((seg.text_range(), deferred));
         }
+        // A `[<RequireQualifiedAccess>]` case of a name the walk read past is
+        // FCS's reading whenever the type (or module) reading supplies
+        // nothing: a tail it lacks, or a bare name that is not a value. FCS
+        // reads the case there rather than going on elsewhere, so the path is
+        // owned, but not by anything this reading names.
+        if rqa_case_fallback && (!owns_path || self.reading_stops_on_a_non_value(segments, &recs)) {
+            return Self::owned_deferral(segments);
+        }
         AssemblyPath::Resolved {
             payload: recs,
             owns_path,
+        }
+    }
+
+    /// The reading of an exception FCS's in-container search takes at
+    /// `segments[at]`: the exception there, every other segment deferred, and
+    /// the path owned. FCS reads the exception constructor and goes no
+    /// further; a tail after it is an error, never a member of the exception
+    /// type.
+    fn exception_reading(
+        segments: &[SyntaxToken],
+        at: usize,
+        exception: EntityHandle,
+    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
+        AssemblyPath::Resolved {
+            payload: segments
+                .iter()
+                .enumerate()
+                .map(|(j, seg)| {
+                    let res = if j == at {
+                        Resolution::Entity(exception)
+                    } else {
+                        Resolution::Deferred(DeferredReason::QualifiedAccess)
+                    };
+                    (seg.text_range(), res)
+                })
+                .collect(),
+            owns_path: true,
+        }
+    }
+
+    /// A reading that **owns** the path but names no target in it: every
+    /// segment deferred, so no lower-priority reading commits the path either.
+    ///
+    /// The qualifiers are deferred too, not only the name: the owner is
+    /// uncertain, and where it is in fact nothing at all — an inaccessible
+    /// first union declaring the case, then a type that is no value — FCS
+    /// goes on to another reading of the qualifier, so naming this one would
+    /// be a wrong target.
+    fn owned_deferral(segments: &[SyntaxToken]) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
+        AssemblyPath::Resolved {
+            payload: segments
+                .iter()
+                .map(|seg| {
+                    (
+                        seg.text_range(),
+                        Resolution::Deferred(DeferredReason::QualifiedAccess),
+                    )
+                })
+                .collect(),
+            owns_path: true,
         }
     }
 
