@@ -557,6 +557,18 @@ fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
     for root in std::env::split_paths(&roots).filter(|p| p.as_os_str() != "") {
         collect_assemblies(&root, &mut found, &mut visited);
     }
+    assert!(
+        found.unexamined.is_empty(),
+        "{} path(s) under {roots:?} could not be examined, so the census cannot claim anything \
+         about the assemblies there:\n{}",
+        found.unexamined.len(),
+        found
+            .unexamined
+            .iter()
+            .map(|(p, e)| format!("  {}: {e}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
     let files: Vec<PathBuf> = found.assemblies.into_values().collect();
 
     /// Rows sharing the projected key with another row of the same image.
@@ -699,6 +711,10 @@ fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
     for (path, why) in &failures {
         eprintln!("[join-census] failed: {why} in {}", path.display());
     }
+    assert!(
+        !rows.is_empty(),
+        "no F# assembly with a host pickle under {roots:?}: a census of nothing claims nothing"
+    );
     assert!(
         unjoined.is_empty() && failures.is_empty(),
         "{} F# assemblies have pickled entities the join cannot attribute to a row, and {} \
