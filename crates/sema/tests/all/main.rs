@@ -22,6 +22,7 @@ mod attr_resolution_sweep;
 mod augmentation_scope_diff;
 mod auto_open_fold_back;
 mod auto_open_member_sweep;
+mod auto_open_short_name;
 mod binder_site_grid;
 mod case_access_grid;
 mod case_open_grid;

@@ -142,14 +142,13 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   marks where it closes (`docs/unmodelled-contributors.md`), and by position
   the mark shadows the fold's entries.
 
-  The project half lends no **shortening prefix** (task #30), which is the one
-  place this channel still gives ground. Where a project `[<AutoOpen>]` module
-  in the namespace nests a module, `open Inner` reaches it in FCS and not in us,
-  so the fold declines that half's entries — affordable because such modules are
-  overwhelmingly flat, and measured at zero cost across the corpus. Where the
-  contest is with an *assembly* auto-open module nesting the same short name,
-  no affordable decline exists; #30 records both levers tried and why they were
-  rejected.
+  The project half's `[<AutoOpen>]` fragments enter their own nested modules
+  under their short names where the fold folds them
+  (`Resolver::enter_fragment_child_modules`), after the assembly half's
+  prefixes, so `open Inner` reaches the project's `Inner` where both sides nest
+  one, as FCS's last-folded project fragment does. Only a fragment's own
+  children enter: a `module N.A.Pick` header elsewhere makes `N.A.Pick` a
+  module path that folding `N.A` does not reach (FS0039).
 
 ## Still to do
 

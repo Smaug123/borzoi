@@ -714,6 +714,8 @@ impl Resolver<'_> {
             // here by name, in pattern position only: an active-pattern case
             // is not a value.
             Some(path) => {
+                let file = self.preceding.num_files();
+                self.enter_fragment_child_modules(&path, file, end);
                 self.open_project_namespace_values(&path, end);
                 self.module_open_contributions(&path, end);
                 let generation = self.open_generation;

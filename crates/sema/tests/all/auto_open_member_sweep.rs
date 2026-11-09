@@ -473,8 +473,7 @@ enum Place {
     /// `[<AutoOpen>] module Wrap = module Child =` holding the decl, then
     /// `open Child` by its short name, probed below. FCS enters a folded
     /// module's nested modules under their short names, so the decl takes the
-    /// name from everything in scope; a project auto-open module lends no
-    /// shortening prefix, so the walk must not answer from what it replaces.
+    /// name from everything in scope, as it does through [`Self::Opened`].
     ShortOpened,
     /// `module rec AfterRec =` probed **before** its own decl.
     RecForward,

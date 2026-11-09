@@ -534,6 +534,12 @@ pub struct ProjectItems {
     /// winner nondeterministic. [`Self::extend_with`] appends in the same
     /// Compile-order loop as every other per-file accumulator.
     pub(super) auto_open_module_paths: Vec<(Vec<String>, usize)>,
+    /// Earlier-file non-`private` real nested modules, with the file declaring
+    /// each: which modules a module fragment declares itself
+    /// ([`Self::fragment_child_modules`]). Empty for a file a signature
+    /// screens, whose surface the implementation's nested modules do not
+    /// prove.
+    pub(super) nested_module_files: Vec<(Vec<String>, usize)>,
     /// What earlier files add to every later file's root scope through routes
     /// the walk does not model ([`FileContributions::root`]).
     pub(super) root_contribution: Contribution,
@@ -1563,6 +1569,9 @@ impl ProjectItems {
                 .or_default()
                 .push(file_idx);
         }
+        for nested in idx.nested_module_files {
+            self.nested_module_files.push((nested, file_idx));
+        }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
@@ -1701,6 +1710,19 @@ impl ProjectItems {
             .cloned()
             .collect()
     }
+
+    /// The short names of the non-`private` modules that earlier file `file`
+    /// declares directly in module `container`: the children of the fragment
+    /// `(container, file)`, as [`Self::auto_open_fragments_directly_in`]'s
+    /// same-file rule reads nesting. A file declares at most one module at a
+    /// path (FS0248), so these are exactly that module's own.
+    pub(super) fn fragment_child_modules(&self, container: &[String], file: usize) -> Vec<String> {
+        self.nested_module_files
+            .iter()
+            .filter(|(p, f)| *f == file && is_directly_in(p, container))
+            .filter_map(|(p, _)| p.last().cloned())
+            .collect()
+    }
 }
 
 /// A `type_qualified_cases` entry's payload: the case's handle and its
@@ -1748,6 +1770,7 @@ struct FileExportIndices {
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, ExportedTypeFacts)>,
     auto_open_module_paths: Vec<Vec<String>>,
+    nested_module_files: Vec<Vec<String>>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
 
@@ -2020,6 +2043,9 @@ impl FileExportIndices {
                         } else {
                             fi.real_nested_modules.push(decl.path.clone());
                             fi.nested_module_paths.push(decl.path.clone());
+                            if !*private && screen.is_none() {
+                                fi.nested_module_files.push(decl.path.clone());
+                            }
                         }
                         // The signature's `[<AutoOpen>]` verdict is
                         // authoritative in **both** directions (conclusion 6

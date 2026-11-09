@@ -18,8 +18,8 @@ use super::model::{
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
-    RecordedFold, Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix,
-    TieredResolution,
+    RecordedFold, RelativeBase, Resolver, SameFileQualified, ScopeEntry, ShadowVeto,
+    ShorteningPrefix, TierCandidate, TieredResolution,
 };
 
 /// The part of a qualified case path after its head — `B….Color.Red` of
@@ -697,13 +697,18 @@ impl<'a> Resolver<'a> {
     /// module nested in a project `[<AutoOpen>]` module that `interps` (the
     /// open's own reading) does not open.
     ///
-    /// FCS enters every module a folded module nests under its short name,
-    /// but a project auto-open module lends no shortening prefix (task #30),
-    /// so the walk cannot follow such an `open`, and what it brings could
-    /// replace anything in scope. Blind to position and scope, which can only
-    /// over-decline: every parent of a project module named `path`'s head
-    /// that is, or may be, auto-open is a candidate prefix, every parent
-    /// module when written attribute names cannot be trusted.
+    /// FCS enters every module a folded module nests under its short name.
+    /// The walk enters a fragment's own non-`private` children where it runs
+    /// the fold ([`Self::enter_fragment_child_modules`]), and then the open's
+    /// reading opens the module. Where it does not run the fold (written
+    /// attribute names untrusted, an anonymous root, an open `rec` block, a
+    /// signature-screened file), or the child is `private`, or the `open` sits
+    /// where the fold has not reached, it cannot follow such an `open`, and
+    /// what it brings could replace anything in scope. Blind to position and
+    /// scope, which can only over-decline: every parent of a project module
+    /// named `path`'s head that is, or may be, auto-open is a candidate
+    /// prefix, every parent module when written attribute names cannot be
+    /// trusted.
     pub(super) fn may_name_unlent_module(
         &self,
         path: &[String],
@@ -969,9 +974,12 @@ impl<'a> Resolver<'a> {
         rooted: bool,
     ) -> Vec<OpenInterpretation> {
         let mut out: Vec<OpenInterpretation> = Vec::new();
-        let consider = |out: &mut Vec<OpenInterpretation>,
-                        full: Vec<String>,
-                        namespaces_reachable: bool| {
+        let consider = |out: &mut Vec<OpenInterpretation>, candidate: TierCandidate| {
+            let TierCandidate {
+                full,
+                namespaces_reachable,
+                assemblies_reachable,
+            } = candidate;
             if self.is_project_module_path(&full)
                 && !out
                     .iter()
@@ -990,7 +998,8 @@ impl<'a> Resolver<'a> {
             // ever see the path *as written*, so `namespace A; open M` and
             // `open A; open M` would never find `A.M`, and a colliding root `M` could
             // win instead (review, Slice A round 1).
-            if self.opened_assembly_module(&full).is_some()
+            if assemblies_reachable
+                && self.opened_assembly_module(&full).is_some()
                 && !out
                     .iter()
                     .any(|o| matches!(o, OpenInterpretation::AssemblyModule(p) if *p == full))
@@ -1006,8 +1015,8 @@ impl<'a> Resolver<'a> {
                 out.push(OpenInterpretation::Reading(full));
             }
         };
-        for (full, namespaces_reachable) in self.open_tier_candidates(written, rooted) {
-            consider(&mut out, full, namespaces_reachable);
+        for candidate in self.open_tier_candidates(written, rooted) {
+            consider(&mut out, candidate);
         }
         out
     }
@@ -1025,43 +1034,104 @@ impl<'a> Resolver<'a> {
         &self,
         written: &[String],
         rooted: bool,
-    ) -> Vec<(Vec<String>, bool)> {
-        let mut out: Vec<(Vec<String>, bool)> = Vec::new();
-        if !rooted {
+    ) -> Vec<TierCandidate> {
+        let mut out: Vec<TierCandidate> = Vec::new();
+        let candidate = |full: Vec<String>, namespaces_reachable: bool| TierCandidate {
+            full,
+            namespaces_reachable,
+            assemblies_reachable: true,
+        };
+        if !rooted && let Some((head, rest)) = written.split_first() {
             // Tier 0 — a module alias as the bare head (`open Alias[.rest]` →
             // `Target[.rest]`); the alias is a module, never a namespace.
-            if let Some((head, rest)) = written.split_first()
-                && let Some(target) = self.lexical_alias_target(head)
-            {
+            if let Some(target) = self.lexical_alias_target(head) {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                out.push((full, false));
+                out.push(candidate(full, false));
             }
-            // Tier 1 — explicit opens (namespace + chained module), latest first.
-            // Each opened container also lends the `[<AutoOpen>]` modules it
-            // folds as prefixes, ahead of the container itself
-            // ([`Self::auto_open_shortening_prefixes`]); a module cannot hold a
-            // namespace, so no namespace is reachable at one of those.
-            for prefix in self.open_shortening_prefixes.iter().rev() {
-                for auto in self.auto_open_shortening_prefixes(prefix) {
-                    let mut full = auto;
-                    full.extend_from_slice(written);
-                    out.push((full, false));
+            // Tiers 1 and 2, one position-ranked list ([`Self::relative_bases`]).
+            for base in self.relative_bases(head, self.namespace_depth.max(1)) {
+                match base {
+                    // An `open`'s (or a fold's) prefix. Each opened container
+                    // also lends the `[<AutoOpen>]` modules it folds as
+                    // prefixes, ahead of the container itself
+                    // ([`Self::auto_open_shortening_prefixes`]); a module cannot
+                    // hold a namespace, so no namespace is reachable at one of
+                    // those. A prefix restricted to a fragment's own children
+                    // names a project module and nothing else.
+                    RelativeBase::Prefix(prefix) => {
+                        for auto in self.auto_open_shortening_prefixes(prefix) {
+                            let mut full = auto;
+                            full.extend_from_slice(written);
+                            out.push(candidate(full, false));
+                        }
+                        if let Some(full) = prefix.shorten(written) {
+                            let unrestricted = prefix.children.is_none();
+                            out.push(TierCandidate {
+                                full,
+                                namespaces_reachable: unrestricted,
+                                assemblies_reachable: unrestricted,
+                            });
+                        }
+                    }
+                    // Implicit relative resolution; namespaces are reachable
+                    // only at the enclosing-namespace base.
+                    RelativeBase::Container(k) => {
+                        let mut full = self.container_path[..k].to_vec();
+                        full.extend_from_slice(written);
+                        out.push(candidate(full, k == self.namespace_depth));
+                    }
                 }
-                let mut full = prefix.path.clone();
-                full.extend_from_slice(written);
-                out.push((full, true));
-            }
-            // Tier 2 — implicit relative resolution, innermost first; namespaces
-            // are reachable only at the enclosing-namespace base.
-            for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
-                full.extend_from_slice(written);
-                out.push((full, k == self.namespace_depth));
             }
         }
         // Tier 3 — the as-written root, kept *in addition* to any relative match.
-        out.push((written.to_vec(), true));
+        out.push(candidate(written.to_vec(), true));
+        out
+    }
+
+    /// The bases a relative path headed `head` is shortened through, highest
+    /// priority first: every [`ShorteningPrefix`] in scope (tier 1), and each
+    /// enclosing container `container_path[..k]` for `k` from `min_k` up
+    /// (tier 2).
+    ///
+    /// FCS keeps one short-name table, latest entry first: an `open` or a fold
+    /// enters its containers' modules at its position, and a nested module
+    /// enters itself at its declaration (`AddLocalSubModule`). So a module
+    /// named `head` that this file declares directly in an enclosing container
+    /// ranks by its declaration, above every prefix that entered scope before
+    /// it: `open H; module Child = …; open Child` opens both, and the local
+    /// `Child` wins a collision. Every other container base ranks below every
+    /// prefix: what it reaches was entered by the enclosing namespace's
+    /// implicit open, at the start of the block, or from an earlier file. So
+    /// does a module the walk is inside, which FCS enters only at its close.
+    pub(super) fn relative_bases(&self, head: &str, min_k: usize) -> Vec<RelativeBase<'_>> {
+        let mut positioned: Vec<(usize, u32)> = Vec::new();
+        let mut unpositioned: Vec<usize> = Vec::new();
+        for k in (min_k..=self.container_path.len()).rev() {
+            let container = &self.container_path[..k];
+            let enclosing = self.container_path.get(k).is_some_and(|seg| seg == head);
+            match self
+                .container_decls
+                .get(container)
+                .and_then(|decls| decls.get(head))
+                .filter(|kinds| kinds.module && !enclosing)
+                .and_then(|kinds| kinds.module_pos)
+            {
+                Some(pos) => positioned.push((k, pos)),
+                None => unpositioned.push(k),
+            }
+        }
+        positioned.sort_by_key(|&(_, pos)| std::cmp::Reverse(pos));
+        let mut out = Vec::new();
+        let mut local = positioned.into_iter().peekable();
+        for prefix in self.open_shortening_prefixes.iter().rev() {
+            while let Some((k, _)) = local.next_if(|&(_, pos)| pos > prefix.pos) {
+                out.push(RelativeBase::Container(k));
+            }
+            out.push(RelativeBase::Prefix(prefix));
+        }
+        out.extend(local.map(|(k, _)| RelativeBase::Container(k)));
+        out.extend(unpositioned.into_iter().map(RelativeBase::Container));
         out
     }
 
@@ -1084,14 +1154,15 @@ impl<'a> Resolver<'a> {
     /// auto-open module holding its own `M`, `open M` names the latter
     /// (`open_shortening_matrix`'s `precedence / …` cell, FCS-diffed).
     ///
-    /// Two limits, both deliberate:
+    /// **Project** auto-open modules are not this walk's: FCS auto-opens one
+    /// *fragment*, not the merged module, so `[<AutoOpen>] module A` in one
+    /// file does not make a `Pick` declared by a plain `module A` augmentation
+    /// in another file answer to its short name (fcs-dump-verified: FS0039).
+    /// The project fold enters each fragment's own children where it folds the
+    /// fragment ([`Self::enter_fragment_child_modules`]).
     ///
-    /// - **project** auto-open modules lend no prefix. FCS auto-opens one
-    ///   *fragment*, not the merged module, so `[<AutoOpen>] module A` in one
-    ///   file does not make a `Pick` declared by a plain `module A` augmentation
-    ///   in another file answer to its short name (fcs-dump-verified: FS0039).
-    ///   Deciding that needs the declaring file of a nested module, which
-    ///   `ProjectItems` does not carry — its own slice.
+    /// One limit, deliberate:
+    ///
     /// - where `prefix` is a namespace in one assembly and a module in another,
     ///   the two halves' prefixes are not interleaved by reference order, so a
     ///   short name both halves' auto-open roots expose takes the module half's.
@@ -1321,28 +1392,24 @@ impl<'a> Resolver<'a> {
         // module half, whose own auto-open descendants shorten the same way.
         //
         // Gated on the **assemblies** declaring the path: a project-only
-        // namespace lends no prefix, because a project `[<AutoOpen>]` module
-        // lends none either — FCS auto-opens one *fragment*, and deciding which
-        // nested modules belong to the attributed fragment needs each one's
-        // declaring file (`Self::auto_open_shortening_prefixes`, and the
-        // "**Project** auto-open modules lend no shortening prefix" note on
-        // `open_shortening_matrix`). Pushing one there is not a no-op: the
-        // prefix reroutes a dotted head through tier 1, which cost the
-        // companion-module grid a committed cell.
-        //
+        // namespace's own modules are tier 2's enclosing-namespace base, and
+        // its `[<AutoOpen>]` fragments enter their children where the fold
+        // below folds them ([`Self::enter_fragment_child_modules`]). Pushing
+        // a prefix there is not a no-op: it reroutes a dotted head through
+        // tier 1, which cost the companion-module grid a committed cell.
         if !handles.is_empty() || self.assemblies.has_namespace(&namespace) {
-            self.open_shortening_prefixes.push(ShorteningPrefix {
-                path: namespace.clone(),
-                namespace_reading: true,
-                module_reading: !handles.is_empty(),
-            });
+            self.open_shortening_prefixes
+                .push(ShorteningPrefix::container(
+                    namespace.clone(),
+                    true,
+                    !handles.is_empty(),
+                    0,
+                ));
         }
         // A project `[<AutoOpen>]` module in this namespace nests short names
         // too, and FCS folds the project fragment last, so `open <short>`
-        // binds the project's where both sides nest that name. The project
-        // half lends no shortening prefix of its own (task #30), so such an
-        // `open` goes opaque ([`Self::may_name_unlent_module`]) rather than
-        // binding the assembly's.
+        // binds the project's where both sides nest that name: the project
+        // fold below enters its fragments' children after this prefix.
         // The assembly **module** half's dotted-head bookkeeping, keyed on the
         // handles rather than the merged surface list — the explicit-`open`
         // path's, for the same reasons, because the reachability it describes is
@@ -1379,10 +1446,9 @@ impl<'a> Resolver<'a> {
         self.apply_assembly_fold_group(&namespace, group, 0);
         // The project namespace half's own cases/exceptions and its
         // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves
-        // so that on a shared name the project entry wins by position.
-        // A module nested in one of its `[<AutoOpen>]` modules answers to its
-        // short name, which the walk cannot follow; a later `open` of it goes
-        // opaque ([`Self::may_name_unlent_module`]).
+        // so that on a shared name the project entry wins by position. A
+        // module nested in one of its `[<AutoOpen>]` modules answers to its
+        // short name from here on.
         let project_half = if project_ns {
             self.record_fold(|r| {
                 r.open_project_namespace_values(&namespace, 0);
@@ -1398,9 +1464,9 @@ impl<'a> Resolver<'a> {
         }
         // A project module may hold submodules and types we do not model, so a
         // dotted head through it stays conservative. No shortening prefix: the
-        // project half lends none (task #30), and the path is this block's own
-        // enclosing namespace, which `open_tier_candidates` already offers at
-        // tier 2 — an extra tier-1 copy of the same path would decide nothing.
+        // path is this block's own enclosing namespace, which
+        // `open_tier_candidates` already offers at tier 2, and its fragments'
+        // children entered with the fold above.
         if self.is_project_module_path(&namespace) {
             self.dotted_opacity.set_opaque();
         }
@@ -1585,6 +1651,52 @@ impl<'a> Resolver<'a> {
                 .map(|(p, _)| (p.clone(), current)),
         );
         out
+    }
+
+    /// The short names of the non-`private` modules that the module fragment
+    /// `(path, file)` declares itself, `file` being this file or an earlier
+    /// one ([`ProjectItems::fragment_child_modules`](super::model::ProjectItems::fragment_child_modules)).
+    /// None for a file with an anonymous root, whose nested modules carry no
+    /// qualified paths.
+    fn fragment_child_modules(&self, path: &[String], file: usize) -> Vec<String> {
+        if file < self.preceding.num_files() {
+            return self.preceding.fragment_child_modules(path, file);
+        }
+        if self.anonymous_root {
+            return Vec::new();
+        }
+        self.export_decls
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.kind,
+                    super::model::ExportDeclKind::Module {
+                        header: false,
+                        private: false,
+                        ..
+                    }
+                ) && super::model::is_directly_in(&d.path, path)
+            })
+            .filter_map(|d| d.path.last().cloned())
+            .collect()
+    }
+
+    /// Enter the modules that the module fragment `(path, file)` declares
+    /// under their short names, as folding it does
+    /// (`AddModuleOrNamespaceRefsToNameEnv`): a prefix restricted to those
+    /// children, at `pos`.
+    pub(super) fn enter_fragment_child_modules(&mut self, path: &[String], file: usize, pos: u32) {
+        let children = self.fragment_child_modules(path, file);
+        if children.is_empty() {
+            return;
+        }
+        self.open_shortening_prefixes.push(ShorteningPrefix {
+            path: path.to_vec(),
+            namespace_reading: false,
+            module_reading: false,
+            children: Some(children),
+            pos,
+        });
     }
 
     /// Every `[<AutoOpen>]` fragment reachable by opening `namespace`, as
@@ -1939,21 +2051,21 @@ impl<'a> Resolver<'a> {
                 full.extend_from_slice(rest);
                 return self.is_project_module_path(&full).then_some(full);
             }
-            // Tier 1 — explicit opens (namespace + chained module), one
-            // source-ordered list, latest open first so the most recent shadowing
-            // prefix wins across open kinds.
-            for prefix in self.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.path.clone();
-                full.extend_from_slice(written);
-                if self.is_project_module_path(&full) {
-                    return Some(full);
-                }
-            }
-            // Tier 2 — enclosing namespace/module nesting, innermost first.
-            for k in (1..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
-                full.extend_from_slice(written);
-                if self.is_project_module_path(&full) {
+            // Tiers 1 and 2 — explicit opens (namespace + chained module) and
+            // the enclosing namespace/module nesting, one position-ranked list
+            // ([`Self::relative_bases`]).
+            for base in self.relative_bases(head, 1) {
+                let full = match base {
+                    RelativeBase::Prefix(prefix) => prefix.shorten(written),
+                    RelativeBase::Container(k) => {
+                        let mut full = self.container_path[..k].to_vec();
+                        full.extend_from_slice(written);
+                        Some(full)
+                    }
+                };
+                if let Some(full) = full
+                    && self.is_project_module_path(&full)
+                {
                     return Some(full);
                 }
             }
@@ -2115,20 +2227,22 @@ impl<'a> Resolver<'a> {
                 full.extend_from_slice(rest);
                 return hit(full, CaseTier::Alias);
             }
-            // Tier 1 — explicit opens, latest first.
-            for prefix in self.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.path.clone();
-                full.extend_from_slice(written);
-                if let Some(found) = hit(full, CaseTier::Namespace) {
-                    return Some(found);
-                }
-            }
-            // Tier 2 — enclosing namespace/module nesting, innermost first.
-            for k in (1..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
-                full.extend_from_slice(written);
-                if let Some(found) = hit(full, CaseTier::Namespace) {
-                    return Some(found);
+            // Tiers 1 and 2 — explicit opens and the enclosing
+            // namespace/module nesting, one position-ranked list
+            // ([`Self::relative_bases`]).
+            if let Some(head) = written.first() {
+                for base in self.relative_bases(head, 1) {
+                    let full = match base {
+                        RelativeBase::Prefix(prefix) => prefix.shorten(written),
+                        RelativeBase::Container(k) => {
+                            let mut full = self.container_path[..k].to_vec();
+                            full.extend_from_slice(written);
+                            Some(full)
+                        }
+                    };
+                    if let Some(found) = full.and_then(|full| hit(full, CaseTier::Namespace)) {
+                        return Some(found);
+                    }
                 }
             }
         }
@@ -2741,6 +2855,7 @@ impl<'a> Resolver<'a> {
                 self.open_generation += 1;
             }
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
+            self.enter_fragment_child_modules(&frag_path, frag_file, open_pos);
         }
         // The namespace's types of a file later than every fragment's.
         for (name, _) in own_types {
