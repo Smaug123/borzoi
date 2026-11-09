@@ -487,6 +487,8 @@ impl<'a> Resolver<'a> {
                 self.module_frame()
                     .entries
                     .push(ScopeEntry::binding(name, res, generation));
+            } else {
+                self.mark_decl(&name).qualified_case = true;
             }
         }
     }

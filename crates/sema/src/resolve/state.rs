@@ -657,11 +657,11 @@ pub(super) enum OpenInterpretation {
 /// view that closes Gap A of `docs/type-qualified-case-prefix-plan.md`.
 ///
 /// Only names reachable *bare* or as `Container.Name` are recorded (the
-/// value/type/module namespaces): `let` values, exception constructors,
-/// **non**-`[<RequireQualifiedAccess>]` union cases, types, nested modules /
-/// abbreviations, and active-pattern cases. Require-qualified union cases and enum
-/// cases are *not* — they are reachable only as `Type.Case`, so they never collide
-/// with a module-qualifier segment.
+/// value/type/module namespaces): `let` values and `extern` functions, exception
+/// constructors, union cases (require-qualified ones apart, since only a pattern
+/// reaches them as `Container.Name`), types, nested modules / abbreviations, and
+/// active-pattern cases. Enum cases are *not* — they are reachable only as
+/// `Type.Case`, so they never collide with a module-qualifier segment.
 ///
 /// The point of the *complete* view: deciding "is the segment `Color` unambiguously
 /// a type here, or is something else also named `Color`?" needs certainty, and a
@@ -690,6 +690,11 @@ pub(super) struct DeclKinds {
     pub(super) ty: bool,
     /// A bare-reachable (non-RQA) union case constructor.
     pub(super) union_case: bool,
+    /// A `[<RequireQualifiedAccess>]` union case. Neither bare-reachable nor
+    /// found by an expression's search through a module, but a pattern's
+    /// search through one finds it (`TryFindTypeWithUnionCase`, no RQA
+    /// filter) before the module's submodules and types.
+    pub(super) qualified_case: bool,
     /// A **real** nested module (`module M = …`). *Not* an abbreviation — those set
     /// [`Self::alias`] instead, since an alias's target may be cross-file.
     pub(super) module: bool,
@@ -805,6 +810,7 @@ impl DeclKinds {
             && !self.exception_ctor
             && !self.ty
             && !self.union_case
+            && !self.qualified_case
             && !self.active_pattern
     }
 
