@@ -1749,6 +1749,12 @@ pub(super) struct Resolver<'a> {
     /// file ([`Resolver::note_module_declared`]): FS0892 declines through a
     /// duplicated path.
     pub(super) declared_module_paths: HashSet<Vec<String>>,
+    /// How many declarations of this file — modules, module abbreviations,
+    /// types, exceptions, `extern`s — occupy each full path
+    /// ([`Resolver::record_project_name_shadow`]): FS0892 declines through a
+    /// module whose name, or whose `Module`-suffixed compiled name, another
+    /// declaration takes (FCS rejects such a module with FS0037).
+    pub(super) declared_name_counts: HashMap<Vec<String>, usize>,
     pub(super) duplicated_module_paths: HashSet<Vec<String>>,
     /// The resolution-explain trace — one [`OpenTrace`] per `open` declaration,
     /// in source order, recording the opaque-open flags it flipped. Accumulated

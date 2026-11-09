@@ -2001,6 +2001,9 @@ impl<'a> Resolver<'a> {
         if segs.is_empty() {
             return;
         }
+        let mut full = self.container_path.clone();
+        full.extend(segs.iter().cloned());
+        *self.declared_name_counts.entry(full).or_default() += 1;
         if !self.anonymous_root {
             let mut qualified = self.container_path.clone();
             qualified.extend(segs.iter().cloned());

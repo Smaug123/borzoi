@@ -90,15 +90,38 @@ impl Resolver<'_> {
     /// namespace both (`namespace N.A` beside `module A` in `namespace N`: an
     /// `open M` inside the module does not reach the namespace's `M`,
     /// FCS-graded).
+    ///
+    /// Or a module another declaration shares a name with — its own name, or
+    /// the `Module`-suffixed name it compiles to beside a same-named type:
+    /// `type MModule` and `type M` beside `module M` make FCS reject the module
+    /// (FS0037), and an `open M` then names nothing (FCS-graded). The
+    /// companion pair `type M` + `module M`, valid on its own, declines with
+    /// it.
     fn module_path_is_ambiguous(&self, path: &[String]) -> bool {
+        let here = |q: &[String]| self.declared_name_counts.get(q).copied().unwrap_or(0);
+        let earlier_name = |q: &[String]| {
+            self.preceding.nested_module_paths.contains(q)
+                || self.preceding.module_headers.contains(q)
+                || self.preceding.type_paths.contains_key(q)
+        };
         (1..=path.len()).any(|k| {
             let p = &path[..k];
-            let module = self.declared_module_paths.contains(p)
-                || self.preceding.is_exact_project_module(p)
+            let earlier_module = self.preceding.is_exact_project_module(p)
                 || self.preceding.is_real_nested_module(p);
+            let module = self.declared_module_paths.contains(p) || earlier_module;
+            let mut suffixed = p.to_vec();
+            if let Some(last) = suffixed.last_mut() {
+                last.push_str("Module");
+            }
             self.duplicated_module_paths.contains(p)
                 || self.preceding.is_duplicated_module(p)
                 || (module && self.is_project_namespace_path(p))
+                || (module
+                    && (here(p) > 1
+                        || here(&suffixed) > 0
+                        || earlier_name(&suffixed)
+                        || self.preceding.type_paths.contains_key(p)
+                        || (earlier_module && here(p) > 0)))
         })
     }
 

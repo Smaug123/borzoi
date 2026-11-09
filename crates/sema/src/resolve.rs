@@ -2295,6 +2295,7 @@ impl<'a> Resolver<'a> {
             rqa_module_paths: Vec::new(),
             finished_module_paths: HashSet::new(),
             declared_module_paths: HashSet::new(),
+            declared_name_counts: HashMap::new(),
             duplicated_module_paths: HashSet::new(),
             trace_opens: Vec::new(),
             recovery: SyntaxRecovery::Unretained,

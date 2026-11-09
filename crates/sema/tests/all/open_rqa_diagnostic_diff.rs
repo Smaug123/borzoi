@@ -144,6 +144,20 @@ const CELLS: &[Cell] = &[
         expect: Expect::Clean,
     },
     Cell {
+        label: "same-file / a module whose compiled name a type takes",
+        files: &[
+            "module {p}Top\n\ntype MModule = class end\ntype M = class end\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n\nopen M\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
+        label: "same-file / a companion type and module",
+        files: &[
+            "module {p}Top\n\ntype M = { V: int }\n\n[<RequireQualifiedAccess>]\nmodule M =\n    let x = 1\n\nopen M\n",
+        ],
+        expect: Expect::Gap("a module sharing its name with another declaration is not decided"),
+    },
+    Cell {
         label: "same-file / a module opening itself",
         files: &[
             "module {p}Top\n\n[<RequireQualifiedAccess>]\nmodule M =\n    open M\n    let x = 1\n",
@@ -889,7 +903,22 @@ fn gen_modules(
             }
         }
         previous = Some(name.clone());
-        let trusted = trusted && duplicate.is_none();
+        // Now and then a type shares the module's name, or takes the
+        // `Module`-suffixed name it would compile to as well: FCS rejects the
+        // module in the second case, and the diagnostic declines both.
+        let collision = match t.pick(10) {
+            0 => {
+                out.push_str(&format!("{indent}type {name} = {{ F{counter}: int }}\n\n"));
+                true
+            }
+            1 => {
+                out.push_str(&format!("{indent}type {name}Module = class end\n"));
+                out.push_str(&format!("{indent}type {name} = class end\n\n"));
+                true
+            }
+            _ => false,
+        };
+        let trusted = trusted && duplicate.is_none() && !collision;
         if !attr.is_empty() {
             out.push_str(&format!("{indent}{attr}"));
         }
