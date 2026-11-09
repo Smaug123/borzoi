@@ -155,52 +155,71 @@ pub(super) enum QualifiedRead {
     Miss,
 }
 
+/// One fragment of a container's members at a qualified path `P.C`: what
+/// [`read_fragment`] reads.
+pub(super) struct Fragment<'a> {
+    /// The value-namespace exports at the path — `(handle, access_root_len,
+    /// fold_rank)` — pattern-only ones excluded.
+    pub(super) exports: &'a [(ItemId, Option<usize>, u8)],
+    /// The first union case declared at the path, in source order.
+    pub(super) first_union: Option<UnionCaseEntry>,
+    /// Whether the fragment also declares a member there the walk does not
+    /// model (an `extern`, a value FCS reads first).
+    pub(super) unread: bool,
+    /// Whether the fragment declares a type or module of the name.
+    pub(super) entity: bool,
+}
+
 /// FCS's reading of a container-qualified `P.C` in an expression within one
 /// fragment of `P` (`ResolveExprLongIdentInModuleOrNamespace`): an accessible
 /// value of the name, else an accessible exception, else the case of the
-/// **first** union declaring it.
+/// **first** union declaring it, else a type or module of the name.
 ///
-/// `exports` are the fragment's value-namespace exports at the path —
-/// `(handle, access_root_len, fold_rank)`, pattern-only ones excluded —,
-/// `first_union` the first union case declared there in source order, and
-/// `unread` whether the fragment also declares a member there the walk does
-/// not model (an `extern`, a value FCS reads first): then nothing is certain.
-///
-/// The first union is found without regard to accessibility
-/// (`TryFindTypeWithUnionCase`), so an inaccessible one hides every later
-/// union; FCS then reports it, erroring. A qualified-only first union is read
-/// only after a type or module of the name, and a possible one may not be a
-/// union at all. Each of those declines.
-pub(super) fn read_fragment(
-    exports: &[(ItemId, Option<usize>, u8)],
-    first_union: Option<UnionCaseEntry>,
-    unread: bool,
-    path: &[String],
-    site: &[String],
-) -> QualifiedRead {
-    if unread {
+/// It commits only inside the domain it models, and declines rather than
+/// reading past anything else:
+/// - a member it does not model (`unread`);
+/// - several values beside a member of another kind, or several exceptions
+///   (FS0037 territory, where FCS's recovery is not modelled); values alone
+///   keep the latest accessible one, a public `let x` under a later
+///   `let private x` included;
+/// - a first union it cannot commit as FCS reads it: found without regard to
+///   accessibility (`TryFindTypeWithUnionCase`), so an inaccessible one hides
+///   every later union and FCS reports it erroring; a qualified-only or
+///   undecided one is read only after a type or module of the name; a
+///   possible one may not be a union at all;
+/// - a type or module of the name, which FCS reads once no value, exception
+///   or union case did: the walk commits no type here, and must not read past
+///   it into an older fragment.
+pub(super) fn read_fragment(fragment: &Fragment<'_>, path: &[String], site: &[String]) -> QualifiedRead {
+    if fragment.unread {
         return QualifiedRead::Decline;
     }
     let accessible = |access: Option<usize>| accessible_from(access, path, site);
-    let latest_of_rank = |rank: u8| {
-        exports
-            .iter()
-            .rev()
-            .find(|(_, access, r)| *r == rank && accessible(*access))
-            .map(|(id, _, _)| *id)
-    };
-    if let Some(id) = latest_of_rank(fold_rank(None)) {
-        return QualifiedRead::Commit(id);
+    let of_rank = |rank: u8| fragment.exports.iter().filter(move |(_, _, r)| *r == rank);
+    let values = of_rank(fold_rank(None)).count();
+    let exceptions = of_rank(fold_rank(Some(CaseKind::Exception))).count();
+    let others = exceptions > 0 || fragment.first_union.is_some() || fragment.entity;
+    if values > 1 && others {
+        return QualifiedRead::Decline;
     }
-    if let Some(id) = latest_of_rank(fold_rank(Some(CaseKind::Exception))) {
-        return QualifiedRead::Commit(id);
+    if let Some((id, _, _)) = of_rank(fold_rank(None)).filter(|(_, a, _)| accessible(*a)).last() {
+        return QualifiedRead::Commit(*id);
     }
-    match first_union {
+    if exceptions > 1 {
+        return QualifiedRead::Decline;
+    }
+    if let Some((id, _, _)) = of_rank(fold_rank(Some(CaseKind::Exception)))
+        .find(|(_, a, _)| accessible(*a))
+    {
+        return QualifiedRead::Commit(*id);
+    }
+    match fragment.first_union {
         Some(UnionCaseEntry {
             plain: Some(id),
             access_root_len,
         }) if accessible(access_root_len) => QualifiedRead::Commit(id),
         Some(_) => QualifiedRead::Decline,
+        None if fragment.entity => QualifiedRead::Decline,
         None => QualifiedRead::Miss,
     }
 }
@@ -462,6 +481,10 @@ pub struct ProjectItems {
     /// a value FCS reads first that the walk interns no identity for
     /// ([`Self::qualified_read`] declines its fragment).
     pub(super) unread_member_files: HashMap<Vec<String>, Vec<usize>>,
+    /// Path → the Compile-order file of each earlier-file type or module
+    /// declared there: what a qualified read of the path must not read past
+    /// ([`read_fragment`]).
+    pub(super) entity_files: HashMap<Vec<String>, Vec<usize>>,
     /// Container-qualified path (container + case name) → every union case an
     /// earlier file declares there, qualified-only and possible ones included,
     /// in Compile order and, within a file, declaration order: the order in
@@ -803,12 +826,14 @@ impl ProjectItems {
             .unread_member_files
             .get(path)
             .map_or(&[][..], Vec::as_slice);
+        let entities = self.entity_files.get(path).map_or(&[][..], Vec::as_slice);
         let mut files: Vec<usize> = history
             .iter()
             .filter(|r| !r.pattern_only)
             .map(|r| self.file_of(r.id))
             .chain(unions.iter().map(|u| u.file))
             .chain(unread.iter().copied())
+            .chain(entities.iter().copied())
             .collect();
         files.sort_unstable();
         files.dedup();
@@ -819,7 +844,13 @@ impl ProjectItems {
                 .map(|r| (r.id, r.access_root_len, r.rank))
                 .collect();
             let first_union = unions.iter().find(|u| u.file == file).map(|u| u.entry);
-            match read_fragment(&exports, first_union, unread.contains(&file), path, site) {
+            let fragment = Fragment {
+                exports: &exports,
+                first_union,
+                unread: unread.contains(&file),
+                entity: entities.contains(&file),
+            };
+            match read_fragment(&fragment, path, site) {
                 QualifiedRead::Miss => {}
                 read => return read,
             }
@@ -1617,6 +1648,9 @@ impl ProjectItems {
                 .or_default()
                 .push(file_idx);
         }
+        for path in idx.entities {
+            self.entity_files.entry(path).or_default().push(file_idx);
+        }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
@@ -1787,6 +1821,7 @@ struct FileExportIndices {
     value_exports: Vec<(Vec<String>, ExportRecord)>,
     member_decls: Vec<Vec<String>>,
     unread_members: Vec<Vec<String>>,
+    entities: Vec<Vec<String>>,
     union_cases: Vec<(Vec<String>, UnionCaseEntry)>,
     case_item_ids: Vec<ItemId>,
     attributed_value_ids: Vec<ItemId>,
@@ -2020,6 +2055,7 @@ impl FileExportIndices {
                 },
                 ExportDeclKind::Type { info, auto_open } => {
                     if !anon {
+                        fi.entities.push(decl.path.clone());
                         fi.nested_module_paths.push(decl.path.clone());
                         if let Some((cases_enumerable, slot)) = info {
                             // Signature-restricted: the signature may declare
@@ -2070,6 +2106,7 @@ impl FileExportIndices {
                     private,
                 } => {
                     if !anon {
+                        fi.entities.push(decl.path.clone());
                         if *header {
                             fi.module_headers.push(decl.path.clone());
                         } else {

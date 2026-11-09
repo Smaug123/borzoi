@@ -938,3 +938,27 @@ fn an_undecided_require_qualified_first_union_commits_no_case() {
     crate::union_rqa_attribute_grid::project_probe_agrees(&files, "Lib.C")
         .expect("agrees with FCS");
 }
+
+/// A newer fragment of `namespace N` that declares only a class `C`: FCS
+/// asks it first and reads the class, so the older fragment's unions are
+/// never reached, and the walk commits neither union's case.
+#[test]
+fn a_newer_fragment_with_a_type_of_the_name_hides_older_cases() {
+    let older = "namespace N\n\ntype U1 =\n    | C of int\n    | D\n\ntype U2 =\n    | C\n    | E\n";
+    let newer = "namespace N\n\ntype C() =\n    class\n    end\n";
+    let probe = "module Use\n\nlet probe = N.C\n";
+    let files = [("A.fs", older), ("B.fs", newer), ("Use.fs", probe)];
+    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "N.C")
+        .expect("agrees with FCS");
+}
+
+/// Two exceptions of one name in one module (FS0037): FCS's recovery reads
+/// the first; the walk does not model it and commits neither.
+#[test]
+fn duplicate_exceptions_commit_neither() {
+    let lib = "module A\n\nexception C of int\nexception C of string\n";
+    let probe = "module Use\n\nlet probe = A.C\n";
+    let files = [("A.fs", lib), ("Use.fs", probe)];
+    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "A.C")
+        .expect("agrees with FCS");
+}

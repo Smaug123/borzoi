@@ -2723,7 +2723,24 @@ impl<'a> Resolver<'a> {
             matches!(d.kind, ExportDeclKind::Extern { .. })
                 && d.member_path(&self.items, false).as_deref() == Some(full)
         });
-        super::model::read_fragment(&exports, first_union, unread, full, &self.container_path)
+        // A type or module of the name, which the read must not read past.
+        let entity = decls.iter().any(|d| {
+            !d.anonymous_root
+                && d.path == full
+                && matches!(
+                    d.kind,
+                    ExportDeclKind::Type { .. }
+                        | ExportDeclKind::Module { .. }
+                        | ExportDeclKind::ModuleAbbrev
+                )
+        });
+        let fragment = super::model::Fragment {
+            exports: &exports,
+            first_union,
+            unread,
+            entity,
+        };
+        super::model::read_fragment(&fragment, full, &self.container_path)
     }
 
     /// Record what a qualified expression path `segments` reads, and whether
