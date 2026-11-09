@@ -887,7 +887,7 @@ impl<'src> Parser<'src> {
     /// `outer_cp = Some(checkpoint)` (the `static do` form) reopens the node *at*
     /// the checkpoint so a leading `STATIC_TOK` the caller bumped becomes the
     /// `MEMBER_DO`'s first child; `None` is the plain `do`.
-    fn parse_member_do(&mut self, outer_cp: Option<rowan::Checkpoint>) {
+    fn parse_member_do(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -914,7 +914,7 @@ impl<'src> Parser<'src> {
     /// a record field). The first `bump_into` (`static` / `val`) drains any
     /// leading trivia itself, so no cursor realignment is needed. `None` is the
     /// plain (unattributed) form.
-    pub(super) fn parse_val_field_at(&mut self, outer_cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_val_field_at(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -1014,7 +1014,7 @@ impl<'src> Parser<'src> {
     /// The first `bump_into` (the `[static] member` / `override` / `default`
     /// leading keyword) drains any leading trivia itself, so no cursor realignment
     /// is needed. `None` is the plain (unattributed) form.
-    fn parse_auto_property_at(&mut self, outer_cp: Option<rowan::Checkpoint>) -> bool {
+    fn parse_auto_property_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -1199,7 +1199,7 @@ impl<'src> Parser<'src> {
     /// `SynBinding.attributes`; for a get/set property it duplicates the attribute
     /// onto both accessor bindings). `None` is the plain (unattributed) form.
     /// Mirrors [`Self::parse_let_decl_at`].
-    fn parse_member_defn_at(&mut self, outer_cp: Option<rowan::Checkpoint>) -> bool {
+    fn parse_member_defn_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         let cp = outer_cp.unwrap_or_else(|| self.builder.checkpoint());
         // Leading keyword: `[static] member` (9.7/9.9a), or `override`/`default`
         // (9.10a) — the latter introduce a member with no `member` keyword, the
@@ -1718,7 +1718,7 @@ impl<'src> Parser<'src> {
     /// FCS — so its terminator must not consume a (non-existent) RHS-close
     /// `OBLOCKEND`. The caller threads this into
     /// [`Self::consume_object_model_item_terminator`]'s `has_rhs_block`.
-    fn parse_new_ctor_at(&mut self, outer_cp: Option<rowan::Checkpoint>) -> bool {
+    fn parse_new_ctor_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -1825,7 +1825,7 @@ impl<'src> Parser<'src> {
     /// abstract-slot attribute in `SynValSig.attributes`). `bump_into(ABSTRACT_TOK)`
     /// drains any leading trivia itself, so no cursor realignment is needed. `None`
     /// is the plain (unattributed) form.
-    fn parse_abstract_slot_at(&mut self, outer_cp: Option<rowan::Checkpoint>) {
+    fn parse_abstract_slot_at(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
             Some(cp) => self
                 .builder

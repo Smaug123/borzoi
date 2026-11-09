@@ -17,7 +17,7 @@ impl<'src> Parser<'src> {
             filtered_tokens,
             pos: 0,
             raw_consumed_end: 0,
-            builder: GreenNodeBuilder::new(),
+            builder: TreeBuilder::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
             interp_nest: Vec::new(),
@@ -44,7 +44,7 @@ impl<'src> Parser<'src> {
     /// three are mutually recursive via `(e : T)`, lambda parameters, match
     /// arms). See [`Self::with_depth_bool`] for the `bool`-returning variant.
     pub(super) fn with_depth(&mut self, body: impl FnOnce(&mut Self)) {
-        if self.depth_limit_hit {
+        if self.depth_limit_latched() {
             return;
         }
         self.depth += 1;
@@ -62,7 +62,7 @@ impl<'src> Parser<'src> {
     /// element loops (they also see EOF after the drain, so this is belt and
     /// braces).
     pub(super) fn with_depth_bool(&mut self, body: impl FnOnce(&mut Self) -> bool) -> bool {
-        if self.depth_limit_hit {
+        if self.depth_limit_latched() {
             return false;
         }
         self.depth += 1;
@@ -74,6 +74,20 @@ impl<'src> Parser<'src> {
         };
         self.depth -= 1;
         result
+    }
+
+    /// Whether the depth limit is latched, latching it first if the tree being
+    /// built has reached [`TREE_HEIGHT_STOP`] (see [`MAX_TREE_HEIGHT`]).
+    ///
+    /// Checked wherever the parse can make progress — each recursion chokepoint
+    /// ([`Self::with_depth`]) and each consumed token ([`Self::bump_into`]) —
+    /// because a chain built in a loop grows the tree without recursing: every
+    /// repeat consumes a token, and nothing else bounds how many repeats come.
+    fn depth_limit_latched(&mut self) -> bool {
+        if !self.depth_limit_hit && self.builder.height_if_closed_now() >= TREE_HEIGHT_STOP {
+            self.trigger_depth_limit();
+        }
+        self.depth_limit_hit
     }
 
     /// Record the depth-limit breach (latch + capture the breach span) and drain
@@ -200,11 +214,38 @@ impl<'src> Parser<'src> {
     ///   span, see `Filter::insert_token`). No raw token is consumed; the
     ///   virtual lands as a zero-width green-tree token so its bytes
     ///   aren't double-counted when the next Raw filtered token follows.
+    ///
+    /// A virtual may only be stamped [`SyntaxKind::ERROR`] or its own marker
+    /// kind ([`virtual_marker_kind`]), and a real token never a marker kind.
+    /// The productions gate on the *raw* stream as well as the filtered one, so
+    /// a raw-stream lookahead can approve a `bump_into` while the filtered
+    /// cursor is parked on a layout virtual, which would then land as a
+    /// zero-width real token. [`stamp_mismatch`] catches that whole class here:
+    /// a debug build panics, so the differential suites fail loudly; a release
+    /// build stamps `ERROR` and records the internal error as a parse error,
+    /// keeping the tree lossless and the file marked broken rather than
+    /// handing consumers a zero-width identifier or keyword.
     pub(super) fn bump_into(&mut self, kind: SyntaxKind) {
+        if self.depth_limit_latched() {
+            return;
+        }
         let Some((res, span)) = self.filtered_tokens.get(self.pos).cloned() else {
             return;
         };
         let is_virtual = matches!(&res, Ok(FilteredToken::Virtual(_)));
+        let kind = match stamp_mismatch(&res, kind) {
+            None => kind,
+            Some(message) => {
+                if cfg!(debug_assertions) {
+                    panic!("{message} at {span:?}");
+                }
+                self.errors.push(ParseError {
+                    message: format!("internal parser error: {message}"),
+                    span: span.clone(),
+                });
+                SyntaxKind::ERROR
+            }
+        };
 
         // Virtuals are inserted *just before* the next real filtered token.
         // For LF (`42\n43`) BlockSep is at [3..3) and draining to span.start
@@ -717,5 +758,155 @@ impl<'src> Parser<'src> {
             message: format!("unexpected end of input inside {construct}; expected `{closer}`"),
             span: end..end,
         });
+    }
+}
+
+/// The kind of the zero-width marker token a virtual becomes when the tree
+/// keeps it as a marker; `None` for the virtuals the tree records as a
+/// zero-width [`SyntaxKind::ERROR`] (the layout virtuals, and the relabels
+/// whose backing raw keyword a dedicated emitter takes instead, such as
+/// [`Parser::emit_let_keyword`]). Exhaustive, so a new virtual has to choose.
+fn virtual_marker_kind(virtual_token: &Virtual) -> Option<SyntaxKind> {
+    match virtual_token {
+        Virtual::HighPrecedenceParenApp => Some(SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK),
+        Virtual::HighPrecedenceBrackApp => Some(SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK),
+        Virtual::Let
+        | Virtual::Binder
+        | Virtual::AndBang
+        | Virtual::BlockBegin
+        | Virtual::BlockEnd
+        | Virtual::DeclEnd
+        | Virtual::BlockSep
+        | Virtual::Do
+        | Virtual::DoBang
+        | Virtual::Then
+        | Virtual::Else
+        | Virtual::Fun
+        | Virtual::Function
+        | Virtual::Lazy
+        | Virtual::Assert
+        | Virtual::End
+        | Virtual::With
+        | Virtual::JoinIn
+        | Virtual::InterfaceMember
+        | Virtual::RightBlockEnd
+        | Virtual::HighPrecedenceTyApp => None,
+    }
+}
+
+/// Why stamping `kind` onto the filtered entry `entry` would be wrong, or
+/// `None` when it is right: a virtual takes only `ERROR` or its own
+/// [`virtual_marker_kind`], and a real token never takes a marker kind (it has
+/// width; a marker has none). A lex error takes whatever the production chose.
+fn stamp_mismatch(entry: &Result<FilteredToken<'_>, LexError>, kind: SyntaxKind) -> Option<String> {
+    match entry {
+        Ok(FilteredToken::Virtual(v)) => (kind != SyntaxKind::ERROR
+            && virtual_marker_kind(v) != Some(kind))
+        .then(|| format!("bump_into stamped {kind:?} onto the layout virtual {v:?}")),
+        Ok(FilteredToken::Raw(t)) => matches!(
+            kind,
+            SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK | SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK
+        )
+        .then(|| format!("bump_into stamped the marker kind {kind:?} onto the real token {t:?}")),
+        Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_virtual_takes_only_error_or_its_own_marker_kind() {
+        let virtual_entry = |v| Ok(FilteredToken::Virtual(v));
+        let block_sep = virtual_entry(Virtual::BlockSep);
+        assert_eq!(stamp_mismatch(&block_sep, SyntaxKind::ERROR), None);
+        assert!(stamp_mismatch(&block_sep, SyntaxKind::IDENT_TOK).is_some());
+        assert!(stamp_mismatch(&block_sep, SyntaxKind::SEMI_TOK).is_some());
+        assert!(stamp_mismatch(&block_sep, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK).is_some());
+
+        let paren_app = virtual_entry(Virtual::HighPrecedenceParenApp);
+        assert_eq!(stamp_mismatch(&paren_app, SyntaxKind::ERROR), None);
+        assert_eq!(
+            stamp_mismatch(&paren_app, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK),
+            None
+        );
+        assert!(stamp_mismatch(&paren_app, SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK).is_some());
+
+        let brack_app = virtual_entry(Virtual::HighPrecedenceBrackApp);
+        assert_eq!(
+            stamp_mismatch(&brack_app, SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK),
+            None
+        );
+        assert!(stamp_mismatch(&brack_app, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK).is_some());
+    }
+
+    #[test]
+    fn a_real_token_never_takes_a_marker_kind() {
+        let ident = Ok(FilteredToken::Raw(Token::Ident("a")));
+        assert_eq!(stamp_mismatch(&ident, SyntaxKind::IDENT_TOK), None);
+        assert_eq!(stamp_mismatch(&ident, SyntaxKind::ERROR), None);
+        assert!(stamp_mismatch(&ident, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK).is_some());
+        assert!(stamp_mismatch(&ident, SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK).is_some());
+    }
+
+    /// `a` with an offside block opening at it: the filtered cursor starts on
+    /// the zero-width `OBLOCKBEGIN` while the raw cursor already sees the `a`,
+    /// which is the misalignment the stamp guard exists for.
+    fn parser_parked_on_a_virtual() -> Parser<'static> {
+        let mut parser = Parser::new(
+            "a",
+            vec![(Ok(TriviaToken::Lexed(Token::Ident("a"))), 0..1)],
+            vec![
+                (Ok(FilteredToken::Virtual(Virtual::BlockBegin)), 0..1),
+                (Ok(FilteredToken::Raw(Token::Ident("a"))), 0..1),
+            ],
+        );
+        parser
+            .builder
+            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IMPL_FILE));
+        parser
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "bump_into stamped IDENT_TOK onto the layout virtual BlockBegin")]
+    fn stamping_a_real_kind_onto_a_virtual_panics_in_a_debug_build() {
+        parser_parked_on_a_virtual().bump_into(SyntaxKind::IDENT_TOK);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn stamping_a_real_kind_onto_a_virtual_is_an_error_in_a_release_build() {
+        let mut parser = parser_parked_on_a_virtual();
+        parser.bump_into(SyntaxKind::IDENT_TOK);
+        parser.bump_into(SyntaxKind::IDENT_TOK);
+        parser.builder.finish_node();
+        let root = SyntaxNode::new_root(parser.builder.finish());
+        let kinds: Vec<_> = root
+            .children_with_tokens()
+            .map(|t| (t.kind(), t.to_string()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (SyntaxKind::ERROR, String::new()),
+                (SyntaxKind::IDENT_TOK, "a".to_string())
+            ]
+        );
+        assert_eq!(parser.errors.len(), 1);
+        assert!(
+            parser.errors[0]
+                .message
+                .starts_with("internal parser error: bump_into stamped IDENT_TOK")
+        );
+    }
+
+    #[test]
+    fn stamping_error_onto_a_virtual_is_silent() {
+        let mut parser = parser_parked_on_a_virtual();
+        parser.bump_into(SyntaxKind::ERROR);
+        parser.bump_into(SyntaxKind::IDENT_TOK);
+        assert!(parser.errors.is_empty());
     }
 }

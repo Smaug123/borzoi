@@ -943,7 +943,7 @@ impl<'src> Parser<'src> {
     /// inside tuple/`as` operands — token order no longer matches the tree, and
     /// the climber is required (e.g. `a, b :: c` ⇒ `Tuple[a, ListCons(b,c)]`,
     /// not `ListCons(Tuple[a,b], c)`).
-    pub(super) fn wrap_pat_tail(&mut self, cp: rowan::Checkpoint, ctx: PatCtx) {
+    pub(super) fn wrap_pat_tail(&mut self, cp: Checkpoint, ctx: PatCtx) {
         self.climb_pat_tail(cp, 0, ctx);
     }
 
@@ -1016,7 +1016,7 @@ impl<'src> Parser<'src> {
     /// selects the `: type` arm (all but [`PatCtx::Head`]) and, in
     /// [`Self::emit_pat_atom`], which operands admit a leading `[<…>]` attribute
     /// prefix (`Paren`/`Clause`, never the bare `Head`).
-    pub(super) fn climb_pat_tail(&mut self, cp: rowan::Checkpoint, min_bp: u8, ctx: PatCtx) {
+    pub(super) fn climb_pat_tail(&mut self, cp: Checkpoint, min_bp: u8, ctx: PatCtx) {
         loop {
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::ColonColon) if Self::PAT_BP_CONS >= min_bp => {
@@ -1353,7 +1353,7 @@ impl<'src> Parser<'src> {
     /// pattern. The raw stream still surfaces the `)`, so the inner bails
     /// cleanly — the `ATTRIB_PAT` gets no inner pat, the `)` closes the
     /// delimiter, and `x` survives as the next element / argument.
-    pub(super) fn emit_attrib_pat(&mut self, cp: rowan::Checkpoint, ctx: PatCtx) {
+    pub(super) fn emit_attrib_pat(&mut self, cp: Checkpoint, ctx: PatCtx) {
         self.parse_attribute_lists();
         // FCS's `attributeList` carries a trailing `opt_OBLOCKSEP`, so the
         // attributed pattern may sit on a fresh offside line (`([<A>]⏎  x)`).

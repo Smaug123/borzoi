@@ -97,6 +97,7 @@ mod parser_diff_underscore_pat;
 mod parser_diff_when_constraints;
 mod parser_ifdef;
 mod parser_panic_sweep;
+mod parser_tree_height;
 mod recovery_sweep;
 mod shape_sensitivity;
 

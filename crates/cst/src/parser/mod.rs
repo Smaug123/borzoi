@@ -1,7 +1,7 @@
 //! Hand-written recursive-descent parser over the [`FilteredToken`] stream.
 //!
 //! Per `docs/parser-plan.md`, the parser builds a rowan green tree via
-//! [`GreenNodeBuilder`] and exposes a typed AST in [`crate::syntax`]. Phase 2
+//! [`rowan::GreenNodeBuilder`] (through [`tree_builder::TreeBuilder`]) and exposes a typed AST in [`crate::syntax`]. Phase 2
 //! grows the Phase 1 scaffold (empty file + lone int literal) one literal
 //! form at a time; see the table in `docs/parser-plan.md` for the running
 //! list of supported `SynConst` variants.
@@ -40,7 +40,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use rowan::{GreenNodeBuilder, Language};
+use rowan::Language;
 
 use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia};
 use crate::language_version::LanguageVersion;
@@ -141,6 +141,7 @@ mod numeric;
 mod pat;
 mod sign_fold;
 mod strings;
+mod tree_builder;
 mod types;
 
 use classify::{
@@ -162,6 +163,7 @@ use numeric::{
     validate_xint_int32,
 };
 use pat::PatCtx;
+use tree_builder::{Checkpoint, TreeBuilder};
 
 /// Outcome of a parse. Holds the tree plus diagnostics partitioned by
 /// severity; the tree is always present (errors become [`SyntaxKind::ERROR`]
@@ -475,19 +477,19 @@ fn parse_inner(
         FileKind::Impl => parser.parse_impl_file(),
         FileKind::Sig => parser.parse_sig_file(),
     }
-    // If the recursion-depth guard fired, the parse stopped at the breach and
-    // drained the rest of the input to EOF; the unwinding productions emitted a
-    // cascade of "expected closer" errors against that EOF. Collapse the whole
-    // diagnostic set to the single depth error — the file is pathologically
-    // nested and already an error; one characterised diagnostic is the useful
-    // signal. (The tree stays lossless regardless.)
+    // If the depth guard fired (the recursion bound or the tree-height bound),
+    // the parse stopped at the breach and drained the rest of the input to EOF;
+    // the unwinding productions emitted a cascade of "expected closer" errors
+    // against that EOF. Collapse the whole diagnostic set to the single depth
+    // error — the file is pathologically nested and already an error; one
+    // characterised diagnostic is the useful signal. (The tree stays lossless
+    // regardless.)
     if parser.depth_limit_hit {
         let span = parser.depth_limit_span.clone().unwrap_or(0..source.len());
         return Parse {
             root: SyntaxNode::new_root(parser.builder.finish()),
             errors: vec![ParseError {
-                message: "expression, type, or pattern nesting is too deep; parsing stopped here"
-                    .to_string(),
+                message: "nesting is too deep; parsing stopped here".to_string(),
                 span,
             }],
             warnings: Vec::new(),
@@ -665,7 +667,11 @@ fn tab_diagnostics(source: &str, raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
     for (res, span) in raw_tokens {
+        // The directive-line test scans back to the start of the line, so it
+        // runs only for whitespace that holds a tab; run for every whitespace
+        // token, it would make a long line quadratic.
         if !matches!(res, Ok(TriviaToken::Lexed(Token::Whitespace)))
+            || !bytes[span.clone()].contains(&b'\t')
             || whitespace_on_directive_line(bytes, span.start)
         {
             continue;
@@ -854,7 +860,7 @@ struct Parser<'src> {
     /// [s+1,e)` (LexFilter.fs:2757 `UseShiftedLocation(..., 1, 0)`) — don't
     /// double-count the shared byte and break `text(tree) == source`.
     raw_consumed_end: usize,
-    builder: GreenNodeBuilder<'static>,
+    builder: TreeBuilder,
     errors: Vec<ParseError>,
     /// Warning-severity diagnostics (FCS `warning(...)` cases that leave
     /// `hadErrors` false). Kept separate from `errors` — see [`Parse`].
@@ -889,7 +895,8 @@ struct Parser<'src> {
     /// process — it does not unwind, so the LSP's `catch_unwind` parser wrapper
     /// could not recover from it). See [`MAX_PARSE_DEPTH`].
     depth: u32,
-    /// Latched once [`MAX_PARSE_DEPTH`] is breached. While set, every guarded
+    /// Latched once [`MAX_PARSE_DEPTH`] is breached or the tree reaches
+    /// [`TREE_HEIGHT_STOP`]. While set, every guarded
     /// entry is a no-op: the breach drained the remaining input to EOF (so the
     /// productions' token loops terminate), and the unwinding parse must not do
     /// further work or re-trigger.
@@ -912,6 +919,35 @@ struct Parser<'src> {
 /// such files are absent from the FCS differential corpus entirely and this
 /// bound introduces no comparison regression.
 const MAX_PARSE_DEPTH: u32 = 512;
+
+/// The tallest tree any parse returns: no root-to-leaf path holds more than
+/// this many nodes.
+///
+/// [`MAX_PARSE_DEPTH`] bounds the parser's recursion, which does not bound the
+/// tree: application chains (`f a a a`), left-associative operator chains,
+/// postfix type applications (`int list list`) and the like are built in a
+/// loop, one wrapping node per repeat, so they are as deep as they are long.
+/// rowan frees a green tree recursively, so dropping a tall enough one
+/// overflows the stack and aborts the process, which `catch_unwind` cannot
+/// catch; any consumer walking the tree recursively has the same exposure.
+/// The parser therefore also stops, with the depth-limit diagnostic, once the
+/// tree it is building reaches [`TREE_HEIGHT_STOP`].
+///
+/// Calibration, all in a debug build: rowan drops a 4 000-node-deep tree on a
+/// 2 MiB stack (a Rust thread's default) and overflows by 8 000, but the
+/// tighter limit is `borzoi-sema`'s recursive walk, on the LSP's 8 MiB main
+/// thread: it resolves a 1 000-deep operator chain and overflows by 1 300. The
+/// tallest tree in the pinned F# corpus that parses cleanly is 259 nodes deep;
+/// the tallest of all is 666, in a file the recursion guard already stops.
+pub const MAX_TREE_HEIGHT: usize = 1024;
+
+/// The tree height at which the parser stops (see [`MAX_TREE_HEIGHT`]). It is
+/// measured as [`TreeBuilder::height_if_closed_now`], which already counts the
+/// open nodes the unwinding productions go on to close; the margin covers the
+/// few nodes those productions add on the way out.
+/// `tests/all/parser_tree_height.rs` checks the guarantee over the grammar's
+/// repetition forms.
+const TREE_HEIGHT_STOP: usize = MAX_TREE_HEIGHT - 64;
 
 #[cfg(test)]
 mod tests;

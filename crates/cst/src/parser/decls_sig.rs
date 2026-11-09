@@ -34,7 +34,7 @@ impl<'src> Parser<'src> {
     /// the `VAL_DECL` is opened *at* that checkpoint so the attribute lists
     /// become its leading children (FCS homes them in `SynValSig.attributes`).
     /// `None` is the plain (unattributed) form.
-    pub(super) fn parse_val_sig_decl_at(&mut self, outer_cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_val_sig_decl_at(&mut self, outer_cp: Option<Checkpoint>) {
         // Keep leading trivia/comments as a sibling of VAL_DECL, matching the
         // convention in `parse_open_decl` / `parse_module_decl` / `parse_let_decl_at`
         // — at file start or after a same-line `;` separator there is no layout
@@ -230,7 +230,7 @@ impl<'src> Parser<'src> {
     /// `TYPE_DEFN` (FCS homes them in the `SynTypeDefnSig`'s
     /// `SynComponentInfo.attributes`). Mirrors the impl-side
     /// [`Self::parse_type_defn_at`]. `None` is the plain (unattributed) form.
-    pub(super) fn parse_sig_type_defn_at(&mut self, cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_sig_type_defn_at(&mut self, cp: Option<Checkpoint>) {
         let (kw, type_span) = self
             .next_non_trivia_raw_at_pos_with_span()
             .expect("caller verified a swallowed `type`");
@@ -1421,7 +1421,7 @@ impl<'src> Parser<'src> {
     /// (mirrors the impl-side `has_rhs_block`).
     pub(super) fn parse_member_sig_at(
         &mut self,
-        cp: Option<rowan::Checkpoint>,
+        cp: Option<Checkpoint>,
         allow_literal: bool,
     ) -> bool {
         match cp {

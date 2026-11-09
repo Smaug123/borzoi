@@ -71,7 +71,7 @@ impl<'src> Parser<'src> {
     /// (FCS attaches a type-header attribute to the first definition's
     /// `SynComponentInfo.attributes`; an `and`-chained definition carries its
     /// own, here always empty). Mirrors [`Self::parse_let_decl_at`].
-    pub(super) fn parse_type_defn_at(&mut self, cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_type_defn_at(&mut self, cp: Option<Checkpoint>) {
         let (kw, type_span) = self
             .next_non_trivia_raw_at_pos_with_span()
             .expect("caller verified a swallowed `type`");

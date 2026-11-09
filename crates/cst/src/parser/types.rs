@@ -568,7 +568,7 @@ impl<'src> Parser<'src> {
     ///
     /// `cp` is the builder checkpoint taken *before* the type, so the shorthand's
     /// node can wrap what it parses.
-    fn parse_app_type_without_null_at(&mut self, cp: rowan::Checkpoint) -> bool {
+    fn parse_app_type_without_null_at(&mut self, cp: Checkpoint) -> bool {
         let Some(head) = self.peek_is_bare_subtype_shorthand() else {
             self.parse_app_type();
             return false;
@@ -928,7 +928,7 @@ impl<'src> Parser<'src> {
     /// The facade [`IntersectionType::typar`](crate::syntax::IntersectionType)
     /// recovers it, so the parser stores the head as a plain first child either
     /// way.
-    fn parse_intersection_tail(&mut self, cp: rowan::Checkpoint) {
+    fn parse_intersection_tail(&mut self, cp: Checkpoint) {
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::INTERSECTION_TYPE));
         self.parse_intersection_constraint_run();
@@ -1995,7 +1995,7 @@ impl<'src> Parser<'src> {
     /// `appTypeConPower` — only the former admits a `typeArgsNoHpaDeprecated`
     /// wrap (`pars.fsy:6596`) — use this to suppress the type-arg block after
     /// a power.
-    pub(super) fn try_parse_measure_power_tail(&mut self, cp: rowan::Checkpoint) -> bool {
+    pub(super) fn try_parse_measure_power_tail(&mut self, cp: Checkpoint) -> bool {
         if !self
             .next_non_trivia_raw_at_pos()
             .is_some_and(|t| matches!(t, Token::Op("^" | "^-")))

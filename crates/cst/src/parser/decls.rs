@@ -2129,11 +2129,7 @@ impl<'src> Parser<'src> {
     /// drops the whole decl in a `.fsi` (unlike `.fs`, where `module rec X` is
     /// valid). The node kinds (`NESTED_MODULE_DECL` / `MODULE_ABBREV_DECL`) are
     /// shared with the impl side — the sig variants reuse the same nodes.
-    pub(super) fn parse_nested_module_decl_at(
-        &mut self,
-        outer_cp: Option<rowan::Checkpoint>,
-        sig: bool,
-    ) {
+    pub(super) fn parse_nested_module_decl_at(&mut self, outer_cp: Option<Checkpoint>, sig: bool) {
         // `outer_cp` is the attributed entry (the dispatch parses ≥1 attribute
         // list before it), so it doubles as the "has header attributes" flag —
         // captured here before it is consumed into `cp` below.
@@ -2353,14 +2349,19 @@ impl<'src> Parser<'src> {
         } else if sig {
             // Signature nested-module body — the sig decl loop, terminating at
             // the body-closing `OBLOCKEND` (phase 10.13b), or — when
-            // `begin_delimited` — at the verbose `end`.
-            self.parse_sig_module_decls(BodyScope::Nested, false, begin_delimited);
+            // `begin_delimited` — at the verbose `end`. A recursion chokepoint,
+            // like the expression ones: modules nest without bound.
+            self.with_depth(|p| {
+                p.parse_sig_module_decls(BodyScope::Nested, false, begin_delimited);
+            });
         } else {
             // Nested-module body — the shared loop, terminating at the
             // body-closing `OBLOCKEND` (or the verbose `end`). A nested body has
             // no file-level `module`/`namespace` header, so `header_present` is
-            // `false`.
-            self.parse_module_decls(BodyScope::Nested, false, begin_delimited);
+            // `false`. A recursion chokepoint, as above.
+            self.with_depth(|p| {
+                p.parse_module_decls(BodyScope::Nested, false, begin_delimited);
+            });
         }
 
         // An abbreviation body that did not close at the long-ident
