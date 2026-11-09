@@ -23,11 +23,15 @@
 //! grid cannot pass by declining everything.
 
 use crate::common::{
-    fsharp_core_env, invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file,
+    ensure_case_pattern_autoopen_fixture_built, fsharp_core_bytes, fsharp_core_env,
+    invoke_fcs_dump_project, invoke_fcs_dump_project_with_refs, parse_fcs_uses_project,
+    temp_fs_file, temp_fs_tree,
 };
+use crate::resolve_signatures::project;
+use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{Resolution, resolve_project};
+use borzoi_sema::{AssemblyEnv, Resolution, resolve_project, resolve_project_files};
 use rowan::TextRange;
 
 fn impl_file(src: &str) -> ImplFile {
@@ -154,25 +158,34 @@ fn our_target(
 }
 
 fn check(cell: &Cell<'_>) {
-    let written: Vec<(std::path::PathBuf, String)> = cell
-        .files
-        .iter()
-        .enumerate()
-        .map(|(i, src)| {
-            (
-                temp_fs_file(&format!("dupcase_{}_{i}", cell.name), src),
-                (*src).to_string(),
-            )
-        })
+    let names: Vec<String> = (0..cell.files.len())
+        .map(|i| format!("File{i}.fs"))
         .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    check_with(cell, &names, &[], fsharp_core_env());
+}
+
+/// [`check`], with each file under the given name (a headerless file's
+/// implicit module is its name), FCS referencing `refs` and our side
+/// resolving over `env`, which should hold the same assemblies.
+fn check_with(cell: &Cell<'_>, names: &[&str], refs: &[&std::path::Path], env: &AssemblyEnv) {
+    assert_eq!(
+        names.len(),
+        cell.files.len(),
+        "{}: one name per file",
+        cell.name
+    );
+    let rows: Vec<(&str, &str)> = names
+        .iter()
+        .copied()
+        .zip(cell.files.iter().copied())
+        .collect();
+    let (root, written) = temp_fs_tree(&format!("dupcase_{}", cell.name), &rows);
     let paths: Vec<&std::path::Path> = written.iter().map(|(p, _)| p.as_path()).collect();
-    let json = invoke_fcs_dump_project(&paths);
+    let json = invoke_fcs_dump_project_with_refs(&paths, refs);
     let fcs_files = parse_fcs_uses_project(&json, &written);
-    let asts: Vec<ImplFile> = written.iter().map(|(_, src)| impl_file(src)).collect();
-    let proj = resolve_project(&asts, fsharp_core_env());
-    for (p, _) in &written {
-        let _ = std::fs::remove_file(p);
-    }
+    let proj = resolve_project_files(&project(&rows), env);
+    let _ = std::fs::remove_dir_all(&root);
 
     let file_index = |path: &std::path::Path| {
         written
@@ -489,6 +502,49 @@ fn type_qualified_case_named_like_an_implicitly_opened_module_member() {
         errors_expected: false,
         pins: &[no_commit(at(1, "Option.map", 0))],
     });
+}
+
+#[test]
+fn type_qualified_case_named_like_an_implicit_filename_module() {
+    // A headerless earlier file is the implicit module `U`, searched before
+    // the opened project type: `U.A` is that file's value.
+    let cell = Cell {
+        name: "implicit_filename_module_namesake",
+        files: &[
+            "module Lib\ntype U = A | B\n",
+            "let A = 42\n",
+            "module Use\nopen Lib\nlet x = U.A\n",
+        ],
+        errors_expected: false,
+        pins: &[no_commit(at(2, "U.A", 0))],
+    };
+    check_with(
+        &cell,
+        &["Lib.fs", "U.fsx", "Use.fs"],
+        &[],
+        fsharp_core_env(),
+    );
+}
+
+#[test]
+fn type_qualified_case_named_like_a_retained_auto_open_module() {
+    // A referenced assembly's manifest `AutoOpen` brings `module Shade` into
+    // bare scope, searched before the opened project type.
+    let fixture = ensure_case_pattern_autoopen_fixture_built();
+    let view = Ecma335Assembly::parse(&std::fs::read(fixture).expect("read fixture"))
+        .expect("parse fixture");
+    let core = Ecma335Assembly::parse(fsharp_core_bytes()).expect("parse FSharp.Core");
+    let env = AssemblyEnv::from_views(&[core, view]).expect("build AssemblyEnv");
+    let cell = Cell {
+        name: "retained_auto_open_namesake",
+        files: &[
+            "module Lib\ntype Shade = A | B\n",
+            "module Use\nopen Lib\nlet x = Shade.A\n",
+        ],
+        errors_expected: false,
+        pins: &[no_commit(at(1, "Shade.A", 0))],
+    };
+    check_with(&cell, &["Lib.fs", "Use.fs"], &[fixture], &env);
 }
 
 #[test]
