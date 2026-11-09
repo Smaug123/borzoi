@@ -958,11 +958,13 @@ jobs:
         # generated `cref` differential and the generated-program properties
         # run deep here (the normal suite runs a few dozen cases each): the
         # generated-program module's `deep_*` twins, in the module and its
-        # families, are its only ignored tests.
+        # families, are its only ignored tests. The type-ID differential's
+        # generated metadata runs deep here too.
         run: |
           nix develop --command cargo test -p borzoi --test all -- --ignored --nocapture \
             xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ \
-            xml_doc_inheritdoc_generated_diff:: xml_doc_inheritdoc_metadata_diff::deep_
+            xml_doc_inheritdoc_generated_diff:: xml_doc_inheritdoc_metadata_diff::deep_ \
+            xml_doc_type_id_diff::deep_
 
       - name: Report the slowest tests
         if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}

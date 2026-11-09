@@ -1021,6 +1021,18 @@ pub struct Entity {
     /// suffix as an arity.
     #[cfg_attr(feature = "serde", serde(default))]
     pub metadata_name: Option<String>,
+    /// The F# compiled name of an entity no `TypeDef` row stands behind — an
+    /// abbreviation or exception-abbreviation marker — exactly as the signature
+    /// pickle records it: the `[<CompiledName>]` string verbatim (``Alias`3``),
+    /// else the logical name (``Pair`1``). fsc keys the entity's documentation
+    /// by it (`XmlDocSigOfTycon`), and nothing else spells it: [`Self::name`]
+    /// strips its suffix, and a `[<CompiledName>]` suffix need not count the
+    /// type parameters.
+    ///
+    /// `None` for an entity read from a row, whose compiled name is
+    /// [`Self::metadata_name`]; at most one of the two is `Some`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub marker_compiled_name: Option<String>,
     /// `true` when the entity carries
     /// `[Microsoft.FSharp.Core.NoEqualityAttribute]`. F# emits this to
     /// suppress the auto-derived `Equals` / `GetHashCode` (and the
@@ -1262,6 +1274,20 @@ impl Entity {
     /// stand for it.
     pub fn metadata_arity_suffix(&self) -> Option<usize> {
         crate::ecma335_assembly::metadata_arity_suffix(self.metadata_name.as_deref()?)
+    }
+
+    /// The name this entity compiles to: its row's [`Self::metadata_name`], or
+    /// a marker's [`Self::marker_compiled_name`]. `None` when neither is known.
+    pub fn compiled_name(&self) -> Option<&str> {
+        debug_assert!(
+            self.metadata_name.is_none() || self.marker_compiled_name.is_none(),
+            "an entity is a row or a marker, not both: {:?} / {:?}",
+            self.metadata_name,
+            self.marker_compiled_name
+        );
+        self.metadata_name
+            .as_deref()
+            .or(self.marker_compiled_name.as_deref())
     }
 }
 

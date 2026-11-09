@@ -22,7 +22,9 @@
 //! its siblings on [`crate::Property`] and [`crate::Event`]). Where a member
 //! carries one, its ID *is* that string; everything else is computed, and a
 //! *member* ID computed for an F#-compiled assembly may be another member's key
-//! — see [`DocIdDialect`]. A type's ID is its compiled name under both.
+//! — see [`DocIdDialect`]. A type's ID is its compiled name under both, except
+//! where the name's arity suffix does not count the type's parameters
+//! ([`type_segment`]).
 //!
 //! This module is the *generation* half: a pure [`Entity`]/[`Member`] →
 //! ID-string function. Finding, parsing and rendering the `.xml` for hover is
@@ -39,10 +41,11 @@
 //!   event — except that an F# record's instance fields and an F# module's
 //!   literals key `P:`, as fsc keys them.
 //! - **Type full name**: namespace segments and the enclosing-type chain joined
-//!   with `.` (never `+`), each type segment keeping its `` `n `` arity suffix.
-//!   The arity on a segment counts the generic parameters *introduced at that
-//!   level* — a nested type subtracts its encloser's cumulative arity (so
-//!   `Dictionary`2.Enumerator`, not `Dictionary`2.Enumerator`2`).
+//!   with `.` (never `+`), each type segment its row's name, `` `n `` suffix
+//!   and all ([`type_segment`]). Where that suffix does not count the
+//!   parameters the type introduces — a nested type introduces its cumulative
+//!   arity less its encloser's (`Dictionary`2.Enumerator` introduces none) —
+//!   Roslyn appends the count and fsc does not.
 //! - **Union cases**: `T:<union>.<case>` for each case
 //!   [`Entity::union_cases`] knows ([`union_case_doc_id`]).
 //! - **Member name**: `.` becomes `#`, so `.ctor` → `#ctor`; an explicit
@@ -101,7 +104,9 @@ use crate::model::{
 /// so the computed ID of one member can be the F# compiler's ID of another, and
 /// the doc file's entry under it belongs to that other member. A *type*'s ID is
 /// its compiled full name under both (`XmlDocSigOfTycon` builds it from the
-/// compiled path), so only member IDs depend on the dialect.
+/// compiled path) wherever the name's arity suffix counts the type's
+/// parameters, which is everywhere C# writes; elsewhere Roslyn appends the
+/// count ([`type_segment`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DocIdDialect {
@@ -139,16 +144,25 @@ impl TypeDocName {
     }
 }
 
-/// Compute a type's [`TypeDocName`]. `enclosing` is `None` for a top-level type
-/// — its name is prefixed by its [`Entity::namespace`] — or `Some(parent)` for
-/// a nested type, whose name is prefixed by the enclosing type's full name and
-/// whose own arity is its cumulative arity minus the encloser's.
+/// Compute a type's [`TypeDocName`] as the doc file of `dialect` spells it.
+/// `enclosing` is `None` for a top-level type — its name is prefixed by its
+/// [`Entity::namespace`] — or `Some(parent)` for a nested type, whose name is
+/// prefixed by the enclosing type's full name (computed in the same dialect)
+/// and whose own arity is its cumulative arity minus the encloser's.
+///
+/// The segment a type contributes is its compiled name ([`type_segment`]), so
+/// `None` when the entity has none ([`Entity::compiled_name`]), or when
+/// `dialect` keys only rows and the entity is a marker.
 ///
 /// To enumerate a whole subtree (top-level type, then its nested types, then
 /// theirs) thread the returned value down as the `enclosing` of each child;
 /// [`walk_doc_ids`] does exactly that.
-pub fn type_doc_name(entity: &Entity, enclosing: Option<&TypeDocName>) -> TypeDocName {
-    let cumulative_arity = entity.generic_parameters.len();
+pub fn type_doc_name(
+    entity: &Entity,
+    enclosing: Option<&TypeDocName>,
+    dialect: DocIdDialect,
+) -> Option<TypeDocName> {
+    let listed = entity.generic_parameters.len();
     let (prefix, parent_arity) = match enclosing {
         Some(parent) => (parent.full.clone(), parent.cumulative_arity),
         // A top-level type's namespace is its prefix; the global namespace ([])
@@ -156,24 +170,61 @@ pub fn type_doc_name(entity: &Entity, enclosing: Option<&TypeDocName>) -> TypeDo
         None => (entity.namespace.join("."), 0),
     };
     // A nested type's metadata generic-parameter list repeats every enclosing
-    // type's parameters, so its *own* arity — the count the `` `n `` name suffix
-    // encodes — is the difference. `saturating_sub` keeps malformed metadata
-    // (a child with fewer parameters than its parent) from panicking.
-    let own_arity = cumulative_arity.saturating_sub(parent_arity);
-    let mut name = demangle_segment(&entity.name).to_string();
-    if own_arity > 0 {
-        name.push('`');
-        name.push_str(&own_arity.to_string());
-    }
+    // type's parameters, so its *own* arity — the count Roslyn's `` `n ``
+    // encodes — is the difference. A malformed row listing no more than its
+    // encloser introduces none. What the types nested in it subtract is
+    // Roslyn's `MetadataArity` of it: the count it lists
+    // (`PENamedTypeSymbolGeneric`), or its encloser's when it lists none
+    // (`PENamedTypeSymbolNonGeneric`).
+    let own_arity = listed.saturating_sub(parent_arity);
+    let cumulative_arity = if listed == 0 { parent_arity } else { listed };
+    let name = type_segment(entity, own_arity, dialect)?;
     let full = if prefix.is_empty() {
         name
     } else {
         format!("{prefix}.{name}")
     };
-    TypeDocName {
+    Some(TypeDocName {
         full,
         cumulative_arity,
         kind: entity.kind,
+    })
+}
+
+/// The segment a type contributes to its documentation comment ID, in
+/// `dialect`, given the number of type parameters it introduces.
+///
+/// - **F#** (`XmlDocSigOfTycon [ptext; tc.CompiledName]`): the compiled name
+///   verbatim — the `[<CompiledName>]` string, or the logical name, which for
+///   a generic type already carries `` `n ``. That is the row's own name
+///   ([`Entity::metadata_name`]: IlxGen names the row by it), or for a marker
+///   the pickled one ([`Entity::marker_compiled_name`]). The suffix is the
+///   name's, whatever the type parameters number: a one-parameter
+///   ``[<CompiledName("Dropped`2")>] type Squatter<'T>`` keys ``Dropped`2``, and
+///   a generic `[<CompiledName("Bare")>]` keys `Bare`.
+/// - **Metadata** (Roslyn's `DocumentationCommentIDVisitor`): the symbol's
+///   name, then `` `n `` for its arity `n` when `n > 0`. A metadata type's name
+///   is its row's name with a suffix stripped only when that suffix is
+///   canonical and equals `n` (`PENamedTypeSymbol`, through
+///   `MetadataHelpers.UnmangleMetadataNameForArity`), and kept whole otherwise.
+///   So the row's name verbatim when it introduces no parameters or its suffix
+///   counts them, and the name with `` `n `` appended when not (``Dropped`2``
+///   on one parameter keys ``Dropped`2`1``). A marker has no row, so Roslyn
+///   has no symbol for it: `None`.
+///
+/// The two agree wherever the row's suffix counts its parameters, which is
+/// every type C# writes.
+pub fn type_segment(entity: &Entity, own_arity: usize, dialect: DocIdDialect) -> Option<String> {
+    match dialect {
+        DocIdDialect::FSharp => entity.compiled_name().map(str::to_string),
+        DocIdDialect::Metadata => {
+            let name = entity.metadata_name.as_deref()?;
+            if own_arity == 0 || entity.metadata_arity_suffix() == Some(own_arity) {
+                Some(name.to_string())
+            } else {
+                Some(format!("{name}`{own_arity}"))
+            }
+        }
     }
 }
 
@@ -285,11 +336,20 @@ fn computed_member_doc_id(decl: &TypeDocName, member: &Member) -> String {
 }
 
 /// Visit the documentation comment ID of `entity` and of each of its members,
-/// then recurse into its nested types. `enclosing` is the entity's enclosing
-/// [`TypeDocName`] (`None` at a top level). The IDs arrive in no guaranteed
-/// order; callers that need a set should collect into one.
-pub fn walk_doc_ids(entity: &Entity, enclosing: Option<&TypeDocName>, f: &mut impl FnMut(String)) {
-    let decl = type_doc_name(entity, enclosing);
+/// then recurse into its nested types, as the doc file of `dialect` keys them.
+/// `enclosing` is the entity's enclosing [`TypeDocName`] (`None` at a top
+/// level). An entity [`type_doc_name`] cannot name contributes nothing, nor
+/// does anything beneath it. The IDs arrive in no guaranteed order; callers
+/// that need a set should collect into one.
+pub fn walk_doc_ids(
+    entity: &Entity,
+    enclosing: Option<&TypeDocName>,
+    dialect: DocIdDialect,
+    f: &mut impl FnMut(String),
+) {
+    let Some(decl) = type_doc_name(entity, enclosing, dialect) else {
+        return;
+    };
     f(decl.type_id());
     for member in &entity.members {
         for id in member_doc_ids(&decl, member) {
@@ -307,7 +367,7 @@ pub fn walk_doc_ids(entity: &Entity, enclosing: Option<&TypeDocName>, f: &mut im
         }
     }
     for nested in &entity.nested_types {
-        walk_doc_ids(nested, Some(&decl), f);
+        walk_doc_ids(nested, Some(&decl), dialect, f);
     }
 }
 
@@ -868,7 +928,9 @@ mod tests {
         }
     }
 
-    /// A type entity with `arity` (dummy) generic parameters and no members.
+    /// A type entity with `arity` (dummy) generic parameters and no members,
+    /// read from a row named as C# names a top-level type: `name`, suffixed
+    /// with `` `arity `` when it is generic.
     fn ent(namespace: &[&str], name: &str, arity: usize) -> Entity {
         Entity {
             extension_member_names: Vec::new(),
@@ -894,7 +956,12 @@ mod tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
-            metadata_name: Some(name.to_string()),
+            metadata_name: Some(if arity == 0 {
+                name.to_string()
+            } else {
+                format!("{name}`{arity}")
+            }),
+            marker_compiled_name: None,
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -915,7 +982,7 @@ mod tests {
     }
 
     fn decl(namespace: &[&str], name: &str, arity: usize) -> TypeDocName {
-        type_doc_name(&ent(namespace, name, arity), None)
+        type_doc_name(&ent(namespace, name, arity), None, DocIdDialect::Metadata).unwrap()
     }
 
     fn prim(p: Primitive) -> TypeRef {
@@ -1119,7 +1186,9 @@ mod tests {
         // of its own, but inherits both of the encloser's, so its name carries
         // no `` `n `` despite a cumulative arity of 2.
         let outer = decl(&["System", "Collections", "Generic"], "Dictionary", 2);
-        let inner = type_doc_name(&ent(&[], "Enumerator", 2), Some(&outer));
+        let mut enumerator = ent(&[], "Enumerator", 2);
+        enumerator.metadata_name = Some("Enumerator".into());
+        let inner = type_doc_name(&enumerator, Some(&outer), DocIdDialect::Metadata).unwrap();
         assert_eq!(
             inner.type_id(),
             "T:System.Collections.Generic.Dictionary`2.Enumerator"
@@ -1130,8 +1199,208 @@ mod tests {
     fn nested_generic_type_uses_own_arity() {
         // `Box`1.Inner`1` — Inner inherits Box's one parameter and adds one.
         let outer = decl(&["N"], "Box", 1);
-        let inner = type_doc_name(&ent(&[], "Inner", 2), Some(&outer));
+        let mut inner = ent(&[], "Inner", 2);
+        inner.metadata_name = Some("Inner`1".into());
+        let inner = type_doc_name(&inner, Some(&outer), DocIdDialect::Metadata).unwrap();
         assert_eq!(inner.type_id(), "T:N.Box`1.Inner`1");
+    }
+
+    #[test]
+    fn a_row_listing_fewer_than_its_encloser_carries_the_enclosers() {
+        // Malformed: `X` lists none of `W`1`'s parameter, `Y` one. Roslyn
+        // reads `X` as carrying `W`1`'s one, so `Y` introduces none.
+        let outer = decl(&["N"], "W", 1);
+        let mut x = ent(&[], "X", 0);
+        x.metadata_name = Some("X".into());
+        let x = type_doc_name(&x, Some(&outer), DocIdDialect::Metadata).unwrap();
+        assert_eq!(x.type_id(), "T:N.W`1.X");
+        let mut y = ent(&[], "Y", 1);
+        y.metadata_name = Some("Y".into());
+        let y = type_doc_name(&y, Some(&x), DocIdDialect::Metadata).unwrap();
+        assert_eq!(y.type_id(), "T:N.W`1.X.Y");
+    }
+
+    #[test]
+    fn a_row_listing_some_parameters_carries_its_own_count() {
+        // Malformed: `Z` lists one parameter inside the two-parameter
+        // ``W`1.X`1``, so introduces none, but a type nested in it subtracts
+        // the one it lists, not the encloser's two.
+        let w = decl(&["N"], "W", 1);
+        let mut x = ent(&[], "X", 2);
+        x.metadata_name = Some("X`1".into());
+        let x = type_doc_name(&x, Some(&w), DocIdDialect::Metadata).unwrap();
+        let mut z = ent(&[], "Z", 1);
+        z.metadata_name = Some("Z".into());
+        let z = type_doc_name(&z, Some(&x), DocIdDialect::Metadata).unwrap();
+        assert_eq!(z.type_id(), "T:N.W`1.X`1.Z");
+        let mut q = ent(&[], "Q", 2);
+        q.metadata_name = Some("Q`1".into());
+        let q = type_doc_name(&q, Some(&z), DocIdDialect::Metadata).unwrap();
+        assert_eq!(q.type_id(), "T:N.W`1.X`1.Z.Q`1");
+    }
+
+    // ------------------------- suffixes the name owns -------------------------
+
+    /// A row named `row` with `arity` type parameters, under `N`.
+    fn row(row: &str, arity: usize) -> Entity {
+        let mut e = ent(&["N"], "unused", arity);
+        e.name = crate::ecma335_assembly::strip_arity(row).to_string();
+        e.metadata_name = Some(row.to_string());
+        e
+    }
+
+    fn id_in(e: &Entity, dialect: DocIdDialect) -> Option<String> {
+        type_doc_name(e, None, dialect).map(|d| d.type_id())
+    }
+
+    #[test]
+    fn fsharp_keys_a_type_by_its_compiled_name_verbatim() {
+        // fsc's own XML (`XmlDocSigOfTycon [ptext; tc.CompiledName]`), read
+        // off real output: `[<CompiledName("Dropped`2")>] type Squatter<'T>`
+        // keys ``Dropped`2``, not the ``Dropped`1`` of a one-parameter
+        // `Dropped<'T>`; a generic `[<CompiledName("Bare")>]` keys `Bare`.
+        for (name, arity) in [
+            ("Dropped`2", 1),
+            ("Bare", 1),
+            ("Suffixed`3", 0),
+            ("Zero`0", 0),
+            ("Box`1", 1),
+        ] {
+            assert_eq!(
+                id_in(&row(name, arity), DocIdDialect::FSharp),
+                Some(format!("T:N.{name}")),
+                "{name} with {arity}"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_appends_the_arity_a_suffix_does_not_count() {
+        // Roslyn strips a suffix only when it is canonical and counts the
+        // type's own parameters, and otherwise appends the count to the whole
+        // name.
+        for (name, arity, id) in [
+            ("Dropped`2", 1, "T:N.Dropped`2`1"),
+            ("Bare", 1, "T:N.Bare`1"),
+            ("Box`01", 1, "T:N.Box`01`1"),
+            ("Suffixed`3", 0, "T:N.Suffixed`3"),
+            ("Zero`0", 0, "T:N.Zero`0"),
+            ("Box`1", 1, "T:N.Box`1"),
+        ] {
+            assert_eq!(
+                id_in(&row(name, arity), DocIdDialect::Metadata).as_deref(),
+                Some(id),
+                "{name} with {arity}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_marker_keys_by_its_pickled_compiled_name_in_fsharp_only() {
+        // `[<CompiledName("Alias`3")>] type Aliased<'a> = 'a list`: no row, so
+        // no Roslyn symbol; fsc keys it by the compiled name.
+        let mut marker = ent(&["N"], "Alias", 1);
+        marker.kind = EntityKind::Abbreviation;
+        marker.metadata_name = None;
+        marker.marker_compiled_name = Some("Alias`3".into());
+        assert_eq!(
+            id_in(&marker, DocIdDialect::FSharp).as_deref(),
+            Some("T:N.Alias`3")
+        );
+        assert_eq!(id_in(&marker, DocIdDialect::Metadata), None);
+        // An entity with no compiled name has no ID in either dialect.
+        marker.marker_compiled_name = None;
+        assert_eq!(id_in(&marker, DocIdDialect::FSharp), None);
+    }
+
+    mod suffix_properties {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A row name built so that its stripped forms collide: one of two
+        /// stems, then no suffix or one of the suffixes metadata can carry
+        /// (canonical, non-canonical, empty).
+        fn row_name() -> impl Strategy<Value = String> {
+            (
+                prop::sample::select(vec!["U", "Dropped"]),
+                prop::sample::select(vec!["", "`0", "`1", "`2", "`01", "`", "`x"]),
+            )
+                .prop_map(|(stem, suffix)| format!("{stem}{suffix}"))
+        }
+
+        /// Rows nested in a parent of `parent` parameters: name, cumulative
+        /// arity.
+        fn rows() -> impl Strategy<Value = (usize, Vec<(String, usize)>)> {
+            (
+                0usize..3,
+                prop::collection::vec((row_name(), 0usize..5), 1..8),
+            )
+        }
+
+        /// The ID of each distinctly named row, nested in a row `P` of
+        /// `parent_arity` parameters whose suffix counts them.
+        fn ids(
+            parent_arity: usize,
+            rows: &[(String, usize)],
+            dialect: DocIdDialect,
+        ) -> Vec<(String, Option<String>)> {
+            let parent = ent(&["N"], "P", parent_arity);
+            let outer = type_doc_name(&parent, None, dialect).expect("a row has a name");
+            let mut seen = BTreeSet::new();
+            rows.iter()
+                .filter(|(name, _)| seen.insert(name.clone()))
+                .map(|(name, cumulative)| {
+                    let mut e = row(name, *cumulative);
+                    e.namespace = Vec::new();
+                    let id = type_doc_name(&e, Some(&outer), dialect).map(|d| d.type_id());
+                    (name.clone(), id)
+                })
+                .collect()
+        }
+
+        proptest! {
+            /// In the F# dialect, rows of distinct names — siblings in one
+            /// encloser, as metadata requires — never share an ID. The stripped
+            /// name and the parameter count, which the ID used to be built
+            /// from, collide for ``Dropped`2`` on one parameter and
+            /// ``Dropped`1``, so one type read the other's documentation.
+            ///
+            /// Roslyn's rule is not injective (`U` and ``U`1`` on one parameter
+            /// both key ``U`1``): that is Roslyn's own collision, which a
+            /// consumer meets by counting keys.
+            #[test]
+            fn distinct_rows_key_distinctly_in_fsharp((parent, rows) in rows()) {
+                let keyed = ids(parent, &rows, DocIdDialect::FSharp);
+                let mut by_id: BTreeMap<&str, &str> = BTreeMap::new();
+                for (name, id) in &keyed {
+                    let id = id.as_deref().expect("every row has an ID");
+                    if let Some(other) = by_id.insert(id, name) {
+                        prop_assert!(false, "{other} and {name} both key {id}");
+                    }
+                }
+            }
+
+            /// The two dialects agree exactly where the row's suffix counts the
+            /// parameters it introduces, and there both spell the row's name.
+            #[test]
+            fn dialects_agree_where_the_suffix_counts((parent, rows) in rows()) {
+                let outer = type_doc_name(&ent(&["N"], "P", parent), None, DocIdDialect::FSharp)
+                    .expect("a row has a name");
+                let fsharp = ids(parent, &rows, DocIdDialect::FSharp);
+                let metadata = ids(parent, &rows, DocIdDialect::Metadata);
+                for ((name, f), (_, m)) in fsharp.iter().zip(&metadata) {
+                    let cumulative = rows.iter().find(|(n, _)| n == name).unwrap().1;
+                    let own = cumulative.saturating_sub(parent);
+                    let counts = own == 0
+                        || crate::ecma335_assembly::metadata_arity_suffix(name) == Some(own);
+                    let verbatim = format!("T:{}.{name}", outer.full());
+                    prop_assert_eq!(f.as_deref(), Some(verbatim.as_str()));
+                    prop_assert_eq!(f == m, counts, "{} on {} own", name, own);
+                }
+            }
+        }
     }
 
     // --------------------------------- methods ---------------------------------
@@ -1545,7 +1814,7 @@ mod tests {
         // the same record, a class field and an exception field keep `F:`.
         let mut record = ent(&["N"], "R", 0);
         record.kind = EntityKind::Record;
-        let d = type_doc_name(&record, None);
+        let d = type_doc_name(&record, None, DocIdDialect::FSharp).unwrap();
         assert_eq!(
             member_doc_id(&d, &field("contents", prim(Primitive::I4))),
             "P:N.R.contents"
@@ -1559,7 +1828,10 @@ mod tests {
             let mut e = ent(&["N"], "C", 0);
             e.kind = kind;
             assert_eq!(
-                member_doc_id(&type_doc_name(&e, None), &field("x", prim(Primitive::I4))),
+                member_doc_id(
+                    &type_doc_name(&e, None, DocIdDialect::FSharp).unwrap(),
+                    &field("x", prim(Primitive::I4))
+                ),
                 "F:N.C.x",
                 "{kind:?}"
             );
@@ -1712,7 +1984,7 @@ mod tests {
         module.kind = EntityKind::Module;
         assert_eq!(
             member_doc_id(
-                &type_doc_name(&module, None),
+                &type_doc_name(&module, None, DocIdDialect::FSharp).unwrap(),
                 &field("Limit", prim(Primitive::I4))
             ),
             "P:N.M.Limit"
@@ -1731,7 +2003,7 @@ mod tests {
         ]);
         union.nested_types.push(ent(&[], "Circle", 0));
         let mut ids = Vec::new();
-        walk_doc_ids(&union, None, &mut |id| ids.push(id));
+        walk_doc_ids(&union, None, DocIdDialect::FSharp, &mut |id| ids.push(id));
         ids.sort();
         assert_eq!(
             ids,
@@ -1836,7 +2108,7 @@ mod tests {
         outer.nested_types.push(inner);
 
         let mut ids = Vec::new();
-        walk_doc_ids(&outer, None, &mut |id| ids.push(id));
+        walk_doc_ids(&outer, None, DocIdDialect::Metadata, &mut |id| ids.push(id));
         ids.sort();
         assert_eq!(
             ids,

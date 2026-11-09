@@ -52,7 +52,7 @@ use super::candidate::{
     Candidate, Instantiation, NoCandidate, ParameterSlot, Reached, Undecidable, candidate,
     il_faithful, inherits_automatically, shape_of, shaped_throughout, type_parameters_in_scope,
 };
-use super::key::{DocIdIndex, DocTarget, type_name};
+use super::key::{DocIdIndex, DocTarget, roslyn_type_name};
 use super::lookup::{DocLookup, DocSources, Located, xml_path_for};
 use super::tree::{DocElement, DocNode, MAX_DEPTH, Namespacing, name_is};
 use super::xpath::{Unsupported, authored_path, default_path};
@@ -546,7 +546,7 @@ impl Walk<'_> {
         // out of the index, so one of them may carry the ID too.
         let mut siblings = Vec::new();
         if let DocTarget::Member { parent, .. } = target {
-            siblings = match type_name(env, parent) {
+            siblings = match roslyn_type_name(env, parent) {
                 Ok(name) => index.targets(&name.type_id()).to_vec(),
                 Err(_) => return Err(Decline::Cref(CrefMiss::NotIl)),
             };
@@ -570,7 +570,7 @@ impl Walk<'_> {
                 return Err(Decline::Cref(CrefMiss::NotIl));
             }
             // Every type of the parent's ID, in this assembly or another.
-            let parents: Vec<DocTarget> = match type_name(env, parent) {
+            let parents: Vec<DocTarget> = match roslyn_type_name(env, parent) {
                 Ok(name) => index.targets(&name.type_id()).to_vec(),
                 Err(_) => return Err(Decline::Cref(CrefMiss::DroppedNearby)),
             };
@@ -590,7 +590,7 @@ impl Walk<'_> {
                 // name, so the competitor is found by spelling its ID as
                 // `Item`'s.
                 let competes = |other: EntityHandle| {
-                    let Ok(name) = type_name(env, other) else {
+                    let Ok(name) = roslyn_type_name(env, other) else {
                         return true;
                     };
                     env.member_indices(other)
@@ -757,7 +757,7 @@ fn spelled_uniquely(
             else {
                 return false;
             };
-            type_name(env, def).is_ok_and(|name| {
+            roslyn_type_name(env, def).is_ok_and(|name| {
                 let id = name.type_id();
                 name.full()
                     .split('.')

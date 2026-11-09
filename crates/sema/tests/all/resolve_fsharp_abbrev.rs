@@ -1006,6 +1006,7 @@ fn synth_entity(
         is_auto_open: false,
         is_require_qualified_access: false,
         metadata_name: Some(name.to_string()),
+        marker_compiled_name: None,
         is_no_equality: false,
         is_no_comparison: false,
         is_structural_equality: false,

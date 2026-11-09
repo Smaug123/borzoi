@@ -592,11 +592,16 @@ mod keys {
 
     /// The `T:` key of every type in the tree under `entity`. A union case keys
     /// `T:` too, but is not a type: in the F# dialect it is a member's key.
-    fn type_keys(entity: &Entity, enclosing: Option<&TypeDocName>, out: &mut BTreeSet<String>) {
-        let decl = type_doc_name(entity, enclosing);
+    fn type_keys(
+        entity: &Entity,
+        enclosing: Option<&TypeDocName>,
+        dialect: DocIdDialect,
+        out: &mut BTreeSet<String>,
+    ) {
+        let decl = type_doc_name(entity, enclosing, dialect).expect("a real entity has a name");
         out.insert(decl.type_id());
         for nested in &entity.nested_types {
-            type_keys(nested, Some(&decl), out);
+            type_keys(nested, Some(&decl), dialect, out);
         }
     }
 
@@ -659,13 +664,16 @@ mod keys {
         assert_eq!(dialect(&system_runtime().dll), DocIdDialect::Metadata);
         assert_eq!(dialect(&sdk_fsharp_core().dll), DocIdDialect::FSharp);
         for dll in [system_runtime().dll, sdk_fsharp_core().dll] {
-            let fsharp = dialect(&dll) == DocIdDialect::FSharp;
+            let doc_dialect = dialect(&dll);
+            let fsharp = doc_dialect == DocIdDialect::FSharp;
             let roots = roots(&dll);
             let mut walked: BTreeMap<String, usize> = BTreeMap::new();
             let mut types: BTreeSet<String> = BTreeSet::new();
             for root in &roots {
-                walk_doc_ids(root, None, &mut |id| *walked.entry(id).or_default() += 1);
-                type_keys(root, None, &mut types);
+                walk_doc_ids(root, None, doc_dialect, &mut |id| {
+                    *walked.entry(id).or_default() += 1
+                });
+                type_keys(root, None, doc_dialect, &mut types);
             }
             let env = env_of(&dll, roots);
             let (keyed, shared) = key_all(&env);

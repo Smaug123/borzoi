@@ -309,6 +309,37 @@ impl Oracle {
         self.request(&request);
     }
 
+    /// Roslyn's documentation comment ID of every type it imports from the
+    /// assembly read from `assembly`, over a compilation referencing exactly
+    /// `references`, keyed by the type's metadata identity: its namespace,
+    /// `|`, and the `/`-joined row names of its enclosing types and itself
+    /// (`N|Outer`1/Inner`). `Err` with the exception when Roslyn's importer
+    /// throws reading the assembly's types, as it does for some malformed
+    /// nestings.
+    pub fn type_ids(
+        &mut self,
+        references: &[PathBuf],
+        assembly: &Path,
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let r = self.request(&serde_json::json!({
+            "op": "type-ids",
+            "references": references,
+            "assembly": assembly,
+        }));
+        if let Some(why) = r["unimportable"].as_str() {
+            return Err(why.to_string());
+        }
+        let mut ids = std::collections::BTreeMap::new();
+        for t in r["types"].as_array().expect("types") {
+            let path = t["path"].as_str().expect("path").to_string();
+            let id = t["id"].as_str().expect("id").to_string();
+            if let Some(previous) = ids.insert(path.clone(), id) {
+                panic!("Roslyn imports two types at {path} (IDs {previous} and another)");
+            }
+        }
+        Ok(ids)
+    }
+
     pub fn xpath(&mut self, xml: &str, path: &str) -> Option<String> {
         let r = self.request(&serde_json::json!({ "op": "xpath", "xml": xml, "path": path }));
         (r["ok"].as_bool() == Some(true))

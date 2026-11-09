@@ -253,6 +253,11 @@ This is a Cargo workspace with nine members:
   `BORZOI_INHERITDOC_CASES` overriding them all — and the ignored
   `xml_doc_inheritdoc_sweep` (the ASP.NET Core pack, plus a NuGet cache under
   `BORZOI_INHERITDOC_SWEEP_ROOT`) hold every `<inheritdoc>` expansion to it.
+  The oracle's `type-ids` op grades a type's own ID: `xml_doc_type_id_diff`
+  emits rows whose `` `n `` suffix need not count their parameters (Roslyn
+  then appends the count; fsc, whose side `borzoi-assembly`'s
+  `doc_id_fsharp_diff` grades, does not) and holds every one to Roslyn's
+  `GetDocumentationCommentId`.
   The expansion certifies only metadata shaped as C# writes it: every type it
   reads must pass `borzoi_assembly::shape::compiler_shape`, or it declines.
   So a disagreement with Roslyn over metadata outside that shape (an event's
@@ -498,7 +503,7 @@ nix develop -c cargo test -p borzoi-sema --test all auto_open_member_sweep:: -- 
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_shipped_sweep:: -- --ignored  #  ~10 s
 nix develop -c cargo test -p borzoi      --test all xml_doc_source_diff::corpus:: -- --ignored  #  ~20 s
-nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ xml_doc_inheritdoc_generated_diff:: xml_doc_inheritdoc_metadata_diff::deep_  #  ~4 min
+nix develop -c cargo test -p borzoi      --test all -- --ignored xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ xml_doc_inheritdoc_generated_diff:: xml_doc_inheritdoc_metadata_diff::deep_ xml_doc_type_id_diff::deep_  #  ~4 min
 nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
 nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~50 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~40 s

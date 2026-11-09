@@ -34,7 +34,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use borzoi_assembly::doc_id::{member_doc_ids, type_doc_name, type_enc, walk_doc_ids};
+use borzoi_assembly::doc_id::{
+    DocIdDialect, member_doc_ids, type_doc_name, type_enc, walk_doc_ids,
+};
 use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity, Member, MethodLike};
 use proptest::prelude::*;
 
@@ -253,7 +255,9 @@ fn check(groups: &[Group]) -> Result<(), String> {
         .map_err(|e| fail("enumerate", e.to_string()))?;
     let mut generated: BTreeMap<String, usize> = BTreeMap::new();
     for e in &types {
-        walk_doc_ids(e, None, &mut |id| *generated.entry(id).or_default() += 1);
+        walk_doc_ids(e, None, DocIdDialect::FSharp, &mut |id| {
+            *generated.entry(id).or_default() += 1
+        });
     }
     let entity = |name: &str| -> Result<&Entity, String> {
         types
@@ -266,7 +270,7 @@ fn check(groups: &[Group]) -> Result<(), String> {
     for (g, group) in groups.iter().enumerate() {
         let (name, owner) = il_name(g, group.host);
         let owner = entity(owner)?;
-        let decl = type_doc_name(owner, None);
+        let decl = type_doc_name(owner, None, DocIdDialect::FSharp).expect("a row has a name");
         let receiver = usize::from(group.host == Host::ExtInstance);
         for (o, params) in group.overloads.iter().enumerate() {
             let tag = marker(g, o);

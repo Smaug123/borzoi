@@ -90,46 +90,50 @@ hit P:DocIdsFs.Widget.Label <= Property Label()
 hit P:DocIdsFs.Widget.Label(System.String) <= Property Label()
 hit P:DocIdsFs.Widget.Name <= Property Name()
 hit P:DocIdsFs.Widget.Sink(System.String) <= Property Sink()
-hit T:DocIdsFs.Boom
-hit T:DocIdsFs.Box`1
-hit T:DocIdsFs.Colour
-hit T:DocIdsFs.Dropped`1
-hit T:DocIdsFs.Ext
-hit T:DocIdsFs.Fields
-hit T:DocIdsFs.Funcs
-hit T:DocIdsFs.Funcs.Inner
-hit T:DocIdsFs.Handler
-hit T:DocIdsFs.Hidden
-hit T:DocIdsFs.Hidden.Elided
-hit T:DocIdsFs.Hidden.Renamed
-hit T:DocIdsFs.Hidden.RenamedAlike
-hit T:DocIdsFs.Hidden.SharedHidden
-hit T:DocIdsFs.IShape
-hit T:DocIdsFs.IntId
-hit T:DocIdsFs.Maybe`1
-hit T:DocIdsFs.Maybe`1.Just
-hit T:DocIdsFs.Maybe`1.Nothing
-hit T:DocIdsFs.Pair`1
-hit T:DocIdsFs.ParamMarker
-hit T:DocIdsFs.Point
-hit T:DocIdsFs.Pos
-hit T:DocIdsFs.Quantity
-hit T:DocIdsFs.SPoint
-hit T:DocIdsFs.Shape
-hit T:DocIdsFs.Shape.Circle
-hit T:DocIdsFs.Shape.Empty
-hit T:DocIdsFs.Shape.Rect
-hit T:DocIdsFs.SharedName
-hit T:DocIdsFs.StaticCompiled
-hit T:DocIdsFs.StaticCompiledStruct
-hit T:DocIdsFs.Thing
-hit T:DocIdsFs.ThingModule
-hit T:DocIdsFs.Tree`1
-hit T:DocIdsFs.Tree`1.Leaf
-hit T:DocIdsFs.Tree`1.Node
-hit T:DocIdsFs.Widget
-hit T:DocIdsFs.m
-keys 140
+hit T:DocIdsFs.Alias`3 <= Marker DocIdsFs.Alias`3
+hit T:DocIdsFs.Bare <= Type DocIdsFs.Bare
+hit T:DocIdsFs.Boom <= Type DocIdsFs.Boom
+hit T:DocIdsFs.Box`1 <= Type DocIdsFs.Box`1
+hit T:DocIdsFs.Colour <= Type DocIdsFs.Colour
+hit T:DocIdsFs.Dropped`2 <= Type DocIdsFs.Dropped`2
+hit T:DocIdsFs.Ext <= Type DocIdsFs.Ext
+hit T:DocIdsFs.Fields <= Type DocIdsFs.Fields
+hit T:DocIdsFs.Funcs <= Type DocIdsFs.Funcs
+hit T:DocIdsFs.Funcs.Inner <= Type DocIdsFs.Funcs/Inner
+hit T:DocIdsFs.Handler <= Type DocIdsFs.Handler
+hit T:DocIdsFs.Hidden <= Type DocIdsFs.Hidden
+hit T:DocIdsFs.Hidden.Elided <= Type DocIdsFs.Hidden/Elided
+hit T:DocIdsFs.Hidden.Renamed <= Type DocIdsFs.Hidden/Renamed
+hit T:DocIdsFs.Hidden.RenamedAlike <= Type DocIdsFs.Hidden/RenamedAlike
+hit T:DocIdsFs.Hidden.SharedHidden <= Type DocIdsFs.Hidden/SharedHidden
+hit T:DocIdsFs.IShape <= Type DocIdsFs.IShape
+hit T:DocIdsFs.IntId <= Marker DocIdsFs.IntId
+hit T:DocIdsFs.Maybe`1 <= Type DocIdsFs.Maybe`1
+hit T:DocIdsFs.Maybe`1.Just <= Case Just
+hit T:DocIdsFs.Maybe`1.Nothing <= Case Nothing
+hit T:DocIdsFs.Pair`1 <= Marker DocIdsFs.Pair`1
+hit T:DocIdsFs.ParamMarker <= Type DocIdsFs.ParamMarker
+hit T:DocIdsFs.Point <= Type DocIdsFs.Point
+hit T:DocIdsFs.Pos <= Type DocIdsFs.Pos
+hit T:DocIdsFs.Quantity <= Type DocIdsFs.Quantity
+hit T:DocIdsFs.SPoint <= Type DocIdsFs.SPoint
+hit T:DocIdsFs.Shape <= Type DocIdsFs.Shape
+hit T:DocIdsFs.Shape.Circle <= Type DocIdsFs.Shape/Circle
+hit T:DocIdsFs.Shape.Empty <= Case Empty
+hit T:DocIdsFs.Shape.Rect <= Type DocIdsFs.Shape/Rect
+hit T:DocIdsFs.SharedName <= Type DocIdsFs.SharedName
+hit T:DocIdsFs.StaticCompiled <= Type DocIdsFs.StaticCompiled
+hit T:DocIdsFs.StaticCompiledStruct <= Type DocIdsFs.StaticCompiledStruct
+hit T:DocIdsFs.Suffixed`3 <= Type DocIdsFs.Suffixed`3
+hit T:DocIdsFs.Thing <= Type DocIdsFs.Thing
+hit T:DocIdsFs.ThingModule <= Type DocIdsFs.ThingModule
+hit T:DocIdsFs.Tree`1 <= Type DocIdsFs.Tree`1
+hit T:DocIdsFs.Tree`1.Leaf <= Case Leaf
+hit T:DocIdsFs.Tree`1.Node <= Type DocIdsFs.Tree`1/Node
+hit T:DocIdsFs.Widget <= Type DocIdsFs.Widget
+hit T:DocIdsFs.Zero`0 <= Type DocIdsFs.Zero`0
+hit T:DocIdsFs.m <= Type DocIdsFs.m
+keys 145
 miss M:DocIdsFs.Dropped`1.Corner(System.Int32[0:])
 miss M:DocIdsFs.Hidden.Elided.Corner(System.Int32[0:, 0:])
 miss M:DocIdsFs.Hidden.RankShared(System.Int32[0:])
@@ -141,5 +145,6 @@ miss P:DocIdsFs.Hidden.SharedHidden.Second
 miss P:DocIdsFs.SharedName.First
 miss P:DocIdsFs.SharedName.Second
 miss P:DocIdsFs.StaticCompiledStruct.Doubled
+miss T:DocIdsFs.Dropped`1
 miss T:DocIdsFs.metre
 pickle decoded

@@ -32,6 +32,15 @@
 //     `interface-impl`, `base-class`, `base-interface`, `none`) and the
 //     candidate's documentation-comment ID. The `xml` is the authority.
 //
+//   {"op":"type-ids","references":[dll..],"assembly":dll}
+//     Over the same compilation as `expand`, every type Roslyn imports from
+//     `assembly` (nested types included), with its documentation comment ID
+//     (`GetDocumentationCommentId`) and its metadata identity: the namespace,
+//     `|`, then the `MetadataName` of each type from the outermost enclosing
+//     one down, joined by `/`.
+//     -> {"types":[{"path":"N|Outer`1/Inner","id":"T:N.Outer`1.Inner"}..]}
+//      | {"unimportable":why}   (Roslyn's importer threw while reading them)
+//
 //   {"op":"xpath","xml":s,"path":p}
 //     The selection `RewriteInheritdocElement` makes: `XPathEvaluate` of `p`
 //     over `xml` parsed with whitespace preserved.
@@ -151,6 +160,28 @@ internal static class Program
     }
 
     private static string? DocId(ISymbol? symbol) => symbol?.GetDocumentationCommentId();
+
+    /// <summary>
+    /// The metadata identity of <paramref name="type"/>: its namespace, `|`, then the `MetadataName` of its
+    /// outermost enclosing type and of each type down to it, joined by `/` (`N.A|Outer`1/Inner`). A
+    /// `MetadataName` is the row's name as the metadata spells it.
+    /// </summary>
+    private static string MetadataPath(INamedTypeSymbol type)
+    {
+        var chain = new List<string>();
+        var outermost = type;
+        for (INamedTypeSymbol? t = type; t is not null; t = t.ContainingType)
+        {
+            chain.Insert(0, t.MetadataName);
+            outermost = t;
+        }
+        var ns = new List<string>();
+        for (var n = outermost.ContainingNamespace; n is { IsGlobalNamespace: false }; n = n.ContainingNamespace)
+        {
+            ns.Insert(0, n.MetadataName);
+        }
+        return string.Join(".", ns) + "|" + string.Join("/", chain);
+    }
 
     private static (string Rule, ISymbol? Candidate) Rule(ISymbol symbol, XElement inheritdoc)
     {
@@ -274,6 +305,44 @@ internal static class Program
                     results.Add(ExpandOne(compilation, assembly, (string)id!));
                 }
                 return new JsonObject { ["results"] = results };
+            }
+            case "type-ids":
+            {
+                var references = request["references"]!.AsArray().Select(r => (string)r!).ToList();
+                var assemblyPath = (string)request["assembly"]!;
+                var compilation = CompilationOf(references);
+                if (compilation.GetAssemblyOrModuleSymbol(Reference(assemblyPath)) is not IAssemblySymbol assembly)
+                {
+                    throw new InvalidOperationException($"{assemblyPath} is not one of the references");
+                }
+                var types = new JsonArray();
+                void Visit(INamespaceOrTypeSymbol container)
+                {
+                    foreach (var type in container.GetTypeMembers())
+                    {
+                        types.Add(new JsonObject { ["path"] = MetadataPath(type), ["id"] = DocId(type) });
+                        Visit(type);
+                    }
+                    if (container is INamespaceSymbol ns)
+                    {
+                        foreach (var child in ns.GetNamespaceMembers())
+                        {
+                            Visit(child);
+                        }
+                    }
+                }
+                try
+                {
+                    Visit(assembly.GlobalNamespace);
+                }
+                catch (Exception e)
+                {
+                    // Roslyn's importer throws on some malformed nestings
+                    // (`MatchesContainingTypeParameters` indexing past a short
+                    // parameter list): it has no ID to give for that assembly.
+                    return new JsonObject { ["unimportable"] = $"{e.GetType().Name}: {e.Message}" };
+                }
+                return new JsonObject { ["types"] = types };
             }
             case "compile":
             {

@@ -11,8 +11,13 @@
 //!   towards the generic arity, then is erased), so the ID computed from IL can
 //!   be the ID fsc wrote for a *different* member — and no census of computed
 //!   IDs sees that, since the colliding ID is never computed for its owner. A
-//!   member of an assembly whose dialect the env does not record is refused
-//!   the same way. A *type*'s ID is its compiled name in both dialects;
+//!   *type*'s ID is its compiled name in both dialects except where the name's
+//!   arity suffix does not count its parameters, where Roslyn appends the
+//!   count ([`borzoi_assembly::doc_id::type_segment`]); so a type is keyed in
+//!   its assembly's dialect, and any target of an assembly whose dialect the
+//!   env does not record is refused;
+//! - an entity with no name in that dialect (an abbreviation marker has no
+//!   row, so no Roslyn ID) has no ID;
 //! - a handle the env cannot place under a top-level type has no knowable
 //!   enclosing chain, so no knowable ID (a guessed `T:Name` could be another
 //!   type's key);
@@ -67,14 +72,17 @@ pub enum KeyError {
     /// A member of an assembly the F# compiler may have written: the doc file
     /// keys it from its F# signature, which the IL-derived ID need not match.
     FSharpMember,
-    /// A member of an assembly whose [`DocIdDialect`] the env does not record.
+    /// A target of an assembly whose [`DocIdDialect`] the env does not record.
     DialectUnknown,
+    /// The entity, or one enclosing it, has no name in the dialect asked
+    /// about ([`type_doc_name`] declines it).
+    Unnamed,
 }
 
 /// The documentation-comment IDs that more than one target of one assembly
 /// generates — every type and every member under the assembly's top-level
-/// types, keyed exactly as [`doc_key`] keys them. Built in one pass; the
-/// lookup layer caches one per assembly per env.
+/// types, keyed exactly as [`doc_key`] keys them, in the assembly's dialect.
+/// Built in one pass; the lookup layer caches one per assembly per env.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeyCensus {
     shared: HashSet<String>,
@@ -95,21 +103,31 @@ impl KeyCensus {
             env: &AssemblyEnv,
             handle: EntityHandle,
             enclosing: Option<&TypeDocName>,
+            dialect: DocIdDialect,
             note: &mut impl FnMut(String),
         ) {
             let entity = env.entity(handle);
-            let name = type_doc_name(entity, enclosing);
+            // An entity without a name keys nothing, and nor does anything
+            // beneath it: `doc_key` refuses them all.
+            let Some(name) = type_doc_name(entity, enclosing, dialect) else {
+                return;
+            };
             note(name.type_id());
             for member in &entity.members {
                 note(member_doc_id(&name, member));
             }
             for &child in env.children(handle) {
-                walk(env, child, Some(&name), note);
+                walk(env, child, Some(&name), dialect, note);
             }
         }
         for &root in env.top_level_handles() {
-            if env.assembly_path(root) == Some(dll) {
-                walk(env, root, None, &mut note);
+            if env.assembly_path(root) != Some(dll) {
+                continue;
+            }
+            // `doc_key` refuses every target of an assembly of unknown
+            // dialect, so its census need count nothing.
+            if let Some(dialect) = env.doc_id_dialect(root) {
+                walk(env, root, None, dialect, &mut note);
             }
         }
         KeyCensus { shared }
@@ -122,10 +140,14 @@ impl KeyCensus {
 }
 
 /// Every target of an env by documentation-comment ID, across all its
-/// assemblies — the inverse of [`doc_key`], for following an `<inheritdoc
-/// cref="…">`, which names its target by ID alone. Keys are generated exactly
-/// as [`doc_key`] generates them; a key with several targets (in one assembly
-/// or across several) keeps them all, so a caller sees the ambiguity.
+/// assemblies, for following an `<inheritdoc cref="…">`, which names its
+/// target by ID alone. A cref is resolved by Roslyn, so each type is named as
+/// Roslyn names it ([`roslyn_type_name`]) whatever its assembly's dialect —
+/// the dialects differ only where a row's arity suffix does not count its
+/// parameters — and an abbreviation marker, which has no row, is not indexed.
+/// Members are keyed as [`member_doc_id`] keys them. A key with several
+/// targets (in one assembly or across several) keeps them all, so a caller
+/// sees the ambiguity.
 ///
 /// A property's or event's accessors are methods with IDs of their own
 /// (`M:N.T.get_P`), which the model folds into their owner and so has no
@@ -171,7 +193,9 @@ impl DocIdIndex {
         ) {
             let entity = env.entity(handle);
             index.has_no_pia_local_type |= entity.is_no_pia_local;
-            let name = type_doc_name(entity, enclosing);
+            let Some(name) = type_doc_name(entity, enclosing, DocIdDialect::Metadata) else {
+                return;
+            };
             index
                 .by_key
                 .entry(name.type_id())
@@ -216,10 +240,13 @@ impl DocIdIndex {
                 if env.has_authoritative_fsharp_signature(root) {
                     let entity = env.entity(root);
                     if entity.namespace.is_empty() {
-                        // As its ID spells it (`` G`1 ``), and as bare.
-                        index
-                            .fsharp_prefixes
-                            .insert(type_doc_name(entity, None).full().to_string());
+                        // As either dialect's ID spells it (`` G`1 ``), and as
+                        // bare.
+                        for dialect in [DocIdDialect::Metadata, DocIdDialect::FSharp] {
+                            if let Some(name) = type_doc_name(entity, None, dialect) {
+                                index.fsharp_prefixes.insert(name.full().to_string());
+                            }
+                        }
                         index.fsharp_prefixes.insert(entity.name.clone());
                     } else {
                         index.fsharp_prefixes.insert(entity.namespace.join("."));
@@ -279,24 +306,26 @@ impl DocIdIndex {
     }
 }
 
-/// The documentation-comment ID of `target`, refused when `census` (the
-/// census of `target`'s assembly) records it as generated more than once, and
-/// for a member unless its assembly's doc file is keyed in the
+/// The documentation-comment ID of `target` in its assembly's doc file,
+/// refused when `census` (the census of `target`'s assembly) records it as
+/// generated more than once, when the env does not record the assembly's
+/// dialect, and for a member unless its assembly's doc file is keyed in the
 /// [`DocIdDialect::Metadata`] dialect.
 pub fn doc_key(
     env: &AssemblyEnv,
     census: &KeyCensus,
     target: DocTarget,
 ) -> Result<String, KeyError> {
-    let key = match target {
-        DocTarget::Entity(handle) => type_name(env, handle)?.type_id(),
-        DocTarget::Member { parent, idx } => match env.doc_id_dialect(parent) {
-            Some(DocIdDialect::Metadata) => {
-                member_doc_id(&type_name(env, parent)?, env.member_at(parent, idx))
-            }
-            Some(DocIdDialect::FSharp) => return Err(KeyError::FSharpMember),
-            None => return Err(KeyError::DialectUnknown),
-        },
+    let dialect = env
+        .doc_id_dialect(target.owner())
+        .ok_or(KeyError::DialectUnknown)?;
+    let key = match (target, dialect) {
+        (DocTarget::Entity(handle), _) => type_name(env, handle, dialect)?.type_id(),
+        (DocTarget::Member { parent, idx }, DocIdDialect::Metadata) => member_doc_id(
+            &type_name(env, parent, dialect)?,
+            env.member_at(parent, idx),
+        ),
+        (DocTarget::Member { .. }, DocIdDialect::FSharp) => return Err(KeyError::FSharpMember),
     };
     if census.shared.contains(&key) {
         Err(KeyError::Shared)
@@ -305,15 +334,27 @@ pub fn doc_key(
     }
 }
 
-/// The doc-ID type name of `handle`, threaded down its enclosing chain.
-pub fn type_name(env: &AssemblyEnv, handle: EntityHandle) -> Result<TypeDocName, KeyError> {
+/// The doc-ID type name of `handle` in `dialect`, threaded down its enclosing
+/// chain.
+pub fn type_name(
+    env: &AssemblyEnv,
+    handle: EntityHandle,
+    dialect: DocIdDialect,
+) -> Result<TypeDocName, KeyError> {
     let chain = env
         .enclosing_chain_from_root(handle)
         .ok_or(KeyError::Unplaced)?;
     let mut name: Option<TypeDocName> = None;
     for link in chain {
-        name = Some(type_doc_name(env.entity(link), name.as_ref()));
+        name =
+            Some(type_doc_name(env.entity(link), name.as_ref(), dialect).ok_or(KeyError::Unnamed)?);
     }
     // A chain from a root is never empty: it ends at `handle`.
     name.ok_or(KeyError::Unplaced)
+}
+
+/// The doc-ID type name of `handle` as Roslyn spells it — what a cref names,
+/// and what [`DocIdIndex`] is keyed by.
+pub fn roslyn_type_name(env: &AssemblyEnv, handle: EntityHandle) -> Result<TypeDocName, KeyError> {
+    type_name(env, handle, DocIdDialect::Metadata)
 }
