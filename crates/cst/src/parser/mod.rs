@@ -1,8 +1,8 @@
 //! Hand-written recursive-descent parser over the [`FilteredToken`] stream.
 //!
 //! Per `docs/parser-plan.md`, the parser builds a rowan green tree via
-//! [`rowan::GreenNodeBuilder`] (through [`tree_builder::TreeBuilder`]) and exposes a typed AST in [`crate::syntax`]. Phase 2
-//! grows the Phase 1 scaffold (empty file + lone int literal) one literal
+//! [`rowan::GreenNodeBuilder`] (wrapped to track the tree's height) and
+//! exposes a typed AST in [`crate::syntax`]. Phase 2 grows the Phase 1 scaffold (empty file + lone int literal) one literal
 //! form at a time; see the table in `docs/parser-plan.md` for the running
 //! list of supported `SynConst` variants.
 //!
@@ -473,9 +473,27 @@ fn parse_inner(
     let langversion_errors = langversion_diagnostics(&elif_directives, lang);
 
     let mut parser = Parser::new(source, raw_tokens, filtered_tokens);
-    match file_kind {
-        FileKind::Impl => parser.parse_impl_file(),
-        FileKind::Sig => parser.parse_sig_file(),
+    loop {
+        match file_kind {
+            FileKind::Impl => parser.parse_impl_file(),
+            FileKind::Sig => parser.parse_sig_file(),
+        }
+        // The parse stops once the tree would reach `tree_height_stop`, but
+        // that measure can only count the ancestors already open: a production
+        // that wraps finished children under a node it opens afterwards
+        // (`start_node_at`, as a nested module does around its body) adds
+        // levels the parse never saw coming. So the finished height is checked
+        // here, and an over-tall parse is redone stopping lower by the excess.
+        // The stop falls strictly each round and a stop of 0 halts at the first
+        // token, so this terminates; on real input it never repeats.
+        let height = parser.builder.height_if_closed_now();
+        if height <= MAX_TREE_HEIGHT {
+            break;
+        }
+        let stop = parser
+            .tree_height_stop
+            .saturating_sub(height - MAX_TREE_HEIGHT);
+        parser = parser.restart(stop);
     }
     // If the depth guard fired (the recursion bound or the tree-height bound),
     // the parse stopped at the breach and drained the rest of the input to EOF;
@@ -904,6 +922,10 @@ struct Parser<'src> {
     /// Span of the token where the depth limit was breached, for the single
     /// collapsed diagnostic [`parse_inner`] emits. `None` until a breach.
     depth_limit_span: Option<Range<usize>>,
+    /// The tree height at which the parse stops: [`TREE_HEIGHT_STOP`], or lower
+    /// on a parse [`parse_inner`] redoes because its tree came out taller than
+    /// [`MAX_TREE_HEIGHT`].
+    tree_height_stop: usize,
 }
 
 /// Maximum nesting depth of the recursive-descent productions (expression /
@@ -923,7 +945,7 @@ const MAX_PARSE_DEPTH: u32 = 512;
 /// The tallest tree any parse returns: no root-to-leaf path holds more than
 /// this many nodes.
 ///
-/// [`MAX_PARSE_DEPTH`] bounds the parser's recursion, which does not bound the
+/// The recursion bound (`MAX_PARSE_DEPTH`) does not bound the
 /// tree: application chains (`f a a a`), left-associative operator chains,
 /// postfix type applications (`int list list`) and the like are built in a
 /// loop, one wrapping node per repeat, so they are as deep as they are long.
@@ -931,7 +953,7 @@ const MAX_PARSE_DEPTH: u32 = 512;
 /// overflows the stack and aborts the process, which `catch_unwind` cannot
 /// catch; any consumer walking the tree recursively has the same exposure.
 /// The parser therefore also stops, with the depth-limit diagnostic, once the
-/// tree it is building reaches [`TREE_HEIGHT_STOP`].
+/// tree it is building nears this height.
 ///
 /// Calibration, all in a debug build: rowan drops a 4 000-node-deep tree on a
 /// 2 MiB stack (a Rust thread's default) and overflows by 8 000, but the
@@ -941,12 +963,15 @@ const MAX_PARSE_DEPTH: u32 = 512;
 /// the tallest of all is 666, in a file the recursion guard already stops.
 pub const MAX_TREE_HEIGHT: usize = 1024;
 
-/// The tree height at which the parser stops (see [`MAX_TREE_HEIGHT`]). It is
-/// measured as [`TreeBuilder::height_if_closed_now`], which already counts the
-/// open nodes the unwinding productions go on to close; the margin covers the
-/// few nodes those productions add on the way out.
-/// `tests/all/parser_tree_height.rs` checks the guarantee over the grammar's
-/// repetition forms.
+/// The tree height at which the parser first tries stopping (see
+/// [`MAX_TREE_HEIGHT`]). It is measured as
+/// [`TreeBuilder::height_if_closed_now`], which counts the open nodes the
+/// unwinding productions go on to close; the margin covers the few nodes they
+/// add on the way out. Nodes a production opens around children it has already
+/// finished are not countable in advance, so [`parse_inner`] checks the
+/// finished height and redoes a parse that came out too tall with a lower
+/// stop. `tests/all/parser_tree_height.rs` checks the guarantee over the
+/// grammar's repetition forms, alone and nested in modules.
 const TREE_HEIGHT_STOP: usize = MAX_TREE_HEIGHT - 64;
 
 #[cfg(test)]

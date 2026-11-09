@@ -415,6 +415,24 @@ fn the_known_panic_witnesses_parse() {
     );
 }
 
+/// The shapes that have tripped `bump_into`'s stamp check: a production gated
+/// on the *raw* stream consumed a layout virtual parked between two tokens the
+/// raw stream sees as adjacent, stamping it as a real token. Pinned by
+/// spelling, as above.
+#[test]
+fn the_known_virtual_stamp_witnesses_parse() {
+    let mut census = Census::default();
+    for src in [
+        // `at_dot_lambda`: the `OBLOCKSEP` before the `.` became the `DOT_TOK`.
+        "_\n.\n",
+        // `parse_var_type`: the `OBLOCKSEP` before `a` became the typar name.
+        "x:?'\na",
+    ] {
+        probe(src, &mut census);
+    }
+    assert_no_failures("known virtual-stamp witnesses", &census);
+}
+
 /// A fresh-seed random walk over [`WIDE`] at lengths the exhaustive halves
 /// cannot reach.
 ///

@@ -26,6 +26,17 @@ impl<'src> Parser<'src> {
             depth: 0,
             depth_limit_hit: false,
             depth_limit_span: None,
+            tree_height_stop: TREE_HEIGHT_STOP,
+        }
+    }
+
+    /// A fresh parser over the same tokens that stops at tree height `stop`
+    /// (see [`parse_inner`]); this one's partial tree and diagnostics are
+    /// dropped.
+    pub(super) fn restart(self, stop: usize) -> Self {
+        Self {
+            tree_height_stop: stop,
+            ..Self::new(self.source, self.raw_tokens, self.filtered_tokens)
         }
     }
 
@@ -77,14 +88,15 @@ impl<'src> Parser<'src> {
     }
 
     /// Whether the depth limit is latched, latching it first if the tree being
-    /// built has reached [`TREE_HEIGHT_STOP`] (see [`MAX_TREE_HEIGHT`]).
+    /// built has reached its stop height (`tree_height_stop`, normally
+    /// [`TREE_HEIGHT_STOP`]; see [`MAX_TREE_HEIGHT`]).
     ///
     /// Checked wherever the parse can make progress — each recursion chokepoint
     /// ([`Self::with_depth`]) and each consumed token ([`Self::bump_into`]) —
     /// because a chain built in a loop grows the tree without recursing: every
     /// repeat consumes a token, and nothing else bounds how many repeats come.
     fn depth_limit_latched(&mut self) -> bool {
-        if !self.depth_limit_hit && self.builder.height_if_closed_now() >= TREE_HEIGHT_STOP {
+        if !self.depth_limit_hit && self.builder.height_if_closed_now() >= self.tree_height_stop {
             self.trigger_depth_limit();
         }
         self.depth_limit_hit

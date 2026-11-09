@@ -351,29 +351,101 @@ fn every_shape_parses_cleanly_when_short() {
 fn check_every_shape_long(long: impl Fn(&Shape) -> usize) {
     let mut failures = Vec::new();
     for shape in SHAPES {
-        // A stack overflow aborts the process before the assertions can name
-        // the shape, so name it first.
-        eprintln!("parser_tree_height: {}", shape.name);
-        let probe = parse_and_drop(shape.kind, shape.source(long(shape)));
-        if !probe.roundtrip_ok {
-            failures.push(format!("{}: tree is not lossless", shape.name));
-        }
-        if probe.height > MAX_TREE_HEIGHT {
-            failures.push(format!(
-                "{}: tree height {} exceeds MAX_TREE_HEIGHT ({MAX_TREE_HEIGHT})",
-                shape.name, probe.height
-            ));
-        }
-        let stopped = matches!(&probe.error_messages[..], [m] if m.contains("too deep"));
-        if !probe.error_messages.is_empty() && !stopped {
-            failures.push(format!(
-                "{}: expected a clean parse or the one depth-limit diagnostic, got {:?}",
-                shape.name, probe.error_messages
-            ));
-        }
+        check_long(
+            shape.name,
+            shape.kind,
+            shape.source(long(shape)),
+            &mut failures,
+        );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Parse and drop one long input (see [`parse_and_drop`]), recording in
+/// `failures` how it breaks the contract, if it does.
+fn check_long(name: &str, kind: Kind, src: String, failures: &mut Vec<String>) {
+    // A stack overflow aborts the process before the assertions can name the
+    // input, so name it first.
+    eprintln!("parser_tree_height: {name}");
+    let probe = parse_and_drop(kind, src);
+    if !probe.roundtrip_ok {
+        failures.push(format!("{name}: tree is not lossless"));
+    }
+    if probe.height > MAX_TREE_HEIGHT {
+        failures.push(format!(
+            "{name}: tree height {} exceeds MAX_TREE_HEIGHT ({MAX_TREE_HEIGHT})",
+            probe.height
+        ));
+    }
+    let stopped = matches!(&probe.error_messages[..], [m] if m.contains("too deep"));
+    if !probe.error_messages.is_empty() && !stopped {
+        failures.push(format!(
+            "{name}: expected a clean parse or the one depth-limit diagnostic, got {:?}",
+            probe.error_messages
+        ));
+    }
+}
+
+/// How deep [`every_shape_nested_in_modules_stays_within_the_bound`] nests each
+/// shape. A nested module opens its node only after parsing its body, so the
+/// parse cannot count it while the body grows; this many modules add several
+/// hundred such levels on top of a body the parse stopped at the bound.
+const MODULE_NEST: usize = 400;
+
+/// `src` as the body of [`MODULE_NEST`] nested `module M =` declarations.
+fn nested_in_modules(src: &str) -> String {
+    let mut s = String::new();
+    for i in 0..MODULE_NEST {
+        s.extend(std::iter::repeat_n(' ', 2 * i));
+        s.push_str("module M =\n");
+    }
+    for line in src.lines() {
+        s.extend(std::iter::repeat_n(' ', 2 * MODULE_NEST));
+        s.push_str(line);
+        s.push('\n');
+    }
+    s
+}
+
+/// The shapes that can sit inside a nested module: implementation-file shapes
+/// that neither open with a whole-file `module` header nor nest by layout
+/// themselves.
+fn nestable_shapes() -> impl Iterator<Item = &'static Shape> {
+    SHAPES.iter().filter(|shape| {
+        matches!(shape.kind, Kind::Impl) && shape.indent == 0 && !shape.head.starts_with("module ")
+    })
+}
+
+/// Every shape, nested inside [`MODULE_NEST`] modules: the stop the parse
+/// chooses while it builds the body cannot see the module nodes still to come,
+/// so this checks the bound holds for the finished tree, not just for the part
+/// of it the parse could measure. Each must parse cleanly when short, as
+/// above, so the nesting is not vacuous.
+#[test]
+fn every_shape_nested_in_modules_stays_within_the_bound() {
+    let mut failures = Vec::new();
+    for shape in nestable_shapes() {
+        let short = parse_and_drop(shape.kind, nested_in_modules(&shape.source(SHORT)));
+        if !short.roundtrip_ok || !short.error_messages.is_empty() {
+            failures.push(format!(
+                "{} (nested, short): {:?}",
+                shape.name, short.error_messages
+            ));
+        }
+        check_long(
+            &format!("{} (nested)", shape.name),
+            shape.kind,
+            nested_in_modules(&shape.source(NESTED_LONG)),
+            &mut failures,
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The body length for the module-nested shapes: past the bound for every
+/// shape that nests once per repeat, and short enough that the indented body
+/// stays a few megabytes.
+const NESTED_LONG: usize = 3_000;
 
 #[test]
 fn every_shape_stays_within_the_tree_height_bound_when_long() {

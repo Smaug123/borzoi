@@ -2287,10 +2287,20 @@ impl<'src> Parser<'src> {
         // identifier as the typar name would drag the real `)` in as
         // `ERROR` and corrupt the surrounding parse. Mirrors the
         // raw-stream boundary checks in `parse_type` /
-        // `parse_atomic_type`'s LPAREN arm.
+        // `parse_atomic_type`'s LPAREN arm. The filtered peek must be the
+        // identifier too: a layout virtual between the sigil and it (`'⏎a`)
+        // separates them for the parser, and would otherwise be stamped as
+        // the name.
         if self
             .next_non_trivia_raw_at_pos()
             .is_some_and(|t| matches!(t, Token::Ident(_) | Token::QuotedIdent(_)))
+            && matches!(
+                self.peek(),
+                Some((
+                    Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
+                    _
+                ))
+            )
         {
             self.bump_into(SyntaxKind::IDENT_TOK);
         } else {
