@@ -18,7 +18,8 @@
 //! The axes:
 //!
 //! - the type's kind ([`TypeKind`]): a class, which takes the unqualified
-//!   name slot from a value, or a record, which does not;
+//!   name slot from a value, a record, which does not, an enum or a union,
+//!   whose `X.M` is a case, and a class with a generic namesake;
 //! - a rival for the name in the type's namespace ([`Rival`]): an
 //!   `[<AutoOpen>]` module's value, nested module or type, or none;
 //! - where the rival sits ([`RivalPlacement`]): in the type's block before or
@@ -29,9 +30,12 @@
 //! - where the probe sits ([`SiteNs`]): the type's own block (the lexical
 //!   control), or a later block of the same, a descendant, an ancestor or an
 //!   unrelated namespace, in the type's file or in a later file;
-//! - whether the probe's module opens the type's namespace;
-//! - the use: a bare name, the head of `X.M`, a type annotation and a
-//!   constructor call.
+//! - what the probe's module writes first ([`Opens`]): nothing, an `open`
+//!   of the type's namespace, of an earlier file's namespace declaring its
+//!   own `X`, both in either order, or a local value `X` and then the
+//!   other `open`;
+//! - the use: a bare name, the head of `X.M`, a type annotation, a
+//!   constructor call and, where `X.M` is a case, a pattern.
 //!
 //! The oracle is [`crate::common::use_grade`]'s: certain-implies-exact, and
 //! [`MUST_COMMIT`] keeps the grid from passing by declining everything.
@@ -46,29 +50,122 @@ enum TypeKind {
     Class,
     /// `type X = { F: int } static member M = 0`.
     Record,
+    /// `type X = M = 0 | N = 1`: `X.M` is a case.
+    Enum,
+    /// `type X = M | N`: `X.M` is a case.
+    Union,
+    /// `type X()` and `type X<'t>()`, each with a static `M`: FCS reads
+    /// `X.M` as the non-generic one.
+    GenericPair,
 }
 
 impl TypeKind {
-    const ALL: [TypeKind; 2] = [TypeKind::Class, TypeKind::Record];
+    const ALL: [TypeKind; 5] = [
+        TypeKind::Class,
+        TypeKind::Record,
+        TypeKind::Enum,
+        TypeKind::Union,
+        TypeKind::GenericPair,
+    ];
 
     fn tag(self) -> &'static str {
         match self {
             TypeKind::Class => "class",
             TypeKind::Record => "record",
+            TypeKind::Enum => "enum",
+            TypeKind::Union => "union",
+            TypeKind::GenericPair => "pair",
         }
     }
 
-    fn decl(self) -> Vec<String> {
+    /// Whether `X.M` names a case, which a pattern can match.
+    fn has_case(self) -> bool {
+        matches!(self, TypeKind::Enum | TypeKind::Union)
+    }
+
+    /// The declaration; `m` is the value of its `M`, so that two
+    /// declarations of the kind are told apart.
+    fn decl(self, m: u32) -> Vec<String> {
+        let lines: &[&str] = match self {
+            TypeKind::Class => &["type X() =", "    static member M = {m}"],
+            TypeKind::Record => &["type X =", "    { F: int }", "    static member M = {m}"],
+            TypeKind::Enum => &["type X =", "    | M = {m}", "    | N = 9"],
+            TypeKind::Union => &["type X =", "    | M", "    | N"],
+            TypeKind::GenericPair => &[
+                "type X() =",
+                "    static member M = {m}",
+                "type X<'t>() =",
+                "    static member M = 9",
+            ],
+        };
+        lines
+            .iter()
+            .map(|l| l.replace("{m}", &m.to_string()))
+            .collect()
+    }
+}
+
+/// What the probe's module writes before probing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Opens {
+    /// Nothing.
+    None,
+    /// `open R{i}.T`, the type's namespace.
+    Ns,
+    /// `open O{i}`, an earlier file's namespace declaring its own `X` of the
+    /// same kind.
+    Other,
+    /// `open O{i}` then `open R{i}.T`.
+    OtherThenNs,
+    /// `open R{i}.T` then `open O{i}`.
+    NsThenOther,
+    /// `let X = {| M = 2 |}` then `open O{i}`.
+    LocalThenOther,
+}
+
+impl Opens {
+    const ALL: [Opens; 6] = [
+        Opens::None,
+        Opens::Ns,
+        Opens::Other,
+        Opens::OtherThenNs,
+        Opens::NsThenOther,
+        Opens::LocalThenOther,
+    ];
+
+    fn tag(self) -> &'static str {
         match self {
-            TypeKind::Class => vec![
-                "type X() =".to_string(),
-                "    static member M = 0".to_string(),
-            ],
-            TypeKind::Record => vec![
-                "type X =".to_string(),
-                "    { F: int }".to_string(),
-                "    static member M = 0".to_string(),
-            ],
+            Opens::None => "noOpen",
+            Opens::Ns => "open",
+            Opens::Other => "openOther",
+            Opens::OtherThenNs => "openOtherThenNs",
+            Opens::NsThenOther => "openNsThenOther",
+            Opens::LocalThenOther => "localThenOther",
+        }
+    }
+
+    /// A module name suffix, unique per variant.
+    fn module(self) -> &'static str {
+        match self {
+            Opens::None => "Bare",
+            Opens::Ns => "Open",
+            Opens::Other => "Other",
+            Opens::OtherThenNs => "OtherNs",
+            Opens::NsThenOther => "NsOther",
+            Opens::LocalThenOther => "Local",
+        }
+    }
+
+    fn lines(self, i: usize) -> Vec<String> {
+        let ns = format!("    open R{i}.T");
+        let other = format!("    open O{i}");
+        match self {
+            Opens::None => vec![],
+            Opens::Ns => vec![ns],
+            Opens::Other => vec![other],
+            Opens::OtherThenNs => vec![other, ns],
+            Opens::NsThenOther => vec![ns, other],
+            Opens::LocalThenOther => vec!["    let X = {| M = 2 |}".to_string(), other],
         }
     }
 }
@@ -193,7 +290,7 @@ fn lines(f: &mut FileBuilder, ls: &[String]) {
 /// The uses of `X`, in a module at one indent. A value rival is no
 /// constructor, so where it wins `X ()` is a type error FCS reports at the
 /// name; the constructor is probed only without one.
-fn probes(f: &mut FileBuilder, sites: &mut Vec<Site>, rival: Rival, label: &str) {
+fn probes(f: &mut FileBuilder, sites: &mut Vec<Site>, kind: TypeKind, ctor: bool, label: &str) {
     f.probe("    let v = X", "X", format!("{label}/bare"), sites);
     f.probe("    let w = X.M", "X", format!("{label}/head"), sites);
     f.probe(
@@ -202,55 +299,66 @@ fn probes(f: &mut FileBuilder, sites: &mut Vec<Site>, rival: Rival, label: &str)
         format!("{label}/annotation"),
         sites,
     );
-    if rival != Rival::AoValue {
+    if ctor {
         f.probe("    let c = X ()", "X", format!("{label}/ctor"), sites);
+    }
+    if kind.has_case() {
+        f.probe(
+            "    let p = match Unchecked.defaultof<_> with X.M -> 0 | _ -> 1",
+            "X",
+            format!("{label}/pattern"),
+            sites,
+        );
     }
 }
 
-/// A module `{prefix}` probing `X`, opening the type's namespace or not.
+/// A module `{prefix}…` probing `X` after `opens`.
+#[allow(clippy::too_many_arguments)]
 fn probe_module(
     f: &mut FileBuilder,
     sites: &mut Vec<Site>,
     i: usize,
     prefix: &str,
-    open: bool,
+    opens: Opens,
+    kind: TypeKind,
     rival: Rival,
     label: &str,
 ) {
-    f.line(&format!(
-        "module {prefix}{} =",
-        if open { "Open" } else { "Bare" }
-    ));
-    if open {
-        f.line(&format!("    open R{i}.T"));
-    }
+    f.line(&format!("module {prefix}{} =", opens.module()));
+    lines(f, &opens.lines(i));
+    let value_rival = rival == Rival::AoValue || opens == Opens::LocalThenOther;
     probes(
         f,
         sites,
-        rival,
-        &format!("{label}/{}", if open { "open" } else { "noOpen" }),
+        kind,
+        !value_rival,
+        &format!("{label}/{}", opens.tag()),
     );
 }
 
-/// The later blocks' probe modules, every namespace and both `open` choices.
+/// The later blocks' probe modules, every namespace and each of `opens`.
+#[allow(clippy::too_many_arguments)]
 fn later_blocks(
     f: &mut FileBuilder,
     sites: &mut Vec<Site>,
     i: usize,
     prefix: &str,
+    opens: &[Opens],
+    kind: TypeKind,
     rival: Rival,
     label: &str,
 ) {
     for ns in SiteNs::ALL {
         f.line(&format!("namespace {}", ns.namespace(i)));
         f.line("");
-        for open in [false, true] {
+        for &o in opens {
             probe_module(
                 f,
                 sites,
                 i,
                 prefix,
-                open,
+                o,
+                kind,
                 rival,
                 &format!("{label}/{}", ns.tag()),
             );
@@ -273,6 +381,10 @@ fn cell(
 ) {
     let label = format!("{}/{}/{}", kind.tag(), rival.tag(), placement.tag());
     let ns = format!("R{i}.T");
+    // The other namespace's `X`, which `Opens` brings in.
+    a.line(&format!("namespace O{i}"));
+    a.line("");
+    lines(a, &kind.decl(3));
     if placement == RivalPlacement::EarlierFile && rival != Rival::None {
         a.line(&format!("namespace {ns}"));
         a.line("");
@@ -291,19 +403,46 @@ fn cell(
     if placement == RivalPlacement::BlockBefore {
         lines(b, &rival.decl());
     }
-    lines(b, &kind.decl());
+    lines(b, &kind.decl(0));
     if placement == RivalPlacement::BlockAfter {
         lines(b, &rival.decl());
     }
     // The lexical control: the type's own block.
-    for open in [false, true] {
-        probe_module(b, sites, i, "H", open, rival, &format!("{label}/sameBlock"));
+    for opens in Opens::ALL {
+        probe_module(
+            b,
+            sites,
+            i,
+            "H",
+            opens,
+            kind,
+            rival,
+            &format!("{label}/sameBlock"),
+        );
     }
     if placement == RivalPlacement::LaterBlock && rival != Rival::None {
         rival_block(b);
     }
-    later_blocks(b, sites, i, "S", rival, &format!("{label}/sameFile"));
-    later_blocks(c, sites, i, "L", rival, &format!("{label}/laterFile"));
+    later_blocks(
+        b,
+        sites,
+        i,
+        "S",
+        &Opens::ALL,
+        kind,
+        rival,
+        &format!("{label}/sameFile"),
+    );
+    later_blocks(
+        c,
+        sites,
+        i,
+        "L",
+        &[Opens::None, Opens::Ns],
+        kind,
+        rival,
+        &format!("{label}/laterFile"),
+    );
 }
 
 /// Sites that must commit FCS's answer: the lexical control, and a later
@@ -318,6 +457,10 @@ const MUST_COMMIT: &[&str] = &[
     "class/none/blockAfter/sameFile/sameNs/noOpen/annotation",
     "record/none/blockAfter/sameFile/sameNs/noOpen/head",
     "record/none/blockAfter/sameFile/sameNs/noOpen/annotation",
+    "enum/none/blockAfter/sameFile/sameNs/noOpen/head",
+    "enum/none/blockAfter/sameFile/sameNs/noOpen/pattern",
+    "union/none/blockAfter/sameFile/sameNs/noOpen/head",
+    "union/none/blockAfter/sameFile/sameNs/noOpen/pattern",
     // The value's fragment precedes the class's: the class evicts it.
     "class/aoValue/earlierBlock/sameFile/sameNs/noOpen/head",
     // The value's fragment is the class's or a later one: the value holds.
@@ -338,41 +481,41 @@ const MUST_COMMIT: &[&str] = &[
 /// rows, where the type is lexical, have it too.
 const AUTO_OPEN_CHILD_MODULE: &[&str] = &[
     "class/aoModule/blockBefore/sameBlock/noOpen/head",
-    "class/aoModule/blockBefore/sameBlock/open/head",
     "class/aoModule/blockBefore/sameFile/sameNs/noOpen/head",
-    "class/aoModule/blockBefore/sameFile/sameNs/open/head",
     "class/aoModule/blockAfter/sameBlock/noOpen/head",
-    "class/aoModule/blockAfter/sameBlock/open/head",
     "class/aoModule/blockAfter/sameFile/sameNs/noOpen/head",
-    "class/aoModule/blockAfter/sameFile/sameNs/open/head",
     "class/aoModule/earlierBlock/sameBlock/noOpen/head",
-    "class/aoModule/earlierBlock/sameBlock/open/head",
     "class/aoModule/earlierBlock/sameFile/sameNs/noOpen/head",
-    "class/aoModule/earlierBlock/sameFile/sameNs/open/head",
     "class/aoModule/laterBlock/sameFile/sameNs/noOpen/head",
-    "class/aoModule/laterBlock/sameFile/sameNs/open/head",
     "class/aoModule/earlierFile/sameBlock/noOpen/head",
-    "class/aoModule/earlierFile/sameBlock/open/head",
     "class/aoModule/earlierFile/sameFile/sameNs/noOpen/head",
-    "class/aoModule/earlierFile/sameFile/sameNs/open/head",
     "record/aoModule/blockBefore/sameBlock/noOpen/head",
-    "record/aoModule/blockBefore/sameBlock/open/head",
     "record/aoModule/blockBefore/sameFile/sameNs/noOpen/head",
-    "record/aoModule/blockBefore/sameFile/sameNs/open/head",
     "record/aoModule/blockAfter/sameBlock/noOpen/head",
-    "record/aoModule/blockAfter/sameBlock/open/head",
     "record/aoModule/blockAfter/sameFile/sameNs/noOpen/head",
-    "record/aoModule/blockAfter/sameFile/sameNs/open/head",
     "record/aoModule/earlierBlock/sameBlock/noOpen/head",
-    "record/aoModule/earlierBlock/sameBlock/open/head",
     "record/aoModule/earlierBlock/sameFile/sameNs/noOpen/head",
-    "record/aoModule/earlierBlock/sameFile/sameNs/open/head",
     "record/aoModule/laterBlock/sameFile/sameNs/noOpen/head",
-    "record/aoModule/laterBlock/sameFile/sameNs/open/head",
     "record/aoModule/earlierFile/sameBlock/noOpen/head",
-    "record/aoModule/earlierFile/sameBlock/open/head",
     "record/aoModule/earlierFile/sameFile/sameNs/noOpen/head",
-    "record/aoModule/earlierFile/sameFile/sameNs/open/head",
+    "enum/aoModule/blockBefore/sameBlock/noOpen/head",
+    "enum/aoModule/blockBefore/sameFile/sameNs/noOpen/head",
+    "enum/aoModule/blockAfter/sameBlock/noOpen/head",
+    "enum/aoModule/blockAfter/sameFile/sameNs/noOpen/head",
+    "enum/aoModule/earlierBlock/sameBlock/noOpen/head",
+    "enum/aoModule/earlierBlock/sameFile/sameNs/noOpen/head",
+    "enum/aoModule/laterBlock/sameFile/sameNs/noOpen/head",
+    "enum/aoModule/earlierFile/sameBlock/noOpen/head",
+    "enum/aoModule/earlierFile/sameFile/sameNs/noOpen/head",
+    "union/aoModule/blockBefore/sameBlock/noOpen/head",
+    "union/aoModule/blockBefore/sameFile/sameNs/noOpen/head",
+    "union/aoModule/blockAfter/sameBlock/noOpen/head",
+    "union/aoModule/blockAfter/sameFile/sameNs/noOpen/head",
+    "union/aoModule/earlierBlock/sameBlock/noOpen/head",
+    "union/aoModule/earlierBlock/sameFile/sameNs/noOpen/head",
+    "union/aoModule/laterBlock/sameFile/sameNs/noOpen/head",
+    "union/aoModule/earlierFile/sameBlock/noOpen/head",
+    "union/aoModule/earlierFile/sameFile/sameNs/noOpen/head",
 ];
 
 #[test]

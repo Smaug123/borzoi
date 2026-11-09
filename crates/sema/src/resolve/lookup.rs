@@ -3236,32 +3236,18 @@ impl<'a> Resolver<'a> {
             // The definite-non-case test is `case_classification == Some(false)` (the
             // same `head_is_definite_value` test the cross-file block below uses): it
             // catches an **opened** assembly / auto-open value too, which has no
-            // in-file `Def` range — so testing the classification, not
-            // `value_slot_position`, is what makes `open Demo.Auto (value Tag); type Tag =
+            // in-file `Def` range — so testing the classification, not a
+            // declaration position, is what makes `open Demo.Auto (value Tag); type Tag =
             // Case | Other; Tag.Case` defer to the opened value (FCS), not the case.
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
             let value_takes_qualifier = match self.case_resolution_kind(case_res) {
-                // An enum case loses the qualifier only to a *later* value; the
-                // position needs an in-file range (an opened value has none, and is
-                // never later than the same-file enum we model, so it does not take).
-                // A contributor mark the position cannot order against the
-                // enum keeps the qualifier: the path then declines at the mark.
-                // So does an unmodelled binder in scope (an instance member's
-                // `` ``base`` `` receiver): it has no position to order, and
-                // FCS binds it over any enum of the name.
-                Some(DefKind::EnumCase) if reach == TypeReach::Lexical => {
-                    head_is_value
-                        && match self.value_slot_position(head) {
-                            Some(vp) => vp > self.defs[type_id.index()].range.start(),
-                            None => self.lookup_entry(head).is_some_and(|e| {
-                                e.mark.is_some() || matches!(e.resolution, Resolution::Deferred(_))
-                            }),
-                        }
-                }
-                // An earlier block's enum entered at the block's start, so
-                // the slot orders it against the value
-                // ([`Self::head_value_slot`]).
+                // An enum case loses the qualifier only to a value that holds
+                // the slot over it ([`Self::head_value_slot`]): one written
+                // after it, or opened after it — an opened value enters where
+                // its `open` is written, not where it is declared. A contest
+                // the slot cannot order lets the value take it, and the path
+                // then declines further on.
                 Some(DefKind::EnumCase) => {
                     head_is_value && !matches!(self.head_value_slot(head), HeadSlot::Evicted)
                 }
@@ -3269,7 +3255,11 @@ impl<'a> Resolver<'a> {
                 _ => head_is_value,
             };
             if !value_takes_qualifier {
-                if let Some(cause) = self.reached_type_contested(head, reach) {
+                let type_pos = Self::reached_type_slot_pos(
+                    reach,
+                    u32::from(self.defs[type_id.index()].range.start()),
+                );
+                if let Some(cause) = self.reached_type_contested(head, reach, type_pos) {
                     self.defer_with_cause(
                         first.text_range(),
                         segments,
@@ -3314,19 +3304,9 @@ impl<'a> Resolver<'a> {
                 reach,
                 u32::from(self.defs[type_id.index()].range.start()),
             );
-            let type_takes_qualifier = !head_is_value
-                || self
-                    .value_slot_position(head)
-                    .is_some_and(|vr| u32::from(vr) <= type_pos);
-            if type_takes_qualifier && self.lower_arity_namesake_possible(head, type_id, None) {
-                self.defer_with_cause(
-                    first.text_range(),
-                    segments,
-                    DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
-                );
-                return;
-            }
-            if head_is_value {
+            // Whether the type takes the qualifier: `None` when a value
+            // does, the cause when the contest is not decidable.
+            let takes = if head_is_value {
                 // FCS gives a value in scope the qualifier outright unless a
                 // type took its unqualified slot ([`Self::head_value_slot`]):
                 // a later constructible type does (M2d), a later value takes
@@ -3336,45 +3316,45 @@ impl<'a> Resolver<'a> {
                 match self.head_value_slot(head) {
                     // Member access on the value — the intra-file fallback
                     // below resolves the head to it.
-                    HeadSlot::Held => {}
+                    HeadSlot::Held => None,
                     HeadSlot::Evicted if !self.lexical_type_is_latest(head, type_pos) => {
-                        self.defer_with_cause(
-                            first.text_range(),
-                            segments,
-                            DeclineSite::pre_walk(DeclineCause::ValueEvicted),
-                        );
-                        return;
+                        Some(Err(DeclineCause::ValueEvicted))
                     }
-                    HeadSlot::Evicted => {
-                        if let Some(cause) = self.reached_type_contested(head, reach) {
-                            self.defer_with_cause(
-                                first.text_range(),
-                                segments,
-                                DeclineSite::pre_walk(cause),
-                            );
-                            return;
-                        }
-                        self.record_type_qualifier(
-                            first,
-                            member_seg,
-                            type_id,
-                            Resolution::Local(member_def),
-                        );
-                        return;
-                    }
-                    HeadSlot::Unordered => {
-                        // An unorderable contest between the head's two slots,
-                        // reached before the fallback that usually names it.
-                        self.defer_with_cause(
-                            first.text_range(),
-                            segments,
-                            DeclineSite::pre_walk(DeclineCause::HeadSlotUnordered),
-                        );
-                        return;
-                    }
+                    HeadSlot::Evicted => Some(Ok(())),
+                    // An unorderable contest between the head's two slots,
+                    // reached before the fallback that usually names it.
+                    HeadSlot::Unordered => Some(Err(DeclineCause::HeadSlotUnordered)),
                 }
             } else {
-                if let Some(cause) = self.reached_type_contested(head, reach) {
+                Some(Ok(()))
+            };
+            // A type that takes the qualifier is the one FCS reads only when
+            // no other type of the name entered after it
+            // ([`Self::reached_type_contested`]) and no namesake of lower
+            // arity is in scope, whichever way it took the qualifier.
+            let takes = takes.map(|takes| {
+                takes.and_then(
+                    |()| match self.reached_type_contested(head, reach, type_pos) {
+                        Some(cause) => Err(cause),
+                        None if self.lower_arity_namesake_possible(head, type_id, None) => {
+                            Err(DeclineCause::QualifierArityNamesake)
+                        }
+                        None => Ok(()),
+                    },
+                )
+            });
+            match takes {
+                None => {}
+                Some(Ok(())) => {
+                    self.record_type_qualifier(
+                        first,
+                        member_seg,
+                        type_id,
+                        Resolution::Local(member_def),
+                    );
+                    return;
+                }
+                Some(Err(cause)) => {
                     self.defer_with_cause(
                         first.text_range(),
                         segments,
@@ -3382,13 +3362,6 @@ impl<'a> Resolver<'a> {
                     );
                     return;
                 }
-                self.record_type_qualifier(
-                    first,
-                    member_seg,
-                    type_id,
-                    Resolution::Local(member_def),
-                );
-                return;
             }
         }
 
@@ -4162,7 +4135,9 @@ impl<'a> Resolver<'a> {
         let Some((type_id, case_res, reach)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
-        if let Some(cause) = self.reached_type_contested(&id_text(type_seg), reach) {
+        let type_pos =
+            Self::reached_type_slot_pos(reach, u32::from(self.defs[type_id.index()].range.start()));
+        if let Some(cause) = self.reached_type_contested(&id_text(type_seg), reach, type_pos) {
             self.defer_with_cause(
                 type_seg.text_range(),
                 &[type_seg.clone(), case_seg.clone()],
@@ -5174,29 +5149,9 @@ impl<'a> Resolver<'a> {
         self.record(whole, case_res);
     }
 
-    /// The source range of the latest in-scope **value** named `name` (a value /
-    /// parameter / local / pattern binder), or `None` if none is in scope. Used
-    /// to break a value-vs-type qualifier collision by source order (latest
-    /// wins): see the enum-case branch of [`resolve_long_ident`](Self::resolve_long_ident).
-    /// Where the value [`Self::lookup`] finds for `name` entered the
-    /// environment, for ordering it against a same-named in-file type: its
-    /// in-file definition. `None` for an opened value — and for a contributor
-    /// mark unless a constructible type took the slot after it
-    /// ([`Self::head_value_slot`]), when it is the mark's position: a record
-    /// or union never takes the slot, so a mark before one still holds it.
-    pub(super) fn value_slot_position(&self, name: &str) -> Option<rowan::TextSize> {
-        let entry = self.lookup_entry(name)?;
-        if entry.mark.is_some() {
-            return matches!(self.head_value_slot(name), HeadSlot::Evicted)
-                .then(|| rowan::TextSize::from(entry.open_pos));
-        }
-        self.value_resolution_def_range(entry.resolution)
-            .map(|r| r.start())
-    }
-
-    /// The in-file definition range behind a value-frame resolution — the
-    /// range half of [`value_slot_position`](Self::value_slot_position), for callers
-    /// that already hold the resolution.
+    /// The in-file definition range behind a value-frame resolution: where a
+    /// value the frame binds was declared, `None` for one declared in no
+    /// earlier part of this file.
     fn value_resolution_def_range(&self, res: Resolution) -> Option<TextRange> {
         match res {
             Resolution::Local(id) => Some(self.defs[id.index()].range),
@@ -5310,17 +5265,15 @@ impl<'a> Resolver<'a> {
     /// (FCS-probed), so only a same-file type that positively owns the case
     /// blocks the fall-through.
     fn same_file_type_owns_case(&self, tname: &str, cname: &str) -> bool {
+        // Every type along the chain, the ones an earlier block declared
+        // included: one out of lexical reach ([`Self::in_file_type_reach`])
+        // may still be in scope through an `open`, which outranks the
+        // cross-file index's reading too.
         (0..=self.container_path.len()).rev().any(|k| {
-            let prefix = &self.container_path[..k];
-            self.type_defs
-                .get(prefix)
+            self.type_cases
+                .get(&self.container_path[..k])
                 .and_then(|m| m.get(tname))
-                .is_some_and(|&id| self.in_file_type_reach_of(k, id).visible())
-                && self
-                    .type_cases
-                    .get(prefix)
-                    .and_then(|m| m.get(tname))
-                    .is_some_and(|c| c.contains_key(cname))
+                .is_some_and(|c| c.contains_key(cname))
         })
     }
 
@@ -5368,12 +5321,14 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Why a qualifier `name` that reaches an earlier block's type as `reach`
-    /// may instead name another type that entered the slot at the block's
-    /// start, in an order the walk does not record; `None` when it cannot:
+    /// Why a qualifier `name` that reaches an in-file type as `reach`,
+    /// entering the slot at `type_pos` ([`Self::reached_type_slot_pos`]),
+    /// may name another type instead; `None` when it cannot:
     ///
+    /// - a type of the name entered after it: an `open` supplied one
+    ///   ([`Self::lexical_type_is_latest`]);
     /// - a [`TypeReach::Boundary`] type is ordered against nothing the
-    ///   implicit open adds;
+    ///   block's implicit open adds;
     /// - a [`TypeReach::NamespaceOpen`] type comes in with its block's
     ///   fragment, and that fragment's `[<AutoOpen>]` modules' types follow
     ///   it, as do a later block's
@@ -5384,14 +5339,16 @@ impl<'a> Resolver<'a> {
         &self,
         name: &str,
         reach: TypeReach,
+        type_pos: u32,
     ) -> Option<DeclineCause> {
         match reach {
-            TypeReach::Lexical => None,
             TypeReach::Boundary | TypeReach::Hidden => Some(DeclineCause::EarlierBlockRootType),
-            TypeReach::NamespaceOpen => self
-                .auto_open_type_shadow_names
-                .contains_key(name)
-                .then_some(DeclineCause::SameFileAutoOpenType),
+            TypeReach::NamespaceOpen if self.auto_open_type_shadow_names.contains_key(name) => {
+                Some(DeclineCause::SameFileAutoOpenType)
+            }
+            TypeReach::Lexical | TypeReach::NamespaceOpen => (!self
+                .lexical_type_is_latest(name, type_pos))
+            .then_some(DeclineCause::InFileTypeOpenedOver),
         }
     }
 
@@ -5518,8 +5475,8 @@ impl<'a> Resolver<'a> {
     /// union/record/interface never does (probes M20k/M20l/M20o), and a
     /// statically-undecidable repr (abbreviation, delegate, unspecified-kind
     /// object model) makes the contest [`HeadSlot::Unordered`]. The latest
-    /// eviction-relevant position is compared against the value's
-    /// ([`Self::value_slot_position`]); a value with no in-file position (an
+    /// eviction-relevant position is compared against the value's (its
+    /// `open`'s, or its declaration's); a value with no in-file position (an
     /// opened module's value) cannot be ordered either, so any
     /// possibly-evicting type alongside one is likewise `Unordered` —
     /// mirroring the member branch's positionless defer. Deliberately **not**
