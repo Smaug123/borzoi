@@ -756,6 +756,12 @@ impl<'src> Parser<'src> {
         }
 
         loop {
+            // Each postfix application or array suffix wraps the type so far in
+            // one more node without recursing, so the run is held to the tree
+            // bound here.
+            if self.depth_limit_latched() {
+                break;
+            }
             // Bail at a layout virtual: `Virtual::BlockSep` /
             // `Virtual::BlockEnd` at the filtered cursor marks a
             // structural boundary that the postfix-app / array-suffix

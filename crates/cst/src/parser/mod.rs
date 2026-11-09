@@ -403,6 +403,20 @@ fn parse_inner(
     file_kind: FileKind,
     lang: LanguageVersion,
 ) -> Parse {
+    parse_inner_stopping_at(source, symbols, file_kind, lang, TREE_HEIGHT_STOP)
+}
+
+/// [`parse_inner`] with the tree height at which the parse first tries
+/// stopping given explicitly. A low stop makes the depth limit latch early, at
+/// whichever safe point comes first, which is how the parser's own tests reach
+/// every production's handling of a latch.
+fn parse_inner_stopping_at(
+    source: &str,
+    symbols: &HashSet<String>,
+    file_kind: FileKind,
+    lang: LanguageVersion,
+    initial_stop: usize,
+) -> Parse {
     // Non-`Lex` preprocessor errors — malformed directive lines (`#if *FOO*`),
     // orphan `#else`/`#elif`/`#endif`, bad chains, and `#if` unclosed at EOF —
     // are dropped from the raw stream but re-attached to `Parse::errors` below.
@@ -473,6 +487,7 @@ fn parse_inner(
     let langversion_errors = langversion_diagnostics(&elif_directives, lang);
 
     let mut parser = Parser::new(source, raw_tokens, filtered_tokens);
+    parser.tree_height_stop = initial_stop;
     loop {
         match file_kind {
             FileKind::Impl => parser.parse_impl_file(),

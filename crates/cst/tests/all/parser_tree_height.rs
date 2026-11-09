@@ -384,7 +384,21 @@ fn check_long(name: &str, kind: Kind, src: String, failures: &mut Vec<String>) {
             probe.error_messages
         ));
     }
+    if stopped && probe.height < STOPPED_TREE_MIN_HEIGHT {
+        failures.push(format!(
+            "{name}: stopped with a tree only {} deep, so the stop came early, not at \
+             the bound — a loop that wraps a node per repeat may not be checking it \
+             (`depth_limit_latched`), leaving only the redo-from-a-lower-stop fallback",
+            probe.height
+        ));
+    }
 }
+
+/// A parse only stops because something grew tall or deep, so its tree is at
+/// least this tall: the shallowest stop, the recursion guard's on a chain that
+/// costs it two levels per repeat, leaves about 260. A tree much shorter means
+/// the parse gave up near the start instead.
+const STOPPED_TREE_MIN_HEIGHT: usize = 200;
 
 /// How deep [`every_shape_nested_in_modules_stays_within_the_bound`] nests each
 /// shape. A nested module opens its node only after parsing its body, so the

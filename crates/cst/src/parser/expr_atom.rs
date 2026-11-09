@@ -3362,6 +3362,11 @@ impl<'src> Parser<'src> {
     ) -> EndsInAdjacentApp {
         let mut ends = head;
         loop {
+            // Each postfix wraps the chain so far in one more node, without
+            // recursing; this is where such a chain is held to the tree bound.
+            if self.depth_limit_latched() {
+                return ends;
+            }
             // Only a raw-adjacent `.` continues a postfix access — a dot reached
             // only by crossing a LexFilter-swallowed `)` belongs to an
             // enclosing construct (see [`Self::at_raw_adjacent_dot`]).

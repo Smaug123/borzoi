@@ -1018,6 +1018,12 @@ impl<'src> Parser<'src> {
     /// prefix (`Paren`/`Clause`, never the bare `Head`).
     pub(super) fn climb_pat_tail(&mut self, cp: Checkpoint, min_bp: u8, ctx: PatCtx) {
         loop {
+            // Every arm below dispatches on the raw stream; a layout virtual at
+            // the cursor ends the pattern (`function ?⏎:`, where an `OEND`
+            // precedes the `:`), as the parser will consume it next.
+            if self.parked_on_layout_virtual() {
+                break;
+            }
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::ColonColon) if Self::PAT_BP_CONS >= min_bp => {
                     self.builder

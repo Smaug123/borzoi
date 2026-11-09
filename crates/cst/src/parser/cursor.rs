@@ -34,6 +34,9 @@ impl<'src> Parser<'src> {
     /// (see [`parse_inner`]); this one's partial tree and diagnostics are
     /// dropped.
     pub(super) fn restart(self, stop: usize) -> Self {
+        // The tree being thrown away is too tall by construction, perhaps far
+        // too tall to drop by rowan's recursive free.
+        self.builder.discard();
         Self {
             tree_height_stop: stop,
             ..Self::new(self.source, self.raw_tokens, self.filtered_tokens)
@@ -91,11 +94,14 @@ impl<'src> Parser<'src> {
     /// built has reached its stop height (`tree_height_stop`, normally
     /// [`TREE_HEIGHT_STOP`]; see [`MAX_TREE_HEIGHT`]).
     ///
-    /// Checked wherever the parse can make progress — each recursion chokepoint
-    /// ([`Self::with_depth`]) and each consumed token ([`Self::bump_into`]) —
-    /// because a chain built in a loop grows the tree without recursing: every
-    /// repeat consumes a token, and nothing else bounds how many repeats come.
-    fn depth_limit_latched(&mut self) -> bool {
+    /// Latching drains the rest of the input, so it may only happen where a
+    /// production is ready to see end of input next: at a recursion chokepoint
+    /// ([`Self::with_depth`]), or at the head of a loop that wraps one more
+    /// node per repeat, before it looks for the next repeat — such a chain
+    /// grows the tree without recursing. Never mid-production: a production
+    /// that has looked ahead and then bumps a token may rely on the tokens it
+    /// saw still following.
+    pub(super) fn depth_limit_latched(&mut self) -> bool {
         if !self.depth_limit_hit && self.builder.height_if_closed_now() >= self.tree_height_stop {
             self.trigger_depth_limit();
         }
@@ -238,9 +244,6 @@ impl<'src> Parser<'src> {
     /// keeping the tree lossless and the file marked broken rather than
     /// handing consumers a zero-width identifier or keyword.
     pub(super) fn bump_into(&mut self, kind: SyntaxKind) {
-        if self.depth_limit_latched() {
-            return;
-        }
         let Some((res, span)) = self.filtered_tokens.get(self.pos).cloned() else {
             return;
         };
@@ -803,6 +806,53 @@ fn virtual_marker_kind(virtual_token: &Virtual) -> Option<SyntaxKind> {
         | Virtual::InterfaceMember
         | Virtual::RightBlockEnd
         | Virtual::HighPrecedenceTyApp => None,
+    }
+}
+
+/// Whether `virtual_token` is pure layout: a block opener, closer or separator
+/// LexFilter inserts with no raw token behind it. The others either relabel a
+/// raw keyword that sits at the same span (`Let`, `Then`, `With`, …), so the
+/// raw stream still shows what comes next, or mark an adjacency just before
+/// the raw token they precede (the `HighPrecedence*` markers). Exhaustive, so
+/// a new virtual has to choose.
+fn is_layout_virtual(virtual_token: &Virtual) -> bool {
+    match virtual_token {
+        Virtual::BlockBegin
+        | Virtual::BlockEnd
+        | Virtual::DeclEnd
+        | Virtual::BlockSep
+        | Virtual::End
+        | Virtual::RightBlockEnd => true,
+        Virtual::Let
+        | Virtual::Binder
+        | Virtual::AndBang
+        | Virtual::Do
+        | Virtual::DoBang
+        | Virtual::Then
+        | Virtual::Else
+        | Virtual::Fun
+        | Virtual::Function
+        | Virtual::Lazy
+        | Virtual::Assert
+        | Virtual::With
+        | Virtual::JoinIn
+        | Virtual::InterfaceMember
+        | Virtual::HighPrecedenceParenApp
+        | Virtual::HighPrecedenceBrackApp
+        | Virtual::HighPrecedenceTyApp => false,
+    }
+}
+
+impl Parser<'_> {
+    /// Whether the filtered cursor sits on a layout virtual
+    /// ([`is_layout_virtual`]). A production that dispatches on the raw stream
+    /// at the cursor must not commit there: the raw token it sees is not the
+    /// next one the parser consumes, and bumping it would stamp the virtual
+    /// instead (see [`Self::bump_into`]). The raw lookaheads themselves do not
+    /// stop at one, since many productions read past a layout virtual on
+    /// purpose, to decide whether to consume it.
+    pub(super) fn parked_on_layout_virtual(&self) -> bool {
+        matches!(self.peek(), Some((Ok(FilteredToken::Virtual(v)), _)) if is_layout_virtual(v))
     }
 }
 

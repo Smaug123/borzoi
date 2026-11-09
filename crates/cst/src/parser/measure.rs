@@ -90,8 +90,13 @@ impl<'src> Parser<'src> {
     fn parse_measure_type_expr(&mut self) {
         let cp = self.builder.checkpoint();
         self.parse_measure_operand();
-        // Left-associative `*` / `/` run.
+        // Left-associative `*` / `/` run. Each operator wraps the run so far in
+        // one more node without recursing, so the run is held to the tree bound
+        // here.
         loop {
+            if self.depth_limit_latched() {
+                break;
+            }
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::Op("*")) => {
                     self.builder

@@ -5,6 +5,7 @@
 
 mod bindings;
 mod control_flow;
+mod depth_latch;
 mod expressions;
 mod interp;
 mod literals;

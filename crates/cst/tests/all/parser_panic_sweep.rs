@@ -427,6 +427,9 @@ fn the_known_virtual_stamp_witnesses_parse() {
         "_\n.\n",
         // `parse_var_type`: the `OBLOCKSEP` before `a` became the typar name.
         "x:?'\na",
+        // `climb_pat_tail`, dispatching on the raw stream: the `OEND` before
+        // the `:` became the typed pattern's `COLON_TOK` (F# 4.6).
+        "function?\n:\n",
     ] {
         probe(src, &mut census);
     }
