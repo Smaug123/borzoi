@@ -1147,7 +1147,11 @@ impl<'a> Resolver<'a> {
     fn container_and_ancestors_hide_values(&self) -> bool {
         let mut path = self.container_path.clone();
         loop {
-            if self.modules_with_hidden_values.contains(&path) {
+            // A `private` extern of an enclosing container is in reach here;
+            // one of an `[<AutoOpen>]` module inside it (below) is not.
+            if self.modules_with_hidden_values.contains(&path)
+                || self.modules_with_private_hidden_values.contains(&path)
+            {
                 return true;
             }
             // …and the `[<AutoOpen>]` modules *inside* it, whose contents F# folds

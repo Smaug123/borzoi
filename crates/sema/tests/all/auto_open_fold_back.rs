@@ -312,3 +312,205 @@ fn an_opaque_open_does_not_expose_what_a_later_fold_shadows() {
         .collect();
     assert!(failed.is_empty(), "graded wrong: {failed:?}");
 }
+
+/// The members a fold does not model, each `private` to the module that
+/// declares it, and the probe that would find each if it were in reach.
+/// `outer` is the binding FCS keeps when the member is out of reach, and
+/// `want` pins it.
+struct Unmodelled {
+    tag: &'static str,
+    member: &'static str,
+    outer: &'static str,
+    probe: &'static str,
+    want: &'static str,
+    /// Where FCS binds the probe when the member is `internal`, and so in
+    /// reach: `{i}` stands for the member's indent.
+    reach_want: &'static str,
+}
+
+const EXPR_OUTER: &str = "let Nn = 99";
+const EXPR_PROBE: &str = "let probe = Nn";
+const PAT_OUTER: &str = "type U =\n    | Nn\n    | Other";
+const PAT_PROBE: &str = "let probe x =\n    match x with\n    | Nn -> 0\n    | Other -> 1";
+
+const PRIVATE_UNMODELLED: &[Unmodelled] = &[
+    Unmodelled {
+        tag: "extern",
+        member: "extern int private Nn()",
+        outer: EXPR_OUTER,
+        probe: EXPR_PROBE,
+        want: "Nn = 99",
+        reach_want: "Nn()",
+    },
+    Unmodelled {
+        tag: "ctor_type",
+        member: "type private Nn() = class end",
+        outer: EXPR_OUTER,
+        probe: EXPR_PROBE,
+        want: "Nn = 99",
+        reach_want: "Nn()",
+    },
+    Unmodelled {
+        tag: "barless_expr",
+        member: "type private NnBarX = Nn",
+        outer: EXPR_OUTER,
+        probe: EXPR_PROBE,
+        want: "Nn = 99",
+        reach_want: "Nn\n{i}let filler",
+    },
+    Unmodelled {
+        tag: "barless_pattern",
+        member: "type private NnBarX = Nn",
+        outer: PAT_OUTER,
+        probe: PAT_PROBE,
+        want: "Nn\n    | Other",
+        reach_want: "Nn\n{i}let filler",
+    },
+    Unmodelled {
+        tag: "active_pattern",
+        member: "let private (|Nn|_|) x = Some x",
+        outer: PAT_OUTER,
+        probe: PAT_PROBE,
+        want: "Nn\n    | Other",
+        reach_want: "|Nn|_|",
+    },
+];
+
+/// The routes a fold reaches a module's members by, each with the member
+/// spliced in where `{m}` sits (at the indent of the module that declares
+/// it), the outer binding at `{o}` and the probe at `{p}`. The last file
+/// holds the probe; `outer_file` says which file holds the outer binding.
+const FOLD_ROUTES: &[(&str, &[&str])] = &[
+    (
+        "fold_back",
+        &["module Demo\n\n{o}\n\n[<AutoOpen>]\nmodule A =\n    {m}\n    let filler = 0\n\n{p}\n"],
+    ),
+    // A `module private` lends its members its parent's reach: an `internal`
+    // one folds back, a `private` one does not.
+    (
+        "fold_back_private_module",
+        &[
+            "module Demo\n\n{o}\n\n[<AutoOpen>]\nmodule private A =\n    {m}\n    let filler = 0\n\n{p}\n",
+        ],
+    ),
+    (
+        "open_child",
+        &[
+            "module Demo\n\nmodule H =\n    [<AutoOpen>]\n    module A =\n        {m}\n        \
+             let filler = 0\n\n{o}\n\nopen H\n\n{p}\n",
+        ],
+    ),
+    (
+        "open_module",
+        &["module Demo\n\nmodule H =\n    {m}\n    let filler = 0\n\n{o}\n\nopen H\n\n{p}\n"],
+    ),
+    (
+        "open_child_cross_file",
+        &[
+            "module H\n\n[<AutoOpen>]\nmodule A =\n    {m}\n    let filler = 0\n",
+            "module Demo\n\n{o}\n\nopen H\n\n{p}\n",
+        ],
+    ),
+    (
+        "open_module_cross_file",
+        &[
+            "module H\n\n{m}\nlet filler = 0\n",
+            "module Demo\n\n{o}\n\nopen H\n\n{p}\n",
+        ],
+    ),
+];
+
+fn instantiate(
+    template: &str,
+    case: &Unmodelled,
+    member: &str,
+    probe: &str,
+    indent: usize,
+) -> String {
+    let member = member.replace('\n', &format!("\n{}", " ".repeat(indent)));
+    template
+        .replace("{m}", &member)
+        .replace("{o}", case.outer)
+        .replace("{p}", probe)
+}
+
+fn member_indent(template: &str) -> usize {
+    let at = template.find("{m}").expect("a member slot");
+    at - template[..at].rfind('\n').map_or(0, |n| n + 1)
+}
+
+/// **A member out of reach costs no decline.** A `private` member of the
+/// folded module is not accessible where the fold lands, so FCS's environment
+/// does not take it, and the walk must commit what FCS binds rather than
+/// decline on a mark the member pushed. Every route and member runs, so a
+/// regression names each one.
+#[test]
+fn a_private_unmodelled_member_pushes_no_mark() {
+    let mut failed: Vec<String> = Vec::new();
+    for (route, templates) in FOLD_ROUTES {
+        for case in PRIVATE_UNMODELLED {
+            let files: Vec<String> = templates
+                .iter()
+                .map(|t| instantiate(t, case, case.member, case.probe, member_indent_or_zero(t)))
+                .collect();
+            let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+            let label = format!("private_{route}_{}", case.tag);
+            let outer_file = files.len() - 1;
+            let ok = std::panic::catch_unwind(|| {
+                assert_commits(&label, &refs, "Nn", outer_file, case.want)
+            })
+            .is_ok();
+            if !ok {
+                failed.push(label);
+            }
+        }
+    }
+    assert!(failed.is_empty(), "graded wrong or declined: {failed:?}");
+}
+
+/// **A member in reach keeps its mark.** The same grid with each member
+/// `internal`, which a fold over the project brings into bare scope: FCS
+/// binds the member, so the outer binding must not be committed.
+#[test]
+fn an_internal_unmodelled_member_still_marks() {
+    let mut failed: Vec<String> = Vec::new();
+    for (route, templates) in FOLD_ROUTES {
+        for case in PRIVATE_UNMODELLED {
+            let member = case.member.replace("private", "internal");
+            // Typed by the member now, whose type may be in reach of the
+            // probe and no further.
+            let probe = case
+                .probe
+                .replace("let probe", "let private probe")
+                .replace("| Other -> 1", "| _ -> 1");
+            let member_file = templates
+                .iter()
+                .position(|t| t.contains("{m}"))
+                .expect("a member slot");
+            let indent = member_indent(templates[member_file]);
+            let files: Vec<String> = templates
+                .iter()
+                .map(|t| instantiate(t, case, &member, &probe, member_indent_or_zero(t)))
+                .collect();
+            let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+            let want = case.reach_want.replace("{i}", &" ".repeat(indent));
+            let label = format!("internal_{route}_{}", case.tag);
+            let ok = std::panic::catch_unwind(|| {
+                assert_fcs_graded_bind(&label, &refs, "Nn", member_file, &want, false)
+            })
+            .is_ok();
+            if !ok {
+                failed.push(label);
+            }
+        }
+    }
+    assert!(failed.is_empty(), "graded wrong: {failed:?}");
+}
+
+fn member_indent_or_zero(template: &str) -> usize {
+    if template.contains("{m}") {
+        member_indent(template)
+    } else {
+        0
+    }
+}

@@ -16,9 +16,6 @@ after opaque open: literal/pattern gap
 after opaque open: nested-auto/expr gap
 after opaque open: private alias-nested-auto/expr gap
 after opaque open: private auto-open-static/expr gap
-after opaque open: private barless-case/expr gap
-after opaque open: private extern/expr gap
-after opaque open: private type/expr gap
 after opaque open: type/expr gap
 after opaque open: value/expr gap
 alias-nested-auto ; alias-nested-auto/expr gap
@@ -69,17 +66,14 @@ ap ; private alias-nested-auto/expr gap
 ap ; private alias-nested-auto/pattern gap
 ap ; private auto-open-static/expr gap
 ap ; private auto-open-static/pattern gap
-ap ; private barless-case/expr gap
 ap ; private barless-case/pattern gap
 ap ; private case/pattern gap
 ap ; private exn/pattern gap
-ap ; private extern/expr gap
 ap ; private extern/pattern gap
 ap ; private literal/pattern gap
 ap ; private nested-auto/pattern gap
 ap ; private rqa-barless-case/pattern gap
 ap ; private rqa-case/pattern gap
-ap ; private type/expr gap
 ap ; private type/pattern gap
 ap ; private value/pattern gap
 ap ; rqa-barless-case/pattern gap
@@ -183,14 +177,8 @@ case ; extern/pattern gap
 case ; literal/pattern gap
 case ; private alias-nested-auto/expr gap
 case ; private alias-nested-auto/pattern gap
-case ; private ap/pattern gap
 case ; private auto-open-static/expr gap
 case ; private auto-open-static/pattern gap
-case ; private barless-case/expr gap
-case ; private barless-case/pattern gap
-case ; private extern/expr gap
-case ; private extern/pattern gap
-case ; private type/expr gap
 case ; type/expr gap
 exn ; alias-nested-auto/expr gap
 exn ; alias-nested-auto/pattern gap
@@ -204,13 +192,8 @@ exn ; extern/pattern gap
 exn ; literal/pattern gap
 exn ; private alias-nested-auto/expr gap
 exn ; private alias-nested-auto/pattern gap
-exn ; private ap/pattern gap
 exn ; private auto-open-static/expr gap
 exn ; private auto-open-static/pattern gap
-exn ; private barless-case/expr gap
-exn ; private barless-case/pattern gap
-exn ; private extern/expr gap
-exn ; private extern/pattern gap
 extern ; alias-nested-auto/expr gap
 extern ; ap/expr gap
 extern ; ap/pattern gap
@@ -256,7 +239,6 @@ literal ; private exn/pattern gap
 literal ; private nested-auto/pattern gap
 literal ; private rqa-barless-case/pattern gap
 literal ; private rqa-case/pattern gap
-literal ; private type/expr gap
 literal ; private type/pattern gap
 literal ; rqa-barless-case/pattern gap
 literal ; rqa-case/pattern gap
@@ -278,9 +260,6 @@ namespace-cross-file: after opaque open: literal/pattern gap
 namespace-cross-file: after opaque open: nested-auto/expr gap
 namespace-cross-file: after opaque open: private alias-nested-auto/expr gap
 namespace-cross-file: after opaque open: private auto-open-static/expr gap
-namespace-cross-file: after opaque open: private barless-case/expr gap
-namespace-cross-file: after opaque open: private extern/expr gap
-namespace-cross-file: after opaque open: private type/expr gap
 namespace-cross-file: after opaque open: type/expr gap
 namespace-cross-file: after opaque open: value/expr gap
 namespace-cross-file: alias-nested-auto ; alias-nested-auto/expr gap
@@ -328,11 +307,6 @@ namespace-cross-file: ap ; private alias-nested-auto/expr gap
 namespace-cross-file: ap ; private alias-nested-auto/pattern gap
 namespace-cross-file: ap ; private auto-open-static/expr gap
 namespace-cross-file: ap ; private auto-open-static/pattern gap
-namespace-cross-file: ap ; private barless-case/expr gap
-namespace-cross-file: ap ; private barless-case/pattern gap
-namespace-cross-file: ap ; private extern/expr gap
-namespace-cross-file: ap ; private extern/pattern gap
-namespace-cross-file: ap ; private type/expr gap
 namespace-cross-file: ap ; type/expr gap
 namespace-cross-file: auto-open-static ; alias-nested-auto/expr gap
 namespace-cross-file: auto-open-static ; ap/expr gap
@@ -430,11 +404,6 @@ namespace-cross-file: case ; private alias-nested-auto/expr gap
 namespace-cross-file: case ; private alias-nested-auto/pattern gap
 namespace-cross-file: case ; private auto-open-static/expr gap
 namespace-cross-file: case ; private auto-open-static/pattern gap
-namespace-cross-file: case ; private barless-case/expr gap
-namespace-cross-file: case ; private barless-case/pattern gap
-namespace-cross-file: case ; private extern/expr gap
-namespace-cross-file: case ; private extern/pattern gap
-namespace-cross-file: case ; private type/expr gap
 namespace-cross-file: case ; type/expr gap
 namespace-cross-file: exn ; alias-nested-auto/expr gap
 namespace-cross-file: exn ; alias-nested-auto/pattern gap
@@ -449,10 +418,6 @@ namespace-cross-file: exn ; private alias-nested-auto/expr gap
 namespace-cross-file: exn ; private alias-nested-auto/pattern gap
 namespace-cross-file: exn ; private auto-open-static/expr gap
 namespace-cross-file: exn ; private auto-open-static/pattern gap
-namespace-cross-file: exn ; private barless-case/expr gap
-namespace-cross-file: exn ; private barless-case/pattern gap
-namespace-cross-file: exn ; private extern/expr gap
-namespace-cross-file: exn ; private extern/pattern gap
 namespace-cross-file: extern ; alias-nested-auto/expr gap
 namespace-cross-file: extern ; ap/expr gap
 namespace-cross-file: extern ; ap/pattern gap
@@ -498,7 +463,6 @@ namespace-cross-file: literal ; private exn/pattern gap
 namespace-cross-file: literal ; private nested-auto/pattern gap
 namespace-cross-file: literal ; private rqa-barless-case/pattern gap
 namespace-cross-file: literal ; private rqa-case/pattern gap
-namespace-cross-file: literal ; private type/expr gap
 namespace-cross-file: literal ; private type/pattern gap
 namespace-cross-file: literal ; rqa-barless-case/pattern gap
 namespace-cross-file: literal ; rqa-case/pattern gap
@@ -512,8 +476,6 @@ namespace-cross-file: nested-auto ; extern/expr gap
 namespace-cross-file: nested-auto ; literal/pattern gap
 namespace-cross-file: nested-auto ; private alias-nested-auto/expr gap
 namespace-cross-file: nested-auto ; private auto-open-static/expr gap
-namespace-cross-file: nested-auto ; private extern/expr gap
-namespace-cross-file: nested-auto ; private type/expr gap
 namespace-cross-file: nested-auto ; type/expr gap
 namespace-cross-file: private alias-nested-auto ; alias-nested-auto/expr gap
 namespace-cross-file: private alias-nested-auto ; ap/expr gap
@@ -555,9 +517,6 @@ namespace-cross-file: private ap ; extern/expr gap
 namespace-cross-file: private ap ; literal/pattern gap
 namespace-cross-file: private ap ; private alias-nested-auto/expr gap
 namespace-cross-file: private ap ; private auto-open-static/expr gap
-namespace-cross-file: private ap ; private barless-case/expr gap
-namespace-cross-file: private ap ; private extern/expr gap
-namespace-cross-file: private ap ; private type/expr gap
 namespace-cross-file: private ap ; type/expr gap
 namespace-cross-file: private auto-open-static ; alias-nested-auto/expr gap
 namespace-cross-file: private auto-open-static ; ap/expr gap
@@ -592,34 +551,14 @@ namespace-cross-file: private auto-open-static ; type/expr gap
 namespace-cross-file: private auto-open-static ; value/expr gap
 namespace-cross-file: private auto-open-static/expr gap
 namespace-cross-file: private barless-case ; alias-nested-auto/expr gap
-namespace-cross-file: private barless-case ; ap/expr gap
-namespace-cross-file: private barless-case ; ap/pattern gap
 namespace-cross-file: private barless-case ; auto-open-static/expr gap
 namespace-cross-file: private barless-case ; barless-case/expr gap
 namespace-cross-file: private barless-case ; barless-case/pattern gap
-namespace-cross-file: private barless-case ; case/expr gap
-namespace-cross-file: private barless-case ; case/pattern gap
-namespace-cross-file: private barless-case ; exn/expr gap
-namespace-cross-file: private barless-case ; exn/pattern gap
 namespace-cross-file: private barless-case ; extern/expr gap
 namespace-cross-file: private barless-case ; literal/pattern gap
 namespace-cross-file: private barless-case ; private alias-nested-auto/expr gap
-namespace-cross-file: private barless-case ; private ap/expr gap
 namespace-cross-file: private barless-case ; private auto-open-static/expr gap
-namespace-cross-file: private barless-case ; private barless-case/expr gap
-namespace-cross-file: private barless-case ; private case/expr gap
-namespace-cross-file: private barless-case ; private exn/expr gap
-namespace-cross-file: private barless-case ; private extern/expr gap
-namespace-cross-file: private barless-case ; private literal/expr gap
-namespace-cross-file: private barless-case ; private nested-auto/expr gap
-namespace-cross-file: private barless-case ; private rqa-barless-case/expr gap
-namespace-cross-file: private barless-case ; private rqa-case/expr gap
-namespace-cross-file: private barless-case ; private type/expr gap
-namespace-cross-file: private barless-case ; private value/expr gap
-namespace-cross-file: private barless-case ; rqa-barless-case/expr gap
-namespace-cross-file: private barless-case ; rqa-case/expr gap
 namespace-cross-file: private barless-case ; type/expr gap
-namespace-cross-file: private barless-case/expr gap
 namespace-cross-file: private case ; alias-nested-auto/expr gap
 namespace-cross-file: private case ; auto-open-static/expr gap
 namespace-cross-file: private case ; barless-case/expr gap
@@ -628,9 +567,6 @@ namespace-cross-file: private case ; extern/expr gap
 namespace-cross-file: private case ; literal/pattern gap
 namespace-cross-file: private case ; private alias-nested-auto/expr gap
 namespace-cross-file: private case ; private auto-open-static/expr gap
-namespace-cross-file: private case ; private barless-case/expr gap
-namespace-cross-file: private case ; private extern/expr gap
-namespace-cross-file: private case ; private type/expr gap
 namespace-cross-file: private case ; type/expr gap
 namespace-cross-file: private exn ; alias-nested-auto/expr gap
 namespace-cross-file: private exn ; auto-open-static/expr gap
@@ -639,41 +575,19 @@ namespace-cross-file: private exn ; extern/expr gap
 namespace-cross-file: private exn ; literal/pattern gap
 namespace-cross-file: private exn ; private alias-nested-auto/expr gap
 namespace-cross-file: private exn ; private auto-open-static/expr gap
-namespace-cross-file: private exn ; private barless-case/expr gap
-namespace-cross-file: private exn ; private extern/expr gap
 namespace-cross-file: private extern ; alias-nested-auto/expr gap
-namespace-cross-file: private extern ; ap/expr gap
-namespace-cross-file: private extern ; ap/pattern gap
 namespace-cross-file: private extern ; auto-open-static/expr gap
 namespace-cross-file: private extern ; barless-case/expr gap
 namespace-cross-file: private extern ; barless-case/pattern gap
-namespace-cross-file: private extern ; case/expr gap
-namespace-cross-file: private extern ; case/pattern gap
-namespace-cross-file: private extern ; exn/expr gap
-namespace-cross-file: private extern ; exn/pattern gap
-namespace-cross-file: private extern ; nested-auto/expr gap
 namespace-cross-file: private extern ; private alias-nested-auto/expr gap
-namespace-cross-file: private extern ; private ap/expr gap
 namespace-cross-file: private extern ; private auto-open-static/expr gap
-namespace-cross-file: private extern ; private barless-case/expr gap
-namespace-cross-file: private extern ; private case/expr gap
-namespace-cross-file: private extern ; private exn/expr gap
-namespace-cross-file: private extern ; private nested-auto/expr gap
-namespace-cross-file: private extern ; private rqa-barless-case/expr gap
-namespace-cross-file: private extern ; private rqa-case/expr gap
-namespace-cross-file: private extern ; private type/expr gap
-namespace-cross-file: private extern ; rqa-barless-case/expr gap
-namespace-cross-file: private extern ; rqa-case/expr gap
 namespace-cross-file: private extern ; type/expr gap
-namespace-cross-file: private extern/expr gap
 namespace-cross-file: private literal ; alias-nested-auto/expr gap
 namespace-cross-file: private literal ; auto-open-static/expr gap
 namespace-cross-file: private literal ; barless-case/expr gap
 namespace-cross-file: private literal ; barless-case/pattern gap
 namespace-cross-file: private literal ; private alias-nested-auto/expr gap
 namespace-cross-file: private literal ; private auto-open-static/expr gap
-namespace-cross-file: private literal ; private barless-case/expr gap
-namespace-cross-file: private literal ; private type/expr gap
 namespace-cross-file: private literal ; type/expr gap
 namespace-cross-file: private nested-auto ; alias-nested-auto/expr gap
 namespace-cross-file: private nested-auto ; auto-open-static/expr gap
@@ -683,9 +597,6 @@ namespace-cross-file: private nested-auto ; extern/expr gap
 namespace-cross-file: private nested-auto ; literal/pattern gap
 namespace-cross-file: private nested-auto ; private alias-nested-auto/expr gap
 namespace-cross-file: private nested-auto ; private auto-open-static/expr gap
-namespace-cross-file: private nested-auto ; private barless-case/expr gap
-namespace-cross-file: private nested-auto ; private extern/expr gap
-namespace-cross-file: private nested-auto ; private type/expr gap
 namespace-cross-file: private nested-auto ; type/expr gap
 namespace-cross-file: private rqa-barless-case ; alias-nested-auto/expr gap
 namespace-cross-file: private rqa-barless-case ; auto-open-static/expr gap
@@ -695,9 +606,6 @@ namespace-cross-file: private rqa-barless-case ; extern/expr gap
 namespace-cross-file: private rqa-barless-case ; literal/pattern gap
 namespace-cross-file: private rqa-barless-case ; private alias-nested-auto/expr gap
 namespace-cross-file: private rqa-barless-case ; private auto-open-static/expr gap
-namespace-cross-file: private rqa-barless-case ; private barless-case/expr gap
-namespace-cross-file: private rqa-barless-case ; private extern/expr gap
-namespace-cross-file: private rqa-barless-case ; private type/expr gap
 namespace-cross-file: private rqa-barless-case ; type/expr gap
 namespace-cross-file: private rqa-case ; alias-nested-auto/expr gap
 namespace-cross-file: private rqa-case ; auto-open-static/expr gap
@@ -707,42 +615,19 @@ namespace-cross-file: private rqa-case ; extern/expr gap
 namespace-cross-file: private rqa-case ; literal/pattern gap
 namespace-cross-file: private rqa-case ; private alias-nested-auto/expr gap
 namespace-cross-file: private rqa-case ; private auto-open-static/expr gap
-namespace-cross-file: private rqa-case ; private barless-case/expr gap
-namespace-cross-file: private rqa-case ; private extern/expr gap
-namespace-cross-file: private rqa-case ; private type/expr gap
 namespace-cross-file: private rqa-case ; type/expr gap
 namespace-cross-file: private type ; alias-nested-auto/expr gap
-namespace-cross-file: private type ; ap/expr gap
 namespace-cross-file: private type ; auto-open-static/expr gap
-namespace-cross-file: private type ; barless-case/expr gap
-namespace-cross-file: private type ; case/expr gap
 namespace-cross-file: private type ; extern/expr gap
-namespace-cross-file: private type ; literal/expr gap
 namespace-cross-file: private type ; literal/pattern gap
-namespace-cross-file: private type ; nested-auto/expr gap
 namespace-cross-file: private type ; private alias-nested-auto/expr gap
-namespace-cross-file: private type ; private ap/expr gap
 namespace-cross-file: private type ; private auto-open-static/expr gap
-namespace-cross-file: private type ; private barless-case/expr gap
-namespace-cross-file: private type ; private case/expr gap
-namespace-cross-file: private type ; private extern/expr gap
-namespace-cross-file: private type ; private literal/expr gap
-namespace-cross-file: private type ; private nested-auto/expr gap
-namespace-cross-file: private type ; private rqa-barless-case/expr gap
-namespace-cross-file: private type ; private rqa-case/expr gap
-namespace-cross-file: private type ; private value/expr gap
-namespace-cross-file: private type ; rqa-barless-case/expr gap
-namespace-cross-file: private type ; rqa-case/expr gap
-namespace-cross-file: private type ; value/expr gap
-namespace-cross-file: private type/expr gap
 namespace-cross-file: private value ; alias-nested-auto/expr gap
 namespace-cross-file: private value ; auto-open-static/expr gap
 namespace-cross-file: private value ; barless-case/expr gap
 namespace-cross-file: private value ; barless-case/pattern gap
 namespace-cross-file: private value ; private alias-nested-auto/expr gap
 namespace-cross-file: private value ; private auto-open-static/expr gap
-namespace-cross-file: private value ; private barless-case/expr gap
-namespace-cross-file: private value ; private type/expr gap
 namespace-cross-file: private value ; type/expr gap
 namespace-cross-file: rqa-barless-case ; alias-nested-auto/expr gap
 namespace-cross-file: rqa-barless-case ; auto-open-static/expr gap
@@ -752,9 +637,6 @@ namespace-cross-file: rqa-barless-case ; extern/expr gap
 namespace-cross-file: rqa-barless-case ; literal/pattern gap
 namespace-cross-file: rqa-barless-case ; private alias-nested-auto/expr gap
 namespace-cross-file: rqa-barless-case ; private auto-open-static/expr gap
-namespace-cross-file: rqa-barless-case ; private barless-case/expr gap
-namespace-cross-file: rqa-barless-case ; private extern/expr gap
-namespace-cross-file: rqa-barless-case ; private type/expr gap
 namespace-cross-file: rqa-barless-case ; type/expr gap
 namespace-cross-file: rqa-case ; alias-nested-auto/expr gap
 namespace-cross-file: rqa-case ; auto-open-static/expr gap
@@ -764,9 +646,6 @@ namespace-cross-file: rqa-case ; extern/expr gap
 namespace-cross-file: rqa-case ; literal/pattern gap
 namespace-cross-file: rqa-case ; private alias-nested-auto/expr gap
 namespace-cross-file: rqa-case ; private auto-open-static/expr gap
-namespace-cross-file: rqa-case ; private barless-case/expr gap
-namespace-cross-file: rqa-case ; private extern/expr gap
-namespace-cross-file: rqa-case ; private type/expr gap
 namespace-cross-file: rqa-case ; type/expr gap
 namespace-cross-file: type ; alias-nested-auto/expr gap
 namespace-cross-file: type ; ap/expr gap
@@ -797,7 +676,6 @@ namespace-cross-file: value ; auto-open-static/expr gap
 namespace-cross-file: value ; barless-case/pattern gap
 namespace-cross-file: value ; private alias-nested-auto/expr gap
 namespace-cross-file: value ; private auto-open-static/expr gap
-namespace-cross-file: value ; private type/expr gap
 namespace-cross-file: value ; type/expr gap
 namespace-implicit: after opaque open: ap/pattern gap
 namespace-implicit: after opaque open: barless-case/pattern gap
@@ -816,8 +694,6 @@ namespace-implicit: ap ; extern/pattern gap
 namespace-implicit: ap ; literal/pattern gap
 namespace-implicit: ap ; private alias-nested-auto/pattern gap
 namespace-implicit: ap ; private auto-open-static/pattern gap
-namespace-implicit: ap ; private barless-case/pattern gap
-namespace-implicit: ap ; private extern/pattern gap
 namespace-implicit: auto-open-static ; ap/pattern gap
 namespace-implicit: auto-open-static ; barless-case/pattern gap
 namespace-implicit: auto-open-static ; case/pattern gap
@@ -857,8 +733,6 @@ namespace-implicit: case ; extern/pattern gap
 namespace-implicit: case ; literal/pattern gap
 namespace-implicit: case ; private alias-nested-auto/pattern gap
 namespace-implicit: case ; private auto-open-static/pattern gap
-namespace-implicit: case ; private barless-case/pattern gap
-namespace-implicit: case ; private extern/pattern gap
 namespace-implicit: exn ; alias-nested-auto/pattern gap
 namespace-implicit: exn ; auto-open-static/pattern gap
 namespace-implicit: exn ; barless-case/pattern gap
@@ -866,8 +740,6 @@ namespace-implicit: exn ; extern/pattern gap
 namespace-implicit: exn ; literal/pattern gap
 namespace-implicit: exn ; private alias-nested-auto/pattern gap
 namespace-implicit: exn ; private auto-open-static/pattern gap
-namespace-implicit: exn ; private barless-case/pattern gap
-namespace-implicit: exn ; private extern/pattern gap
 namespace-implicit: extern ; ap/pattern gap
 namespace-implicit: extern ; barless-case/pattern gap
 namespace-implicit: extern ; case/pattern gap
@@ -907,18 +779,12 @@ namespace-implicit: private auto-open-static ; barless-case/pattern gap
 namespace-implicit: private auto-open-static ; case/pattern gap
 namespace-implicit: private auto-open-static ; exn/pattern gap
 namespace-implicit: private auto-open-static ; literal/pattern gap
-namespace-implicit: private barless-case ; ap/pattern gap
 namespace-implicit: private barless-case ; barless-case/pattern gap
-namespace-implicit: private barless-case ; case/pattern gap
-namespace-implicit: private barless-case ; exn/pattern gap
 namespace-implicit: private barless-case ; literal/pattern gap
 namespace-implicit: private case ; barless-case/pattern gap
 namespace-implicit: private case ; literal/pattern gap
 namespace-implicit: private exn ; literal/pattern gap
-namespace-implicit: private extern ; ap/pattern gap
 namespace-implicit: private extern ; barless-case/pattern gap
-namespace-implicit: private extern ; case/pattern gap
-namespace-implicit: private extern ; exn/pattern gap
 namespace-implicit: private literal ; barless-case/pattern gap
 namespace-implicit: private nested-auto ; barless-case/pattern gap
 namespace-implicit: private nested-auto ; literal/pattern gap
@@ -942,8 +808,6 @@ nested-auto ; extern/expr gap
 nested-auto ; literal/pattern gap
 nested-auto ; private alias-nested-auto/expr gap
 nested-auto ; private auto-open-static/expr gap
-nested-auto ; private extern/expr gap
-nested-auto ; private type/expr gap
 nested-auto ; type/expr gap
 open-cross-file: after opaque open: alias-nested-auto/expr gap
 open-cross-file: after opaque open: ap/pattern gap
@@ -960,9 +824,6 @@ open-cross-file: after opaque open: literal/pattern gap
 open-cross-file: after opaque open: nested-auto/expr gap
 open-cross-file: after opaque open: private alias-nested-auto/expr gap
 open-cross-file: after opaque open: private auto-open-static/expr gap
-open-cross-file: after opaque open: private barless-case/expr gap
-open-cross-file: after opaque open: private extern/expr gap
-open-cross-file: after opaque open: private type/expr gap
 open-cross-file: after opaque open: type/expr gap
 open-cross-file: after opaque open: value/expr gap
 open-cross-file: alias-nested-auto ; alias-nested-auto/expr gap
@@ -1010,11 +871,6 @@ open-cross-file: ap ; private alias-nested-auto/expr gap
 open-cross-file: ap ; private alias-nested-auto/pattern gap
 open-cross-file: ap ; private auto-open-static/expr gap
 open-cross-file: ap ; private auto-open-static/pattern gap
-open-cross-file: ap ; private barless-case/expr gap
-open-cross-file: ap ; private barless-case/pattern gap
-open-cross-file: ap ; private extern/expr gap
-open-cross-file: ap ; private extern/pattern gap
-open-cross-file: ap ; private type/expr gap
 open-cross-file: ap ; type/expr gap
 open-cross-file: auto-open-static ; alias-nested-auto/expr gap
 open-cross-file: auto-open-static ; ap/expr gap
@@ -1112,11 +968,6 @@ open-cross-file: case ; private alias-nested-auto/expr gap
 open-cross-file: case ; private alias-nested-auto/pattern gap
 open-cross-file: case ; private auto-open-static/expr gap
 open-cross-file: case ; private auto-open-static/pattern gap
-open-cross-file: case ; private barless-case/expr gap
-open-cross-file: case ; private barless-case/pattern gap
-open-cross-file: case ; private extern/expr gap
-open-cross-file: case ; private extern/pattern gap
-open-cross-file: case ; private type/expr gap
 open-cross-file: case ; type/expr gap
 open-cross-file: exn ; alias-nested-auto/expr gap
 open-cross-file: exn ; alias-nested-auto/pattern gap
@@ -1131,10 +982,6 @@ open-cross-file: exn ; private alias-nested-auto/expr gap
 open-cross-file: exn ; private alias-nested-auto/pattern gap
 open-cross-file: exn ; private auto-open-static/expr gap
 open-cross-file: exn ; private auto-open-static/pattern gap
-open-cross-file: exn ; private barless-case/expr gap
-open-cross-file: exn ; private barless-case/pattern gap
-open-cross-file: exn ; private extern/expr gap
-open-cross-file: exn ; private extern/pattern gap
 open-cross-file: extern ; alias-nested-auto/expr gap
 open-cross-file: extern ; ap/expr gap
 open-cross-file: extern ; ap/pattern gap
@@ -1180,7 +1027,6 @@ open-cross-file: literal ; private exn/pattern gap
 open-cross-file: literal ; private nested-auto/pattern gap
 open-cross-file: literal ; private rqa-barless-case/pattern gap
 open-cross-file: literal ; private rqa-case/pattern gap
-open-cross-file: literal ; private type/expr gap
 open-cross-file: literal ; private type/pattern gap
 open-cross-file: literal ; rqa-barless-case/pattern gap
 open-cross-file: literal ; rqa-case/pattern gap
@@ -1194,8 +1040,6 @@ open-cross-file: nested-auto ; extern/expr gap
 open-cross-file: nested-auto ; literal/pattern gap
 open-cross-file: nested-auto ; private alias-nested-auto/expr gap
 open-cross-file: nested-auto ; private auto-open-static/expr gap
-open-cross-file: nested-auto ; private extern/expr gap
-open-cross-file: nested-auto ; private type/expr gap
 open-cross-file: nested-auto ; type/expr gap
 open-cross-file: private alias-nested-auto ; alias-nested-auto/expr gap
 open-cross-file: private alias-nested-auto ; ap/expr gap
@@ -1237,9 +1081,6 @@ open-cross-file: private ap ; extern/expr gap
 open-cross-file: private ap ; literal/pattern gap
 open-cross-file: private ap ; private alias-nested-auto/expr gap
 open-cross-file: private ap ; private auto-open-static/expr gap
-open-cross-file: private ap ; private barless-case/expr gap
-open-cross-file: private ap ; private extern/expr gap
-open-cross-file: private ap ; private type/expr gap
 open-cross-file: private ap ; type/expr gap
 open-cross-file: private auto-open-static ; alias-nested-auto/expr gap
 open-cross-file: private auto-open-static ; ap/expr gap
@@ -1274,34 +1115,14 @@ open-cross-file: private auto-open-static ; type/expr gap
 open-cross-file: private auto-open-static ; value/expr gap
 open-cross-file: private auto-open-static/expr gap
 open-cross-file: private barless-case ; alias-nested-auto/expr gap
-open-cross-file: private barless-case ; ap/expr gap
-open-cross-file: private barless-case ; ap/pattern gap
 open-cross-file: private barless-case ; auto-open-static/expr gap
 open-cross-file: private barless-case ; barless-case/expr gap
 open-cross-file: private barless-case ; barless-case/pattern gap
-open-cross-file: private barless-case ; case/expr gap
-open-cross-file: private barless-case ; case/pattern gap
-open-cross-file: private barless-case ; exn/expr gap
-open-cross-file: private barless-case ; exn/pattern gap
 open-cross-file: private barless-case ; extern/expr gap
 open-cross-file: private barless-case ; literal/pattern gap
 open-cross-file: private barless-case ; private alias-nested-auto/expr gap
-open-cross-file: private barless-case ; private ap/expr gap
 open-cross-file: private barless-case ; private auto-open-static/expr gap
-open-cross-file: private barless-case ; private barless-case/expr gap
-open-cross-file: private barless-case ; private case/expr gap
-open-cross-file: private barless-case ; private exn/expr gap
-open-cross-file: private barless-case ; private extern/expr gap
-open-cross-file: private barless-case ; private literal/expr gap
-open-cross-file: private barless-case ; private nested-auto/expr gap
-open-cross-file: private barless-case ; private rqa-barless-case/expr gap
-open-cross-file: private barless-case ; private rqa-case/expr gap
-open-cross-file: private barless-case ; private type/expr gap
-open-cross-file: private barless-case ; private value/expr gap
-open-cross-file: private barless-case ; rqa-barless-case/expr gap
-open-cross-file: private barless-case ; rqa-case/expr gap
 open-cross-file: private barless-case ; type/expr gap
-open-cross-file: private barless-case/expr gap
 open-cross-file: private case ; alias-nested-auto/expr gap
 open-cross-file: private case ; auto-open-static/expr gap
 open-cross-file: private case ; barless-case/expr gap
@@ -1310,9 +1131,6 @@ open-cross-file: private case ; extern/expr gap
 open-cross-file: private case ; literal/pattern gap
 open-cross-file: private case ; private alias-nested-auto/expr gap
 open-cross-file: private case ; private auto-open-static/expr gap
-open-cross-file: private case ; private barless-case/expr gap
-open-cross-file: private case ; private extern/expr gap
-open-cross-file: private case ; private type/expr gap
 open-cross-file: private case ; type/expr gap
 open-cross-file: private exn ; alias-nested-auto/expr gap
 open-cross-file: private exn ; auto-open-static/expr gap
@@ -1321,41 +1139,19 @@ open-cross-file: private exn ; extern/expr gap
 open-cross-file: private exn ; literal/pattern gap
 open-cross-file: private exn ; private alias-nested-auto/expr gap
 open-cross-file: private exn ; private auto-open-static/expr gap
-open-cross-file: private exn ; private barless-case/expr gap
-open-cross-file: private exn ; private extern/expr gap
 open-cross-file: private extern ; alias-nested-auto/expr gap
-open-cross-file: private extern ; ap/expr gap
-open-cross-file: private extern ; ap/pattern gap
 open-cross-file: private extern ; auto-open-static/expr gap
 open-cross-file: private extern ; barless-case/expr gap
 open-cross-file: private extern ; barless-case/pattern gap
-open-cross-file: private extern ; case/expr gap
-open-cross-file: private extern ; case/pattern gap
-open-cross-file: private extern ; exn/expr gap
-open-cross-file: private extern ; exn/pattern gap
-open-cross-file: private extern ; nested-auto/expr gap
 open-cross-file: private extern ; private alias-nested-auto/expr gap
-open-cross-file: private extern ; private ap/expr gap
 open-cross-file: private extern ; private auto-open-static/expr gap
-open-cross-file: private extern ; private barless-case/expr gap
-open-cross-file: private extern ; private case/expr gap
-open-cross-file: private extern ; private exn/expr gap
-open-cross-file: private extern ; private nested-auto/expr gap
-open-cross-file: private extern ; private rqa-barless-case/expr gap
-open-cross-file: private extern ; private rqa-case/expr gap
-open-cross-file: private extern ; private type/expr gap
-open-cross-file: private extern ; rqa-barless-case/expr gap
-open-cross-file: private extern ; rqa-case/expr gap
 open-cross-file: private extern ; type/expr gap
-open-cross-file: private extern/expr gap
 open-cross-file: private literal ; alias-nested-auto/expr gap
 open-cross-file: private literal ; auto-open-static/expr gap
 open-cross-file: private literal ; barless-case/expr gap
 open-cross-file: private literal ; barless-case/pattern gap
 open-cross-file: private literal ; private alias-nested-auto/expr gap
 open-cross-file: private literal ; private auto-open-static/expr gap
-open-cross-file: private literal ; private barless-case/expr gap
-open-cross-file: private literal ; private type/expr gap
 open-cross-file: private literal ; type/expr gap
 open-cross-file: private nested-auto ; alias-nested-auto/expr gap
 open-cross-file: private nested-auto ; auto-open-static/expr gap
@@ -1365,9 +1161,6 @@ open-cross-file: private nested-auto ; extern/expr gap
 open-cross-file: private nested-auto ; literal/pattern gap
 open-cross-file: private nested-auto ; private alias-nested-auto/expr gap
 open-cross-file: private nested-auto ; private auto-open-static/expr gap
-open-cross-file: private nested-auto ; private barless-case/expr gap
-open-cross-file: private nested-auto ; private extern/expr gap
-open-cross-file: private nested-auto ; private type/expr gap
 open-cross-file: private nested-auto ; type/expr gap
 open-cross-file: private rqa-barless-case ; alias-nested-auto/expr gap
 open-cross-file: private rqa-barless-case ; auto-open-static/expr gap
@@ -1377,9 +1170,6 @@ open-cross-file: private rqa-barless-case ; extern/expr gap
 open-cross-file: private rqa-barless-case ; literal/pattern gap
 open-cross-file: private rqa-barless-case ; private alias-nested-auto/expr gap
 open-cross-file: private rqa-barless-case ; private auto-open-static/expr gap
-open-cross-file: private rqa-barless-case ; private barless-case/expr gap
-open-cross-file: private rqa-barless-case ; private extern/expr gap
-open-cross-file: private rqa-barless-case ; private type/expr gap
 open-cross-file: private rqa-barless-case ; type/expr gap
 open-cross-file: private rqa-case ; alias-nested-auto/expr gap
 open-cross-file: private rqa-case ; auto-open-static/expr gap
@@ -1389,42 +1179,19 @@ open-cross-file: private rqa-case ; extern/expr gap
 open-cross-file: private rqa-case ; literal/pattern gap
 open-cross-file: private rqa-case ; private alias-nested-auto/expr gap
 open-cross-file: private rqa-case ; private auto-open-static/expr gap
-open-cross-file: private rqa-case ; private barless-case/expr gap
-open-cross-file: private rqa-case ; private extern/expr gap
-open-cross-file: private rqa-case ; private type/expr gap
 open-cross-file: private rqa-case ; type/expr gap
 open-cross-file: private type ; alias-nested-auto/expr gap
-open-cross-file: private type ; ap/expr gap
 open-cross-file: private type ; auto-open-static/expr gap
-open-cross-file: private type ; barless-case/expr gap
-open-cross-file: private type ; case/expr gap
 open-cross-file: private type ; extern/expr gap
-open-cross-file: private type ; literal/expr gap
 open-cross-file: private type ; literal/pattern gap
-open-cross-file: private type ; nested-auto/expr gap
 open-cross-file: private type ; private alias-nested-auto/expr gap
-open-cross-file: private type ; private ap/expr gap
 open-cross-file: private type ; private auto-open-static/expr gap
-open-cross-file: private type ; private barless-case/expr gap
-open-cross-file: private type ; private case/expr gap
-open-cross-file: private type ; private extern/expr gap
-open-cross-file: private type ; private literal/expr gap
-open-cross-file: private type ; private nested-auto/expr gap
-open-cross-file: private type ; private rqa-barless-case/expr gap
-open-cross-file: private type ; private rqa-case/expr gap
-open-cross-file: private type ; private value/expr gap
-open-cross-file: private type ; rqa-barless-case/expr gap
-open-cross-file: private type ; rqa-case/expr gap
-open-cross-file: private type ; value/expr gap
-open-cross-file: private type/expr gap
 open-cross-file: private value ; alias-nested-auto/expr gap
 open-cross-file: private value ; auto-open-static/expr gap
 open-cross-file: private value ; barless-case/expr gap
 open-cross-file: private value ; barless-case/pattern gap
 open-cross-file: private value ; private alias-nested-auto/expr gap
 open-cross-file: private value ; private auto-open-static/expr gap
-open-cross-file: private value ; private barless-case/expr gap
-open-cross-file: private value ; private type/expr gap
 open-cross-file: private value ; type/expr gap
 open-cross-file: rqa-barless-case ; alias-nested-auto/expr gap
 open-cross-file: rqa-barless-case ; auto-open-static/expr gap
@@ -1434,9 +1201,6 @@ open-cross-file: rqa-barless-case ; extern/expr gap
 open-cross-file: rqa-barless-case ; literal/pattern gap
 open-cross-file: rqa-barless-case ; private alias-nested-auto/expr gap
 open-cross-file: rqa-barless-case ; private auto-open-static/expr gap
-open-cross-file: rqa-barless-case ; private barless-case/expr gap
-open-cross-file: rqa-barless-case ; private extern/expr gap
-open-cross-file: rqa-barless-case ; private type/expr gap
 open-cross-file: rqa-barless-case ; type/expr gap
 open-cross-file: rqa-case ; alias-nested-auto/expr gap
 open-cross-file: rqa-case ; auto-open-static/expr gap
@@ -1446,9 +1210,6 @@ open-cross-file: rqa-case ; extern/expr gap
 open-cross-file: rqa-case ; literal/pattern gap
 open-cross-file: rqa-case ; private alias-nested-auto/expr gap
 open-cross-file: rqa-case ; private auto-open-static/expr gap
-open-cross-file: rqa-case ; private barless-case/expr gap
-open-cross-file: rqa-case ; private extern/expr gap
-open-cross-file: rqa-case ; private type/expr gap
 open-cross-file: rqa-case ; type/expr gap
 open-cross-file: type ; alias-nested-auto/expr gap
 open-cross-file: type ; ap/expr gap
@@ -1479,7 +1240,6 @@ open-cross-file: value ; auto-open-static/expr gap
 open-cross-file: value ; barless-case/pattern gap
 open-cross-file: value ; private alias-nested-auto/expr gap
 open-cross-file: value ; private auto-open-static/expr gap
-open-cross-file: value ; private type/expr gap
 open-cross-file: value ; type/expr gap
 open-plain-cross-file: after opaque open: alias-nested-auto/expr gap
 open-plain-cross-file: after opaque open: ap/pattern gap
@@ -1496,9 +1256,6 @@ open-plain-cross-file: after opaque open: literal/pattern gap
 open-plain-cross-file: after opaque open: nested-auto/expr gap
 open-plain-cross-file: after opaque open: private alias-nested-auto/expr gap
 open-plain-cross-file: after opaque open: private auto-open-static/expr gap
-open-plain-cross-file: after opaque open: private barless-case/expr gap
-open-plain-cross-file: after opaque open: private extern/expr gap
-open-plain-cross-file: after opaque open: private type/expr gap
 open-plain-cross-file: after opaque open: type/expr gap
 open-plain-cross-file: after opaque open: value/expr gap
 open-plain-cross-file: alias-nested-auto ; alias-nested-auto/expr gap
@@ -1541,11 +1298,6 @@ open-plain-cross-file: ap ; literal/pattern gap
 open-plain-cross-file: ap ; private alias-nested-auto/expr gap
 open-plain-cross-file: ap ; private auto-open-static/expr gap
 open-plain-cross-file: ap ; private auto-open-static/pattern gap
-open-plain-cross-file: ap ; private barless-case/expr gap
-open-plain-cross-file: ap ; private barless-case/pattern gap
-open-plain-cross-file: ap ; private extern/expr gap
-open-plain-cross-file: ap ; private extern/pattern gap
-open-plain-cross-file: ap ; private type/expr gap
 open-plain-cross-file: ap ; type/expr gap
 open-plain-cross-file: auto-open-static ; alias-nested-auto/expr gap
 open-plain-cross-file: auto-open-static ; ap/expr gap
@@ -1641,11 +1393,6 @@ open-plain-cross-file: case ; literal/pattern gap
 open-plain-cross-file: case ; private alias-nested-auto/expr gap
 open-plain-cross-file: case ; private auto-open-static/expr gap
 open-plain-cross-file: case ; private auto-open-static/pattern gap
-open-plain-cross-file: case ; private barless-case/expr gap
-open-plain-cross-file: case ; private barless-case/pattern gap
-open-plain-cross-file: case ; private extern/expr gap
-open-plain-cross-file: case ; private extern/pattern gap
-open-plain-cross-file: case ; private type/expr gap
 open-plain-cross-file: case ; type/expr gap
 open-plain-cross-file: exn ; alias-nested-auto/expr gap
 open-plain-cross-file: exn ; auto-open-static/expr gap
@@ -1658,10 +1405,6 @@ open-plain-cross-file: exn ; literal/pattern gap
 open-plain-cross-file: exn ; private alias-nested-auto/expr gap
 open-plain-cross-file: exn ; private auto-open-static/expr gap
 open-plain-cross-file: exn ; private auto-open-static/pattern gap
-open-plain-cross-file: exn ; private barless-case/expr gap
-open-plain-cross-file: exn ; private barless-case/pattern gap
-open-plain-cross-file: exn ; private extern/expr gap
-open-plain-cross-file: exn ; private extern/pattern gap
 open-plain-cross-file: extern ; alias-nested-auto/expr gap
 open-plain-cross-file: extern ; ap/expr gap
 open-plain-cross-file: extern ; ap/pattern gap
@@ -1707,7 +1450,6 @@ open-plain-cross-file: literal ; private exn/pattern gap
 open-plain-cross-file: literal ; private nested-auto/pattern gap
 open-plain-cross-file: literal ; private rqa-barless-case/pattern gap
 open-plain-cross-file: literal ; private rqa-case/pattern gap
-open-plain-cross-file: literal ; private type/expr gap
 open-plain-cross-file: literal ; private type/pattern gap
 open-plain-cross-file: literal ; rqa-barless-case/pattern gap
 open-plain-cross-file: literal ; rqa-case/pattern gap
@@ -1721,8 +1463,6 @@ open-plain-cross-file: nested-auto ; extern/expr gap
 open-plain-cross-file: nested-auto ; literal/pattern gap
 open-plain-cross-file: nested-auto ; private alias-nested-auto/expr gap
 open-plain-cross-file: nested-auto ; private auto-open-static/expr gap
-open-plain-cross-file: nested-auto ; private extern/expr gap
-open-plain-cross-file: nested-auto ; private type/expr gap
 open-plain-cross-file: nested-auto ; type/expr gap
 open-plain-cross-file: private alias-nested-auto ; alias-nested-auto/expr gap
 open-plain-cross-file: private alias-nested-auto ; ap/expr gap
@@ -1761,9 +1501,6 @@ open-plain-cross-file: private ap ; extern/expr gap
 open-plain-cross-file: private ap ; literal/pattern gap
 open-plain-cross-file: private ap ; private alias-nested-auto/expr gap
 open-plain-cross-file: private ap ; private auto-open-static/expr gap
-open-plain-cross-file: private ap ; private barless-case/expr gap
-open-plain-cross-file: private ap ; private extern/expr gap
-open-plain-cross-file: private ap ; private type/expr gap
 open-plain-cross-file: private ap ; type/expr gap
 open-plain-cross-file: private auto-open-static ; alias-nested-auto/expr gap
 open-plain-cross-file: private auto-open-static ; ap/expr gap
@@ -1798,34 +1535,14 @@ open-plain-cross-file: private auto-open-static ; type/expr gap
 open-plain-cross-file: private auto-open-static ; value/expr gap
 open-plain-cross-file: private auto-open-static/expr gap
 open-plain-cross-file: private barless-case ; alias-nested-auto/expr gap
-open-plain-cross-file: private barless-case ; ap/expr gap
-open-plain-cross-file: private barless-case ; ap/pattern gap
 open-plain-cross-file: private barless-case ; auto-open-static/expr gap
 open-plain-cross-file: private barless-case ; barless-case/expr gap
 open-plain-cross-file: private barless-case ; barless-case/pattern gap
-open-plain-cross-file: private barless-case ; case/expr gap
-open-plain-cross-file: private barless-case ; case/pattern gap
-open-plain-cross-file: private barless-case ; exn/expr gap
-open-plain-cross-file: private barless-case ; exn/pattern gap
 open-plain-cross-file: private barless-case ; extern/expr gap
 open-plain-cross-file: private barless-case ; literal/pattern gap
 open-plain-cross-file: private barless-case ; private alias-nested-auto/expr gap
-open-plain-cross-file: private barless-case ; private ap/expr gap
 open-plain-cross-file: private barless-case ; private auto-open-static/expr gap
-open-plain-cross-file: private barless-case ; private barless-case/expr gap
-open-plain-cross-file: private barless-case ; private case/expr gap
-open-plain-cross-file: private barless-case ; private exn/expr gap
-open-plain-cross-file: private barless-case ; private extern/expr gap
-open-plain-cross-file: private barless-case ; private literal/expr gap
-open-plain-cross-file: private barless-case ; private nested-auto/expr gap
-open-plain-cross-file: private barless-case ; private rqa-barless-case/expr gap
-open-plain-cross-file: private barless-case ; private rqa-case/expr gap
-open-plain-cross-file: private barless-case ; private type/expr gap
-open-plain-cross-file: private barless-case ; private value/expr gap
-open-plain-cross-file: private barless-case ; rqa-barless-case/expr gap
-open-plain-cross-file: private barless-case ; rqa-case/expr gap
 open-plain-cross-file: private barless-case ; type/expr gap
-open-plain-cross-file: private barless-case/expr gap
 open-plain-cross-file: private case ; alias-nested-auto/expr gap
 open-plain-cross-file: private case ; auto-open-static/expr gap
 open-plain-cross-file: private case ; barless-case/expr gap
@@ -1834,9 +1551,6 @@ open-plain-cross-file: private case ; extern/expr gap
 open-plain-cross-file: private case ; literal/pattern gap
 open-plain-cross-file: private case ; private alias-nested-auto/expr gap
 open-plain-cross-file: private case ; private auto-open-static/expr gap
-open-plain-cross-file: private case ; private barless-case/expr gap
-open-plain-cross-file: private case ; private extern/expr gap
-open-plain-cross-file: private case ; private type/expr gap
 open-plain-cross-file: private case ; type/expr gap
 open-plain-cross-file: private exn ; alias-nested-auto/expr gap
 open-plain-cross-file: private exn ; auto-open-static/expr gap
@@ -1845,41 +1559,19 @@ open-plain-cross-file: private exn ; extern/expr gap
 open-plain-cross-file: private exn ; literal/pattern gap
 open-plain-cross-file: private exn ; private alias-nested-auto/expr gap
 open-plain-cross-file: private exn ; private auto-open-static/expr gap
-open-plain-cross-file: private exn ; private barless-case/expr gap
-open-plain-cross-file: private exn ; private extern/expr gap
 open-plain-cross-file: private extern ; alias-nested-auto/expr gap
-open-plain-cross-file: private extern ; ap/expr gap
-open-plain-cross-file: private extern ; ap/pattern gap
 open-plain-cross-file: private extern ; auto-open-static/expr gap
 open-plain-cross-file: private extern ; barless-case/expr gap
 open-plain-cross-file: private extern ; barless-case/pattern gap
-open-plain-cross-file: private extern ; case/expr gap
-open-plain-cross-file: private extern ; case/pattern gap
-open-plain-cross-file: private extern ; exn/expr gap
-open-plain-cross-file: private extern ; exn/pattern gap
-open-plain-cross-file: private extern ; nested-auto/expr gap
 open-plain-cross-file: private extern ; private alias-nested-auto/expr gap
-open-plain-cross-file: private extern ; private ap/expr gap
 open-plain-cross-file: private extern ; private auto-open-static/expr gap
-open-plain-cross-file: private extern ; private barless-case/expr gap
-open-plain-cross-file: private extern ; private case/expr gap
-open-plain-cross-file: private extern ; private exn/expr gap
-open-plain-cross-file: private extern ; private nested-auto/expr gap
-open-plain-cross-file: private extern ; private rqa-barless-case/expr gap
-open-plain-cross-file: private extern ; private rqa-case/expr gap
-open-plain-cross-file: private extern ; private type/expr gap
-open-plain-cross-file: private extern ; rqa-barless-case/expr gap
-open-plain-cross-file: private extern ; rqa-case/expr gap
 open-plain-cross-file: private extern ; type/expr gap
-open-plain-cross-file: private extern/expr gap
 open-plain-cross-file: private literal ; alias-nested-auto/expr gap
 open-plain-cross-file: private literal ; auto-open-static/expr gap
 open-plain-cross-file: private literal ; barless-case/expr gap
 open-plain-cross-file: private literal ; barless-case/pattern gap
 open-plain-cross-file: private literal ; private alias-nested-auto/expr gap
 open-plain-cross-file: private literal ; private auto-open-static/expr gap
-open-plain-cross-file: private literal ; private barless-case/expr gap
-open-plain-cross-file: private literal ; private type/expr gap
 open-plain-cross-file: private literal ; type/expr gap
 open-plain-cross-file: private nested-auto ; alias-nested-auto/expr gap
 open-plain-cross-file: private nested-auto ; auto-open-static/expr gap
@@ -1889,9 +1581,6 @@ open-plain-cross-file: private nested-auto ; extern/expr gap
 open-plain-cross-file: private nested-auto ; literal/pattern gap
 open-plain-cross-file: private nested-auto ; private alias-nested-auto/expr gap
 open-plain-cross-file: private nested-auto ; private auto-open-static/expr gap
-open-plain-cross-file: private nested-auto ; private barless-case/expr gap
-open-plain-cross-file: private nested-auto ; private extern/expr gap
-open-plain-cross-file: private nested-auto ; private type/expr gap
 open-plain-cross-file: private nested-auto ; type/expr gap
 open-plain-cross-file: private rqa-barless-case ; alias-nested-auto/expr gap
 open-plain-cross-file: private rqa-barless-case ; auto-open-static/expr gap
@@ -1901,9 +1590,6 @@ open-plain-cross-file: private rqa-barless-case ; extern/expr gap
 open-plain-cross-file: private rqa-barless-case ; literal/pattern gap
 open-plain-cross-file: private rqa-barless-case ; private alias-nested-auto/expr gap
 open-plain-cross-file: private rqa-barless-case ; private auto-open-static/expr gap
-open-plain-cross-file: private rqa-barless-case ; private barless-case/expr gap
-open-plain-cross-file: private rqa-barless-case ; private extern/expr gap
-open-plain-cross-file: private rqa-barless-case ; private type/expr gap
 open-plain-cross-file: private rqa-barless-case ; type/expr gap
 open-plain-cross-file: private rqa-case ; alias-nested-auto/expr gap
 open-plain-cross-file: private rqa-case ; auto-open-static/expr gap
@@ -1913,42 +1599,19 @@ open-plain-cross-file: private rqa-case ; extern/expr gap
 open-plain-cross-file: private rqa-case ; literal/pattern gap
 open-plain-cross-file: private rqa-case ; private alias-nested-auto/expr gap
 open-plain-cross-file: private rqa-case ; private auto-open-static/expr gap
-open-plain-cross-file: private rqa-case ; private barless-case/expr gap
-open-plain-cross-file: private rqa-case ; private extern/expr gap
-open-plain-cross-file: private rqa-case ; private type/expr gap
 open-plain-cross-file: private rqa-case ; type/expr gap
 open-plain-cross-file: private type ; alias-nested-auto/expr gap
-open-plain-cross-file: private type ; ap/expr gap
 open-plain-cross-file: private type ; auto-open-static/expr gap
-open-plain-cross-file: private type ; barless-case/expr gap
-open-plain-cross-file: private type ; case/expr gap
 open-plain-cross-file: private type ; extern/expr gap
-open-plain-cross-file: private type ; literal/expr gap
 open-plain-cross-file: private type ; literal/pattern gap
-open-plain-cross-file: private type ; nested-auto/expr gap
 open-plain-cross-file: private type ; private alias-nested-auto/expr gap
-open-plain-cross-file: private type ; private ap/expr gap
 open-plain-cross-file: private type ; private auto-open-static/expr gap
-open-plain-cross-file: private type ; private barless-case/expr gap
-open-plain-cross-file: private type ; private case/expr gap
-open-plain-cross-file: private type ; private extern/expr gap
-open-plain-cross-file: private type ; private literal/expr gap
-open-plain-cross-file: private type ; private nested-auto/expr gap
-open-plain-cross-file: private type ; private rqa-barless-case/expr gap
-open-plain-cross-file: private type ; private rqa-case/expr gap
-open-plain-cross-file: private type ; private value/expr gap
-open-plain-cross-file: private type ; rqa-barless-case/expr gap
-open-plain-cross-file: private type ; rqa-case/expr gap
-open-plain-cross-file: private type ; value/expr gap
-open-plain-cross-file: private type/expr gap
 open-plain-cross-file: private value ; alias-nested-auto/expr gap
 open-plain-cross-file: private value ; auto-open-static/expr gap
 open-plain-cross-file: private value ; barless-case/expr gap
 open-plain-cross-file: private value ; barless-case/pattern gap
 open-plain-cross-file: private value ; private alias-nested-auto/expr gap
 open-plain-cross-file: private value ; private auto-open-static/expr gap
-open-plain-cross-file: private value ; private barless-case/expr gap
-open-plain-cross-file: private value ; private type/expr gap
 open-plain-cross-file: private value ; type/expr gap
 open-plain-cross-file: rqa-barless-case ; alias-nested-auto/expr gap
 open-plain-cross-file: rqa-barless-case ; auto-open-static/expr gap
@@ -1958,9 +1621,6 @@ open-plain-cross-file: rqa-barless-case ; extern/expr gap
 open-plain-cross-file: rqa-barless-case ; literal/pattern gap
 open-plain-cross-file: rqa-barless-case ; private alias-nested-auto/expr gap
 open-plain-cross-file: rqa-barless-case ; private auto-open-static/expr gap
-open-plain-cross-file: rqa-barless-case ; private barless-case/expr gap
-open-plain-cross-file: rqa-barless-case ; private extern/expr gap
-open-plain-cross-file: rqa-barless-case ; private type/expr gap
 open-plain-cross-file: rqa-barless-case ; type/expr gap
 open-plain-cross-file: rqa-case ; alias-nested-auto/expr gap
 open-plain-cross-file: rqa-case ; auto-open-static/expr gap
@@ -1970,9 +1630,6 @@ open-plain-cross-file: rqa-case ; extern/expr gap
 open-plain-cross-file: rqa-case ; literal/pattern gap
 open-plain-cross-file: rqa-case ; private alias-nested-auto/expr gap
 open-plain-cross-file: rqa-case ; private auto-open-static/expr gap
-open-plain-cross-file: rqa-case ; private barless-case/expr gap
-open-plain-cross-file: rqa-case ; private extern/expr gap
-open-plain-cross-file: rqa-case ; private type/expr gap
 open-plain-cross-file: rqa-case ; type/expr gap
 open-plain-cross-file: type ; alias-nested-auto/expr gap
 open-plain-cross-file: type ; ap/expr gap
@@ -2003,7 +1660,6 @@ open-plain-cross-file: value ; auto-open-static/expr gap
 open-plain-cross-file: value ; barless-case/pattern gap
 open-plain-cross-file: value ; private alias-nested-auto/expr gap
 open-plain-cross-file: value ; private auto-open-static/expr gap
-open-plain-cross-file: value ; private type/expr gap
 open-plain-cross-file: value ; type/expr gap
 open-plain: after opaque open: alias-nested-auto/expr gap
 open-plain: after opaque open: ap/expr gap
@@ -2020,11 +1676,7 @@ open-plain: after opaque open: literal/expr gap
 open-plain: after opaque open: literal/pattern gap
 open-plain: after opaque open: nested-auto/expr gap
 open-plain: after opaque open: private alias-nested-auto/expr gap
-open-plain: after opaque open: private ap/expr gap
 open-plain: after opaque open: private auto-open-static/expr gap
-open-plain: after opaque open: private barless-case/expr gap
-open-plain: after opaque open: private extern/expr gap
-open-plain: after opaque open: private type/expr gap
 open-plain: after opaque open: type/expr gap
 open-plain: after opaque open: value/expr gap
 open-plain: alias-nested-auto ; alias-nested-auto/expr gap
@@ -2195,14 +1847,8 @@ open-plain: case ; extern/expr gap
 open-plain: case ; extern/pattern gap
 open-plain: case ; literal/pattern gap
 open-plain: case ; private alias-nested-auto/expr gap
-open-plain: case ; private ap/pattern gap
 open-plain: case ; private auto-open-static/expr gap
 open-plain: case ; private auto-open-static/pattern gap
-open-plain: case ; private barless-case/expr gap
-open-plain: case ; private barless-case/pattern gap
-open-plain: case ; private extern/expr gap
-open-plain: case ; private extern/pattern gap
-open-plain: case ; private type/expr gap
 open-plain: case ; type/expr gap
 open-plain: exn ; alias-nested-auto/expr gap
 open-plain: exn ; ap/pattern gap
@@ -2214,13 +1860,8 @@ open-plain: exn ; extern/expr gap
 open-plain: exn ; extern/pattern gap
 open-plain: exn ; literal/pattern gap
 open-plain: exn ; private alias-nested-auto/expr gap
-open-plain: exn ; private ap/pattern gap
 open-plain: exn ; private auto-open-static/expr gap
 open-plain: exn ; private auto-open-static/pattern gap
-open-plain: exn ; private barless-case/expr gap
-open-plain: exn ; private barless-case/pattern gap
-open-plain: exn ; private extern/expr gap
-open-plain: exn ; private extern/pattern gap
 open-plain: extern ; alias-nested-auto/expr gap
 open-plain: extern ; ap/expr gap
 open-plain: extern ; ap/pattern gap
@@ -2266,7 +1907,6 @@ open-plain: literal ; private exn/pattern gap
 open-plain: literal ; private nested-auto/pattern gap
 open-plain: literal ; private rqa-barless-case/pattern gap
 open-plain: literal ; private rqa-case/pattern gap
-open-plain: literal ; private type/expr gap
 open-plain: literal ; private type/pattern gap
 open-plain: literal ; rqa-barless-case/pattern gap
 open-plain: literal ; rqa-case/pattern gap
@@ -2281,8 +1921,6 @@ open-plain: nested-auto ; extern/expr gap
 open-plain: nested-auto ; literal/pattern gap
 open-plain: nested-auto ; private alias-nested-auto/expr gap
 open-plain: nested-auto ; private auto-open-static/expr gap
-open-plain: nested-auto ; private extern/expr gap
-open-plain: nested-auto ; private type/expr gap
 open-plain: nested-auto ; type/expr gap
 open-plain: private alias-nested-auto ; alias-nested-auto/expr gap
 open-plain: private alias-nested-auto ; ap/expr gap
@@ -2318,26 +1956,11 @@ open-plain: private ap ; alias-nested-auto/expr gap
 open-plain: private ap ; auto-open-static/expr gap
 open-plain: private ap ; barless-case/expr gap
 open-plain: private ap ; barless-case/pattern gap
-open-plain: private ap ; case/pattern gap
-open-plain: private ap ; exn/pattern gap
 open-plain: private ap ; extern/expr gap
 open-plain: private ap ; literal/pattern gap
 open-plain: private ap ; private alias-nested-auto/expr gap
 open-plain: private ap ; private auto-open-static/expr gap
-open-plain: private ap ; private barless-case/expr gap
-open-plain: private ap ; private case/expr gap
-open-plain: private ap ; private exn/expr gap
-open-plain: private ap ; private extern/expr gap
-open-plain: private ap ; private literal/expr gap
-open-plain: private ap ; private nested-auto/expr gap
-open-plain: private ap ; private rqa-barless-case/expr gap
-open-plain: private ap ; private rqa-case/expr gap
-open-plain: private ap ; private type/expr gap
-open-plain: private ap ; private value/expr gap
-open-plain: private ap ; rqa-barless-case/expr gap
-open-plain: private ap ; rqa-case/expr gap
 open-plain: private ap ; type/expr gap
-open-plain: private ap/expr gap
 open-plain: private auto-open-static ; alias-nested-auto/expr gap
 open-plain: private auto-open-static ; ap/expr gap
 open-plain: private auto-open-static ; ap/pattern gap
@@ -2376,29 +1999,11 @@ open-plain: private barless-case ; ap/pattern gap
 open-plain: private barless-case ; auto-open-static/expr gap
 open-plain: private barless-case ; barless-case/expr gap
 open-plain: private barless-case ; barless-case/pattern gap
-open-plain: private barless-case ; case/expr gap
-open-plain: private barless-case ; case/pattern gap
-open-plain: private barless-case ; exn/expr gap
-open-plain: private barless-case ; exn/pattern gap
 open-plain: private barless-case ; extern/expr gap
 open-plain: private barless-case ; literal/pattern gap
 open-plain: private barless-case ; private alias-nested-auto/expr gap
-open-plain: private barless-case ; private ap/expr gap
 open-plain: private barless-case ; private auto-open-static/expr gap
-open-plain: private barless-case ; private barless-case/expr gap
-open-plain: private barless-case ; private case/expr gap
-open-plain: private barless-case ; private exn/expr gap
-open-plain: private barless-case ; private extern/expr gap
-open-plain: private barless-case ; private literal/expr gap
-open-plain: private barless-case ; private nested-auto/expr gap
-open-plain: private barless-case ; private rqa-barless-case/expr gap
-open-plain: private barless-case ; private rqa-case/expr gap
-open-plain: private barless-case ; private type/expr gap
-open-plain: private barless-case ; private value/expr gap
-open-plain: private barless-case ; rqa-barless-case/expr gap
-open-plain: private barless-case ; rqa-case/expr gap
 open-plain: private barless-case ; type/expr gap
-open-plain: private barless-case/expr gap
 open-plain: private case ; alias-nested-auto/expr gap
 open-plain: private case ; ap/expr gap
 open-plain: private case ; ap/pattern gap
@@ -2408,11 +2013,7 @@ open-plain: private case ; barless-case/pattern gap
 open-plain: private case ; extern/expr gap
 open-plain: private case ; literal/pattern gap
 open-plain: private case ; private alias-nested-auto/expr gap
-open-plain: private case ; private ap/expr gap
 open-plain: private case ; private auto-open-static/expr gap
-open-plain: private case ; private barless-case/expr gap
-open-plain: private case ; private extern/expr gap
-open-plain: private case ; private type/expr gap
 open-plain: private case ; type/expr gap
 open-plain: private exn ; alias-nested-auto/expr gap
 open-plain: private exn ; ap/expr gap
@@ -2422,35 +2023,16 @@ open-plain: private exn ; barless-case/expr gap
 open-plain: private exn ; extern/expr gap
 open-plain: private exn ; literal/pattern gap
 open-plain: private exn ; private alias-nested-auto/expr gap
-open-plain: private exn ; private ap/expr gap
 open-plain: private exn ; private auto-open-static/expr gap
-open-plain: private exn ; private barless-case/expr gap
-open-plain: private exn ; private extern/expr gap
 open-plain: private extern ; alias-nested-auto/expr gap
 open-plain: private extern ; ap/expr gap
 open-plain: private extern ; ap/pattern gap
 open-plain: private extern ; auto-open-static/expr gap
 open-plain: private extern ; barless-case/expr gap
 open-plain: private extern ; barless-case/pattern gap
-open-plain: private extern ; case/expr gap
-open-plain: private extern ; case/pattern gap
-open-plain: private extern ; exn/expr gap
-open-plain: private extern ; exn/pattern gap
-open-plain: private extern ; nested-auto/expr gap
 open-plain: private extern ; private alias-nested-auto/expr gap
-open-plain: private extern ; private ap/expr gap
 open-plain: private extern ; private auto-open-static/expr gap
-open-plain: private extern ; private barless-case/expr gap
-open-plain: private extern ; private case/expr gap
-open-plain: private extern ; private exn/expr gap
-open-plain: private extern ; private nested-auto/expr gap
-open-plain: private extern ; private rqa-barless-case/expr gap
-open-plain: private extern ; private rqa-case/expr gap
-open-plain: private extern ; private type/expr gap
-open-plain: private extern ; rqa-barless-case/expr gap
-open-plain: private extern ; rqa-case/expr gap
 open-plain: private extern ; type/expr gap
-open-plain: private extern/expr gap
 open-plain: private literal ; alias-nested-auto/expr gap
 open-plain: private literal ; ap/expr gap
 open-plain: private literal ; ap/pattern gap
@@ -2458,10 +2040,7 @@ open-plain: private literal ; auto-open-static/expr gap
 open-plain: private literal ; barless-case/expr gap
 open-plain: private literal ; barless-case/pattern gap
 open-plain: private literal ; private alias-nested-auto/expr gap
-open-plain: private literal ; private ap/expr gap
 open-plain: private literal ; private auto-open-static/expr gap
-open-plain: private literal ; private barless-case/expr gap
-open-plain: private literal ; private type/expr gap
 open-plain: private literal ; type/expr gap
 open-plain: private nested-auto ; alias-nested-auto/expr gap
 open-plain: private nested-auto ; ap/expr gap
@@ -2472,11 +2051,7 @@ open-plain: private nested-auto ; barless-case/pattern gap
 open-plain: private nested-auto ; extern/expr gap
 open-plain: private nested-auto ; literal/pattern gap
 open-plain: private nested-auto ; private alias-nested-auto/expr gap
-open-plain: private nested-auto ; private ap/expr gap
 open-plain: private nested-auto ; private auto-open-static/expr gap
-open-plain: private nested-auto ; private barless-case/expr gap
-open-plain: private nested-auto ; private extern/expr gap
-open-plain: private nested-auto ; private type/expr gap
 open-plain: private nested-auto ; type/expr gap
 open-plain: private rqa-barless-case ; alias-nested-auto/expr gap
 open-plain: private rqa-barless-case ; ap/expr gap
@@ -2487,11 +2062,7 @@ open-plain: private rqa-barless-case ; barless-case/pattern gap
 open-plain: private rqa-barless-case ; extern/expr gap
 open-plain: private rqa-barless-case ; literal/pattern gap
 open-plain: private rqa-barless-case ; private alias-nested-auto/expr gap
-open-plain: private rqa-barless-case ; private ap/expr gap
 open-plain: private rqa-barless-case ; private auto-open-static/expr gap
-open-plain: private rqa-barless-case ; private barless-case/expr gap
-open-plain: private rqa-barless-case ; private extern/expr gap
-open-plain: private rqa-barless-case ; private type/expr gap
 open-plain: private rqa-barless-case ; type/expr gap
 open-plain: private rqa-case ; alias-nested-auto/expr gap
 open-plain: private rqa-case ; ap/expr gap
@@ -2502,37 +2073,16 @@ open-plain: private rqa-case ; barless-case/pattern gap
 open-plain: private rqa-case ; extern/expr gap
 open-plain: private rqa-case ; literal/pattern gap
 open-plain: private rqa-case ; private alias-nested-auto/expr gap
-open-plain: private rqa-case ; private ap/expr gap
 open-plain: private rqa-case ; private auto-open-static/expr gap
-open-plain: private rqa-case ; private barless-case/expr gap
-open-plain: private rqa-case ; private extern/expr gap
-open-plain: private rqa-case ; private type/expr gap
 open-plain: private rqa-case ; type/expr gap
 open-plain: private type ; alias-nested-auto/expr gap
 open-plain: private type ; ap/expr gap
 open-plain: private type ; ap/pattern gap
 open-plain: private type ; auto-open-static/expr gap
-open-plain: private type ; barless-case/expr gap
-open-plain: private type ; case/expr gap
 open-plain: private type ; extern/expr gap
-open-plain: private type ; literal/expr gap
 open-plain: private type ; literal/pattern gap
-open-plain: private type ; nested-auto/expr gap
 open-plain: private type ; private alias-nested-auto/expr gap
-open-plain: private type ; private ap/expr gap
 open-plain: private type ; private auto-open-static/expr gap
-open-plain: private type ; private barless-case/expr gap
-open-plain: private type ; private case/expr gap
-open-plain: private type ; private extern/expr gap
-open-plain: private type ; private literal/expr gap
-open-plain: private type ; private nested-auto/expr gap
-open-plain: private type ; private rqa-barless-case/expr gap
-open-plain: private type ; private rqa-case/expr gap
-open-plain: private type ; private value/expr gap
-open-plain: private type ; rqa-barless-case/expr gap
-open-plain: private type ; rqa-case/expr gap
-open-plain: private type ; value/expr gap
-open-plain: private type/expr gap
 open-plain: private value ; alias-nested-auto/expr gap
 open-plain: private value ; ap/expr gap
 open-plain: private value ; ap/pattern gap
@@ -2540,10 +2090,7 @@ open-plain: private value ; auto-open-static/expr gap
 open-plain: private value ; barless-case/expr gap
 open-plain: private value ; barless-case/pattern gap
 open-plain: private value ; private alias-nested-auto/expr gap
-open-plain: private value ; private ap/expr gap
 open-plain: private value ; private auto-open-static/expr gap
-open-plain: private value ; private barless-case/expr gap
-open-plain: private value ; private type/expr gap
 open-plain: private value ; type/expr gap
 open-plain: rqa-barless-case ; alias-nested-auto/expr gap
 open-plain: rqa-barless-case ; ap/expr gap
@@ -2554,11 +2101,7 @@ open-plain: rqa-barless-case ; barless-case/pattern gap
 open-plain: rqa-barless-case ; extern/expr gap
 open-plain: rqa-barless-case ; literal/pattern gap
 open-plain: rqa-barless-case ; private alias-nested-auto/expr gap
-open-plain: rqa-barless-case ; private ap/expr gap
 open-plain: rqa-barless-case ; private auto-open-static/expr gap
-open-plain: rqa-barless-case ; private barless-case/expr gap
-open-plain: rqa-barless-case ; private extern/expr gap
-open-plain: rqa-barless-case ; private type/expr gap
 open-plain: rqa-barless-case ; type/expr gap
 open-plain: rqa-case ; alias-nested-auto/expr gap
 open-plain: rqa-case ; ap/expr gap
@@ -2569,11 +2112,7 @@ open-plain: rqa-case ; barless-case/pattern gap
 open-plain: rqa-case ; extern/expr gap
 open-plain: rqa-case ; literal/pattern gap
 open-plain: rqa-case ; private alias-nested-auto/expr gap
-open-plain: rqa-case ; private ap/expr gap
 open-plain: rqa-case ; private auto-open-static/expr gap
-open-plain: rqa-case ; private barless-case/expr gap
-open-plain: rqa-case ; private extern/expr gap
-open-plain: rqa-case ; private type/expr gap
 open-plain: rqa-case ; type/expr gap
 open-plain: type ; alias-nested-auto/expr gap
 open-plain: type ; ap/expr gap
@@ -2606,7 +2145,6 @@ open-plain: value ; auto-open-static/expr gap
 open-plain: value ; barless-case/pattern gap
 open-plain: value ; private alias-nested-auto/expr gap
 open-plain: value ; private auto-open-static/expr gap
-open-plain: value ; private type/expr gap
 open-plain: value ; type/expr gap
 open-same-file: after opaque open: alias-nested-auto/expr gap
 open-same-file: after opaque open: ap/expr gap
@@ -2623,11 +2161,7 @@ open-same-file: after opaque open: literal/expr gap
 open-same-file: after opaque open: literal/pattern gap
 open-same-file: after opaque open: nested-auto/expr gap
 open-same-file: after opaque open: private alias-nested-auto/expr gap
-open-same-file: after opaque open: private ap/expr gap
 open-same-file: after opaque open: private auto-open-static/expr gap
-open-same-file: after opaque open: private barless-case/expr gap
-open-same-file: after opaque open: private extern/expr gap
-open-same-file: after opaque open: private type/expr gap
 open-same-file: after opaque open: type/expr gap
 open-same-file: after opaque open: value/expr gap
 open-same-file: alias-nested-auto ; alias-nested-auto/expr gap
@@ -2802,14 +2336,8 @@ open-same-file: case ; extern/pattern gap
 open-same-file: case ; literal/pattern gap
 open-same-file: case ; private alias-nested-auto/expr gap
 open-same-file: case ; private alias-nested-auto/pattern gap
-open-same-file: case ; private ap/pattern gap
 open-same-file: case ; private auto-open-static/expr gap
 open-same-file: case ; private auto-open-static/pattern gap
-open-same-file: case ; private barless-case/expr gap
-open-same-file: case ; private barless-case/pattern gap
-open-same-file: case ; private extern/expr gap
-open-same-file: case ; private extern/pattern gap
-open-same-file: case ; private type/expr gap
 open-same-file: case ; type/expr gap
 open-same-file: exn ; alias-nested-auto/expr gap
 open-same-file: exn ; alias-nested-auto/pattern gap
@@ -2823,13 +2351,8 @@ open-same-file: exn ; extern/pattern gap
 open-same-file: exn ; literal/pattern gap
 open-same-file: exn ; private alias-nested-auto/expr gap
 open-same-file: exn ; private alias-nested-auto/pattern gap
-open-same-file: exn ; private ap/pattern gap
 open-same-file: exn ; private auto-open-static/expr gap
 open-same-file: exn ; private auto-open-static/pattern gap
-open-same-file: exn ; private barless-case/expr gap
-open-same-file: exn ; private barless-case/pattern gap
-open-same-file: exn ; private extern/expr gap
-open-same-file: exn ; private extern/pattern gap
 open-same-file: extern ; alias-nested-auto/expr gap
 open-same-file: extern ; ap/expr gap
 open-same-file: extern ; ap/pattern gap
@@ -2875,7 +2398,6 @@ open-same-file: literal ; private exn/pattern gap
 open-same-file: literal ; private nested-auto/pattern gap
 open-same-file: literal ; private rqa-barless-case/pattern gap
 open-same-file: literal ; private rqa-case/pattern gap
-open-same-file: literal ; private type/expr gap
 open-same-file: literal ; private type/pattern gap
 open-same-file: literal ; rqa-barless-case/pattern gap
 open-same-file: literal ; rqa-case/pattern gap
@@ -2890,8 +2412,6 @@ open-same-file: nested-auto ; extern/expr gap
 open-same-file: nested-auto ; literal/pattern gap
 open-same-file: nested-auto ; private alias-nested-auto/expr gap
 open-same-file: nested-auto ; private auto-open-static/expr gap
-open-same-file: nested-auto ; private extern/expr gap
-open-same-file: nested-auto ; private type/expr gap
 open-same-file: nested-auto ; type/expr gap
 open-same-file: private alias-nested-auto ; alias-nested-auto/expr gap
 open-same-file: private alias-nested-auto ; ap/expr gap
@@ -2929,26 +2449,11 @@ open-same-file: private ap ; alias-nested-auto/expr gap
 open-same-file: private ap ; auto-open-static/expr gap
 open-same-file: private ap ; barless-case/expr gap
 open-same-file: private ap ; barless-case/pattern gap
-open-same-file: private ap ; case/pattern gap
-open-same-file: private ap ; exn/pattern gap
 open-same-file: private ap ; extern/expr gap
 open-same-file: private ap ; literal/pattern gap
 open-same-file: private ap ; private alias-nested-auto/expr gap
 open-same-file: private ap ; private auto-open-static/expr gap
-open-same-file: private ap ; private barless-case/expr gap
-open-same-file: private ap ; private case/expr gap
-open-same-file: private ap ; private exn/expr gap
-open-same-file: private ap ; private extern/expr gap
-open-same-file: private ap ; private literal/expr gap
-open-same-file: private ap ; private nested-auto/expr gap
-open-same-file: private ap ; private rqa-barless-case/expr gap
-open-same-file: private ap ; private rqa-case/expr gap
-open-same-file: private ap ; private type/expr gap
-open-same-file: private ap ; private value/expr gap
-open-same-file: private ap ; rqa-barless-case/expr gap
-open-same-file: private ap ; rqa-case/expr gap
 open-same-file: private ap ; type/expr gap
-open-same-file: private ap/expr gap
 open-same-file: private auto-open-static ; alias-nested-auto/expr gap
 open-same-file: private auto-open-static ; ap/expr gap
 open-same-file: private auto-open-static ; ap/pattern gap
@@ -2987,29 +2492,11 @@ open-same-file: private barless-case ; ap/pattern gap
 open-same-file: private barless-case ; auto-open-static/expr gap
 open-same-file: private barless-case ; barless-case/expr gap
 open-same-file: private barless-case ; barless-case/pattern gap
-open-same-file: private barless-case ; case/expr gap
-open-same-file: private barless-case ; case/pattern gap
-open-same-file: private barless-case ; exn/expr gap
-open-same-file: private barless-case ; exn/pattern gap
 open-same-file: private barless-case ; extern/expr gap
 open-same-file: private barless-case ; literal/pattern gap
 open-same-file: private barless-case ; private alias-nested-auto/expr gap
-open-same-file: private barless-case ; private ap/expr gap
 open-same-file: private barless-case ; private auto-open-static/expr gap
-open-same-file: private barless-case ; private barless-case/expr gap
-open-same-file: private barless-case ; private case/expr gap
-open-same-file: private barless-case ; private exn/expr gap
-open-same-file: private barless-case ; private extern/expr gap
-open-same-file: private barless-case ; private literal/expr gap
-open-same-file: private barless-case ; private nested-auto/expr gap
-open-same-file: private barless-case ; private rqa-barless-case/expr gap
-open-same-file: private barless-case ; private rqa-case/expr gap
-open-same-file: private barless-case ; private type/expr gap
-open-same-file: private barless-case ; private value/expr gap
-open-same-file: private barless-case ; rqa-barless-case/expr gap
-open-same-file: private barless-case ; rqa-case/expr gap
 open-same-file: private barless-case ; type/expr gap
-open-same-file: private barless-case/expr gap
 open-same-file: private case ; alias-nested-auto/expr gap
 open-same-file: private case ; ap/expr gap
 open-same-file: private case ; ap/pattern gap
@@ -3019,11 +2506,7 @@ open-same-file: private case ; barless-case/pattern gap
 open-same-file: private case ; extern/expr gap
 open-same-file: private case ; literal/pattern gap
 open-same-file: private case ; private alias-nested-auto/expr gap
-open-same-file: private case ; private ap/expr gap
 open-same-file: private case ; private auto-open-static/expr gap
-open-same-file: private case ; private barless-case/expr gap
-open-same-file: private case ; private extern/expr gap
-open-same-file: private case ; private type/expr gap
 open-same-file: private case ; type/expr gap
 open-same-file: private exn ; alias-nested-auto/expr gap
 open-same-file: private exn ; ap/expr gap
@@ -3033,35 +2516,16 @@ open-same-file: private exn ; barless-case/expr gap
 open-same-file: private exn ; extern/expr gap
 open-same-file: private exn ; literal/pattern gap
 open-same-file: private exn ; private alias-nested-auto/expr gap
-open-same-file: private exn ; private ap/expr gap
 open-same-file: private exn ; private auto-open-static/expr gap
-open-same-file: private exn ; private barless-case/expr gap
-open-same-file: private exn ; private extern/expr gap
 open-same-file: private extern ; alias-nested-auto/expr gap
 open-same-file: private extern ; ap/expr gap
 open-same-file: private extern ; ap/pattern gap
 open-same-file: private extern ; auto-open-static/expr gap
 open-same-file: private extern ; barless-case/expr gap
 open-same-file: private extern ; barless-case/pattern gap
-open-same-file: private extern ; case/expr gap
-open-same-file: private extern ; case/pattern gap
-open-same-file: private extern ; exn/expr gap
-open-same-file: private extern ; exn/pattern gap
-open-same-file: private extern ; nested-auto/expr gap
 open-same-file: private extern ; private alias-nested-auto/expr gap
-open-same-file: private extern ; private ap/expr gap
 open-same-file: private extern ; private auto-open-static/expr gap
-open-same-file: private extern ; private barless-case/expr gap
-open-same-file: private extern ; private case/expr gap
-open-same-file: private extern ; private exn/expr gap
-open-same-file: private extern ; private nested-auto/expr gap
-open-same-file: private extern ; private rqa-barless-case/expr gap
-open-same-file: private extern ; private rqa-case/expr gap
-open-same-file: private extern ; private type/expr gap
-open-same-file: private extern ; rqa-barless-case/expr gap
-open-same-file: private extern ; rqa-case/expr gap
 open-same-file: private extern ; type/expr gap
-open-same-file: private extern/expr gap
 open-same-file: private literal ; alias-nested-auto/expr gap
 open-same-file: private literal ; ap/expr gap
 open-same-file: private literal ; ap/pattern gap
@@ -3069,10 +2533,7 @@ open-same-file: private literal ; auto-open-static/expr gap
 open-same-file: private literal ; barless-case/expr gap
 open-same-file: private literal ; barless-case/pattern gap
 open-same-file: private literal ; private alias-nested-auto/expr gap
-open-same-file: private literal ; private ap/expr gap
 open-same-file: private literal ; private auto-open-static/expr gap
-open-same-file: private literal ; private barless-case/expr gap
-open-same-file: private literal ; private type/expr gap
 open-same-file: private literal ; type/expr gap
 open-same-file: private nested-auto ; alias-nested-auto/expr gap
 open-same-file: private nested-auto ; ap/expr gap
@@ -3083,11 +2544,7 @@ open-same-file: private nested-auto ; barless-case/pattern gap
 open-same-file: private nested-auto ; extern/expr gap
 open-same-file: private nested-auto ; literal/pattern gap
 open-same-file: private nested-auto ; private alias-nested-auto/expr gap
-open-same-file: private nested-auto ; private ap/expr gap
 open-same-file: private nested-auto ; private auto-open-static/expr gap
-open-same-file: private nested-auto ; private barless-case/expr gap
-open-same-file: private nested-auto ; private extern/expr gap
-open-same-file: private nested-auto ; private type/expr gap
 open-same-file: private nested-auto ; type/expr gap
 open-same-file: private rqa-barless-case ; alias-nested-auto/expr gap
 open-same-file: private rqa-barless-case ; ap/expr gap
@@ -3098,11 +2555,7 @@ open-same-file: private rqa-barless-case ; barless-case/pattern gap
 open-same-file: private rqa-barless-case ; extern/expr gap
 open-same-file: private rqa-barless-case ; literal/pattern gap
 open-same-file: private rqa-barless-case ; private alias-nested-auto/expr gap
-open-same-file: private rqa-barless-case ; private ap/expr gap
 open-same-file: private rqa-barless-case ; private auto-open-static/expr gap
-open-same-file: private rqa-barless-case ; private barless-case/expr gap
-open-same-file: private rqa-barless-case ; private extern/expr gap
-open-same-file: private rqa-barless-case ; private type/expr gap
 open-same-file: private rqa-barless-case ; type/expr gap
 open-same-file: private rqa-case ; alias-nested-auto/expr gap
 open-same-file: private rqa-case ; ap/expr gap
@@ -3113,37 +2566,16 @@ open-same-file: private rqa-case ; barless-case/pattern gap
 open-same-file: private rqa-case ; extern/expr gap
 open-same-file: private rqa-case ; literal/pattern gap
 open-same-file: private rqa-case ; private alias-nested-auto/expr gap
-open-same-file: private rqa-case ; private ap/expr gap
 open-same-file: private rqa-case ; private auto-open-static/expr gap
-open-same-file: private rqa-case ; private barless-case/expr gap
-open-same-file: private rqa-case ; private extern/expr gap
-open-same-file: private rqa-case ; private type/expr gap
 open-same-file: private rqa-case ; type/expr gap
 open-same-file: private type ; alias-nested-auto/expr gap
 open-same-file: private type ; ap/expr gap
 open-same-file: private type ; ap/pattern gap
 open-same-file: private type ; auto-open-static/expr gap
-open-same-file: private type ; barless-case/expr gap
-open-same-file: private type ; case/expr gap
 open-same-file: private type ; extern/expr gap
-open-same-file: private type ; literal/expr gap
 open-same-file: private type ; literal/pattern gap
-open-same-file: private type ; nested-auto/expr gap
 open-same-file: private type ; private alias-nested-auto/expr gap
-open-same-file: private type ; private ap/expr gap
 open-same-file: private type ; private auto-open-static/expr gap
-open-same-file: private type ; private barless-case/expr gap
-open-same-file: private type ; private case/expr gap
-open-same-file: private type ; private extern/expr gap
-open-same-file: private type ; private literal/expr gap
-open-same-file: private type ; private nested-auto/expr gap
-open-same-file: private type ; private rqa-barless-case/expr gap
-open-same-file: private type ; private rqa-case/expr gap
-open-same-file: private type ; private value/expr gap
-open-same-file: private type ; rqa-barless-case/expr gap
-open-same-file: private type ; rqa-case/expr gap
-open-same-file: private type ; value/expr gap
-open-same-file: private type/expr gap
 open-same-file: private value ; alias-nested-auto/expr gap
 open-same-file: private value ; ap/expr gap
 open-same-file: private value ; ap/pattern gap
@@ -3151,10 +2583,7 @@ open-same-file: private value ; auto-open-static/expr gap
 open-same-file: private value ; barless-case/expr gap
 open-same-file: private value ; barless-case/pattern gap
 open-same-file: private value ; private alias-nested-auto/expr gap
-open-same-file: private value ; private ap/expr gap
 open-same-file: private value ; private auto-open-static/expr gap
-open-same-file: private value ; private barless-case/expr gap
-open-same-file: private value ; private type/expr gap
 open-same-file: private value ; type/expr gap
 open-same-file: rqa-barless-case ; alias-nested-auto/expr gap
 open-same-file: rqa-barless-case ; ap/expr gap
@@ -3165,11 +2594,7 @@ open-same-file: rqa-barless-case ; barless-case/pattern gap
 open-same-file: rqa-barless-case ; extern/expr gap
 open-same-file: rqa-barless-case ; literal/pattern gap
 open-same-file: rqa-barless-case ; private alias-nested-auto/expr gap
-open-same-file: rqa-barless-case ; private ap/expr gap
 open-same-file: rqa-barless-case ; private auto-open-static/expr gap
-open-same-file: rqa-barless-case ; private barless-case/expr gap
-open-same-file: rqa-barless-case ; private extern/expr gap
-open-same-file: rqa-barless-case ; private type/expr gap
 open-same-file: rqa-barless-case ; type/expr gap
 open-same-file: rqa-case ; alias-nested-auto/expr gap
 open-same-file: rqa-case ; ap/expr gap
@@ -3180,11 +2605,7 @@ open-same-file: rqa-case ; barless-case/pattern gap
 open-same-file: rqa-case ; extern/expr gap
 open-same-file: rqa-case ; literal/pattern gap
 open-same-file: rqa-case ; private alias-nested-auto/expr gap
-open-same-file: rqa-case ; private ap/expr gap
 open-same-file: rqa-case ; private auto-open-static/expr gap
-open-same-file: rqa-case ; private barless-case/expr gap
-open-same-file: rqa-case ; private extern/expr gap
-open-same-file: rqa-case ; private type/expr gap
 open-same-file: rqa-case ; type/expr gap
 open-same-file: type ; alias-nested-auto/expr gap
 open-same-file: type ; ap/expr gap
@@ -3217,7 +2638,6 @@ open-same-file: value ; auto-open-static/expr gap
 open-same-file: value ; barless-case/pattern gap
 open-same-file: value ; private alias-nested-auto/expr gap
 open-same-file: value ; private auto-open-static/expr gap
-open-same-file: value ; private type/expr gap
 open-same-file: value ; type/expr gap
 private alias-nested-auto ; alias-nested-auto/expr gap
 private alias-nested-auto ; ap/expr gap
@@ -3255,15 +2675,10 @@ private ap ; alias-nested-auto/expr gap
 private ap ; auto-open-static/expr gap
 private ap ; barless-case/expr gap
 private ap ; barless-case/pattern gap
-private ap ; case/pattern gap
-private ap ; exn/pattern gap
 private ap ; extern/expr gap
 private ap ; literal/pattern gap
 private ap ; private alias-nested-auto/expr gap
 private ap ; private auto-open-static/expr gap
-private ap ; private barless-case/expr gap
-private ap ; private extern/expr gap
-private ap ; private type/expr gap
 private ap ; type/expr gap
 private auto-open-static ; alias-nested-auto/expr gap
 private auto-open-static ; ap/expr gap
@@ -3298,34 +2713,15 @@ private auto-open-static ; type/expr gap
 private auto-open-static ; value/expr gap
 private auto-open-static/expr gap
 private barless-case ; alias-nested-auto/expr gap
-private barless-case ; ap/expr gap
 private barless-case ; ap/pattern gap
 private barless-case ; auto-open-static/expr gap
 private barless-case ; barless-case/expr gap
 private barless-case ; barless-case/pattern gap
-private barless-case ; case/expr gap
-private barless-case ; case/pattern gap
-private barless-case ; exn/expr gap
-private barless-case ; exn/pattern gap
 private barless-case ; extern/expr gap
 private barless-case ; literal/pattern gap
 private barless-case ; private alias-nested-auto/expr gap
-private barless-case ; private ap/expr gap
 private barless-case ; private auto-open-static/expr gap
-private barless-case ; private barless-case/expr gap
-private barless-case ; private case/expr gap
-private barless-case ; private exn/expr gap
-private barless-case ; private extern/expr gap
-private barless-case ; private literal/expr gap
-private barless-case ; private nested-auto/expr gap
-private barless-case ; private rqa-barless-case/expr gap
-private barless-case ; private rqa-case/expr gap
-private barless-case ; private type/expr gap
-private barless-case ; private value/expr gap
-private barless-case ; rqa-barless-case/expr gap
-private barless-case ; rqa-case/expr gap
 private barless-case ; type/expr gap
-private barless-case/expr gap
 private case ; alias-nested-auto/expr gap
 private case ; ap/pattern gap
 private case ; auto-open-static/expr gap
@@ -3335,9 +2731,6 @@ private case ; extern/expr gap
 private case ; literal/pattern gap
 private case ; private alias-nested-auto/expr gap
 private case ; private auto-open-static/expr gap
-private case ; private barless-case/expr gap
-private case ; private extern/expr gap
-private case ; private type/expr gap
 private case ; type/expr gap
 private exn ; alias-nested-auto/expr gap
 private exn ; ap/pattern gap
@@ -3347,33 +2740,14 @@ private exn ; extern/expr gap
 private exn ; literal/pattern gap
 private exn ; private alias-nested-auto/expr gap
 private exn ; private auto-open-static/expr gap
-private exn ; private barless-case/expr gap
-private exn ; private extern/expr gap
 private extern ; alias-nested-auto/expr gap
-private extern ; ap/expr gap
 private extern ; ap/pattern gap
 private extern ; auto-open-static/expr gap
 private extern ; barless-case/expr gap
 private extern ; barless-case/pattern gap
-private extern ; case/expr gap
-private extern ; case/pattern gap
-private extern ; exn/expr gap
-private extern ; exn/pattern gap
-private extern ; nested-auto/expr gap
 private extern ; private alias-nested-auto/expr gap
-private extern ; private ap/expr gap
 private extern ; private auto-open-static/expr gap
-private extern ; private barless-case/expr gap
-private extern ; private case/expr gap
-private extern ; private exn/expr gap
-private extern ; private nested-auto/expr gap
-private extern ; private rqa-barless-case/expr gap
-private extern ; private rqa-case/expr gap
-private extern ; private type/expr gap
-private extern ; rqa-barless-case/expr gap
-private extern ; rqa-case/expr gap
 private extern ; type/expr gap
-private extern/expr gap
 private literal ; alias-nested-auto/expr gap
 private literal ; ap/pattern gap
 private literal ; auto-open-static/expr gap
@@ -3381,8 +2755,6 @@ private literal ; barless-case/expr gap
 private literal ; barless-case/pattern gap
 private literal ; private alias-nested-auto/expr gap
 private literal ; private auto-open-static/expr gap
-private literal ; private barless-case/expr gap
-private literal ; private type/expr gap
 private literal ; type/expr gap
 private nested-auto ; alias-nested-auto/expr gap
 private nested-auto ; ap/pattern gap
@@ -3393,9 +2765,6 @@ private nested-auto ; extern/expr gap
 private nested-auto ; literal/pattern gap
 private nested-auto ; private alias-nested-auto/expr gap
 private nested-auto ; private auto-open-static/expr gap
-private nested-auto ; private barless-case/expr gap
-private nested-auto ; private extern/expr gap
-private nested-auto ; private type/expr gap
 private nested-auto ; type/expr gap
 private rqa-barless-case ; alias-nested-auto/expr gap
 private rqa-barless-case ; ap/pattern gap
@@ -3406,9 +2775,6 @@ private rqa-barless-case ; extern/expr gap
 private rqa-barless-case ; literal/pattern gap
 private rqa-barless-case ; private alias-nested-auto/expr gap
 private rqa-barless-case ; private auto-open-static/expr gap
-private rqa-barless-case ; private barless-case/expr gap
-private rqa-barless-case ; private extern/expr gap
-private rqa-barless-case ; private type/expr gap
 private rqa-barless-case ; type/expr gap
 private rqa-case ; alias-nested-auto/expr gap
 private rqa-case ; ap/pattern gap
@@ -3419,35 +2785,14 @@ private rqa-case ; extern/expr gap
 private rqa-case ; literal/pattern gap
 private rqa-case ; private alias-nested-auto/expr gap
 private rqa-case ; private auto-open-static/expr gap
-private rqa-case ; private barless-case/expr gap
-private rqa-case ; private extern/expr gap
-private rqa-case ; private type/expr gap
 private rqa-case ; type/expr gap
 private type ; alias-nested-auto/expr gap
-private type ; ap/expr gap
 private type ; ap/pattern gap
 private type ; auto-open-static/expr gap
-private type ; barless-case/expr gap
-private type ; case/expr gap
 private type ; extern/expr gap
-private type ; literal/expr gap
 private type ; literal/pattern gap
-private type ; nested-auto/expr gap
 private type ; private alias-nested-auto/expr gap
-private type ; private ap/expr gap
 private type ; private auto-open-static/expr gap
-private type ; private barless-case/expr gap
-private type ; private case/expr gap
-private type ; private extern/expr gap
-private type ; private literal/expr gap
-private type ; private nested-auto/expr gap
-private type ; private rqa-barless-case/expr gap
-private type ; private rqa-case/expr gap
-private type ; private value/expr gap
-private type ; rqa-barless-case/expr gap
-private type ; rqa-case/expr gap
-private type ; value/expr gap
-private type/expr gap
 private value ; alias-nested-auto/expr gap
 private value ; ap/pattern gap
 private value ; auto-open-static/expr gap
@@ -3455,8 +2800,6 @@ private value ; barless-case/expr gap
 private value ; barless-case/pattern gap
 private value ; private alias-nested-auto/expr gap
 private value ; private auto-open-static/expr gap
-private value ; private barless-case/expr gap
-private value ; private type/expr gap
 private value ; type/expr gap
 rqa-barless-case ; alias-nested-auto/expr gap
 rqa-barless-case ; ap/pattern gap
@@ -3467,9 +2810,6 @@ rqa-barless-case ; extern/expr gap
 rqa-barless-case ; literal/pattern gap
 rqa-barless-case ; private alias-nested-auto/expr gap
 rqa-barless-case ; private auto-open-static/expr gap
-rqa-barless-case ; private barless-case/expr gap
-rqa-barless-case ; private extern/expr gap
-rqa-barless-case ; private type/expr gap
 rqa-barless-case ; type/expr gap
 rqa-case ; alias-nested-auto/expr gap
 rqa-case ; ap/pattern gap
@@ -3480,9 +2820,6 @@ rqa-case ; extern/expr gap
 rqa-case ; literal/pattern gap
 rqa-case ; private alias-nested-auto/expr gap
 rqa-case ; private auto-open-static/expr gap
-rqa-case ; private barless-case/expr gap
-rqa-case ; private extern/expr gap
-rqa-case ; private type/expr gap
 rqa-case ; type/expr gap
 type ; alias-nested-auto/expr gap
 type ; ap/expr gap
@@ -3515,5 +2852,4 @@ value ; auto-open-static/expr gap
 value ; barless-case/pattern gap
 value ; private alias-nested-auto/expr gap
 value ; private auto-open-static/expr gap
-value ; private type/expr gap
 value ; type/expr gap

@@ -1229,6 +1229,15 @@ pub(super) struct Resolver<'a> {
     /// earlier Compile-order file via [`Preceding`](super::model::ProjectItems)); merged across files like
     /// [`Self::nested_module_exports`].
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
+    /// Containers holding an `extern` or a module-level active pattern of their
+    /// own `private`: names the walk does not enumerate, reachable only from
+    /// inside the container. Every reader of
+    /// [`Self::modules_with_hidden_values`] but one reads it from outside the
+    /// module it names — an `open` or a fold of it, or a qualified path
+    /// through it — where such a name is not in reach, so the container is
+    /// recorded here instead, for the one that reads from inside
+    /// ([`Resolver::container_and_ancestors_hide_values`](super::Resolver)).
+    pub(super) modules_with_private_hidden_values: HashSet<Vec<String>>,
     /// Qualified paths of `[<AutoOpen>]` modules declared in this file,
     /// each with its `module private` bit — one record per module, written by
     /// [`Resolver::record_auto_open_module`](super::Resolver) from both

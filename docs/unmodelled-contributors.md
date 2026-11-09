@@ -29,6 +29,20 @@ A mark's reach follows FCS's two tables:
 | `Both` | bare use, dotted head, and pattern | cases, active-pattern cases, attributed `let`s (which may be `[<Literal>]`) |
 | `Expression` | bare use and dotted head | values that cannot be literals (an unattributed `let`, an `extern`, a static), and constructible types' names |
 
+A mark carries its name's access too (`Access` in
+`crates/sema/src/resolve/contributors.rs`): an `open` adds only what is
+accessible where it is written (`AddModuleOrNamespaceContentsToNameEnv` filters
+by the accessor domain there), so a mark is pushed only where its name can be
+reached. An `extern`, a constructible type, a bar-less union case or a
+module-level active pattern of its module's own `private` therefore costs no
+decline outside the module, nor does it mark the module as hiding values; one
+inside a `module private` keeps its reach over the module's parent. Where the
+name sets are read off the syntax wholesale (a module that may be
+`[<AutoOpen>]` but cannot be folded, a `rec` block, a root contribution), every
+name is taken as public. `auto_open_member_sweep`'s inaccessible-member property
+holds this to zero declines, and `auto_open_fold_back.rs` grades each member
+`private` and `internal` through every fold route against FCS.
+
 Whether a name set holds every name FCS says a contributor introduces is
 checked by a generated oracle, `crates/sema/tests/all/contributor_name_oracle.rs`.
 It writes contributors of every kind (`[<AutoOpen>]` modules, aliased, nested,

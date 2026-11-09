@@ -2224,6 +2224,7 @@ impl<'a> Resolver<'a> {
             open_generation: 0,
             pattern_suppressed_case_ids: HashSet::new(),
             modules_with_hidden_values: HashSet::new(),
+            modules_with_private_hidden_values: HashSet::new(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,

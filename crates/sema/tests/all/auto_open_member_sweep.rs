@@ -1542,13 +1542,12 @@ fn resolve_cell(cell: &Cell) -> ResolvedCell {
 /// **A member that is not in scope cannot change what is.**
 ///
 /// Append an inaccessible declaration to each cell's fragment and the probe must
-/// resolve exactly as before — same variant, same target range — or decline.
-/// `private` at the fragment's own level means the member never reaches the
-/// enclosing block, so its only possible effect is on machinery that scans the
-/// fragment *without* applying the accessibility test the fold itself applies.
-/// A target that moves fails; a decline is that machinery's availability
-/// cost, pinned per probe in the exact manifest
-/// `tests/manifests/auto_open_member_sweep_inaccessible.txt`.
+/// resolve exactly as before — same variant, same target range. `private` at the
+/// fragment's own level means the member never reaches the enclosing block, so
+/// its only possible effect is on machinery that scans the fragment *without*
+/// applying the accessibility test the fold itself applies: the marks a fold
+/// pushes for what it does not model carry the member's access for exactly
+/// this reason (`Access`, in `src/resolve/contributors.rs`).
 ///
 /// This is the sweep's answer to its own arity. The grid above is pairwise, and
 /// the first defect of exactly this shape took **three** members to build — an
@@ -1620,17 +1619,12 @@ fn an_inaccessible_member_does_not_change_any_cell() {
     );
 
     // A loss is a decline the invisible member caused: no wrong target, but
-    // machinery that counted a member the fold itself filters out. The marks
-    // a fold pushes for what it does not model and the bar-less case
-    // declines are blind to access, so each loss is pinned.
-    let manifest = Manifest::from_entries(losses.into_iter().map(|l| format!("{l} loss")))
-        .unwrap_or_else(|e| panic!("manifest entry: {e}"));
-    borzoi_oracle_harness::manifest::check(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/manifests/auto_open_member_sweep_inaccessible.txt"),
-        &manifest,
-        "BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all \
-         auto_open_member_sweep::an_inaccessible_member_does_not_change_any_cell",
+    // machinery that counted a member the fold itself filters out.
+    assert!(
+        losses.is_empty(),
+        "{} probes decline only because an out-of-scope member was added:\n  {}",
+        losses.len(),
+        losses.join("\n  ")
     );
 }
 
