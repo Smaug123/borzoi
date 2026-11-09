@@ -179,6 +179,21 @@ did not re-add the namespace's earlier-file cases over an intervening `open`.
 It has nothing to do with accessibility; `reopened_namespace_grid` grades it
 on its own axes.
 
+`crates/sema/tests/all/case_open_grid.rs` grades the `open` route on its own
+(#44): `open N.M` then a bare `X`, for a union in a module, a nested module, a
+namespace or an `[<AutoOpen>]` module, declared in an earlier file, an earlier
+block or the current block. It crosses the `open`'s spelling (full, partial
+after an outer `open`, `global.`, relative to the enclosing namespace, an
+`open` of the namespace that folds an `[<AutoOpen>]` container) with a rival
+for `X` before or after the `open` (a value, a literal, an active pattern,
+another case, an exception, a class, a local), in an expression and a
+pattern. The `[<RequireQualifiedAccess>]`, `private`-representation and
+`private`-type unions are its controls. Every site FCS binds cleanly commits,
+except three classes outside its subject: a later `open`'s literal in a
+pattern, a later `open`'s class constructor, and `type U = X`, whose case the
+walk does not intern because whether `X` names a type depends on every type
+name in scope at the declaration.
+
 ## Stage 4 — landed (straddle resolution, #980; supersedes #973)
 
 Rebuilt the cross-tier namespace-straddle fold on the Stage-3 queries plus a new
