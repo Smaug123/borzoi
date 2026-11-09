@@ -22,10 +22,12 @@
 //! differential by agreement), and which of them we must commit to, so the
 //! grid cannot pass by declining everything.
 
-use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
+use crate::common::{
+    fsharp_core_env, invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file,
+};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
+use borzoi_sema::{Resolution, resolve_project};
 use rowan::TextRange;
 
 fn impl_file(src: &str) -> ImplFile {
@@ -167,7 +169,7 @@ fn check(cell: &Cell<'_>) {
     let json = invoke_fcs_dump_project(&paths);
     let fcs_files = parse_fcs_uses_project(&json, &written);
     let asts: Vec<ImplFile> = written.iter().map(|(_, src)| impl_file(src)).collect();
-    let proj = resolve_project(&asts, &AssemblyEnv::default());
+    let proj = resolve_project(&asts, fsharp_core_env());
     for (p, _) in &written {
         let _ = std::fs::remove_file(p);
     }
@@ -475,6 +477,36 @@ fn open_binds_the_last_union_declaring_a_case() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn type_qualified_case_named_like_an_implicitly_opened_module_member() {
+    // FSharp.Core's `Option` module, opened by no source `open`, is searched
+    // before the opened project type: `Option.map` is `Option.map`.
+    check(&Cell {
+        name: "implicit_module_namesake",
+        files: &[
+            "module Lib\n[<RequireQualifiedAccess>]\ntype Option = map | Other\n",
+            "module Use\nopen Lib\nlet x = Option.map\n",
+        ],
+        errors_expected: false,
+        pins: &[no_commit(at(1, "Option.map", 0))],
+    });
+}
+
+#[test]
+fn type_qualified_case_named_like_a_same_file_namespace() {
+    // An earlier namespace block of this file named like the type takes
+    // the head: `U.A` is the namespace-qualified case `U.V.A`.
+    check(&Cell {
+        name: "same_file_namespace_namesake",
+        files: &[
+            "module Lib\ntype U = A | B\n",
+            "namespace U\ntype V = A | C\n\nnamespace Client\nmodule M =\n    open Lib\n    let x = U.A\n",
+        ],
+        errors_expected: false,
+        pins: &[binds(at(1, "U.A", 0), at(1, "A", 0))],
+    });
+}
+
+#[test]
 fn type_qualified_case_beside_a_generic_type_of_the_same_name() {
     // `U` and `U<'T>` share a path and a case name, and FCS splits them by
     // position: the expression reads the non-generic type's `A`, the
@@ -602,7 +634,7 @@ fn grade_project(label: &str, files: &[String], head_text: &str) -> (bool, usize
     let json = invoke_fcs_dump_project(&paths);
     let fcs_files = parse_fcs_uses_project(&json, &written);
     let asts: Vec<ImplFile> = written.iter().map(|(_, src)| impl_file(src)).collect();
-    let proj = resolve_project(&asts, &AssemblyEnv::default());
+    let proj = resolve_project(&asts, fsharp_core_env());
     for (p, _) in &written {
         let _ = std::fs::remove_file(p);
     }
