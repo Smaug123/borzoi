@@ -4168,7 +4168,7 @@ impl<'a> Resolver<'a> {
     ///
     /// In pattern position FCS tries the head's *types* before its modules and
     /// namespaces, so an emit also declines where a type of the head's name
-    /// that may nest one is in scope
+    /// may be in scope
     /// ([`pattern_type_head_possible`](Self::pattern_type_head_possible)).
     fn classify_same_file_module_qualified_case(
         &self,
@@ -4654,7 +4654,22 @@ impl<'a> Resolver<'a> {
                     }));
             return owns.then_some(SameFileQualified::DeferStop);
         }
-        None
+        // Transparent only on proof the open brings no `head` in by a route the
+        // arms above do not enumerate: an `[<AutoOpen>]` module of the opened
+        // container (an assembly namespace's, read from its fold surfaces; a
+        // project container's, unenumerated) or a dropped type at the path.
+        let auto_open_supplies = self.assemblies.has_namespace(prefix)
+            && self
+                .assemblies
+                .open_namespace_fold_surfaces(prefix)
+                .iter()
+                .any(|s| s.residue || s.entries.iter().any(|e| e.name == head));
+        let unprovable = auto_open_supplies
+            || !self.project_auto_open_submodules_in(prefix).is_empty()
+            || self
+                .assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(&full);
+        unprovable.then_some(SameFileQualified::DeferStop)
     }
 
     /// Classify the residual `B….Color.Red` of a qualified case **within one
@@ -4792,7 +4807,8 @@ impl<'a> Resolver<'a> {
     /// and the modules around the use, the `[<AutoOpen>]` modules opened
     /// there (this file's, an earlier file's, or a referenced assembly's when
     /// it shares the enclosing namespace), and an `open` an earlier
-    /// `namespace global` block held.
+    /// `namespace global` block held. So the enclosing namespace must have no
+    /// contributor but this file.
     ///
     /// `None` when none of that may name `head`. `Some(Miss)` when, innermost
     /// first, an earlier file positively declares the whole written path
@@ -4827,16 +4843,17 @@ impl<'a> Resolver<'a> {
                 .is_some_and(|(_, parent)| self.container_path.starts_with(parent))
         });
         let enclosing = &self.container_path[..self.namespace_depth];
-        let earlier_auto_open = !enclosing.is_empty()
-            && !self
-                .preceding
-                .auto_open_modules_directly_in(enclosing)
-                .is_empty();
-        // A referenced assembly's part of the enclosing namespace: entering it
-        // opens its `[<AutoOpen>]` modules, whose nested modules are not
-        // enumerated here.
-        let assembly_enclosing = !enclosing.is_empty() && self.assemblies.has_namespace(enclosing);
-        (same_file_auto_open || earlier_auto_open || assembly_enclosing || self.global_block_opened)
+        // Any other contributor to the enclosing namespace — an earlier file's
+        // fragment, or a referenced assembly's (an accessible type there, or a
+        // dropped one that may be): entering it opens its contents and its
+        // `[<AutoOpen>]` modules, which are not enumerated here.
+        let other_contributor = !enclosing.is_empty()
+            && (self.preceding.is_namespace(enclosing)
+                || self.assemblies.has_namespace(enclosing)
+                || self
+                    .assemblies
+                    .any_split_of_a_module_path_has_a_dropped_type(enclosing));
+        (same_file_auto_open || other_contributor || self.global_block_opened)
             .then_some(SameFileQualified::DeferStop)
     }
 

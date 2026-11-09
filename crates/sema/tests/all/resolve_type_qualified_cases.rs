@@ -1262,10 +1262,11 @@ fn module_qualified_case_head_walk_skips_constructor_and_type_containers() {
     }
     // The type row in pattern position: FCS tries a pattern head's types
     // first, and `int` nests no `Color`, so it binds the module's case too
-    // (probe Kpat). The abbreviation's target is not chased, so a pattern head
-    // with an abbreviation of its name in scope declines rather than commit
-    // past a type that might nest the residual (`type_qualified_prefix_grid`'s
-    // `abbreviation-head-*` shapes are ones that do). Never the earlier file.
+    // (probe Kpat). Which types nest one is not modelled (an abbreviation's
+    // target, a class's base), so a pattern head with a type of its name in
+    // scope declines rather than commit past a type that might nest the
+    // residual (`type_qualified_prefix_grid`'s `abbreviation-head-*` shapes
+    // are ones that do). Never the earlier file.
     let src0 = "module Pal\ntype Color = Red | Blue\n";
     let src1 = "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Inner =\n    type Pal = int\n    let f c = match c with Pal.Color.Red -> 1 | _ -> 0\n";
     let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());

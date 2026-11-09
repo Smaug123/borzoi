@@ -2050,9 +2050,14 @@ impl Resolver<'_> {
             return;
         }
         self.opaque_binders.insert(case.text_range());
+        // A case of the container's, for the declared-name view.
+        let rqa = self.require_qualified_access(defn.attributes());
+        let decl = self.mark_decl(&id_text(&case));
+        decl.union_case |= rqa != RequireQualifiedAccess::Certain;
+        decl.qualified_case |= rqa != RequireQualifiedAccess::CertainlyNot;
         // A type that certainly requires qualified access puts no bare case
         // in scope.
-        if self.require_qualified_access(defn.attributes()) == RequireQualifiedAccess::Certain {
+        if rqa == RequireQualifiedAccess::Certain {
             return;
         }
         let contribution = Contribution {

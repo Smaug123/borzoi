@@ -478,17 +478,18 @@ impl<'a> Resolver<'a> {
                 // A non-RQA union case is a bare-reachable constructor (value
                 // namespace) → record it in the container's declared-name view, so a
                 // same-named type elsewhere in the container is seen as contention.
-                // (RQA cases are reachable only as `Type.Case`, so they never collide
-                // with a module-qualifier segment — not recorded.)
                 self.mark_decl(&name).union_case = true;
+            }
+            if rqa != RequireQualifiedAccess::CertainlyNot {
+                // A require-qualified case is reachable as `Mod.Case` in a pattern
+                // only ([`DeclKinds::qualified_case`](super::state::DeclKinds)).
+                self.mark_decl(&name).qualified_case = true;
             }
             if !require_qualified {
                 let generation = self.open_generation;
                 self.module_frame()
                     .entries
                     .push(ScopeEntry::binding(name, res, generation));
-            } else {
-                self.mark_decl(&name).qualified_case = true;
             }
         }
     }
@@ -3211,13 +3212,14 @@ impl<'a> Resolver<'a> {
     /// before its modules and namespaces (`ResolvePatternLongIdentPrim`:
     /// `tyconSearch +++ moduleSearch`, first success wins), so such a type
     /// owning the residual takes the path from a module or namespace of the
-    /// name. A type this file defines nests nothing unless it abbreviates
-    /// another; anything else — an abbreviation here, an earlier file's type,
-    /// a referenced assembly's type under any prefix the type walk visits, an
-    /// `[<AutoOpen>]` surface or a dropped type that may be one — counts.
+    /// name. Which types nest one is not modelled — an abbreviation exposes
+    /// its target's, a class inherits its base's — so every type of the name
+    /// counts: this file's (an exception nests nothing, and is left out), an
+    /// earlier file's, a referenced assembly's under any prefix the type walk
+    /// visits, an `[<AutoOpen>]` surface's, or a dropped type that may be one.
     pub(super) fn pattern_type_head_possible(&self, head: &str) -> bool {
         let names = [head.to_string()];
-        self.own_abbrev_type_simple_names.contains(head)
+        self.own_type_scoped.keys().any(|(name, _)| name == head)
             || self.preceding.earlier_type_arities.contains_key(head)
             || self.assemblies.manifest_auto_open_target_is_uncertain()
             || self.assemblies.contested_auto_open_is_uncertain()
@@ -3233,6 +3235,12 @@ impl<'a> Resolver<'a> {
                     .type_arities_named(prefix, head)
                     .next()
                     .is_some()
+                    || (self.assemblies.has_namespace(prefix)
+                        && self
+                            .assemblies
+                            .open_namespace_fold_surfaces(prefix)
+                            .iter()
+                            .any(|s| s.residue || s.entries.iter().any(|e| e.name == head)))
             })
     }
 

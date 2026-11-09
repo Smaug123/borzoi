@@ -54,25 +54,29 @@ that with a complete per-container name environment.
 
 - **Multi-segment qualifiers and namespace roots** (#69, #70) — the residual
   after the head is walked segment by segment through `container_decls`
-  (`Resolver::classify_module_qualified_residual`): each segment before the
-  type must be *solely* a module (`DeclKinds::is_sole_module`) or a same-file
-  sub-namespace, a `module private` one only from inside its container; any
-  co-declaration defers, as does a type declared twice. A same-file namespace
-  of the head's name is the last head candidate
-  (`Resolver::namespace_head_candidate`): in scope only once an *earlier*
-  block declared it, and below everything the current block brings into
-  scope, so it emits only when nothing else may name the head
-  (`Resolver::root_head_rival`, which a root module candidate must clear too)
-  and the namespace has no other contributor (an earlier file, an assembly, a
-  root module of its name, the current block). Graded by
-  `crates/sema/tests/all/type_qualified_prefix_grid.rs`, which found further
-  wrong-target classes on the way, all now declining: a `module rec` /
-  `namespace rec` block (FCS puts its *later* modules and opens in scope at
-  the use — `DeclineCause::RecursiveModuleActive`), a module or type declared
-  twice in one container (FCS reads the first), a same-file `[<AutoOpen>]`
-  module supplying a module of the head's name, an `open` in an earlier
-  `namespace global` block (FCS carries it into later blocks), and an
-  earlier file's module in the enclosing namespace outranking a root module.
+  (`Resolver::classify_module_qualified_residual`). A same-file namespace of
+  the head's name is the last head candidate
+  (`Resolver::namespace_head_candidate`): FCS adds it only when an *earlier*
+  block declaring it closes, below everything the current block brings into
+  scope. Graded by `crates/sema/tests/all/type_qualified_prefix_grid.rs`. Review
+  kept finding channels the walk did not enumerate, so the walk commits only
+  inside a positive domain and declines outside it:
+  - every segment before the type is *solely* a module
+    (`DeclKinds::is_sole_module`) or a same-file sub-namespace in a view that
+    records every module-level declaration, `extern`s and require-qualified
+    cases included, and a type segment declared once;
+  - every `open` in scope is proven not to bring the head in by a route the
+    walk does not classify (an assembly target's fold surface, its namespace's
+    `[<AutoOpen>]` modules, a project container's auto-open submodules, a
+    dropped type);
+  - a root head (a `namespace global` module or a same-file namespace) needs
+    an enclosing namespace no earlier file or referenced assembly contributes
+    to (`Resolver::root_head_rival`);
+  - in a pattern, where FCS tries the head's types first, no type of the
+    head's name may be in scope (`Resolver::pattern_type_head_possible`);
+  - not inside `module rec` / `namespace rec` (`RecursiveModuleActive`);
+  - no same-file `[<AutoOpen>]` module supplies a module of the head's name,
+    and no earlier `namespace global` block held an `open`.
 
 ## Invariant
 

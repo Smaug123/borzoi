@@ -288,7 +288,6 @@ tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafety
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/BaseCallByref.fs type_defn
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefReturnMember/TestBaseCall.fs type_defn
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/MethodApplicationResolution/MultiExtensionMethods01.fs member-of-augmentation x2
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/NameResolution/RequireQualifiedAccess/OnRecordVsUnion.fs let_decl
 tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/TypeInference/RegressionTest01.fs member-of-augmentation x15
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/AbstractMembers/E_InlineVirtualMember02.fs type_defn x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/AbstractClassMultipleConstructors01.fs type_defn x2
