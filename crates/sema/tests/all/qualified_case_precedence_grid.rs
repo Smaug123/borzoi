@@ -818,3 +818,45 @@ fn a_signature_hidden_possible_case_contests_nothing() {
         proj.file(2).decline_site(probed)
     );
 }
+
+/// `N.C` in a block of `namespace N` that this file reopens: the file's
+/// earlier block is the newest fragment of `N`, so FCS reads its union's case
+/// ahead of an earlier file's, and the walk commits it.
+#[test]
+fn a_reopened_namespace_reads_this_files_earlier_block_first() {
+    let first = "namespace N\n\ntype A =\n    | C of int\n    | D\n";
+    let probe = "namespace N\n\ntype B =\n    | C of string\n    | E\n\nnamespace N\n\nmodule Test =\n    let probe = N.C\n";
+    let files = [("A.fs", first), ("B.fs", probe)];
+    crate::union_rqa_attribute_grid::project_probe_agrees(&files, "N.C").expect("agrees with FCS");
+    let env = env_of(&[ensure_fsharp_core_dll().as_path()]);
+    let proj = resolve_project_files(&project(&files), &env);
+    let probed = range(probe.rfind("N.C").expect("the probe"), "N.C".len());
+    assert!(
+        matches!(
+            proj.file(1).resolution_at(probed),
+            Some(Resolution::Item(_))
+        ),
+        "this file's case is committed: {:?}",
+        proj.file(1).decline_site(probed)
+    );
+}
+
+/// The same probe where no earlier file declares `namespace N`: the
+/// namespace's own name may not be in scope yet, so the walk commits nothing.
+#[test]
+fn a_namespace_only_this_file_declares_commits_nothing() {
+    let first = "namespace Other\n\ntype X =\n    | X1\n";
+    let probe = "namespace N\n\ntype B =\n    | C of string\n    | E\n\nnamespace N\n\nmodule Test =\n    let probe = N.C\n";
+    let files = [("A.fs", first), ("B.fs", probe)];
+    let env = env_of(&[ensure_fsharp_core_dll().as_path()]);
+    let proj = resolve_project_files(&project(&files), &env);
+    let probed = range(probe.rfind("N.C").expect("the probe"), "N.C".len());
+    assert!(
+        !matches!(
+            proj.file(1).resolution_at(probed),
+            Some(Resolution::Item(_))
+        ),
+        "committed {:?}",
+        proj.file(1).resolution_at(probed)
+    );
+}

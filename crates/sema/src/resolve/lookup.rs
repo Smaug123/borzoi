@@ -2666,6 +2666,16 @@ impl<'a> Resolver<'a> {
     pub(super) fn qualified_value_in(&self, module_path: &[String], value: &str) -> QualifiedRead {
         let mut full = module_path.to_vec();
         full.push(value.to_string());
+        match self.same_file_qualified_read(&full) {
+            QualifiedRead::Miss => self.preceding.qualified_read(&full, &self.container_path),
+            read => read,
+        }
+    }
+
+    /// What a qualified expression path `full` (container + name) reads
+    /// among this file's members so far, the newest fragment of the
+    /// container ([`read_fragment`](super::model::read_fragment)).
+    fn same_file_qualified_read(&self, full: &[String]) -> QualifiedRead {
         // `self.items` is source-ordered. An accessibility gate as the
         // cross-file read's: a `let private` value is invisible to a *sibling*
         // module (FCS FS1094), and a public value under a later inaccessible
@@ -2673,7 +2683,7 @@ impl<'a> Resolver<'a> {
         let exports: Vec<(ItemId, Option<usize>, u8)> = self
             .items
             .iter()
-            .filter(|i| i.qualified.as_deref() == Some(full.as_slice()))
+            .filter(|i| i.qualified.as_deref() == Some(full))
             .map(|i| (i.id, i.access_root_len, super::model::fold_rank(i.case)))
             .collect();
         // The first union case declared at the path, qualified-only and
@@ -2691,7 +2701,7 @@ impl<'a> Resolver<'a> {
                         plain: it.qualified.is_some().then_some(it.id),
                         access_root_len: super::model::case_access(
                             it,
-                            &full,
+                            full,
                             &self.repr_private_cases,
                         ),
                     })
@@ -2705,18 +2715,9 @@ impl<'a> Resolver<'a> {
         // A member the read does not model, declared here too.
         let unread = self.export_decls.iter().any(|d| {
             matches!(d.kind, ExportDeclKind::Extern { .. })
-                && d.member_path(&self.items, false).as_deref() == Some(full.as_slice())
+                && d.member_path(&self.items, false).as_deref() == Some(full)
         });
-        match super::model::read_fragment(
-            &exports,
-            first_union,
-            unread,
-            &full,
-            &self.container_path,
-        ) {
-            QualifiedRead::Miss => self.preceding.qualified_read(&full, &self.container_path),
-            read => read,
-        }
+        super::model::read_fragment(&exports, first_union, unread, full, &self.container_path)
     }
 
     /// Record what a qualified expression path `segments` reads, and whether
@@ -3460,17 +3461,24 @@ impl<'a> Resolver<'a> {
             // resolution above rejects a self/ancestor head — FCS's project oracle
             // resolves it. No name-shortening, so no head-guard; the relative
             // resolution above already handles the common cross-file shapes, so this
-            // only adds the enclosing-namespace-qualified case. A *same-file* such
-            // reference still misses here (`preceding` lacks it) and so defers,
-            // matching FCS (FS0039 — same-file, the namespace's own name is not yet
-            // in scope). (The root-qualified form `global.Demo.Target.foo` does not
+            // only adds the enclosing-namespace-qualified case. This file's own
+            // fragment of the container is the newest, so it is read first (a
+            // namespace reopened later in the file reads its earlier block's
+            // case); a member only this file declares declines, since the
+            // namespace's own name may not be in scope yet (FS0039).
+            // (The root-qualified form `global.Demo.Target.foo` does not
             // parse in expression position yet — see the parser's
             // `global_headed_app_source_does_not_panic` — so it never reaches here;
             // it can be handled when the parser supports `global` as an expr atom.)
             if !rest.is_empty() && !sig_screened {
-                let read = self
+                let earlier = self
                     .preceding
                     .qualified_read(&written_path, &self.container_path);
+                let read = match (self.same_file_qualified_read(&written_path), earlier) {
+                    (QualifiedRead::Miss, earlier) => earlier,
+                    (_, QualifiedRead::Miss) => QualifiedRead::Decline,
+                    (here, _) => here,
+                };
                 if self.record_qualified_read(read, segments) {
                     return;
                 }
