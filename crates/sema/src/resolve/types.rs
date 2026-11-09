@@ -362,6 +362,13 @@ impl<'a> Resolver<'a> {
         // A case of a `private` union type is scoped to the type's container
         // (oracle-pinned D3), so its export inherits that privacy.
         let type_is_private = super::decls::header_is_private(defn.syntax());
+        // `type U = private X | Y`: the parser keeps the representation's
+        // access modifier as the union node's own token.
+        let repr_private = u.syntax().children_with_tokens().any(|el| {
+            el.as_token().is_some_and(|t| {
+                t.kind() == borzoi_cst::syntax::SyntaxKind::ACCESS_TOK && t.text() == "private"
+            })
+        });
         let type_key = id_text(type_name).to_string();
         // The type was just defined, so the name's latest binder is it.
         let own_key = self
@@ -445,6 +452,9 @@ impl<'a> Resolver<'a> {
                     }
                 }
             };
+            if repr_private && let Resolution::Item(item) = res {
+                self.repr_private_cases.insert(item);
+            }
             // Every union case is reachable type-qualified (`Color.Red`, RQA or
             // not), so file its *resolution* in the container-scoped
             // [`Self::type_cases`] index keyed by the type name (the same index enum

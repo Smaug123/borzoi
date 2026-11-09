@@ -2352,6 +2352,7 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
+            repr_private_cases: HashSet::new(),
         }
     }
 
@@ -2637,6 +2638,7 @@ impl<'a> Resolver<'a> {
             },
             decline_sites: self.decline_sites,
             export_decls: self.export_decls,
+            repr_private_cases: self.repr_private_cases,
             sig_screen: None,
             sig_exports: Vec::new(),
             recovery: self.recovery.clone(),

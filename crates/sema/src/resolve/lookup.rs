@@ -2689,7 +2689,11 @@ impl<'a> Resolver<'a> {
                     let it = &self.items[idx];
                     matches!(it.case, Some(CaseKind::Union { .. })).then(|| UnionCaseEntry {
                         plain: it.qualified.is_some().then_some(it.id),
-                        access_root_len: it.access_root_len,
+                        access_root_len: super::model::case_access(
+                            it,
+                            &full,
+                            &self.repr_private_cases,
+                        ),
                     })
                 }
                 ExportDeclKind::OpaqueCase => Some(UnionCaseEntry {

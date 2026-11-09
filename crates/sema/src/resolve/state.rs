@@ -1717,6 +1717,11 @@ pub(super) struct Resolver<'a> {
     /// from this list; a decl is appended at the same program point each legacy
     /// export writer fires, so the derivations reproduce today's ordering.
     pub(super) export_decls: Vec<ExportDecl>,
+    /// The cases of every union in this file whose representation is
+    /// `private` (`type U = private X | Y`): out of reach outside the
+    /// union's container even though the type is not, so a qualified read
+    /// treats them as restricted there ([`ProjectItems::qualified_read`](super::model::ProjectItems::qualified_read)).
+    pub(super) repr_private_cases: HashSet<ItemId>,
     /// What the parser had to recover from in the file being walked, moved into
     /// [`ResolvedFile::recovery`](super::model::ResolvedFile). Set by
     /// [`resolve_file`](super::resolve_file) from its caller's parse;

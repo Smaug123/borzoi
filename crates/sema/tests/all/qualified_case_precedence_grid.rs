@@ -25,12 +25,15 @@
 //!   shapes** (nullary, one field, two fields; equal and differing arity);
 //! - an **extra** member of the name: a value ahead of the unions, an
 //!   exception ahead of or behind them, an active pattern `(|C|_|)` ahead of
-//!   or behind them, an abbreviation of the first union behind them, or the
-//!   first union `private`;
+//!   or behind them, an abbreviation of the first union behind them, a
+//!   possible case `type A = C` ahead of them, an `extern` behind them, or
+//!   the first union `private`,
+//!   with a `private` representation, or `[<RequireQualifiedAccess>]`;
 //! - the **container**: a nested module of the probe file, an earlier file's
-//!   module, a module nested in an earlier file's namespace, an earlier
-//!   file's namespace, a namespace split across two earlier files, and a
-//!   referenced assembly's module and namespace;
+//!   module (with a signature stating the same members, and with one hiding
+//!   the extra), a module nested in an earlier file's namespace, an earlier
+//!   file's namespace, a namespace split across two earlier files or within
+//!   one, and a referenced assembly's module and namespace;
 //! - the **use**: `M.C` in an expression and in a pattern, `M.Un.C`, and the
 //!   bare name after `open M` in an expression and in a pattern.
 //!
@@ -93,6 +96,11 @@ pub(crate) enum Extra {
     AbbrevLast,
     /// The first union is `private`.
     PrivateFirst,
+    /// The first union's representation is `private` (`type U = private …`).
+    PrivateReprFirst,
+    /// An `extern` of the name behind the unions: a value FCS reads first,
+    /// which the walk interns no identity for.
+    ExternLast,
     /// The first union is `[<RequireQualifiedAccess>]`.
     RqaFirst,
     /// `type GridA = GridC` ahead of the unions: a union with the nullary
@@ -102,7 +110,7 @@ pub(crate) enum Extra {
 }
 
 impl Extra {
-    const ALL: [Extra; 9] = [
+    const ALL: [Extra; 11] = [
         Extra::ValueFirst,
         Extra::ExnFirst,
         Extra::ExnLast,
@@ -110,6 +118,8 @@ impl Extra {
         Extra::ApLast,
         Extra::AbbrevLast,
         Extra::PrivateFirst,
+        Extra::PrivateReprFirst,
+        Extra::ExternLast,
         Extra::RqaFirst,
         Extra::AbbrevCaseFirst,
     ];
@@ -119,20 +129,31 @@ impl Extra {
     fn fits_namespace(self) -> bool {
         !matches!(
             self,
-            Extra::ValueFirst | Extra::ApFirst | Extra::ApLast | Extra::PrivateFirst
+            Extra::ValueFirst
+                | Extra::ApFirst
+                | Extra::ApLast
+                | Extra::PrivateFirst
+                | Extra::PrivateReprFirst
+                | Extra::ExternLast
         )
     }
 
     /// Whether a signature file can state it: a `private` type in a
     /// signature is a different question from the one this grid asks.
     fn fits_signature(self) -> bool {
-        self != Extra::PrivateFirst
+        !matches!(
+            self,
+            Extra::PrivateFirst | Extra::PrivateReprFirst | Extra::ExternLast
+        )
     }
 
     /// Whether a signature can leave it out: a member of its own, not a
     /// change to a union the signature states.
     fn hides_behind_signature(self) -> bool {
-        !matches!(self, Extra::None | Extra::PrivateFirst | Extra::RqaFirst)
+        !matches!(
+            self,
+            Extra::None | Extra::PrivateFirst | Extra::PrivateReprFirst | Extra::RqaFirst
+        )
     }
 
     /// The member's line, in an implementation file or, when `sig`, in a
@@ -146,7 +167,10 @@ impl Extra {
             Extra::ApFirst | Extra::ApLast => Some("let (|GridC|_|) (_: obj) : unit option = None"),
             Extra::AbbrevLast => Some("type GridA = GridU1"),
             Extra::AbbrevCaseFirst => Some("type GridA = GridC"),
-            Extra::None | Extra::PrivateFirst | Extra::RqaFirst => None,
+            Extra::ExternLast => Some(
+                "[<System.Runtime.InteropServices.DllImport(\"grid\")>] extern int GridC(int x)",
+            ),
+            Extra::None | Extra::PrivateFirst | Extra::PrivateReprFirst | Extra::RqaFirst => None,
         }
     }
 
@@ -181,9 +205,12 @@ impl Setup {
         };
         let rqa = (n == 1 && self.extra == Extra::RqaFirst)
             .then(|| "[<RequireQualifiedAccess>]".to_string());
+        let repr_private = (n == 1 && self.extra == Extra::PrivateReprFirst)
+            .then(|| "    private".to_string());
         rqa.into_iter()
+            .chain([format!("type {private}GridU{n} =")])
+            .chain(repr_private)
             .chain([
-                format!("type {private}GridU{n} ="),
                 format!("    | GridC{}", self.shapes[n - 1].fields()),
                 format!("    | GridD{n}"),
             ])
@@ -597,7 +624,11 @@ fn control(cell: &Cell, use_: Use) -> bool {
             project
                 && !matches!(
                     cell.setup.extra,
-                    Extra::PrivateFirst | Extra::RqaFirst | Extra::AbbrevCaseFirst
+                    Extra::PrivateFirst
+                        | Extra::PrivateReprFirst
+                        | Extra::ExternLast
+                        | Extra::RqaFirst
+                        | Extra::AbbrevCaseFirst
                 )
         }
         Use::BareExpr | Use::BarePat => project && cell.setup.extra == Extra::None,

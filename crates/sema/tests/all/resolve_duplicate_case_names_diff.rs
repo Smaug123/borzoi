@@ -312,7 +312,7 @@ fn qualified_case_binds_the_first_union_declaring_it() {
         ],
         errors_expected: false,
         pins: &[
-            binds(at(1, "Lib.X", 0), at(0, "X", 0)),
+            commits(at(1, "Lib.X", 0), at(0, "X", 0)),
             commits(at(1, "Lib.Z", 0), at(0, "Z", 0)),
             binds(at(1, "Lib.X", 1), at(0, "X", 0)),
         ],
@@ -362,7 +362,7 @@ fn qualified_case_in_a_same_file_nested_module() {
         ],
         errors_expected: false,
         pins: &[
-            binds(at(0, "Inner.X", 0), at(0, "X", 0)),
+            commits(at(0, "Inner.X", 0), at(0, "X", 0)),
             commits(at(0, "Inner.Z", 0), at(0, "Z", 0)),
             binds(at(0, "Inner.X", 1), at(0, "X", 0)),
         ],
@@ -396,7 +396,7 @@ fn qualified_case_across_namespace_fragments() {
         ],
         errors_expected: false,
         pins: &[
-            binds(at(2, "N.X", 0), at(1, "X", 0)),
+            commits(at(2, "N.X", 0), at(1, "X", 0)),
             commits(at(2, "N.Z", 0), at(1, "Z", 0)),
             binds(at(2, "N.X", 1), at(1, "X", 0)),
         ],
