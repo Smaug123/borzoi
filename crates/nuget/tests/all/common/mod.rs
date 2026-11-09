@@ -438,8 +438,25 @@ pub const FRAMEWORK_ZOO: &[&str] = &[
     "portable-profile259",
     "portable-Profile7",
     "portable-",
+    "portable-+",
+    "portable-++",
     "portable",
     "net45+win8",
+    // Every identifier spelling NuGet canonicalises to `.NETPortable`
+    // enters its portable branch, so a member carrying a profile throws
+    // under each of them, not only under `portable-…`.
+    ".NETPortable-net45+win8",
+    "NETPortable-net45+win8",
+    ".netportable45-net45+win8",
+    "netportable-net45+win8",
+    ".NETPortable-profile259",
+    ".NETPortable45",
+    ".NETPortable-",
+    "portable-net45-client",
+    ".NETPortable-net45-client",
+    "NETPortable-net45-client",
+    ".netportable45-net45-client",
+    "netportable-net45-client",
     // Long (FrameworkName) forms.
     ".NETFramework,Version=v4.7.2",
     ".NETFramework,Version=v4.0,Profile=Client",

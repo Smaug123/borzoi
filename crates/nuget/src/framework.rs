@@ -681,16 +681,27 @@ fn parse_short(input: &str) -> Result<NuGetFramework, FrameworkParseError> {
     }
     let lower = input.to_ascii_lowercase(); // byte-length-preserving
 
-    // Portable: "portable[<version>]-<list>", where the version is the
+    // Identifier = leading letters/dots; version+suffix = the rest.
+    // Leading dots are stripped before alias lookup (".net5.0" parses as
+    // net5.0, ".netstandard2.0" as netstandard2.0).
+    let split = lower
+        .find(|c: char| !c.is_ascii_alphabetic() && c != '.')
+        .unwrap_or(lower.len());
+    let (alias, rest) = lower.split_at(split);
+
+    // Portable: "<portable>[<version>]-<list>", where the version is the
     // digit-concat form ("portable45-…" is v4.5, "portable73-…" is v7.3,
     // "portable-…" is v0.0). The list is sliced from the *original* input —
     // profiles are stored verbatim, case included ("portable-Profile7"
     // keeps "Profile7").
-    // `netportable` is an accepted alias for the `portable` prefix.
-    if let Some(rest) = lower
-        .strip_prefix("portable")
-        .or_else(|| lower.strip_prefix("netportable"))
-    {
+    // NuGet's identifier table sends every spelling that canonicalises to
+    // `.NETPortable` — the short name `portable`, the synonym
+    // `NETPortable` and the canonical `.NETPortable` itself, `netportable`
+    // among them — through its portable branch, so a member carrying a
+    // profile throws under each of them (".NETPortable-net45-client" as
+    // much as "portable-net45-client"); the generic identifier path below
+    // would read that list as a plain profile instead.
+    if is_portable_alias(alias) {
         // The version runs to the '-' and may be dotted, not just
         // digit-concat: a component above 9 forces dotted rendering, so
         // ".NETPortable,Version=v4.10" is folder "portable4.10-…".
@@ -700,7 +711,7 @@ fn parse_short(input: &str) -> Result<NuGetFramework, FrameworkParseError> {
         let (ver_text, tail) = rest.split_at(digits_end);
         if let Some(list) = tail.strip_prefix('-') {
             // An absent version is 0.0; a present one that does not parse
-            // ("portable.-…", "portable4.-…") makes the framework unsupported.
+            // ("portable4.-…") makes the framework unsupported.
             let Some(version) = parse_short_version(ver_text) else {
                 return Ok(unsupported());
             };
@@ -709,14 +720,6 @@ fn parse_short(input: &str) -> Result<NuGetFramework, FrameworkParseError> {
         }
         return Ok(unsupported());
     }
-
-    // Identifier = leading letters/dots; version+suffix = the rest.
-    // Leading dots are stripped before alias lookup (".net5.0" parses as
-    // net5.0, ".netstandard2.0" as netstandard2.0).
-    let split = lower
-        .find(|c: char| !c.is_ascii_alphabetic() && c != '.')
-        .unwrap_or(lower.len());
-    let (alias, rest) = lower.split_at(split);
     // ".net5.0" parses like "net5.0", but ".sl5"/".win8"/".uap" do NOT —
     // there is no general dot-strip, only the ".net" spelling plus the
     // canonical-identifier matches (".netstandard2.0" hits ".NETStandard"
@@ -961,6 +964,12 @@ fn parse_portable(version: [u32; 4], list: &str) -> Result<NuGetFramework, Frame
                 .unwrap_or_else(|| "unsupported".to_owned())
         });
     }
+    // A list with no members ("portable-+") is unsupported: NuGet's
+    // `TryGetPortableFrameworks` splits on '+' dropping empties and
+    // reports failure for an empty result — oracle-pinned.
+    if members.is_empty() {
+        return Ok(unsupported());
+    }
     members.sort();
     members.dedup();
     let matched = PCL_PROFILES.iter().find(|(_, table)| {
@@ -1089,6 +1098,13 @@ const CANONICAL_IDENTIFIERS: &[&str] = &[
     id::UNSUPPORTED,
 ];
 
+/// The lowercased identifier spellings NuGet's `TryGetIdentifier` maps to
+/// `.NETPortable`: its short name, its `NETPortable` synonym, the canonical
+/// spelling, and the `netportable` alias.
+fn is_portable_alias(lower: &str) -> bool {
+    matches!(lower, "portable" | "netportable" | ".netportable")
+}
+
 /// Map a long-form identifier onto its canonical spelling when known —
 /// including via the short-alias table ("net,45" is .NETFramework,
 /// "sl,3" is Silverlight); otherwise keep it verbatim (NuGet preserves
@@ -1104,7 +1120,7 @@ fn canonical_identifier(identifier: &str) -> String {
     if lower == "net" || lower == ".net" {
         return id::NET_FRAMEWORK.to_owned();
     }
-    if lower == "portable" || lower == "netportable" {
+    if is_portable_alias(&lower) {
         return id::PORTABLE.to_owned();
     }
     // The dotless-canonical short aliases (netframework → .NETFramework,
