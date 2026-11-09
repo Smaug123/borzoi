@@ -129,12 +129,16 @@ fn target_mentions(
 
 /// The written names of the two FSharp.Core attributes whose presence changes
 /// what an `open` brings into bare scope: `[<AutoOpen>]` and
-/// `[<RequireQualifiedAccess>]`, with and without the `Attribute` suffix.
+/// `[<RequireQualifiedAccess>]`, with and without the `Attribute` suffix —
+/// and `RequireQualifiedAccessAttributeAttribute`, which FCS looks the long
+/// spelling `[<RequireQualifiedAccessAttribute>]` up under first, so that a
+/// type of that name withdraws trust in the long spelling too.
 pub(crate) const CORE_ATTRIBUTE_NAMES: &[&str] = &[
     "AutoOpen",
     "AutoOpenAttribute",
     "RequireQualifiedAccess",
     "RequireQualifiedAccessAttribute",
+    "RequireQualifiedAccessAttributeAttribute",
 ];
 
 /// See [`AssemblyEnv::augmentation_member_names`].

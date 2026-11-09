@@ -671,7 +671,7 @@ impl<'a> Resolver<'a> {
                         // absent, every name the cases could take declines.
                         let rqa = self.require_qualified_access(defn.attributes());
                         self.define_union_cases(defn, &name, rqa);
-                        if rqa == RequireQualifiedAccess::Unknown {
+                        if matches!(rqa, RequireQualifiedAccess::Unknown { .. }) {
                             self.unproven_bare_cases(
                                 defn,
                                 u32::from(types.syntax().text_range().start()),

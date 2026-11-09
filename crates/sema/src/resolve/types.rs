@@ -331,10 +331,14 @@ impl<'a> Resolver<'a> {
     /// definition contributes no cases.
     ///
     /// A union whose attribute is undecided ([`RequireQualifiedAccess::Unknown`])
-    /// is exported as a require-qualified one is, so that neither a bare name
-    /// nor `M.Case` commits to its cases, while its cases still count as the
-    /// container's bare names wherever contention is asked; the caller declines
-    /// the names they could take ([`Self::unproven_bare_cases`]).
+    /// keeps the export its written attribute names imply
+    /// ([`RequireQualifiedAccess::exports_qualified_only`]), its cases count as
+    /// the container's bare names wherever contention is asked, and the caller
+    /// declines every bare name they could take
+    /// ([`Self::unproven_bare_cases`]). A qualified path through the container
+    /// (`M.Case`) is not decided by the attribute, so the export choice speaks
+    /// only to that path: FCS reads it as the case either way, cleanly or with
+    /// an error.
     ///
     /// Cases are value-namespace entries living in the same position-ordered,
     /// container-scoped frame as values (see [`Self::top_level`]); that gives
@@ -354,7 +358,7 @@ impl<'a> Resolver<'a> {
         let Some(TypeDefnRepr::Union(u)) = defn.repr() else {
             return;
         };
-        let require_qualified = rqa != RequireQualifiedAccess::CertainlyNot;
+        let require_qualified = rqa.exports_qualified_only();
         // A case of a `private` union type is scoped to the type's container
         // (oracle-pinned D3), so its export inherits that privacy.
         let type_is_private = super::decls::header_is_private(defn.syntax());

@@ -736,41 +736,145 @@ fn every_union_rqa_cell_agrees_with_fcs() {
     );
 }
 
-/// `GridLib.GridC` where `GridLib` declares an earlier union with the case
-/// too, and the later union's attribute is undecided (the long spelling): FCS
-/// reads the first union's case (`TryFindTypeWithUnionCase`), and an
-/// undecided union's cases must not be committed through the container. The
-/// grid keeps its fallback out of the container for this probe (see
-/// [`FALLBACK`]), so this shape is graded here.
-#[test]
-fn an_undecided_union_commits_nothing_through_its_module() {
+/// Grade one project against FCS: the probe file is the last of `files`, and
+/// `probed` its last occurrence of the probed text. Wherever we commit — the
+/// whole text, or a dotted text's last segment — FCS must report that very
+/// symbol; the error names the first commit it does not.
+fn project_probe_agrees(files: &[(&str, &str)], probed: &str) -> Result<(), String> {
     let fsharp_core = ensure_fsharp_core_dll();
     let env = env_of(&[fsharp_core.as_path()]);
-    let lib = "module GridLib\n\ntype GridE =\n    | GridC\n    | GridF\n[<RequireQualifiedAccessAttribute>]\ntype GridU =\n    | GridC\n    | GridD\n";
-    let (probe_src, probe) = probe_file("", false, Use::ModuleQualified);
-    let rel = [("GridLib.fs", lib), ("GridProbe.fs", probe_src.as_str())];
-    let (root, written) = temp_fs_tree("union_rqa_undecided", &rel);
+    let (root, written) = temp_fs_tree("union_rqa_probe", files);
     let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
     let fcs = parse_fcs_uses_project(&invoke_fcs_dump_project_with_refs(&paths, &[]), &written);
     let _ = std::fs::remove_dir_all(&root);
+    let last = written.len() - 1;
     let fu = fcs
         .iter()
-        .find(|f| f.path.file_name() == written[1].0.file_name())
+        .find(|f| f.path.file_name() == written[last].0.file_name())
         .expect("the probe file's uses");
-    let theirs = fcs_at(fu, probe);
-    assert!(
-        render_fcs(theirs).contains("GridLib.GridE.GridC"),
-        "FCS reads the first union's case: {}",
-        render_fcs(theirs)
+    let src = files[last].1;
+    let start = src.rfind(probed).expect("the probed text");
+    let whole = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + probed.len()).unwrap().into(),
     );
-    let proj = resolve_project_files(&project(&rel), &env);
+    let leaf_start = start + probed.rfind('.').map_or(0, |d| d + 1);
+    let leaf = TextRange::new(u32::try_from(leaf_start).unwrap().into(), whole.end());
+    let theirs = fcs_at(fu, whole);
+    assert!(theirs.is_some(), "FCS records no symbol at {probed}");
+    let proj = resolve_project_files(&project(files), &env);
     let file_paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
-    match proj.file(1).resolution_at(probe) {
-        None | Some(Resolution::Deferred(_) | Resolution::Unresolved) => {}
-        Some(res) => assert!(
-            theirs.is_some_and(|u| agrees(&env, &proj, &file_paths, 1, res, u)),
-            "ours {res:?}, FCS {}",
-            render_fcs(theirs)
-        ),
+    for range in [whole, leaf] {
+        let at = fcs_at(fu, range).or(theirs);
+        if let Some(res) = proj
+            .file(last)
+            .resolution_at(range)
+            .filter(|r| !matches!(r, Resolution::Deferred(_) | Resolution::Unresolved))
+            && !at.is_some_and(|u| agrees(&env, &proj, &file_paths, last, res, u))
+        {
+            return Err(format!(
+                "{probed} at {range:?}: ours {res:?}, FCS {}",
+                render_fcs(at)
+            ));
+        }
     }
+    Ok(())
+}
+
+/// Assert each `(attribute, known)` row of `rows`, the union declared under
+/// `attribute` by `files_for`: certain-implies-exact where `known` is `None`,
+/// and where it names an issue, the pre-existing qualified-path divergence
+/// that issue tracks — pinned, so that fixing it fails here until the row
+/// moves.
+fn assert_rows(
+    rows: &[(&str, Option<&str>)],
+    probed: &str,
+    files_for: impl Fn(&str) -> Vec<(String, String)>,
+) {
+    let mut failures = Vec::new();
+    for (attr, known) in rows {
+        let files = files_for(attr);
+        let rel: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, s)| (p.as_str(), s.as_str()))
+            .collect();
+        match (project_probe_agrees(&rel, probed), known) {
+            (Ok(()), None) | (Err(_), Some(_)) => {}
+            (Err(e), None) => failures.push(format!("{attr}: {e}")),
+            (Ok(()), Some(issue)) => {
+                failures.push(format!("{attr}: now agrees with FCS; {issue} may be fixed"))
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// `GridLib.GridC` where `GridLib` declares an earlier union with the case
+/// too: FCS reads the first union's case (`TryFindTypeWithUnionCase`),
+/// whatever the later union's attribute. The grid keeps its fallback out of
+/// the container for this probe (see [`FALLBACK`]), so the shape is graded
+/// here. A union exported with a value path takes the path from the earlier
+/// one, the walk's latest-wins reading of a module-qualified case (#469).
+#[test]
+fn a_module_qualified_case_through_an_undecided_union() {
+    let rows = [
+        ("[<RequireQualifiedAccess>]", None),
+        ("[<Microsoft.FSharp.Core.RequireQualifiedAccess>]", None),
+        ("[<RequireQualifiedAccess(); NoComparison>]", None),
+        ("[<GridRqa>]", Some("#469")),
+        ("[<NoComparison>]", Some("#469")),
+    ];
+    assert_rows(&rows, "GridLib.GridC", |attr| {
+        vec![
+            (
+                "GridLib.fs".to_string(),
+                format!(
+                    "module GridLib\n\ntype GridRqa = RequireQualifiedAccessAttribute\ntype GridE =\n    | GridC\n    | GridF\n{attr}\ntype GridU =\n    | GridC\n    | GridD\n"
+                ),
+            ),
+            (
+                "GridProbe.fs".to_string(),
+                "module GridProbe\n\nlet probe = GridLib.GridC\n".to_string(),
+            ),
+        ]
+    });
+}
+
+/// `N.GridC` where two earlier files' fragments of `namespace N` each declare
+/// a union with the case: FCS reads the later fragment's, whatever its
+/// attribute. A union exported qualified-only leaves the path to the earlier
+/// fragment's case (#472).
+#[test]
+fn a_namespace_qualified_case_through_an_undecided_union() {
+    let rows = [
+        ("[<RequireQualifiedAccess>]", Some("#472")),
+        (
+            "[<Microsoft.FSharp.Core.RequireQualifiedAccess>]",
+            Some("#472"),
+        ),
+        (
+            "[<RequireQualifiedAccess(); NoComparison>]",
+            Some("#472"),
+        ),
+        ("[<GridRqa>]", None),
+        ("[<NoComparison>]", None),
+    ];
+    assert_rows(&rows, "N.GridC", |attr| {
+        vec![
+            (
+                "First.fs".to_string(),
+                "namespace N\n\ntype GridE =\n    | GridC\n    | GridF\n".to_string(),
+            ),
+            (
+                "Second.fs".to_string(),
+                format!(
+                    "namespace N\n\ntype GridRqa = RequireQualifiedAccessAttribute\n{attr}\ntype GridU =\n    | GridC\n    | GridD\n"
+                ),
+            ),
+            (
+                "GridProbe.fs".to_string(),
+                "module GridProbe\n\nlet probe = N.GridC\n".to_string(),
+            ),
+        ]
+    });
 }

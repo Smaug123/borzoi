@@ -278,8 +278,23 @@ pub(super) enum RequireQualifiedAccess {
     Certain,
     /// No attribute can.
     CertainlyNot,
-    /// Some attribute may: neither reading may be committed.
-    Unknown,
+    /// Some attribute may: neither reading may be committed. `written` is
+    /// whether some attribute's name ends in `RequireQualifiedAccess` or its
+    /// long form, which decides only how the cases are exported
+    /// ([`Resolver::define_union_cases`]).
+    Unknown { written: bool },
+}
+
+impl RequireQualifiedAccess {
+    /// Whether the walk exports the union's cases qualified-only — certainly
+    /// require-qualified, or undecided with an attribute spelled like it — and
+    /// so gives them no value path.
+    pub(super) fn exports_qualified_only(self) -> bool {
+        matches!(
+            self,
+            RequireQualifiedAccess::Certain | RequireQualifiedAccess::Unknown { written: true }
+        )
+    }
 }
 
 impl Resolver<'_> {
@@ -329,15 +344,14 @@ impl Resolver<'_> {
     /// only where nothing else can be what it resolves to:
     ///
     /// - [`RequireQualifiedAccess::Certain`] when one attribute is written
-    ///   exactly `RequireQualifiedAccess` — one segment
-    ///   (`Foo.RequireQualifiedAccess` may name any type), no target, no
-    ///   argument — FSharp.Core declares the attribute, and nothing can rename
-    ///   or impersonate the two names FCS looks that spelling up under,
-    ///   `RequireQualifiedAccessAttribute` then itself
-    ///   ([`Self::attribute_spellings_trusted`]). The long spelling is never
-    ///   certain: FCS looks it up first as
-    ///   `RequireQualifiedAccessAttributeAttribute`, a name the trust rule
-    ///   does not guard (FCS-graded).
+    ///   exactly `RequireQualifiedAccess` or `RequireQualifiedAccessAttribute`
+    ///   — one segment (`Foo.RequireQualifiedAccess` may name any type), no
+    ///   target, no argument — FSharp.Core declares the attribute, and nothing
+    ///   can rename or impersonate a name FCS looks that spelling up under: the
+    ///   spelling with `Attribute` appended, then the spelling itself
+    ///   ([`Self::attribute_spellings_trusted`]; for the long spelling the
+    ///   first is `RequireQualifiedAccessAttributeAttribute`, which
+    ///   [`crate::assembly_env::CORE_ATTRIBUTE_NAMES`] lists for that reason).
     /// - [`RequireQualifiedAccess::CertainlyNot`] when no attribute may be it
     ///   ([`Self::may_require_qualified_access`]).
     /// - [`RequireQualifiedAccess::Unknown`] otherwise.
@@ -345,29 +359,36 @@ impl Resolver<'_> {
         &self,
         attrs: impl Iterator<Item = AttributeList>,
     ) -> RequireQualifiedAccess {
+        const SPELLINGS: [&str; 2] = ["RequireQualifiedAccess", "RequireQualifiedAccessAttribute"];
         let attrs: Vec<AttributeList> = attrs.collect();
-        let written_plainly = attrs
+        let plain_spellings: Vec<String> = attrs
             .iter()
             .flat_map(|list| list.attributes().collect::<Vec<_>>())
             .filter(|attr| attr.target().is_none() && attr.arg().is_none())
             .filter_map(|attr| attr.type_name())
-            .any(|name| {
+            .filter_map(|name| {
                 let mut idents = name.idents();
-                idents.next().is_some_and(|only| {
-                    idents.next().is_none() && id_text(&only) == "RequireQualifiedAccess"
-                })
-            });
+                let only = idents.next()?;
+                idents.next().is_none().then(|| id_text(&only).to_string())
+            })
+            .filter(|s| SPELLINGS.contains(&s.as_str()))
+            .collect();
         let core_namespace = ["Microsoft", "FSharp", "Core"].map(str::to_string);
-        if written_plainly
+        let certain = plain_spellings
+            .iter()
+            .any(|spelling| self.attribute_spellings_trusted(std::iter::once(spelling.as_str())))
             && self
                 .assemblies
                 .lookup_type(&core_namespace, "RequireQualifiedAccessAttribute", 0)
-                .is_some()
-            && self.attribute_spellings_trusted(std::iter::once("RequireQualifiedAccess"))
-        {
+                .is_some();
+        if certain {
             RequireQualifiedAccess::Certain
-        } else if self.may_require_qualified_access(attrs.into_iter()) {
-            RequireQualifiedAccess::Unknown
+        } else if self.may_require_qualified_access(attrs.iter().cloned()) {
+            RequireQualifiedAccess::Unknown {
+                written: attribute_spellings(attrs.into_iter())
+                    .iter()
+                    .any(|s| SPELLINGS.contains(&s.as_str())),
+            }
         } else {
             RequireQualifiedAccess::CertainlyNot
         }
