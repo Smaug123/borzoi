@@ -846,7 +846,7 @@ jobs:
     name: Test lsp
     needs: [changes, fcs-dump]
     runs-on: ubuntu-latest
-# Adds the LSP corpus sweep; bounded for the same reason as test-cst.
+# The crate's ordinary suite; its corpus sweeps are `test-lsp-sweeps`.
     timeout-minutes: 90
     steps:
       # Also runs on `sema` (lsp depends on it) and `sidecar`:
@@ -911,6 +911,79 @@ jobs:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
         run: |
           nix develop --command cargo test -p borzoi --verbose
+
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh >> "$GITHUB_STEP_SUMMARY"
+
+  test-lsp-sweeps:
+    name: Test lsp sweeps
+    needs: [changes, fcs-dump]
+    runs-on: ubuntu-latest
+    # The lsp crate's ignored corpus sweeps, beside `test-lsp` rather than
+    # after it: both keep a four-core runner busy, so in one job they ran end to
+    # end (~10 min of suite, then ~11 of sweeps). Same gate as `test-lsp`.
+    timeout-minutes: 90
+    steps:
+      # Also runs on `sema` (lsp depends on it) and `sidecar`:
+      # `crates/lsp/build.rs` bundles `tools/csharp-sidecar/`, and
+      # `tests/csharp_sidecar*.rs` exercise the bundled artifact end-to-end.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.cst }}" == "true" || \
+                "${{ needs.changes.outputs.msbuild }}" == "true" || \
+                "${{ needs.changes.outputs.assembly }}" == "true" || \
+                "${{ needs.changes.outputs.lsp }}" == "true" || \
+                "${{ needs.changes.outputs.sema }}" == "true" || \
+                "${{ needs.changes.outputs.fcs }}" == "true" || \
+                "${{ needs.changes.outputs.sidecar }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running lsp corpus sweeps."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping lsp corpus sweeps."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          # The crate job's cache, which only the crate job saves: this job
+          # builds a subset of its targets, and a key of its own would start
+          # cold until `main` first saved it.
+          shared-key: test-lsp
+          save-if: false
+
+      - name: Download fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fcs-dump-bundle
+          path: ${{ runner.temp }}
+      - name: Unpack fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          tar -C "$RUNNER_TEMP" -xpzf "$RUNNER_TEMP/fcs-dump.tgz"
+          test -x "$RUNNER_TEMP/fcs-dump-bundle/fcs-dump"
 
       - name: Gate on the LSP parser corpus sweep
         if: steps.gate.outputs.run == 'true'
@@ -1208,6 +1281,7 @@ jobs:
       - test-assembly
       - test-sema
       - test-lsp
+      - test-lsp-sweeps
       - test-sidecar
       - test-spawn
       - test-oracle-harness
