@@ -431,6 +431,21 @@ fn qualified_case_whose_first_union_has_a_private_representation() {
     });
 }
 
+#[test]
+fn qualified_case_beside_an_enum_field_of_its_name() {
+    // An enum field is reached only as `Lib.E.A`, so it is no second
+    // declaration of `Lib.A`: the union's case binds.
+    check(&Cell {
+        name: "qualified_case_beside_enum_field",
+        files: &[
+            "module Lib\ntype U = A | B\ntype E = A = 0 | C = 1\n",
+            "module Use\nlet v = Lib.A\n",
+        ],
+        errors_expected: false,
+        pins: &[commits(at(1, "Lib.A", 0), at(0, "A", 0))],
+    });
+}
+
 // ---------------------------------------------------------------------------
 // `open`
 // ---------------------------------------------------------------------------

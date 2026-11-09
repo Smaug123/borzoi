@@ -2412,6 +2412,11 @@ impl ExportDecl {
             return None;
         }
         match &self.kind {
+            // An enum field is reached only through its type (`M.E.A`), so it
+            // is no member of the container.
+            ExportDeclKind::Item {
+                item: Some(idx), ..
+            } if items[*idx].case == Some(CaseKind::Enum) => None,
             ExportDeclKind::Item {
                 item: Some(idx), ..
             }
