@@ -3104,22 +3104,68 @@ impl<'a> Resolver<'a> {
     /// Whether an earlier file's type-qualified case at `full` (`[container..,
     /// type, case]`) may not be the case FCS binds there, because the type's
     /// name may be borne by a type FCS tries first
-    /// ([`Self::lower_arity_namesake_possible`]): the earlier files declare the
-    /// name at more than one arity (the index keeps one case per path, the
-    /// latest), or at one they could not place, or at a generic arity with a
-    /// namesake of lower arity possible anywhere in scope.
-    pub(super) fn earlier_case_type_namesake_possible(&self, full: &[String]) -> bool {
-        let [.., name, _] = full else {
+    /// ([`Self::lower_arity_namesake_possible`]). The index keeps one case per
+    /// path, the latest declaration's, so two arities of the name in play
+    /// decline.
+    ///
+    /// `qualified` says the written path names the type through a module or
+    /// namespace (`A.T.Case`): FCS then weighs only that container's types of
+    /// the name (`LookupTypeNameInEntityNoArity`) — every earlier file's at
+    /// `container`, this file's, a referenced assembly's (namespaces span all
+    /// three), and one an earlier file could not place. Otherwise (`T.Case`,
+    /// through an `open` or the enclosing namespace) it weighs every
+    /// same-named type in scope: the earlier files' at more than one arity,
+    /// or at one they could not place, decline, as does a generic one with a
+    /// namesake of lower arity possible anywhere.
+    pub(super) fn earlier_case_type_namesake_possible(
+        &self,
+        full: &[String],
+        qualified: bool,
+    ) -> bool {
+        let [container @ .., name, _] = full else {
             return false;
         };
-        let Some(decls) = self.preceding.earlier_type_arities.get(name) else {
-            return false;
-        };
+        let decls = self
+            .preceding
+            .earlier_type_arities
+            .get(name)
+            .map_or(&[][..], Vec::as_slice);
         let mut arities = std::collections::BTreeSet::new();
+        if qualified {
+            for d in decls {
+                let here = d
+                    .path
+                    .as_deref()
+                    .is_none_or(|p| p.len() == container.len() + 1 && p.starts_with(container));
+                match (here, d.arity) {
+                    (false, _) => {}
+                    (true, Some(a)) => {
+                        arities.insert(a);
+                    }
+                    (true, None) => return true,
+                }
+            }
+            if let Some(by_arity) = self
+                .type_decl_counts
+                .get(container)
+                .and_then(|m| m.get(name))
+            {
+                arities.extend(by_arity.keys().copied());
+            }
+            let mut path = container.to_vec();
+            path.push(name.clone());
+            if (self.recursive_module_active && self.own_type_simple_names.contains(name))
+                || self.dropped_type_could_root_this_path(&path)
+            {
+                return true;
+            }
+            arities.extend(self.assemblies.type_arities_named(container, name));
+            return arities.len() > 1;
+        }
         for d in decls {
-            match d {
+            match d.arity {
                 Some(a) => {
-                    arities.insert(*a);
+                    arities.insert(a);
                 }
                 None => return true,
             }
@@ -3144,7 +3190,7 @@ impl<'a> Resolver<'a> {
             .preceding
             .earlier_type_arities
             .get(name)
-            .is_some_and(|decls| decls.iter().any(|d| d.is_none_or(|a| a < arity)));
+            .is_some_and(|decls| decls.iter().any(|d| d.arity.is_none_or(|a| a < arity)));
         let names = [name.to_string()];
         let assemblies = self.assemblies.manifest_auto_open_target_is_uncertain()
             || self.assemblies.contested_auto_open_is_uncertain()

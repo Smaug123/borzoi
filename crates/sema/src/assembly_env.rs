@@ -2599,9 +2599,19 @@ impl AssemblyEnv {
         name: &str,
         arity: usize,
     ) -> bool {
+        self.type_arities_named(namespace, name).any(|a| a < arity)
+    }
+
+    /// The generic arity of every top-level entity named `name` in
+    /// `namespace`, public or not, a module or not.
+    pub fn type_arities_named(
+        &self,
+        namespace: &[String],
+        name: &str,
+    ) -> impl Iterator<Item = usize> + '_ {
         self.types_named(namespace, name)
             .iter()
-            .any(|&handle| self.entity(handle).generic_parameters.len() < arity)
+            .map(|&handle| self.entity(handle).generic_parameters.len())
     }
 
     /// Whether some referenced assembly declares a **public** top-level type

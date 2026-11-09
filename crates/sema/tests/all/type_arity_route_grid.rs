@@ -513,15 +513,19 @@ enum CrossRoute {
     /// As [`Self::Qualified`], with `A.fsi` declaring every type before
     /// `A.fs` does: a later file sees the signature's declarations.
     Signature,
+    /// `module A` declares all but the first; the using module declares the
+    /// first and writes `A.CT`, which weighs only `A`'s types.
+    QualifiedOverLocal,
 }
 
-const CROSS_ROUTES: [CrossRoute; 6] = [
+const CROSS_ROUTES: [CrossRoute; 7] = [
     CrossRoute::Opened,
     CrossRoute::Qualified,
     CrossRoute::Namespace,
     CrossRoute::Split,
     CrossRoute::NamespaceSplit,
     CrossRoute::Signature,
+    CrossRoute::QualifiedOverLocal,
 ];
 
 /// The signature of [`declaration`]'s type.
@@ -550,9 +554,16 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
         text.lines().map(|l| format!("{indent}{l}\n")).collect()
     };
     let (declaring, using_head, qualifier, indent, local) = match route {
-        CrossRoute::Opened | CrossRoute::Qualified | CrossRoute::Split | CrossRoute::Signature => {
+        CrossRoute::Opened
+        | CrossRoute::Qualified
+        | CrossRoute::Split
+        | CrossRoute::Signature
+        | CrossRoute::QualifiedOverLocal => {
+            let over_local = route == CrossRoute::QualifiedOverLocal && arities.len() > 1;
             let declared = if route == CrossRoute::Split {
                 &arities[..1]
+            } else if over_local {
+                &arities[1..]
             } else {
                 arities
             };
@@ -561,7 +572,9 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
                 a.push_str(&declaration("CT", kind, ar, ""));
             }
             let (head, qualifier) = match route {
-                CrossRoute::Qualified | CrossRoute::Signature => ("", "A."),
+                CrossRoute::Qualified | CrossRoute::Signature | CrossRoute::QualifiedOverLocal => {
+                    ("", "A.")
+                }
                 _ => ("open A\n", ""),
             };
             let local: String = if route == CrossRoute::Split {
@@ -569,6 +582,8 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
                     .iter()
                     .map(|&ar| declaration("CT", kind, ar, ""))
                     .collect()
+            } else if over_local {
+                declaration("CT", kind, arities[0], "")
             } else {
                 String::new()
             };
@@ -734,14 +749,16 @@ fn same_named_types_of_every_arity_agree_with_fcs_across_files() {
                     }
                     // The earlier module's only union of the name, named by
                     // its module, its signature's or its own: a case qualified
-                    // by it must commit, whatever the union's arity. (Through
+                    // by it must commit, whatever the union's arity and
+                    // whatever namesake the using module declares. (Through
                     // `open A`, `CT.K` commits at no arity, so `Opened` has no
                     // obligation.)
                     if idx >= first_use
                         && clean
                         && kind == Kind::Union
-                        && arities.len() == 1
-                        && matches!(route, CrossRoute::Qualified | CrossRoute::Signature)
+                        && (arities.len() == 1
+                            && matches!(route, CrossRoute::Qualified | CrossRoute::Signature)
+                            || arities.len() == 2 && route == CrossRoute::QualifiedOverLocal)
                         && matches!(USES[idx - first_use].label, "case-expr" | "case-pattern")
                     {
                         must_commit_points += 1;
@@ -840,7 +857,7 @@ fn same_named_types_of_every_arity_agree_with_fcs_across_files() {
         undercommitted.join("\n")
     );
     assert!(
-        must_commit_points >= 30,
+        must_commit_points >= 42,
         "the must-commit set shrank to {must_commit_points}"
     );
 }

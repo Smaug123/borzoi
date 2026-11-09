@@ -1863,7 +1863,7 @@ impl<'a> Resolver<'a> {
             self.preceding
                 .type_qualified_case(full, &self.container_path)
                 .filter(|_| !self.value_shadows_case(full))
-                .filter(|_| !self.earlier_case_type_namesake_possible(full))
+                .filter(|_| !self.earlier_case_type_namesake_possible(full, written.len() > 2))
         };
         if !rooted {
             // Tier 0 — a lexically in-scope **module alias** as the bare head:

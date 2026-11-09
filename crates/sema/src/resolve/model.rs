@@ -283,6 +283,16 @@ pub(super) struct EarlierType {
     pub(super) access_root: Option<usize>,
 }
 
+/// What a later file knows of one earlier type declaration's place and
+/// generic arity ([`ProjectItems::earlier_type_arities`]).
+#[derive(Debug, Clone)]
+pub(super) struct EarlierArity {
+    /// Its full path, when the declaring file placed it.
+    pub(super) path: Option<Vec<String>>,
+    /// Its generic arity, when known.
+    pub(super) arity: Option<usize>,
+}
+
 /// Exported project items visible to a file from *earlier* in Compile order.
 ///
 /// F# resolution is order-sensitive across files: a file may reference
@@ -380,7 +390,7 @@ pub struct ProjectItems {
     /// place. What lets a later file bound the arities FCS weighs a
     /// qualifier's namesakes by
     /// ([`Resolver::lower_arity_namesake_possible`](super::state::Resolver)).
-    pub(super) earlier_type_arities: HashMap<String, Vec<Option<usize>>>,
+    pub(super) earlier_type_arities: HashMap<String, Vec<EarlierArity>>,
     /// Every earlier-file project **module**'s simple name, from each file's
     /// syntactic whole-file pre-scan
     /// ([`ResolvedFile::own_module_simple_names`]). The dotted half of the
@@ -1353,7 +1363,10 @@ impl ProjectItems {
             self.earlier_type_arities
                 .entry(name.clone())
                 .or_default()
-                .push(Some(t.arity));
+                .push(EarlierArity {
+                    path: Some(t.path.clone()),
+                    arity: Some(t.arity),
+                });
         }
         for (name, &unplaced) in &file.unplaced_types {
             self.earlier_types
@@ -1365,9 +1378,15 @@ impl ProjectItems {
                 .get(name)
                 .map_or(&[][..], Vec::as_slice);
             let arities = self.earlier_type_arities.entry(name.clone()).or_default();
-            arities.extend(known.iter().map(|&a| Some(a)));
+            arities.extend(known.iter().map(|&a| EarlierArity {
+                path: None,
+                arity: Some(a),
+            }));
             arities.extend(std::iter::repeat_n(
-                None,
+                EarlierArity {
+                    path: None,
+                    arity: None,
+                },
                 unplaced.saturating_sub(known.len()),
             ));
         }
