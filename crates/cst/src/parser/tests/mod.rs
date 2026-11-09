@@ -200,20 +200,3 @@ fn assert_no_nonempty_error_tokens(parse: &Parse) {
         }
     }
 }
-
-/// Every version-gated kind (one whose `kind_interval` carries an `introduced`)
-/// must have an FS3350 feature name, so [`node_surface_diagnostics`] never has to
-/// silently skip a gated node for want of a message. Iterates the whole
-/// `SyntaxKind` range, so a future gated kind added without a name fails here.
-#[test]
-fn every_gated_kind_has_a_feature_name() {
-    for raw in 0..(SyntaxKind::__LAST as u16) {
-        let kind = SyntaxKind::from_raw(raw).expect("raw below __LAST is a kind");
-        if kind_interval(kind).introduced.is_some() {
-            assert!(
-                feature_name_for_kind(kind).is_some(),
-                "gated kind {kind:?} has no FS3350 feature name",
-            );
-        }
-    }
-}

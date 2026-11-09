@@ -48,6 +48,7 @@ mod parser_diff_dot_index_spacing;
 mod parser_diff_dot_lambda;
 mod parser_diff_dynamic;
 mod parser_diff_extern;
+mod parser_diff_feature_gates;
 mod parser_diff_fixed;
 mod parser_diff_functions;
 mod parser_diff_global;

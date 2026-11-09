@@ -210,7 +210,11 @@ impl<'src> Parser<'src> {
                     Ok(FilteredToken::Virtual(Virtual::BlockSep)) => None,
                     other => Some(other),
                 })
-                .is_some_and(|t| matches!(t, Ok(FilteredToken::Raw(Token::LBrackLess))));
+                .is_some_and(|t| matches!(t, Ok(FilteredToken::Raw(Token::LBrackLess))))
+                // The filtered stream skips a keyword LexFilter swallowed, so
+                // `[<A>]⏎module [<B>] M` shows `[<B>]` next there; the raw
+                // stream shows the `module`, whose own attributes `[<B>]` are.
+                && matches!(self.next_non_trivia_raw_at_pos(), Some(Token::LBrackLess));
             if !next_is_same_scope_list {
                 break;
             }

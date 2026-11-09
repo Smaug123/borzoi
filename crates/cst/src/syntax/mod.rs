@@ -37,7 +37,7 @@ pub use generated::union_types::*;
 // — the maximal, every-version superset; pin a `vN` for a frozen, exhaustive
 // view (`docs/ast-versioning-plan.md` D4).
 pub use generated::{v8, v9};
-pub use kinds::{KindInterval, SyntaxKind, kind_in_surface, kind_interval};
+pub use kinds::{KindInterval, SyntaxKind, kind_feature, kind_in_surface, kind_interval};
 
 /// Rowan's [`rowan::Language`] is the per-language plumbing that ties our
 /// [`SyntaxKind`] enum to rowan's `u16`-tagged green nodes. Zero-sized.

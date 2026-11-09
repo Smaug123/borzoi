@@ -10,7 +10,7 @@
 //! a kind is legal at, shared by the parser's version gate and the per-version
 //! typed facades (`docs/ast-versioning-plan.md` D5).
 
-use crate::language_version::LanguageVersion;
+use crate::language_version::{LanguageFeature, LanguageVersion};
 
 /// `u16` repr is required by rowan: it stores kinds as `u16` internally and
 /// round-trips them through `Language::kind_from_raw` / `kind_to_raw`.
@@ -3139,38 +3139,48 @@ impl KindInterval {
     };
 }
 
-/// The [`KindInterval`] for `kind` — the version range over which a node of that
-/// kind is legal F# syntax.
+/// The [`LanguageFeature`] whose introduction made a node of `kind` legal, for
+/// the kinds FCS gates while parsing; `None` for a kind legal since before our
+/// F# 4.6 floor.
 ///
-/// **Scope today — exact for the committed surfaces.** The published facades are
-/// `v8` (F# 8.0) and `v9` (= the union, F# 9.0+), so the only distinction the
-/// table must draw is what separates 8.0 from 9.0: a single post-8.0 kind,
-/// [`WITH_NULL_TYPE`](SyntaxKind::WITH_NULL_TYPE) (nullness, `string | null`,
-/// `LanguageFeature.NullnessChecking`, F# 9.0). Every other modelled kind is in
-/// surface at 8.0, so for the committed surfaces — and any pin `>= 8.0` — this
-/// one row makes [`kind_in_surface`] exact.
+/// Every row is a feature FCS checks *in the parser* with
+/// `CheckLanguageFeatureAndRecover`, so the gate over this table reports exactly
+/// where FCS's parse does; `parser_diff_feature_gates` grades the rows against
+/// FCS at every version.
 ///
-/// **Known gap (D3 limitation, pins `< 8.0`).** Some modelled kinds *were*
-/// introduced after the 4.6 floor but at or below 8.0 — e.g. `INTERP_STRING_EXPR`
-/// (`StringInterpolation`, F# 5.0), `WHILE_BANG_EXPR` (`WhileBang`, 8.0),
-/// `INTERSECTION_TYPE` (`ConstraintIntersectionOnFlexibleTypes`, 8.0),
-/// `DOT_LAMBDA_EXPR` (`AccessorFunctionShorthand`, 8.0). They are deliberately
-/// **not** given rows yet, so [`kind_in_surface`] (and the gate over it)
-/// *under-report* them at a pin below their introduction (4.6-7.0). This is the
-/// documented unmodelled-older-pin limitation (plan D3) and the "incomplete,
-/// never wrong" floor (D7): we decline to *guess* gating we cannot yet verify —
-/// version-aware differential testing against FCS is the tracked prerequisite
-/// (`docs/completed/ast-versioning-nullness-proof.md`), since each row is a
-/// per-feature monotonic-addition (Case A) call. Stage-4 codegen seeds these
-/// systematically from FCS `featureVersionMap`.
-pub fn kind_interval(kind: SyntaxKind) -> KindInterval {
+/// Two post-floor kinds have no row, deliberately:
+///
+/// - `INTERP_STRING_EXPR` (`StringInterpolation`, F# 5.0): FCS checks it in the
+///   type checker, not the parser, so a parse-time row would report what FCS's
+///   parse does not.
+/// - `DOT_LAMBDA_EXPR` (`AccessorFunctionShorthand`, F# 8.0): FCS checks it in
+///   the parser, but a row would make every file using `_.M` version-dependent
+///   under [`diagnostics_are_version_invariant`]; see `docs/fcs-divergences.md`,
+///   "Language-version pinning".
+///
+/// [`diagnostics_are_version_invariant`]: crate::parser::diagnostics_are_version_invariant
+pub fn kind_feature(kind: SyntaxKind) -> Option<LanguageFeature> {
     match kind {
-        // F# 9.0 nullness — `LanguageFeature.NullnessChecking, languageVersion90`.
-        SyntaxKind::WITH_NULL_TYPE => KindInterval {
-            introduced: Some(LanguageVersion::V9_0),
-            removed: None,
-        },
-        _ => KindInterval::ALWAYS,
+        SyntaxKind::WHILE_BANG_EXPR => Some(LanguageFeature::WhileBang),
+        SyntaxKind::INTERSECTION_TYPE => {
+            Some(LanguageFeature::ConstraintIntersectionOnFlexibleTypes)
+        }
+        SyntaxKind::WITH_NULL_TYPE => Some(LanguageFeature::NullnessChecking),
+        _ => None,
+    }
+}
+
+/// The [`KindInterval`] for `kind` — the version range over which a node of that
+/// kind is legal F# syntax: from the introduction of its [`kind_feature`], if it
+/// has one.
+///
+/// The published facades are `v8` (F# 8.0) and `v9` (= the union, F# 9.0+), so
+/// the one row that separates them is [`WITH_NULL_TYPE`](SyntaxKind::WITH_NULL_TYPE)
+/// (nullness, F# 9.0); the 8.0 rows are in surface in both.
+pub fn kind_interval(kind: SyntaxKind) -> KindInterval {
+    KindInterval {
+        introduced: kind_feature(kind).map(LanguageFeature::introduced),
+        removed: None,
     }
 }
 
@@ -3233,17 +3243,23 @@ mod tests {
 
     /// The interval table agrees with FCS's `featureVersionMap`
     /// (`LanguageFeatures.fs`) for every kind we gate, and treats everything
-    /// else as present since before the floor. Today the only gated kind is
-    /// nullness (`LanguageFeature.NullnessChecking, languageVersion90`).
+    /// else as present since before the floor.
     #[test]
     fn interval_table_matches_fcs() {
-        assert_eq!(
-            kind_interval(SyntaxKind::WITH_NULL_TYPE),
-            KindInterval {
-                introduced: Some(LanguageVersion::V9_0),
-                removed: None,
-            },
-        );
+        for (kind, introduced) in [
+            (SyntaxKind::WHILE_BANG_EXPR, LanguageVersion::V8_0),
+            (SyntaxKind::INTERSECTION_TYPE, LanguageVersion::V8_0),
+            (SyntaxKind::WITH_NULL_TYPE, LanguageVersion::V9_0),
+        ] {
+            assert_eq!(
+                kind_interval(kind),
+                KindInterval {
+                    introduced: Some(introduced),
+                    removed: None,
+                },
+                "{kind:?}",
+            );
+        }
         // A sample of kinds across the token / type / expression layers all
         // predate the floor, so they are ALWAYS in surface.
         for kind in [
@@ -3281,26 +3297,14 @@ mod tests {
         }
     }
 
-    /// Documents the D3/D7 known gap (see [`kind_interval`]): modelled kinds
-    /// introduced after the floor but at or below 8.0 are deliberately *not* yet
-    /// gated, so the committed `v8` (8.0) surface stays exact — they are all in
-    /// surface at 8.0 — while pins below 8.0 under-report rather than risk
-    /// unverified gating. This test locks that intent: giving one of these a row
-    /// is a deliberate change that must update this assertion (and should arrive
-    /// with the version-aware differential coverage that verifies it).
+    /// The post-floor kinds left without a row (see [`kind_feature`]) are in
+    /// surface even at the floor. Giving one a row is a deliberate change that
+    /// must update this assertion and the reasons on [`kind_feature`].
     #[test]
-    fn modelled_post_floor_kinds_not_yet_gated() {
-        for kind in [
-            SyntaxKind::INTERP_STRING_EXPR,
-            SyntaxKind::WHILE_BANG_EXPR,
-            SyntaxKind::INTERSECTION_TYPE,
-            SyntaxKind::DOT_LAMBDA_EXPR,
-        ] {
+    fn unrowed_post_floor_kinds_are_always_in_surface() {
+        for kind in [SyntaxKind::INTERP_STRING_EXPR, SyntaxKind::DOT_LAMBDA_EXPR] {
             assert_eq!(kind_interval(kind), KindInterval::ALWAYS, "{kind:?}");
-            // ...so they are in surface even at the floor — the under-report.
             assert!(kind_in_surface(kind, LanguageVersion::V4_6), "{kind:?}");
-            // But all are in surface at 8.0, so the committed v8 surface is exact.
-            assert!(kind_in_surface(kind, LanguageVersion::V8_0), "{kind:?}");
         }
     }
 }

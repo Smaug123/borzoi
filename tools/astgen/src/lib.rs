@@ -1047,6 +1047,7 @@ pub const SURFACES: &[Surface] = &[
 /// since before the floor.
 fn kind_introduced(kind: &str) -> Option<f64> {
     match kind {
+        "WHILE_BANG_EXPR" | "INTERSECTION_TYPE" => Some(8.0),
         "WITH_NULL_TYPE" => Some(9.0),
         _ => None,
     }
