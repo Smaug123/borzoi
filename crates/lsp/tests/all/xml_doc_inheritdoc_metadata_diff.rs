@@ -1636,6 +1636,90 @@ fn an_override_beside_a_rank_one_array_declines() {
     );
 }
 
+/// Signatures differing only by an optional modifier, C++/CLI's
+/// `M(const int)` beside `M(int)` (#339). The projection drops the `modopt`,
+/// but Roslyn's override comparer keeps it, so to Roslyn `C.M(int)` overrides
+/// `B.M(int)` and not its `modopt(IsConst)` twin, and `C2.M(int)` steps past
+/// `B2`, whose only `M` carries the modifier, to `A.M`. Read without the
+/// modifier, `C2.M` would take `B2.M`'s documentation: the two are an unproven
+/// equality, and each override declines (`B` and `B2` are not
+/// compiler-shaped).
+#[test]
+fn an_override_beside_a_modopt_only_twin_declines() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    let (runtime, core) = system_runtime();
+    let lo = Ident::new("Lo", "1.0.0.0", "");
+    let cx = Cx {
+        core: 0,
+        lo: -1,
+        ex: -1,
+    };
+    let int = sig(STy::Int, RetMod::None, &cx);
+    let const_int = sig(STy::Int, RetMod::Opt, &cx);
+    let local = |name: &str| json!({"scope": -1, "ns": "N", "name": name});
+    let m = |param: &Value, newslot: bool| {
+        method(
+            "M",
+            "public",
+            (true, newslot, false, false),
+            false,
+            int.clone(),
+            vec![param.clone()],
+            vec![],
+        )
+    };
+    let types = vec![
+        class("N", "A", Some(object(&cx)), vec![m(&int, true)]),
+        class(
+            "N",
+            "B",
+            Some(local("A")),
+            vec![m(&const_int, true), m(&int, true)],
+        ),
+        class("N", "C", Some(local("B")), vec![m(&int, false)]),
+        class("N", "B2", Some(local("A")), vec![m(&const_int, true)]),
+        class("N", "C2", Some(local("B2")), vec![m(&int, false)]),
+    ];
+    let path = emit(d, "Lo", &lo, &[core], types, json!([]));
+    let documented = |key: &str| (key.to_string(), full(key));
+    let docs: Entries = vec![
+        documented("T:N.A"),
+        documented("M:N.A.M(System.Int32)"),
+        documented("T:N.B"),
+        documented("M:N.B.M(System.Int32)"),
+        documented("T:N.C"),
+        ("M:N.C.M(System.Int32)".into(), bare()),
+        documented("T:N.B2"),
+        documented("M:N.B2.M(System.Int32)"),
+        documented("T:N.C2"),
+        ("M:N.C2.M(System.Int32)".into(), bare()),
+    ];
+    std::fs::write(
+        path.with_extension("xml"),
+        render_xml("Lo", &docs, Layout::Indented),
+    )
+    .unwrap();
+    let fx = fixture_from(dir, path.clone(), vec![runtime.clone(), path]);
+    let compared = compare(&fx);
+    let mut census = crate::common::inheritdoc_diff::Census::default();
+    census.add(&compared);
+    census.print("an override beside a modopt-only twin");
+    census.assert_sound();
+    // Roslyn expands both, so each decline is a question it answers.
+    for key in ["M:N.C.M(System.Int32)", "M:N.C2.M(System.Int32)"] {
+        let verdict = compared.iter().find(|c| c.key == key).map(|c| &c.verdict);
+        assert!(
+            matches!(
+                verdict,
+                Some(Verdict::Declined { cause, roslyn_left_it: false })
+                    if cause.contains("OptionalModifier")
+            ),
+            "{key}: {verdict:?}"
+        );
+    }
+}
+
 /// `Lo` with interface `N.I` declaring `i_methods` (each documented under
 /// its ID) and class `N.C : N.I` declaring `x`, whose entry `x_id` is a bare
 /// `<inheritdoc/>`: compared against Roslyn, held sound, and `x_id`'s
