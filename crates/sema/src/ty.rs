@@ -23,6 +23,73 @@
 //! equality — the same projection-to-a-shared-form discipline the parser
 //! differential uses.
 
+/// The most nodes a type inference builds or walks may have, counting every
+/// [`Ty`] variant as one node, with its variables resolved.
+///
+/// Inferred types are not bounded by the tree they are inferred from: each
+/// line of `let g0 x = (x, 0)`, `let g1 x = g0 (g0 x)`, …, doubles the type,
+/// and the unification table shares structure through variables that
+/// resolving a type expands (`let a = (x, x) in let b = (a, a) in …`). So
+/// the unification table's walks count what they visit and stop here, and a file
+/// whose inference reaches this bound publishes nothing
+/// ([`InferredFile::type_budget_exceeded`](crate::InferredFile::type_budget_exceeded)).
+///
+/// The bound is 75 times the largest type inference walks in the pinned
+/// corpora: 54 nodes over every `.fs` file of the F# compiler corpus, each
+/// inferred alone against the reference pack and FSharp.Core, and 42 over
+/// the whole-project corpus (measured with this budget in place, which
+/// none of them reached). `infer_corpus_diff` holds its sample to an eighth
+/// of it.
+pub const MAX_TYPE_NODES: usize = 1 << 12;
+
+/// The deepest a type inference builds or walks may be, the root counting as
+/// depth 1: the depth bound beside [`MAX_TYPE_NODES`].
+///
+/// Every walk of a [`Ty`] — resolution, the occurs check, unification,
+/// instantiation, rendering, cloning and dropping — recurses once per level,
+/// so this is what bounds the stack they use on an inferred type
+/// (`tests/all/infer_type_budget.rs` walks one at this depth under the
+/// tallest expression, on half of [`WALK_STACK_BYTES`](crate::WALK_STACK_BYTES)).
+///
+/// It is the tree's own height bound,
+/// [`MAX_TREE_HEIGHT`](borzoi_cst::parser::MAX_TREE_HEIGHT): a type built a
+/// level per level of the tree — an annotation, the chain of results a long
+/// curried application unifies its callee with — never passes it, so the
+/// budget bites only on types that outgrow the tree. The one construct that
+/// builds depth from the tree's width, a function's curried parameters, is
+/// checked where its type is built. The deepest type inference walks in the
+/// pinned corpora is 20 levels deep (a long curried function in the F#
+/// compiler corpus; 10 in the whole-project corpus).
+pub const MAX_TYPE_DEPTH: usize = borzoi_cst::parser::MAX_TREE_HEIGHT;
+
+/// Which of the type budget's bounds a file's inference reached:
+/// [`MAX_TYPE_NODES`] or [`MAX_TYPE_DEPTH`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TypeBudgetExceeded {
+    /// A type with more than [`MAX_TYPE_NODES`] nodes.
+    Nodes,
+    /// A type deeper than [`MAX_TYPE_DEPTH`].
+    Depth,
+}
+
+/// The node count and depth of a type, as [`MAX_TYPE_NODES`] and
+/// [`MAX_TYPE_DEPTH`] count them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TySize {
+    pub nodes: usize,
+    pub depth: usize,
+}
+
+impl TySize {
+    /// The larger of two sizes in each dimension.
+    pub fn max_each(self, other: TySize) -> TySize {
+        TySize {
+            nodes: self.nodes.max(other.nodes),
+            depth: self.depth.max(other.depth),
+        }
+    }
+}
+
 /// An inference variable: a placeholder the unification substrate (the
 /// crate-internal `unify` module) solves for. A newtype over the `ena`
 /// [`UnifyKey`] index, not a bare `u32`, per "no primitive obsession".
@@ -120,6 +187,30 @@ impl Ty {
             path,
             args: Vec::new(),
         }
+    }
+
+    /// This type's node count and depth, as the type budget counts them
+    /// ([`MAX_TYPE_NODES`], [`MAX_TYPE_DEPTH`]), its variables taken as they
+    /// stand. Iterative, so it measures a type of any depth.
+    pub fn size(&self) -> TySize {
+        let mut size = TySize::default();
+        let mut stack = vec![(self, 1usize)];
+        while let Some((ty, depth)) = stack.pop() {
+            size.nodes += 1;
+            size.depth = size.depth.max(depth);
+            match ty {
+                Ty::Named { args, .. } | Ty::Project { args, .. } | Ty::Tuple(args) => {
+                    stack.extend(args.iter().map(|a| (a, depth + 1)));
+                }
+                Ty::Array { elem, .. } => stack.push((elem, depth + 1)),
+                Ty::Fun { arg, ret } => {
+                    stack.push((arg, depth + 1));
+                    stack.push((ret, depth + 1));
+                }
+                Ty::Param(_) | Ty::Var(_) => {}
+            }
+        }
+        size
     }
 
     /// Whether this type is fully resolved — contains no [`Ty::Var`]. The
