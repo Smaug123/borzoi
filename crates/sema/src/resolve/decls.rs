@@ -7,7 +7,7 @@ use borzoi_cst::syntax::{
 
 use crate::def::{DefId, DefKind};
 
-use super::contributors::Contribution;
+use super::contributors::{Contribution, RequireQualifiedAccess};
 use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
 };
@@ -15,8 +15,7 @@ use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
 };
 use super::{
-    attrs_auto_open, attrs_require_qualified_access, id_text, is_type_augmentation, single_ident,
-    type_long_ident_path,
+    attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path,
 };
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
@@ -670,9 +669,12 @@ impl<'a> Resolver<'a> {
                         // so a qualified `Color.Red` resolves (for unions and enums
                         // uniformly); `[<RequireQualifiedAccess>]` keeps the cases
                         // out of the *value* frame — reachable then only as `T.Case`.
-                        let require_qualified = attrs_require_qualified_access(defn.attributes());
-                        self.define_union_cases(defn, &name, require_qualified);
-                        if !require_qualified {
+                        // Where the attribute is neither certain nor certainly
+                        // absent, the cases enter it and every name they could
+                        // take declines.
+                        let rqa = self.require_qualified_access(defn.attributes());
+                        self.define_union_cases(defn, &name, rqa == RequireQualifiedAccess::Certain);
+                        if rqa == RequireQualifiedAccess::Unknown {
                             self.unproven_bare_cases(defn);
                         }
                         // An enum's cases (`Color = Red = 0 | …`) populate the same
@@ -693,8 +695,8 @@ impl<'a> Resolver<'a> {
                     if !is_type_augmentation(defn)
                         && let Some(name) = defn.long_id().and_then(single_ident)
                     {
-                        let require_qualified =
-                            self.certainly_require_qualified_access(defn.attributes());
+                        let require_qualified = self.require_qualified_access(defn.attributes())
+                            == RequireQualifiedAccess::Certain;
                         self.shadow_abbreviation_case(defn, &name, require_qualified);
                     }
                 }
@@ -2046,8 +2048,9 @@ impl Resolver<'_> {
             return;
         }
         self.opaque_binders.insert(case.text_range());
-        // A type that requires qualified access puts no bare case in scope.
-        if attrs_require_qualified_access(defn.attributes()) {
+        // A type that certainly requires qualified access puts no bare case
+        // in scope.
+        if self.require_qualified_access(defn.attributes()) == RequireQualifiedAccess::Certain {
             return;
         }
         let contribution = Contribution {

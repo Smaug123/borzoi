@@ -15,7 +15,7 @@ use crate::common::{
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use borzoi_sema::{ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// The declarations, with the target name `X` they use and whether `X`
@@ -64,7 +64,9 @@ fn abbreviation_targets_shadow_values_as_fcs_does() {
         let rf = resolve_file(
             &ImplFile::cast(parsed.root.clone()).unwrap(),
             &ProjectItems::default(),
-            &AssemblyEnv::default(),
+            // FCS reads FSharp.Core, and `[<RequireQualifiedAccess>]` is
+            // certain only where FSharp.Core declares it.
+            crate::common::fsharp_core_env(),
             &SyntaxRecovery::of(&parsed),
         );
         let at = src.rfind("= X").unwrap() + 2;

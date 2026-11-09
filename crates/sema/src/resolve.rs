@@ -123,6 +123,14 @@ pub fn resolve_file(
     // FooAttribute` is declared before or after it, or in a sibling block.
     // Over-approximate (an augmentation target's last segment counts too),
     // which is sound: a spurious match only adds a defer.
+    if file
+        .syntax()
+        .descendants()
+        .filter_map(ExceptionDefnDecl::cast)
+        .any(|e| exception_named_like_core_attribute(&e))
+    {
+        r.declares_core_attribute_alias = true;
+    }
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
         if type_defn_renames_core_attribute(&defn) {
             r.declares_core_attribute_alias = true;
@@ -2742,23 +2750,6 @@ fn type_long_ident_path(ty: &Type) -> Option<Vec<String>> {
     (!segs.is_empty()).then_some(segs)
 }
 
-/// Whether any attribute in `attrs` is `[<RequireQualifiedAccess>]` (or its
-/// `…Attribute` long form), matched on the attribute name's last segment. Such a
-/// union keeps its cases out of the unqualified value scope, so they must not be
-/// added to the case index.
-fn attrs_require_qualified_access(attrs: impl Iterator<Item = AttributeList>) -> bool {
-    attrs
-        .flat_map(|list| list.attributes().collect::<Vec<_>>())
-        .filter_map(|attr| attr.type_name())
-        .filter_map(|li| li.idents().last())
-        .any(|seg| {
-            matches!(
-                &*id_text(&seg),
-                "RequireQualifiedAccess" | "RequireQualifiedAccessAttribute"
-            )
-        })
-}
-
 /// Every nested-module name declared anywhere under `decls` (all depths),
 /// for the `rec`-block pre-scan ([`Resolver::rec_module_names`]): inside
 /// `module rec` / `namespace rec`, a later-declared module is already in
@@ -2793,6 +2784,17 @@ pub(crate) fn collect_nested_module_names(
 /// read: using an attribute renames nothing.
 pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
     type_defn_renames_attribute(defn, crate::assembly_env::CORE_ATTRIBUTE_NAMES)
+}
+
+/// Whether an `exception` is named like a core attribute
+/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]): it declares a type, which
+/// an attribute's written name resolves to as readily as a `type`'s, so the
+/// name proves nothing (FCS-graded: FCS then rejects the attribute rather than
+/// reading it as FSharp.Core's).
+pub(super) fn exception_named_like_core_attribute(exn: &ExceptionDefnDecl) -> bool {
+    exn.union_case()
+        .and_then(|case| case.ident())
+        .is_some_and(|name| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(&name)))
 }
 
 /// [`type_defn_renames_core_attribute`], for the attributes written `names`.

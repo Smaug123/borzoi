@@ -35,8 +35,8 @@ use super::model::SlotClass;
 use super::model::{ProjectItems, ResolvedFile};
 use super::state::{MarkReach, ScopeEntry};
 use super::{
-    Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation,
-    type_defn_renames_core_attribute,
+    Resolver, abbrev_target_single_ident, attrs_auto_open, exception_named_like_core_attribute,
+    is_type_augmentation, type_defn_renames_core_attribute,
 };
 use crate::assembly_env::{AssemblyEnv, CoreAttributeAliases, CustomOperationNames};
 use crate::binders::{BinderRole, PatternName, pattern_names};
@@ -269,6 +269,19 @@ pub(super) fn core_attribute_spellings_trusted<'s>(
         })
 }
 
+/// Whether a declaration carries FSharp.Core's `[<RequireQualifiedAccess>]`,
+/// as far as its written attributes can say
+/// ([`Resolver::require_qualified_access`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RequireQualifiedAccess {
+    /// An attribute certainly resolves to FSharp.Core's.
+    Certain,
+    /// No attribute can.
+    CertainlyNot,
+    /// Some attribute may: neither reading may be committed.
+    Unknown,
+}
+
 impl Resolver<'_> {
     /// Whether written attribute names in this file can be taken at their
     /// word for `[<AutoOpen>]` and `[<RequireQualifiedAccess>]`: the
@@ -306,23 +319,58 @@ impl Resolver<'_> {
         self.may_carry_core_attribute(attrs, "AutoOpen")
     }
 
-    /// Whether attribute lists certainly mark their target
-    /// `[<RequireQualifiedAccess>]`: spelled so, while written names can be
-    /// trusted ([`Self::attribute_spellings_trusted`]).
-    pub(super) fn certainly_require_qualified_access(
+    /// What attribute lists prove about whether they mark their target with
+    /// FSharp.Core's `[<RequireQualifiedAccess>]`.
+    ///
+    /// FCS honours the attribute when its written name *resolves* to
+    /// FSharp.Core's `Microsoft.FSharp.Core.RequireQualifiedAccessAttribute`
+    /// (`TypedTreeOps.Attributes.fs`, `resolveAttribPath`: the referenced
+    /// entity's CCU and path, never its name), so a written name is evidence
+    /// only where nothing else can be what it resolves to:
+    ///
+    /// - [`RequireQualifiedAccess::Certain`] when one attribute is written
+    ///   exactly `RequireQualifiedAccess` — one segment
+    ///   (`Foo.RequireQualifiedAccess` may name any type), no target, no
+    ///   argument — FSharp.Core declares the attribute, and nothing can rename
+    ///   or impersonate the two names FCS looks that spelling up under,
+    ///   `RequireQualifiedAccessAttribute` then itself
+    ///   ([`Self::attribute_spellings_trusted`]). The long spelling is never
+    ///   certain: FCS looks it up first as
+    ///   `RequireQualifiedAccessAttributeAttribute`, a name the trust rule
+    ///   does not guard (FCS-graded).
+    /// - [`RequireQualifiedAccess::CertainlyNot`] when no attribute may be it
+    ///   ([`Self::may_require_qualified_access`]).
+    /// - [`RequireQualifiedAccess::Unknown`] otherwise.
+    pub(super) fn require_qualified_access(
         &self,
         attrs: impl Iterator<Item = AttributeList>,
-    ) -> bool {
-        let spellings: Vec<String> = attrs
-            .flat_map(|list| list.attributes().collect::<Vec<_>>())
-            .filter_map(|attr| attr.type_name())
-            .filter_map(|li| li.idents().last())
-            .map(|seg| id_text(&seg).to_string())
-            .collect();
-        spellings
+    ) -> RequireQualifiedAccess {
+        let attrs: Vec<AttributeList> = attrs.collect();
+        let written_plainly = attrs
             .iter()
-            .any(|s| s == "RequireQualifiedAccess" || s == "RequireQualifiedAccessAttribute")
-            && self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .filter(|attr| attr.target().is_none() && attr.arg().is_none())
+            .filter_map(|attr| attr.type_name())
+            .any(|name| {
+                let mut idents = name.idents();
+                idents.next().is_some_and(|only| {
+                    idents.next().is_none() && id_text(&only) == "RequireQualifiedAccess"
+                })
+            });
+        let core_namespace = ["Microsoft", "FSharp", "Core"].map(str::to_string);
+        if written_plainly
+            && self
+                .assemblies
+                .lookup_type(&core_namespace, "RequireQualifiedAccessAttribute", 0)
+                .is_some()
+            && self.attribute_spellings_trusted(std::iter::once("RequireQualifiedAccess"))
+        {
+            RequireQualifiedAccess::Certain
+        } else if self.may_require_qualified_access(attrs.into_iter()) {
+            RequireQualifiedAccess::Unknown
+        } else {
+            RequireQualifiedAccess::CertainlyNot
+        }
     }
 
     /// Whether attribute lists *may* mark their target
@@ -759,16 +807,13 @@ impl Resolver<'_> {
         self.record_open_contribution(&contribution, false);
     }
 
-    /// A union whose cases the walk just put in bare scope, because its
-    /// attributes are not spelled `[<RequireQualifiedAccess>]`: if they may
-    /// still be that attribute under another name, FCS may hold the cases
+    /// A union whose cases the walk just put in bare scope although its
+    /// `[<RequireQualifiedAccess>]` verdict is
+    /// [`RequireQualifiedAccess::Unknown`]: FCS may hold the cases
     /// qualified-only, and a bare use then binds whatever they would shadow.
     /// Neither reading can be committed, here or through an `open` of the
     /// container.
     pub(super) fn unproven_bare_cases(&mut self, defn: &TypeDefn) {
-        if !self.may_require_qualified_access(defn.attributes()) {
-            return;
-        }
         let cases = Contribution {
             names: defn
                 .syntax()
@@ -941,7 +986,12 @@ pub(super) fn signature_contributions(
         .syntax()
         .descendants()
         .filter_map(TypeDefn::cast)
-        .any(|defn| type_defn_renames_core_attribute(&defn));
+        .any(|defn| type_defn_renames_core_attribute(&defn))
+        || sig
+            .syntax()
+            .descendants()
+            .filter_map(ExceptionDefnDecl::cast)
+            .any(|exn| exception_named_like_core_attribute(&exn));
     rf.declares_core_attribute_alias = renames;
     let aliases = assemblies.core_attribute_aliases();
     let may_auto_open = |attrs: &mut dyn Iterator<Item = AttributeList>| {

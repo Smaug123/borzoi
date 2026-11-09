@@ -118,6 +118,7 @@ mod silent_region_sweep;
 mod tier_order_diff;
 mod type_name_env_grid;
 mod types_census;
+mod union_rqa_attribute_grid;
 mod unmodelled_contributor_grid;
 mod use_rec;
 mod uses_census;
