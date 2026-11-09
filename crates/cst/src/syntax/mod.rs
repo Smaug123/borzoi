@@ -398,8 +398,9 @@ impl TypeDefn {
 
     /// The definition's type parameters — FCS's `SynComponentInfo.typeParams`
     /// (`SynTyparDecls option`, phase 9.3). `None` for a non-generic definition.
-    /// The `PostfixList`/`PrefixList`/`SinglePrefix` variant is not represented
-    /// (the typar list is the same); see [`TyparDecls::typars`].
+    /// The `PostfixList`/`PrefixList`/`SinglePrefix` variant is
+    /// [`TyparDecls::form`]; the parameters are [`TyparDecls::typars`] in every
+    /// form.
     pub fn typar_decls(&self) -> Option<TyparDecls> {
         accessor!("TypeDefn::typar_decls");
         child(&self.0)
@@ -483,6 +484,35 @@ impl TyparDecls {
         accessor!("TyparDecls::constraint_clause");
         child(&self.0)
     }
+
+    /// Which source shape declared the parameters — FCS's `SynTyparDecls` case.
+    /// Read from the delimiter: a `<` opens the postfix list, a `(` the
+    /// parenthesised prefix list, and neither is the single prefix typar.
+    pub fn form(&self) -> TyparDeclsForm {
+        accessor!("TyparDecls::form");
+        if token(&self.0, SyntaxKind::LESS_TOK).is_some() {
+            TyparDeclsForm::Postfix
+        } else if token(&self.0, SyntaxKind::LPAREN_TOK).is_some() {
+            TyparDeclsForm::PrefixList
+        } else {
+            TyparDeclsForm::SinglePrefix
+        }
+    }
+}
+
+/// The source shape of a [`TyparDecls`] — FCS's `SynTyparDecls` case. The
+/// three declare the same parameters; they differ in where the list sits and
+/// what it may carry (only the postfix list holds a `when` clause).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TyparDeclsForm {
+    /// `T<'a, 'b>` — `SynTyparDecls.PostfixList`, after the name.
+    Postfix,
+    /// `('a, 'b) T` — `SynTyparDecls.PrefixList`, parenthesised before the
+    /// name (one or more parameters).
+    PrefixList,
+    /// `'a T` — `SynTyparDecls.SinglePrefix`, one bare parameter before the
+    /// name.
+    SinglePrefix,
 }
 
 /// The kind of a [`TyparConstraint`] (phase 9.3b) — the supported

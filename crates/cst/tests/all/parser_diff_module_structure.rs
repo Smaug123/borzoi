@@ -1078,10 +1078,10 @@ fn diff_ast_type_and_chain_offside() {
 // `SynComponentInfo.typeParams: SynTyparDecls option`. Postfix `type T<'a>`
 // (`PostfixList`, via the phase-7.6 `HighPrecedenceTyApp` + `< … >` machinery)
 // and single-prefix `type 'a T` (`SinglePrefix`); each typar is a `SynTyparDecl`
-// wrapping a `SynTypar(ident, staticReq, _)`. The `preferPostfix` flag and the
-// `SynTyparDecls` *variant* are elided — the flat typar list (name + head-type)
-// is what's projected. (Parenthesised-prefix `('a, 'b) T` is deferred — its
-// `)` is LexFilter-swallowed; see `prefix_list_typars_are_a_clean_error`.)
+// wrapping a `SynTypar(ident, staticReq, _)`. The flat typar list (name +
+// head-type) and the `SynTyparDecls` case are projected; `preferPostfix` is
+// elided. Parenthesised prefix `type ('a, 'b) T` (`PrefixList`) has its own
+// case group, `parser_diff_prefix_typars`.
 
 /// Phase 9.3 — a single postfix type parameter: `T<'a>`.
 #[test]

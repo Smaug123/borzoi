@@ -4440,21 +4440,100 @@ fn type_param_facade() {
         vec![("a".to_string(), false), ("b".to_string(), false)]
     );
     assert_eq!(collect("type T<^a> = int\n"), vec![("a".to_string(), true)]);
+    assert_eq!(
+        collect("type ('a, ^b) T = 'a\n"),
+        vec![("a".to_string(), false), ("b".to_string(), true)]
+    );
 }
 
-/// Phase 9.3 — parenthesised-prefix `('a, 'b) T` is deferred (its `)` is
-/// LexFilter-swallowed). A `(` after `type` is not claimed as a typar group; it
-/// falls through to the name parser and records a clean "expected identifier"
-/// error rather than panicking.
+/// [`TyparDecls::form`](crate::syntax::TyparDecls::form) reads each source
+/// shape's `SynTyparDecls` case from its delimiter.
 #[test]
-fn prefix_list_typars_are_a_clean_error() {
+fn type_param_form_facade() {
+    use crate::syntax::{AstNode, ImplFile, ModuleDecl, TyparDeclsForm};
+    let form = |source: &str| -> TyparDeclsForm {
+        let parse = parse(source);
+        assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
+        let module = ImplFile::cast(parse.root.clone())
+            .and_then(|f| f.modules().next())
+            .expect("a MODULE_OR_NAMESPACE");
+        let ModuleDecl::Types(t) = module.decls().next().expect("a decl") else {
+            panic!("expected a Types decl");
+        };
+        let defn = t.defns().next().expect("one defn");
+        defn.typar_decls()
+            .expect("generic defn has typar decls")
+            .form()
+    };
+    assert_eq!(form("type T<'a> = int\n"), TyparDeclsForm::Postfix);
+    assert_eq!(form("type T <'a> = int\n"), TyparDeclsForm::Postfix);
+    assert_eq!(form("type 'a T = int\n"), TyparDeclsForm::SinglePrefix);
+    assert_eq!(form("type ('a) T = int\n"), TyparDeclsForm::PrefixList);
+    assert_eq!(form("type ('a, 'b) T = int\n"), TyparDeclsForm::PrefixList);
+}
+
+/// Parenthesised prefix `type ('a, 'b) T`: a `TYPAR_DECLS` of `(`, the decls
+/// and their commas, and the `)` — read from the raw stream, as LexFilter
+/// swallows it — sits *before* the name.
+#[test]
+fn type_param_prefix_list_green_shape() {
     let source = "type ('a, 'b) T = 'a\n";
     let parse = parse(source);
-    assert!(
-        !parse.errors.is_empty(),
-        "parenthesised-prefix typars are deferred; expected a clean error"
-    );
+    assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
+    let expected = "\
+IMPL_FILE@0..21
+  MODULE_OR_NAMESPACE@0..21
+    TYPE_DEFNS@0..20
+      TYPE_DEFN@0..20
+        TYPE_TOK@0..4 \"type\"
+        WHITESPACE@4..5 \" \"
+        TYPAR_DECLS@5..13
+          LPAREN_TOK@5..6 \"(\"
+          TYPAR_DECL@6..8
+            QUOTE_TOK@6..7 \"'\"
+            IDENT_TOK@7..8 \"a\"
+          COMMA_TOK@8..9 \",\"
+          TYPAR_DECL@9..12
+            WHITESPACE@9..10 \" \"
+            QUOTE_TOK@10..11 \"'\"
+            IDENT_TOK@11..12 \"b\"
+          RPAREN_TOK@12..13 \")\"
+        WHITESPACE@13..14 \" \"
+        LONG_IDENT@14..15
+          IDENT_TOK@14..15 \"T\"
+        WHITESPACE@15..16 \" \"
+        EQUALS_TOK@16..17 \"=\"
+        WHITESPACE@17..18 \" \"
+        ERROR@18..18 \"\"
+        TYPE_ABBREV@18..20
+          VAR_TYPE@18..20
+            QUOTE_TOK@18..19 \"'\"
+            IDENT_TOK@19..20 \"a\"
+        ERROR@20..20 \"\"
+    NEWLINE@20..21 \"\\n\"
+";
+    assert_eq!(debug_tree(&parse.root), expected);
     assert_lossless(source, &parse);
+}
+
+/// A malformed parenthesised prefix list — unclosed, a missing comma, a
+/// trailing comma — records an error and stays lossless.
+#[test]
+fn malformed_prefix_list_typars_are_rejected() {
+    for source in [
+        "type ('a, 'b T = 'a\n",
+        "type ('a 'b) T = 'a\n",
+        "type ('a, ) T = 'a\n",
+        "type ('a,\n",
+        "type ('a",
+    ] {
+        let parse = parse(source);
+        assert!(
+            !parse.errors.is_empty(),
+            "malformed prefix typars must be rejected: {source:?}"
+        );
+        assert_lossless(source, &parse);
+    }
 }
 
 /// Phase 9.3 — a malformed postfix type-parameter list is rejected (FCS's

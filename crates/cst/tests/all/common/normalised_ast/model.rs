@@ -350,10 +350,13 @@ pub struct NormalisedTypeDefn {
     pub access: Option<NormalisedAccess>,
     pub long_id: Vec<String>,
     /// `SynComponentInfo.typeParams` flattened to the typar list (phase 9.3).
-    /// The `SynTyparDecls` variant (`PostfixList`/`PrefixList`/`SinglePrefix`)
-    /// and `preferPostfix` are elided — `type T<'a>` and `type 'a T` declare
-    /// the same parameter. Empty for a non-generic definition.
+    /// Empty for a non-generic definition; the list's source shape is
+    /// [`Self::typar_form`].
     pub typars: Vec<NormalisedTypar>,
+    /// The `SynTyparDecls` case that declared [`Self::typars`] — `None` for a
+    /// non-generic definition. `preferPostfix` is elided: FCS sets it exactly
+    /// for [`NormalisedTyparForm::Postfix`].
+    pub typar_form: Option<NormalisedTyparForm>,
     /// The type-parameter constraints in source order (phase 9.3b) — the union
     /// of the inside-`<>` `when` clause (`SynTyparDecls.PostfixList` constraints)
     /// and the after-decls one (`SynComponentInfo.constraints`). Empty when the
@@ -373,6 +376,18 @@ pub struct NormalisedTypeDefn {
     /// member list (FCS populates both slots), so the projectors mirror that
     /// dual placement. `None` for a definition with no primary constructor.
     pub implicit_ctor: Option<NormalisedMember>,
+}
+
+/// The `SynTyparDecls` case of a type definition's parameters
+/// (`SyntaxTree.fsi:448`): where the list sits relative to the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalisedTyparForm {
+    /// `T<'a, 'b>` — `PostfixList`.
+    Postfix,
+    /// `('a, 'b) T` — `PrefixList`.
+    PrefixList,
+    /// `'a T` — `SinglePrefix`.
+    SinglePrefix,
 }
 
 /// One `SynTypeConstraint` (`SyntaxTree.fsi:399`, phase 9.3b), reduced to the

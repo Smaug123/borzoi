@@ -16,8 +16,8 @@ use borzoi_cst::syntax::{
     NewExpr, ObjExpr, OpenDecl, ParenExpr, ParenPat, Pat, RationalConst, RecordField,
     RecordFieldDecl, SigDecl, SigFile, StaticOptCondition, StaticOptimizationExpr, SyntaxKind,
     SyntaxToken, TraitCallExpr, TupleExpr, TuplePat, TupleSegment, TupleType, TyparConstraint,
-    TyparConstraintKind, TyparDecl, Type, TypeAppExpr, TypeDefn, TypeDefnRepr, TypeTestExpr,
-    TypedExpr, TypedPat, UnionCase, UnionCaseField, UpcastExpr, ValField, VarType,
+    TyparConstraintKind, TyparDecl, TyparDeclsForm, Type, TypeAppExpr, TypeDefn, TypeDefnRepr,
+    TypeTestExpr, TypedExpr, TypedPat, UnionCase, UnionCaseField, UpcastExpr, ValField, VarType,
 };
 
 use super::decode::*;
@@ -895,6 +895,11 @@ fn normalise_type_defn(d: &TypeDefn) -> NormalisedTypeDefn {
         .typar_decls()
         .map(|ds| ds.typars().map(|t| normalise_typar(&t)).collect())
         .unwrap_or_default();
+    let typar_form = d.typar_decls().map(|ds| match ds.form() {
+        TyparDeclsForm::Postfix => NormalisedTyparForm::Postfix,
+        TyparDeclsForm::PrefixList => NormalisedTyparForm::PrefixList,
+        TyparDeclsForm::SinglePrefix => NormalisedTyparForm::SinglePrefix,
+    });
     let constraints = d
         .constraints()
         .map(|c| normalise_type_constraint(&c))
@@ -938,6 +943,7 @@ fn normalise_type_defn(d: &TypeDefn) -> NormalisedTypeDefn {
         access: cst_type_header_access(d.syntax()),
         long_id,
         typars,
+        typar_form,
         constraints,
         repr,
         members,
