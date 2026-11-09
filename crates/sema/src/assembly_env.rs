@@ -3604,14 +3604,23 @@ impl AssemblyEnv {
     /// (under-colour, never mis-colour) is the honest answer until the resolution
     /// distinguishes the two.
     /// Whether `handle`'s source assembly has a **non-authoritative** F#
-    /// signature — its pickle is absent/undecodable, or it embeds foreign CCU
-    /// pickles (an `fsc --standalone` build). In that state fsc's IL-level F#
-    /// markers (`CompilationMappingAttribute` for module kind, the static-property
-    /// shape for a module value) survive but the pickle overlay never ran, so they
-    /// are *heuristic, not authoritative* — and FCS imports such an assembly
-    /// through IL, where a module reads as a plain type and its `let`s as ordinary
-    /// members (verified against real `--standalone` output). A classifier must
-    /// therefore not trust `EntityKind::Module` (or the module-member split) here.
+    /// signature: no pickle the projection could read in full. That covers two
+    /// different assemblies, which the projection already tells apart:
+    ///
+    /// - one without the `FSharpInterfaceDataVersionAttribute` (C#, the BCL, or
+    ///   F# built with `--nointerfacedata` or `--standalone`), which FCS
+    ///   imports through IL. The projection reads it the same way, so it
+    ///   carries no F# kind at all: a module there is the plain class FCS sees.
+    /// - one with the marker whose pickle the projection could not read (it is
+    ///   undecodable, its join is partial, or foreign CCUs ride beside it).
+    ///   FCS reads that pickle, so its kinds and members are F#'s, and the
+    ///   projection's — from fsc's IL markers (`CompilationMappingAttribute`
+    ///   for a kind, the static-property shape for a module value) — are a
+    ///   heuristic for them.
+    ///
+    /// So an F# kind (`Module`, `Union`, `Record`, `Exception`) on such an
+    /// entity is always the heuristic one, and anything that *acts* on it must
+    /// decline.
     ///
     /// The entity's [`EntityNode::signature_non_authoritative`] bit — carried on
     /// every build path (including [`Self::from_views`], which tags no
@@ -3634,10 +3643,11 @@ impl AssemblyEnv {
     /// Whether `handle` is an F# **module** we may rely on being one.
     ///
     /// A module's kind is trustworthy only from an authoritative F# pickle. A
-    /// non-authoritative assembly's `Module` is an IL heuristic FCS does not
-    /// share — it imports the type through IL, where a module reads as a plain
-    /// type — so anything that *acts* on module-ness must ask this rather than
-    /// match `EntityKind::Module` directly. [`Self::entity_class`] declines
+    /// non-authoritative assembly's `Module` is an IL heuristic for a pickle
+    /// FCS reads and the projection could not
+    /// (see [`Self::has_authoritative_fsharp_signature`]), so anything that *acts* on
+    /// module-ness must ask this rather than match `EntityKind::Module`
+    /// directly. [`Self::entity_class`] declines
     /// such a kind for the same reason; the resolver's type-position
     /// eligibility filter (a module cannot be a terminal type) must decline to
     /// *exclude* it for the same reason, or it would drop a genuine
@@ -4004,6 +4014,27 @@ impl AssemblyEnv {
             EntityKind::Exception | EntityKind::Enum | EntityKind::Delegate => true,
             _ => false,
         }
+    }
+
+    /// Whether an expression-position path ending at the class `handle` is
+    /// FCS's reading but names nothing we can commit to: the class has
+    /// instance constructors, none of them public. FCS takes the type, finds
+    /// no accessible constructor ("This type has no accessible object
+    /// constructors") and goes no further — it does not move on as it does
+    /// past a class with no instance constructor at all
+    /// ([`Self::terminal_expression_value`]). An F# union read through IL is
+    /// such a class (its constructor is `internal`).
+    pub fn terminal_constructor_inaccessible(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        let instance_ctors = || {
+            e.members.iter().filter_map(|m| match m {
+                Member::Method(mm) if mm.is_constructor && !mm.is_static => Some(mm.access),
+                _ => None,
+            })
+        };
+        e.kind == EntityKind::Class
+            && instance_ctors().next().is_some()
+            && instance_ctors().all(|access| access != Access::Public)
     }
 
     /// Whether `handle` is a union we may rely on declaring a case named `name`.
@@ -4502,12 +4533,11 @@ impl AssemblyEnv {
             .collect();
         // A banana-named val is an active-pattern recognizer **only in an
         // authoritative F# module**. On an assembly whose F# signature is
-        // unreliable (`fsc --standalone`, an undecoded pickle) `EntityKind::Module`
-        // is an IL heuristic FCS does not share — it imports the entity through IL,
-        // where a banana-named `let` is an ordinary method group, never a
-        // recognizer (Stage 3b; the same reason [`Self::entity_class`] declines the
-        // kind). So demangle only when the container's signature is authoritative;
-        // otherwise the `|Foo|` is just a value entry.
+        // unreliable `EntityKind::Module` is a heuristic for a pickle FCS reads
+        // and we could not ([`Self::fsharp_signature_unreliable`]), so nothing
+        // vouches for the recognizer's shape; such a module's extension index
+        // is unknowable too, so its surface is already residue above, and the
+        // `|Foo|` stays a plain value entry.
         let authoritative_module = !self.fsharp_signature_unreliable(handle);
         for (name, idx) in vals {
             if authoritative_module && name.starts_with('|') {
@@ -6216,10 +6246,24 @@ impl AssemblyEnv {
 
     /// Whether `handle` is an F# **exception** we may rely on being one: on an
     /// assembly whose F# signature is not authoritative the kind is an IL
-    /// heuristic, and FCS imports the type as an ordinary class.
+    /// heuristic ([`Self::fsharp_signature_unreliable`]).
     pub(crate) fn is_authoritative_exception(&self, handle: EntityHandle) -> bool {
         self.entity(handle).kind == EntityKind::Exception
             && !self.fsharp_signature_unreliable(handle)
+    }
+
+    /// Whether `handle`'s F# kind — a module, union, record or exception — is
+    /// the projection's heuristic for a pickle FCS reads and the projection
+    /// could not ([`Self::fsharp_signature_unreliable`]). FCS reads such an
+    /// entity by F#'s rules for that kind (a module's value ahead of its
+    /// nested type, an exception's constructor and nothing after it, a
+    /// union's cases), over contents the projection cannot vouch for, so a
+    /// reading through it must decline.
+    pub(crate) fn has_heuristic_fsharp_kind(&self, handle: EntityHandle) -> bool {
+        matches!(
+            self.entity(handle).kind,
+            EntityKind::Module | EntityKind::Union | EntityKind::Record | EntityKind::Exception
+        ) && self.fsharp_signature_unreliable(handle)
     }
 
     /// What FCS's in-module expression search can read for `name` in module

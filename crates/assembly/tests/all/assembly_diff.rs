@@ -20,9 +20,9 @@ use borzoi_assembly::{
 };
 
 use crate::common::{
-    ArgGroupObligation, assert_dll_projections_agree, ensure_literal_consts_built,
-    ensure_measure_attr_args_built, ensure_minilib_built, ensure_minilib_fs_built,
-    ensure_minilib_fs_ext_built,
+    ArgGroupObligation, assert_dll_projections_agree, diff_il_imported_dll,
+    ensure_literal_consts_built, ensure_measure_attr_args_built, ensure_minilib_built,
+    ensure_minilib_fs_built, ensure_minilib_fs_ext_built, ensure_minilib_fs_il_only_built,
 };
 
 /// `System.Object`, trimmed to the members that exercise the model:
@@ -595,6 +595,34 @@ fn minilib_nullable_index_parameter_projects_from_getter() {
 #[test]
 fn diff_assembly_minilib_fs() {
     assert_dll_projections_agree(ensure_minilib_fs_built(), ArgGroupObligation::ModulesCommit);
+}
+
+/// The same fixture built without F# signature data: FCS imports it through
+/// IL, so the projection must read it exactly as FCS's IL import does — every
+/// module, union, record and exception a plain type under its IL name, every
+/// member under its IL name — whatever F# attributes the IL still carries.
+/// No marker says the assembly is F#, so every method is the single argument
+/// group FCS reads, and nothing may decline.
+///
+/// Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
+#[test]
+fn diff_assembly_minilib_fs_without_interface_data() {
+    let dll = ensure_minilib_fs_il_only_built();
+    let bytes = std::fs::read(dll).expect("read IL-only MiniLibFs.dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse IL-only MiniLibFs");
+    // The premise: no signature data, so nothing for the projection to read
+    // but the IL.
+    assert!(
+        view.fsharp_resources().expect("resources").is_empty(),
+        "--nointerfacedata still wrote F# resources"
+    );
+    let entities = view.enumerate_type_defs().expect("enumerate");
+    let module = entities
+        .iter()
+        .find(|e| e.name == "Hello")
+        .expect("the module Hello, as a type");
+    assert_eq!(module.kind, EntityKind::Class, "{module:#?}");
+    diff_il_imported_dll(dll).unwrap_or_else(|e| panic!("{e}"));
 }
 
 /// Regression for the `Expr.Op` attribute-argument decoder slice. The

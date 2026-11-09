@@ -43,17 +43,26 @@
 //!
 //! The fixture assembly is generated from [`setups`]
 //! (`tests/fixtures/container_precedence_env`).
+//!
+//! Each use is graded against three builds of it ([`Build`]): the ordinary
+//! one; one without F# signature data, which FCS imports through IL; and the
+//! ordinary one with its signature resources renamed away, whose signature
+//! data FCS reads and the projection cannot. The last two are graded
+//! certain-implies-exact only, and so are the uses of its `[<AutoOpen>]`
+//! section ([`every_auto_open_route_agrees_with_fcs`]).
 
 use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    FileUses, NormalisedProjectUse, ensure_container_precedence_fixture_built,
-    ensure_container_precedence_il_only_fixture_built, ensure_fsharp_core_dll,
-    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
+    FileUses, NormalisedProjectUse, container_precedence_unread_fixture,
+    ensure_container_precedence_fixture_built, ensure_container_precedence_il_only_fixture_built,
+    ensure_fsharp_core_dll, invoke_fcs_dump_project_with_refs, parse_fcs_uses_project,
+    temp_fs_tree,
 };
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
+use borzoi_assembly::EntityKind;
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
 use rowan::{TextRange, TextSize};
@@ -284,8 +293,58 @@ pub(crate) fn fixture_source() -> String {
             ));
         }
     }
+    src.push_str(AUTO_OPEN_SOURCE);
     src
 }
+
+/// The fixture's `[<AutoOpen>]` section, read by [`AUTO_OPEN_PROBES`]: an
+/// auto-open module in a namespace and in a module, and the assembly-level
+/// attribute naming a namespace and a module. FCS honours each only on an
+/// entity it imports as an F# module: through IL, a module is a class, which
+/// it neither opens nor auto-opens.
+const AUTO_OPEN_SOURCE: &str = "namespace AqFix.AutoNs
+
+[<AutoOpen>]
+module GridAuto =
+    let GridA = 7
+
+namespace AqFix.AutoMod
+
+module GridLib =
+    [<AutoOpen>]
+    module GridAuto =
+        let GridA = 8
+
+namespace AqFix.AutoAsm
+
+module GridAsm =
+    let GridD = 10
+
+namespace AqFix.AutoAsmMod
+
+module GridAsmLib =
+    let GridB = 9
+
+namespace AqFix.AutoAttrs
+
+module internal AssemblyAttrs =
+    [<assembly: AutoOpen(\"AqFix.AutoAsm\")>]
+    [<assembly: AutoOpen(\"AqFix.AutoAsmMod.GridAsmLib\")>]
+    do ()
+";
+
+/// Uses of [`AUTO_OPEN_SOURCE`]'s names: each probe's `open`, the written
+/// path, and whether it must commit against the ordinary build (the
+/// controls; the others are graded only where we commit).
+const AUTO_OPEN_PROBES: &[(&str, &str, bool)] = &[
+    ("AqFix.AutoNs", "GridA", true),
+    ("AqFix.AutoNs", "GridAuto.GridA", true),
+    ("AqFix.AutoMod.GridLib", "GridA", true),
+    ("AqFix.AutoMod", "GridLib.GridAuto.GridA", false),
+    ("", "GridB", false),
+    ("", "GridAsm.GridD", true),
+    ("", "GridAsmLib.GridB", false),
+];
 
 /// The namespace holding setup `k`'s fallback: a module `GridLib` of its own
 /// with a value `GridC`, which a [`Use::Fallback`] probe opens ahead of the
@@ -488,13 +547,12 @@ fn rendered_is(rendered: &str, k: usize, setup: &Setup, reading: Reading) -> boo
 /// `u`. [`agrees`] compares an entity or member by assembly and full name,
 /// which a module value `GridC` shares with a class `GridC` beside it — the
 /// very pair this grid orders — so the kind must agree too: an entity is a
-/// type FCS names (or constructs), or a module (one FCS reads as a module:
-/// without F# signature data a module is a class); a member is a value or
+/// type FCS names (or constructs), or a module; a member is a value or
 /// member.
 fn same_kind(env: &AssemblyEnv, res: Resolution, u: &NormalisedProjectUse) -> bool {
     match res {
         Resolution::Entity(h) => {
-            let module = env.is_authoritative_module(h);
+            let module = env.entity(h).kind == EntityKind::Module;
             if u.is_constructor {
                 !module
             } else {
@@ -615,46 +673,14 @@ enum Build {
     /// applies. Only certain-implies-exact is graded: what FCS then reads is
     /// not this grid's model.
     IlOnly,
+    /// The ordinary build with its signature resources renamed away
+    /// ([`container_precedence_unread_fixture`]): FCS still reads the F#
+    /// signature data, so FCS's answers are the ordinary build's, but the
+    /// projection cannot, and works from the IL alone. Only
+    /// certain-implies-exact is graded: what the IL cannot settle must
+    /// decline.
+    Unread,
 }
-
-/// Pre-existing wrong commits against the fixture built without F# signature
-/// data, each pinned against the issue tracking it, so a fix fails the grid
-/// until its pin goes. Keyed by probe label (`S{k} … / {use}`).
-const IL_ONLY_KNOWN_WRONG: &[(&str, &str)] = &[
-    ("S1 Module [Val] / Bare", "#505"),
-    ("S4 Module [Exn] / Bare", "#505"),
-    ("S5 Module [SelfUnion] / Qual", "#505"),
-    ("S5 Module [SelfUnion] / OpenQual", "#505"),
-    ("S5 Module [SelfUnion] / Fallback", "#505"),
-    ("S6 Module [Record] / Fallback", "#505"),
-    ("S11 Module [Union(Unary), Record] / Fallback", "#505"),
-    ("S15 Module [Val, Class] / Qual", "#505"),
-    ("S15 Module [Val, Class] / OpenQual", "#505"),
-    ("S15 Module [Val, Class] / Fallback", "#505"),
-    ("S15 Module [Val, Class] / Tail", "#505"),
-    ("S15 Module [Val, Class] / Bare", "#505"),
-    ("S16 Module [Class, Val] / Qual", "#505"),
-    ("S16 Module [Class, Val] / OpenQual", "#505"),
-    ("S16 Module [Class, Val] / Fallback", "#505"),
-    ("S16 Module [Class, Val] / Tail", "#505"),
-    ("S16 Module [Class, Val] / Bare", "#505"),
-    ("S17 Module [Val, SubModule] / Qual", "#505"),
-    ("S17 Module [Val, SubModule] / OpenQual", "#505"),
-    ("S17 Module [Val, SubModule] / Tail", "#505"),
-    ("S17 Module [Val, SubModule] / Bare", "#505"),
-    ("S17 Module [Val, SubModule] / Fallback", "#505"),
-    ("S18 Module [Val, Union(Nullary)] / Bare", "#505"),
-    ("S19 Module [Union(Unary), Val] / Bare", "#505"),
-    ("S30 Module [Union(Rqa), Record] / Fallback", "#505"),
-    (
-        "S36 Module [Union(PrivateRepr), Union(Nullary), Record] / Fallback",
-        "#505",
-    ),
-    (
-        "S37 Module [Union(Private), Union(Nullary), Record] / Fallback",
-        "#505",
-    ),
-];
 
 /// Every use agrees with FCS wherever we commit, every control commits, and
 /// FCS's in-container readings are the ones the precedence order predicts.
@@ -670,24 +696,185 @@ fn every_container_member_order_agrees_with_fcs_without_interface_data() {
     grade(Build::IlOnly);
 }
 
+/// The same uses against a fixture whose F# signature data FCS reads and the
+/// projection cannot agree with FCS wherever we commit.
+#[test]
+fn every_container_member_order_agrees_with_fcs_with_unread_interface_data() {
+    grade(Build::Unread);
+}
+
+/// The build of the fixture the projection reads, and the one FCS reads.
+fn fixtures(build: Build) -> (&'static Path, &'static Path) {
+    match build {
+        Build::Pickled => (
+            ensure_container_precedence_fixture_built(),
+            ensure_container_precedence_fixture_built(),
+        ),
+        Build::IlOnly => (
+            ensure_container_precedence_il_only_fixture_built(),
+            ensure_container_precedence_il_only_fixture_built(),
+        ),
+        Build::Unread => {
+            let ours = container_precedence_unread_fixture();
+            // The premise: the projection reads the fixture's F# kinds from
+            // the IL, without its signature data.
+            let env = env_of(&[ours]);
+            let &[module] = env
+                .public_entities_named(&["AqFix".to_string(), "S1".to_string()], "GridLib")
+                .as_slice()
+            else {
+                panic!("no single S1 module in the unread fixture");
+            };
+            assert!(
+                env.entity(module).kind == EntityKind::Module
+                    && !env.has_authoritative_fsharp_signature(module),
+                "the unread fixture's signature data was read"
+            );
+            (ours, ensure_container_precedence_fixture_built())
+        }
+    }
+}
+
+/// Every use of a name an `[<AutoOpen>]` attribute brings into scope agrees
+/// with FCS wherever we commit, for each build of the fixture; with the
+/// signature data, every one FCS resolves commits.
+#[test]
+fn every_auto_open_route_agrees_with_fcs() {
+    let fsharp_core = ensure_fsharp_core_dll();
+    let mut failures = Vec::new();
+    let mut entries = Vec::new();
+    for build in [Build::Pickled, Build::IlOnly, Build::Unread] {
+        let (ours, theirs) = fixtures(build);
+        let env = env_of(&[fsharp_core.as_path(), ours]);
+        let mut rel = Vec::new();
+        let mut spans = Vec::new();
+        for (i, (open, written, _)) in AUTO_OPEN_PROBES.iter().enumerate() {
+            let mut src = format!("module AqAutoProbe{i}\n\n");
+            if !open.is_empty() {
+                src.push_str(&format!("open {open}\n\n"));
+            }
+            src.push_str("let probe = ");
+            let start = src.len();
+            src.push_str(written);
+            let end = src.len();
+            src.push('\n');
+            spans.push(TextRange::new(
+                TextSize::from(u32::try_from(start).unwrap()),
+                TextSize::from(u32::try_from(end).unwrap()),
+            ));
+            rel.push((format!("AqAutoProbe{i}.fs"), src));
+        }
+        let rel: Vec<(&str, &str)> = rel.iter().map(|(p, s)| (p.as_str(), s.as_str())).collect();
+        let (root, written) = temp_fs_tree("container_precedence_auto_open", &rel);
+        let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
+        let json = invoke_fcs_dump_project_with_refs(&paths, &[theirs]);
+        let fcs = parse_fcs_uses_project(&json, &written);
+        let _ = std::fs::remove_dir_all(&root);
+        let file_paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
+        let proj = resolve_project_files(&project(&rel), &env);
+        let build_name = match build {
+            Build::Pickled => "pickled",
+            Build::IlOnly => "il-only",
+            Build::Unread => "unread",
+        };
+        for (idx, ((open, written, control), &span)) in
+            AUTO_OPEN_PROBES.iter().zip(&spans).enumerate()
+        {
+            let label = format!("{build_name} open [{open}] {written}");
+            let fu: &FileUses = fcs
+                .iter()
+                .find(|f| f.path.file_name() == file_paths[idx].file_name())
+                .unwrap_or_else(|| panic!("no FCS uses for {label}"));
+            let theirs = fcs_at(fu, span);
+            let mut verdict = "decline";
+            for range in segment_runs(rel[idx].1, span) {
+                let Some(res) = proj
+                    .file(idx)
+                    .resolution_at(range)
+                    .filter(|r| !matches!(r, Resolution::Deferred(_) | Resolution::Unresolved))
+                else {
+                    continue;
+                };
+                let whole = range.end() == span.end();
+                let at = fcs_at(fu, range).or(if whole { theirs } else { None });
+                match at {
+                    Some(u)
+                        if same_kind(&env, res, u)
+                            && agrees(&env, &proj, &file_paths, idx, res, u) =>
+                    {
+                        if whole && verdict != "WRONG" {
+                            verdict = "commit";
+                        }
+                    }
+                    None if !whole => {}
+                    _ => {
+                        verdict = "WRONG";
+                        failures.push(format!(
+                            "  {label} [WRONG] at {range:?}\n    FCS:  {}\n    ours: {res:?}\n    errors: {:?}",
+                            render_fcs(at),
+                            fu.errors
+                        ));
+                    }
+                }
+            }
+            if build == Build::Pickled && *control && verdict == "decline" {
+                failures.push(format!(
+                    "  {label} [MUST COMMIT]\n    FCS:  {}\n    ours: {:?}",
+                    render_fcs(theirs),
+                    proj.file(idx).decline_site(span)
+                ));
+            }
+            let clean = if fu.errors.is_empty() {
+                "clean"
+            } else {
+                "erroring"
+            };
+            entries.push(format!(
+                "{label} | fcs {} ({clean}) | ours {verdict}",
+                render_fcs(theirs)
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        for e in &entries {
+            eprintln!("use: {e}");
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} disagreements with FCS:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    let manifest = Manifest::from_entries(entries).expect("manifest entries");
+    check_manifest(
+        "assembly_container_auto_open",
+        &manifest,
+        &regenerate("assembly_container_precedence_grid::every_auto_open_route_agrees_with_fcs"),
+    );
+}
+
 fn grade(build: Build) {
     let setups = setups();
     let probes = probes(&setups);
     let fsharp_core = ensure_fsharp_core_dll();
-    let (fixture, manifest_name, test_name) = match build {
+    let (manifest_name, test_name) = match build {
         Build::Pickled => (
-            ensure_container_precedence_fixture_built(),
             "assembly_container_precedence_grid",
             "every_container_member_order_agrees_with_fcs",
         ),
         Build::IlOnly => (
-            ensure_container_precedence_il_only_fixture_built(),
             "assembly_container_precedence_grid_il_only",
             "every_container_member_order_agrees_with_fcs_without_interface_data",
         ),
+        Build::Unread => (
+            "assembly_container_precedence_grid_unread",
+            "every_container_member_order_agrees_with_fcs_with_unread_interface_data",
+        ),
     };
+    let (ours, theirs) = fixtures(build);
     let modelled = build == Build::Pickled;
-    let env = env_of(&[fsharp_core.as_path(), fixture]);
+    let env = env_of(&[fsharp_core.as_path(), ours]);
 
     let rel: Vec<(&str, &str)> = probes
         .iter()
@@ -695,7 +882,7 @@ fn grade(build: Build) {
         .collect();
     let (root, written) = temp_fs_tree("container_precedence_grid", &rel);
     let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
-    let json = invoke_fcs_dump_project_with_refs(&paths, &[fixture]);
+    let json = invoke_fcs_dump_project_with_refs(&paths, &[theirs]);
     let fcs = parse_fcs_uses_project(&json, &written);
     let _ = std::fs::remove_dir_all(&root);
     let file_paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
@@ -745,13 +932,6 @@ fn grade(build: Build) {
             }
         }
 
-        let known = match build {
-            Build::IlOnly => IL_ONLY_KNOWN_WRONG
-                .iter()
-                .find(|(l, _)| *l == label)
-                .map(|(_, issue)| *issue),
-            Build::Pickled => None,
-        };
         let mut verdict = "decline";
         for range in segment_runs(&probe.src, probe.span) {
             let Some(res) = proj
@@ -797,7 +977,6 @@ fn grade(build: Build) {
                         verdict = "entity on error";
                     }
                 }
-                _ if known.is_some() => verdict = "WRONG",
                 _ => {
                     verdict = "WRONG";
                     failures.push(format!(
@@ -811,16 +990,6 @@ fn grade(build: Build) {
         if verdict == "commit" {
             commits += 1;
         }
-        let verdict = match known {
-            Some(issue) if verdict == "WRONG" => format!("WRONG ({issue})"),
-            Some(issue) => {
-                failures.push(format!(
-                    "  {label} [NOW AGREES]: {issue} may be fixed; remove its pin"
-                ));
-                verdict.to_string()
-            }
-            None => verdict.to_string(),
-        };
         if modelled && verdict == "decline" && control(setup, probe.use_) {
             failures.push(format!(
                 "  {label} [MUST COMMIT]\n    FCS:  {rendered}\n    ours: {:?}",

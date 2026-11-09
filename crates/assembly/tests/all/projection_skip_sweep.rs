@@ -724,6 +724,114 @@ fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
     );
 }
 
+/// How FCS will read each F#-built assembly under `BORZOI_DLL_SWEEP_ROOT`, and
+/// how the projection does: through its signature data, which the projection
+/// reads too (`pickle`); through signature data the projection cannot read, so
+/// its F# kinds are fsc's IL markers (`heuristic`); or, with no
+/// `FSharpInterfaceDataVersionAttribute` (`--nointerfacedata`,
+/// `--standalone`), through IL, as FCS reads a C# assembly (`il`). An assembly
+/// counts as F#-built when it carries the marker, an F# resource, or a
+/// `CompilationMappingAttribute`
+/// ([`DocIdDialect::FSharp`](borzoi_assembly::doc_id::DocIdDialect)). Asserts nothing
+/// beyond having read every F# assembly: it measures what the `il` and
+/// `heuristic` readings cost. Prints usage and returns green when the variable
+/// is unset.
+#[test]
+#[ignore = "needs a populated local package cache; run explicitly"]
+fn fsharp_signature_reading_census() {
+    use borzoi_assembly::doc_id::DocIdDialect;
+
+    let Some(roots) = std::env::var_os("BORZOI_DLL_SWEEP_ROOT") else {
+        eprintln!("set BORZOI_DLL_SWEEP_ROOT to a package-cache root to run this census");
+        return;
+    };
+    let mut found = Found::default();
+    let mut visited = BTreeSet::new();
+    for root in std::env::split_paths(&roots).filter(|p| p.as_os_str() != "") {
+        collect_assemblies(&root, &mut found, &mut visited);
+    }
+    let files: Vec<PathBuf> = found.assemblies.into_values().collect();
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum Reading {
+        NotFSharp,
+        Pickle,
+        Heuristic,
+        Il,
+    }
+    fn probe(bytes: &[u8]) -> Result<Reading, String> {
+        let Ok(asm) = Ecma335Assembly::parse(bytes) else {
+            return Ok(Reading::NotFSharp);
+        };
+        if asm.doc_id_dialect().map_err(|e| e.to_string())? != DocIdDialect::FSharp {
+            return Ok(Reading::NotFSharp);
+        }
+        let (_, skips) = asm
+            .enumerate_type_defs_with_skips()
+            .map_err(|e| e.to_string())?;
+        Ok(if !skips.fsharp_signature_non_authoritative {
+            Reading::Pickle
+        } else if skips.fsharp_abbreviations_unknowable {
+            // The marker is present: FCS reads the signature data.
+            Reading::Heuristic
+        } else {
+            Reading::Il
+        })
+    }
+
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let chunks: Vec<&[PathBuf]> = files.chunks(files.len().div_ceil(threads).max(1)).collect();
+    let probes: Vec<(PathBuf, Result<Reading, String>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|path| {
+                            let probed = match std::fs::read(path) {
+                                Err(e) => Err(format!("read: {e}")),
+                                Ok(bytes) => catch_unwind_silent(|| probe(&bytes))
+                                    .unwrap_or_else(|_| Err("panicked".to_string())),
+                            };
+                            (path.clone(), probed)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect()
+    });
+
+    let mut counts: BTreeMap<Reading, usize> = BTreeMap::new();
+    let mut failures = Vec::new();
+    for (path, probed) in &probes {
+        match probed {
+            Ok(reading) => {
+                *counts.entry(*reading).or_default() += 1;
+                if matches!(reading, Reading::Heuristic | Reading::Il) {
+                    eprintln!("[reading-census] {reading:?}: {}", path.display());
+                }
+            }
+            Err(why) => failures.push(format!("  {why}: {}", path.display())),
+        }
+    }
+    eprintln!(
+        "[reading-census] {} assemblies | {counts:?} | {} unread",
+        probes.len(),
+        failures.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} F#-built assemblies could not be read through:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 /// The gate's own moving parts, pinned hermetically: a sweep that can only run
 /// against a package cache is a sweep whose *failure* path never executes.
 #[test]

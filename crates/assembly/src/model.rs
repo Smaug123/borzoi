@@ -770,23 +770,25 @@ pub struct AssemblyProjectionSkips {
     /// members exist to miss) and for any F# assembly whose pickle decoded.
     pub fsharp_extension_index_unknowable: bool,
     /// `true` when the host F# signature pickle was **not authoritative** for this
-    /// image — absent, undecodable, or a `--standalone` build that embeds foreign
-    /// dependency CCUs. When so, the pickle overlay never ran, and the projected
-    /// F# facts that depend on it — most visibly a module's kind
-    /// (`EntityKind::Module`, otherwise set from the IL `CompilationMappingAttribute`)
-    /// and its value/function member split — are IL heuristics, *not* what FCS
-    /// sees: FCS imports such an assembly through IL, where a module reads as a
-    /// plain type and its `let`s as ordinary members (verified against real
-    /// `--standalone` output). A semantic-token classifier must therefore not trust
-    /// `EntityKind::Module` here.
+    /// image — absent, undecodable, partially joined, or beside foreign
+    /// dependency CCUs. The pickle overlay then never ran, and the projection
+    /// reads the image one of two ways, by what FCS reads:
+    ///
+    /// - without the assembly-level `FSharpInterfaceDataVersionAttribute` (C#,
+    ///   the BCL, or F# built with `--nointerfacedata` or `--standalone`), FCS
+    ///   imports the image through IL and honours none of fsc's IL markers, so
+    ///   the projection reads the IL alone: no entity has an F# kind, and a
+    ///   member's name is its IL name. That is FCS's view exactly.
+    /// - with the marker, FCS reads the signature data the projection could
+    ///   not, so the projection's F# facts — an entity's kind (from the IL
+    ///   `CompilationMappingAttribute`), a module's value/function member split
+    ///   — are heuristics for FCS's. A consumer must not act on them.
     ///
     /// This is plain `!authoritative` — deliberately *not* gated on the assembly
     /// being *detected* as F# (unlike [`Self::fsharp_extension_index_unknowable`]
-    /// and [`Self::fsharp_abbreviations_unknowable`]). A `--standalone` image can
-    /// lose its assembly-level `FSharpInterfaceDataVersionAttribute` while keeping
-    /// per-type `CompilationMappingAttribute` module markers, so an F#-detection
-    /// gate misses it; keying only on pickle authority catches it. Harmless for a
-    /// C#/BCL image, which is non-authoritative but declares no modules to gate.
+    /// and [`Self::fsharp_abbreviations_unknowable`]): a C#/BCL image is
+    /// non-authoritative too, and so is an F# image FCS reads through IL, which
+    /// the projection reads as it reads a C# one.
     pub fsharp_signature_non_authoritative: bool,
 }
 

@@ -70,6 +70,11 @@ pub struct Ecma335Assembly {
     image: Image,
     /// Pre-projected so [`EcmaView::identity`] can hand back a borrow.
     identity: AssemblyIdentity,
+    /// Whether the image carries an `FSharpInterfaceDataVersionAttribute`, read
+    /// once at parse. Without it FCS imports the image through IL
+    /// ([`FSharpReading::Il`]), and every member projection must read the IL
+    /// alone, as FCS does.
+    fsharp_marker: bool,
 }
 
 impl Ecma335Assembly {
@@ -94,7 +99,16 @@ impl Ecma335Assembly {
                 });
             }
         };
-        Ok(Self { image, identity })
+        let mut asm = Self {
+            image,
+            identity,
+            fsharp_marker: false,
+        };
+        // An undecodable marker fails every enumeration anyway
+        // (`fsharp_resources`); here it reads as present, the reading that
+        // honours fsc's IL markers.
+        asm.fsharp_marker = !matches!(asm.fsharp_interface_data_version(), Ok(None));
+        Ok(asm)
     }
 
     /// The decoded image, mutably — the seam the modifier metamorphic probe
@@ -332,6 +346,13 @@ impl Ecma335Assembly {
         // flag instead, so projection suppresses the heuristic.
         let authoritative = matches!(&decoded, Some((_, Ok((_, join)))) if join.is_total())
             && !foreign_signature_data_present(&resources, &self.identity.name);
+        let reading = if !self.fsharp_marker {
+            FSharpReading::Il
+        } else if authoritative {
+            FSharpReading::Pickle
+        } else {
+            FSharpReading::Heuristic
+        };
 
         let mut out = Vec::new();
         let mut dropped_types = Vec::new();
@@ -349,7 +370,7 @@ impl Ecma335Assembly {
             match self.project_entity(
                 i as usize,
                 0,
-                !authoritative,
+                reading,
                 &mut dropped_types,
                 &td.name.namespace,
             ) {
@@ -718,6 +739,27 @@ impl Ecma335Assembly {
 // Type-tree projection (stage 7.3)
 // ============================================================================
 
+/// Where the projection reads an image's F# facts from, decided by what FCS
+/// itself reads (`TcImports.RegisterAndImportReferencedAssemblies`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FSharpReading {
+    /// No `FSharpInterfaceDataVersionAttribute` (a C# or BCL image, or F#
+    /// built with `--nointerfacedata` or `--standalone`): FCS imports the
+    /// image through IL (`PrepareToImportReferencedILAssembly`), honouring
+    /// none of fsc's IL markers — not a `CompilationMappingAttribute`'s kind,
+    /// nor a `CompilationSourceNameAttribute`'s name. So the projection reads
+    /// the IL alone, and that is exactly FCS's view.
+    Il,
+    /// The marker, and a host pickle the projection reads authoritatively:
+    /// FCS reads the signature data, and so does the projection.
+    Pickle,
+    /// The marker, but no authoritative host pickle (it is undecodable, its
+    /// join is partial, or foreign CCUs ride beside it): FCS reads signature
+    /// data the projection cannot, so the projection reads fsc's IL markers,
+    /// which are a heuristic for it.
+    Heuristic,
+}
+
 /// Maximum type-nesting depth [`Ecma335Assembly::project_entity`] will follow.
 /// Real assemblies nest only a handful of levels deep; a chain deeper than this
 /// is corrupt (or adversarial) metadata whose `nested`/`enclosing` linkage
@@ -779,7 +821,7 @@ impl Ecma335Assembly {
         &self,
         idx: usize,
         depth: usize,
-        il_heuristic: bool,
+        reading: FSharpReading,
         entity_skips: &mut Vec<SkippedProjectionItem>,
         // The **top-level** enclosing type's namespace, threaded down the nesting
         // recursion. A nested `TypeDef` carries an *empty* `TypeNamespace`, so a
@@ -801,7 +843,7 @@ impl Ecma335Assembly {
             Some(Ok(sig)) => Some(self.project_type_ref(sig)?),
             Some(Err(e)) => return Err(sig_error(e, "base type")),
         };
-        let kind = self.project_entity_kind(td, base_type.as_ref())?;
+        let kind = self.project_entity_kind(td, base_type.as_ref(), reading)?;
         let interfaces = td
             .implements
             .iter()
@@ -830,7 +872,12 @@ impl Ecma335Assembly {
             kept: members,
             skipped: skipped_members,
         } = if is_fsharp_kind(kind) {
-            self.project_fsharp_members(kind, td, type_context, il_heuristic)?
+            self.project_fsharp_members(
+                kind,
+                td,
+                type_context,
+                reading == FSharpReading::Heuristic,
+            )?
         } else {
             self.project_il_members(td, type_context)?
         };
@@ -851,7 +898,7 @@ impl Ecma335Assembly {
             match self.project_entity(
                 child as usize,
                 depth + 1,
-                il_heuristic,
+                reading,
                 entity_skips,
                 top_namespace,
             ) {
@@ -890,10 +937,10 @@ impl Ecma335Assembly {
         // this (an entity's `IsType::FSharpModuleWithSuffix` / `compiled_name`),
         // so we leave it `None` and let `apply_entity_overlay` fill it —
         // mirroring how the extension-member flag is left to its overlay. The
-        // IL-name attribute heuristic is the fallback when no host pickle
-        // applies (`il_heuristic`).
+        // IL-name attribute heuristic is the fallback when FCS reads a host
+        // pickle the projection cannot ([`FSharpReading::Heuristic`]).
         let name = strip_arity(&td.name.name).to_string();
-        let source_name = if il_heuristic {
+        let source_name = if reading == FSharpReading::Heuristic {
             self.detect_module_suffix_source_name(&td.attributes, kind, &name)?
         } else {
             None
@@ -1002,12 +1049,22 @@ impl Ecma335Assembly {
     /// delegate) overlaid with the F# kind from `CompilationMappingAttribute`
     /// (Module/Record/Union/Exception). The kind is foundational — the nested
     /// filter and the member projection both depend on it.
+    ///
+    /// An image FCS imports through IL ([`FSharpReading::Il`]) keeps the ECMA
+    /// discriminant: FCS's IL import gives every `TypeDef` an IL
+    /// representation whatever its attributes say, so an F# module, record,
+    /// union or exception there is the plain type its IL declares — one an
+    /// `open` cannot name, with no values, fields or cases of its own.
     fn project_entity_kind(
         &self,
         td: &TypeDef,
         base: Option<&TypeRef>,
+        reading: FSharpReading,
     ) -> Result<EntityKind, ImportError> {
         let il_kind = project_kind(td, base);
+        if reading == FSharpReading::Il {
+            return Ok(il_kind);
+        }
         // `SourceConstructFlags` low 5 bits are the kind tag (bit 5 is a
         // visibility hint we ignore).
         match self.decode_compilation_mapping_kind(td)? {
@@ -2627,7 +2684,9 @@ impl Ecma335Assembly {
             if accessors.contains(&(i as u32)) {
                 continue;
             }
-            if is_fsharp_witness_duplicate(&m.name, &real_method_names) {
+            // A witness twin is pure codegen the pickle never names; FCS's IL
+            // import, which reads no pickle, lists it like any other method.
+            if self.fsharp_marker && is_fsharp_witness_duplicate(&m.name, &real_method_names) {
                 continue;
             }
             out.push_or_skip(
@@ -2807,7 +2866,14 @@ impl Ecma335Assembly {
             experimental: self.detect_experimental(&m.attributes)?,
             sets_required_members: self.has_sets_required_members(&m.attributes)?,
             compiler_feature_required,
-            source_name: self.detect_compilation_source_name(&m.attributes)?,
+            // fsc's record of a `[<CompiledName>]` rename. FCS's IL import
+            // names a method by its IL name, so without the marker the
+            // attribute names nothing FCS can see.
+            source_name: if self.fsharp_marker {
+                self.detect_compilation_source_name(&m.attributes)?
+            } else {
+                None
+            },
             custom_attrs: Vec::new(),
             metadata_token: m.token,
             implements,
@@ -2985,12 +3051,14 @@ impl Ecma335Assembly {
         // a .NET optional is the `Optional` flag and/or a `Constant` default
         // value (a C# `x = <value>`; the flag alone is common in COM/VB
         // metadata). The two are distinct calling conventions, so keep them
-        // apart, carrying the decoded default value for the .NET form.
-        let default = if self.has_attribute(
-            &p.attributes,
-            "Microsoft.FSharp.Core",
-            "OptionalArgumentAttribute",
-        )? {
+        // apart, carrying the decoded default value for the .NET form. FCS's IL
+        // import ([`FSharpReading::Il`]) reads only the .NET form.
+        let default = if self.fsharp_marker
+            && self.has_attribute(
+                &p.attributes,
+                "Microsoft.FSharp.Core",
+                "OptionalArgumentAttribute",
+            )? {
             ParamDefault::FSharpOptional
         } else if let Some(value) = &p.default_value {
             ParamDefault::Optional(Some(project_constant(value)))
@@ -4938,7 +5006,7 @@ mod tests {
     //! unit tests pin refuse-loud paths the fixture corpus cannot reach (no real
     //! compiler emits them), driven directly against synthetic input.
 
-    use super::Ecma335Assembly;
+    use super::{Ecma335Assembly, FSharpReading};
     use crate::ImportError;
     use crate::model::{
         Entity, FSharpConstraints, FsharpOverlayKind, Member, Nullability, ParamDefault, Parameter,
@@ -5119,13 +5187,14 @@ mod tests {
             .find(|&&TypeDefId(i)| view.image.type_defs[i as usize].name.name == "Values")
             .expect("the LiteralConsts.Values module");
 
-        // Force the non-authoritative path: this DLL *has* a good host pickle, so only a
-        // direct call reaches the heuristic the `--standalone` image would take.
+        // Force the heuristic path: this DLL *has* a good host pickle, so only a
+        // direct call reaches the heuristic that an image whose pickle FCS reads
+        // but the projection cannot would take.
         let entity = view
             .project_entity(
                 values as usize,
                 0,
-                true,
+                FSharpReading::Heuristic,
                 &mut Vec::new(),
                 &view.image.type_defs[values as usize].name.namespace,
             )
@@ -6094,13 +6163,25 @@ mod tests {
             .find(|&&TypeDefId(i)| {
                 !super::is_skipped_type(&view.image.type_defs[i as usize])
                     && view
-                        .project_entity(i as usize, 0, true, &mut Vec::new(), "")
+                        .project_entity(
+                            i as usize,
+                            0,
+                            FSharpReading::Heuristic,
+                            &mut Vec::new(),
+                            "",
+                        )
                         .is_ok()
             })
             .expect("a projectable, non-skipped top-level type");
         view.image.type_defs[top as usize].nested = vec![TypeDefId(top)];
         match view
-            .project_entity(top as usize, 0, true, &mut Vec::new(), "")
+            .project_entity(
+                top as usize,
+                0,
+                FSharpReading::Heuristic,
+                &mut Vec::new(),
+                "",
+            )
             .expect_err("a cyclic nested-type chain must be refused")
         {
             ImportError::CyclicTypeNesting { detail } => {

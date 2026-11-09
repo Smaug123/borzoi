@@ -526,6 +526,12 @@ impl<'a> Resolver<'a> {
                 return Self::exception_reading(segments, k - base, type_handle);
             }
         }
+        // An entity whose F# kind is a heuristic is read by FCS through rules
+        // for that kind over contents we cannot vouch for: the path is its
+        // reading, and we cannot say which.
+        if self.assemblies.has_heuristic_fsharp_kind(type_handle) {
+            return Self::owned_deferral(segments);
+        }
 
         // A type-abbreviation marker: the name binds, and FCS chases the
         // abbreviation to its target (`S.Format` where `type S = System.String`
@@ -553,6 +559,9 @@ impl<'a> Resolver<'a> {
         } else {
             type_handle
         };
+        if self.assemblies.has_heuristic_fsharp_kind(walk_root) {
+            return Self::owned_deferral(segments);
+        }
         // True once the path roots (or descends) through a *resolved* abbreviation
         // alias. FCS then owns the alias reading, so an `Absent` member tail must
         // NOT cede the path to a lower reading: the tail may live on a non-member
@@ -649,10 +658,19 @@ impl<'a> Resolver<'a> {
                     }
                 }
             }
+            // Anything else is a type to FCS, whose lookup in it
+            // (`ResolveLongIdentInTypePrim`) searches its contents — members,
+            // inherited ones included — before its nested types: a member of
+            // the name hides a nested type of it.
+            let member_hides_nested = !self.assemblies.is_authoritative_module(parent)
+                && !matches!(
+                    self.assemblies.static_lookup(parent, &names[i]),
+                    StaticLookup::Absent
+                );
             if let Some(child) = self
                 .assemblies
                 .nested(parent, &names[i], 0)
-                .filter(|&h| self.assemblies.is_public(h))
+                .filter(|&h| !member_hides_nested && self.assemblies.is_public(h))
             {
                 // A nested abbreviation marker: resolve through its target (or
                 // shadow-defer if unresolvable), same as the rooting case above.
@@ -689,6 +707,12 @@ impl<'a> Resolver<'a> {
                 } else {
                     child
                 };
+                // As at the rooting: a heuristic F# kind's reading is unknown.
+                if self.assemblies.has_heuristic_fsharp_kind(child)
+                    || self.assemblies.has_heuristic_fsharp_kind(child_walk)
+                {
+                    return Self::owned_deferral(segments);
+                }
                 recs.push((src.text_range(), Resolution::Entity(child)));
                 parent = child_walk;
                 i += 1;
@@ -771,6 +795,17 @@ impl<'a> Resolver<'a> {
         // nothing: a tail it lacks, or a bare name that is not a value. FCS
         // reads the case there rather than going on elsewhere, so the path is
         // owned, but not by anything this reading names.
+        // A class whose constructors are all out of reach is FCS's reading,
+        // with an error, and names nothing we can commit to.
+        if let Some(last) = segments.last()
+            && recs.iter().any(|&(range, res)| {
+                range == last.text_range()
+                    && matches!(res, Resolution::Entity(h)
+                        if self.assemblies.terminal_constructor_inaccessible(h))
+            })
+        {
+            return Self::owned_deferral(segments);
+        }
         if rqa_case_fallback && (!owns_path || self.reading_stops_on_a_non_value(segments, &recs)) {
             return Self::owned_deferral(segments);
         }
