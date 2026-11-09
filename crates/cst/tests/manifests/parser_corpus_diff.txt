@@ -199,7 +199,7 @@ tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/members_basics.fs	range-divergent
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/QueryTrieTests.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/Scenarios.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/AlternateGenericTypeSyntax01.fs	both-reject outside-damage 4/4/6
+tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/AlternateGenericTypeSyntax01.fs	both-reject outside-damage 5/5/6
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/E_MissingArgumentForGetterProp01.fs	both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/E-SignatureAfterSource.fsi	range-divergent
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/E_AnonSignatureFile.fsi	range-divergent
@@ -373,7 +373,6 @@ tests/fsharp/core/large/mixed/LargeSequentialLet-500.fs	fcs-normaliser-unmodelle
 tests/fsharp/core/large/mixed/LargeSequentialLet-maxtested.fs	fcs-normaliser-unmodelled
 tests/fsharp/core/large/sequential/LargeSequential-500.fs	fcs-normaliser-unmodelled
 tests/fsharp/core/large/sequential/LargeSequential-maxtested.fs	fcs-error
-tests/fsharp/core/letrec/test.fsx	we-reject-fcs-accepts divergent 204/209/211
 tests/fsharp/core/libtest/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/load-script/loadfail1.fsx	both-reject exact 0/0/2
 tests/fsharp/core/longnames/test.fsx	range-divergent
@@ -381,22 +380,17 @@ tests/fsharp/core/math/numbers/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/math/numbersVS2008/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/measures/test.fsx	range-divergent
 tests/fsharp/core/members/absil.fs	both-reject divergent 0/0/1
-tests/fsharp/core/members/absil.fsi	both-reject divergent 15/15/17 beyond-fcs:531
-tests/fsharp/core/members/basics-hw/test.fsx	we-reject-fcs-accepts divergent 1773/1778/1781
+tests/fsharp/core/members/absil.fsi	both-reject divergent 15/15/17 beyond-fcs:532
+tests/fsharp/core/members/basics-hw/test.fsx	we-reject-fcs-accepts divergent 1776/1779/1781
 tests/fsharp/core/members/basics/test.fs	range-divergent
 tests/fsharp/core/members/console/console2.fs	both-reject divergent 5/5/7
-tests/fsharp/core/members/incremental-hw-mutrec/test.fsx	we-reject-fcs-accepts divergent 134/134/136
-tests/fsharp/core/members/incremental-hw/test.fsx	we-reject-fcs-accepts divergent 137/137/139
-tests/fsharp/core/members/incremental/test.fsx	we-reject-fcs-accepts divergent 133/133/135
 tests/fsharp/core/nested/test.fsx	range-divergent
-tests/fsharp/core/patterns/test.fsx	we-reject-fcs-accepts divergent 581/584/588
 tests/fsharp/core/printf-interpolated/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/printf/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/printing/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/quotes/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/recordResolution/test.fsx	we-reject-fcs-accepts divergent 34/40/42
 tests/fsharp/core/subtype/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/tlr/test.fsx	we-reject-fcs-accepts divergent 21/53/56
 tests/fsharp/core/topinit/generate.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/unicode/kanji-unicode-utf16.fs	non-utf8
 tests/fsharp/core/unicode/kanji-unicode-utf7-codepage-65000.fs	both-reject outside-damage 1/1/3
