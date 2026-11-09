@@ -38,11 +38,13 @@
 //!   a nested carrier; a static property), and a lookup keyed on one surface is
 //!   blind to the others. A fifth shape, a constructible class, exists for the
 //!   terminal position, which has no leaf to contribute.
-//! - [`Position`] — expression, pattern, or **terminal**. A pattern head is a
-//!   lookup in F#'s *constructor* namespace, where a module value cannot compete
-//!   at all; a terminal head asks for no leaf, so every candidate trivially
-//!   supplies the path and only the candidate order decides — which is why a
-//!   module must not own one (FCS wants a value there, and a module is not one).
+//! - [`Position`] — expression, pattern, **terminal**, or **qualified**
+//!   expression. A pattern head is a lookup in F#'s *constructor* namespace,
+//!   where a module value cannot compete at all; a terminal head asks for no
+//!   leaf, so every candidate trivially supplies the path and only the candidate
+//!   order decides — which is why a module must not own one (FCS wants a value
+//!   there, and a module is not one); a qualified head is reached through a
+//!   written namespace, where FCS searches types before modules.
 //! - `decoy` — whether an explicitly `open`ed namespace declares a same-named
 //!   type that does **not** hold the leaf. This is the tier interaction the
 //!   PawPrint sites hit: the decoy outranks the plant, so only a tail-sensitive
@@ -259,16 +261,30 @@ pub enum Position {
     /// shape where preferring a module is wrong, since FCS's expression-position
     /// lookup wants a value and a module is not one (codex review).
     Terminal,
+    /// `let probeResult = Companion.Enclosing.<head>.Tail` — the head reached
+    /// through a **written** namespace qualifier rather than the enclosing
+    /// namespace. FCS then resolves it in the namespace
+    /// (`ResolveExprLongIdentInModuleOrNamespace`), which searches types
+    /// *before* modules, where an unqualified head
+    /// (`ResolveExprLongIdentPrim`) searches modules first — so a type and a
+    /// module that both hold the leaf answer differently in the two positions.
+    QualifiedExpr,
 }
 
 impl Position {
-    pub const ALL: [Position; 3] = [Position::Expr, Position::Pattern, Position::Terminal];
+    pub const ALL: [Position; 4] = [
+        Position::Expr,
+        Position::Pattern,
+        Position::Terminal,
+        Position::QualifiedExpr,
+    ];
 
     fn tag(self) -> &'static str {
         match self {
             Position::Expr => "E",
             Position::Pattern => "P",
             Position::Terminal => "T",
+            Position::QualifiedExpr => "Q",
         }
     }
 }
@@ -453,6 +469,7 @@ impl Plant {
     pub fn probe_path(&self) -> String {
         match self.position {
             Position::Terminal => format!("{PLANT_NS}.{}", self.name),
+            Position::QualifiedExpr => format!("{PLANT_NS}.{}.{TAIL}", self.name),
             _ => format!("{}.{TAIL}", self.name),
         }
     }
@@ -466,7 +483,7 @@ impl Plant {
         };
         let path = self.probe_path();
         let body = match self.position {
-            Position::Expr | Position::Terminal => {
+            Position::Expr | Position::Terminal | Position::QualifiedExpr => {
                 format!("module Probe =\n    let probeResult = {path}\n")
             }
             Position::Pattern => {
@@ -495,6 +512,10 @@ impl Plant {
         // *last* rather than first.
         match self.position {
             Position::Terminal => (at + path.len() - self.name.len(), at + path.len()),
+            Position::QualifiedExpr => {
+                let head = at + PLANT_NS.len() + 1;
+                (head, head + self.name.len())
+            }
             _ => (at, at + self.name.len()),
         }
     }
