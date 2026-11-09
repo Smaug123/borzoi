@@ -15,10 +15,14 @@
 //! is paired with ours by its metadata identity — namespace and row names —
 //! and must key exactly as Roslyn keys it, in [`DocIdDialect::Metadata`]; the
 //! projection must drop none of them, and Roslyn must import every one.
+//! Roslyn's importer throws on some malformed nestings; such a world gives no
+//! ID to grade against, so it is counted apart, and most worlds must be
+//! graded.
 //!
 //! fsc's side of the rule is graded against fsc's own doc file by
 //! `borzoi-assembly`'s `doc_id_fsharp_diff` (the `DocIdsFs` fixture).
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -145,8 +149,11 @@ fn ours(dll: &Path) -> (BTreeMap<String, String>, usize) {
     (out, skips.dropped_types.len())
 }
 
-/// Emit `rows`, and require our ID of each to be Roslyn's; Roslyn's IDs.
-fn run(rows: &[Row]) -> BTreeMap<String, String> {
+/// Emit `rows`, and require our ID of each to be Roslyn's; Roslyn's IDs, or
+/// `None` when Roslyn's importer throws on the assembly (some malformed
+/// nestings), which leaves no ID to grade ours against. Our projection must
+/// read every row either way.
+fn run(rows: &[Row]) -> Option<BTreeMap<String, String>> {
     let dir = TempDir::new().unwrap();
     let dll = dir.path().join("TypeIds.dll");
     let lists = parameters(rows);
@@ -176,10 +183,15 @@ fn run(rows: &[Row]) -> BTreeMap<String, String> {
         "refs": [],
         "types": types,
     }));
-    let mut roslyn = oracle()
+    let roslyn = oracle()
         .lock()
         .unwrap()
         .type_ids(std::slice::from_ref(&dll), &dll);
+    let (ours, dropped) = ours(&dll);
+    assert_eq!(dropped, 0, "{rows:#?}: the projection dropped a row");
+    let Ok(mut roslyn) = roslyn else {
+        return None;
+    };
     // Roslyn imports the module's `<Module>` row as a type; the projection
     // does not, and no documentation is keyed by it.
     assert_eq!(
@@ -187,15 +199,13 @@ fn run(rows: &[Row]) -> BTreeMap<String, String> {
         Some("T:<Module>"),
         "Roslyn imports `<Module>`"
     );
-    let (ours, dropped) = ours(&dll);
-    assert_eq!(dropped, 0, "{rows:#?}: the projection dropped a row");
     assert_eq!(
         roslyn.len(),
         rows.len(),
         "{rows:#?}: Roslyn imported {roslyn:#?}"
     );
     assert_eq!(ours, roslyn, "{rows:#?}");
-    roslyn
+    Some(roslyn)
 }
 
 fn check(cases: u32) {
@@ -207,12 +217,30 @@ fn check(cases: u32) {
         ..Config::default()
     };
     let mut runner = TestRunner::new(config);
+    let (graded, unimportable) = (Cell::new(0u32), Cell::new(0u32));
     if let Err(e) = runner.run(&world(), |rows| {
-        run(&rows);
+        let tally = if run(&rows).is_some() {
+            &graded
+        } else {
+            &unimportable
+        };
+        tally.set(tally.get() + 1);
         Ok(())
     }) {
         panic!("{e}");
     }
+    eprintln!(
+        "{} worlds graded, {} Roslyn could not import",
+        graded.get(),
+        unimportable.get()
+    );
+    // An importer that refused most worlds would leave the rule ungraded.
+    assert!(
+        graded.get() >= unimportable.get() * 4,
+        "only {} of {} worlds graded",
+        graded.get(),
+        graded.get() + unimportable.get()
+    );
 }
 
 #[test]
@@ -262,7 +290,7 @@ fn the_suffix_cases_key_as_roslyn_keys_them() {
         },
         row("Q`1", 1, Some(12)),
     ];
-    let roslyn = run(&rows);
+    let roslyn = run(&rows).expect("Roslyn imports these");
     let expected = [
         // The suffix counts the wrong number: kept, and the count appended.
         ("N|U`2", "T:N.U`2`1"),

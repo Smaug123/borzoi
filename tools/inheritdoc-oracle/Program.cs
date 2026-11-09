@@ -39,6 +39,7 @@
 //     `|`, then the `MetadataName` of each type from the outermost enclosing
 //     one down, joined by `/`.
 //     -> {"types":[{"path":"N|Outer`1/Inner","id":"T:N.Outer`1.Inner"}..]}
+//      | {"unimportable":why}   (Roslyn's importer threw while reading them)
 //
 //   {"op":"xpath","xml":s,"path":p}
 //     The selection `RewriteInheritdocElement` makes: `XPathEvaluate` of `p`
@@ -330,7 +331,17 @@ internal static class Program
                         }
                     }
                 }
-                Visit(assembly.GlobalNamespace);
+                try
+                {
+                    Visit(assembly.GlobalNamespace);
+                }
+                catch (Exception e)
+                {
+                    // Roslyn's importer throws on some malformed nestings
+                    // (`MatchesContainingTypeParameters` indexing past a short
+                    // parameter list): it has no ID to give for that assembly.
+                    return new JsonObject { ["unimportable"] = $"{e.GetType().Name}: {e.Message}" };
+                }
                 return new JsonObject { ["types"] = types };
             }
             case "compile":
