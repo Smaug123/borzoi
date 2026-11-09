@@ -283,6 +283,10 @@ pub(super) struct EarlierType {
     pub(super) access_root: Option<usize>,
 }
 
+/// Type declarations by simple name, each with its full path and generic
+/// arity.
+pub(super) type TypePlaces = HashMap<String, Vec<(Vec<String>, usize)>>;
+
 /// What a later file knows of one earlier type declaration's place and
 /// generic arity ([`ProjectItems::earlier_type_arities`]).
 #[derive(Debug, Clone)]
@@ -3233,7 +3237,7 @@ pub struct ResolvedFile {
     /// [`Self::unplaced_types`] whose place is known — a signature's types
     /// and exceptions — by name; each name's remaining unplaced declarations
     /// are of unknown place and arity.
-    pub(super) unplaced_type_places: HashMap<String, Vec<(Vec<String>, usize)>>,
+    pub(super) unplaced_type_places: TypePlaces,
     /// The file's syntactic whole-file module-simple-name pre-scan (see
     /// [`Resolver::own_module_simple_names`](super::state::Resolver)), carried
     /// into [`ProjectItems::project_module_simple_names`] by the Compile-order

@@ -770,6 +770,18 @@ impl DeclKinds {
     }
 }
 
+/// What the cross-file type-qualified case index reads a path as — the
+/// result of [`Resolver::cross_file_type_case`].
+pub(super) enum CrossFileCase {
+    /// An earlier file's case reads the path, at this tier.
+    Hit(CaseTier, ItemId),
+    /// An earlier file's case reads the path, but a namesake of its type may
+    /// be what FCS binds: decline, and try no lower tier.
+    Declined,
+    /// No earlier file's case reads the path.
+    Miss,
+}
+
 /// How a same-file module-qualified `Pal.Color.Red` classifies — the result of
 /// [`Resolver::classify_same_file_module_qualified_case`]. The `DeferStop`/`Miss`
 /// split is the soundness keystone (see that method): when the head binds same-file,

@@ -1798,12 +1798,7 @@ fn signature_slot(
 /// declaration's full path and generic arity where the module structure
 /// gives it ([`ResolvedFile::unplaced_type_places`]); an exception's arity
 /// is 0.
-fn signature_type_decls(
-    sig: &SigFile,
-) -> (
-    HashMap<String, usize>,
-    HashMap<String, Vec<(Vec<String>, usize)>>,
-) {
+fn signature_type_decls(sig: &SigFile) -> (HashMap<String, usize>, model::TypePlaces) {
     let mut counts: HashMap<String, usize> = HashMap::new();
     let type_names = sig
         .syntax()
@@ -1818,7 +1813,7 @@ fn signature_type_decls(
     for name in type_names.chain(exception_names) {
         *counts.entry(id_text(&name).to_string()).or_default() += 1;
     }
-    let mut places: HashMap<String, Vec<(Vec<String>, usize)>> = HashMap::new();
+    let mut places = model::TypePlaces::new();
     for fragment in sig.modules() {
         let container = match fragment.kind() {
             ModuleOrNamespaceKind::NamedModule => header_long_id_path(&fragment),
@@ -1844,7 +1839,7 @@ fn signature_type_decls(
 fn signature_type_places(
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
-    places: &mut HashMap<String, Vec<(Vec<String>, usize)>>,
+    places: &mut model::TypePlaces,
 ) {
     let mut place = |name: &SyntaxToken, arity: usize| {
         let name = id_text(name).to_string();

@@ -516,9 +516,14 @@ enum CrossRoute {
     /// `module A` declares all but the first; the using module declares the
     /// first and writes `A.CT`, which weighs only `A`'s types.
     QualifiedOverLocal,
+    /// `namespace NA` and then `namespace NB` each declare a `module Pal`,
+    /// `NA`'s with the first type only and `NB`'s with all of them; the
+    /// using module opens `NA` then `NB` and writes `Pal.CT`, which FCS
+    /// reads through `NB`, the later open, alone.
+    ShadowedModule,
 }
 
-const CROSS_ROUTES: [CrossRoute; 7] = [
+const CROSS_ROUTES: [CrossRoute; 8] = [
     CrossRoute::Opened,
     CrossRoute::Qualified,
     CrossRoute::Namespace,
@@ -526,6 +531,7 @@ const CROSS_ROUTES: [CrossRoute; 7] = [
     CrossRoute::NamespaceSplit,
     CrossRoute::Signature,
     CrossRoute::QualifiedOverLocal,
+    CrossRoute::ShadowedModule,
 ];
 
 /// The signature of [`declaration`]'s type.
@@ -595,6 +601,20 @@ fn render_cross(kind: Kind, arities: &[usize], route: CrossRoute) -> CrossProjec
                 a.push_str(&declaration("CT", kind, ar, ""));
             }
             (a, "", "", "    ", String::new())
+        }
+        CrossRoute::ShadowedModule => {
+            let module = |declared: &[usize]| -> String {
+                declared
+                    .iter()
+                    .map(|&ar| declaration("CT", kind, ar, "    "))
+                    .collect()
+            };
+            let a = format!(
+                "namespace NA\n\nmodule Pal =\n{}\nnamespace NB\n\nmodule Pal =\n{}",
+                module(&arities[..1]),
+                module(arities)
+            );
+            (a, "open NA\nopen NB\n", "Pal.", "", String::new())
         }
         CrossRoute::NamespaceSplit => {
             let mut a = String::new();
