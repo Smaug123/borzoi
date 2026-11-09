@@ -109,7 +109,7 @@ pub const NUGET_PACKAGES: &str = "NUGET_PACKAGES";
 
 /// The spellings of a config file NuGet looks for in a folder of the walk on a
 /// case-sensitive file system, in its order of preference.
-const WALK_FILE_NAMES: [&str; 3] = ["nuget.config", "NuGet.config", "NuGet.Config"];
+pub const WALK_FILE_NAMES: [&str; 3] = ["nuget.config", "NuGet.config", "NuGet.Config"];
 
 /// The name of the user config file, and of the walk's file on a
 /// case-insensitive file system.

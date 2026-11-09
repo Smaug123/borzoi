@@ -462,7 +462,7 @@ fn watched_files_registration_entry() -> Registration {
         watchers: vec![
             watcher("**/*.{fsproj,props,targets,fs,fsi,fsx}"),
             watcher(
-                "**/{global.json,project.assets.json,packages.lock.json,nuget.config,NuGet.Config}",
+                "**/{global.json,project.assets.json,packages.lock.json,nuget.config,NuGet.config,NuGet.Config}",
             ),
             // Referenced-assembly inputs: sibling rebuild / restore outputs,
             // and the C# sources the sidecar compiles.
@@ -2908,6 +2908,21 @@ mod tests {
         assert!(globs.iter().any(|g| g.contains("fsx")), "{globs:?}");
         assert!(globs.iter().any(|g| g.contains("global.json")), "{globs:?}");
         assert!(globs.iter().any(|g| g.contains("dll")), "{globs:?}");
+        // Every spelling of a config file NuGet's settings walk reads (which
+        // chooses the folder restore and versioned SDKs read packages from):
+        // a client matching case-sensitively reports only the spellings named.
+        for name in borzoi_nuget::settings::WALK_FILE_NAMES {
+            assert!(
+                globs.iter().any(|g| g.contains(&format!(",{name},"))
+                    || g.contains(&format!(",{name}}}"))),
+                "no watcher names {name}: {globs:?}"
+            );
+            assert_eq!(
+                classify_change(&url(&format!("file:///p/{name}")), FileChangeType::CHANGED),
+                ChangeClass::Structural,
+                "{name}"
+            );
+        }
     }
 
     // ---- semantic-tokens refresh ------------------------------------------
