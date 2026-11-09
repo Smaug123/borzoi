@@ -567,9 +567,21 @@ pub struct InferredFile {
     /// The records this file declares whose fields inference reads — read by
     /// [`PrecedingTypes::publish`].
     project_records: ProjectRecords,
+    /// See [`Self::deepest_expression_walk`].
+    deepest_expr_depth: usize,
 }
 
 impl InferredFile {
+    /// How deeply the walk nested expressions at its deepest: the most
+    /// expression levels it had open at once. The walk recurses once per
+    /// level, so this is what its stack grows with; the stack-bound test
+    /// (`tests/all/walk_stack_bound.rs`) reads it to know the walk reached
+    /// the depth it is measuring, since a walk that declines at the top of a
+    /// tall expression survives any stack.
+    pub fn deepest_expression_walk(&self) -> usize {
+        self.deepest_expr_depth
+    }
+
     /// The inferred type of the expression at `range`, if one was assigned.
     pub fn type_at(&self, range: TextRange) -> Option<&Ty> {
         self.types.get(&range)
@@ -1624,6 +1636,11 @@ struct Gen<'a> {
     opaque: Vec<(TyVid, Option<TextRange>)>,
     /// The undo log of the speculative solve in progress ([`Self::solve`]).
     trial: Option<TrialLog>,
+    /// How many expression levels the walk has open on its recursion now
+    /// ([`Self::infer_expr_inner`], [`Self::infer_callee`]), and the most there
+    /// have been ([`InferredFile::deepest_expression_walk`]).
+    expr_depth: usize,
+    deepest_expr_depth: usize,
 }
 
 /// What a speculative solve ([`Gen::solve`]) changed outside the table and
@@ -1725,6 +1742,8 @@ impl<'a> Gen<'a> {
             param_annotations: HashMap::new(),
             opaque: Vec::new(),
             trial: None,
+            expr_depth: 0,
+            deepest_expr_depth: 0,
         }
     }
 
@@ -3379,7 +3398,8 @@ impl<'a> Gen<'a> {
     /// will reject is not known while walking, so none of them emits. The walk
     /// itself still runs — its constraints and member wakes are true either way.
     fn infer_expr_inner(&mut self, e: &Expr, expected: Option<TyVid>) -> Option<TyVid> {
-        match expected {
+        self.enter_expression();
+        let result = match expected {
             None => self.infer_construct(e, None),
             Some(_) => {
                 let mark = self.emission_mark();
@@ -3387,7 +3407,16 @@ impl<'a> Gen<'a> {
                 self.discard_emissions_since(mark);
                 result
             }
-        }
+        };
+        self.expr_depth -= 1;
+        result
+    }
+
+    /// Count one more expression level open on the walk's recursion
+    /// ([`InferredFile::deepest_expression_walk`]); the caller closes it.
+    fn enter_expression(&mut self) {
+        self.expr_depth += 1;
+        self.deepest_expr_depth = self.deepest_expr_depth.max(self.expr_depth);
     }
 
     /// The per-construct generation rules (the body of [`Self::infer_expr`],
@@ -4539,6 +4568,14 @@ impl<'a> Gen<'a> {
     /// Any other callee shape (an applied `DotGet`, a lambda, a literal) is
     /// unmodelled ⇒ incomplete, and the whole application defers.
     fn infer_callee(&mut self, e: &Expr) -> Option<TyVid> {
+        self.enter_expression();
+        let result = self.infer_callee_spine(e);
+        self.expr_depth -= 1;
+        result
+    }
+
+    /// [`Self::infer_callee`] without the level count.
+    fn infer_callee_spine(&mut self, e: &Expr) -> Option<TyVid> {
         match e {
             Expr::Paren(p) => {
                 let Some(inner) = p.inner() else {
@@ -7379,6 +7416,7 @@ impl<'a> Gen<'a> {
             project_cases: std::mem::take(&mut self.project_cases),
             constructor_names: std::mem::take(&mut self.constructor_names),
             project_records: std::mem::take(&mut self.project_records),
+            deepest_expr_depth: self.deepest_expr_depth,
         }
     }
 }

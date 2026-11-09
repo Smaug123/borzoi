@@ -1,0 +1,327 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all walk_stack_bound::every_walk_fits_half_the_walk_stack
+anon_record (nested) Long	height 407, resolved at depth 405, inference nested 4
+anon_record (nested) TallestClean	height 407, resolved at depth 405, inference nested 4
+anon_record Long	height 10, resolved at depth 9, inference nested 4
+anon_record TallestClean	height 10, resolved at depth 9, inference nested 4
+app (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+app (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 620
+app Long	height 962 (stopped), resolved at depth 962, inference nested 4
+app TallestClean	height 961, resolved at depth 961, inference nested 957
+app_offside_args (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+app_offside_args (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 620
+app_offside_args Long	height 962 (stopped), resolved at depth 962, inference nested 4
+app_offside_args TallestClean	height 961, resolved at depth 961, inference nested 957
+array (nested) Long	height 407, resolved at depth 407, inference nested 4
+array (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+array Long	height 10, resolved at depth 9, inference nested 4
+array TallestClean	height 10, resolved at depth 9, inference nested 4
+attributes (nested) Long	height 406, resolved at depth 405, inference nested 4
+attributes (nested) TallestClean	height 406, resolved at depth 405, inference nested 4
+attributes Long	height 10, resolved at depth 9, inference nested 4
+attributes TallestClean	height 10, resolved at depth 9, inference nested 4
+ce_let_bang (nested) Long	height 461 (stopped), resolved at depth 461, inference nested 4
+ce_let_bang (nested) TallestClean	height 459, resolved at depth 459, inference nested 4
+ce_let_bang Long	height 261 (stopped), resolved at depth 261, inference nested 4
+ce_let_bang TallestClean	height 259, resolved at depth 259, inference nested 4
+ce_yield (nested) Long	height 409, resolved at depth 406, inference nested 4
+ce_yield (nested) TallestClean	height 409, resolved at depth 406, inference nested 4
+ce_yield Long	height 10, resolved at depth 9, inference nested 4
+ce_yield TallestClean	height 10, resolved at depth 9, inference nested 4
+do_chain (nested) Long	height 407, resolved at depth 406, inference nested 4
+do_chain (nested) TallestClean	height 407, resolved at depth 406, inference nested 4
+do_chain Long	height 10, resolved at depth 9, inference nested 4
+do_chain TallestClean	height 10, resolved at depth 9, inference nested 4
+dot_get (nested) Long	height 406, resolved at depth 406, inference nested 4
+dot_get (nested) TallestClean	height 406, resolved at depth 406, inference nested 4
+dot_get Long	height 10, resolved at depth 9, inference nested 4
+dot_get TallestClean	height 10, resolved at depth 9, inference nested 4
+dot_index (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+dot_index (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 4
+dot_index Long	height 962 (stopped), resolved at depth 962, inference nested 4
+dot_index TallestClean	height 961, resolved at depth 961, inference nested 4
+downcast (nested) Long	height 1024 (stopped), resolved at depth 1023, inference nested 4
+downcast (nested) TallestClean	height 1024, resolved at depth 1023, inference nested 4
+downcast Long	height 962 (stopped), resolved at depth 961, inference nested 4
+downcast TallestClean	height 961, resolved at depth 960, inference nested 4
+dynamic_get (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+dynamic_get (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 4
+dynamic_get Long	height 962 (stopped), resolved at depth 962, inference nested 4
+dynamic_get TallestClean	height 961, resolved at depth 961, inference nested 4
+elif (nested) Long	height 514 (stopped), resolved at depth 513, inference nested 4
+elif (nested) TallestClean	height 513, resolved at depth 513, inference nested 109
+elif Long	height 514 (stopped), resolved at depth 513, inference nested 4
+elif TallestClean	height 513, resolved at depth 513, inference nested 509
+function_arms (nested) Long	height 407, resolved at depth 405, inference nested 4
+function_arms (nested) TallestClean	height 407, resolved at depth 405, inference nested 4
+function_arms Long	height 10, resolved at depth 9, inference nested 4
+function_arms TallestClean	height 10, resolved at depth 9, inference nested 4
+function_params (nested) Long	height 406, resolved at depth 406, inference nested 4
+function_params (nested) TallestClean	height 406, resolved at depth 406, inference nested 4
+function_params Long	height 10, resolved at depth 9, inference nested 4
+function_params TallestClean	height 10, resolved at depth 9, inference nested 4
+generic_method_call (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+generic_method_call (nested) TallestClean	height 1023, resolved at depth 1023, inference nested 4
+generic_method_call Long	height 962 (stopped), resolved at depth 962, inference nested 4
+generic_method_call TallestClean	height 959, resolved at depth 959, inference nested 4
+high_precedence_brack_index (nested) Long	height 1024 (stopped), resolved at depth 1023, inference nested 4
+high_precedence_brack_index (nested) TallestClean	height 1024, resolved at depth 1023, inference nested 618
+high_precedence_brack_index Long	height 962 (stopped), resolved at depth 961, inference nested 4
+high_precedence_brack_index TallestClean	height 961, resolved at depth 960, inference nested 955
+high_precedence_paren_app (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+high_precedence_paren_app (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+high_precedence_paren_app Long	height 962 (stopped), resolved at depth 962, inference nested 4
+high_precedence_paren_app TallestClean	height 961, resolved at depth 961, inference nested 956
+if_then_stmts (nested) Long	height 407, resolved at depth 407, inference nested 4
+if_then_stmts (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+if_then_stmts Long	height 10, resolved at depth 9, inference nested 4
+if_then_stmts TallestClean	height 10, resolved at depth 9, inference nested 4
+interpolated_fills (nested) Long	height 406, resolved at depth 406, inference nested 4
+interpolated_fills (nested) TallestClean	height 406, resolved at depth 406, inference nested 4
+interpolated_fills Long	height 10, resolved at depth 9, inference nested 4
+interpolated_fills TallestClean	height 10, resolved at depth 9, inference nested 4
+lambda_chain (nested) Long	height 461 (stopped), resolved at depth 460, inference nested 4
+lambda_chain (nested) TallestClean	height 459, resolved at depth 459, inference nested 55
+lambda_chain Long	height 261 (stopped), resolved at depth 260, inference nested 4
+lambda_chain TallestClean	height 259, resolved at depth 259, inference nested 255
+lambda_params (nested) Long	height 406, resolved at depth 406, inference nested 4
+lambda_params (nested) TallestClean	height 406, resolved at depth 406, inference nested 4
+lambda_params Long	height 10, resolved at depth 9, inference nested 4
+lambda_params TallestClean	height 10, resolved at depth 9, inference nested 4
+let_chain (nested) Long	height 461 (stopped), resolved at depth 461, inference nested 4
+let_chain (nested) TallestClean	height 460, resolved at depth 460, inference nested 55
+let_chain Long	height 261 (stopped), resolved at depth 261, inference nested 4
+let_chain TallestClean	height 260, resolved at depth 260, inference nested 255
+list_inline (nested) Long	height 407, resolved at depth 407, inference nested 4
+list_inline (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+list_inline Long	height 10, resolved at depth 9, inference nested 4
+list_inline TallestClean	height 10, resolved at depth 9, inference nested 4
+list_lines (nested) Long	height 407, resolved at depth 407, inference nested 4
+list_lines (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+list_lines Long	height 10, resolved at depth 9, inference nested 4
+list_lines TallestClean	height 10, resolved at depth 9, inference nested 4
+match_arms (nested) Long	height 407, resolved at depth 406, inference nested 4
+match_arms (nested) TallestClean	height 407, resolved at depth 406, inference nested 4
+match_arms Long	height 10, resolved at depth 9, inference nested 4
+match_arms TallestClean	height 10, resolved at depth 9, inference nested 4
+measure_juxtaposed (nested) Long	height 408, resolved at depth 405, inference nested 4
+measure_juxtaposed (nested) TallestClean	height 408, resolved at depth 405, inference nested 4
+measure_juxtaposed Long	height 10, resolved at depth 9, inference nested 4
+measure_juxtaposed TallestClean	height 10, resolved at depth 9, inference nested 4
+measure_product (nested) Long	height 1024 (stopped), resolved at depth 405, inference nested 4
+measure_product (nested) TallestClean	height 1024, resolved at depth 405, inference nested 4
+measure_product Long	height 962 (stopped), resolved at depth 9, inference nested 4
+measure_product TallestClean	height 961, resolved at depth 9, inference nested 4
+members (nested) Long	height 409, resolved at depth 405, inference nested 4
+members (nested) TallestClean	height 409, resolved at depth 405, inference nested 4
+members Long	height 10, resolved at depth 9, inference nested 4
+members TallestClean	height 10, resolved at depth 9, inference nested 4
+method_call (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+method_call (nested) TallestClean	height 1023, resolved at depth 1023, inference nested 309
+method_call Long	height 962 (stopped), resolved at depth 962, inference nested 4
+method_call TallestClean	height 961, resolved at depth 961, inference nested 478
+module_long_ident Long	height 5, resolved at depth 5, inference nested 1
+module_long_ident TallestClean	height 5, resolved at depth 5, inference nested 1
+nested_modules Long	height 516 (stopped), resolved at depth 9, inference nested 4
+nested_modules TallestClean	height 514, resolved at depth 514, inference nested 4
+op_add (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_add (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_add Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_add TallestClean	height 960, resolved at depth 960, inference nested 955
+op_add_offside (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_add_offside (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_add_offside Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_add_offside TallestClean	height 960, resolved at depth 960, inference nested 955
+op_and (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_and (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_and Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_and TallestClean	height 960, resolved at depth 960, inference nested 955
+op_append (nested) Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_append (nested) TallestClean	height 516, resolved at depth 516, inference nested 111
+op_append Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_append TallestClean	height 516, resolved at depth 516, inference nested 511
+op_assign (nested) Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_assign (nested) TallestClean	height 516, resolved at depth 516, inference nested 111
+op_assign Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_assign TallestClean	height 516, resolved at depth 516, inference nested 511
+op_bitand (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_bitand (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_bitand Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_bitand TallestClean	height 960, resolved at depth 960, inference nested 955
+op_bitor (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_bitor (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_bitor Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_bitor TallestClean	height 960, resolved at depth 960, inference nested 955
+op_compose (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_compose (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_compose Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_compose TallestClean	height 960, resolved at depth 960, inference nested 955
+op_concat (nested) Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_concat (nested) TallestClean	height 516, resolved at depth 516, inference nested 111
+op_concat Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_concat TallestClean	height 516, resolved at depth 516, inference nested 511
+op_cons (nested) Long	height 515 (stopped), resolved at depth 515, inference nested 4
+op_cons (nested) TallestClean	height 514, resolved at depth 514, inference nested 4
+op_cons Long	height 515 (stopped), resolved at depth 515, inference nested 4
+op_cons TallestClean	height 514, resolved at depth 514, inference nested 4
+op_custom (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_custom (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_custom Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_custom TallestClean	height 960, resolved at depth 960, inference nested 955
+op_div (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_div (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_div Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_div TallestClean	height 960, resolved at depth 960, inference nested 955
+op_dollar (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_dollar (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_dollar Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_dollar TallestClean	height 960, resolved at depth 960, inference nested 955
+op_eq (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_eq (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_eq Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_eq TallestClean	height 960, resolved at depth 960, inference nested 955
+op_lt (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_lt (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_lt Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_lt TallestClean	height 960, resolved at depth 960, inference nested 955
+op_mod (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_mod (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_mod Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_mod TallestClean	height 960, resolved at depth 960, inference nested 955
+op_mul (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_mul (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_mul Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_mul TallestClean	height 960, resolved at depth 960, inference nested 955
+op_or (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_or (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_or Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_or TallestClean	height 960, resolved at depth 960, inference nested 955
+op_pipe (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_pipe (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_pipe Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_pipe TallestClean	height 960, resolved at depth 960, inference nested 955
+op_pipe_offside (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_pipe_offside (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_pipe_offside Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_pipe_offside TallestClean	height 960, resolved at depth 960, inference nested 955
+op_pow (nested) Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_pow (nested) TallestClean	height 516, resolved at depth 516, inference nested 111
+op_pow Long	height 517 (stopped), resolved at depth 517, inference nested 4
+op_pow TallestClean	height 516, resolved at depth 516, inference nested 511
+op_shl (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_shl (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_shl Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_shl TallestClean	height 960, resolved at depth 960, inference nested 955
+op_sub (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+op_sub (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 619
+op_sub Long	height 962 (stopped), resolved at depth 962, inference nested 4
+op_sub TallestClean	height 960, resolved at depth 960, inference nested 955
+open_long_ident (nested) Long	height 404, resolved at depth 9, inference nested 4
+open_long_ident (nested) TallestClean	height 404, resolved at depth 9, inference nested 4
+open_long_ident Long	height 10, resolved at depth 9, inference nested 4
+open_long_ident TallestClean	height 10, resolved at depth 9, inference nested 4
+pat_and (nested) Long	height 408, resolved at depth 408, inference nested 4
+pat_and (nested) TallestClean	height 408, resolved at depth 408, inference nested 4
+pat_and Long	height 10, resolved at depth 9, inference nested 4
+pat_and TallestClean	height 10, resolved at depth 9, inference nested 4
+pat_as (nested) Long	height 1024 (stopped), resolved at depth 1024, inference nested 4
+pat_as (nested) TallestClean	height 1024, resolved at depth 1024, inference nested 4
+pat_as Long	height 962 (stopped), resolved at depth 962, inference nested 4
+pat_as TallestClean	height 961, resolved at depth 961, inference nested 4
+pat_cons (nested) Long	height 519 (stopped), resolved at depth 519, inference nested 4
+pat_cons (nested) TallestClean	height 518, resolved at depth 518, inference nested 4
+pat_cons Long	height 519 (stopped), resolved at depth 519, inference nested 4
+pat_cons TallestClean	height 518, resolved at depth 518, inference nested 4
+pat_list (nested) Long	height 407, resolved at depth 407, inference nested 4
+pat_list (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+pat_list Long	height 10, resolved at depth 9, inference nested 4
+pat_list TallestClean	height 10, resolved at depth 9, inference nested 4
+pat_long_ident (nested) Long	height 408, resolved at depth 408, inference nested 4
+pat_long_ident (nested) TallestClean	height 408, resolved at depth 408, inference nested 4
+pat_long_ident Long	height 10, resolved at depth 9, inference nested 4
+pat_long_ident TallestClean	height 10, resolved at depth 9, inference nested 4
+pat_or (nested) Long	height 1024 (stopped), resolved at depth 406, inference nested 4
+pat_or (nested) TallestClean	height 1024, resolved at depth 406, inference nested 4
+pat_or Long	height 962 (stopped), resolved at depth 9, inference nested 4
+pat_or TallestClean	height 961, resolved at depth 9, inference nested 4
+pat_tuple (nested) Long	height 407, resolved at depth 407, inference nested 4
+pat_tuple (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+pat_tuple Long	height 10, resolved at depth 9, inference nested 4
+pat_tuple TallestClean	height 10, resolved at depth 9, inference nested 4
+record (nested) Long	height 407, resolved at depth 405, inference nested 4
+record (nested) TallestClean	height 407, resolved at depth 405, inference nested 4
+record Long	height 10, resolved at depth 9, inference nested 4
+record TallestClean	height 10, resolved at depth 9, inference nested 4
+seq_inline (nested) Long	height 407, resolved at depth 407, inference nested 4
+seq_inline (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+seq_inline Long	height 10, resolved at depth 9, inference nested 4
+seq_inline TallestClean	height 10, resolved at depth 9, inference nested 4
+seq_lines (nested) Long	height 407, resolved at depth 407, inference nested 4
+seq_lines (nested) TallestClean	height 407, resolved at depth 407, inference nested 4
+seq_lines Long	height 10, resolved at depth 9, inference nested 4
+seq_lines TallestClean	height 10, resolved at depth 9, inference nested 4
+sig_nested_modules Long	height 516 (stopped), resolved at depth 0, inference nested 0
+sig_nested_modules TallestClean	height 517, resolved at depth 0, inference nested 0
+sig_type_postfix_app Long	height 961 (stopped), resolved at depth 0, inference nested 0
+sig_type_postfix_app TallestClean	height 960, resolved at depth 0, inference nested 0
+sig_type_tuple Long	height 7, resolved at depth 0, inference nested 0
+sig_type_tuple TallestClean	height 7, resolved at depth 0, inference nested 0
+sig_vals Long	height 6, resolved at depth 0, inference nested 0
+sig_vals TallestClean	height 6, resolved at depth 0, inference nested 0
+struct_tuple (nested) Long	height 406, resolved at depth 406, inference nested 4
+struct_tuple (nested) TallestClean	height 406, resolved at depth 406, inference nested 4
+struct_tuple Long	height 10, resolved at depth 9, inference nested 4
+struct_tuple TallestClean	height 10, resolved at depth 9, inference nested 4
+top_lets (nested) Long	height 405, resolved at depth 405, inference nested 4
+top_lets (nested) TallestClean	height 405, resolved at depth 405, inference nested 4
+top_lets Long	height 10, resolved at depth 9, inference nested 4
+top_lets TallestClean	height 10, resolved at depth 9, inference nested 4
+try_with_arms (nested) Long	height 407, resolved at depth 406, inference nested 4
+try_with_arms (nested) TallestClean	height 407, resolved at depth 406, inference nested 4
+try_with_arms Long	height 10, resolved at depth 9, inference nested 4
+try_with_arms TallestClean	height 10, resolved at depth 9, inference nested 4
+tuple (nested) Long	height 406, resolved at depth 406, inference nested 4
+tuple (nested) TallestClean	height 406, resolved at depth 406, inference nested 4
+tuple Long	height 10, resolved at depth 9, inference nested 4
+tuple TallestClean	height 10, resolved at depth 9, inference nested 4
+type_constraints (nested) Long	height 409, resolved at depth 408, inference nested 4
+type_constraints (nested) TallestClean	height 409, resolved at depth 408, inference nested 4
+type_constraints Long	height 10, resolved at depth 9, inference nested 4
+type_constraints TallestClean	height 10, resolved at depth 9, inference nested 4
+type_fun (nested) Long	height 519 (stopped), resolved at depth 405, inference nested 4
+type_fun (nested) TallestClean	height 518, resolved at depth 405, inference nested 4
+type_fun Long	height 519 (stopped), resolved at depth 9, inference nested 4
+type_fun TallestClean	height 518, resolved at depth 9, inference nested 4
+type_generic_args (nested) Long	height 408, resolved at depth 405, inference nested 4
+type_generic_args (nested) TallestClean	height 408, resolved at depth 405, inference nested 4
+type_generic_args Long	height 10, resolved at depth 9, inference nested 4
+type_generic_args TallestClean	height 10, resolved at depth 9, inference nested 4
+type_long_ident (nested) Long	height 407, resolved at depth 405, inference nested 4
+type_long_ident (nested) TallestClean	height 407, resolved at depth 405, inference nested 4
+type_long_ident Long	height 10, resolved at depth 9, inference nested 4
+type_long_ident TallestClean	height 10, resolved at depth 9, inference nested 4
+type_postfix_app (nested) Long	height 1024 (stopped), resolved at depth 405, inference nested 4
+type_postfix_app (nested) TallestClean	height 1024, resolved at depth 405, inference nested 4
+type_postfix_app Long	height 961 (stopped), resolved at depth 9, inference nested 4
+type_postfix_app TallestClean	height 960, resolved at depth 9, inference nested 4
+type_tuple (nested) Long	height 408, resolved at depth 405, inference nested 4
+type_tuple (nested) TallestClean	height 408, resolved at depth 405, inference nested 4
+type_tuple Long	height 10, resolved at depth 9, inference nested 4
+type_tuple TallestClean	height 10, resolved at depth 9, inference nested 4
+underscore_dot_lambda (nested) Long	height 407, resolved at depth 405, inference nested 4
+underscore_dot_lambda (nested) TallestClean	height 407, resolved at depth 405, inference nested 4
+underscore_dot_lambda Long	height 10, resolved at depth 9, inference nested 4
+underscore_dot_lambda TallestClean	height 10, resolved at depth 9, inference nested 4
+union_cases (nested) Long	height 406, resolved at depth 406, inference nested 4
+union_cases (nested) TallestClean	height 406, resolved at depth 406, inference nested 4
+union_cases Long	height 10, resolved at depth 9, inference nested 4
+union_cases TallestClean	height 10, resolved at depth 9, inference nested 4
+upcast (nested) Long	height 1024 (stopped), resolved at depth 1023, inference nested 4
+upcast (nested) TallestClean	height 1024, resolved at depth 1023, inference nested 4
+upcast Long	height 962 (stopped), resolved at depth 961, inference nested 4
+upcast TallestClean	height 961, resolved at depth 960, inference nested 4
+use_chain (nested) Long	height 461 (stopped), resolved at depth 461, inference nested 4
+use_chain (nested) TallestClean	height 460, resolved at depth 460, inference nested 4
+use_chain Long	height 261 (stopped), resolved at depth 261, inference nested 4
+use_chain TallestClean	height 260, resolved at depth 260, inference nested 4

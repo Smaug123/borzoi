@@ -957,8 +957,9 @@ struct Parser<'src> {
 ///
 /// Calibration: the worst construct (nested `if`/`then`/`else`, the most stack
 /// per level) overflows an 8 MiB stack at roughly 2000–4000 levels in a debug
-/// build; the LSP runs the parser on its single 8 MiB main thread. 512 keeps
-/// the deepest reachable parse to well under a quarter of that budget (more in
+/// build; the LSP runs the parser on a 32 MiB thread
+/// (`borzoi::server::SERVER_STACK_BYTES`), and the tests on 8 MiB. 512 keeps
+/// the deepest reachable parse to well under a quarter of 8 MiB (more in
 /// release, where frames are smaller), while sitting far above any real source
 /// — anything past ~128 levels already exceeds `serde_json`'s default depth, so
 /// such files are absent from the FCS differential corpus entirely and this
@@ -980,8 +981,11 @@ const MAX_PARSE_DEPTH: u32 = 512;
 ///
 /// Calibration, all in a debug build: rowan drops a 4 000-node-deep tree on a
 /// 2 MiB stack (a Rust thread's default) and overflows by 8 000, but the
-/// tighter limit is `borzoi-sema`'s recursive walk, on the LSP's 8 MiB main
-/// thread: it resolves a 1 000-deep operator chain and overflows by 1 300. The
+/// tighter limit is `borzoi-sema`'s walks, which need about 8 MiB for a tree
+/// of this height (an operator chain under four hundred nested modules). The
+/// LSP answers requests on a thread of `borzoi_sema::WALK_STACK_BYTES`
+/// (32 MiB), and sema's `walk_stack_bound` test holds the walks to half of
+/// that over every repetition form of the grammar at this bound. The
 /// tallest tree in the pinned F# corpus that parses cleanly is 259 nodes deep;
 /// the tallest of all is 666, in a file the recursion guard already stops.
 pub const MAX_TREE_HEIGHT: usize = 1024;

@@ -197,6 +197,16 @@ This is a Cargo workspace with nine members:
   `resolve_corpus_diff` and the whole-project gate run the same check on
   every cell and file. A binding construct the walk does not know about
   starts as a row in that table, not a review finding.
+  Resolution and inference recurse once per level of the tree, so what
+  bounds their stack is the parser's `MAX_TREE_HEIGHT`: `WALK_STACK_BYTES`
+  is the stack they need for any tree it returns, the LSP's request thread
+  is spawned with it, and `tests/all/walk_stack_bound.rs` (and the LSP
+  crate's twin, over the whole request loop) holds every repetition form of
+  the grammar to half of it, each case in a child process. A change that
+  fattens a frame on a walk's recursion fails there, naming the shape. A walk
+  that declines at the top of a tree survives any stack, so how deep each
+  walk reached into each case is pinned in
+  `tests/manifests/walk_stack_bound.txt`.
 - `crates/lsp/` — `borzoi` (the package id is just `borzoi`, *not*
   `borzoi-lsp`; use `cargo test -p borzoi`). The LSP server (binary + library):
   diagnostics, project-assets resolution, the C# sidecar (run only for a host

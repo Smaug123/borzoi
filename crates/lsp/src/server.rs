@@ -565,6 +565,14 @@ impl Default for State {
     }
 }
 
+/// The stack the request loop ([`run`]) runs on, which `main` spawns its
+/// thread with: [`borzoi_sema::WALK_STACK_BYTES`], the stack resolution and
+/// inference need for any tree the parser returns. A platform's main thread
+/// defaults to a quarter of it or less (8 MiB on macOS and Linux, 1 MiB on
+/// Windows). `tests/all/walk_stack_bound.rs` holds the
+/// whole loop, every request that reads the tree included, to half of it.
+pub const SERVER_STACK_BYTES: usize = borzoi_sema::WALK_STACK_BYTES;
+
 /// The dispatch loop with the production SourceLink fetcher
 /// ([`default_source_fetcher`] — present under `sourcelink-fetch`, else `None`).
 /// See [`run_with_fetcher`] for the loop itself.

@@ -14,10 +14,10 @@
 //! continuations, the type / measure recursions, and the pattern atom / `::`
 //! climb — so each path is exercised here.
 //!
-//! Parses run on a thread sized like the LSP's 8 MiB main thread (see
-//! [`probe_lsp_stack`]): below the threshold the parser caps recursion and
-//! returns the one collapsed depth error, and reaching that cap is shown to be
-//! safe on the deployment-sized stack. A broken or missing guard fails these
+//! Parses run on an 8 MiB thread (see [`probe_lsp_stack`]): below the
+//! threshold the parser caps recursion and returns the one collapsed depth
+//! error, and reaching that cap is shown to be safe on a quarter of the stack
+//! the LSP parses on. A broken or missing guard fails these
 //! tests either by aborting (overflow, for the deep non-delimited recursions) or
 //! by parsing `BREACH`-deep with no error (the error-count assertion).
 //!
@@ -50,12 +50,13 @@ const BREACH: usize = 1024;
 /// legitimately (if unusually) nested code.
 const LEGAL: usize = 64;
 
-/// Run `parse` on a thread whose stack matches the LSP's main thread (8 MiB —
-/// `server.rs::run` processes messages there, no `thread::spawn`/tokio). The
-/// Rust test harness otherwise gives each test only ~2 MiB. This both keeps the
-/// parser off the small default test stack *and* validates directly that
-/// reaching the depth cap is safe on the real deployment stack: if `MAX_PARSE_DEPTH`
-/// were miscalibrated (too high for 8 MiB), these tests would abort here rather
+/// Run `parse` on an 8 MiB thread: a platform main thread's stack, and a
+/// quarter of the thread the LSP answers requests on
+/// (`borzoi::server::SERVER_STACK_BYTES`). The Rust test harness otherwise
+/// gives each test only ~2 MiB. This both keeps the parser off the small
+/// default test stack *and* validates directly that reaching the depth cap is
+/// safe with room to spare on the deployment stack: if `MAX_PARSE_DEPTH` were
+/// miscalibrated (too high for 8 MiB), these tests would abort here rather
 /// than return.
 fn probe_lsp_stack(src: String) -> Probe {
     std::thread::Builder::new()

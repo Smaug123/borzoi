@@ -212,6 +212,16 @@ pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Ur
 pub fn runtime_project_state_files(
     files: &[(&str, &str)],
 ) -> (borzoi::server::State, Vec<lsp_types::Uri>) {
+    let tmp = Box::leak(Box::new(tempfile::TempDir::new().unwrap()));
+    runtime_project_state_in(tmp.path(), files)
+}
+
+/// [`runtime_project_state_files`] laid out under `root`, which the caller
+/// owns and removes: for a test that builds many such projects.
+pub fn runtime_project_state_in(
+    root: &Path,
+    files: &[(&str, &str)],
+) -> (borzoi::server::State, Vec<lsp_types::Uri>) {
     use borzoi::sdk_discovery::SdkDiscoveryEnv;
     use borzoi::server::State;
     use borzoi::workspace::Workspace;
@@ -223,8 +233,6 @@ pub fn runtime_project_state_files(
         std::fs::write(path, content).unwrap();
     }
 
-    let tmp = Box::leak(Box::new(tempfile::TempDir::new().unwrap()));
-    let root = tmp.path();
     let dotnet_root = root.join("dotnet");
     let pack = dotnet_root
         .join("packs")

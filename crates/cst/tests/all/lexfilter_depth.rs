@@ -8,7 +8,7 @@
 //!
 //! These tests drive the lex-filter directly (no parser) on a deliberately
 //! small 1 MiB stack: pre-fix this recursion overflowed ~875 deep on 1 MiB
-//! (≈7000 on the LSP's real 8 MiB main thread); with the loop it is effectively
+//! (≈7000 on an 8 MiB one); with the loop it is effectively
 //! iterative, so even a tiny stack handles thousands of levels. Reaching the
 //! assertions at all is the proof — a regression to the recursive form would
 //! overflow and abort the test binary here.

@@ -86,3 +86,21 @@ pub use resolve::{
 // `TyVid` is re-exported because it appears in the public `Ty::Var` variant; it
 // is an inference-internal handle that never surfaces in `infer_file` output.
 pub use ty::{Ty, TyVid};
+
+/// The stack a thread needs to resolve and infer any tree `borzoi_cst`'s
+/// parser returns, with a margin of two: on the tallest, the walks use at most
+/// half of it.
+///
+/// Resolution and inference recurse once per level of the tree, and a stack
+/// overflow aborts the process, which `catch_unwind` cannot recover. The
+/// parser bounds the tree's height
+/// ([`MAX_TREE_HEIGHT`](borzoi_cst::parser::MAX_TREE_HEIGHT)), and so what the
+/// walks need: about 8 MiB in a debug build, whose frames are the largest, for
+/// an operator chain near the bound under four hundred nested modules. That is
+/// all of a platform's default main thread (8 MiB on macOS and Linux), and
+/// four times a spawned thread's, so a caller that may hand the walks
+/// arbitrary input runs them on a thread of this size, as the language
+/// server's request loop does.
+/// `tests/all/walk_stack_bound.rs` holds every repetition form of the grammar,
+/// alone and under nested modules, to half of it.
+pub const WALK_STACK_BYTES: usize = 32 << 20;
