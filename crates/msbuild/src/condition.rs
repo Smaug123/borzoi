@@ -176,6 +176,7 @@ fn evaluate_inner(
     let mut parser = Parser {
         tokens: &tokens,
         pos: 0,
+        depth: 0,
     };
     let Ok(expr) = parser.parse_or() else {
         return unsupported();
@@ -227,9 +228,10 @@ fn refs_outside_empty_comparison(expr: &BoolExpr, out: &mut Vec<String>) {
     match expr {
         BoolExpr::True | BoolExpr::False => {}
         BoolExpr::Not(inner) => refs_outside_empty_comparison(inner, out),
-        BoolExpr::And(lhs, rhs) | BoolExpr::Or(lhs, rhs) => {
-            refs_outside_empty_comparison(lhs, out);
-            refs_outside_empty_comparison(rhs, out);
+        BoolExpr::And(operands) | BoolExpr::Or(operands) => {
+            for operand in operands {
+                refs_outside_empty_comparison(operand, out);
+            }
         }
         BoolExpr::Exists(raw) | BoolExpr::HasTrailingSlash(raw) => {
             out.extend(super::properties::property_references(raw).map(str::to_string))
@@ -630,8 +632,14 @@ enum BoolExpr {
     True,
     False,
     Not(Box<BoolExpr>),
-    And(Box<BoolExpr>, Box<BoolExpr>),
-    Or(Box<BoolExpr>, Box<BoolExpr>),
+    /// A chain `a And b And …`, held flat: MSBuild's connectives are
+    /// left-associative and short-circuit left to right, so the chain's value
+    /// is its operands' in order. Flat, a chain of any length costs no
+    /// recursion to parse, evaluate, scan or drop; only parentheses and `!`
+    /// nest (see [`MAX_CONDITION_NESTING`]). Always two operands or more.
+    And(Vec<BoolExpr>),
+    /// A chain `a Or b Or …`, held flat like [`BoolExpr::And`].
+    Or(Vec<BoolExpr>),
     Exists(String),
     /// `HasTrailingSlash('…')`: the raw (quote-stripped, pre-substitution)
     /// argument text.
@@ -674,9 +682,27 @@ enum CompareOp {
     Gte,
 }
 
+/// How deeply parentheses and `!` may nest in one condition before it is
+/// [`Outcome::Unsupported`].
+///
+/// Parsing and evaluation recurse once per level, so an unbounded depth
+/// overflows the stack, which aborts the process: a project file on disk could
+/// take the LSP down. MSBuild's own parser recurses the same way with no limit;
+/// it evaluates 10,000 nested parentheses or `!`s and dies of a stack overflow
+/// at 100,000 (`msbuild-condition-oracle`, SDK 10.0.401). A decline makes no
+/// claim, so any bound is sound. This one is far beyond what a project writes,
+/// and an eighth of the depth at which a debug build overflows a 2 MiB thread
+/// (about 500 levels, at some 4 KiB of frames each). `tests/deep_nesting.rs`
+/// holds the bound to MSBuild on both sides and drives far deeper input on that
+/// thread. `And`/`Or` chains do not nest (`BoolExpr::And`), so their length
+/// is unbounded.
+pub const MAX_CONDITION_NESTING: usize = 64;
+
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    /// Parentheses and `!`s enclosing the factor being parsed.
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -693,23 +719,36 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_or(&mut self) -> Result<BoolExpr, ()> {
-        let mut left = self.parse_and()?;
+        let mut operands = vec![self.parse_and()?];
         while matches!(self.peek(), Some(Token::Or)) {
             self.bump();
-            let right = self.parse_and()?;
-            left = BoolExpr::Or(Box::new(left), Box::new(right));
+            operands.push(self.parse_and()?);
         }
-        Ok(left)
+        Ok(chain(operands, BoolExpr::Or))
     }
 
     fn parse_and(&mut self) -> Result<BoolExpr, ()> {
-        let mut left = self.parse_primary_bool()?;
+        let mut operands = vec![self.parse_primary_bool()?];
         while matches!(self.peek(), Some(Token::And)) {
             self.bump();
-            let right = self.parse_primary_bool()?;
-            left = BoolExpr::And(Box::new(left), Box::new(right));
+            operands.push(self.parse_primary_bool()?);
         }
-        Ok(left)
+        Ok(chain(operands, BoolExpr::And))
+    }
+
+    /// Run `parse` one nesting level down, declining at
+    /// [`MAX_CONDITION_NESTING`].
+    fn nested(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<BoolExpr, ()>,
+    ) -> Result<BoolExpr, ()> {
+        if self.depth >= MAX_CONDITION_NESTING {
+            return Err(());
+        }
+        self.depth += 1;
+        let parsed = parse(self);
+        self.depth -= 1;
+        parsed
     }
 
     /// A boolean-typed primary at comparison level: a bool factor
@@ -747,11 +786,12 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(Token::Bang) => {
                 self.bump();
-                Ok(BoolExpr::Not(Box::new(self.parse_bool_factor()?)))
+                let operand = self.nested(Self::parse_bool_factor)?;
+                Ok(BoolExpr::Not(Box::new(operand)))
             }
             Some(Token::LParen) => {
                 self.bump();
-                let inner = self.parse_or()?;
+                let inner = self.nested(Self::parse_or)?;
                 match self.bump() {
                     Some(Token::RParen) => Ok(inner),
                     _ => Err(()),
@@ -850,6 +890,15 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// One operand stands alone; two or more form a flat chain.
+fn chain(mut operands: Vec<BoolExpr>, connective: fn(Vec<BoolExpr>) -> BoolExpr) -> BoolExpr {
+    if operands.len() == 1 {
+        operands.pop().expect("one operand")
+    } else {
+        connective(operands)
+    }
+}
+
 impl Token {
     fn is_scalar_start(&self) -> bool {
         matches!(
@@ -894,19 +943,21 @@ fn eval_bool(
         // names from the skipped side. MSBuild itself never sees those
         // refs when the result is decided by the first side, so reporting
         // them as "we couldn't resolve" would be over-eager.
-        BoolExpr::And(a, b) => {
-            let av = eval_bool(a, props, exists, undefined)?;
-            if !av {
-                return Ok(false);
+        BoolExpr::And(operands) => {
+            for operand in operands {
+                if !eval_bool(operand, props, exists, undefined)? {
+                    return Ok(false);
+                }
             }
-            eval_bool(b, props, exists, undefined)
+            Ok(true)
         }
-        BoolExpr::Or(a, b) => {
-            let av = eval_bool(a, props, exists, undefined)?;
-            if av {
-                return Ok(true);
+        BoolExpr::Or(operands) => {
+            for operand in operands {
+                if eval_bool(operand, props, exists, undefined)? {
+                    return Ok(true);
+                }
             }
-            eval_bool(b, props, exists, undefined)
+            Ok(false)
         }
         BoolExpr::Exists(raw) => {
             let Some(exists) = exists else {
@@ -1516,6 +1567,7 @@ mod tests {
             let mut parser = super::Parser {
                 tokens: &tokens,
                 pos: 0,
+                depth: 0,
             };
             let expr = parser.parse_or().expect("parses");
             let mut out = Vec::new();

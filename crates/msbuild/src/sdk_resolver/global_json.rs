@@ -597,9 +597,25 @@ fn find_field<'a>(obj: &'a [(String, JsonValue)], key: &str) -> Option<&'a JsonV
     obj.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
+/// How many arrays and objects may nest, the top-level object included,
+/// before the document is refused.
+///
+/// This is the reference's own limit, not a margin of ours: the `dotnet` CLI
+/// reads `global.json` with `System.Text.Json` at its default `MaxDepth` of 64
+/// before it does anything else, so a document nested 65 deep fails every
+/// `dotnet` command, `dotnet msbuild` included ("The maximum configured depth
+/// of 64 has been exceeded"), while one nested 64 deep evaluates (probed
+/// against SDK 10.0.401). Refusing the 65th level therefore declines exactly
+/// where the real build fails, and it bounds this parser's recursion:
+/// unbounded, a `[[[…` of a few hundred levels overflows a debug build's
+/// 2 MiB thread, which aborts the process.
+pub const GLOBAL_JSON_MAX_DEPTH: usize = 64;
+
 struct Parser<'s> {
     src: &'s [u8],
     pos: usize,
+    /// Arrays and objects enclosing the value being parsed.
+    depth: usize,
 }
 
 impl<'s> Parser<'s> {
@@ -613,7 +629,11 @@ impl<'s> Parser<'s> {
         } else {
             0
         };
-        Self { src: bytes, pos }
+        Self {
+            src: bytes,
+            pos,
+            depth: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -658,8 +678,8 @@ impl<'s> Parser<'s> {
     fn parse_value(&mut self) -> Result<JsonValue, GlobalJsonError> {
         self.skip_ws()?;
         match self.peek() {
-            Some(b'{') => self.parse_object().map(JsonValue::Object),
-            Some(b'[') => self.parse_array().map(JsonValue::Array),
+            Some(b'{') => self.nested(Self::parse_object).map(JsonValue::Object),
+            Some(b'[') => self.nested(Self::parse_array).map(JsonValue::Array),
             Some(b'"') => self.parse_string().map(JsonValue::String),
             Some(b't') | Some(b'f') => self.parse_bool().map(JsonValue::Bool),
             Some(b'n') => self.parse_null().map(|_| JsonValue::Null),
@@ -673,6 +693,22 @@ impl<'s> Parser<'s> {
             )),
             None => self.syntax("unexpected end of input while reading a JSON value"),
         }
+    }
+
+    /// Parse one array or object, refusing it past [`GLOBAL_JSON_MAX_DEPTH`].
+    fn nested<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, GlobalJsonError>,
+    ) -> Result<T, GlobalJsonError> {
+        if self.depth >= GLOBAL_JSON_MAX_DEPTH {
+            return self.syntax(format!(
+                "the maximum configured depth of {GLOBAL_JSON_MAX_DEPTH} has been exceeded"
+            ));
+        }
+        self.depth += 1;
+        let parsed = parse(self);
+        self.depth -= 1;
+        parsed
     }
 
     fn parse_object(&mut self) -> Result<Vec<(String, JsonValue)>, GlobalJsonError> {

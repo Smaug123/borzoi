@@ -206,13 +206,23 @@ pub(crate) fn is_referenceable_name(name: &str) -> bool {
 /// reporting only costs a spurious decline, so every uncertain path here errs
 /// towards reporting.
 ///
-/// The scan is **the same parser evaluation uses** ([`parse`]), walked for its
-/// receiver rather than evaluated. That identity is the whole design: a
-/// hand-rolled recogniser of `$(…)` has to be kept in step with the grammar by
-/// hand, and the moment it drifts — a member the evaluator learned and the
-/// recogniser did not — taint stops propagating through exactly the shapes the
-/// evaluator newly understands. Sharing the parser makes the drift
-/// unrepresentable.
+/// The receiver is read by **the rule the parser uses** ([`receiver_name`],
+/// which [`parse_root`] calls for a property root), not by a recogniser of its
+/// own. That identity is the design: a hand-rolled recogniser of `$(…)` has to
+/// be kept in step with the grammar by hand, and the moment it drifts — a
+/// member the evaluator learned and the recogniser did not — taint stops
+/// propagating through exactly the shapes the evaluator newly understands.
+///
+/// The span's *extent* is not needed. Whatever follows the receiver — a member
+/// chain [`parse`] accepts, or text it rejects — the name reported is the same
+/// leading run (an unparseable interior still reports it: a decline is a claim
+/// about *this* value, not about whether a caller may trust the property it
+/// names, and over-reporting only costs a decline). A static `[Type]::…` root
+/// reads no property itself, and any `$(…)` in its arguments is an opener the
+/// scan reaches in its own right. So each opener costs only its name run, and
+/// the scan is linear in `raw`. Finding each opener's matching `)` instead
+/// costs the rest of the text per opener, which is quadratic in the nesting
+/// depth: a property body of 100,000 nested calls took hours.
 ///
 /// Note this deliberately does **not** consult evaluation *order*: it is a
 /// syntactic walk, so a short-circuited condition arm still contributes its
@@ -222,46 +232,29 @@ pub(crate) fn property_references(raw: &str) -> impl Iterator<Item = &str> {
     let mut search_from = 0;
     while let Some(relative_idx) = raw[search_from..].find("$(") {
         let open = search_from + relative_idx + 2;
-        // Always resume just past this opener: each iteration then makes
-        // progress regardless of what follows, and a nested `$(…)` inside an
-        // argument is reached as a span in its own right rather than by
-        // recursing through the argument slices.
+        // Resume just past this opener: a nested `$(…)` inside an argument is
+        // reached as an opener in its own right rather than by recursing
+        // through the argument slices.
         search_from = open;
-        let after = &raw[open..];
-        // An unclosed `$(` has no interior to speak of; scan what follows, which
-        // the fallback below reads conservatively.
-        let inner = match find_close(after) {
-            Some(close) => &after[..close],
-            None => after,
-        };
-        push_references(inner, &mut refs);
+        // MSBuild tolerates whitespace inside `$( … )`, and the condition
+        // tokeniser trims it before resolving the reference, so skip it — else
+        // a legal spelling would report nothing.
+        let interior = raw[open..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if let Some(name) = receiver_name(interior) {
+            refs.push(name);
+        }
     }
     refs.into_iter()
 }
 
-/// Record the property `inner` (one `$(…)` interior) reads as its receiver.
-fn push_references<'a>(inner: &'a str, out: &mut Vec<&'a str>) {
-    // MSBuild tolerates whitespace inside `$( … )`, and the condition tokeniser
-    // trims it before resolving the reference, so trim before parsing — else a
-    // legal spelling reads as unparseable and drops to the fallback.
-    let trimmed = inner.trim_matches(|c: char| c.is_ascii_whitespace());
-    if let Some(expr) = parse(trimmed) {
-        // A static root (`$([Type]::Member(…))`) reads no property itself; any
-        // `$(…)` in its arguments is a span the caller's scan reaches directly.
-        if let Root::Property(name) = expr.root {
-            out.push(name);
-        }
-        return;
-    }
-    // Outside the grammar. Report the leading name anyway: the shape declines
-    // at evaluation today, but a decline is a claim about *this* value, not
-    // about whether a caller may trust the property it names — and if the
-    // grammar later grows to cover the shape, under-reporting here would be
-    // the original defect returning. Over-reporting only costs a decline.
-    let name_len = trimmed.bytes().take_while(|&b| is_name_byte(b)).count();
-    if name_len > 0 {
-        out.push(&trimmed[..name_len]);
-    }
+/// The property a `$(…)` interior reads as its receiver: the maximal run of
+/// name bytes at its start, or `None` when there is none (a static
+/// `[Type]::Member(…)` root, or text outside the grammar that starts with no
+/// name). The one place the receiver rule lives — [`parse_root`] and
+/// [`property_references`] both read it here.
+fn receiver_name(interior: &str) -> Option<&str> {
+    let len = interior.bytes().take_while(|&b| is_name_byte(b)).count();
+    (len > 0).then(|| &interior[..len])
 }
 
 /// Parse a `$(…)` interior into an [`Expr`], or `None` if it doesn't fit the
@@ -299,11 +292,8 @@ fn parse_root<'a>(inner: &'a str, b: &[u8]) -> Option<(Root<'a>, usize)> {
         Some((Root::Static { type_name, member }, pos))
     } else {
         // Property receiver: a maximal name run. Members/indexers follow.
-        let len = b.iter().take_while(|&&c| is_name_byte(c)).count();
-        if len == 0 {
-            return None;
-        }
-        Some((Root::Property(&inner[..len]), len))
+        let name = receiver_name(inner)?;
+        Some((Root::Property(name), name.len()))
     }
 }
 
@@ -524,7 +514,7 @@ pub(super) fn evaluate(
     // — and this used to be a wholesale decline of any escape-bearing expression.
     let expr = parse(inner)?;
     let mut issues = Vec::new();
-    let value = eval(&expr, props, fs_probes_allowed, &mut issues).ok()?;
+    let value = eval(&expr, props, fs_probes_allowed, &mut issues, 0).ok()?;
     // A `Char` (from a string indexer) is the one result MSBuild hands back
     // *raw*; every other result is already escaped (a re-escaped function return,
     // a spliced property value, or an escape-neutral number/version render), so
@@ -556,15 +546,36 @@ pub(super) fn evaluate(
     Some(Evaluated { value, issues })
 }
 
+/// How many `$(…)` expressions may nest inside one another's arguments before
+/// the evaluator declines the outermost.
+///
+/// Evaluation recurses once per nesting level (an argument's `$(…)` is
+/// evaluated by `eval` again), so an unbounded depth overflows the stack,
+/// which aborts the process: a project file on disk could take the LSP down.
+/// MSBuild's own `Expander` recurses the same way with no limit; it evaluates
+/// 1,000 nested `$([System.String]::Copy(…))` and dies of a stack overflow at
+/// 10,000 (`msbuild-condition-oracle`, SDK 10.0.401). A decline makes no claim,
+/// so any bound is sound. This one is far beyond what a project writes, and an
+/// eighth of the depth at which a debug build overflows a 2 MiB thread (about
+/// 250 levels, at some 8 KiB of frames each). `tests/deep_nesting.rs` holds the
+/// bound to MSBuild on both sides and drives far deeper input on that thread.
+pub const MAX_EXPRESSION_NESTING: usize = 32;
+
+/// `depth` counts the `$(…)` arguments enclosing `expr`; an expression at
+/// depth [`MAX_EXPRESSION_NESTING`] declines.
 fn eval(
     expr: &Expr<'_>,
     props: &PropertyMap,
     fs: bool,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<Value, Unsupported> {
-    let mut value = eval_root(&expr.root, props, fs, issues)?;
+    if depth >= MAX_EXPRESSION_NESTING {
+        return Err(Unsupported);
+    }
+    let mut value = eval_root(&expr.root, props, fs, issues, depth)?;
     for link in &expr.links {
-        value = eval_link(value, link, props, issues)?;
+        value = eval_link(value, link, props, issues, depth)?;
     }
     Ok(value)
 }
@@ -574,6 +585,7 @@ fn eval_root(
     props: &PropertyMap,
     fs: bool,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<Value, Unsupported> {
     match root {
         Root::Property(name) => {
@@ -595,7 +607,9 @@ fn eval_root(
                 }
             }
         }
-        Root::Static { type_name, member } => eval_static(type_name, member, props, fs, issues),
+        Root::Static { type_name, member } => {
+            eval_static(type_name, member, props, fs, issues, depth)
+        }
     }
 }
 
@@ -604,9 +618,10 @@ fn eval_link(
     link: &Link<'_>,
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<Value, Unsupported> {
     match link {
-        Link::Member(member) => eval_member(receiver, member, props, issues),
+        Link::Member(member) => eval_member(receiver, member, props, issues, depth),
         Link::Index(index) => eval_index(receiver, index),
     }
 }
@@ -650,6 +665,7 @@ fn eval_member(
     member: &Member<'_>,
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<Value, Unsupported> {
     // `.ToString()` — a no-arg call rendering the scalar as a string. Pinned
     // for `Str`/`Int`/`Version`; `StrArray.ToString()` is the unstable
@@ -670,7 +686,7 @@ fn eval_member(
         };
     }
     match receiver {
-        Value::Str(recv) => eval_string_member(&recv, member, props, issues),
+        Value::Str(recv) => eval_string_member(&recv, member, props, issues, depth),
         Value::Version(v) => eval_version_member(&v, member),
         Value::StrArray(parts) => eval_array_member(&parts, member),
         Value::Int(_) | Value::Bool(_) | Value::Char(_) => Err(Unsupported),
@@ -691,6 +707,7 @@ fn eval_string_member(
     member: &Member<'_>,
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<Value, Unsupported> {
     // The receiver arrives escaped and leaves the domain here, once
     // (`Expander.cs:3982`) — `$(P.Length)` with `P=a%20b` is 3, the length of
@@ -725,7 +742,7 @@ fn eval_string_member(
         let [needle] = args else {
             return Err(Unsupported);
         };
-        let needle = eval_string_arg(needle, props, issues)?;
+        let needle = eval_string_arg(needle, props, issues, depth)?;
         // MSBuild's comparison is culture-sensitive; a control in either operand
         // is where ordinal and culture diverge, so decline (finding: `%01a`
         // starts-with `a` in MSBuild, not for us).
@@ -741,7 +758,7 @@ fn eval_string_member(
         let [chars] = args else {
             return Err(Unsupported);
         };
-        let chars = eval_string_arg(chars, props, issues)?;
+        let chars = eval_string_arg(chars, props, issues, depth)?;
         // `String.TrimStart(params char[])` with an *empty* char set trims
         // Unicode whitespace instead (`'  abc'.TrimStart('')` → `'abc'`), whose
         // exact set (.NET `Char.IsWhiteSpace`) we don't commit to reproducing —
@@ -756,7 +773,7 @@ fn eval_string_member(
         let [charset] = args else {
             return Err(Unsupported);
         };
-        let charset = eval_string_arg(charset, props, issues)?;
+        let charset = eval_string_arg(charset, props, issues, depth)?;
         // MSBuild binds `Split('…')` to `String.Split(params char[])`: the
         // argument is a *set of characters*, empty entries kept. An *empty* set
         // means "split on whitespace" (like `TrimStart('')`), whose exact set
@@ -818,6 +835,7 @@ fn eval_static(
     props: &PropertyMap,
     fs: bool,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<Value, Unsupported> {
     let args = member.args.as_deref().ok_or(Unsupported)?;
     let member_name = member.name;
@@ -834,7 +852,7 @@ fn eval_static(
         .find(|t| t.eq_ignore_ascii_case(type_name))
         .ok_or(Unsupported)?;
     match canonical_type {
-        "MSBuild" => eval_msbuild_static(member_name, args, props, fs, issues),
+        "MSBuild" => eval_msbuild_static(member_name, args, props, fs, issues, depth),
         "System.IO.Path" if member_name.eq_ignore_ascii_case("Combine") => {
             if !path_args_are_bare(args) {
                 return Err(Unsupported);
@@ -870,7 +888,7 @@ fn eval_static(
             // decline a leading backslash; commit the rest. `is_path_rooted`
             // already matches MSBuild exactly for the committed shapes (oracle
             // 2026-07-13, both cwds: `obj\`, `a\b`, `C:\a` → False; `\a`, `/a` → True).
-            let s = eval_string_arg_allowing_boundary_backslash(arg, props, issues)?;
+            let s = eval_string_arg_allowing_boundary_backslash(arg, props, issues, depth)?;
             if !cfg!(windows) && s.starts_with('\\') {
                 return Err(Unsupported);
             }
@@ -878,7 +896,7 @@ fn eval_static(
         }
         "System.Version" if member_name.eq_ignore_ascii_case("Parse") => {
             let [arg] = args else { return Err(Unsupported) };
-            let s = eval_string_arg(arg, props, issues)?;
+            let s = eval_string_arg(arg, props, issues, depth)?;
             parse_version(&s).map(Value::Version).ok_or(Unsupported)
         }
         "System.String" if member_name.eq_ignore_ascii_case("IsNullOrEmpty") => {
@@ -891,7 +909,7 @@ fn eval_static(
             // emptiness of the escaped one. An undefined nested read
             // substitutes to "" and is reported through `issues`, matching
             // MSBuild's undefined-is-empty (→ True).
-            let s = eval_string_arg(arg, props, issues)?;
+            let s = eval_string_arg(arg, props, issues, depth)?;
             Ok(Value::Bool(s.is_empty()))
         }
         _ => Err(Unsupported),
@@ -930,10 +948,11 @@ fn eval_msbuild_static(
     props: &PropertyMap,
     fs: bool,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<Value, Unsupported> {
     if member_name.eq_ignore_ascii_case("GetTargetFrameworkIdentifier") {
         let [tfm] = args else { return Err(Unsupported) };
-        let tfm = eval_string_arg(tfm, props, issues)?;
+        let tfm = eval_string_arg(tfm, props, issues, depth)?;
         return super::infer_target_framework_identifier(&tfm)
             .map(|id| Value::Str(id.to_string()))
             .ok_or(Unsupported);
@@ -947,14 +966,14 @@ fn eval_msbuild_static(
             ),
             _ => return Err(Unsupported),
         };
-        let tfm = eval_string_arg(tfm_arg, props, issues)?;
+        let tfm = eval_string_arg(tfm_arg, props, issues, depth)?;
         return super::infer_target_framework_version(&tfm, min_parts)
             .map(Value::Str)
             .ok_or(Unsupported);
     }
     if member_name.eq_ignore_ascii_case("GetTargetPlatformIdentifier") {
         let [tfm] = args else { return Err(Unsupported) };
-        let tfm = eval_string_arg(tfm, props, issues)?;
+        let tfm = eval_string_arg(tfm, props, issues, depth)?;
         return super::infer_target_platform_identifier(&tfm)
             .map(Value::Str)
             .ok_or(Unsupported);
@@ -969,7 +988,7 @@ fn eval_msbuild_static(
             ),
             _ => return Err(Unsupported),
         };
-        let tfm = eval_string_arg(tfm_arg, props, issues)?;
+        let tfm = eval_string_arg(tfm_arg, props, issues, depth)?;
         return super::infer_target_platform_version(&tfm, min_parts)
             .map(Value::Str)
             .ok_or(Unsupported);
@@ -988,7 +1007,7 @@ fn eval_msbuild_static(
     }
     if member_name.eq_ignore_ascii_case("IsOSPlatform") {
         let [arg] = args else { return Err(Unsupported) };
-        let name = eval_string_arg(arg, props, issues)?;
+        let name = eval_string_arg(arg, props, issues, depth)?;
         return is_os_platform(&name).map(Value::Bool).ok_or(Unsupported);
     }
     if member_name.eq_ignore_ascii_case("AreFeaturesEnabled") {
@@ -1024,7 +1043,7 @@ fn eval_msbuild_static(
             Some("999.999") => {}
             _ => return Err(Unsupported),
         }
-        let s = eval_string_arg(arg, props, issues)?;
+        let s = eval_string_arg(arg, props, issues, depth)?;
         // The wave string is parsed by .NET's number machinery, whose
         // whitespace set is **ASCII** — so `'17.10 '` parses but an NBSP- or
         // EM-SPACE-padded spelling is a project *error* (oracle-pinned).
@@ -1048,14 +1067,14 @@ fn eval_msbuild_static(
         let [a, b] = args else {
             return Err(Unsupported);
         };
-        let a = eval_version_arg(a, props, issues)?;
-        let b = eval_version_arg(b, props, issues)?;
+        let a = eval_version_arg(a, props, issues, depth)?;
+        let b = eval_version_arg(b, props, issues, depth)?;
         let ordering = super::compare_msbuild_versions(&a, &b).map_err(|()| Unsupported)?;
         return Ok(Value::Bool(op(ordering)));
     }
     if member_name.eq_ignore_ascii_case("EnsureTrailingSlash") {
         let [arg] = args else { return Err(Unsupported) };
-        let s = eval_string_arg(arg, props, issues)?;
+        let s = eval_string_arg(arg, props, issues, depth)?;
         return ensure_trailing_slash(&s)
             .map(|p| str_result(&p))
             .ok_or(Unsupported);
@@ -1165,10 +1184,11 @@ fn eval_version_arg(
     arg: &str,
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<String, Unsupported> {
     let arg = arg.trim();
     if arg.starts_with(['\'', '`', '"']) || arg.starts_with("$(") {
-        return eval_string_arg(arg, props, issues);
+        return eval_string_arg(arg, props, issues, depth);
     }
     if arg.contains("$(") {
         return Err(Unsupported);
@@ -1333,8 +1353,9 @@ fn eval_string_arg(
     arg: &str,
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<String, Unsupported> {
-    eval_string_arg_inner(arg, props, issues, false)
+    eval_string_arg_inner(arg, props, issues, false, depth)
 }
 
 /// [`eval_string_arg`] but tolerating a **boundary backslash** — a backslash in
@@ -1348,8 +1369,9 @@ fn eval_string_arg_allowing_boundary_backslash(
     arg: &str,
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
+    depth: usize,
 ) -> Result<String, Unsupported> {
-    eval_string_arg_inner(arg, props, issues, true)
+    eval_string_arg_inner(arg, props, issues, true, depth)
 }
 
 fn eval_string_arg_inner(
@@ -1357,13 +1379,14 @@ fn eval_string_arg_inner(
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
     allow_boundary_backslash: bool,
+    depth: usize,
 ) -> Result<String, Unsupported> {
     let arg = arg.trim();
     // Any of MSBuild's three string delimiters opens a literal; only the
     // same delimiter closes it (the other two are ordinary text inside).
     for delim in ['\'', '`', '"'] {
         if let Some(body) = arg.strip_prefix(delim).and_then(|s| s.strip_suffix(delim)) {
-            return eval_str_template(body, delim, props, issues, allow_boundary_backslash);
+            return eval_str_template(body, delim, props, issues, allow_boundary_backslash, depth);
         }
     }
     // An unquoted argument that is exactly one `$(…)` expression — the
@@ -1375,7 +1398,7 @@ fn eval_string_arg_inner(
         && after[close + 1..].is_empty()
     {
         let expr = parse(&after[..close]).ok_or(Unsupported)?;
-        return match eval(&expr, props, false, issues)? {
+        return match eval(&expr, props, false, issues, depth + 1)? {
             // The evaluated value is escaped; an argument leaves the domain once
             // at binding (`Expander.cs:4010`). A backslash in this nested `$()`
             // result meets the unix path fixup before the outer function sees it
@@ -1407,6 +1430,7 @@ fn eval_str_template(
     props: &PropertyMap,
     issues: &mut Vec<Issue>,
     allow_boundary_backslash: bool,
+    depth: usize,
 ) -> Result<String, Unsupported> {
     let mut out = String::new();
     let mut rest = body;
@@ -1424,7 +1448,7 @@ fn eval_str_template(
                 // No filesystem access from a string argument; the fs
                 // capability rides with the outer call only where the pinned
                 // function needs it.
-                match eval(&expr, props, false, issues)? {
+                match eval(&expr, props, false, issues, depth + 1)? {
                     // A backslash in this nested `$()` result meets the unix path
                     // fixup before binding (a literal backslash in the arg *text*
                     // does not — the path normalisers handle it, so it is not
@@ -2657,7 +2681,87 @@ mod tests {
 
 #[cfg(test)]
 mod property_reference_tests {
-    use super::property_references;
+    use super::{Root, find_close, is_name_byte, parse, property_references};
+    use proptest::prelude::*;
+
+    /// The extent-based scan: find each opener's matching `)`, parse the
+    /// interior, and report its property receiver — or, for an interior
+    /// outside the grammar, its leading name run. This is the definition the
+    /// linear scan must agree with; it costs the rest of the text per opener.
+    fn reference_scan(raw: &str) -> Vec<&str> {
+        let mut refs = Vec::new();
+        let mut search_from = 0;
+        while let Some(relative_idx) = raw[search_from..].find("$(") {
+            let open = search_from + relative_idx + 2;
+            search_from = open;
+            let after = &raw[open..];
+            let inner = match find_close(after) {
+                Some(close) => &after[..close],
+                None => after,
+            };
+            let trimmed = inner.trim_matches(|c: char| c.is_ascii_whitespace());
+            if let Some(expr) = parse(trimmed) {
+                if let Root::Property(name) = expr.root {
+                    refs.push(name);
+                }
+                continue;
+            }
+            let name_len = trimmed.bytes().take_while(|&b| is_name_byte(b)).count();
+            if name_len > 0 {
+                refs.push(&trimmed[..name_len]);
+            }
+        }
+        refs
+    }
+
+    /// Fragments of the `$(…)` grammar and of the text around it: openers,
+    /// every string delimiter, static roots, member calls, indexers, argument
+    /// separators, interior whitespace, and names that run into other bytes.
+    const FRAGMENTS: &[&str] = &[
+        "$(",
+        ")",
+        "(",
+        "'",
+        "`",
+        "\"",
+        "[",
+        "]",
+        "::",
+        ".",
+        ",",
+        " ",
+        "\t",
+        "\n",
+        "Foo",
+        "A",
+        "x-1",
+        "_",
+        "[MSBuild]::",
+        "[System.String]::Copy(",
+        ".Contains(",
+        ".TrimStart(",
+        ".Split(",
+        "[0]",
+        "%24(",
+        "é",
+        "$",
+        ";",
+    ];
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
+
+        /// The linear scan reports exactly what the extent-based scan reports,
+        /// in the same order, on any arrangement of the grammar's fragments.
+        #[test]
+        fn linear_scan_equals_the_extent_based_scan(
+            parts in proptest::collection::vec(proptest::sample::select(FRAGMENTS), 0..24),
+        ) {
+            let raw: String = parts.concat();
+            let linear: Vec<&str> = property_references(&raw).collect();
+            prop_assert_eq!(linear, reference_scan(&raw), "raw = {:?}", raw);
+        }
+    }
 
     fn refs(raw: &str) -> Vec<&str> {
         property_references(raw).collect()
