@@ -198,6 +198,9 @@ enum Source {
     Empty,
     /// A folder that does not exist, as an SDK's `library-packs` source can be.
     Missing,
+    /// A folder holding files of these names, as an SDK's `library-packs`
+    /// source does (`Microsoft.NET.ILLink.Tasks.10.0.0.nupkg`).
+    Holding(&'static [&'static str]),
 }
 
 #[derive(Debug, Clone)]
@@ -427,6 +430,14 @@ impl Shape {
                     path("empty")
                 }
                 Source::Missing => path("missing"),
+                Source::Holding(files) => {
+                    let holding = dir.join("holding");
+                    fs::create_dir_all(&holding).expect("holding source");
+                    for file in *files {
+                        fs::write(holding.join(file), "").expect("a file in the source");
+                    }
+                    path("holding")
+                }
             };
             sources.insert(folder, json!({}));
         }
@@ -965,8 +976,12 @@ fn project_of(spec: &DependencyGraphSpec) -> String {
 }
 
 /// [`grade`], with the spec also restored by NuGet's legacy dependency
-/// resolver: a closure B₁ commits must be the one both engines write. The
-/// default engine's grading is returned.
+/// resolver: a closure B₁ commits is the default engine's, and where the
+/// legacy engine writes one too it must be the same. The legacy engine may
+/// fail a graph the default engine resolves (a cycle below a losing version,
+/// NU1108; cousin conflicts it cannot settle, NU1106), which B₁ commits; the
+/// resolver's differential grades what the walk claims about the legacy
+/// engine. The default engine's grading is returned.
 ///
 /// A shape with a prune list is graded against the default engine alone, as
 /// stage 5 grades pruning: the legacy engine prunes neither a package's
@@ -997,15 +1012,11 @@ fn grade_both(oracle: &mut Oracle, packages: &[Pkg], shape: &Shape) -> Graded {
     let mut legacy = shape.clone();
     legacy.legacy_engine = true;
     let legacy = restore(oracle, &legacy.render(dir.path()));
-    if let Ok(frameworks) = &graded.ours {
-        assert!(
-            legacy.success,
-            "B₁ committed, but the legacy engine fails:\n{description}\nlegacy: {legacy:#?}"
-        );
+    if let (Ok(frameworks), true) = (&graded.ours, legacy.success) {
         assert_eq!(
             by_framework(frameworks),
             legacy.targets,
-            "B₁'s closures are not the legacy engine's:\n{description}\nlegacy: {legacy:#?}"
+            "B₁'s closures are not the legacy engine's, which resolves:\n{description}\nlegacy: {legacy:#?}"
         );
     }
     graded
@@ -1170,6 +1181,60 @@ fn a_missing_source_folder_is_never_read() {
     shape.sources = vec![Source::Missing, Source::Empty];
     let graded = grade(&mut oracle, &packages, &shape);
     assert_eq!(committed(&graded)["net8.0"], set(&[("A", "1.0.0")]));
+}
+
+/// A source folder is consulted only for an edge restore looks up past the
+/// packages folder: one whose inclusive lower bound is not installed. The
+/// folder may then hold a version of that package, at any spelling, and
+/// restore read it, so B₁ declines; a folder holding versions of packages
+/// whose every edge has an installed lower bound (an SDK's `library-packs`,
+/// with `FSharp.Core` among them) is never read, and passes. The files are
+/// empty, which restore never notices for a package it does not read; where
+/// it does read one it fails, and B₁ has declined.
+#[test]
+fn a_source_folder_is_consulted_only_past_an_installed_lower_bound() {
+    let mut oracle = spawn_oracle();
+    let packages = [
+        Pkg::new(
+            "A",
+            "1.0.0",
+            vec![group(None, &[("B", "[1.0.0, )"), ("C", "[2.0.0, )")])],
+        ),
+        Pkg::new("B", "1.0.0", vec![group(None, &[("C", "[1.5.0, )")])]),
+        Pkg::new("C", "2.0.0", vec![]),
+    ];
+    let shape_with = |source: Source| {
+        let mut shape = Shape::new(vec![Framework::new(
+            "net8.0",
+            vec![Dep::new("A", "[1.0.0, )")],
+        )]);
+        shape.sources = vec![source, Source::Empty];
+        shape
+    };
+    const PASSES: &[&str] = &[
+        "Microsoft.NET.ILLink.Tasks.10.0.0.nupkg",
+        "FSharp.Core.10.1.401.nupkg",
+        "a.9.9.9.nupkg",
+        "b.0.1.0.nupkg",
+        "readme.txt",
+    ];
+    let graded = grade(&mut oracle, &packages, &shape_with(Source::Holding(PASSES)));
+    assert_eq!(
+        committed(&graded)["net8.0"],
+        set(&[("A", "1.0.0"), ("B", "1.0.0"), ("C", "2.0.0")])
+    );
+    const DECLINES: &[&[&str]] = &[&["c.1.5.0.nupkg"], &["C.3.0.0.nupkg"], &["C"]];
+    for files in DECLINES {
+        let graded = grade(&mut oracle, &packages, &shape_with(Source::Holding(files)));
+        assert!(
+            matches!(
+                graded.ours,
+                Err(DgSpecResolveDecline::SourceHoldsPackage { ref entry, .. }) if entry.as_deref() == Some(files[0])
+            ),
+            "{files:?}: {:?}",
+            graded.ours
+        );
+    }
 }
 
 /// Restore fails as a whole when one framework fails, so B₁ declines the whole
@@ -2676,6 +2741,7 @@ fn decline_class(decline: &DgSpecResolveDecline) -> String {
         },
         DgSpecResolveDecline::CompatibilityUnproven { .. } => "compatibility-unproven".to_owned(),
         DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
+        DgSpecResolveDecline::SourceHoldsPackage { .. } => "source-holds-package".to_owned(),
         DgSpecResolveDecline::PackageMetadata { decline, .. } => match decline {
             PackageMetadataDecline::Nuspec(decline) => {
                 format!("package-metadata:nuspec:{}", decline.layer())
@@ -2735,8 +2801,9 @@ fn generated_specs_resolve_identically() {
 }
 
 /// Certain-implies-exact over generated specs that hold referenced projects,
-/// against both restore engines: where B₁ commits, the legacy dependency
-/// resolver writes the same closure as the default one.
+/// against both restore engines: where B₁ commits, the default dependency
+/// resolver writes that closure, and so does the legacy one where it resolves
+/// ([`grade_both`]).
 #[test]
 fn generated_project_graphs_resolve_identically_on_both_engines() {
     let cases: usize = std::env::var("BORZOI_DGSPEC_PROJECT_CASES")
@@ -4151,6 +4218,146 @@ fn downloads_are_a_presence_check() {
             );
         }
     }
+}
+
+/// The default engine reads a package's metadata when it enqueues it, and
+/// throws on a `minClientVersion` above its own, so a losing version's
+/// subtree is read one level past where its items are dequeued.
+///
+/// `A → P[1.0] → Z → T` and `B → Q → P[2.0]`: P 1.0 loses to an edge one
+/// level deeper, so Z is dequeued before the eviction and T enqueued, and
+/// T's metadata read. With T demanding NuGet 99.0 the restore throws; B₁
+/// must have T among the versions restore may read, and decline.
+///
+/// The version read is the one the edge resolves to among what is installed,
+/// which is `T 2.0.0` when 1.0.0 is absent: B₁ cannot name that version, so
+/// it declines whether or not T demands anything.
+#[test]
+fn a_losing_subtrees_boundary_dependencies_are_examined() {
+    let mut oracle = spawn_oracle();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )"), Dep::new("B", "[1.0.0, )")],
+    )]);
+    let packages = |installed: &'static str, minimum: Option<&'static str>| {
+        let mut t = Pkg::new("T", installed, vec![]);
+        t.min_client_version = minimum;
+        vec![
+            Pkg::new("A", "1.0.0", vec![group(None, &[("P", "[1.0.0, )")])]),
+            Pkg::new("B", "1.0.0", vec![group(None, &[("Q", "[1.0.0, )")])]),
+            Pkg::new("Q", "1.0.0", vec![group(None, &[("P", "[2.0.0, )")])]),
+            Pkg::new("P", "1.0.0", vec![group(None, &[("Z", "[1.0.0, )")])]),
+            Pkg::new("P", "2.0.0", vec![]),
+            Pkg::new("Z", "1.0.0", vec![group(None, &[("T", "[1.0.0, )")])]),
+            t,
+        ]
+    };
+    let graded = grade_both(&mut oracle, &packages("1.0.0", None), &shape);
+    assert_eq!(committed_ids(&graded, "net8.0"), ["A", "B", "P", "Q"]);
+    let graded = grade_both(&mut oracle, &packages("1.0.0", Some("99.0")), &shape);
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PackageMetadata { ref package, .. }) if package.id.as_str() == "T"
+        ),
+        "{:?}",
+        graded.ours
+    );
+    for minimum in [None, Some("99.0")] {
+        let graded = grade_both(&mut oracle, &packages("2.0.0", minimum), &shape);
+        assert_eq!(
+            graded.theirs.success,
+            minimum.is_none(),
+            "{:?}",
+            graded.theirs
+        );
+        assert!(
+            matches!(
+                graded.ours,
+                Err(DgSpecResolveDecline::Resolve { ref decline, .. })
+                    if matches!(**decline, ResolveDecline::LosingSubtreeContends { ref dependency, .. } if dependency.as_str() == "T")
+            ),
+            "{minimum:?}: {:?}",
+            graded.ours
+        );
+    }
+}
+
+/// A loser evicted by an edge at its own depth may be dequeued before the
+/// evicter: `A → P[1.0] → T[1.0]` and `B → P[2.0]` put both P edges at one
+/// depth, and P 1.0 is dequeued first, so T is enqueued and read, at the
+/// version its edge resolves to among what is installed. With T 1.0.0
+/// installed and demanding NuGet 99.0 the restore throws, and B₁ declines on
+/// T's metadata; with T installed only at 2.0.0, B₁ cannot name the version
+/// read, and declines whether or not T demands anything.
+#[test]
+fn a_losers_children_at_the_evicters_depth_are_examined() {
+    let mut oracle = spawn_oracle();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )"), Dep::new("B", "[1.0.0, )")],
+    )]);
+    let packages = |installed: &'static str, minimum: Option<&'static str>| {
+        let mut t = Pkg::new("T", installed, vec![]);
+        t.min_client_version = minimum;
+        vec![
+            Pkg::new("A", "1.0.0", vec![group(None, &[("P", "[1.0.0, )")])]),
+            Pkg::new("B", "1.0.0", vec![group(None, &[("P", "[2.0.0, )")])]),
+            Pkg::new("P", "1.0.0", vec![group(None, &[("T", "[1.0.0, )")])]),
+            Pkg::new("P", "2.0.0", vec![]),
+            t,
+        ]
+    };
+    let graded = grade_both(&mut oracle, &packages("1.0.0", None), &shape);
+    assert_eq!(committed_ids(&graded, "net8.0"), ["A", "B", "P"]);
+    let graded = grade_both(&mut oracle, &packages("1.0.0", Some("99.0")), &shape);
+    assert!(!graded.theirs.success, "{:?}", graded.theirs);
+    assert!(
+        matches!(
+            graded.ours,
+            Err(DgSpecResolveDecline::PackageMetadata { ref package, .. }) if package.id.as_str() == "T"
+        ),
+        "{:?}",
+        graded.ours
+    );
+    for minimum in [None, Some("99.0")] {
+        let graded = grade_both(&mut oracle, &packages("2.0.0", minimum), &shape);
+        assert_eq!(
+            graded.theirs.success,
+            minimum.is_none(),
+            "{:?}",
+            graded.theirs
+        );
+        assert!(
+            matches!(
+                graded.ours,
+                Err(DgSpecResolveDecline::Resolve { ref decline, .. })
+                    if matches!(**decline, ResolveDecline::LosingSubtreeContends { ref dependency, .. } if dependency.as_str() == "T")
+            ),
+            "{minimum:?}: {:?}",
+            graded.ours
+        );
+    }
+}
+
+/// B₁ over the spec at `BORZOI_DGSPEC_PATH`, printed in full: the one place
+/// to ask why a real project's spec declines.
+///
+/// ```sh
+/// BORZOI_DGSPEC_PATH=/path/to/obj/project.fsproj.nuget.dgspec.json \
+/// nix develop -c cargo test -p borzoi-nuget --test all \
+///   dgspec_resolve_diff::resolve_the_spec_at_borzoi_dgspec_path -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "env-driven probe; set BORZOI_DGSPEC_PATH"]
+fn resolve_the_spec_at_borzoi_dgspec_path() {
+    let path = std::env::var_os("BORZOI_DGSPEC_PATH").expect("BORZOI_DGSPEC_PATH names a spec");
+    let text = fs::read_to_string(&path).expect("the spec is readable");
+    let spec =
+        parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declines: {decline}"));
+    let resolved = resolve_dgspec(&verified(), &spec, &project_of(&spec), &DEFAULT_ENVIRONMENT);
+    println!("{resolved:#?}");
 }
 
 /// Restore reads a package's `<contentFiles>` rules and throws on one it

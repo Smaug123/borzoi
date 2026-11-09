@@ -6,16 +6,18 @@
 //! `restore` op runs a real restore through `RestoreRunner`, once with NuGet's
 //! legacy dependency resolver (`RestoreUseLegacyDependencyResolver`) and once
 //! with the .NET 10 SDK's default `DependencyGraphResolver`. The two engines
-//! disagree on roughly one generated graph in ten, so the contract is stated
-//! against both: a closure must be the one both engines write.
+//! disagree on roughly one generated graph in ten. The contract is the
+//! default engine's, the one a dependency-graph spec restores under (the key
+//! that selects the legacy one declines in `dgspec`); the legacy engine grades
+//! the declines that name one of its failures.
 //!
 //! The correctness policy (`docs/nuget-restore-plan.md`) is "resolve
 //! identically or degrade": whenever `resolve_offline` returns a closure it
 //! must be *exactly* the closure restore would produce, and otherwise it may
 //! decline. So the load-bearing invariant here is **soundness**:
 //!
-//!   `resolve_offline` returns `Ok(S)`  ⟹  both engines succeed, each with
-//!                                          the same package set `S`.
+//!   `resolve_offline` returns `Ok(S)`  ⟹  the default engine succeeds with
+//!                                          the package set `S`.
 //!
 //! A decline is always permitted (we under-resolve, never mis-resolve). The
 //! only declines checked against the oracle are the four that name a legacy
@@ -82,6 +84,11 @@ struct Pkg {
     /// package is invisible to a correct reader, so it is excluded from the
     /// oracle universe as well.
     committed: bool,
+    /// The `<metadata>` element's `minClientVersion`. Restore throws on
+    /// reading a package whose minimum is above its own, which is how
+    /// [`assert_examined_covers_what_restore_reads`] sees what restore reads;
+    /// no generator sets it.
+    min_client_version: Option<String>,
 }
 
 impl Pkg {
@@ -94,6 +101,7 @@ impl Pkg {
                 deps,
             }],
             committed: true,
+            min_client_version: None,
         }
     }
 
@@ -133,10 +141,15 @@ impl Pkg {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let min_client_version = self
+            .min_client_version
+            .as_ref()
+            .map(|minimum| format!(r#" minClientVersion="{minimum}""#))
+            .unwrap_or_default();
         format!(
             r#"<?xml version="1.0"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
-  <metadata>
+  <metadata{min_client_version}>
     <id>{}</id>
     <version>{}</version>
     <authors>a</authors>
@@ -172,27 +185,105 @@ fn req(id_: &str, range_: &str) -> DirectPackageRequirement {
     DirectPackageRequirement::new(id(id_), range(range_))
 }
 
-/// Materialise the committed packages into a warm-cache layout and return the
-/// oracle request's `packages` array (the committed subset the oracle should
-/// treat as available).
+/// Materialise the packages into a warm-cache layout and return the oracle
+/// request's `packages` array ([`universe_json`]).
 fn materialize(root: &Path, packages: &[Pkg]) -> Vec<serde_json::Value> {
-    let mut universe = Vec::new();
     for pkg in packages {
         let identity = PackageIdentity::new(id(&pkg.id), version(&pkg.version));
         let paths = PackagePaths::new(root, &identity);
         fs::create_dir_all(&paths.package_dir).expect("package dir");
-        let nuspec = pkg.nuspec();
-        fs::write(&paths.nuspec_path, &nuspec).expect("nuspec");
+        fs::write(&paths.nuspec_path, pkg.nuspec()).expect("nuspec");
         if pkg.committed {
             fs::write(&paths.metadata_path, "{}").expect("commit marker");
-            universe.push(json!({
-                "id": pkg.id,
-                "version": pkg.version,
-                "nuspec": nuspec,
-            }));
         }
     }
-    universe
+    universe_json(packages)
+}
+
+/// The oracle request's `packages` array: the committed subset, which is what
+/// the oracle should treat as available.
+fn universe_json(packages: &[Pkg]) -> Vec<serde_json::Value> {
+    packages
+        .iter()
+        .filter(|pkg| pkg.committed)
+        .map(|pkg| {
+            json!({
+                "id": pkg.id,
+                "version": pkg.version,
+                "nuspec": pkg.nuspec(),
+            })
+        })
+        .collect()
+}
+
+/// `dotnet restore` under one engine, over `universe` and the `direct` references.
+fn restore_with_engine(
+    oracle: &mut Oracle,
+    engine: &str,
+    tfm: &str,
+    universe: &[serde_json::Value],
+    direct_json: &[serde_json::Value],
+) -> EngineOutcome {
+    EngineOutcome::parse(&oracle.request(&json!({
+        "op": "restore",
+        "engine": engine,
+        "framework": tfm,
+        "packages": universe,
+        "direct": direct_json,
+    })))
+}
+
+/// [`borzoi_nuget::ResolvedPackageClosure::examined`] holds every version
+/// restore reads: every committed version outside it is given a
+/// `minClientVersion` restore refuses, and restore must still write `closure`.
+/// Reading such a version throws (`FindPackageByIdResource.GetDependencyInfo`,
+/// run as the package is enqueued), so a read outside `examined` fails this
+/// restore, whatever the version's dependencies.
+fn assert_examined_covers_what_restore_reads(
+    oracle: &mut Oracle,
+    tfm: &str,
+    packages: &[Pkg],
+    direct: &[(&str, &str)],
+    direct_json: &[serde_json::Value],
+    resolved: &borzoi_nuget::ResolvedPackageClosure,
+    closure: &BTreeSet<(String, String)>,
+) {
+    // Release labels compare without case, and a version read from the
+    // packages folder carries the folder's lowercase spelling.
+    let key = |id: &str, version: &NuGetVersion| {
+        (
+            id.to_ascii_lowercase(),
+            version.to_normalized_string().to_ascii_lowercase(),
+        )
+    };
+    let examined: BTreeSet<(String, String)> = resolved
+        .examined
+        .iter()
+        .map(|identity| key(identity.id.as_str(), &identity.version))
+        .collect();
+    let mut poisoned = Vec::new();
+    let mut outside: Vec<String> = Vec::new();
+    for pkg in packages {
+        let mut pkg = pkg.clone();
+        let key = key(&pkg.id, &version(&pkg.version));
+        if pkg.committed && !examined.contains(&key) {
+            pkg.min_client_version = Some("99.0".to_owned());
+            outside.push(format!("{} {}", key.0, key.1));
+        }
+        poisoned.push(pkg);
+    }
+    if outside.is_empty() {
+        return;
+    }
+    let universe = universe_json(&poisoned);
+    let outcome = restore_with_engine(oracle, "default", tfm, &universe, direct_json);
+    assert!(
+        outcome == EngineOutcome::Resolved(closure.clone()),
+        "`dotnet restore` reads a version outside `examined`: with every version \
+         outside it refusing the client ({outside:?}) it no longer writes the closure \
+         but {outcome:?}.\n{}",
+        describe(tfm, packages, direct),
+    );
 }
 
 /// The resolved closure as a comparable set: `(lowercased id, normalised
@@ -269,10 +360,21 @@ impl RestoreFailure {
 enum EngineOutcome {
     Resolved(BTreeSet<(String, String)>),
     Failed(BTreeSet<RestoreFailure>),
+    /// Restore threw, by the exception's full type name: how it refuses a
+    /// package whose `minClientVersion` is above its own.
+    Threw(String),
 }
 
 impl EngineOutcome {
     fn parse(response: &serde_json::Value) -> EngineOutcome {
+        if response["ok"] == false {
+            return EngineOutcome::Threw(
+                response["exceptionType"]
+                    .as_str()
+                    .expect("an exception type")
+                    .to_owned(),
+            );
+        }
         if response["resolved"]
             .as_bool()
             .expect("oracle resolved flag")
@@ -298,6 +400,10 @@ impl EngineOutcome {
                 .map(|failure| failure.name())
                 .collect::<Vec<_>>()
                 .join("+"),
+            EngineOutcome::Threw(exception) => format!(
+                "threw-{}",
+                exception.rsplit('.').next().unwrap_or(exception)
+            ),
         }
     }
 
@@ -377,9 +483,6 @@ impl OurOutcome {
                 OurOutcome::Declined("duplicate-dependency")
             }
             ResolveDecline::UnresolvableLosingEdge { .. } => OurOutcome::Declined("losing-edge"),
-            ResolveDecline::LosingVersionNotALeaf { .. } => {
-                OurOutcome::Declined("loser-not-a-leaf")
-            }
             ResolveDecline::TransitivePotentialDowngrade { .. } => {
                 OurOutcome::Declined("transitive-potential-downgrade")
             }
@@ -387,6 +490,12 @@ impl OurOutcome {
                 OurOutcome::Declined("floating-comparison")
             }
             ResolveDecline::GraphTooLarge => OurOutcome::Declined("too-large"),
+            ResolveDecline::LegacyVerdictUnknown { .. } => {
+                OurOutcome::Declined("legacy-verdict-unknown")
+            }
+            ResolveDecline::LosingSubtreeContends { .. } => {
+                OurOutcome::Declined("losing-subtree-contends")
+            }
             // Project nodes, which this differential's graphs do not hold
             // (`dgspec_resolve_diff.rs` grades them).
             ResolveDecline::DuplicateProjectName { .. }
@@ -446,8 +555,10 @@ fn describe(tfm: &str, packages: &[Pkg], direct: &[(&str, &str)]) -> String {
 /// The differential: run `resolve_offline` and both restore engines over the
 /// same graph and compare their outcome *classes*, not only their package sets.
 ///
-/// - A closure must be the closure *both* engines write. Where either engine
-///   fails, or the two write different closures, we must decline.
+/// - A closure must be the closure the *default* engine writes. Where it
+///   fails, or writes another closure, we must decline. The legacy engine's
+///   closure is recorded, not required: a losing version's subtree can fail
+///   it where the default engine evicts the loser unwalked.
 /// - A decline that claims the legacy engine fails (a cycle, conflict or
 ///   downgrade diagnosis) must be right: the legacy engine must fail, with that
 ///   error among the ones it reports. The claim says nothing about the default
@@ -471,24 +582,16 @@ fn compare(
         .map(|(id_, range_)| json!({ "id": id_, "range": range_ }))
         .collect::<Vec<_>>();
 
-    let mut restore_with = |engine: &str| {
-        EngineOutcome::parse(&oracle.request(&json!({
-            "op": "restore",
-            "engine": engine,
-            "framework": tfm,
-            "packages": universe,
-            "direct": direct_json,
-        })))
-    };
     let restore = RestoreOutcome {
-        legacy: restore_with("legacy"),
-        default: restore_with("default"),
+        legacy: restore_with_engine(oracle, "legacy", tfm, &universe, &direct_json),
+        default: restore_with_engine(oracle, "default", tfm, &universe, &direct_json),
     };
     let result = resolve_offline(root.path(), &framework(tfm), &direct_reqs);
     let ours = OurOutcome::of(&result);
 
     for (engine, outcome) in restore.engines() {
         match (&ours, outcome) {
+            (OurOutcome::Resolved(_), _) if engine == "legacy" => {}
             (OurOutcome::Resolved(mine), EngineOutcome::Resolved(theirs)) => {
                 assert_eq!(
                     mine,
@@ -497,11 +600,12 @@ fn compare(
                     describe(tfm, packages, direct),
                 );
             }
-            (OurOutcome::Resolved(mine), EngineOutcome::Failed(failures)) => {
+            (OurOutcome::Resolved(mine), theirs) => {
                 panic!(
-                    "resolve_offline produced a closure but `dotnet restore` fails ({engine} \
-                     engine: {failures:?}); over-resolution violates the correctness policy.\n\
+                    "resolve_offline produced a closure but `dotnet restore` does not write it \
+                     ({engine} engine: {}); over-resolution violates the correctness policy.\n\
                      closure={mine:?}\n{}",
+                    theirs.class(),
                     describe(tfm, packages, direct),
                 );
             }
@@ -514,6 +618,7 @@ fn compare(
                     match theirs {
                         EngineOutcome::Resolved(set) => format!("resolves to {set:?}"),
                         EngineOutcome::Failed(failures) => format!("fails with {failures:?}"),
+                        EngineOutcome::Threw(exception) => format!("threw {exception}"),
                     },
                     result.as_ref().expect_err("a claim is a decline"),
                     describe(tfm, packages, direct),
@@ -521,6 +626,17 @@ fn compare(
             }
             (OurOutcome::ClaimsLegacyFails(_), _) | (OurOutcome::Declined(_), _) => {}
         }
+    }
+    if let (OurOutcome::Resolved(mine), Ok(resolved)) = (&ours, &result) {
+        assert_examined_covers_what_restore_reads(
+            oracle,
+            tfm,
+            packages,
+            direct,
+            &direct_json,
+            resolved,
+            mine,
+        );
     }
 
     Comparison { ours, restore }
@@ -538,7 +654,17 @@ fn assert_sound(
     let comparison = compare(oracle, tfm, packages, direct);
     (
         matches!(comparison.ours, OurOutcome::Resolved(_)),
-        comparison.restore.agreed_closure().is_some(),
+        matches!(comparison.restore.default, EngineOutcome::Resolved(_)),
+    )
+}
+
+/// Our outcome resolved to `packages`, given as `(id, version)`.
+fn ours_resolved_to(packages: &[(&str, &str)]) -> OurOutcome {
+    OurOutcome::Resolved(
+        packages
+            .iter()
+            .map(|(id_, version_)| (id_.to_ascii_lowercase(), (*version_).to_owned()))
+            .collect(),
     )
 }
 
@@ -658,7 +784,7 @@ fn dependency_cycle_must_not_resolve() {
 /// the cycle sits on a rejected branch. The legacy engine reports NU1108 all the
 /// same; the default engine writes `{A, B, G 2.0}`. Both checked against a real
 /// `dotnet restore`: .NET 8, and .NET 10 with and without
-/// `RestoreUseLegacyDependencyResolver`. The engines disagree, so we decline.
+/// `RestoreUseLegacyDependencyResolver`. The closure is the default engine's.
 #[test]
 fn a_cycle_below_a_rejected_version_fails_legacy_restore() {
     let mut oracle = Oracle::spawn();
@@ -681,18 +807,21 @@ fn a_cycle_below_a_rejected_version_fails_legacy_restore() {
         comparison.restore.default,
         resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")])
     );
-    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+    assert_eq!(
+        comparison.ours,
+        ours_resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")])
+    );
 }
 
-/// What the leaf-loser rule costs: a graph both engines resolve, declined.
+/// A losing version's subtree contributes nothing, whatever it holds.
 ///
 /// `B → G[2.0]` makes G 1.0 lose, so the K conflict inside G 1.0's subtree never
-/// bites, and both engines write `{A, B, G 2.0}`. But G 1.0 has dependencies
-/// that would become nodes of the legacy tree, and from G 1.0's dependency list
+/// bites, and both engines write `{A, B, G 2.0}`. From G 1.0's dependency list
 /// alone this graph cannot be told from `mutually_dependent_cousin_conflicts_fail_restore`,
-/// where the loser's subtree is exactly what the engines disagree over.
+/// where the loser's subtree is what fails the legacy engine; the closure is
+/// the default engine's in both.
 #[test]
-fn a_losing_version_with_dependencies_declines() {
+fn a_losing_version_with_dependencies_resolves() {
     let mut oracle = Oracle::spawn();
     let comparison = scenario(
         &mut oracle,
@@ -714,7 +843,10 @@ fn a_losing_version_with_dependencies_declines() {
     let both = resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")]);
     assert_eq!(comparison.restore.legacy, both);
     assert_eq!(comparison.restore.default, both);
-    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+    assert_eq!(
+        comparison.ours,
+        ours_resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")])
+    );
 }
 
 #[test]
@@ -821,6 +953,7 @@ fn multi_tfm_group_selection_resolves_identically() {
             },
         ],
         committed: true,
+        min_client_version: None,
     };
     let mut oracle = Oracle::spawn();
     let (rust, oracle_ok) = assert_sound(
@@ -854,6 +987,7 @@ fn a_dependency_asset_filter_leaves_the_closure_alone() {
             }],
         }],
         committed: true,
+        min_client_version: None,
     };
     let mut oracle = Oracle::spawn();
     let (rust, oracle_ok) = assert_sound(
@@ -868,11 +1002,14 @@ fn a_dependency_asset_filter_leaves_the_closure_alone() {
     );
 }
 
-/// A missing package below a rejected version does not fail restore.
+/// A missing package below a rejected version does not fail restore, and the
+/// walk declines all the same.
 ///
 /// A→G[1.0,) and B→G[2.0,): restore merges G to 2.0 and *rejects* G 1.0, so
 /// G 1.0's missing dependency dangles off a rejected branch and both engines
-/// still write `{A, B, G 2.0}`. G 1.0 is not a leaf, so we decline.
+/// still write `{A, B, G 2.0}`. The walk cannot tell a package absent from
+/// the packages folder from one restore would fetch from a source and read,
+/// so a loser's subtree it cannot read through declines.
 #[test]
 fn rejected_branch_missing_dependency_does_not_fail_restore() {
     let mut oracle = Oracle::spawn();
@@ -889,7 +1026,10 @@ fn rejected_branch_missing_dependency_does_not_fail_restore() {
     let both = resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")]);
     assert_eq!(comparison.restore.legacy, both);
     assert_eq!(comparison.restore.default, both);
-    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
 }
 
 #[test]
@@ -960,6 +1100,7 @@ fn uncommitted_package_is_invisible_to_both() {
     let mut oracle = Oracle::spawn();
     let beta = Pkg {
         committed: false,
+        min_client_version: None,
         ..Pkg::simple("Beta", "2.0.0", vec![])
     };
     let (rust, oracle_ok) = assert_sound(
@@ -1107,6 +1248,7 @@ fn generate(rng: &mut SplitMix64) -> Generated {
             groups,
             // A small fraction of packages are left uncommitted.
             committed: rng.below(8) != 0,
+            min_client_version: None,
         });
     }
 
@@ -1191,6 +1333,7 @@ fn generate_consistent(rng: &mut SplitMix64) -> Generated {
             version: format!("{}.0.0", node + 1),
             groups,
             committed: true,
+            min_client_version: None,
         });
     }
     Generated {
@@ -1273,6 +1416,7 @@ fn generate_multi_version(rng: &mut SplitMix64) -> Generated {
                     deps,
                 }],
                 committed: true,
+                min_client_version: None,
             });
         }
     }
@@ -1347,10 +1491,11 @@ fn multi_version_graphs_resolve_identically() {
 ///
 /// A losing version's *presence* is what tells us restore rejected the edge
 /// rather than bumping it up to the winner (see
-/// `a_losing_path_does_not_contribute_its_winners_dependencies`). Of its
-/// contents, only its dependency list is read, to check it is a leaf of the
-/// legacy tree (`engines_agree`); nothing below a loser is read at all, which
-/// is as much of a rejected branch as the default engine's restore installs.
+/// `a_losing_path_does_not_contribute_its_winners_dependencies`). Its
+/// contents are read for its dependency list (to know whether the legacy
+/// engine's verdict can be claimed) and its subtree, which must be inert
+/// (`losing_subtree_is_inert`); the default engine's restore reads the same
+/// before the eviction.
 ///
 /// So, for every version the closure does not name, delete its nuspec (leaving
 /// the commit marker) and resolve again. The answer must be the same closure,
@@ -1443,7 +1588,7 @@ fn a_resolved_closure_reads_only_the_dependency_lists_of_the_versions_it_rejecte
         "generator degenerated: only {closures} graphs resolved to prune"
     );
     assert!(
-        never_read > 40 && losers_read > 10,
+        never_read > 40,
         "generator degenerated: {never_read} never read, {losers_read} losers read"
     );
 }
@@ -1656,6 +1801,7 @@ fn generate_wide(rng: &mut SplitMix64) -> Generated {
                 version: pool[index].0.clone(),
                 groups,
                 committed: clean || rng.below(15) != 0,
+                min_client_version: None,
             });
         }
     }
@@ -2026,40 +2172,49 @@ fn generate_cross_disputes(rng: &mut SplitMix64) -> Generated {
 
 /// The declines that are the engine-agreement envelope's deliberate price (see
 /// `engines_agree` in `resolver.rs`), rather than a gap in what we model.
-const ENGINE_AGREEMENT_ENVELOPE: [&str; 3] = [
-    "loser-not-a-leaf",
+const ENGINE_AGREEMENT_ENVELOPE: [&str; 4] = [
     "transitive-potential-downgrade",
     "floating-comparison",
+    "losing-subtree-contends",
+    "legacy-verdict-unknown",
 ];
 
 /// What we owe on a [`generate_cross_disputes`] graph, beyond soundness. Where
-/// the legacy engine's only failure is an unsettled conflict pass we must say
-/// so, and where both engines write one closure we must write it, in each case
-/// unless the engine-agreement envelope declines. Without the first, a resolver
-/// that declined every disputed graph for some other reason would pass.
+/// both engines write one closure we must write it; where the legacy engine's
+/// only failure is an unsettled conflict pass we must say so, or write the
+/// default engine's closure where it writes one (the legacy engine fails on a
+/// loser's subtree the default engine never expands); in each case unless the
+/// engine-agreement envelope declines. Without the second, a resolver that
+/// declined every disputed graph for some other reason would pass.
 fn assert_cross_dispute_obligations(generated: &Generated, comparison: &Comparison) {
     let within_envelope = |ours: &OurOutcome| matches!(ours, OurOutcome::Declined(why) if ENGINE_AGREEMENT_ENVELOPE.contains(why));
-    let owed = if comparison.restore.legacy == failed_with(&[RestoreFailure::Undecided]) {
-        Some(OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided))
-    } else {
-        comparison
-            .restore
-            .agreed_closure()
-            .map(|closure| OurOutcome::Resolved(closure.clone()))
-    };
-    if let Some(owed) = owed {
-        assert!(
-            comparison.ours == owed || within_envelope(&comparison.ours),
-            "expected {} but got {}\n{}",
-            owed.class(),
-            comparison.ours.class(),
-            describe(
-                &generated.tfm,
-                &generated.packages,
-                &generated.direct_refs()
-            ),
-        );
+    let mut owed: Vec<OurOutcome> = Vec::new();
+    if let Some(closure) = comparison.restore.agreed_closure() {
+        owed.push(OurOutcome::Resolved(closure.clone()));
     }
+    if comparison.restore.legacy == failed_with(&[RestoreFailure::Undecided]) {
+        owed.push(OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided));
+        if let EngineOutcome::Resolved(closure) = &comparison.restore.default {
+            owed.push(OurOutcome::Resolved(closure.clone()));
+        }
+    }
+    if owed.is_empty() {
+        return;
+    }
+    assert!(
+        owed.contains(&comparison.ours) || within_envelope(&comparison.ours),
+        "expected {} but got {}\n{}",
+        owed.iter()
+            .map(OurOutcome::class)
+            .collect::<Vec<_>>()
+            .join(" or "),
+        comparison.ours.class(),
+        describe(
+            &generated.tfm,
+            &generated.packages,
+            &generated.direct_refs()
+        ),
+    );
 }
 
 #[test]
@@ -2206,9 +2361,12 @@ fn a_losing_path_does_not_contribute_its_winners_dependencies() {
 /// forward. `A → P[1]` and `B → P[2]` make P settle at 2.0, at which point P 1's
 /// `G[3]` edge is gone and only P 2's `G[1]` remains — so G must *fall* to 1.0,
 /// and both engines write G 1.0. Carrying the previous round's map forward
-/// (which only ever rose) left G at 3.0, a closure restore never produces. P 1
-/// loses with a dependency that would be a node, so today the graph declines;
-/// the falling G is still what `walk` must compute before that check runs.
+/// (which only ever rose) left G at 3.0, a closure restore never produces.
+///
+/// The walk declines: P 1.0's subtree names G, which the closure holds, and
+/// the default engine does evict G 1.0 on P 1.0's `G[3]` before evicting P 1.0
+/// and undoing that eviction with it (`DependencyGraphResolver`'s eviction
+/// of an evictee's evictions), which the walk does not model.
 #[test]
 fn a_settled_version_falls_when_the_edge_that_raised_it_disappears() {
     let mut oracle = Oracle::spawn();
@@ -2232,17 +2390,19 @@ fn a_settled_version_falls_when_the_edge_that_raised_it_disappears() {
     ]);
     assert_eq!(comparison.restore.legacy, both);
     assert_eq!(comparison.restore.default, both);
-    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
 }
 
 /// A dependency shape we cannot model, on a version restore *rejects*, is never
 /// raised as that shape's decline: restore does not adjudicate a rejected
 /// package's dependencies, and before the walk settles the answer would depend
-/// on which direct requirement it reached first. The loser's dependency on G
-/// would still be a node of the legacy tree, so the graph declines as a loser
-/// that is not a leaf, whatever order the walk took.
+/// on which direct requirement it reached first. The loser contributes
+/// nothing, whatever order the walk took.
 #[test]
-fn an_asset_filter_on_a_rejected_version_is_judged_as_a_loser() {
+fn an_asset_filter_on_a_rejected_version_is_ignored() {
     let mut oracle = Oracle::spawn();
     let mut filtered = Dep::new("G", "[1.0.0, )");
     filtered.include = Some("compile".to_owned());
@@ -2261,7 +2421,10 @@ fn an_asset_filter_on_a_rejected_version_is_judged_as_a_loser() {
     let both = resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("p", "2.0.0")]);
     assert_eq!(comparison.restore.legacy, both);
     assert_eq!(comparison.restore.default, both);
-    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+    assert_eq!(
+        comparison.ours,
+        ours_resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("p", "2.0.0")])
+    );
 }
 
 // ============================================================================
@@ -2378,8 +2541,10 @@ fn a_downgrade_to_the_accepted_version_fails_on_both_sides() {
 /// (its parent) does, and Y 3.0 wins only if X 1.0 (its parent) does. The
 /// legacy engine's conflict pass accepts neither and fails with NU1106; the
 /// default engine writes `{A, B, X 1.0, Y 3.0}`. Both checked against a real
-/// `dotnet restore` on .NET 8 and on .NET 10 with each resolver. The losers X
-/// 1.0 and Y 1.0 each have a dependency that would be a node, so we decline.
+/// `dotnet restore` on .NET 8 and on .NET 10 with each resolver. X 1.0 loses
+/// to an edge one level deeper than itself, so the default engine dequeues its
+/// `Y[3.0]` first, which evicts Y 1.0 and with it X 1.0's evicter; the walk's
+/// winners say `{X 2.0, Y 1.0}`, so the contending subtree declines.
 #[test]
 fn mutually_dependent_cousin_conflicts_fail_restore() {
     let mut oracle = Oracle::spawn();
@@ -2408,7 +2573,10 @@ fn mutually_dependent_cousin_conflicts_fail_restore() {
             ("y", "3.0.0")
         ])
     );
-    assert_eq!(comparison.ours, OurOutcome::Declined("loser-not-a-leaf"));
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
 }
 
 /// Two cousin conflicts that each hold a *leaf* loser of the other beneath
@@ -2492,6 +2660,348 @@ fn a_potential_downgrade_the_engines_adjudicate_differently() {
         comparison.ours,
         OurOutcome::Declined("transitive-potential-downgrade")
     );
+}
+
+/// A package a losing version's subtree reaches at a version that is not
+/// installed, before the loser is evicted.
+///
+/// `A → X[1.0] → Z[1.0]` and `B → Y[1.0] → K → X[2.0]`: X 1.0 loses to an edge
+/// three levels deeper, so the default engine dequeues its `Z[1.0]` first.
+/// Z 1.0 is not installed, and restore resolves the edge against what is:
+/// Z 2.0, whose `Y[3.0]` evicts Y 1.0 and with it X 1.0's evicter, so the
+/// default engine writes `{A, B, X 1.0, Z 2.0, Y 3.0}`. The walk cannot name
+/// the version read, and declines. Found by review.
+#[test]
+fn an_uninstalled_version_below_a_loser_declines() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[1.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("Y", "[1.0.0, )")]),
+            Pkg::simple("X", "1.0.0", vec![Dep::new("Z", "[1.0.0, )")]),
+            Pkg::simple("X", "2.0.0", vec![]),
+            Pkg::simple("Y", "1.0.0", vec![Dep::new("K", "[1.0.0, )")]),
+            Pkg::simple("Y", "3.0.0", vec![]),
+            Pkg::simple("K", "1.0.0", vec![Dep::new("X", "[2.0.0, )")]),
+            Pkg::simple("Z", "2.0.0", vec![Dep::new("Y", "[3.0.0, )")]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.restore.default,
+        resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("x", "1.0.0"),
+            ("z", "2.0.0"),
+            ("y", "3.0.0")
+        ])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
+}
+
+/// A losing version's subtree reaching a winner at the winner's own version.
+///
+/// `A → X[1.0] → Y[2.0] → X[3.0]` and `B0 → B1 → B2 → Y[2.0]`: X 1.0 loses to
+/// an edge three levels deeper, and its subtree reaches Y at the version the
+/// closure settles on. The default engine reaches Y first under X 1.0, skips
+/// the `X[3.0]` below it as a descendant of the chosen X 1.0, and coalesces
+/// the later Y onto that occurrence, so the edge the walk takes for X 1.0's
+/// evicter never takes effect: restore reports NU1605. A rule that admitted
+/// demands at or below the settled version committed `{X 3.0, Y 2.0}` here,
+/// so a loser's subtree may name no package the closure holds. Found by
+/// review.
+#[test]
+fn a_losers_subtree_reaching_a_winner_at_its_version_declines() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[1.0.0, )")]),
+            Pkg::simple("B0", "1.0.0", vec![Dep::new("B1", "[1.0.0, )")]),
+            Pkg::simple("B1", "1.0.0", vec![Dep::new("B2", "[1.0.0, )")]),
+            Pkg::simple("B2", "1.0.0", vec![Dep::new("Y", "[2.0.0, )")]),
+            Pkg::simple("X", "1.0.0", vec![Dep::new("Y", "[2.0.0, )")]),
+            Pkg::simple("X", "3.0.0", vec![]),
+            Pkg::simple("Y", "2.0.0", vec![Dep::new("X", "[3.0.0, )")]),
+        ],
+        &[("A", "[1.0.0, )"), ("B0", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.restore.default,
+        failed_with(&[RestoreFailure::Downgrade])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
+}
+
+/// A package a losing version's subtree reaches by two paths, the longer
+/// first in the loser's dependency order, naming a winner.
+///
+/// `A → X[1.0]` loses to `B → M → N → O → X[2.0]`, four levels deeper. X 1.0
+/// depends on P and Q; `P → R → Z` and `Q → Z` both reach Z, whose `Y[3.0]`
+/// evicts Y 1.0, which carries X 1.0's evicter. The default engine writes
+/// `{A, B, X 1.0, P, Q, R, Z, Y 3.0}`. A walk that stopped at a depth and
+/// visited Z first by the longer path, and not again, missed the demand.
+/// Found by review.
+#[test]
+fn a_losers_subtree_is_read_at_its_shallowest_depth() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[1.0.0, )")]),
+            Pkg::simple(
+                "B",
+                "1.0.0",
+                vec![Dep::new("Y", "[1.0.0, )"), Dep::new("M", "[1.0.0, )")],
+            ),
+            Pkg::simple(
+                "X",
+                "1.0.0",
+                vec![Dep::new("Q", "[1.0.0, )"), Dep::new("P", "[1.0.0, )")],
+            ),
+            Pkg::simple("X", "2.0.0", vec![]),
+            Pkg::simple("P", "1.0.0", vec![Dep::new("R", "[1.0.0, )")]),
+            Pkg::simple("R", "1.0.0", vec![Dep::new("Z", "[1.0.0, )")]),
+            Pkg::simple("Q", "1.0.0", vec![Dep::new("Z", "[1.0.0, )")]),
+            Pkg::simple("Z", "1.0.0", vec![Dep::new("Y", "[3.0.0, )")]),
+            Pkg::simple("Y", "1.0.0", vec![]),
+            Pkg::simple("Y", "3.0.0", vec![]),
+            Pkg::simple("M", "1.0.0", vec![Dep::new("N", "[1.0.0, )")]),
+            Pkg::simple("N", "1.0.0", vec![Dep::new("O", "[1.0.0, )")]),
+            Pkg::simple("O", "1.0.0", vec![Dep::new("X", "[2.0.0, )")]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
+}
+
+/// A loser evicted by an edge at its own depth may be dequeued before the
+/// evicter, so its children are enqueued and read, each at the version its
+/// edge resolves to among what is installed. `A → P[1.0] → T[1.0]` and
+/// `B → P[2.0]` put both P edges at one depth, and P 1.0 is dequeued first;
+/// with T installed only at 2.0.0 the version read is one the walk cannot
+/// name, so it declines. (A rule that held a loser's subtree inert when its
+/// evicter was no deeper than itself committed here.)
+#[test]
+fn a_losers_children_at_the_evicters_depth_are_read() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("P", "[1.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("P", "[2.0.0, )")]),
+            Pkg::simple("P", "1.0.0", vec![Dep::new("T", "[1.0.0, )")]),
+            Pkg::simple("P", "2.0.0", vec![]),
+            Pkg::simple("T", "2.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.restore.default,
+        resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("p", "2.0.0")])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
+}
+
+/// A package missing from every source below a loser is never reported,
+/// however deep: `A → G[1.0] → H → Missing` and `B → Q → R → G[2.0]` put
+/// G 1.0's evicter two levels below it, so H is dequeued and the missing
+/// package's item dequeued in turn before the eviction restarts the walk, and
+/// both engines still write `{A, B, G 2.0, Q, R}`. The walk declines: absent
+/// from the packages folder is not absent from every source (a loser's
+/// subtree package that a source holds and the folder lacks is fetched, read,
+/// and can carry the closure elsewhere), and the walk cannot tell the two
+/// apart.
+#[test]
+fn a_missing_package_dequeued_below_a_loser_does_not_fail_restore() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("G", "[1.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("Q", "[1.0.0, )")]),
+            Pkg::simple("Q", "1.0.0", vec![Dep::new("R", "[1.0.0, )")]),
+            Pkg::simple("R", "1.0.0", vec![Dep::new("G", "[2.0.0, )")]),
+            Pkg::simple("G", "1.0.0", vec![Dep::new("H", "[1.0.0, )")]),
+            Pkg::simple("G", "2.0.0", vec![]),
+            Pkg::simple("H", "1.0.0", vec![Dep::new("Missing", "[1.0.0, )")]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    let both = resolved_to(&[
+        ("a", "1.0.0"),
+        ("b", "1.0.0"),
+        ("g", "2.0.0"),
+        ("q", "1.0.0"),
+        ("r", "1.0.0"),
+    ]);
+    assert_eq!(comparison.restore.legacy, both);
+    assert_eq!(comparison.restore.default, both);
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
+}
+
+/// Restore starts a read of every edge it enqueues, whether or not the edge's
+/// package is already chosen, at the version the edge resolves to among what
+/// is installed: for an exclusive lower bound, the next installed version
+/// above it. `A → X[2.0]` settles X, and A's `X (1.0, )` beside it is read at
+/// X 1.5, which must be among the versions examined. Found by the examined-set
+/// check on a fresh soak seed.
+#[test]
+fn an_eclipsed_edges_best_match_is_examined() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "A",
+                "1.0.0",
+                vec![Dep::new("X", "[2.0.0, )"), Dep::new("B", "[1.0.0, )")],
+            ),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("X", "(1.0.0, )")]),
+            Pkg::simple("X", "1.0.0", vec![]),
+            Pkg::simple("X", "1.5.0", vec![]),
+            Pkg::simple("X", "2.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.ours,
+        ours_resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("x", "2.0.0")])
+    );
+}
+
+/// An edge from a loser's subtree back to the loser's package, satisfied by
+/// the loser, changes nothing in the engine (the loser is the chosen version
+/// while its subtree is walked), but is read like every edge, at its lower
+/// bound: `A → X[1.0] → Z → X[0.5, )` with `B → C → X[2.0]` reads X 0.5,
+/// which must be among the versions examined. Found by review.
+#[test]
+fn a_back_edge_to_the_loser_is_read_at_its_lower_bound() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[1.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("C", "[1.0.0, )")]),
+            Pkg::simple("C", "1.0.0", vec![Dep::new("X", "[2.0.0, )")]),
+            Pkg::simple("X", "0.5.0", vec![]),
+            Pkg::simple("X", "1.0.0", vec![Dep::new("Z", "[1.0.0, )")]),
+            Pkg::simple("X", "2.0.0", vec![]),
+            Pkg::simple("Z", "1.0.0", vec![Dep::new("X", "[0.5.0, )")]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.ours,
+        ours_resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("c", "1.0.0"),
+            ("x", "2.0.0")
+        ])
+    );
+}
+
+/// A back edge whose lower bound is not installed declines like any other
+/// subtree edge: restore reads the edge's best match across the packages
+/// folder and the sources, which the walk cannot name. `Z → X[0.5, )` with
+/// X 0.5 absent (X 1.0 the loser, X 2.0 the winner). Found by review.
+#[test]
+fn a_back_edge_whose_lower_bound_is_not_installed_declines() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("X", "[1.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("C", "[1.0.0, )")]),
+            Pkg::simple("C", "1.0.0", vec![Dep::new("X", "[2.0.0, )")]),
+            Pkg::simple("X", "1.0.0", vec![Dep::new("Z", "[1.0.0, )")]),
+            Pkg::simple("X", "2.0.0", vec![]),
+            Pkg::simple("Z", "1.0.0", vec![Dep::new("X", "[0.5.0, )")]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.restore.default,
+        resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("c", "1.0.0"),
+            ("x", "2.0.0")
+        ])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Declined("losing-subtree-contends")
+    );
+}
+
+/// Restore's best match takes a prerelease only where the range has a
+/// prerelease bound (`VersionRange.IsBetter`), so an eclipsed `X [0.0, )`
+/// beside installed X 0.5.0-alpha and X 0.5.0 is read at X 0.5.0, which must
+/// be among the versions examined; the alpha is not read. Found by review.
+#[test]
+fn an_eclipsed_edges_best_match_skips_prereleases_for_a_stable_range() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "A",
+                "1.0.0",
+                vec![Dep::new("X", "[2.0.0, )"), Dep::new("B", "[1.0.0, )")],
+            ),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("X", "[0.0.0, )")]),
+            Pkg::simple("X", "0.5.0-alpha", vec![]),
+            Pkg::simple("X", "0.5.0", vec![]),
+            Pkg::simple("X", "2.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.ours,
+        ours_resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("x", "2.0.0")])
+    );
+}
+
+/// The examined-set check ([`assert_examined_covers_what_restore_reads`]) is
+/// live: restore throws on reading a version whose `minClientVersion` is above
+/// its own, under either engine.
+#[test]
+fn a_minimum_client_version_on_a_read_version_throws() {
+    let mut oracle = Oracle::spawn();
+    let mut refused = Pkg::simple("P", "1.0.0", vec![]);
+    refused.min_client_version = Some("99.0".to_owned());
+    let packages = [
+        Pkg::simple("A", "1.0.0", vec![Dep::new("P", "[1.0.0, )")]),
+        refused,
+    ];
+    let universe = universe_json(&packages);
+    let direct_json = [json!({ "id": "A", "range": "[1.0.0, )" })];
+    for engine in ["legacy", "default"] {
+        let outcome = restore_with_engine(&mut oracle, engine, "net8.0", &universe, &direct_json);
+        assert!(
+            matches!(&outcome, EngineOutcome::Threw(exception) if exception.ends_with("MinClientVersionException")),
+            "{engine}: {outcome:?}"
+        );
+    }
 }
 
 /// A floating range in an eclipse comparison, which NuGet decides by the float's

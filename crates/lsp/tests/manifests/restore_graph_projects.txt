@@ -6,7 +6,7 @@ TypeEquality/TypeEquality/TypeEquality.fsproj b1: committed frameworks=1
 TypeEquality/TypeEquality/TypeEquality.fsproj restore: succeeded logs=0
 TypeEquality/TypeEquality/TypeEquality.fsproj spec: committed projects=1 frameworks=1 dependencies=3 pruned=0
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj assets netstandard2.0: libraries=19 packages=19 compile=18
-WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj b1: declined resolve:LosingVersionNotALeaf
+WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj b1: declined resolve:LosingSubtreeContends
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj restore: succeeded logs=0
 WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj spec: committed projects=1 frameworks=1 dependencies=6 pruned=0
 WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj assets net5.0: libraries=6 packages=6 compile=5
