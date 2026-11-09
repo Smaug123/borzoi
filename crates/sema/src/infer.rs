@@ -7319,6 +7319,10 @@ impl<'a> Gen<'a> {
     /// assembly-derived *type* is sealed at its door instead, so by here it has
     /// simply never been unified in — see the seal's comment below.
     fn finish(mut self) -> InferredFile {
+        // Past the budget the table's answers are not answers, so nothing is
+        // read from it. The check repeats below, after the last read: the
+        // read-off resolves every recorded variable, and one of those can be
+        // the first walk to pass the budget.
         if let Some(why) = self.table.over_budget() {
             return self.finish_over_budget(why);
         }
@@ -7454,6 +7458,9 @@ impl<'a> Gen<'a> {
                 (def, verdict)
             })
             .collect();
+        if let Some(why) = self.table.over_budget() {
+            return self.finish_over_budget(why);
+        }
         InferredFile {
             types,
             def_types,

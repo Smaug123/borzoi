@@ -30,7 +30,7 @@
 /// line of `let g0 x = (x, 0)`, `let g1 x = g0 (g0 x)`, …, doubles the type,
 /// and the unification table shares structure through variables that
 /// resolving a type expands (`let a = (x, x) in let b = (a, a) in …`). So
-/// [`crate::unify`]'s walks count what they visit and stop here, and a file
+/// the unification table's walks count what they visit and stop here, and a file
 /// whose inference reaches this bound publishes nothing
 /// ([`InferredFile::type_budget_exceeded`](crate::InferredFile::type_budget_exceeded)).
 ///
