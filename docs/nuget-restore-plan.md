@@ -75,7 +75,8 @@ reads it, the environment as a map. `borzoi_nuget::settings` reads the
 `NuGet.Config` hierarchy that way to find the global packages folder NuGet
 would use for a project (`$NUGET_PACKAGES`, else the configured
 `globalPackagesFolder`, else `~/.nuget/packages`), which the on-demand restore
-pins its package folder to.
+pins its package folder to, and which SDK discovery resolves versioned MSBuild
+SDKs (`Sdk="Name/Version"`, `msbuild-sdks`) from, as NuGet's SDK resolver does.
 
 ## Landed slices (one line each)
 

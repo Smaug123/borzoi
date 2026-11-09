@@ -78,8 +78,8 @@ use borzoi_msbuild::{
     PackageReferenceUncertaintyCause, PackageReferenceUncertaintyCauseKind, ParsedProject,
     SdkPathEntry, SdkResolution, SdkResolveError, SdkVersion,
     StructuralPackageReferenceUncertainty, VersionSpec, find_global_json, glob_resolver,
-    parse_fsproj, parse_fsproj_with_imports, parse_global_json, resolve_sdk, target_frameworks,
-    workloads,
+    nuget_package_version, parse_fsproj, parse_fsproj_with_imports, parse_global_json, resolve_sdk,
+    target_frameworks, workloads,
 };
 use serde::{Deserialize, Serialize};
 
@@ -767,7 +767,9 @@ fn package_view_from_msbuild(item: &MsbuildItem) -> PackageView {
 #[derive(Debug)]
 struct SdkContext {
     roots: Vec<PathBuf>,
-    nuget_packages_dir: Option<PathBuf>,
+    /// The global packages folder the child's NuGet SDK resolver reads, or why
+    /// it cannot be said.
+    nuget_packages_dir: Result<PathBuf, String>,
     spec: VersionSpec,
     msbuild_sdks: BTreeMap<String, SdkVersion>,
     /// Whether the project's global.json engages workload-set
@@ -782,7 +784,7 @@ impl SdkContext {
             .parent()
             .ok_or_else(|| format!("{} has no parent directory", project.display()))?;
         let dotnet_root = std::env::var_os("DOTNET_ROOT").map(PathBuf::from);
-        let nuget_packages_dir = resolve_nuget_packages_dir();
+        let nuget_packages_dir = resolve_nuget_packages_dir(project_dir);
 
         let Some(global_json_path) = find_global_json(project_dir) else {
             let dotnet_root = dotnet_root
@@ -843,11 +845,22 @@ impl SdkContext {
             overrides_present,
             global_json_pins_workload_set: self.global_json_pins_workload_set,
         };
+        // As the LSP's `SdkDiscovery::resolve`: a name NuGet has a version for
+        // declines where its folder cannot be said; any other reads no folder.
+        let nuget_packages_dir = match &self.nuget_packages_dir {
+            Ok(folder) => Some(folder.as_path()),
+            Err(reason) if nuget_package_version(sdk_name, Some(&self.msbuild_sdks)).is_some() => {
+                return Err(SdkResolveError::UnsupportedLayout {
+                    reason: reason.clone(),
+                });
+            }
+            Err(_) => None,
+        };
         let mut version_not_satisfied: Option<SdkResolveError> = None;
         for root in &self.roots {
             match resolve_sdk(
                 root,
-                self.nuget_packages_dir.as_deref(),
+                nuget_packages_dir,
                 sdk_name,
                 Some(&self.spec),
                 Some(&self.msbuild_sdks),
@@ -891,16 +904,21 @@ fn expand_sdk_paths(
     Ok(roots)
 }
 
-fn resolve_nuget_packages_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("NUGET_PACKAGES") {
-        return Some(PathBuf::from(dir));
-    }
-    let home = if cfg!(windows) {
-        std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
-    } else {
-        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
-    };
-    home.map(|h| PathBuf::from(h).join(".nuget").join("packages"))
+/// The global packages folder the real `dotnet msbuild` child's NuGet SDK
+/// resolver reads versioned SDKs from for a project in `project_dir`: what
+/// NuGet's settings choose under the child's environment
+/// ([`common::oracle_environment`], less the one name in it that is not a real
+/// variable of the child). Another folder would hand the evaluator a different
+/// SDK from the one the comparison's other side imports.
+fn resolve_nuget_packages_dir(project_dir: &Path) -> Result<PathBuf, String> {
+    let environment: BTreeMap<OsString, OsString> = common::oracle_environment()
+        .into_iter()
+        .filter(|(name, _)| name != "MSBuildUserExtensionsPath")
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
+    borzoi_nuget::settings::global_packages_folder(project_dir, &environment)
+        .map(|found| found.folder)
+        .map_err(|decline| format!("the global packages folder NuGet would use: {decline}"))
 }
 
 fn collect_fsprojs(root: &Path) -> Vec<PathBuf> {

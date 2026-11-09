@@ -514,9 +514,10 @@ fn classify_change(uri: &Uri, typ: FileChangeType) -> ChangeClass {
     // `packages.lock.json` is an input to the on-demand restore decision
     // (`crate::restore` declines when one exists); `nuget.config` (any casing —
     // `name` is lowercased) steers restore through its `globalPackagesFolder`,
-    // which the restore is pinned to, and its `fallbackPackageFolders`. Both
-    // must invalidate the assembly env, so treat them structurally like the
-    // assets file they sit beside.
+    // which the restore is pinned to and versioned MSBuild SDKs resolve from
+    // (`crate::sdk_discovery`), and its `fallbackPackageFolders`. Both must
+    // invalidate the project evaluations and the assembly env, so treat them
+    // structurally like the assets file they sit beside.
     if name == "global.json"
         || name == "project.assets.json"
         || name == "packages.lock.json"

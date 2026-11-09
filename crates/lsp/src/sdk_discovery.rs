@@ -2,7 +2,7 @@
 //! needs to resolve `Sdk="…"` references.
 //!
 //! The msbuild crate's [`locate_dotnet_sdk`] is deliberately policy-free:
-//! it takes a `$DOTNET_ROOT`, an optional `$NUGET_PACKAGES`, an optional
+//! it takes a `$DOTNET_ROOT`, an optional NuGet package folder, an optional
 //! [`VersionSpec`] (typically built from `global.json`), and an optional
 //! `msbuild-sdks` pin map. Choosing those values is the host's job.
 //! This module is that host — it sniffs the process environment, walks
@@ -32,12 +32,27 @@
 //! `global.json` whose `sdk.paths` lists only relative entries needs no
 //! host root at all.
 //!
-//! ## `$NUGET_PACKAGES` discovery
+//! ## The NuGet package folder
 //!
-//! NuGet itself defaults to `$HOME/.nuget/packages` (Unix) /
-//! `%USERPROFILE%\.nuget\packages` (Windows) when the env var is unset.
-//! We replicate that default here so `locate_dotnet_sdk` has somewhere
-//! to look for `Sdk="Name/Version"` pins backed by a NuGet package.
+//! A versioned SDK reference (`Sdk="Name/Version"`, or a name with a
+//! `global.json` `msbuild-sdks` entry) is NuGet's to resolve: its MSBuild
+//! SDK resolver (`NuGetSdkResolver`) reads the package from the global
+//! packages folder of `Settings.LoadDefaultSettings(<project file>)`, the
+//! same settings model restore uses. So the folder is
+//! [`global_packages_folder`]'s answer for the project's directory (NuGet's
+//! walk starts at the project *file*, whose `nuget.config` child cannot
+//! exist, so its first folder is the project's directory) under
+//! [`crate::restore::restore_environment`]: `$NUGET_PACKAGES`, else the
+//! `globalPackagesFolder` of the config files NuGet loads, else
+//! `<home>/.nuget/packages`. Where that model declines, a versioned
+//! reference declines too ([`SdkDiscovery::resolve`]); an unversioned one
+//! reads no NuGet folder ([`nuget_package_version`]), so it resolves as
+//! ever.
+//!
+//! Where the folder lacks the package, NuGet looks in its fallback folders
+//! and then downloads the package into the folder. Neither is modelled: the
+//! NuGet half of resolution then finds nothing, which is a failure to
+//! resolve, never a resolution to some other copy.
 //!
 //! [`locate_dotnet_sdk`]: borzoi_msbuild::locate_dotnet_sdk
 //! [`SdkResolver`]: borzoi_msbuild::SdkResolver
@@ -48,8 +63,9 @@ use std::path::{Component, Path, PathBuf};
 
 use borzoi_msbuild::{
     GlobalJsonError, SdkPathEntry, SdkResolution, SdkResolveError, SdkVersion, VersionSpec,
-    find_global_json, parse_global_json, resolve_sdk, workloads,
+    find_global_json, nuget_package_version, parse_global_json, resolve_sdk, workloads,
 };
+use borzoi_nuget::settings::{GlobalPackagesFolderDecline, global_packages_folder};
 
 /// Errors that can occur while gathering SDK-resolution context for a
 /// project. A missing `global.json` is *not* an error (it means "no
@@ -143,14 +159,15 @@ pub struct SdkDiscoveryEnv {
     /// `$DOTNET_ROOT`, if set. When `None`, [`SdkDiscovery::for_project`]
     /// falls back to a `$PATH` search.
     pub dotnet_root: Option<PathBuf>,
-    /// `$NUGET_PACKAGES`, if set. When `None`, we synthesise
-    /// `<home>/.nuget/packages` from [`Self::home_dir`].
+    /// `$NUGET_PACKAGES`, if set. It outranks every NuGet config file in
+    /// choosing the global packages folder (see the module docs).
     pub nuget_packages_dir: Option<PathBuf>,
     /// `$HOME` on Unix, `%USERPROFILE%` on Windows, if set to a
     /// non-empty value (empty counts as unset, as everywhere .NET
-    /// consults these). Consulted as a fallback for `$NUGET_PACKAGES`
-    /// and, after [`Self::dotnet_cli_home`], for the user-local dotnet
-    /// root; `None` here just means those fallbacks can't fire.
+    /// consults these). Where NuGet reads its user settings and finds its
+    /// default packages folder, and, after [`Self::dotnet_cli_home`], the
+    /// parent of the user-local dotnet root; `None` here means NuGet's
+    /// settings cannot be said, and the user-local root is unknown.
     pub home_dir: Option<PathBuf>,
     /// `$PATH`. Only consulted as a fallback for `$DOTNET_ROOT`.
     pub search_path: Option<OsString>,
@@ -312,7 +329,9 @@ impl SdkDiscoveryEnv {
 #[derive(Debug, Clone)]
 pub struct SdkDiscovery {
     roots: Vec<PathBuf>,
-    nuget_packages_dir: Option<PathBuf>,
+    /// The global packages folder NuGet's SDK resolver reads versioned SDK
+    /// references from, or why it cannot be said (see the module docs).
+    nuget_packages: Result<PathBuf, GlobalPackagesFolderDecline>,
     /// Always populated. Without an `sdk` block (or without a
     /// `global.json` at all) this carries an unpinned spec built from
     /// the host's prerelease policy — necessary so the policy still
@@ -382,7 +401,12 @@ impl SdkDiscovery {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        let nuget_packages_dir = resolve_nuget_packages_dir(env);
+        // NuGet's SDK resolver loads its settings with the project file as
+        // the root; the walk's first folder holding a config file can only
+        // be the project's directory (see the module docs).
+        let nuget_packages =
+            global_packages_folder(&walk_start, &crate::restore::restore_environment(env))
+                .map(|found| found.folder);
         // Host root resolution is conditionally fatal: required when
         // there's no `sdk.paths` field (today's behaviour preserved),
         // optional when `sdk.paths` is set (it may name explicit
@@ -437,7 +461,7 @@ impl SdkDiscovery {
 
         Ok(Self {
             roots,
-            nuget_packages_dir,
+            nuget_packages,
             spec,
             msbuild_sdks,
             global_json_path,
@@ -512,6 +536,24 @@ impl SdkDiscovery {
                 ),
             });
         }
+        // A name NuGet has a version for is resolved from the global packages
+        // folder, so where that folder cannot be said, so cannot the
+        // resolution. Any other name reads no NuGet folder, and resolves the
+        // same with none.
+        let nuget_packages = match &self.nuget_packages {
+            Ok(folder) => Some(folder.as_path()),
+            Err(decline) => {
+                if nuget_package_version(sdk_name, Some(&self.msbuild_sdks)).is_some() {
+                    return Err(SdkResolveError::UnsupportedLayout {
+                        reason: format!(
+                            "NuGet resolves this versioned SDK from its global packages \
+                             folder, which cannot be said: {decline}"
+                        ),
+                    });
+                }
+                None
+            }
+        };
         let workload_env = workloads::WorkloadEnvironment {
             user_dotnet_root: self.user_dotnet_root.as_deref(),
             overrides_present: self.workload_overrides_present,
@@ -520,7 +562,7 @@ impl SdkDiscovery {
         let locate = |root: &Path, name: &str| {
             resolve_sdk(
                 root,
-                self.nuget_packages_dir.as_deref(),
+                nuget_packages,
                 name,
                 Some(&self.spec),
                 Some(&self.msbuild_sdks),
@@ -536,10 +578,6 @@ impl SdkDiscovery {
     /// empty-roots discovery return [`SdkResolveError::NotFound`].
     pub fn roots(&self) -> &[PathBuf] {
         &self.roots
-    }
-
-    pub fn nuget_packages_dir(&self) -> Option<&Path> {
-        self.nuget_packages_dir.as_deref()
     }
 
     /// The constraint applied during resolution. Always present (see
@@ -752,23 +790,6 @@ fn resolve_across_roots(
             available: union,
         })
     }
-}
-
-/// `$NUGET_PACKAGES` wins; otherwise fall back to NuGet's documented
-/// default of `<home>/.nuget/packages`. Returns `None` if neither is
-/// available — `locate_dotnet_sdk` takes the NuGet dir as `Option`, so
-/// missing it just means "no NuGet fallback for pinned SDKs".
-fn resolve_nuget_packages_dir(env: &SdkDiscoveryEnv) -> Option<PathBuf> {
-    if let Some(dir) = &env.nuget_packages_dir {
-        return Some(dir.clone());
-    }
-    env.home_dir
-        .as_deref()
-        // Guard hand-built envs: an empty home would derive the
-        // cwd-relative `.nuget/packages`, which is nowhere NuGet
-        // writes.
-        .filter(|home| !home.as_os_str().is_empty())
-        .map(|home| home.join(".nuget").join("packages"))
 }
 
 /// The non-empty `MSBuildSDKsPath` a build environment carries, if any (see

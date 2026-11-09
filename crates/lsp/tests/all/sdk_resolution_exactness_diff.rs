@@ -27,7 +27,7 @@ use std::process::Command;
 
 use crate::common;
 use crate::common::SdkDirCasing;
-use borzoi::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use borzoi::sdk_discovery::SdkDiscovery;
 use borzoi_msbuild::{SdkResolution, SdkResolveError};
 use borzoi_spawn::BoundedCommand;
 use proptest::prelude::*;
@@ -199,11 +199,7 @@ impl Harness {
 
         let theirs = self.oracle.borrow_mut().resolve(&sdk_ref, &project_path);
 
-        let env = SdkDiscoveryEnv {
-            dotnet_root: Some(self.dotnet_root.clone()),
-            nuget_packages_dir: Some(self.gpf.clone()),
-            ..SdkDiscoveryEnv::default()
-        };
+        let env = common::sdk_oracle_discovery_env(&self.gpf, self.dotnet_root.clone());
         let disc = SdkDiscovery::for_project(&project_path, &env).expect("discovery");
         let ours = disc.resolve(&sdk_ref);
 

@@ -788,6 +788,29 @@ pub fn resolve_sdk(
     .map(SdkResolution::from)
 }
 
+/// The version of `sdk_name` that [`resolve_sdk`] looks for in the NuGet
+/// package folder: its per-import `Name/Version` pin, else its
+/// `msbuild-sdks` entry (NuGet's MSBuild SDK resolver has no other version
+/// source). `None` when it has neither, when the per-import version does not
+/// parse (which [`locate_dotnet_sdk`] rejects outright), or when the name is
+/// a workload locator (which never reaches NuGet). Then the resolution reads
+/// no NuGet package folder at all: [`resolve_sdk`] answers the same whatever
+/// folder it is handed, `None` included, so a caller that cannot say which
+/// folder NuGet would use need decline only the names this returns `Some`
+/// for.
+pub fn nuget_package_version(
+    sdk_name: &str,
+    msbuild_sdks: Option<&std::collections::BTreeMap<String, SdkVersion>>,
+) -> Option<SdkVersion> {
+    if workloads::is_workload_locator(sdk_name) {
+        return None;
+    }
+    match sdk_name.split_once('/') {
+        Some((_, version)) => SdkVersion::parse(version),
+        None => msbuild_sdks.and_then(|pins| pins.get(sdk_name).cloned()),
+    }
+}
+
 /// The `{dotnet_root}/sdk/{version}` directory of the host SDK the spec
 /// admits (highest installed version when unconstrained) — the SDK
 /// whose `KnownWorkloadManifests.txt` drives workload locator

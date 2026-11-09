@@ -818,25 +818,84 @@ pub struct SdkOracle {
     child: BatchChild,
 }
 
+/// The environment [`SdkOracle::spawn`] runs its child under: the runtime
+/// essentials of this process's environment, with `NUGET_PACKAGES` forced to
+/// `nuget_packages`.
+fn sdk_oracle_environment(nuget_packages: &Path) -> Vec<(String, std::ffi::OsString)> {
+    let mut environment: Vec<(String, std::ffi::OsString)> = Vec::new();
+    for var in ["PATH", "HOME", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(var) {
+            environment.push((var.to_owned(), value));
+        }
+    }
+    for (key, value) in std::env::vars_os() {
+        let Some(key) = key.to_str() else { continue };
+        if (key.starts_with("DOTNET_") || key.starts_with("NUGET_")) && key != "NUGET_PACKAGES" {
+            environment.push((key.to_owned(), value));
+        }
+    }
+    environment.push(("NUGET_PACKAGES".to_owned(), nuget_packages.into()));
+    environment
+}
+
+/// The [`borzoi::sdk_discovery::SdkDiscoveryEnv`] that sees, for NuGet's
+/// settings, what [`SdkOracle::spawn`]'s child sees: its home folder, its
+/// `DOTNET_*` and `NUGET_*` variables, and `nuget_packages` as
+/// `NUGET_PACKAGES`. NuGet's SDK resolver reads its settings (and so its
+/// global packages folder) from that environment, so a differential whose two
+/// sides saw different ones would grade a folder choice neither side made.
+/// `dotnet_root` is the caller's.
+pub fn sdk_oracle_discovery_env(
+    nuget_packages: &Path,
+    dotnet_root: PathBuf,
+) -> borzoi::sdk_discovery::SdkDiscoveryEnv {
+    let environment = sdk_oracle_environment(nuget_packages);
+    let value = |name: &str| {
+        environment
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| PathBuf::from(value))
+            .filter(|value| !value.as_os_str().is_empty())
+    };
+    borzoi::sdk_discovery::SdkDiscoveryEnv {
+        dotnet_root: Some(dotnet_root),
+        nuget_packages_dir: Some(nuget_packages.to_owned()),
+        home_dir: value("HOME"),
+        dotnet_cli_home: value("DOTNET_CLI_HOME"),
+        build_environment: environment
+            .iter()
+            .filter_map(|(key, value)| Some((key.clone(), value.to_str()?.to_owned())))
+            .collect(),
+        ..borzoi::sdk_discovery::SdkDiscoveryEnv::default()
+    }
+}
+
 impl SdkOracle {
     pub fn spawn(nuget_packages: &Path) -> SdkOracle {
+        let environment = sdk_oracle_environment(nuget_packages);
+        SdkOracle::spawn_with(
+            environment
+                .into_iter()
+                .map(|(k, v)| (k.into(), v))
+                .collect(),
+        )
+    }
+
+    /// An oracle whose child runs under exactly `environment`: what a
+    /// differential needs when the environment is the subject, as it is for
+    /// which global packages folder NuGet's settings choose.
+    pub fn spawn_in(
+        environment: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    ) -> SdkOracle {
+        SdkOracle::spawn_with(environment.clone().into_iter().collect())
+    }
+
+    fn spawn_with(environment: Vec<(std::ffi::OsString, std::ffi::OsString)>) -> SdkOracle {
         let bin = ensure_condition_oracle_built().to_path_buf();
-        let gpf = nuget_packages.to_path_buf();
         let factory = move || {
             let mut cmd = Command::new(&bin);
             cmd.env_clear();
-            for var in ["PATH", "HOME", "TMPDIR"] {
-                if let Ok(value) = std::env::var(var) {
-                    cmd.env(var, value);
-                }
-            }
-            for (key, value) in std::env::vars() {
-                if key.starts_with("DOTNET_") || key.starts_with("NUGET_") {
-                    cmd.env(key, value);
-                }
-            }
-            // Wins over the inherited (devshell-pinned) NUGET_PACKAGES.
-            cmd.env("NUGET_PACKAGES", &gpf);
+            cmd.envs(environment.iter().map(|(k, v)| (k, v)));
             cmd
         };
         SdkOracle {
