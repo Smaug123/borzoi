@@ -167,6 +167,12 @@ This is a Cargo workspace with nine members:
   an entry (Nix's macOS `~nix~case~hack~` suffix decoded). And `nuget_oracle`,
   the `tools/nuget-oracle` driver, which lives here because both
   `borzoi-nuget`'s differentials and the LSP's restore-graph oracle drive it.
+  And `xml_pump`: every short element path of an XML input repeated thousands
+  of levels deep, run on a 2 MiB stack. `roxmltree` (≥ 0.21.2) parses
+  iteratively, so a deep file overflows only through a walk of ours that
+  recurses per element; `borzoi-msbuild`'s `xml_nesting_pump` and
+  `borzoi-nuget`'s `dgspec::xml_nesting_pump` hold every reader of untrusted
+  XML to that without naming the recursive paths. A new reader belongs in one.
 - `crates/sema/` — `borzoi-sema`. Semantic analysis (name resolution
   today, type inference later) over the `borzoi-cst` AST. `resolve_file`
   builds a position-ordered scope tree and resolves each name use to its

@@ -3639,9 +3639,18 @@ fn handle_choose(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
 /// `Label` is MSB4066 there, pinned; `<When>` takes `Condition` and
 /// `Label`), and branch children drawn exclusively from
 /// `PropertyGroup` / `ItemGroup` / nested `Choose` (anything else is
-/// MSB4067) — with nested `Choose`s held to the same rules. MSBuild
-/// enforces all of this at load time, before evaluating anything, so
-/// one violation anywhere invalidates the whole element.
+/// MSB4067) — with nested `Choose`s held to the same rules, and nested
+/// no deeper than [`MAXIMUM_CHOOSE_NESTING`]. MSBuild enforces all of
+/// this at load time, before evaluating anything, so one violation
+/// anywhere invalidates the whole element.
+///
+/// The nesting ceiling is also what bounds every recursion through
+/// `<Choose>` — this check, [`handle_choose`] by way of
+/// [`walk_top_level`], [`choose_branch_writes`] and
+/// [`scan_undecided_choose_branch`] — so that a deeply nested
+/// `<Choose>` in a file the user does not control cannot overflow the
+/// stack. Each of those runs only on a `<Choose>` this check passed,
+/// and this check stops descending at the ceiling.
 ///
 /// Deliberately *not* validated: attributes on the branch children
 /// themselves. `<PropertyGroup Foo="bar">` inside a branch is MSB4066
@@ -3653,6 +3662,20 @@ fn handle_choose(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
 /// is an evaluator-wide question, out of scope for the Choose stage
 /// (docs/completed/sdk-chain-exactness-plan.md, Stage A).
 fn choose_shape_is_valid(node: Node<'_, '_>) -> bool {
+    choose_shape_is_valid_at(node, 1)
+}
+
+/// The deepest `<Choose>` nesting MSBuild loads: a `<Choose>` with this
+/// many `<Choose>` elements on its path (itself included) loads, one
+/// more is `ChooseOverflow` (`ProjectParser.MaximumChooseNesting`).
+const MAXIMUM_CHOOSE_NESTING: usize = 50;
+
+/// [`choose_shape_is_valid`] for a `<Choose>` with `nesting` `<Choose>`
+/// elements on its path within the file, itself included.
+fn choose_shape_is_valid_at(node: Node<'_, '_>, nesting: usize) -> bool {
+    if nesting > MAXIMUM_CHOOSE_NESTING {
+        return false;
+    }
     // `<When>` recognizes `Condition` and `Label`; `<Choose>` and
     // `<Otherwise>` recognize no attributes at all.
     let attrs_ok = |element: Node<'_, '_>, is_when: bool| {
@@ -3692,7 +3715,7 @@ fn choose_shape_is_valid(node: Node<'_, '_>) -> bool {
             match grandchild.tag_name().name() {
                 "PropertyGroup" | "ItemGroup" => {}
                 "Choose" => {
-                    if !choose_shape_is_valid(grandchild) {
+                    if !choose_shape_is_valid_at(grandchild, nesting + 1) {
                         return false;
                     }
                 }

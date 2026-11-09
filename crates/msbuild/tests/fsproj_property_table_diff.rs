@@ -629,3 +629,38 @@ fn fixed_seed_document_sweep() {
         "too few committed ({committed}) over {CASES} documents"
     );
 }
+
+/// `<Choose>` nesting around MSBuild's ceiling. MSBuild's loader refuses a
+/// `<Choose>` nested more than `ProjectParser.MaximumChooseNesting` (50) deep
+/// (`ChooseOverflow`), so the whole project fails to load; one level less
+/// evaluates normally. Each depth is pinned to the verdict MSBuild gives it as
+/// well as diffed, since a fixture both sides misjudge alike passes the
+/// differential alone.
+#[test]
+fn choose_nesting_around_msbuilds_ceiling_is_exact() {
+    let mut oracle = Oracle::spawn();
+    let names: Vec<String> = NAMES.iter().map(|n| (*n).to_string()).collect();
+    for (depth, msbuild_loads) in [(1, true), (49, true), (50, true), (51, false), (52, false)] {
+        // Writes at the outermost and innermost levels: an evaluator that
+        // checked the ceiling only once it had walked in would commit the first.
+        let xml = format!(
+            "<Project>\n{}<PropertyGroup><Beta>inner</Beta></PropertyGroup>{}\n</Project>\n",
+            "<Choose><When Condition=\"'$(Gamma)' == ''\">\
+             <PropertyGroup><Alpha>outer</Alpha></PropertyGroup>"
+                .repeat(depth),
+            "</When></Choose>".repeat(depth),
+        );
+        let theirs = oracle.project(&xml, &names, None, &[]);
+        assert_eq!(
+            theirs.is_some(),
+            msbuild_loads,
+            "MSBuild's verdict on {depth} nested Chooses moved"
+        );
+        let committed = check_property_table_certain_implies_exact(&mut oracle, &xml);
+        assert_eq!(
+            committed,
+            if msbuild_loads { 2 } else { 0 },
+            "{depth} nested Chooses: we committed {committed} of Alpha, Beta"
+        );
+    }
+}
