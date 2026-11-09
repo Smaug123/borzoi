@@ -4165,6 +4165,11 @@ impl<'a> Resolver<'a> {
     /// use — FCS puts the block's later modules and `open`s in scope at it — so
     /// an emit declines there ([`DeclineCause::RecursiveModuleActive`]); the walk
     /// still decides whether the path is same-file-rooted.
+    ///
+    /// In pattern position FCS tries the head's *types* before its modules and
+    /// namespaces, so an emit also declines where a type of the head's name
+    /// that may nest one is in scope
+    /// ([`pattern_type_head_possible`](Self::pattern_type_head_possible)).
     fn classify_same_file_module_qualified_case(
         &self,
         segments: &[SyntaxToken],
@@ -4194,6 +4199,11 @@ impl<'a> Resolver<'a> {
         match outcome {
             SameFileQualified::Emit { .. } if self.recursive_module_active => {
                 SameFileQualified::Decline(DeclineCause::RecursiveModuleActive)
+            }
+            SameFileQualified::Emit { .. } | SameFileQualified::Decline(_)
+                if in_pattern && self.pattern_type_head_possible(&id_text(head_seg)) =>
+            {
+                SameFileQualified::DeferStop
             }
             outcome => outcome,
         }

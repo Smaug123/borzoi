@@ -542,6 +542,20 @@ const SHAPES: &[(&str, &str, &str)] = &[
         "module Top\n\nmodule ``global`` =\n    module System =\n        \
          type String = Empty | Other\nmodule Use =\n    USE\n",
     ),
+    // A pattern tries the head's types first: an abbreviation of a BCL type
+    // that nests the residual takes it from the namespace or module.
+    (
+        "abbreviation-head-namespace",
+        "Environment.SpecialFolder.Desktop",
+        "namespace Environment\n\ntype SpecialFolder = Desktop | Other\n\nnamespace Client\n\n\
+         type Environment = System.Environment\nmodule Use =\n    USE\n",
+    ),
+    (
+        "abbreviation-head-module",
+        "Environment.SpecialFolder.Desktop",
+        "module Top\n\nmodule Environment =\n    type SpecialFolder = Desktop | Other\n\
+         type Environment = System.Environment\nmodule Use =\n    USE\n",
+    ),
     // A module segment declared twice in one container (FS0037).
     (
         "redeclared-segment",
