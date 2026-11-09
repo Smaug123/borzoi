@@ -518,6 +518,91 @@ const AUTO_OPEN_CHILD_MODULE: &[&str] = &[
     "union/aoModule/earlierFile/sameFile/sameNs/noOpen/head",
 ];
 
+/// A namespace-level constructor and a class of one name, declared in one
+/// block (`decls`), probed bare in that block and in a later block of the
+/// same namespace: the later block's implicit open adds the fragment's types
+/// and union cases in declaration order, and its exceptions apart from them.
+const CONSTRUCTOR_ORDERS: &[(&str, &[&str])] = &[
+    (
+        "caseThenClass",
+        &["type U = X of int | Y", "type X() = class end"],
+    ),
+    (
+        "classThenCase",
+        &["type X() = class end", "type U = X of int | Y"],
+    ),
+    (
+        "caseThenGenericClass",
+        &["type U = X of int | Y", "type X<'T>() = class end"],
+    ),
+    (
+        "genericClassThenCase",
+        &["type X<'T>() = class end", "type U = X of int | Y"],
+    ),
+    (
+        "exceptionThenClass",
+        &["exception X of int", "type X() = class end"],
+    ),
+    (
+        "classThenException",
+        &["type X() = class end", "exception X of int"],
+    ),
+    (
+        "exceptionThenGenericClass",
+        &["exception X of int", "type X<'T>() = class end"],
+    ),
+    (
+        "genericClassThenException",
+        &["type X<'T>() = class end", "exception X of int"],
+    ),
+];
+
+#[test]
+fn a_constructor_of_an_earlier_block_agrees_with_fcs() {
+    let mut f = FileBuilder::new(0);
+    let mut sites = Vec::new();
+    for (i, (tag, decls)) in CONSTRUCTOR_ORDERS.iter().enumerate() {
+        f.line(&format!("namespace C{i}"));
+        f.line("");
+        lines(
+            &mut f,
+            &decls.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
+        );
+        f.line("module Here =");
+        f.probe("    let v = X", "X", format!("{tag}/sameBlock"), &mut sites);
+        f.line(&format!("namespace C{i}"));
+        f.line("");
+        f.line("module Later =");
+        f.probe(
+            "    let v = X",
+            "X",
+            format!("{tag}/laterBlock"),
+            &mut sites,
+        );
+    }
+    let graded = grade("nbtc", &[("a.fs", f.text)], &sites);
+    assert!(
+        graded
+            .iter()
+            .any(|g| matches!(g.fcs, FcsVerdict::Resolved(..)))
+    );
+    assert_sound_and_live(
+        "earlier-block constructor",
+        &graded,
+        EXCEPTION_AFTER_CLASS,
+        &[
+            "classThenCase/laterBlock",
+            "genericClassThenCase/laterBlock",
+        ],
+    );
+}
+
+/// A bare `X` after `type X() = class end` and then `exception X of int` in
+/// the same block: FCS binds the class, and the walk the exception, the later
+/// declaration. Lexical, so not about namespace blocks: a later block, which
+/// adds a fragment's exceptions apart from its types, declines.
+const EXCEPTION_AFTER_CLASS: &[&str] = &["classThenException/sameBlock"];
+
 #[test]
 fn a_type_in_an_earlier_namespace_block_agrees_with_fcs() {
     let mut a = FileBuilder::new(0);

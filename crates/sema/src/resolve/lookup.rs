@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity, OpenTrace,
-    Resolution, SlotClass, TypeSlot,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity,
+    OpenTrace, Resolution, SlotClass, TypeSlot,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
@@ -5781,12 +5781,13 @@ impl<'a> Resolver<'a> {
     ///
     /// The implicit open adds the namespace's fragments in order, earlier
     /// files' before this file's earlier blocks', and within a fragment its
-    /// types, union and exception cases in declaration order, then its
-    /// `[<AutoOpen>]` modules' contents (`AddModuleOrNamespaceContentsToNameEnv`).
+    /// types and union cases in declaration order (its exceptions apart from
+    /// them), then its `[<AutoOpen>]` modules' contents
+    /// (`AddModuleOrNamespaceContentsToNameEnv`).
     /// So against a [`TypeReach::NamespaceOpen`] type:
     ///
     /// - a value an earlier file supplies is earlier;
-    /// - a case an earlier block declares is earlier exactly when it is
+    /// - a union case an earlier block declares is earlier exactly when it is
     ///   declared before the type, whether the open folded it or the block
     ///   re-took it from the namespace's frame;
     /// - a value an earlier block's `[<AutoOpen>]` module supplies is later
@@ -5806,7 +5807,19 @@ impl<'a> Resolver<'a> {
         let def = self
             .value_resolution_def_range(entry.resolution)
             .map(|r| u32::from(r.start()));
-        let is_case = matches!(entry.resolution, Resolution::Item(id) if self.item_is_case(id));
+        // A union case: the fold adds a fragment's exceptions apart from its
+        // types, so an exception is ordered against no type.
+        let is_case = match entry.resolution {
+            Resolution::Item(id) => id
+                .index()
+                .checked_sub(self.item_base as usize)
+                .and_then(|local| self.items.get(local))
+                .is_some_and(|item| matches!(item.case_kind(), Some(CaseKind::Union { .. }))),
+            _ => false,
+        };
+        if matches!(entry.resolution, Resolution::Item(id) if self.item_is_case(id)) && !is_case {
+            return None;
+        }
         match (entry.from_open, def) {
             (true, Some(def)) if is_case => Some(def < type_pos),
             (true, Some(def)) => {
