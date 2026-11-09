@@ -416,3 +416,243 @@ fn config_global_packages_folder_stays_in_cache() {
         Expect::Resolves,
     );
 }
+
+/// The version of the `FSharp.Core` package in the `FSharp/library-packs`
+/// folder of the SDK a project with no `global.json` restores with (the
+/// highest installed), which the SDK's targets add as a restore source whatever
+/// `RestoreSources` says. The folder holds one package.
+fn library_packs_fsharp_core_version() -> String {
+    let sdks = dotnet_root().join("sdk");
+    let newest = std::fs::read_dir(&sdks)
+        .unwrap()
+        .flatten()
+        .filter(|sdk| sdk.path().join("FSharp").is_dir())
+        .max_by_key(|sdk| version_parts(&sdk.file_name().to_string_lossy()))
+        .unwrap_or_else(|| panic!("no SDK with an F# toolset under {}", sdks.display()))
+        .path();
+    let packs = newest.join("FSharp").join("library-packs");
+    let versions: Vec<String> = std::fs::read_dir(&packs)
+        .unwrap()
+        .flatten()
+        .filter_map(|pack| {
+            let name = pack.file_name().to_string_lossy().into_owned();
+            name.strip_prefix("FSharp.Core.")
+                .and_then(|rest| rest.strip_suffix(".nupkg"))
+                .map(str::to_owned)
+        })
+        .collect();
+    let [version] = versions.as_slice() else {
+        panic!(
+            "expected one FSharp.Core in {}: {versions:?}",
+            packs.display()
+        );
+    };
+    version.clone()
+}
+
+/// The leading number of each dot-separated part of `version` (`100` of
+/// `100-rc`), for ordering stable versions and SDK folder names.
+fn version_parts(version: &str) -> Vec<u64> {
+    version
+        .split('.')
+        .map(|part| {
+            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+            digits
+                .parse()
+                .unwrap_or_else(|_| panic!("not a version: {version}"))
+        })
+        .collect()
+}
+
+/// The process environment with `packages` as the global packages folder.
+fn env_with_packages_folder(packages: &Path) -> SdkDiscoveryEnv {
+    std::fs::create_dir_all(packages).unwrap();
+    let mut env = SdkDiscoveryEnv::from_process_env();
+    env.nuget_packages_dir = Some(packages.to_owned());
+    env
+}
+
+/// A packages folder under `scratch` holding only the vendored
+/// [`FSHARP_CORE_VERSION`] of `FSharp.Core`.
+fn packages_folder_with_the_vendored_fsharp_core(scratch: &Path) -> PathBuf {
+    let vendored = PathBuf::from(
+        std::env::var_os("NUGET_PACKAGES").expect("NUGET_PACKAGES unset — run under `nix develop`"),
+    );
+    let packages = scratch.join("packages");
+    copy_folder(
+        &vendored.join("fsharp.core").join(FSHARP_CORE_VERSION),
+        &packages.join("fsharp.core").join(FSHARP_CORE_VERSION),
+    );
+    packages
+}
+
+/// Restore `body` as `App.fsproj` in a fresh project beside `packages`, the
+/// global packages folder, and return the outcome.
+fn restore_with_packages_folder(
+    tag: &str,
+    scratch: &Path,
+    packages: &Path,
+    body: &str,
+) -> RestoreOutcome {
+    let root = scratch.join("app");
+    std::fs::create_dir_all(&root).unwrap();
+    restore_hazard(tag, &root, body, &[], env_with_packages_folder(packages))
+}
+
+#[test]
+fn a_library_packs_fsharp_core_above_the_request_declines() {
+    // A cold packages folder, and a request below the SDK's own FSharp.Core.
+    // The SDK's library-packs source survives the source override, so restore
+    // settles for the bundled FSharp.Core (`NU1603`), where the user's restore
+    // would take the requested version from its feed. Decline.
+    let bundled = library_packs_fsharp_core_version();
+    assert!(
+        version_parts(FSHARP_CORE_VERSION) < version_parts(&bundled),
+        "the case needs the request ({FSHARP_CORE_VERSION}) below library-packs' {bundled}"
+    );
+    let scratch = scratch_folder("library-packs-above");
+    let packages = scratch.join("packages");
+    let outcome = restore_with_packages_folder(
+        "library-packs-above",
+        &scratch,
+        &packages,
+        &project("", &fsharp_core_ref()),
+    );
+    assert_outcome("library-packs-above", Expect::Declines, &outcome);
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+#[test]
+fn the_sdk_fsharp_core_resolves_from_library_packs_into_a_cold_folder() {
+    // The implicit FSharp.Core asks for exactly the version library-packs
+    // holds. Any restore whose sources include library-packs selects that
+    // version, so a cold packages folder still resolves.
+    let bundled = library_packs_fsharp_core_version();
+    let scratch = scratch_folder("library-packs-exact");
+    let packages = scratch.join("packages");
+    let body = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="App.fs" />
+  </ItemGroup>
+</Project>
+"#;
+    let outcome = restore_with_packages_folder("library-packs-exact", &scratch, &packages, body);
+    assert_outcome("library-packs-exact", Expect::Resolves, &outcome);
+    let RestoreOutcome::Resolved(resolved) = outcome else {
+        unreachable!("asserted above")
+    };
+    let expected = packages.join("fsharp.core").join(&bundled);
+    assert!(
+        !resolved.package_dlls.is_empty()
+            && resolved
+                .package_dlls
+                .iter()
+                .all(|dll| dll.starts_with(&expected)),
+        "every package assembly must be the SDK's FSharp.Core {bundled}: {:?}",
+        resolved.package_dlls
+    );
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// The runtime identifier of the machine the tests run on.
+fn host_runtime_identifier() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "osx-arm64",
+        ("macos", "x86_64") => "osx-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("linux", "x86_64") => "linux-x64",
+        ("windows", "aarch64") => "win-arm64",
+        ("windows", "x86_64") => "win-x64",
+        (os, arch) => panic!("no runtime identifier for {os}-{arch}"),
+    }
+}
+
+#[test]
+fn a_runtime_identifier_does_not_decline() {
+    // The spec of a project with a runtime identifier holds fields the
+    // certificate does not read (`runtimes`); they must not decline it.
+    let rid = host_runtime_identifier();
+    let body = project(
+        &format!(
+            "    <RuntimeIdentifier>{rid}</RuntimeIdentifier>\n    <UseAppHost>false</UseAppHost>"
+        ),
+        &fsharp_core_ref(),
+    );
+    assert_hazard("runtime-identifier", &body, &[], Expect::Resolves);
+}
+
+/// A request below every `FSharp.Core` the packages folder and library-packs
+/// hold, so restore settles for the folder's (`NU1603`).
+const FSHARP_CORE_BELOW_THE_FOLDER: &str = "10.0.100";
+
+/// Restore a project asking for `FSharp.Core` as `reference` says, with
+/// `extra_properties`, from a packages folder holding only the vendored
+/// version, and assert that it declines.
+fn assert_inexact_request_declines(tag: &str, extra_properties: &str, reference: &str) {
+    assert!(version_parts(FSHARP_CORE_BELOW_THE_FOLDER) < version_parts(FSHARP_CORE_VERSION));
+    let scratch = scratch_folder(tag);
+    let packages = packages_folder_with_the_vendored_fsharp_core(&scratch);
+    let outcome = restore_with_packages_folder(
+        tag,
+        &scratch,
+        &packages,
+        &project(extra_properties, reference),
+    );
+    assert_outcome(tag, Expect::Declines, &outcome);
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// A `FSharp.Core` reference with the version `range`, and `metadata`.
+fn fsharp_core_with(range: &str, metadata: &str) -> String {
+    format!("    <PackageReference Include=\"FSharp.Core\" Version=\"{range}\"{metadata} />")
+}
+
+#[test]
+fn a_folder_holding_only_a_higher_version_declines() {
+    // Restore settles for the folder's version (`NU1603`), where the user's
+    // restore would take the requested one from its feed.
+    assert_inexact_request_declines(
+        "folder-higher",
+        "",
+        &fsharp_core_with(FSHARP_CORE_BELOW_THE_FOLDER, ""),
+    );
+}
+
+#[test]
+fn a_project_wide_no_warn_does_not_hide_a_higher_version() {
+    // `NoWarn` keeps `NU1603` out of the assets file's log.
+    assert_inexact_request_declines(
+        "folder-higher-nowarn",
+        "    <NoWarn>$(NoWarn);NU1603</NoWarn>",
+        &fsharp_core_with(FSHARP_CORE_BELOW_THE_FOLDER, ""),
+    );
+}
+
+#[test]
+fn a_package_no_warn_does_not_hide_a_higher_version() {
+    assert_inexact_request_declines(
+        "folder-higher-package-nowarn",
+        "",
+        &fsharp_core_with(FSHARP_CORE_BELOW_THE_FOLDER, " NoWarn=\"NU1603\""),
+    );
+}
+
+#[test]
+fn a_floating_request_declines() {
+    // A floating range takes the highest version the sources hold, and the
+    // user's feed may hold a higher one.
+    assert_inexact_request_declines("floating", "", &fsharp_core_with("10.*", ""));
+}
+
+#[test]
+fn an_exclusive_lower_bound_declines() {
+    // `(a, )` has no version restore can match exactly.
+    assert_inexact_request_declines(
+        "exclusive-lower-bound",
+        "",
+        &fsharp_core_with(&format!("({FSHARP_CORE_BELOW_THE_FOLDER}, )"), ""),
+    );
+}

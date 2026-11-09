@@ -29,27 +29,38 @@
 //!   `RestoreAdditionalProjectSources`) overrides every configured feed — the
 //!   project's own `<RestoreSources>`, `Directory.Build.props`, and the ambient
 //!   config's `nuget.org` — with a single empty local folder, so restore reads
-//!   only the warm global-packages cache. A cached project restores in ~0.5s; a
+//!   no feed. A cached project restores in ~0.5s; a
 //!   cold cache fails fast (~0.7s) with `NU1101` instead of stalling on the
 //!   network, which nothing could make fast anyway — so we decline and degrade.
 //!   `-p:NuGetAudit=false` keeps the audit from reaching its own sources.
+//!   The SDK's `library-packs` folders survive the override: its targets list
+//!   `RestoreAdditionalProjectSources` in `TreatAsLocalProperty` and then
+//!   append them. They are local folders, so the restore stays offline, and
+//!   restore extracts from them into the package folder, as the user's own
+//!   restore does.
+//! - **Certified exact.** The offline restore reads a subset of the user's
+//!   sources, so it can settle for a version the user's feeds would beat: one
+//!   above the range's minimum (`NU1603`), held by the package folder or a
+//!   `library-packs` folder, or the highest it can see for a floating range.
+//!   Its result is used only if every dependency edge resolved to the
+//!   inclusive minimum of its range, the one version every superset of its
+//!   sources selects too; anything else declines (see `restore/exact.rs`). So an
+//!   `FSharp.Core` request the SDK bundles resolves from a cold package folder,
+//!   and one below it declines rather than resolving to the bundled version.
 //! - **Package folder pinned to NuGet's own.** `-p:RestorePackagesPath=<folder>`
 //!   pins the *package* folder to the one NuGet itself would use for the
 //!   project — `$NUGET_PACKAGES`, else the `globalPackagesFolder` of the config
 //!   files NuGet loads, else `<home>/.nuget/packages` — computed by
 //!   [`borzoi_nuget::settings::global_packages_folder`], which declines what it
 //!   cannot say exactly (and then so does the restore). Reading another folder
-//!   would resolve against packages the user's own restore never sees: an
-//!   offline restore resolves what the folder holds, settling for a higher
-//!   version (`NU1603`) where the requested one is missing.
+//!   would resolve against packages the user's own restore never sees.
 //!
 //!   The pin masks a project's own `RestorePackagesPath` (residual: such a
 //!   project restores from the settings' folder, not its own). A folder inside
 //!   the project's directory, or inside the directory of the project-tree
-//!   config file that chose it, declines: the SDK's `library-packs` sources
-//!   survive the source override below (its targets name
-//!   `RestoreAdditionalProjectSources` in `TreatAsLocalProperty`), so restore
-//!   can extract into the folder, and the source tree is not ours to write.
+//!   config file that chose it, declines: restore can extract into the folder
+//!   from the SDK's `library-packs` sources (see **Offline**), and the source
+//!   tree is not ours to write.
 //!   (Residual: a folder a config chooses elsewhere in a repository, through
 //!   `..` past its own directory, or one the user config or `NUGET_PACKAGES`
 //!   puts inside a repository, is written to as a cache.) So does a folder
@@ -118,6 +129,8 @@ use crate::project_assets::{
 };
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::workspace::ServedTfm;
+
+mod exact;
 
 /// Backstop deadline for the restore subprocess. Offline resolution makes a warm
 /// restore ~0.5s and a cold one fail fast, so this is only ever reached by a
@@ -240,17 +253,33 @@ pub fn restore_to_scratch_assemblies(
         RunResult::Transient => return RestoreOutcome::TransientFailure,
     }
 
-    let spec = restored_spec_path(&scratch.path, project)
-        .and_then(|path| std::fs::read_to_string(path).ok());
-    if !spec.is_some_and(|spec| loads_the_modelled_config_files(&spec, &inputs)) {
+    let Some(spec) = restored_spec_path(&scratch.path, project)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+    else {
+        return RestoreOutcome::Declined;
+    };
+    if !loads_the_modelled_config_files(&spec, &inputs) {
         return RestoreOutcome::Declined;
     }
 
     let assets_path = scratch.path.join("project.assets.json");
-    if !assets_path.is_file() {
+    let Ok(assets) = std::fs::read_to_string(&assets_path) else {
         tracing::info!(
             project = %project.display(),
             "on-demand restore produced no assets file; assembly env defaults to empty"
+        );
+        return RestoreOutcome::Declined;
+    };
+    if let Err(uncertified) = exact::certify_exact_minimums(
+        &spec,
+        &assets,
+        project,
+        &redirected_lock_file(&scratch.path),
+    ) {
+        tracing::info!(
+            project = %project.display(),
+            %uncertified,
+            "on-demand restore declined: the user's restore could resolve differently"
         );
         return RestoreOutcome::Declined;
     }
@@ -717,7 +746,7 @@ fn offline_restore_command(
     .arg("-p:RestorePackagesWithLockFile=false")
     .arg(property_arg(
         "NuGetLockFilePath",
-        scratch.join("packages.lock.json").as_os_str(),
+        redirected_lock_file(scratch).as_os_str(),
     ))
     // NuGet's package audit contacts its `auditSources` even when
     // `RestoreSources` points at the empty folder, so an unreachable audit
@@ -736,6 +765,12 @@ fn offline_restore_command(
     }
     apply_env(&mut cmd, env);
     Some(cmd)
+}
+
+/// Where a restore whose output is redirected to `scratch` is told its lock
+/// file lives.
+fn redirected_lock_file(scratch: &Path) -> PathBuf {
+    scratch.join("packages.lock.json")
 }
 
 /// `path` with a trailing `/`, as MSBuild directory properties require.
