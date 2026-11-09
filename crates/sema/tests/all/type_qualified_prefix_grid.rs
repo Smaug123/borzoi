@@ -570,6 +570,22 @@ const SHAPES: &[(&str, &str, &str)] = &[
         "module Top\n\nmodule Environment =\n    type SpecialFolder = Desktop | Other\n\
          type Environment = System.Environment\nmodule Use =\n    USE\n",
     ),
+    // An `open` supplying an assembly module of the head's name whose *value*
+    // owns the next segment (FSharp.Core's `List.empty`).
+    (
+        "assembly-module-value",
+        "List.empty.Length.CompareTo(1)",
+        "module Top\n\nmodule List =\n    module empty =\n        type Length() =\n            \
+         static member CompareTo(x: int) = x\nopen Microsoft.FSharp.Collections\nmodule Use =\n    USE\n",
+    ),
+    // Entering an assembly's namespace opens its `[<AutoOpen>]` modules, whose
+    // nested `Unchecked` outranks a same-file root namespace.
+    (
+        "assembly-auto-open-rival",
+        "Unchecked.hash.ToString()",
+        "namespace Unchecked\n\ntype hash() =\n    static member ToString() = \"x\"\n\n\
+         namespace Microsoft.FSharp.Core\n\nmodule Use =\n    USE\n",
+    ),
     // A module segment declared twice in one container (FS0037).
     (
         "redeclared-segment",

@@ -4341,7 +4341,7 @@ impl<'a> Resolver<'a> {
                 .rev() // latest open first — the winner under latest-wins
                 .filter(|(open_pos, _)| kinds.module_pos.is_none_or(|p| *open_pos > p))
                 .find_map(|(_, prefix)| {
-                    self.open_contests_candidate(prefix, head, res, in_pattern, use_pos)
+                    self.open_contests_candidate(prefix, head, res, in_pattern, use_pos, true)
                 });
             if let Some(outcome) = contest {
                 return outcome;
@@ -4372,17 +4372,22 @@ impl<'a> Resolver<'a> {
         // latest first. Re-checking an already-transparent later open is a no-op
         // (any non-transparent one would have returned above), so scanning all of
         // them is equivalent to scanning the remainder.
+        // Only a same-file namespace head still ranks below these opens.
+        let namespace = self.namespace_head_candidate(head, res, in_pattern, use_pos);
+        let below = namespace
+            .as_ref()
+            .is_some_and(|outcome| !matches!(outcome, SameFileQualified::Miss));
         if let Some(outcome) = self
             .explicit_open_prefixes
             .iter()
             .rev()
             .find_map(|(_, prefix)| {
-                self.open_contests_candidate(prefix, head, res, in_pattern, use_pos)
+                self.open_contests_candidate(prefix, head, res, in_pattern, use_pos, below)
             })
         {
             return outcome;
         }
-        if let Some(outcome) = self.namespace_head_candidate(head, res, in_pattern, use_pos) {
+        if let Some(outcome) = namespace {
             return outcome;
         }
         SameFileQualified::Miss // no same-file candidate owns it — cross-file may try
@@ -4428,8 +4433,13 @@ impl<'a> Resolver<'a> {
     ///   CF8), or any other project-introduced name the conflated shadow index
     ///   holds at the segment that no arm positively classified (an `extern`
     ///   prototype, an earlier file's module abbreviation — the conservative
-    ///   catch-all). Likewise an assembly target with an entity/namespace at
-    ///   `ty`.
+    ///   catch-all). Likewise an assembly target that may hold anything at
+    ///   the segment — an entity, a namespace, or any name a module's fold
+    ///   surface lists (a value commits member access as surely as a nested
+    ///   type). An entity or namespace there defers whatever ranks below; a
+    ///   name only the fold surface lists defers only when a same-file
+    ///   candidate ranks below the open (`below`), and is otherwise left to
+    ///   the assembly branches.
     ///   Neither the cross-file lower tiers nor a farther candidate may win
     ///   then — defer, and stop the search.
     ///
@@ -4444,6 +4454,7 @@ impl<'a> Resolver<'a> {
         res: QualifiedResidual<'_>,
         in_pattern: bool,
         use_pos: TextSize,
+        below: bool,
     ) -> Option<SameFileQualified> {
         let QualifiedResidual { mids, ty, case } = res;
         let mut full = prefix.to_vec();
@@ -4621,13 +4632,26 @@ impl<'a> Resolver<'a> {
             }
             // Nothing project-side owns `seg` — fall through to the assembly arm.
         }
-        // An assembly type (module / static class) or namespace: the env is
-        // complete for referenced assemblies, so absence at `seg` is provable.
-        if self.opened_assembly_type(&full).is_some() || self.assemblies.has_namespace(&full) {
-            let mut ty_path = full.clone();
-            ty_path.push(seg.to_string());
-            let owns = self.opened_assembly_type(&ty_path).is_some()
-                || self.assemblies.has_namespace(&ty_path);
+        // An assembly type (module / static class) or namespace. Absence at
+        // `seg` is provable only from the exhaustive negation: an entity or
+        // namespace there ([`Self::assemblies_provably_lack_module_path`]),
+        // and, under a module or class, any name its fold surface lists — a
+        // value at `seg` commits member access as surely as a nested type —
+        // or a residue of names it cannot list.
+        let mut ty_path = full.clone();
+        ty_path.push(seg.to_string());
+        let entities: Vec<EntityHandle> = self
+            .opened_assembly_modules(&full)
+            .into_iter()
+            .chain(self.opened_assembly_type(&full))
+            .collect();
+        if !entities.is_empty() || self.assemblies.has_namespace(&full) {
+            let owns = !self.assemblies_provably_lack_module_path(&ty_path)
+                || (below
+                    && entities.iter().any(|&handle| {
+                        let surface = self.assemblies.open_fold_surface(handle);
+                        surface.residue || surface.entries.iter().any(|e| e.name == seg)
+                    }));
             return owns.then_some(SameFileQualified::DeferStop);
         }
         None
@@ -4766,7 +4790,9 @@ impl<'a> Resolver<'a> {
     /// it: what earlier files, earlier blocks of this file and referenced
     /// assemblies declare at `container ++ [head]` for the enclosing namespace
     /// and the modules around the use, the `[<AutoOpen>]` modules opened
-    /// there, and an `open` an earlier `namespace global` block held.
+    /// there (this file's, an earlier file's, or a referenced assembly's when
+    /// it shares the enclosing namespace), and an `open` an earlier
+    /// `namespace global` block held.
     ///
     /// `None` when none of that may name `head`. `Some(Miss)` when, innermost
     /// first, an earlier file positively declares the whole written path
@@ -4806,7 +4832,11 @@ impl<'a> Resolver<'a> {
                 .preceding
                 .auto_open_modules_directly_in(enclosing)
                 .is_empty();
-        (same_file_auto_open || earlier_auto_open || self.global_block_opened)
+        // A referenced assembly's part of the enclosing namespace: entering it
+        // opens its `[<AutoOpen>]` modules, whose nested modules are not
+        // enumerated here.
+        let assembly_enclosing = !enclosing.is_empty() && self.assemblies.has_namespace(enclosing);
+        (same_file_auto_open || earlier_auto_open || assembly_enclosing || self.global_block_opened)
             .then_some(SameFileQualified::DeferStop)
     }
 
