@@ -495,22 +495,20 @@ fn parse_inner(
             shape_depends_on_language_version,
         };
     }
-    // Build the root now: the node-surface and `_`-rooted pattern gates below
-    // walk it for constructs that are out of surface at `lang`.
+    // Build the root now: the node-surface gate below walks it for typed-node
+    // features that are out of surface at `lang` (today: nullness).
     let root = SyntaxNode::new_root(parser.builder.finish());
     // Merge the directive errors (collected in source order above), the FS1161
     // tab errors (scanned off the whitespace trivia), the `#elif` trivia gate,
-    // and the typed-node surface and `_`-rooted pattern gates with the
-    // productions' errors (emitted in parse order), then re-sort by span start so
-    // the final list reads in source order regardless of which producer found
-    // each problem.
+    // and the typed-node surface gate with the productions' errors (emitted in
+    // parse order), then re-sort by span start so the final list reads in source
+    // order regardless of which producer found each problem.
     let mut errors = parser.errors;
     errors.extend(directive_errors);
     errors.extend(tab_errors);
     errors.extend(operator_char_errors);
     errors.extend(langversion_errors);
     errors.extend(node_surface_diagnostics(&root, lang));
-    errors.extend(underscore_pat_diagnostics(&root, lang));
     // Warnings come from the productions and the lex-filter's offside
     // diagnostics; directive/tab/langversion problems are all errors.
     let mut warnings = parser.warnings;
@@ -613,52 +611,6 @@ fn node_surface_diagnostics(root: &SyntaxNode, lang: LanguageVersion) -> Vec<Par
                     "Feature '{feature}' is not available in F# {lang}. \
                      Please use language version {introduced} or greater."
                 ),
-                span: usize::from(range.start())..usize::from(range.end()),
-            })
-        })
-        .collect()
-}
-
-/// Language-version legality diagnostics for the `_`-rooted pattern path
-/// (`_.M`, `private _.M`, the member self-id `member _.M`): FCS's
-/// `underscoreLongIdentPat`, gated on `LanguageFeature.SingleUnderscorePattern`
-/// (F# 4.7, [`LanguageVersion::supports_single_underscore_pattern`]).
-///
-/// Every such path is a [`SyntaxKind::LONG_IDENT_PAT`] whose head
-/// [`SyntaxKind::LONG_IDENT`] opens with an `IDENT_TOK` spelled `_` (the bare
-/// `UNDERSCORE` token; a backtick-quoted ``` ``_`` ``` is an ordinary identifier
-/// FCS does not gate) followed by a `DOT_TOK`. So the gate is read off the
-/// tree, like [`node_surface_diagnostics`], and cannot disagree with the
-/// productions about which heads are `_`-rooted.
-///
-/// Below 4.7 FCS raises FS0010 at the `.` and recovers by discarding the
-/// enclosing construct. We report the same message at the same span and keep
-/// the maximal tree, as every version gate here does.
-fn underscore_pat_diagnostics(root: &SyntaxNode, lang: LanguageVersion) -> Vec<ParseError> {
-    if lang.supports_single_underscore_pattern() {
-        return Vec::new();
-    }
-    root.descendants()
-        .filter(|n| n.kind() == SyntaxKind::LONG_IDENT_PAT)
-        .filter_map(|pat| {
-            let path = pat
-                .children()
-                .find(|c| c.kind() == SyntaxKind::LONG_IDENT)?;
-            let mut tokens = path
-                .children_with_tokens()
-                .filter_map(|e| e.into_token())
-                .filter(|t| !t.kind().is_trivia());
-            let head = tokens.next()?;
-            if head.kind() != SyntaxKind::IDENT_TOK || head.text() != "_" {
-                return None;
-            }
-            let dot = tokens.next().filter(|t| t.kind() == SyntaxKind::DOT_TOK)?;
-            let range = dot.text_range();
-            Some(ParseError {
-                // FCS FS0010 `parsUnexpectedSymbolDot`.
-                message: "Unexpected symbol '.' in member definition. \
-                          Expected 'with', '=' or other token."
-                    .to_string(),
                 span: usize::from(range.start())..usize::from(range.end()),
             })
         })

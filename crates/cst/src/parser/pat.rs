@@ -1472,10 +1472,9 @@ impl<'src> Parser<'src> {
     /// `global` (no dotted tail) is an error (FCS FS0010), never a pattern name;
     /// a bare `_` is the wildcard.
     ///
-    /// The `_.`-rooted form is gated on the F# 4.7 `SingleUnderscorePattern`
-    /// feature; the productions accept it at every version and the gate is a
-    /// diagnostic read off the tree (`underscore_pat_diagnostics` in
-    /// `parser/mod.rs`).
+    /// The `_.`-rooted form is accepted at every language version; the pinned
+    /// FCS rejects it below F# 4.7, a recorded leniency (`docs/parser-plan.md`,
+    /// "Known leniencies").
     pub(super) fn pat_head_has_dotted_tail(&self) -> bool {
         matches!(
             self.next_non_trivia_filtered_after_pos(),
@@ -1878,8 +1877,7 @@ impl<'src> Parser<'src> {
             {
                 // `_.M` — FCS's `UNDERSCORE DOT pathOp`
                 // (`SynPat.LongIdent(["_"; …])`), the `_`-rooted sibling of the
-                // `global.` head below. Its F# 4.7 gate is a diagnostic read off
-                // the tree (see [`Self::pat_head_has_dotted_tail`]).
+                // `global.` head below.
                 self.emit_rooted_long_ident_pat();
                 true
             }

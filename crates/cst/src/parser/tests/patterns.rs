@@ -2321,8 +2321,8 @@ fn bare_global_pattern_is_rejected() {
 
 /// `_.M` — FCS's `UNDERSCORE DOT pathOp` — is a `LONG_IDENT_PAT` whose first
 /// segment is the bare `_`, while a `_` with no dotted tail stays the wildcard.
-/// Cross-checked against FCS, and its F# 4.7 gate pinned at every version band,
-/// in `tests/all/parser_diff_underscore_pat.rs`.
+/// Cross-checked against FCS, at every version band, in
+/// `tests/all/parser_diff_underscore_pat.rs`.
 #[test]
 fn underscore_rooted_pat_is_long_ident() {
     let source = "match x with\n| _.M -> 1\n| _ -> 2\n";

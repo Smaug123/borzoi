@@ -11,14 +11,14 @@
 //!
 //! FCS (the `FSharp.Compiler.Service` `tools/fcs-dump` pins) gates the production
 //! on `LanguageFeature.SingleUnderscorePattern` (F# 4.7): below it the `.` is a
-//! hard FS0010 parse error, member heads included. We report the same error at the
-//! same span and keep the maximal tree (the version is a diagnostic lens, never a
-//! reshape — `docs/ast-versioning-plan.md`). The version grid below holds that to
-//! FCS at every version band the gate distinguishes.
+//! hard FS0010 parse error, member heads included. Upstream FCS has removed that
+//! gate (dotnet/fsharp#20222), and we do not model it: the parse is clean at every
+//! version, a recorded leniency (`docs/parser-plan.md`, "Known leniencies"). The
+//! version tests below hold the trees to FCS from 4.7 up, and pin the leniency at
+//! 4.6.
 
 use std::collections::{BTreeSet, HashSet};
 use std::io::Write;
-use std::ops::Range;
 
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::parser::{FileKind, Parse, ParseOptions, parse_with_options};
@@ -212,14 +212,13 @@ fn recover_underscore_dot_without_segment() {
 }
 
 // ---------------------------------------------------------------------------
-// The language-version gate.
+// Language versions.
 // ---------------------------------------------------------------------------
 
 /// Each fixture holds at most one `_.`-rooted pattern (none, for the controls):
-/// below 4.7 FCS's gate is a hard parse error, and its recovery skips past any
-/// second one without reporting it. The grid parses each at every version band
-/// and holds both the tree and the gate diagnostic to FCS.
-const GATE_FIXTURES: &[&str] = &[
+/// below 4.7 the pinned FCS's gate is a hard parse error, and its recovery skips
+/// past any second one without reporting it.
+const VERSION_FIXTURES: &[&str] = &[
     "match x with\n| _.M -> 1\n| _ -> 2\n",
     "let _.M = 1\n",
     "let f _.M = 1\n",
@@ -230,23 +229,23 @@ const GATE_FIXTURES: &[&str] = &[
     "match x with\n| _ .M -> 1\n",
     "match x with\n| (_.M, _) -> 1\n",
     "let g = fun _.M -> 1\n",
-    // The member self-id reaches FCS through the same production, so it is
-    // gated too.
+    // The member self-id reaches FCS through the same production, so the pinned
+    // FCS gates it too.
     "type T() =\n  member _.M = 1\n",
     "type T() =\n  member _.M x = x\n",
     "type T() =\n  member _.(+) x = x\n",
     "type T() =\n  member private _.M = 1\n",
     "let x = { new System.IDisposable with member _.Dispose() = () }\n",
     // Controls: a backtick-quoted `_` is an ordinary `pathOp` ident, not the
-    // `UNDERSCORE` token, so it is never gated; nor is the bare wildcard.
+    // `UNDERSCORE` token, so FCS never gates it; nor is the bare wildcard.
     "match x with\n| ``_``.M -> 1\n",
     "type T() =\n  member ``_``.M = 1\n",
     "match x with\n| _ -> 1\n",
 ];
 
-/// The bands the gate distinguishes, with the `<LangVersion>` token FCS reads.
-const GATE_BANDS: &[(LanguageVersion, &str)] = &[
-    (LanguageVersion::V4_6, "4.6"),
+/// The bands at which the pinned FCS accepts `_.`-rooted patterns, with the
+/// `<LangVersion>` token FCS reads.
+const ACCEPTING_BANDS: &[(LanguageVersion, &str)] = &[
     (LanguageVersion::V4_7, "4.7"),
     (LanguageVersion::V8_0, "8.0"),
     (LanguageVersion::V10_0, "10.0"),
@@ -268,17 +267,16 @@ fn parse_at(source: &str, lang: LanguageVersion) -> Parse {
     )
 }
 
-fn spans(errors: &[borzoi_cst::parser::ParseError]) -> BTreeSet<(usize, usize)> {
-    errors.iter().map(|e| (e.span.start, e.span.end)).collect()
+fn source_file(source: &str) -> NamedTempFile {
+    let mut tmp = NamedTempFile::with_suffix(".fs").expect("create tempfile");
+    tmp.write_all(source.as_bytes()).expect("write source");
+    tmp
 }
 
-fn as_set(spans: Vec<Range<usize>>) -> BTreeSet<(usize, usize)> {
-    spans.into_iter().map(|s| (s.start, s.end)).collect()
-}
-
-/// Every `.` that follows a bare `_` token in `source` — the spans FCS's gate
-/// reports at (`rhs parseState 2`). Computed from the raw text, independently of
-/// both parsers, so the grid cannot pass on a gate that flags the wrong dot.
+/// Every `.` that follows a bare `_` token in `source`: the spans the pinned
+/// FCS's gate reports at (`rhs parseState 2`). Computed from the raw text,
+/// independently of both parsers, so the leniency pin cannot pass on an FCS
+/// error that is not the gate.
 fn underscore_dot_spans(source: &str) -> BTreeSet<(usize, usize)> {
     let bytes = source.as_bytes();
     let mut out = BTreeSet::new();
@@ -302,77 +300,71 @@ fn underscore_dot_spans(source: &str) -> BTreeSet<(usize, usize)> {
     out
 }
 
-/// At each band: where FCS accepts, the trees agree and neither side errors;
-/// where FCS rejects, its FS0010 spans are exactly the `_.` dots, ours are the
-/// same spans, the gate is the *only* difference from our maximal parse, and our
-/// tree is that maximal parse unchanged.
+/// From F# 4.7 up, FCS accepts every fixture and the trees agree.
 #[test]
-fn underscore_pat_gate_matches_fcs_at_every_band() {
-    for source in GATE_FIXTURES {
-        let mut tmp = NamedTempFile::with_suffix(".fs").expect("create tempfile");
-        tmp.write_all(source.as_bytes()).expect("write source");
-        let expected_gate = underscore_dot_spans(source);
-        let maximal = parse_at(source, LanguageVersion::Preview);
-        assert!(
-            maximal.errors.is_empty(),
-            "the maximal parse of {source:?} must be clean: {:?}",
-            maximal.errors
-        );
-        for &(lang, lang_text) in GATE_BANDS {
+fn underscore_pat_matches_fcs_from_4_7() {
+    for source in VERSION_FIXTURES {
+        let tmp = source_file(source);
+        for &(lang, lang_text) in ACCEPTING_BANDS {
             let json = fcs_ast_batch_at(tmp.path(), lang_text);
             let ours = parse_at(source, lang);
-            assert_eq!(
-                format!("{:#?}", ours.root),
-                format!("{:#?}", maximal.root),
-                "the gate must not reshape the tree ({lang_text}, {source:?})",
+            assert!(
+                !fcs_parse_had_errors(&json),
+                "FCS rejects {source:?} at {lang_text}",
             );
-            let fcs_gate = as_set(fcs_diagnostic_spans(&json, source, FS0010));
-            if lang.supports_single_underscore_pattern() {
-                assert!(
-                    !fcs_parse_had_errors(&json),
-                    "FCS rejects {source:?} at {lang_text}, where the gate says it is open",
-                );
-                assert!(
-                    ours.errors.is_empty(),
-                    "we reject {source:?} at {lang_text}: {:?}",
-                    ours.errors
-                );
-                let fcs = normalised_ast::normalise_fcs_dump(&json);
-                let rust = normalised_ast::normalise_parse(&ours);
-                assert_eq!(
-                    rust, fcs,
-                    "AST divergence at {lang_text} for {source:?}\n  rust: {rust:#?}\n  fcs:  {fcs:#?}",
-                );
-            } else {
-                assert_eq!(
-                    fcs_gate, expected_gate,
-                    "FCS's FS0010 spans at {lang_text} are not the `_.` dots of {source:?}",
-                );
-                assert_eq!(
-                    fcs_parse_had_errors(&json),
-                    !expected_gate.is_empty(),
-                    "FCS's verdict at {lang_text} for {source:?}",
-                );
-                assert_eq!(
-                    spans(&ours.errors),
-                    expected_gate,
-                    "our gate diagnostics at {lang_text} for {source:?}: {:?}",
-                    ours.errors
-                );
-            }
+            assert!(
+                ours.errors.is_empty(),
+                "we reject {source:?} at {lang_text}: {:?}",
+                ours.errors
+            );
+            let fcs = normalised_ast::normalise_fcs_dump(&json);
+            let rust = normalised_ast::normalise_parse(&ours);
+            assert_eq!(
+                rust, fcs,
+                "AST divergence at {lang_text} for {source:?}\n  rust: {rust:#?}\n  fcs:  {fcs:#?}",
+            );
         }
     }
 }
 
-/// The gate's message is FCS's `parsUnexpectedSymbolDot`.
+/// The known leniency (`docs/parser-plan.md`, "Known leniencies"): at F# 4.6 the
+/// pinned FCS reports FS0010 at exactly the `_.` dots, and we parse each fixture
+/// clean and lossless, to the same tree as at preview.
+///
+/// Upstream FCS removed the gate in dotnet/fsharp#20222. Once the fcs-dump pin
+/// moves past that change, FCS stops erroring here and this test fails. The
+/// leniency is then gone: delete its entry in `docs/parser-plan.md` and this
+/// test, and add `LanguageVersion::V4_6` to [`ACCEPTING_BANDS`].
 #[test]
-fn underscore_pat_gate_message_is_fcs_wording() {
-    let source = "let _.M = 1\n";
-    let p = parse_at(source, LanguageVersion::V4_6);
-    assert_eq!(p.errors.len(), 1, "{:?}", p.errors);
-    assert_eq!(
-        p.errors[0].message,
-        "Unexpected symbol '.' in member definition. Expected 'with', '=' or other token.",
-    );
-    assert_eq!(&source[p.errors[0].span.clone()], ".");
+fn underscore_pat_below_4_7_is_lenient_lossless() {
+    for source in VERSION_FIXTURES {
+        let tmp = source_file(source);
+        let json = fcs_ast_batch_at(tmp.path(), "4.6");
+        let gated = underscore_dot_spans(source);
+        let fcs_fs0010: BTreeSet<(usize, usize)> = fcs_diagnostic_spans(&json, source, FS0010)
+            .into_iter()
+            .map(|s| (s.start, s.end))
+            .collect();
+        assert_eq!(
+            (fcs_fs0010, fcs_parse_had_errors(&json)),
+            (gated.clone(), !gated.is_empty()),
+            "at 4.6 the pinned FCS must error FS0010 at exactly the `_.` dots of {source:?}. \
+             If it no longer errors, the fcs-dump pin has moved past dotnet/fsharp#20222 and \
+             the leniency is gone: delete its entry in docs/parser-plan.md (\"Known \
+             leniencies\") and this test, and add 4.6 to ACCEPTING_BANDS.",
+        );
+        let ours = parse_at(source, LanguageVersion::V4_6);
+        assert!(
+            ours.errors.is_empty(),
+            "lenient: no error at 4.6 for {source:?}: {:?}",
+            ours.errors
+        );
+        assert_eq!(ours.root.to_string(), *source, "lossless at 4.6");
+        let preview = parse_at(source, LanguageVersion::Preview);
+        assert_eq!(
+            ours.root.green(),
+            preview.root.green(),
+            "the 4.6 tree of {source:?} is the preview tree",
+        );
+    }
 }

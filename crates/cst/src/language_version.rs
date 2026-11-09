@@ -93,18 +93,6 @@ impl LanguageVersion {
         self >= LanguageVersion::V4_7
     }
 
-    /// Whether FCS's `LanguageFeature.SingleUnderscorePattern` (F# 4.7,
-    /// `LanguageFeatures.fs`) is on: a pattern long-identifier may be rooted at
-    /// a bare `_` (`_.M`, `private _.M`, the member self-id `member _.M`). Below
-    /// 4.7 FCS reports the `.` as FS0010 "Unexpected symbol '.' in member
-    /// definition". This mirrors the `FSharp.Compiler.Service` that
-    /// `tools/fcs-dump` pins; later compilers drop the gate (dotnet/fsharp#20222),
-    /// and `parser_diff_underscore_pat`'s version grid fails when the pin moves
-    /// past it.
-    pub fn supports_single_underscore_pattern(self) -> bool {
-        self >= LanguageVersion::V4_7
-    }
-
     /// Whether FCS's `LanguageFeature.RelaxWhitespace2` (F# 6.0,
     /// `LanguageFeatures.fs`) is on. It gates three lex-filter behaviours:
     /// the `relaxWhitespace2OffsideRule` `+1` grace that lets a dedented
