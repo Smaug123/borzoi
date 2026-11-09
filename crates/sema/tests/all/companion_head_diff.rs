@@ -92,6 +92,14 @@ impl Site {
 const PATTERN_DECOY: &str = "the case-pattern walk declines at a prefix holding a same-named non-union type instead of \
      reading past it";
 
+/// A **qualified** head (`Companion.Enclosing.C.Tail`) where the type and its
+/// companion module both hold the leaf. Through a written namespace FCS searches
+/// the type first and binds its member; the walk binds a module over its
+/// companion type only at an unqualified head, where FCS searches modules first,
+/// and defers here rather than choose between two owners.
+const QUALIFIED_BOTH: &str = "a written namespace qualifier makes FCS search the type before the module, and the walk \
+     defers between the two owners rather than pick the type";
+
 /// The cells where FCS resolves and we decline to name a target, each with the
 /// modelling reason. Keyed `"<plant>/<site>"`.
 ///
@@ -123,6 +131,38 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ("CT1TFPD/leaf", PATTERN_DECOY),
     ("CT1TUPD/head", PATTERN_DECOY),
     ("CT1TUPD/leaf", PATTERN_DECOY),
+    ("CB0BFQD/head", QUALIFIED_BOTH),
+    ("CB0BFQD/leaf", QUALIFIED_BOTH),
+    ("CB0BFQX/head", QUALIFIED_BOTH),
+    ("CB0BFQX/leaf", QUALIFIED_BOTH),
+    ("CB0BRQD/head", QUALIFIED_BOTH),
+    ("CB0BRQD/leaf", QUALIFIED_BOTH),
+    ("CB0BRQX/head", QUALIFIED_BOTH),
+    ("CB0BRQX/leaf", QUALIFIED_BOTH),
+    ("CB0BSQD/head", QUALIFIED_BOTH),
+    ("CB0BSQD/leaf", QUALIFIED_BOTH),
+    ("CB0BSQX/head", QUALIFIED_BOTH),
+    ("CB0BSQX/leaf", QUALIFIED_BOTH),
+    ("CB0BUQD/head", QUALIFIED_BOTH),
+    ("CB0BUQD/leaf", QUALIFIED_BOTH),
+    ("CB0BUQX/head", QUALIFIED_BOTH),
+    ("CB0BUQX/leaf", QUALIFIED_BOTH),
+    ("CB1BFQD/head", QUALIFIED_BOTH),
+    ("CB1BFQD/leaf", QUALIFIED_BOTH),
+    ("CB1BFQX/head", QUALIFIED_BOTH),
+    ("CB1BFQX/leaf", QUALIFIED_BOTH),
+    ("CB1BRQD/head", QUALIFIED_BOTH),
+    ("CB1BRQD/leaf", QUALIFIED_BOTH),
+    ("CB1BRQX/head", QUALIFIED_BOTH),
+    ("CB1BRQX/leaf", QUALIFIED_BOTH),
+    ("CB1BSQD/head", QUALIFIED_BOTH),
+    ("CB1BSQD/leaf", QUALIFIED_BOTH),
+    ("CB1BSQX/head", QUALIFIED_BOTH),
+    ("CB1BSQX/leaf", QUALIFIED_BOTH),
+    ("CB1BUQD/head", QUALIFIED_BOTH),
+    ("CB1BUQD/leaf", QUALIFIED_BOTH),
+    ("CB1BUQX/head", QUALIFIED_BOTH),
+    ("CB1BUQX/leaf", QUALIFIED_BOTH),
 ];
 
 /// The cells where we name the **wrong** target, each with the defect it is a
