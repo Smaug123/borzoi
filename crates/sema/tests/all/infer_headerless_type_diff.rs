@@ -321,3 +321,44 @@ fn a_headerless_file_an_earlier_file_names_agrees_with_fcs() {
     }
     assert_clean(&tally, 0);
 }
+
+/// Two files named `Program.fs` in different directories, so with distinct
+/// qualified names but one implicit module `Program` where either is
+/// headerless: each declares a type `R` at the same path, a record, a union
+/// or a class, and the later file reads it. Nothing the earlier file
+/// declares may stand for the later one's type. Graded for agreement only.
+#[test]
+fn a_type_two_same_named_files_declare_agrees_with_fcs() {
+    let mut tally = Tally::default();
+    let headers = ["", "module Program\n"];
+    let earlier_decls = [
+        "type R = { V: int }\nlet r0 : R = { V = 1 }\n",
+        "type R = V of int | W\n",
+        "type R() =\n    member _.V = 1\n",
+    ];
+    let later_decls = [
+        "type R = { V: string }\nlet f (r: R) = r.V\nlet g (r: R) = r\n",
+        "type R() =\n    member _.V = \"s\"\nlet f (r: R) = r.V\nlet g (r: R) = r\n",
+        "type R = V of string | W\nlet f () = V \"s\"\nlet g r = match r with V s -> s | W -> \"\"\n",
+    ];
+    for earlier_header in headers {
+        for earlier in earlier_decls {
+            for later_header in headers {
+                for later in later_decls {
+                    let sources = vec![
+                        (
+                            "one/Program.fs".to_string(),
+                            format!("{earlier_header}{earlier}"),
+                        ),
+                        (
+                            "two/Program.fs".to_string(),
+                            format!("{later_header}{later}"),
+                        ),
+                    ];
+                    check(&sources, &[], &mut tally);
+                }
+            }
+        }
+    }
+    assert_clean(&tally, 0);
+}

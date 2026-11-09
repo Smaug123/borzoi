@@ -995,10 +995,10 @@ pub(crate) struct ProjectCase {
     name: String,
     scheme: UnionCaseScheme,
     key: CaseKey,
-    /// Where a use of the case is accessible, for a union whose
-    /// representation is `private`: the enclosing module's or namespace's
-    /// range in the declaring file. Such a case is never published to a
-    /// later file.
+    /// Where a use of the case is read, for a union whose representation is
+    /// `private` (the enclosing module's or namespace's range in the
+    /// declaring file) or that a headerless file declares (the file). Such a
+    /// case is never published to a later file.
     scope: Option<TextRange>,
 }
 
@@ -1014,8 +1014,9 @@ pub(crate) struct ProjectRecord {
     record: Ty,
     /// Each field inference reads, by name, over those parameters.
     fields: HashMap<String, Ty>,
-    /// Where a field is accessible, for a `private` representation (as
-    /// [`ProjectCase::scope`]); such a record is never published.
+    /// Where a field is read, for a `private` representation or a headerless
+    /// file's record (as [`ProjectCase::scope`]); such a record is never
+    /// published.
     scope: Option<TextRange>,
 }
 
@@ -2392,7 +2393,8 @@ impl<'a> Gen<'a> {
     /// path (which already leaves out a constrained or attributed parameter,
     /// and an attribute that may make F# reject a use) and its declaration
     /// did not recover. A `private` representation confines its cases to
-    /// the enclosing module or namespace ([`ProjectCase::scope`]). A case is left out
+    /// the enclosing module or namespace ([`ProjectCase::scope`]), and a
+    /// headerless file's are confined to the file. A case is left out
     /// when it carries an attribute (an error-level `[<Obsolete>]` rejects
     /// its use), is written in the `Case : type` signature form, or has a field whose type the annotation bridge declines (a
     /// measure among them); a use of one declines.
@@ -2424,6 +2426,7 @@ impl<'a> Gen<'a> {
         let mut out = HashMap::new();
         let mut records: ProjectRecords = HashMap::new();
         let recovery = self.resolved.recovery();
+        let headerless = is_headerless(file);
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
             let repr = match defn.repr() {
                 Some(TypeDefnRepr::Union(repr)) => DeclaredFields::Union(repr),
@@ -2459,6 +2462,13 @@ impl<'a> Gen<'a> {
                     continue;
                 };
                 Some(container.text_range())
+            } else if headerless {
+                // A later file reaches nothing of a headerless file by name
+                // (the resolver gives its contents no cross-file handle), so
+                // its schemes stay in the file: another file's type at the
+                // same path (`one/Program.fs` and `two/Program.fs` share the
+                // implicit module `Program`) is a different type.
+                Some(file.syntax().text_range())
             } else {
                 None
             };
