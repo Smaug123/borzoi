@@ -858,8 +858,24 @@ struct Restored {
     version: u64,
     /// Each target's package libraries, by [`framework_key`].
     targets: BTreeMap<String, PackageSet>,
+    /// Each target library's `frameworkAssemblies`, by [`framework_key`] and
+    /// then by package, as the assets file writes them (sorted, ordinal);
+    /// absent where the assets file writes none.
+    framework_assemblies: BTreeMap<String, BTreeMap<(String, String), Vec<String>>>,
     /// Every log code, sorted.
     codes: Vec<String>,
+}
+
+/// A target library's `id/version` key as [`PackageSet`] spells it.
+fn package_key(key: &str) -> (String, String) {
+    let (id, version) = key.split_once('/').expect("`id/version`");
+    (
+        id.to_ascii_lowercase(),
+        NuGetVersion::parse(version)
+            .expect("a version")
+            .to_normalized_string()
+            .to_ascii_lowercase(),
+    )
 }
 
 fn restore(oracle: &mut Oracle, text: &str) -> Restored {
@@ -875,6 +891,7 @@ fn restore(oracle: &mut Oracle, text: &str) -> Restored {
             success: false,
             version: 0,
             targets: BTreeMap::new(),
+            framework_assemblies: BTreeMap::new(),
             codes: vec![format!(
                 "threw {}",
                 response["exceptionType"]
@@ -889,32 +906,33 @@ fn restore(oracle: &mut Oracle, text: &str) -> Restored {
     };
     let assets: Value =
         serde_json::from_str(result["assets"].as_str().expect("assets")).expect("assets JSON");
-    let targets = assets["targets"]
-        .as_object()
-        .expect("targets")
-        .iter()
-        .map(|(name, libraries)| {
-            let packages = libraries
-                .as_object()
-                .expect("a target maps libraries")
-                .iter()
-                .filter(|(_, library)| library["type"] == "package")
-                .map(|(key, _)| {
-                    let (id, version) = key.split_once('/').expect("`id/version`");
-                    (
-                        id.to_ascii_lowercase(),
-                        NuGetVersion::parse(version)
-                            .expect("a version")
-                            .to_normalized_string()
-                            .to_ascii_lowercase(),
-                    )
-                })
-                .collect();
-            let framework = NuGetFramework::parse(name)
-                .unwrap_or_else(|e| panic!("target {name:?} names a framework: {e}"));
-            (framework_key(&framework), packages)
-        })
-        .collect();
+    let mut targets = BTreeMap::new();
+    let mut framework_assemblies = BTreeMap::new();
+    for (name, libraries) in assets["targets"].as_object().expect("targets") {
+        let framework = NuGetFramework::parse(name)
+            .unwrap_or_else(|e| panic!("target {name:?} names a framework: {e}"));
+        let libraries = libraries
+            .as_object()
+            .expect("a target maps libraries")
+            .iter()
+            .filter(|(_, library)| library["type"] == "package");
+        let mut packages = PackageSet::new();
+        let mut assemblies = BTreeMap::new();
+        for (key, library) in libraries {
+            packages.insert(package_key(key));
+            if let Some(names) = library.get("frameworkAssemblies") {
+                let names = names
+                    .as_array()
+                    .expect("frameworkAssemblies is an array")
+                    .iter()
+                    .map(|name| name.as_str().expect("an assembly name").to_owned())
+                    .collect();
+                assemblies.insert(package_key(key), names);
+            }
+        }
+        targets.insert(framework_key(&framework), packages);
+        framework_assemblies.insert(framework_key(&framework), assemblies);
+    }
     let mut codes: Vec<String> = assets["logs"]
         .as_array()
         .map(|logs| {
@@ -930,6 +948,7 @@ fn restore(oracle: &mut Oracle, text: &str) -> Restored {
         success: result["success"].as_bool().expect("success"),
         version: assets["version"].as_u64().expect("an assets version"),
         targets,
+        framework_assemblies,
         codes,
     }
 }
@@ -1547,6 +1566,444 @@ fn descriptive_metadata_is_inert() {
         let graded = grade(&mut oracle, &[package], &shape);
         assert!(graded.ours.is_ok(), "{marker}: {:?}", graded.ours);
     }
+}
+
+/// Where restore puts a nuspec's `<frameworkAssemblies>`, pinned on B₀: a
+/// target whose framework is package based (`net8.0`) gets none, whatever the
+/// nuspec declares; one whose framework is not (`net472`) gets the group
+/// nearest its framework (`net45` here, over `Any` and over a `net48` it
+/// cannot take), the names merged across entries, duplicates dropped, sorted.
+/// A version the engine examines without choosing it (B 1.0.0, under A's
+/// edge, while the project takes B 2.0.0 directly) is read for the element
+/// too, and writes nothing. B₁ commits throughout, and nothing it commits
+/// moves: the element reaches the assets file as names the LSP never reads.
+#[test]
+fn framework_assemblies_land_on_targets_that_are_not_package_based() {
+    const DECLARED: &str = r#"<frameworkAssemblies>
+      <frameworkAssembly assemblyName="System.Xml" targetFramework="net45" />
+      <frameworkAssembly assemblyName="System.Net" targetFramework="net45, net8.0" />
+      <frameworkAssembly assemblyName="System.Xml" targetFramework="net45" />
+      <frameworkAssembly assemblyName="mscorlib" />
+      <frameworkAssembly assemblyName="System.Data" targetFramework="net48" />
+    </frameworkAssemblies>"#;
+    let mut oracle = spawn_oracle();
+    let deps = || vec![Dep::new("A", "[1.0.0, )"), Dep::new("B", "[2.0.0, )")];
+    let shape = Shape::new(vec![
+        Framework::new("net8.0", deps()),
+        Framework::new("net472", deps()),
+    ]);
+    let mut a = Pkg::new(
+        "A",
+        "1.0.0",
+        vec![Group {
+            tfm: None,
+            deps: vec![("B".to_owned(), "[1.0.0, )".to_owned())],
+        }],
+    )
+    .with_files(&["lib/netstandard2.0/A.dll"]);
+    a.metadata = vec![DECLARED];
+    let mut b1 = Pkg::new("B", "1.0.0", vec![]).with_files(&["lib/netstandard2.0/B.dll"]);
+    b1.metadata = vec![DECLARED];
+    let b2 = Pkg::new("B", "2.0.0", vec![]).with_files(&["lib/netstandard2.0/B.dll"]);
+    let graded = grade(&mut oracle, &[a, b1, b2], &shape);
+    let closures = committed(&graded);
+    let a_key = ("a".to_owned(), "1.0.0".to_owned());
+    for framework in ["net8.0", "net472"] {
+        assert_eq!(
+            closures[framework],
+            PackageSet::from([a_key.clone(), ("b".to_owned(), "2.0.0".to_owned())]),
+            "{framework}"
+        );
+    }
+    assert_eq!(
+        graded.theirs.framework_assemblies["net8.0"],
+        BTreeMap::new()
+    );
+    assert_eq!(
+        graded.theirs.framework_assemblies["net472"],
+        BTreeMap::from([(
+            a_key,
+            vec!["System.Net".to_owned(), "System.Xml".to_owned()]
+        )])
+    );
+}
+
+/// Restore throws, at the edge's lookup and so for a version it only
+/// examines, on a `<frameworkAssembly>` whose `targetFramework` names a
+/// portable profile with a member carrying a profile (the profile mapping
+/// refuses the hyphen), under every spelling of the identifier and however
+/// the piece is padded (it trims every Unicode white space first); it reads
+/// a profile of unknown members and a framework it cannot parse at all as
+/// unsupported, and commits. B₁ declines the whole portable family and any
+/// piece with white space inside, and admits the rest; each row pins B₀'s
+/// own outcome beside B₁'s, so a decline is a decline of a known outcome.
+#[test]
+fn framework_assemblies_naming_a_profile_nuget_refuses_decline() {
+    let mut oracle = spawn_oracle();
+    let shape = Shape::new(vec![Framework::new(
+        "net8.0",
+        vec![Dep::new("A", "[1.0.0, )")],
+    )]);
+    for (target_framework, restore_succeeds, b1_commits) in [
+        ("portable-net45-client", false, false),
+        ("portable-net-40+sl5", false, false),
+        ("net45, portable-net45-client", false, false),
+        (".NETPortable-net45-client", false, false),
+        ("NETPortable-net45-client", false, false),
+        ("\u{a0}portable-net45-client\u{a0}", false, false),
+        ("portable4.00000000000-net45-client", false, false),
+        ("PORTABLE-net45-client", false, false),
+        ("portable-net45+bogus", true, false),
+        ("portable-net45+win8", true, false),
+        ("portable45-net45+win8", true, false),
+        ("portable-Profile7", true, false),
+        ("bogus", true, true),
+        ("\u{a0}net45\u{a0}", true, true),
+        ("net 45", true, false),
+    ] {
+        let metadata: &'static str = Box::leak(
+            format!(
+                r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Xml" targetFramework="{target_framework}" /></frameworkAssemblies>"#
+            )
+            .into_boxed_str(),
+        );
+        let mut package = Pkg::new("A", "1.0.0", vec![]).with_files(&["lib/net8.0/A.dll"]);
+        package.metadata = vec![metadata];
+        let graded = grade(&mut oracle, &[package], &shape);
+        assert_eq!(
+            graded.theirs.success, restore_succeeds,
+            "{target_framework}: {:?}",
+            graded.theirs
+        );
+        assert_eq!(
+            graded.ours.is_ok(),
+            b1_commits,
+            "{target_framework}: {:?}",
+            graded.ours
+        );
+    }
+}
+
+/// The pieces a generated `targetFramework` is spelt from: frameworks restore
+/// parses, ones it reads as unsupported, portable and platform-bearing ones,
+/// an escape, the long form (whose comma splits it), and whitespace and
+/// separators on their own.
+const FRAMEWORK_ASSEMBLY_TFM_PIECES: &[&str] = &[
+    "net45",
+    "net48",
+    "net472",
+    "net8.0",
+    "netstandard2.0",
+    "netcoreapp3.1",
+    "Any",
+    "any",
+    "agnostic",
+    "unsupported",
+    "portable-net45+win8",
+    "portable-net45-client",
+    ".NETPortable-net45-client",
+    "NETPortable-net45-client",
+    ".netportable-net45+win8",
+    "portable45-net45+win8",
+    "portable4.00000000000-net45-client",
+    "PORTABLE-net45-client",
+    ".NetPortable4.5-net45+win8",
+    "portable45-net45-client",
+    "portable-net45+client",
+    "portable-net-40+sl5",
+    "portable-net45+bogus",
+    "portable-Profile7",
+    "portable-Profile999",
+    "portable-net8.0-windows+win8",
+    "portable-net45%2Bclient",
+    "portable",
+    "portable-",
+    "dotnet",
+    "uap10.0",
+    "netcore50",
+    "win8",
+    "monoandroid",
+    "tizen40",
+    "net5.0-windows",
+    "net5.0-windows10.0.19041",
+    "net5.0-bogus1.2.3",
+    ".NETFramework4.5",
+    ".NETFramework,Version=v4.5",
+    "v4.5",
+    "4.5",
+    "net4.5.6.7.8",
+    "%41",
+    "net45%2C",
+    "bogus",
+    "MSBuildCore",
+    "",
+    " ",
+    "\t",
+    "\u{a0}net45\u{a0}",
+    "\u{a0}portable-net45-client",
+    "net 45",
+    "net45\u{3000}",
+    "-",
+    "+",
+    ";",
+    "net45;net48",
+    "Version=v4.5",
+];
+
+/// One generated `<frameworkAssembly>`.
+#[derive(Debug, Clone)]
+struct FrameworkAssemblyShape {
+    assembly_name: Option<String>,
+    target_framework: Option<String>,
+    foreign_attribute: bool,
+    child: bool,
+    text: bool,
+}
+
+/// One generated `<frameworkAssemblies>` element, with how often it appears.
+#[derive(Debug, Clone)]
+struct FrameworkAssembliesShape {
+    entries: Vec<FrameworkAssemblyShape>,
+    foreign_attribute: bool,
+    copies: usize,
+}
+
+impl FrameworkAssembliesShape {
+    fn generate(rng: &mut SplitMix64) -> FrameworkAssembliesShape {
+        let entries = (0..rng.below(4))
+            .map(|_| {
+                let target_framework = if rng.below(5) == 0 {
+                    None
+                } else {
+                    let pieces =
+                        1 + usize::from(rng.below(3) == 0) + usize::from(rng.below(6) == 0);
+                    let separator = *rng.pick(&[",", ", ", " , ", ",,"]);
+                    Some(
+                        (0..pieces)
+                            .map(|_| *rng.pick(FRAMEWORK_ASSEMBLY_TFM_PIECES))
+                            .collect::<Vec<_>>()
+                            .join(separator),
+                    )
+                };
+                FrameworkAssemblyShape {
+                    assembly_name: if rng.below(8) == 0 {
+                        None
+                    } else {
+                        Some(
+                            (*rng.pick(&[
+                                "System.Xml",
+                                "mscorlib",
+                                "System.Net",
+                                "",
+                                " System.Xml ",
+                            ]))
+                            .to_owned(),
+                        )
+                    },
+                    target_framework,
+                    foreign_attribute: rng.below(12) == 0,
+                    child: rng.below(12) == 0,
+                    text: rng.below(12) == 0,
+                }
+            })
+            .collect();
+        FrameworkAssembliesShape {
+            entries,
+            foreign_attribute: rng.below(12) == 0,
+            copies: if rng.below(10) == 0 { 2 } else { 1 },
+        }
+    }
+
+    /// The stated domain, before any code runs: one `<frameworkAssemblies>`
+    /// without attributes, holding `<frameworkAssembly>` elements that each
+    /// carry an `assemblyName` (any value), at most a `targetFramework`
+    /// besides — absent, or every non-empty comma piece, trimmed of Unicode
+    /// white space, holding no `%` and no white space, whose leading run of
+    /// ASCII letters and dots is not `portable`, `NETPortable` or
+    /// `.NETPortable` in any case, and parsing with the crate's framework
+    /// parser — and no child or text. A shape the class admits that NuGet
+    /// throws on fails the grade, not the class.
+    fn class(&self) -> Class {
+        let framework_admitted = |value: &Option<String>| {
+            value.as_ref().is_none_or(|raw| {
+                raw.split(',')
+                    .filter(|piece| !piece.is_empty())
+                    .all(|piece| {
+                        let piece = piece.trim_matches(char::is_whitespace);
+                        let identifier_end = piece
+                            .find(|c: char| !(c.is_ascii_alphabetic() || c == '.'))
+                            .unwrap_or(piece.len());
+                        let identifier = &piece[..identifier_end];
+                        !piece.contains('%')
+                            && !piece.contains(char::is_whitespace)
+                            && !["portable", "NETPortable", ".NETPortable"]
+                                .iter()
+                                .any(|spelling| identifier.eq_ignore_ascii_case(spelling))
+                            && NuGetFramework::parse(piece).is_ok()
+                    })
+            })
+        };
+        let admitted = self.copies == 1
+            && !self.foreign_attribute
+            && self.entries.iter().all(|entry| {
+                entry.assembly_name.is_some()
+                    && framework_admitted(&entry.target_framework)
+                    && !entry.foreign_attribute
+                    && !entry.child
+                    && !entry.text
+            });
+        if admitted {
+            Class::MustCommit
+        } else {
+            Class::MustDecline
+        }
+    }
+
+    fn render(&self) -> String {
+        let mut out = String::new();
+        for _ in 0..self.copies {
+            out.push_str("<frameworkAssemblies");
+            if self.foreign_attribute {
+                out.push_str(r#" zzz="1""#);
+            }
+            out.push('>');
+            for entry in &self.entries {
+                out.push_str("<frameworkAssembly");
+                if let Some(name) = &entry.assembly_name {
+                    out.push_str(&format!(r#" assemblyName="{name}""#));
+                }
+                if let Some(tfm) = &entry.target_framework {
+                    out.push_str(&format!(r#" targetFramework="{tfm}""#));
+                }
+                if entry.foreign_attribute {
+                    out.push_str(r#" zzz="1""#);
+                }
+                if entry.child || entry.text {
+                    out.push('>');
+                    if entry.child {
+                        out.push_str("<x />");
+                    }
+                    if entry.text {
+                        out.push('t');
+                    }
+                    out.push_str("</frameworkAssembly>");
+                } else {
+                    out.push_str(" />");
+                }
+            }
+            out.push_str("</frameworkAssemblies>");
+        }
+        out
+    }
+
+    /// The names restore could write for this element: every non-empty
+    /// `assemblyName`, as spelt.
+    fn declared_names(&self) -> BTreeSet<String> {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.assembly_name.clone())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+}
+
+/// `<frameworkAssemblies>` shapes generated over an alphabet of framework
+/// spellings and of element shapes (attribute sets, children, text,
+/// duplicates), each classified by the stated domain before any code runs and
+/// graded against B₀ on one spec that reads the element every way restore
+/// does: on a chosen package (A) and on a version the engine examines without
+/// choosing it (B 1.0.0, under A's edge, while the project takes B 2.0.0),
+/// under a package-based framework (`net8.0`, where restore reads the element
+/// at the lookup only) and one that is not (`net472`, where it also writes
+/// the nearest group into the assets file). In-domain shapes commit (B₀
+/// agreeing), out-of-domain ones decline, and the over-decline census — shapes
+/// outside the domain that restore accepted — is printed. On every committed
+/// spec the `net8.0` target has no `frameworkAssemblies`, and every name the
+/// `net472` target has is one the nuspec declares.
+#[test]
+fn framework_assemblies_shapes_are_graded_at_the_lookup_and_in_the_closure() {
+    let mut oracle = spawn_oracle();
+    let deps = || vec![Dep::new("A", "[1.0.0, )"), Dep::new("B", "[2.0.0, )")];
+    let shape = Shape::new(vec![
+        Framework::new("net8.0", deps()),
+        Framework::new("net472", deps()),
+    ]);
+    let mut rng = SplitMix64(0xf4a5_5e3b_1e5a_0001);
+    let mut failures = Vec::new();
+    let mut over_declines = Vec::new();
+    let mut counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    let mut names_written = 0;
+    for _ in 0..240 {
+        let generated = FrameworkAssembliesShape::generate(&mut rng);
+        let rendered: &'static str = Box::leak(generated.render().into_boxed_str());
+        let mut a = Pkg::new(
+            "A",
+            "1.0.0",
+            vec![Group {
+                tfm: None,
+                deps: vec![("B".to_owned(), "[1.0.0, )".to_owned())],
+            }],
+        )
+        .with_files(&["lib/netstandard2.0/A.dll"]);
+        a.metadata = vec![rendered];
+        let mut b1 = Pkg::new("B", "1.0.0", vec![]).with_files(&["lib/netstandard2.0/B.dll"]);
+        b1.metadata = vec![rendered];
+        let b2 = Pkg::new("B", "2.0.0", vec![]).with_files(&["lib/netstandard2.0/B.dll"]);
+        let graded = grade(&mut oracle, &[a, b1, b2], &shape);
+        let class = generated.class();
+        let entry = counts
+            .entry(match class {
+                Class::MustCommit => "must-commit",
+                Class::MustDecline => "must-decline",
+                Class::Either => unreachable!(),
+            })
+            .or_default();
+        entry.0 += 1;
+        entry.1 += usize::from(graded.ours.is_ok());
+        match (class, &graded.ours) {
+            (Class::MustCommit, Err(decline)) => failures.push(format!(
+                "in the domain, but B₁ declined: {decline}\n{rendered}"
+            )),
+            (Class::MustDecline, Ok(_)) => {
+                failures.push(format!("outside the domain, but B₁ committed\n{rendered}"))
+            }
+            (Class::MustDecline, Err(_)) if graded.theirs.success => {
+                over_declines.push(rendered.to_owned());
+            }
+            _ => {}
+        }
+        if graded.ours.is_ok() {
+            let package_based = &graded.theirs.framework_assemblies["net8.0"];
+            if !package_based.is_empty() {
+                failures.push(format!(
+                    "a package-based target has frameworkAssemblies {package_based:?}\n{rendered}"
+                ));
+            }
+            let declared = generated.declared_names();
+            for (package, names) in &graded.theirs.framework_assemblies["net472"] {
+                names_written += names.len();
+                for name in names {
+                    if !declared.contains(name) {
+                        failures.push(format!(
+                            "net472's {package:?} has {name:?}, which the nuspec does not declare\n{rendered}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "framework assemblies: {counts:?} (shapes, committed); {names_written} names written"
+    );
+    eprintln!(
+        "over-declines ({}): {}",
+        over_declines.len(),
+        over_declines.join("\n")
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+    let (committing, committed) = counts["must-commit"];
+    assert!(committing >= 40 && committed == committing, "{counts:?}");
+    assert!(names_written >= 10, "{names_written} names written");
 }
 
 /// Restore throws on a commit marker without a content hash or with a bad
@@ -2283,10 +2740,27 @@ const DESCRIPTIVE_METADATA: &[&str] = &[
     "<developmentDependency>true</developmentDependency>",
     "<developmentDependency>bogus</developmentDependency>",
 ];
-/// `<metadata>` children restore reads and B₁ does not model.
+/// `<frameworkAssemblies>` elements in B₁'s domain, which restore reads at
+/// every lookup and writes into a non-package-based target's libraries: each
+/// must be graded on a committed spec, on a chosen version and on one the
+/// engine only examines.
+const ADMITTED_FRAMEWORK_ASSEMBLIES: &[&str] = &[
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Xml" targetFramework="net48" /></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="mscorlib" targetFramework="net45" /><frameworkAssembly assemblyName="mscorlib" targetFramework="net461" /></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Net" /></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Net" targetFramework="net45, net8.0" /></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Net" targetFramework="bogus" /></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="" targetFramework="" /></frameworkAssemblies>"#,
+    "<frameworkAssemblies />",
+];
+/// `<metadata>` children restore reads and B₁ does not model, or models and
+/// declines in this shape.
 const DECLINED_METADATA: &[&str] = &[
     r#"<contentFiles><files include="**/*" buildAction="Bad" /></contentFiles>"#,
-    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Xml" targetFramework="net48" /></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Xml"><x /></frameworkAssembly></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly targetFramework="net48" /></frameworkAssemblies>"#,
+    r#"<frameworkAssemblies><frameworkAssembly assemblyName="System.Xml" targetFramework="portable-net45-client" /></frameworkAssemblies>"#,
+    r#"<frameworkReferences><group targetFramework="net8.0"><frameworkReference name="Microsoft.AspNetCore.App" /></group></frameworkReferences>"#,
     "<somethingNew>1</somethingNew>",
 ];
 
@@ -2453,6 +2927,11 @@ fn generate_in(rng: &mut SplitMix64, projects: Projects) -> Generated {
             let mut package = Pkg::new(id, version, groups).with_files(files);
             if rng.below(3) == 0 {
                 package.metadata = vec![*rng.pick(DESCRIPTIVE_METADATA)];
+            }
+            if !clean && rng.below(4) == 0 {
+                package
+                    .metadata
+                    .push(*rng.pick(ADMITTED_FRAMEWORK_ASSEMBLIES));
             }
             match if clean { usize::MAX } else { rng.below(40) } {
                 10 => package.metadata.push(*rng.pick(DECLINED_METADATA)),
@@ -3313,6 +3792,7 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
     <serviceable>{6}</serviceable>
     <dependencies><group targetFramework="{7}"><dependency id="{8}" version="{9}" /></group></dependencies>
     <contentFiles><files include="{10}" buildAction="{11}" copyToOutput="{12}" flatten="{13}" /></contentFiles>
+    <frameworkAssemblies><frameworkAssembly assemblyName="{14}" targetFramework="{15}" /></frameworkAssemblies>
   </metadata>
 </package>"#;
     const NUSPEC_VALUES: &[&str] = &[
@@ -3330,6 +3810,8 @@ fn every_perturbation_of_nuspec_and_config_text_is_graded() {
         "Content",
         "true",
         "false",
+        "System.Xml",
+        "net48",
     ];
     const CONFIG: &str = r#"<configuration>
   <packageSources><add key="{0}" value="{1}" protocolVersion="{2}" /></packageSources>
@@ -3533,7 +4015,7 @@ fn text_elem(name: &'static str, text: &str) -> XNode {
 
 /// A nuspec B₁ commits, with every vocabulary element present at least
 /// once: identity, descriptive elements with and without attributes, package
-/// types, grouped dependencies and flat references.
+/// types, grouped dependencies, flat references and framework assemblies.
 fn committing_nuspec() -> XElem {
     let XNode::Elem(root) = elem(
         "package",
@@ -3573,6 +4055,15 @@ fn committing_nuspec() -> XElem {
                     "references",
                     &[],
                     vec![elem("reference", &[("file", "A.dll")], vec![])],
+                ),
+                elem(
+                    "frameworkAssemblies",
+                    &[],
+                    vec![elem(
+                        "frameworkAssembly",
+                        &[("assemblyName", "System.Xml"), ("targetFramework", "net45")],
+                        vec![],
+                    )],
                 ),
             ],
         )],
@@ -3722,16 +4213,19 @@ fn classify(mutation: Mutation, name: &str) -> Option<Class> {
         Mutation::Duplicate => match name {
             "package" => return None,
             _ if descriptive => Class::MustCommit,
-            // The first group for a framework wins on both sides, and a
-            // second `Dependency` package type is one more admitted type.
-            "group" | "packageType" => Class::MustCommit,
+            // The first group for a framework wins on both sides, a second
+            // `Dependency` package type is one more admitted type, and
+            // restore merges framework assemblies, duplicates included.
+            "group" | "packageType" | "frameworkAssembly" => Class::MustCommit,
             "dependency" | "reference" => Class::Either,
             _ => Class::MustDecline,
         },
         Mutation::Remove => match name {
             "package" => return None,
             _ if descriptive => Class::MustCommit,
-            "packageTypes" | "packageType" => Class::MustCommit,
+            "packageTypes" | "packageType" | "frameworkAssemblies" | "frameworkAssembly" => {
+                Class::MustCommit
+            }
             _ if graph => Class::Either,
             _ => Class::MustDecline,
         },

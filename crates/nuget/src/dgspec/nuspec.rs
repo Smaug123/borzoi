@@ -33,12 +33,13 @@
 //!   never reads and which may hold anything, or one of the elements restore
 //!   reads and B₁ models, each with exactly the attributes and children the
 //!   SDK's `pack` writes: `id` and `version` once each; `dependencies`,
-//!   `references`, `packageTypes` and `contentFiles` at most once (NuGet's reader takes the
-//!   first of each, which the lenient reader does not). Two `<group>`s for
-//!   one framework are admitted: the first wins on both sides, and the
-//!   generated sweep grades it. The elements restore reads
-//!   and B₁ does not model (`frameworkAssemblies`, `frameworkReferences`)
-//!   decline by name, as does any other.
+//!   `references`, `packageTypes`, `contentFiles` and `frameworkAssemblies`
+//!   at most once (NuGet's reader takes the first of each, which the lenient
+//!   reader does not; it merges every `frameworkAssemblies`, and holding the
+//!   element to one is the measured shape). Two `<group>`s for one framework
+//!   are admitted: the first wins on both sides, and the generated sweep
+//!   grades it. The one element restore reads and B₁ does not model,
+//!   `frameworkReferences`, declines by name, as does any other.
 //! - **Identity.** `<id>` and `<version>` name the folder the package is in;
 //!   every `<packageType>` is `Dependency` without a version (restore refuses
 //!   other types in a `PackageReference` project, `DotnetTool` with `NU1212`,
@@ -53,9 +54,10 @@
 //! `<dependency>` but `id`, `version`, `include` and `exclude`, no child of
 //! `<group>` but `<dependency>`, and no repeated `<dependencies>` or
 //! `<group>` framework; 3,837 open with a UTF-8 byte order mark and 2 are
-//! UTF-16. What that cache has and this domain declines is
-//! `<frameworkAssemblies>` (839 nuspecs) and `<frameworkReferences>` (74):
-//! later stages.
+//! UTF-16. 839 of them declare `<frameworkAssemblies>` (Microsoft's
+//! `System.*` packages among them; see [`admitted_framework_assemblies`] for
+//! what restore reads of it, and where). What that cache has and this domain
+//! declines is `<frameworkReferences>` (74): a later stage.
 
 use super::resolve::NuGetIdentity;
 use crate::{NuGetFramework, NuGetVersion, PackageId, PackageIdentity, VersionRange};
@@ -151,7 +153,7 @@ pub const DESCRIPTIVE_ELEMENTS: &[&str] = &[
 ];
 
 /// The `<metadata>` elements restore reads and B₁ does not model.
-const UNMODELLED_ELEMENTS: &[&str] = &["frameworkAssemblies", "frameworkReferences"];
+const UNMODELLED_ELEMENTS: &[&str] = &["frameworkReferences"];
 
 /// Whether `bytes`, the nuspec of the package `identity` is installed as, is
 /// in the domain B₁ commits in under the restoring NuGet `nuget`.
@@ -430,7 +432,11 @@ fn admitted_metadata(
                     )));
                 }
             }
-            "dependencies" | "references" | "packageTypes" | "contentFiles" => {
+            "dependencies"
+            | "references"
+            | "packageTypes"
+            | "contentFiles"
+            | "frameworkAssemblies" => {
                 if !once.insert(name) {
                     return Err(vocabulary_decline("metadata", format!("a second <{name}>")));
                 }
@@ -439,7 +445,8 @@ fn admitted_metadata(
                     "dependencies" => admitted_dependencies(vocabulary, child, &path)?,
                     "references" => admitted_references(vocabulary, child, &path)?,
                     "packageTypes" => admitted_package_types(vocabulary, child, &path)?,
-                    _ => admitted_content_files(vocabulary, child, &path)?,
+                    "contentFiles" => admitted_content_files(vocabulary, child, &path)?,
+                    _ => admitted_framework_assemblies(vocabulary, child, &path)?,
                 }
             }
             _ => {
@@ -708,6 +715,113 @@ fn admitted_content_files(
         }
     }
     Ok(())
+}
+
+/// `<frameworkAssemblies>` holding `<frameworkAssembly assemblyName
+/// targetFramework />` elements and nothing else: the shape `pack` writes,
+/// with `assemblyName` present and any value, and `targetFramework` optional.
+///
+/// Restore reads the element wherever it reads a nuspec: at an edge's lookup
+/// (`FindPackageByIdResource.GetDependencyInfo` reads the framework assembly
+/// groups beside the dependency groups and the minimum client version, so a
+/// version the engine examines without choosing it is read too) and for each
+/// package of the closure. What it reads
+/// (`NuspecReader.GetFrameworkAssemblyGroups`): an absent or empty
+/// `targetFramework` is NuGet's `Any`; any other is split on commas, the
+/// empty pieces dropped, and each piece trimmed (`String.Trim`: every
+/// Unicode white space) and parsed as a folder name, which reads what it
+/// does not know as `Unsupported` except in its portable branch, where a
+/// profile member carrying a profile throws (`portable-net45-client`, under
+/// any spelling of the identifier: `NETPortable`, `.NETPortable`); an empty
+/// `assemblyName` is dropped and duplicates merge. So each piece is held
+/// to: no `%` (NuGet unescapes it before parsing; the parser here does
+/// not), no white space inside, a leading identifier — the run of ASCII
+/// letters and dots NuGet's `RawParse` cuts off the front — that is not one
+/// of NuGet's spellings of `.NETPortable` (`portable`, `NETPortable`,
+/// `.NETPortable`, in any case), and parsing with [`NuGetFramework::parse`].
+/// The portable family is the one branch of the folder parser that throws,
+/// and one the measured cache never spells in this element, and the rule
+/// that holds it out is textual: no reading of the piece by the parser
+/// here stands between the spelling and the decline, since that parser
+/// reads `.NETPortable-net45-client` as a profile and
+/// `portable4.00000000000-net45-client` as unsupported where NuGet reads
+/// both as portable profiles and throws. The generated sweep
+/// (`framework_assemblies_shapes_are_graded_at_the_lookup_and_in_the_closure`)
+/// grades spellings restore parses, ones it reads as unsupported, portable
+/// profiles sound and throwing under each identifier and version spelling,
+/// escapes, lists and white space alike.
+///
+/// What restore then does with the groups moves nothing B₁ commits. For a
+/// framework that is package based (`.NETCoreApp`, `.NETStandard`, …) it
+/// never consults them again. For one that is not (`.NETFramework`) it
+/// writes the names of the group nearest the framework into the target
+/// library's `frameworkAssemblies` in the assets file — names the LSP never
+/// reads (its assets consumer reads compile assets, package folders and
+/// framework references) — and counts them as a compatible asset in its
+/// compatibility check, which can only make compatible a package B₁ already
+/// declines: `check_compatibility` admits a package only with compile assets
+/// for the framework itself, or with no framework-specific file at all, and
+/// restore finds both compatible whatever this element says.
+fn admitted_framework_assemblies(
+    vocabulary: Vocabulary<'_>,
+    framework_assemblies: Node<'_, '_>,
+    path: &str,
+) -> Result<(), NuspecDecline> {
+    for framework_assembly in element_children(framework_assemblies, path)? {
+        let assembly_path = format!("{path}/frameworkAssembly");
+        if framework_assembly.tag_name().name() != "frameworkAssembly"
+            || !vocabulary.plain(framework_assembly)
+        {
+            return Err(vocabulary_decline(
+                path,
+                format!("element {}", framework_assembly.tag_name().name()),
+            ));
+        }
+        attributes_in(
+            framework_assembly,
+            &assembly_path,
+            &["assemblyName", "targetFramework"],
+        )?;
+        if !element_children(framework_assembly, &assembly_path)?.is_empty() {
+            return Err(vocabulary_decline(
+                &assembly_path,
+                "an element inside <frameworkAssembly>",
+            ));
+        }
+        if framework_assembly.attribute("assemblyName").is_none() {
+            return Err(vocabulary_decline(&assembly_path, "no assemblyName"));
+        }
+        if let Some(raw) = framework_assembly.attribute("targetFramework") {
+            for piece in raw.split(',').filter(|piece| !piece.is_empty()) {
+                let piece = piece.trim_matches(char::is_whitespace);
+                let admitted = !piece.contains('%')
+                    && !piece.contains(char::is_whitespace)
+                    && !names_portable(piece)
+                    && NuGetFramework::parse(piece).is_ok();
+                if !admitted {
+                    return Err(vocabulary_decline(
+                        &assembly_path,
+                        format!("targetFramework {raw:?}"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a framework folder name's identifier — the leading run of ASCII
+/// letters and dots, as NuGet's `RawParse` cuts it — is one NuGet maps to
+/// `.NETPortable`: `portable` (its short name), `NETPortable` (its synonym)
+/// or `.NETPortable` itself, compared ignoring case as NuGet's tables do.
+fn names_portable(piece: &str) -> bool {
+    let identifier_end = piece
+        .find(|c: char| !(c.is_ascii_alphabetic() || c == '.'))
+        .unwrap_or(piece.len());
+    let identifier = &piece[..identifier_end];
+    ["portable", "NETPortable", ".NETPortable"]
+        .iter()
+        .any(|spelling| identifier.eq_ignore_ascii_case(spelling))
 }
 
 /// Whether a content-file glob is in the subset B₁ admits: `/`-separated
