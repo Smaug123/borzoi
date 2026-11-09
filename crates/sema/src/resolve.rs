@@ -2296,6 +2296,7 @@ impl<'a> Resolver<'a> {
             module_open_prefixes: Vec::new(),
             assembly_open_prefixes: Vec::new(),
             open_generation: 0,
+            own_namespace_fold: state::RecordedFold::default(),
             pattern_suppressed_case_ids: HashSet::new(),
             modules_with_hidden_values: HashSet::new(),
             auto_open_module_paths: Vec::new(),

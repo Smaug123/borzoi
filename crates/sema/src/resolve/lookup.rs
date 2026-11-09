@@ -18,7 +18,8 @@ use super::model::{
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
-    Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
+    RecordedFold, Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix,
+    TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -1104,27 +1105,31 @@ impl<'a> Resolver<'a> {
     ///
     /// Position 0: this precedes every declaration in the block, so anything
     /// the file writes — a `let`, a later `open`, a type it defines — outranks
-    /// it, which is FCS's last-write-wins env. That is also why the project
-    /// half is folded *here* but skipped by an explicit self-`open` of the same
-    /// namespace (see the `open` arm in `decls.rs`): position 0 is FCS's real
-    /// fold position for it, while re-running it at a later `open`'s text
-    /// position would wrongly override a binding declared in between.
+    /// it, which is FCS's last-write-wins env.
     ///
     /// After the fold, what the open adds that the fold does not model
     /// ([`Self::namespace_open_contributions`]), at the same position.
+    ///
+    /// What the project half and those contributions wrote is kept as
+    /// [`Self::own_namespace_fold`]: it is exactly the namespace's fragments
+    /// from earlier files and earlier blocks, the ones FCS has registered by
+    /// now, so an explicit `open` of the namespace later in the block writes
+    /// it again at its own position ([`Self::replay_own_namespace_fold`]).
     ///
     /// `header` is the block header's namespace path, the range the
     /// resolution-explain trace records this implicit open at; the trace
     /// covers the fold and the contributions both, as an explicit `open`'s
     /// does.
     pub(super) fn open_own_enclosing_namespace(&mut self, header: TextRange) {
+        self.own_namespace_fold = RecordedFold::default();
         let namespace = self.enclosing_namespace().to_vec();
         if namespace.is_empty() {
             return;
         }
         let trace_before = self.open_trace_snapshot();
-        self.fold_own_enclosing_namespace(&namespace);
-        self.namespace_open_contributions(&namespace, 0);
+        let project_half = self.fold_own_enclosing_namespace(&namespace);
+        let contributions = self.record_fold(|r| r.namespace_open_contributions(&namespace, 0));
+        self.own_namespace_fold = project_half.then(contributions);
         let opacity = self.open_opacity_since(&trace_before);
         self.trace_opens.push(OpenTrace {
             range: header,
@@ -1135,8 +1140,9 @@ impl<'a> Resolver<'a> {
         });
     }
 
-    /// The fold behind [`Self::open_own_enclosing_namespace`].
-    fn fold_own_enclosing_namespace(&mut self, namespace: &[String]) {
+    /// The fold behind [`Self::open_own_enclosing_namespace`], returning what
+    /// its project namespace half wrote.
+    fn fold_own_enclosing_namespace(&mut self, namespace: &[String]) -> RecordedFold {
         let namespace = namespace.to_vec();
         // The same-FQN assembly **module** half — `ResolveLongIdentAsModuleOrNamespace`
         // returns modules and namespaces alike, so a top-level `module A.B` in
@@ -1263,9 +1269,13 @@ impl<'a> Resolver<'a> {
         // A module nested in one of its `[<AutoOpen>]` modules answers to its
         // short name, which the walk cannot follow; a later `open` of it goes
         // opaque ([`Self::may_name_unlent_module`]).
-        if project_ns {
-            self.open_project_namespace_values(&namespace, 0);
-        }
+        let project_half = if project_ns {
+            self.record_fold(|r| {
+                r.open_project_namespace_values(&namespace, 0);
+            })
+        } else {
+            RecordedFold::default()
+        };
         // The project module half's opaque-marker bump: hidden names no
         // signature screen bounds must stale this fold's own assembly entries
         // too, so they go after it.
@@ -1280,6 +1290,70 @@ impl<'a> Resolver<'a> {
         if self.is_project_module_path(&namespace) {
             self.opaque_dotted_open = true;
         }
+        project_half
+    }
+
+    /// Run `fold` and return what it wrote into the module frame, with the
+    /// generation barriers it raised ([`RecordedFold`]). A fold only ever
+    /// appends to the module frame and bumps the generation, so the appended
+    /// entries and the generation's growth are all of it that a replay needs.
+    fn record_fold(&mut self, fold: impl FnOnce(&mut Self)) -> RecordedFold {
+        let generation = self.open_generation;
+        let len = self.module_frame().entries.len();
+        fold(self);
+        let entries = self.module_frame().entries[len..]
+            .iter()
+            .map(|entry| {
+                let barriers = entry
+                    .generation
+                    .checked_sub(generation)
+                    .expect("a fold writes its entries at or after the generation it starts at");
+                (barriers, entry.clone())
+            })
+            .collect();
+        RecordedFold {
+            entries,
+            barriers: self.open_generation - generation,
+        }
+    }
+
+    /// An explicit `open` of this block's own enclosing namespace: write what
+    /// the block's implicit open of it wrote ([`Self::own_namespace_fold`])
+    /// again, at `open_pos` and on top of the current generation, raising the
+    /// same barriers between the same entries.
+    ///
+    /// FCS resolves the `open` to the namespace's fragments its environment
+    /// has registered — every earlier file's and every earlier block's of this
+    /// file, which is what the implicit open folded at the block's start — and
+    /// adds their contents again at the `open`, over whatever came in between
+    /// (fcs-dump-verified, `reopened_namespace_grid`). The current block's own
+    /// fragment is registered only when the block ends, so its declarations
+    /// keep the place they were written at: `[<AutoOpen>] module A = let x = 1`
+    /// / `module Client = let x = 2; open N; let y = x` binds `Client.x` when
+    /// `A` is in the current block, and `A.x` when it is in an earlier file.
+    ///
+    /// The fold is replayed rather than recomputed because recomputing it here
+    /// would read the current block's declarations too, which the walk has
+    /// recorded by now. One part of it reads the scope rather than the
+    /// fragments, and the scope has grown since: a constructible type under a
+    /// signatured namespace evicts a same-named value already visible
+    /// ([`Self::push_signatured_slot_marks`]), so those marks are taken again
+    /// here.
+    pub(super) fn replay_own_namespace_fold(&mut self, open_pos: u32) {
+        let namespace = self.enclosing_namespace().to_vec();
+        self.push_signatured_slot_marks(&namespace, open_pos);
+        let RecordedFold { entries, barriers } = self.own_namespace_fold.clone();
+        let generation = self.open_generation;
+        let replayed: Vec<ScopeEntry> = entries
+            .into_iter()
+            .map(|(barriers_before, mut entry)| {
+                entry.generation = generation + barriers_before;
+                entry.open_pos = open_pos;
+                entry
+            })
+            .collect();
+        self.module_frame().entries.extend(replayed);
+        self.open_generation = generation + barriers;
     }
 
     /// The walk state an `open` can perturb, captured before it so
@@ -2189,6 +2263,50 @@ impl<'a> Resolver<'a> {
         count
     }
 
+    /// A constructible type directly under a signatured namespace takes FCS's
+    /// unqualified slot from a same-named value already visible — an implicit
+    /// FSharp.Core auto-open's `ref` in any enclosing frame, a local bound
+    /// before the open — so a bare `ref ()` is its constructor, which sema
+    /// does not model. The eviction is that name's alone, so each such name
+    /// with an entry visible here, in any frame, is marked in expression
+    /// position at the open, and nothing else is staled: a type whose name
+    /// nothing in scope claims evicts nothing, and an implicitly opened union
+    /// case of the name (`Ok`) is one more entry it evicts. A binder after the
+    /// open shadows the type by position as usual. (An unsigned namespace's
+    /// bare constructor contest is unmodelled: see
+    /// `sig_namespace_fold_diff::unsigned_constructor_slot_contest`.)
+    pub(super) fn push_signatured_slot_marks(&mut self, namespace: &[String], open_pos: u32) {
+        if !(self.is_project_namespace_path(namespace)
+            && self.preceding.signatured_namespaces.contains(namespace))
+        {
+            return;
+        }
+        let mut contested: Vec<String> = self
+            .direct_project_type_contestants(namespace)
+            .into_iter()
+            .map(|(name, _)| name)
+            .chain(
+                self.preceding
+                    .signatured_slot_type_names
+                    .get(namespace)
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            )
+            .filter(|name| self.latest_entry(name).is_some())
+            .collect();
+        contested.sort();
+        contested.dedup();
+        let generation = self.open_generation;
+        let marks: Vec<ScopeEntry> = contested
+            .into_iter()
+            .map(|name| {
+                ScopeEntry::contributor_mark(name, MarkReach::Expression, generation, open_pos)
+            })
+            .collect();
+        self.module_frame().entries.extend(marks);
+    }
+
     /// Bring a project **namespace**'s direct cases/exceptions into scope —
     /// [`Self::open_module_values`] on `namespace` itself, since F# forbids
     /// values at namespace scope, its direct exports (if any) are exactly the
@@ -2309,45 +2427,7 @@ impl<'a> Resolver<'a> {
         // is always brought in, a submodule's members only through auto-open
         // fragments.
         let is_namespace = self.is_project_namespace_path(namespace);
-        // A constructible type directly under a signatured namespace takes
-        // FCS's unqualified slot from a same-named value already visible — an
-        // implicit FSharp.Core auto-open's `ref` in any enclosing frame, a
-        // local bound before the open — so a bare `ref ()` is its
-        // constructor, which sema does not model. The eviction is that name's
-        // alone, so each such name with an entry visible here, in any frame,
-        // is marked in expression position at the open, and nothing else is
-        // staled: a type whose name nothing in scope claims evicts nothing,
-        // and an implicitly opened union case of the name (`Ok`) is one more
-        // entry it evicts. A binder after the open shadows the type by
-        // position as usual. (An unsigned namespace's bare constructor
-        // contest is unmodelled: see
-        // `sig_namespace_fold_diff::unsigned_constructor_slot_contest`.)
-        if is_namespace && self.preceding.signatured_namespaces.contains(namespace) {
-            let mut contested: Vec<String> = self
-                .direct_project_type_contestants(namespace)
-                .into_iter()
-                .map(|(name, _)| name)
-                .chain(
-                    self.preceding
-                        .signatured_slot_type_names
-                        .get(namespace)
-                        .into_iter()
-                        .flatten()
-                        .cloned(),
-                )
-                .filter(|name| self.latest_entry(name).is_some())
-                .collect();
-            contested.sort();
-            contested.dedup();
-            let generation = self.open_generation;
-            let marks: Vec<ScopeEntry> = contested
-                .into_iter()
-                .map(|name| {
-                    ScopeEntry::contributor_mark(name, MarkReach::Expression, generation, open_pos)
-                })
-                .collect();
-            self.module_frame().entries.extend(marks);
-        }
+        self.push_signatured_slot_marks(namespace, open_pos);
         let direct_tier = if is_namespace {
             self.direct_tier_ids_at(namespace)
         } else {
@@ -2998,6 +3078,16 @@ impl<'a> Resolver<'a> {
             self.defs[def.index()].kind,
             DefKind::UnionCase | DefKind::ExceptionCase | DefKind::ActivePattern
         ))
+    }
+
+    /// Whether the export behind `id` is a union or exception **case**:
+    /// same-file via this file's export arena, cross-file via
+    /// [`ProjectItems::is_case_item`](super::model::ProjectItems::is_case_item).
+    fn item_is_case(&self, id: ItemId) -> bool {
+        match id.index().checked_sub(self.item_base as usize) {
+            Some(local) => self.items.get(local).is_some_and(|it| it.is_case()),
+            None => self.preceding.is_case_item(id),
+        }
     }
 
     /// Whether the module-level value behind `id` is **attributed** — a
@@ -5361,6 +5451,10 @@ impl<'a> Resolver<'a> {
             .explicit_open_prefixes
             .iter()
             .chain(&self.module_open_prefixes);
+        // Where an opened *project* type of the name that may take the slot
+        // entered it — the positions a project case the same `open` supplied
+        // cannot be ordered against (below).
+        let mut project_type_opens: Vec<u32> = Vec::new();
         for (pos, prefix) in open_prefixes {
             let mut path = prefix.clone();
             path.push(head.to_string());
@@ -5377,11 +5471,18 @@ impl<'a> Resolver<'a> {
             let seen = |slot: TypeSlot| {
                 slot.class_through_scoped_open(&path, namespace, &self.container_path)
             };
-            if let Some((_, _, slot)) = self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
+            let class = if let Some((_, _, slot)) =
+                self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
             {
-                note(*pos, seen(*slot));
-            } else if let Some(slot) = self.preceding.exported_type_slot(&path) {
-                note(*pos, seen(slot));
+                Some(seen(*slot))
+            } else {
+                self.preceding.exported_type_slot(&path).map(seen)
+            };
+            if let Some(class) = class {
+                note(*pos, class);
+                if class != SlotClass::Keeps {
+                    project_type_opens.push(*pos);
+                }
             } else if self
                 .type_defs
                 .get(prefix.as_slice())
@@ -5394,6 +5495,7 @@ impl<'a> Resolver<'a> {
                 // was never exported (probe M20r), so treat the contest as
                 // undecidable rather than trust it.
                 note(*pos, SlotClass::Unknown);
+                project_type_opens.push(*pos);
             }
         }
         // …and a referenced-assembly type at an opened path. Assembly namespace
@@ -5418,7 +5520,10 @@ impl<'a> Resolver<'a> {
         // `open M` after the type re-takes the slot for `M.Color` and one
         // before it loses (probes M20p/M20q, codex round 3) — while a source
         // binding sits at its definition's.
-        let (value_pos, value_from_open) = match self.lookup_entry(head) {
+        let value_entry = self.lookup_entry(head);
+        let value_is_case = value_entry
+            .is_some_and(|e| matches!(e.resolution, Resolution::Item(id) if self.item_is_case(id)));
+        let (value_pos, value_from_open) = match value_entry {
             // An expression-local binding enters scope after every type that
             // is in scope where it is bound — a type group's types enter
             // ahead of its members' bodies, whatever their text order — so no
@@ -5444,13 +5549,25 @@ impl<'a> Resolver<'a> {
                 // tie — distinct tokens never share an offset). FCS breaks
                 // the tie by reading priority (the higher reading's TYPE
                 // wins — probe M20x, codex round 9), which the slot ordering
-                // does not model — undecidable, defer.
+                // does not model — undecidable, defer. A bare use reads the
+                // open's fold instead, which adds a container's types before
+                // its `[<AutoOpen>]` modules' values and the project's
+                // fragment after the referenced assemblies', so such a value
+                // holds — but a project union or exception case enters with
+                // the project's types, in declaration order (`type U = X of
+                // unit | O` then `type X()` binds the class), which the
+                // positions do not record either.
                 let same_open_tie = |p: u32| !bare && value_from_open && p == value_pos;
+                let case_tie = bare
+                    && value_is_case
+                    && value_from_open
+                    && project_type_opens.contains(&value_pos);
                 if evictor_pos.is_some_and(|p| p > value_pos) {
                     HeadSlot::Evicted
                 } else if unknown_pos.is_some_and(|p| p > value_pos)
                     || evictor_pos.is_some_and(same_open_tie)
                     || unknown_pos.is_some_and(same_open_tie)
+                    || case_tie
                 {
                     HeadSlot::Unordered
                 } else {

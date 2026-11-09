@@ -24,6 +24,7 @@ pub mod overload_corpus;
 pub mod project_grade;
 pub mod scope_gen;
 pub mod tier_corpus;
+pub mod use_grade;
 
 use std::collections::HashMap;
 use std::ffi::OsStr;

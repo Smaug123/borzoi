@@ -290,6 +290,31 @@ impl ScopeEntry {
     }
 }
 
+/// What one fold wrote into the module frame, kept so the same contents can
+/// be written again at a later position: each entry with the number of
+/// generation barriers the fold had raised before writing it, and the number
+/// it raised in all ([`Resolver::own_namespace_fold`]).
+#[derive(Debug, Clone, Default)]
+pub(super) struct RecordedFold {
+    pub(super) entries: Vec<(usize, ScopeEntry)>,
+    pub(super) barriers: usize,
+}
+
+impl RecordedFold {
+    /// This fold followed by `next`, as one: `next`'s entries come after every
+    /// barrier this one raised.
+    pub(super) fn then(mut self, next: RecordedFold) -> RecordedFold {
+        let before = self.barriers;
+        self.entries.extend(
+            next.entries
+                .into_iter()
+                .map(|(barriers, entry)| (before + barriers, entry)),
+        );
+        self.barriers += next.barriers;
+        self
+    }
+}
+
 /// One in-file type definition's position and [`SlotClass`]
 /// ([`Resolver::type_slot_history`]).
 pub(super) type TypeSlotDef = (u32, SlotClass);
@@ -1229,6 +1254,16 @@ pub(super) struct Resolver<'a> {
     /// earlier opens stay resolvable. Block-scoped (reset per top-level block,
     /// saved/restored across nested modules) like `imports`.
     pub(super) open_generation: usize,
+    /// The project half of this block's implicit open of its own enclosing
+    /// namespace ([`Resolver::open_own_enclosing_namespace`]): the namespace's
+    /// fragments from earlier files and earlier blocks of this file, as the
+    /// fold wrote them at the block's start. An explicit `open` of the same
+    /// namespace in the block writes them again at its own position
+    /// ([`Resolver::replay_own_namespace_fold`]): FCS's `open` re-adds the
+    /// fragments the environment has registered, and the current block's own
+    /// fragment is registered only once the block ends. Block-scoped: set at
+    /// each block's start.
+    pub(super) own_namespace_fold: RecordedFold,
     /// Project-global [`ItemId`]s of opened cross-file cases that must **not** be
     /// trusted in pattern position — exported cases of a *hidden* module (one whose
     /// `open` also brings unenumerable constructors, e.g. an active pattern, that
