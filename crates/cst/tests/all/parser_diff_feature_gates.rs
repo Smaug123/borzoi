@@ -206,7 +206,10 @@ const IMPL: &[(&str, Expect)] = &[
         "module M\nlet f () = 1.0f\nlet g () = 1e3f\nlet h () = 0x1f\nlet i = 1_0f\n",
         Gated,
     ),
-    ("module M\nlet j = -2f\nlet k = 3F\nlet l = (+4f)\n", Gated),
+    (
+        "module M\nlet j = -2f\nlet k = 3F\nlet l = (+4f)\nlet m = 1__0f\n",
+        Gated,
+    ),
     ("module M\nlet m = 0x3f800000lf\nlet n = 1.5F\n", Control),
     (
         "module M\nlet f x =\n    match x with\n    | 1f -> 0\n    | _ -> 1\n",
@@ -366,42 +369,61 @@ fn sig_feature_gates_match_fcs_at_every_version() {
     check_all(SIG, FileKind::Sig);
 }
 
-/// Gated constructs whose annotation is missing, so that both sides also
-/// report parse errors and recover. Recovery diagnostics are not the subject
-/// here, so only the FS3350 feature errors are compared, at every version.
+/// Gated constructs in input both sides also reject and recover from — a
+/// missing annotation, a malformed literal. Recovery diagnostics are not the
+/// subject here, so only the modelled gates' diagnostics are compared, at
+/// every version.
 #[test]
 fn feature_gates_on_recovered_input_match_fcs() {
-    const RECOVERED: &[&str] = &[
-        "module Module\n\nlet _ =\n    async { \n        return new MyType() :\n    }\n",
-        "module Module\n\nseq {\n    yield! [ 1 .. 10 ] :\n}\n",
-        "module M\nlet f () = async {\n    let! x : = async { return 1 }\n    return x }\n",
+    const RECOVERED: &[(&str, Expect)] = &[
+        (
+            "module Module\n\nlet _ =\n    async { \n        return new MyType() :\n    }\n",
+            Gated,
+        ),
+        (
+            "module Module\n\nseq {\n    yield! [ 1 .. 10 ] :\n}\n",
+            Gated,
+        ),
+        (
+            "module M\nlet f () = async {\n    let! x : = async { return 1 }\n    return x }\n",
+            Gated,
+        ),
+        // Not an integer, so not a dotless `float32`: an invalid numeric
+        // literal at every version.
+        ("module M\nlet x = 1_f\nlet y = 2__f\n", Control),
     ];
     let mut failures = Vec::new();
-    for &source in RECOVERED {
+    for &(source, expect) in RECOVERED {
         let tmp = source_file(source, FileKind::Impl);
         let mut gated_somewhere = false;
         for &(lang, lang_text) in VERSIONS {
             let json = fcs_ast_batch_at(tmp.path(), lang_text);
-            let fcs: BTreeSet<(usize, usize, String)> =
-                crate::common::fcs_diagnostics(&json, source, 3350)
+            let fcs = modelled_gate_diagnostics(
+                fcs_all_diagnostics(&json, source)
                     .into_iter()
-                    .map(|(span, message)| (span.start, span.end, message))
-                    .collect();
+                    .map(|(span, message, _)| (span, message)),
+                source,
+                lang,
+            );
             gated_somewhere |= !fcs.is_empty();
-            let ours: BTreeSet<(usize, usize, String)> = parse_at(source, FileKind::Impl, lang)
-                .errors
-                .into_iter()
-                .filter(|e| e.message.starts_with("Feature '"))
-                .map(|e| (e.span.start, e.span.end, e.message))
-                .collect();
+            let ours = modelled_gate_diagnostics(
+                parse_at(source, FileKind::Impl, lang)
+                    .errors
+                    .into_iter()
+                    .map(|e| (e.span, e.message)),
+                source,
+                lang,
+            );
             if ours != fcs {
                 failures.push(format!(
-                    "FS3350 diverges at {lang_text} for {source:?}\n  ours: {ours:?}\n  fcs:  {fcs:?}"
+                    "gate diagnostics diverge at {lang_text} for {source:?}\n  ours: {ours:?}\n  fcs:  {fcs:?}"
                 ));
             }
         }
-        if !gated_somewhere {
-            failures.push(format!("FCS gates nothing in {source:?}"));
+        if gated_somewhere != (expect == Gated) {
+            failures.push(format!(
+                "{source:?} is listed as {expect:?}, but FCS gates something: {gated_somewhere}"
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -452,14 +474,15 @@ fn unmodelled_gates_are_pinned() {
     }
 }
 
-/// The modelled gates' diagnostics at F# 4.6 — below every modelled feature —
-/// for one file: the FS3350s naming a modelled feature, and the FS1153s on a
-/// dotless `float32` literal (FCS reports FS1153 for other bad literals too).
+/// The modelled gates' diagnostics at `lang` for one file: the FS3350s naming a
+/// modelled feature, and the FS1153s on a `float32` literal (FCS reports
+/// FS1153 for other bad literals too).
 /// Nullness is left out: below 9.0 FCS does not parse `string | null` as a
 /// nullness annotation at all (`docs/completed/ast-versioning-nullness-proof.md`).
 fn modelled_gate_diagnostics(
     diags: impl IntoIterator<Item = (std::ops::Range<usize>, String)>,
     source: &str,
+    lang: LanguageVersion,
 ) -> BTreeSet<(usize, usize, String)> {
     use borzoi_cst::language_version::LanguageFeature;
     let feature_messages: Vec<String> = [
@@ -469,19 +492,20 @@ fn modelled_gate_diagnostics(
         LanguageFeature::WhileBang,
         LanguageFeature::AllowTypedLetUseAndBang,
     ]
-    .map(|f| f.not_available_message(LanguageVersion::V4_6))
+    .map(|f| f.not_available_message(lang))
     .to_vec();
-    let dotless = |span: &std::ops::Range<usize>| {
-        source.get(span.clone()).is_some_and(|text| {
-            text.strip_suffix(['f', 'F']).is_some_and(|digits| {
-                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit() || b == b'_')
-            })
-        })
+    // Any decimal `float32`-suffixed literal: broader than the dotless form, so
+    // an FS1153 the gate reports on a literal FCS does not is still compared.
+    let float32_literal = |span: &std::ops::Range<usize>| {
+        source
+            .get(span.clone())
+            .is_some_and(|text| text.ends_with(['f', 'F']) && !text.contains(['x', 'X']))
     };
     diags
         .into_iter()
         .filter(|(span, message)| {
-            feature_messages.contains(message) || (message == INVALID_FLOAT && dotless(span))
+            feature_messages.contains(message)
+                || (message == INVALID_FLOAT && float32_literal(span))
         })
         .map(|(span, message)| (span.start, span.end, message))
         .collect()
@@ -545,6 +569,7 @@ fn feature_gates_match_fcs_over_corpus() {
         let ours = modelled_gate_diagnostics(
             parse.errors.into_iter().map(|e| (e.span, e.message)),
             &source,
+            LanguageVersion::V4_6,
         );
         let json = fcs_ast_batch_at(path, "4.6");
         let fcs = if json.contains("\"Diagnostics\":") {
@@ -553,6 +578,7 @@ fn feature_gates_match_fcs_over_corpus() {
                     .into_iter()
                     .map(|(span, message, _)| (span, message)),
                 &source,
+                LanguageVersion::V4_6,
             )
         } else {
             return Some("fcs-error".to_string());

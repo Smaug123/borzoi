@@ -267,16 +267,21 @@ fn static_abstract_span(node: &SyntaxNode) -> Option<Range<usize>> {
 }
 
 /// A `float32` literal written as an integer and a suffix (`1f`, `1_0F`): FCS's
-/// `ieee32_dotless_no_exponent`. A sign folded into the literal is not part of
-/// what FCS's lexer reports.
+/// `ieee32_dotless_no_exponent`, whose `integer` is `digit ((digit | '_')*
+/// digit)?`, so `1_f` is not one (it is an invalid numeric literal at every
+/// version). A sign folded into the literal is not part of what FCS's lexer
+/// reports.
 fn dotless_float32_span(token: &SyntaxToken) -> Option<Range<usize>> {
     if token.kind() != SyntaxKind::IEEE32_LIT {
         return None;
     }
     let text = token.text();
     let unsigned = text.trim_start_matches(['+', '-']);
-    let digits = unsigned.strip_suffix(['f', 'F'])?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
+    let digits = unsigned.strip_suffix(['f', 'F'])?.as_bytes();
+    let is_integer = digits.first().is_some_and(u8::is_ascii_digit)
+        && digits.last().is_some_and(u8::is_ascii_digit)
+        && digits.iter().all(|b| b.is_ascii_digit() || *b == b'_');
+    if !is_integer {
         return None;
     }
     let span = token_span(token);
