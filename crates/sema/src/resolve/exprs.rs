@@ -371,7 +371,7 @@ impl<'a> Resolver<'a> {
             }
             Expr::Fun(e) => {
                 let entries = self.pattern_locals(e.args(), BinderRole::Param);
-                self.scopes.push(Frame { entries });
+                self.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
@@ -574,7 +574,7 @@ impl<'a> Resolver<'a> {
                     }
                     entries.extend(self.pattern_locals(b.pat().into_iter(), BinderRole::Pattern));
                 }
-                self.scopes.push(Frame { entries });
+                self.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
@@ -647,7 +647,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(&enum_expr);
                 }
                 let entries = self.pattern_locals(e.pat().into_iter(), BinderRole::Pattern);
-                self.scopes.push(Frame { entries });
+                self.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
@@ -675,7 +675,7 @@ impl<'a> Resolver<'a> {
                     self.record(range, res);
                     entries.push(ScopeEntry::binding(name, res, self.open_generation));
                 }
-                self.scopes.push(Frame { entries });
+                self.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
@@ -782,7 +782,7 @@ impl<'a> Resolver<'a> {
     /// [`Expr::MatchBang`], and [`Expr::MatchLambda`].
     pub(super) fn resolve_match_clause(&mut self, clause: &MatchClause) {
         let entries = self.pattern_locals(clause.pat().into_iter(), BinderRole::Pattern);
-        self.scopes.push(Frame { entries });
+        self.scopes.push(Frame::new(entries));
         if let Some(guard) = clause.guard() {
             self.resolve_expr(&guard);
         }

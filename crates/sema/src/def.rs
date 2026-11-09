@@ -321,11 +321,15 @@ fn is_prefix_operator(tok: &SyntaxToken) -> bool {
     let Some(expr) = long_ident.parent() else {
         return false;
     };
+    // `take(2)`: a dotted path's every segment comes through here, so counting
+    // all of the path's children would make a walk over its segments
+    // quadratic in its length.
     tok.kind() == SyntaxKind::IDENT_TOK
         && long_ident.kind() == SyntaxKind::LONG_IDENT
         && long_ident
             .children_with_tokens()
             .filter(|c| !c.kind().is_trivia())
+            .take(2)
             .count()
             == 1
         && expr.kind() == SyntaxKind::LONG_IDENT_EXPR

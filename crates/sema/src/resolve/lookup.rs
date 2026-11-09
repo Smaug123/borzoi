@@ -281,7 +281,7 @@ impl<'a> Resolver<'a> {
                 ),
             })
             .collect();
-        self.module_frame().entries.extend(entries);
+        self.module_frame().extend(entries);
         // The members the projection dropped are statics FCS still opens, by
         // names the entries above do not list. An accessor's IL name carries
         // its property's.
@@ -384,7 +384,7 @@ impl<'a> Resolver<'a> {
                 entry
             })
             .collect();
-        self.module_frame().entries.extend(entries);
+        self.module_frame().extend(entries);
     }
 
     /// Push the implicitly opened union cases
@@ -431,7 +431,7 @@ impl<'a> Resolver<'a> {
                 Some(entry)
             })
             .collect();
-        self.module_frame().entries.extend(entries);
+        self.module_frame().extend(entries);
     }
 
     /// Whether a **constructible type** named `name` may hold FCS's unqualified
@@ -804,7 +804,7 @@ impl<'a> Resolver<'a> {
                 entries.push(entry);
             }
         }
-        self.module_frame().entries.extend(entries);
+        self.module_frame().extend(entries);
     }
 
     /// Whether `mp` is **exactly** a declared in-project module path — a
@@ -1312,9 +1312,9 @@ impl<'a> Resolver<'a> {
     /// entries and the generation's growth are all of it that a replay needs.
     fn record_fold(&mut self, fold: impl FnOnce(&mut Self)) -> RecordedFold {
         let generation = self.open_generation;
-        let len = self.module_frame().entries.len();
+        let len = self.module_frame().len();
         fold(self);
-        let entries = self.module_frame().entries[len..]
+        let entries = self.module_frame().entries()[len..]
             .iter()
             .map(|entry| {
                 let barriers = entry
@@ -1365,7 +1365,7 @@ impl<'a> Resolver<'a> {
                 entry
             })
             .collect();
-        self.module_frame().entries.extend(replayed);
+        self.module_frame().extend(replayed);
         self.open_generation = generation + barriers;
     }
 
@@ -1378,7 +1378,7 @@ impl<'a> Resolver<'a> {
             opaque_dotted: self.opaque_dotted_open,
             unmodelled: self.unmodelled_open_active,
             generation: self.open_generation,
-            entries: self.scopes.last().map_or(0, |f| f.entries.len()),
+            entries: self.scopes.last().map_or(0, |f| f.len()),
             imports: self.imports.len(),
             shortening: self.open_shortening_prefixes.len(),
         }
@@ -1405,7 +1405,7 @@ impl<'a> Resolver<'a> {
             unmodelled: self.unmodelled_open_active && !before.unmodelled,
             staled_earlier: self.open_generation > before.generation,
             imported_deferred: self.scopes.last().is_some_and(|f| {
-                f.entries
+                f.entries()
                     .get(before.entries..)
                     .unwrap_or(&[])
                     .iter()
@@ -2271,7 +2271,7 @@ impl<'a> Resolver<'a> {
             }
         }
         let count = entries.len();
-        self.module_frame().entries.extend(entries);
+        self.module_frame().extend(entries);
         self.pattern_suppressed_case_ids.extend(suppressed);
         count
     }
@@ -2317,7 +2317,7 @@ impl<'a> Resolver<'a> {
                 ScopeEntry::contributor_mark(name, MarkReach::Expression, generation, open_pos)
             })
             .collect();
-        self.module_frame().entries.extend(marks);
+        self.module_frame().extend(marks);
     }
 
     /// Bring a project **namespace**'s direct cases/exceptions into scope —
@@ -2601,7 +2601,7 @@ impl<'a> Resolver<'a> {
                     self.open_generation,
                     open_pos,
                 );
-                self.module_frame().entries.push(entry);
+                self.module_frame().push(entry);
             }
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
@@ -2621,7 +2621,7 @@ impl<'a> Resolver<'a> {
                         )
                     })
                     .collect();
-                self.module_frame().entries.extend(entries);
+                self.module_frame().extend(entries);
             }
             // A fragment bringing value-space names we cannot enumerate (an active
             // pattern, an alias, an `extern`) bumps the generation before it folds,
@@ -2639,7 +2639,7 @@ impl<'a> Resolver<'a> {
                 self.open_generation,
                 open_pos,
             );
-            self.module_frame().entries.push(entry);
+            self.module_frame().push(entry);
         }
         // What each fragment adds that this fold does not model
         // ([`Self::module_open_contributions`]). These are marks, so they go
@@ -2661,20 +2661,18 @@ impl<'a> Resolver<'a> {
             // id-keyed when its fragment folded, and survives this re-push.
             let mut entry = ScopeEntry::opened(name, Resolution::Item(id), generation, open_pos);
             entry.maybe_constant_pattern = self.item_is_attributed(id);
-            self.module_frame().entries.push(entry);
+            self.module_frame().push(entry);
             count += 1;
         }
         for (name, id) in ctor_winners {
             // Pattern-only: wins the constructor namespace without disturbing the
             // value namespace (a later submodule value / type owns that slot).
-            self.module_frame()
-                .entries
-                .push(ScopeEntry::opened_pattern_only(
-                    name,
-                    Resolution::Item(id),
-                    generation,
-                    open_pos,
-                ));
+            self.module_frame().push(ScopeEntry::opened_pattern_only(
+                name,
+                Resolution::Item(id),
+                generation,
+                open_pos,
+            ));
             count += 1;
         }
         for (name, cause) in value_deferrals {
@@ -2683,11 +2681,9 @@ impl<'a> Resolver<'a> {
             // use defers, while `case_reference` reads it as a non-case and scans
             // past it to the constructor outcome — so a pattern the type does not
             // contest still resolves.
-            self.module_frame()
-                .entries
-                .push(ScopeEntry::opened_declined(
-                    name, cause, generation, open_pos,
-                ));
+            self.module_frame().push(ScopeEntry::opened_declined(
+                name, cause, generation, open_pos,
+            ));
             count += 1;
         }
         for name in deferred_straddles {
@@ -2704,7 +2700,7 @@ impl<'a> Resolver<'a> {
                 open_pos,
             );
             entry.opened_case = true;
-            self.module_frame().entries.push(entry);
+            self.module_frame().push(entry);
             count += 1;
         }
         // A signatured fragment's bare names with no exported identity
@@ -2729,7 +2725,7 @@ impl<'a> Resolver<'a> {
                     open_pos,
                 );
                 entry.opened_case = true;
-                self.module_frame().entries.push(entry);
+                self.module_frame().push(entry);
                 count += 1;
             }
         }
@@ -2925,10 +2921,7 @@ impl<'a> Resolver<'a> {
     ) -> Result<&ScopeEntry, Option<DeclineCause>> {
         let mut skipped_literal = false;
         for frame in self.scopes.iter().rev() {
-            for entry in frame.entries.iter().rev() {
-                if entry.name != name {
-                    continue;
-                }
+            for entry in frame.named_rev(name) {
                 // A contributor mark: the name may be a case the walk does not
                 // model, unless the contributor is a constructible type, which
                 // never enters the pattern table.
@@ -5793,7 +5786,7 @@ impl<'a> Resolver<'a> {
             .iter()
             .enumerate()
             .skip(module + 1)
-            .any(|(_, frame)| frame.entries.iter().any(|e| std::ptr::eq(e, entry)))
+            .any(|(_, frame)| frame.named_rev(&entry.name).any(|e| std::ptr::eq(e, entry)))
     }
 
     fn head_value_slot(&self, head: &str) -> HeadSlot {
@@ -6284,10 +6277,7 @@ impl<'a> Resolver<'a> {
     /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
     fn latest_entry_noting_withdrawals(&self, name: &str) -> (Option<&ScopeEntry>, bool) {
         for frame in self.scopes.iter().rev() {
-            for entry in frame.entries.iter().rev() {
-                if entry.name != name {
-                    continue;
-                }
+            for entry in frame.named_rev(name) {
                 if entry.pattern_only {
                     continue; // constructor namespace only — not a value here
                 }

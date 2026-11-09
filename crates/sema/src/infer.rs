@@ -910,6 +910,18 @@ enum BinderSite {
     Module,
 }
 
+/// The open variables of [`Gen::opaque`]'s entries, as roots of their classes
+/// ([`Gen::opaque_roots`]).
+#[derive(Debug, Default)]
+struct OpaqueRoots {
+    /// Of the entries that hold everywhere: a binder the binding refers to,
+    /// a member access's result.
+    everywhere: HashSet<TyVid>,
+    /// Of each method argument's entry, with the argument's span: a relation
+    /// inside it may bind them.
+    outside: Vec<(TextRange, HashSet<TyVid>)>,
+}
+
 /// What [`Gen::finish`] needs to know of a module-level binder's binding,
 /// beyond its type, to decide what it publishes.
 #[derive(Debug, Clone, Copy)]
@@ -1258,6 +1270,7 @@ pub fn infer_file(
 ) -> InferredFile {
     let ext_scope = ExtensionScope::of(resolved, env);
     let mut cx = Gen::new(resolved, env, ext_scope, preceding);
+    cx.rejecting_modules = cx.rejecting_modules(file);
     cx.rejected_defs = cx.rejected_use_defs(file);
     cx.project_types = cx.project_type_paths(file);
     (cx.project_cases, cx.project_records) = cx.project_type_schemes(file);
@@ -1451,6 +1464,12 @@ struct Gen<'a> {
     env: &'a AssemblyEnv,
     table: InferTable,
     constraints: Vec<Constraint>,
+    /// The argument checks a mid-walk [`Self::settle`] parked, in the order
+    /// it met them: they stand ahead of every argument check in
+    /// [`Self::constraints`], and only [`Self::solve`] fires one. Kept apart
+    /// so a settle does not read them again: a binding of `n` statements
+    /// settles `n` times.
+    settled_args: Vec<ArgCheck>,
     /// `(range, var)` per expression whose type to emit; `range` is the read-off
     /// key (and the same range the resolver keyed the occurrence under).
     exprs: Vec<(TextRange, TyVid, Option<GuardId>)>,
@@ -1636,6 +1655,10 @@ struct Gen<'a> {
     /// for their attributes ([`Self::rejected_use_defs`]); computed once in
     /// [`infer_file`].
     rejected_defs: HashSet<TextRange>,
+    /// The module headers and nested modules whose attributes may make F#
+    /// reject a use of their contents ([`Self::rejecting_modules`]); computed
+    /// once in [`infer_file`].
+    rejecting_modules: HashSet<SyntaxNode>,
     /// **Per binding**: every check-mode relation the walk dropped, as the
     /// checked expression's variable and its expected one
     /// ([`Self::infer_expr`]). FCS applies each one, as an equality whenever
@@ -1731,6 +1754,7 @@ impl<'a> Gen<'a> {
             ext_scope,
             table: InferTable::new(),
             constraints: Vec::new(),
+            settled_args: Vec::new(),
             exprs: Vec::new(),
             def_vars: HashMap::new(),
             local_defs: HashSet::new(),
@@ -1764,6 +1788,7 @@ impl<'a> Gen<'a> {
             declares_typars: false,
             binding_params: Vec::new(),
             rejected_defs: HashSet::new(),
+            rejecting_modules: HashSet::new(),
             project_types: HashMap::new(),
             project_cases: HashMap::new(),
             own_union_cases: HashSet::new(),
@@ -2020,7 +2045,7 @@ impl<'a> Gen<'a> {
         let rejects = |h: EntityHandle| self.rejects_use(h);
         let in_rejected_module = |node: &SyntaxNode| {
             node.ancestors().any(|a| {
-                a.kind() == SyntaxKind::NESTED_MODULE_DECL && self.attribute_may_be(&a, rejects)
+                a.kind() == SyntaxKind::NESTED_MODULE_DECL && self.rejecting_modules.contains(&a)
             })
         };
         let mut out = HashSet::new();
@@ -2103,6 +2128,20 @@ impl<'a> Gen<'a> {
             .filter_map(|d| d.long_id())
             .flat_map(|li| li.idents().map(|t| ident_text(&t)).collect::<Vec<_>>())
             .collect();
+        // A module whose attribute renames it, or may make F# reject a use
+        // reaching the type through it. A module's attributes and its header
+        // keyword are found among its children, which are also its
+        // declarations, so both are read once per module rather than once per
+        // type in it, which would cost a module of `n` types `n²`.
+        let mut renames_cache: HashMap<SyntaxNode, bool> = HashMap::new();
+        let mut renames_module = |node: &SyntaxNode| {
+            *renames_cache.entry(node.clone()).or_insert_with(|| {
+                self.attribute_may_be(node, |h| {
+                    env.is_compilation_representation_attribute(h) || self.rejects_use(h)
+                })
+            })
+        };
+        let mut module_kinds: HashMap<SyntaxNode, ModuleOrNamespaceKind> = HashMap::new();
         let mut out = HashMap::new();
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
             let Some(name) = defn.long_id().and_then(|li| {
@@ -2154,13 +2193,6 @@ impl<'a> Gen<'a> {
             {
                 continue;
             }
-            // A module whose attribute renames it, or may make F# reject a use
-            // reaching the type through it.
-            let renames_module = |node: &SyntaxNode| {
-                self.attribute_may_be(node, |h| {
-                    env.is_compilation_representation_attribute(h) || self.rejects_use(h)
-                })
-            };
             let mut path = vec![ident_text(&name)];
             let mut provable = true;
             for anc in defn.syntax().ancestors().skip(1) {
@@ -2176,7 +2208,8 @@ impl<'a> Gen<'a> {
                     }
                     path.splice(0..0, segs);
                 } else if let Some(m) = ModuleOrNamespace::cast(anc.clone()) {
-                    let header = match m.kind() {
+                    let kind = *module_kinds.entry(anc.clone()).or_insert_with(|| m.kind());
+                    let header = match kind {
                         ModuleOrNamespaceKind::DeclaredNamespace => m.long_id(),
                         ModuleOrNamespaceKind::NamedModule if !renames_module(&anc) => {
                             m.long_id().filter(|li| {
@@ -2546,9 +2579,27 @@ impl<'a> Gen<'a> {
     /// ([`Self::finish`]); a use inside the module is the in-file rule's.
     fn in_rejecting_header(&self, node: &SyntaxNode) -> bool {
         node.ancestors().any(|a| {
-            a.kind() == SyntaxKind::MODULE_OR_NAMESPACE
-                && self.attribute_may_be(&a, |h| self.rejects_use(h))
+            a.kind() == SyntaxKind::MODULE_OR_NAMESPACE && self.rejecting_modules.contains(&a)
         })
+    }
+
+    /// Every module header and nested module in `file` whose attributes may
+    /// make F# reject a use of its contents ([`Self::rejects_use`]).
+    ///
+    /// A module's attributes are found among its children, which are also
+    /// its declarations, so each binding asking of its own containers would
+    /// make a module of `n` bindings cost `n²`; asked once per module here,
+    /// the file costs one pass.
+    fn rejecting_modules(&self, file: &ImplFile) -> HashSet<SyntaxNode> {
+        file.syntax()
+            .descendants()
+            .filter(|node| {
+                matches!(
+                    node.kind(),
+                    SyntaxKind::MODULE_OR_NAMESPACE | SyntaxKind::NESTED_MODULE_DECL
+                ) && self.attribute_may_be(node, |h| self.rejects_use(h))
+            })
+            .collect()
     }
 
     /// Whether a use of the in-file binder `def` is left untyped, marking the
@@ -5954,7 +6005,11 @@ impl<'a> Gen<'a> {
     ///   (FS0072), so the pattern must not wake it
     ///   (`(o.Length, match o with "a" -> …)`).
     fn pattern_preempts_earlier_relation(&mut self, sv: TyVid, pt: &Ty) -> bool {
-        let mut eqs: Vec<(Ty, Ty)> = Vec::new();
+        let mut eqs: Vec<(Ty, Ty)> = self
+            .settled_args
+            .iter()
+            .map(|ac| (Ty::Var(ac.arg), Ty::Var(ac.dom)))
+            .collect();
         let mut receivers: Vec<TyVid> = Vec::new();
         for c in &self.constraints {
             match c {
@@ -6321,6 +6376,7 @@ impl<'a> Gen<'a> {
     /// undischarged and poisoned, which is silence.
     fn solve(&mut self) {
         let constraints = self.constraints.clone();
+        let settled_args = self.settled_args.clone();
         let poison = self.poison.len();
         let eq_failures = self.eq_failures;
         let snapshot = self.table.snapshot();
@@ -6337,6 +6393,7 @@ impl<'a> Gen<'a> {
             self.poison.truncate(poison);
             self.eq_failures = eq_failures;
             self.constraints = constraints;
+            self.settled_args = settled_args;
             self.run_worklist(Fire::None)
         };
         // Deferred poison (Stage 3.3c): every arg check still pending never fired
@@ -6512,8 +6569,17 @@ impl<'a> Gen<'a> {
             .collect();
         // A relation touching what FCS knows and inference does not proves
         // nothing by being consistent here.
+        let mut opaque: Option<OpaqueRoots> = None;
         for &(a, b, span) in &relations {
-            if self.touches_opaque(a, b, span) {
+            let roots = self.relation_roots(a, b);
+            if roots.is_empty() {
+                continue;
+            }
+            let opaque = match &opaque {
+                Some(opaque) => opaque,
+                None => opaque.insert(self.opaque_roots()),
+            };
+            if self.roots_touch_opaque(roots, span, opaque) {
                 return false;
             }
         }
@@ -6570,10 +6636,11 @@ impl<'a> Gen<'a> {
 
     /// Settle the constraints generated **so far** in the current binding,
     /// mid-walk (CE-1): discharge the eager `Eq`s and wake members to a fixpoint,
-    /// then put every suspension still pending — and every [`ArgCheck`], none of
-    /// which fires here — back on the constraint list for the binding's final
-    /// [`Self::solve`]. Used to ask whether a local binder or a statement is
-    /// ground *at that point in the walk*.
+    /// then put every suspension still pending back on the constraint list,
+    /// and every [`ArgCheck`], none of which fires here, on
+    /// [`Self::settled_args`], for the binding's final [`Self::solve`]. Used to
+    /// ask whether a local binder or a statement is ground *at that point in
+    /// the walk*.
     ///
     /// Only the two constraint kinds that are true regardless of the rest of the
     /// binding are discharged. An `Eq` is a genuine equality, and a member wake
@@ -6593,9 +6660,8 @@ impl<'a> Gen<'a> {
                 args_by: m.args_by,
             });
         }
-        for ac in outcome.args {
-            self.constraints.push(Constraint::ArgCheck(ac));
-        }
+        debug_assert!(self.settled_args.is_empty(), "the worklist took them");
+        self.settled_args = outcome.args;
     }
 
     /// The worklist behind [`Self::solve`] and [`Self::settle`]: discharge every
@@ -6606,7 +6672,12 @@ impl<'a> Gen<'a> {
     fn run_worklist(&mut self, fire: Fire) -> WorklistOutcome {
         // Split the batch: discharge every eager `Eq` now, park suspensions.
         let mut suspended: Vec<SuspendedMember> = Vec::new();
-        let mut suspended_args: Vec<ArgCheck> = Vec::new();
+        // No argument check fires under `Fire::None`, so the ones a settle
+        // parked wait outside the fixpoint, ahead of those this run parks.
+        let (held_args, mut suspended_args) = match fire {
+            Fire::None => (std::mem::take(&mut self.settled_args), Vec::new()),
+            Fire::All => (Vec::new(), std::mem::take(&mut self.settled_args)),
+        };
         self.discharge_eqs(&mut suspended, &mut suspended_args);
         let mut outcome = WorklistOutcome::default();
         // The latest end of a discharged check's argument, which a member
@@ -6733,7 +6804,8 @@ impl<'a> Gen<'a> {
             }
         }
         outcome.members = suspended;
-        outcome.args = suspended_args;
+        outcome.args = held_args;
+        outcome.args.extend(suspended_args);
         outcome
     }
 
@@ -6782,22 +6854,67 @@ impl<'a> Gen<'a> {
     /// span holds `span`, a relation FCS checks before it relates the argument
     /// to the method's parameter.
     fn touches_opaque(&mut self, a: TyVid, b: TyVid, span: TextRange) -> bool {
-        let mut roots: HashSet<TyVid> = HashSet::new();
-        for v in [a, b] {
-            let ty = self.table.resolve(&Ty::Var(v));
-            collect_var_roots(&ty, &mut roots);
+        let roots = self.relation_roots(a, b);
+        if roots.is_empty() {
+            return false;
         }
-        let mut opaque: HashSet<TyVid> = HashSet::new();
+        let opaque = self.opaque_roots();
+        self.roots_touch_opaque(roots, span, &opaque)
+    }
+
+    /// The open variables of `a` and `b`, as roots of their classes.
+    fn relation_roots(&mut self, a: TyVid, b: TyVid) -> HashSet<TyVid> {
+        let mut roots = self.open_roots(a);
+        roots.extend(self.open_roots(b));
+        roots
+    }
+
+    /// The variables of `v`'s resolution, each as the root of its class.
+    /// A resolution's variables are already roots, except where the table is
+    /// past its budget and returns what it was given.
+    fn open_roots(&mut self, v: TyVid) -> HashSet<TyVid> {
+        let ty = self.table.resolve(&Ty::Var(v));
+        let mut vars = HashSet::new();
+        collect_var_roots(&ty, &mut vars);
+        vars.into_iter().map(|v| self.table.root(v)).collect()
+    }
+
+    /// The open variables of every [`Self::opaque`] entry's resolution, as
+    /// roots of their classes: valid until the table next changes.
+    ///
+    /// There is one entry per environment use in the binding, so a batch of
+    /// relations reads them once ([`Self::verified`]): reading them for each
+    /// relation would cost a binding of `n` statements `n²`. And a relation
+    /// with no open variable ([`Self::touches_opaque`]) does not read them.
+    fn opaque_roots(&mut self) -> OpaqueRoots {
+        let mut out = OpaqueRoots::default();
         for (u, within) in self.opaque.clone() {
-            if within.is_some_and(|arg| arg.contains_range(span)) {
-                continue;
+            let roots = self.open_roots(u);
+            match within {
+                None => out.everywhere.extend(roots),
+                Some(arg) => out.outside.push((arg, roots)),
             }
-            let ty = self.table.resolve(&Ty::Var(u));
-            collect_var_roots(&ty, &mut opaque);
         }
+        out
+    }
+
+    /// [`Self::touches_opaque`] over a relation's `roots`, against the
+    /// [`Self::opaque_roots`] read since the table last changed. Every
+    /// variable here is the root of its class, so two are unioned exactly
+    /// when they are equal.
+    fn roots_touch_opaque(
+        &mut self,
+        roots: HashSet<TyVid>,
+        span: TextRange,
+        opaque: &OpaqueRoots,
+    ) -> bool {
         roots.into_iter().any(|v| {
             self.table.any_older_unioned(v, self.cur_mark)
-                || opaque.iter().any(|&o| self.table.unioned(o, v))
+                || opaque.everywhere.contains(&v)
+                || opaque
+                    .outside
+                    .iter()
+                    .any(|(arg, roots)| !arg.contains_range(span) && roots.contains(&v))
         })
     }
 

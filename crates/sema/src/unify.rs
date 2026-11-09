@@ -262,6 +262,13 @@ impl InferTable {
         self.table.unioned(a, b)
     }
 
+    /// The root of `v`'s equivalence class: two variables are
+    /// [`unioned`](Self::unioned) exactly when their roots are equal, until
+    /// the table next changes.
+    pub(crate) fn root(&mut self, v: TyVid) -> TyVid {
+        self.table.find(v)
+    }
+
     /// Look through `ty` one level: a variable to the term it is bound to, or
     /// to its canonical unbound root; any other term to itself.
     fn head<'t>(&mut self, ty: &'t Ty) -> Head<'t> {

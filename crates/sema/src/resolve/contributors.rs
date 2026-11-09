@@ -603,7 +603,7 @@ impl Resolver<'_> {
             )
             .map(|(name, reach)| ScopeEntry::contributor_mark(name.clone(), reach, generation, pos))
             .collect();
-        self.module_frame().entries.extend(marks);
+        self.module_frame().extend(marks);
     }
 }
 
@@ -723,7 +723,7 @@ impl Resolver<'_> {
                         mark
                     })
                     .collect();
-                self.module_frame().entries.extend(marks);
+                self.module_frame().extend(marks);
             }
             None => self.push_contribution(&contribution, end),
         }
@@ -936,10 +936,10 @@ impl Resolver<'_> {
     /// stand above them.
     pub(super) fn earlier_block_contributions(&mut self, seeded: usize) {
         let own = self.contributions.root.clone();
-        let before = self.module_frame().entries.len();
+        let before = self.module_frame().len();
         self.push_contribution(&own, 0);
-        let pushed = self.module_frame().entries.len() - before;
-        self.module_frame().entries[seeded..].rotate_right(pushed);
+        let pushed = self.module_frame().len() - before;
+        self.module_frame().rotate_tail_right(seeded, pushed);
     }
 
     /// A top-level block, after the implicit auto-opens are seeded and before
