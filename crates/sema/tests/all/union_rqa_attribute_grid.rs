@@ -25,7 +25,7 @@
 //!   bare name in an expression and in a pattern, and `GridU.GridC`; without
 //!   one, `GridLib.GridC` and `GridLib.GridU.GridC`.
 //!
-//! An earlier union in the probe file declares a same-named case, so each
+//! An earlier union in the same container declares a same-named case, so each
 //! reading binds something different: the union's case when its cases are
 //! bare, the earlier case when they are not.
 //!
@@ -330,14 +330,26 @@ impl Use {
     }
 }
 
-/// The earlier union whose case the probe binds when the grid's union holds
-/// its cases qualified-only.
-const FALLBACK: &str = "type GridE =\n    | GridC\n    | GridF\n";
+/// The earlier union whose case a bare probe binds when the grid's union
+/// holds its cases qualified-only. It sits in the grid's union's own
+/// container, ahead of it, so that an `open` of the container brings both.
+///
+/// A probe through the container (`GridLib.GridC`) is the exception, with the
+/// fallback in the probe file: FCS reads `M.C` as the case of the *first*
+/// union of `M` declaring `C`, whether or not that union requires qualified
+/// access (`TryFindTypeWithUnionCase`; an RQA one only adds an error), so a
+/// fallback in the container would grade the precedence of module-qualified
+/// lookup rather than the attribute.
+const FALLBACK: [&str; 3] = ["type GridE =", "    | GridC", "    | GridF"];
 
-/// The union's declaration, preceded by the environment and the spelling's
-/// prelude, every line indented by `indent`.
-fn union_block(spelling: Spelling, env: Env, indent: &str) -> String {
+/// The union's declaration, preceded by the fallback union when `fallback`,
+/// the environment and the spelling's prelude, every line indented by
+/// `indent`.
+fn union_block(spelling: Spelling, env: Env, fallback: bool, indent: &str) -> String {
     let mut lines: Vec<&str> = Vec::new();
+    if fallback {
+        lines.extend(FALLBACK);
+    }
     lines.extend(env.container_lines());
     lines.extend(spelling.prelude());
     lines.extend(spelling.attribute());
@@ -357,10 +369,15 @@ struct Cell {
     fixture: Fixture,
 }
 
-/// The probe file: `body` (declarations after the fallback), then the use.
-fn probe_file(body: &str, use_: Use) -> (String, TextRange) {
+/// The probe file: the fallback union when `fallback`, `body`, then the use.
+fn probe_file(body: &str, fallback: bool, use_: Use) -> (String, TextRange) {
     let (line, probed) = use_.line();
-    let mut src = format!("module GridProbe\n\n{FALLBACK}\n{body}\n");
+    let fallback = if fallback {
+        FALLBACK.map(|l| format!("{l}\n")).concat()
+    } else {
+        String::new()
+    };
+    let mut src = format!("module GridProbe\n\n{fallback}\n{body}\n");
     let at = src.len() + line.find(probed).expect("the probed text is in the line");
     src.push_str(line);
     src.push('\n');
@@ -377,11 +394,18 @@ fn cell(spelling: Spelling, env: Env, location: Location, use_: Use) -> Cell {
         .into_iter()
         .map(|(p, s)| (p.to_string(), s.to_string()))
         .collect();
+    let in_container = !matches!(location, Location::Assembly(_)) && !use_.names_container();
     let body = match location {
-        Location::SameModule => union_block(spelling, env, ""),
-        Location::Nested => format!("module GridLib =\n{}", union_block(spelling, env, "    ")),
+        Location::SameModule => union_block(spelling, env, in_container, ""),
+        Location::Nested => format!(
+            "module GridLib =\n{}",
+            union_block(spelling, env, in_container, "    ")
+        ),
         Location::EarlierFile | Location::EarlierSig => {
-            let lib = format!("module GridLib\n\n{}", union_block(spelling, env, ""));
+            let lib = format!(
+                "module GridLib\n\n{}",
+                union_block(spelling, env, in_container, "")
+            );
             if location == Location::EarlierSig {
                 files.push(("GridLib.fsi".to_string(), lib.clone()));
             }
@@ -394,7 +418,7 @@ fn cell(spelling: Spelling, env: Env, location: Location, use_: Use) -> Cell {
         Some(open) if !use_.names_container() => format!("{body}\n{open}\n"),
         _ => body,
     };
-    let (src, probe) = probe_file(&body, use_);
+    let (src, probe) = probe_file(&body, !in_container, use_);
     files.push(("GridProbe.fs".to_string(), src));
     // FSharp.Core's attribute written plainly, or no attribute, with nothing
     // that could impersonate it. A dotted value path after an `open` (the open
@@ -650,4 +674,43 @@ fn every_union_rqa_cell_agrees_with_fcs() {
         &manifest_entries,
         &regenerate("union_rqa_attribute_grid::every_union_rqa_cell_agrees_with_fcs"),
     );
+}
+
+/// `GridLib.GridC` where `GridLib` declares an earlier union with the case
+/// too, and the later union's attribute is undecided (the long spelling): FCS
+/// reads the first union's case (`TryFindTypeWithUnionCase`), and an
+/// undecided union's cases must not be committed through the container. The
+/// grid keeps its fallback out of the container for this probe (see
+/// [`FALLBACK`]), so this shape is graded here.
+#[test]
+fn an_undecided_union_commits_nothing_through_its_module() {
+    let fsharp_core = ensure_fsharp_core_dll();
+    let env = env_of(&[fsharp_core.as_path()]);
+    let lib = "module GridLib\n\ntype GridE =\n    | GridC\n    | GridF\n[<RequireQualifiedAccessAttribute>]\ntype GridU =\n    | GridC\n    | GridD\n";
+    let (probe_src, probe) = probe_file("", false, Use::ModuleQualified);
+    let rel = [("GridLib.fs", lib), ("GridProbe.fs", probe_src.as_str())];
+    let (root, written) = temp_fs_tree("union_rqa_undecided", &rel);
+    let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
+    let fcs = parse_fcs_uses_project(&invoke_fcs_dump_project_with_refs(&paths, &[]), &written);
+    let _ = std::fs::remove_dir_all(&root);
+    let fu = fcs
+        .iter()
+        .find(|f| f.path.file_name() == written[1].0.file_name())
+        .expect("the probe file's uses");
+    let theirs = fcs_at(fu, probe);
+    assert!(
+        render_fcs(theirs).contains("GridLib.GridE.GridC"),
+        "FCS reads the first union's case: {}",
+        render_fcs(theirs)
+    );
+    let proj = resolve_project_files(&project(&rel), &env);
+    let file_paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
+    match proj.file(1).resolution_at(probe) {
+        None | Some(Resolution::Deferred(_) | Resolution::Unresolved) => {}
+        Some(res) => assert!(
+            theirs.is_some_and(|u| agrees(&env, &proj, &file_paths, 1, res, u)),
+            "ours {res:?}, FCS {}",
+            render_fcs(theirs)
+        ),
+    }
 }

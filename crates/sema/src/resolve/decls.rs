@@ -668,16 +668,14 @@ impl<'a> Resolver<'a> {
                         // uniformly); `[<RequireQualifiedAccess>]` keeps the cases
                         // out of the *value* frame — reachable then only as `T.Case`.
                         // Where the attribute is neither certain nor certainly
-                        // absent, the cases enter it and every name they could
-                        // take declines.
+                        // absent, every name the cases could take declines.
                         let rqa = self.require_qualified_access(defn.attributes());
-                        self.define_union_cases(
-                            defn,
-                            &name,
-                            rqa == RequireQualifiedAccess::Certain,
-                        );
+                        self.define_union_cases(defn, &name, rqa);
                         if rqa == RequireQualifiedAccess::Unknown {
-                            self.unproven_bare_cases(defn);
+                            self.unproven_bare_cases(
+                                defn,
+                                u32::from(types.syntax().text_range().start()),
+                            );
                         }
                         // An enum's cases (`Color = Red = 0 | …`) populate the same
                         // [`Self::type_cases`] index — never the value frame, so a

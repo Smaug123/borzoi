@@ -807,13 +807,14 @@ impl Resolver<'_> {
         self.record_open_contribution(&contribution, false);
     }
 
-    /// A union whose cases the walk just put in bare scope although its
-    /// `[<RequireQualifiedAccess>]` verdict is
-    /// [`RequireQualifiedAccess::Unknown`]: FCS may hold the cases
-    /// qualified-only, and a bare use then binds whatever they would shadow.
-    /// Neither reading can be committed, here or through an `open` of the
+    /// A union whose `[<RequireQualifiedAccess>]` verdict is
+    /// [`RequireQualifiedAccess::Unknown`]: FCS may put its cases in bare
+    /// scope or hold them qualified-only, and a bare use binds the cases in
+    /// one reading and whatever they would shadow in the other. Neither can be
+    /// committed, from `group_start` (the start of its type group, every
+    /// member of which may see the cases) on, or through an `open` of the
     /// container.
-    pub(super) fn unproven_bare_cases(&mut self, defn: &TypeDefn) {
+    pub(super) fn unproven_bare_cases(&mut self, defn: &TypeDefn, group_start: u32) {
         let cases = Contribution {
             names: defn
                 .syntax()
@@ -825,9 +826,12 @@ impl Resolver<'_> {
                 .collect(),
             ..Contribution::default()
         };
-        let pos = u32::from(defn.syntax().text_range().end());
-        self.push_contribution(&cases, pos);
+        self.push_contribution(&cases, group_start);
         self.record_open_contribution(&cases, false);
+        // Nor does `M.C` fall through past them to anything else of the name.
+        for name in cases.names {
+            self.record_project_name_shadow(vec![name]);
+        }
     }
 
     /// Entering a `rec` block's module: everything it declares is in scope
