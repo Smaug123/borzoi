@@ -904,16 +904,23 @@ impl Parser<'_> {
     }
 
     /// Whether the filtered cursor reaches the real token starting at byte
-    /// `start` with no layout virtual in front of it or of anything before it.
-    /// The span-keyed form of [`Self::next_tokens_unbroken`], for a lookahead
-    /// whose run may cross a LexFilter-swallowed closer (which the raw stream
-    /// holds and the filtered one does not, so token counts disagree).
-    pub(super) fn reaches_unbroken(&self, start: usize) -> bool {
+    /// `start` with no layout virtual in front of it or of anything before it,
+    /// except inside attribute lists (`[< … >]`), whose arguments are
+    /// expressions with their own layout. The span-keyed form of
+    /// [`Self::next_tokens_unbroken`], for a lookahead whose run may cross an
+    /// attribute list (where a LexFilter-swallowed closer makes the raw and
+    /// filtered token counts disagree).
+    pub(super) fn reaches_unbroken_outside_attributes(&self, start: usize) -> bool {
+        let mut in_attribute = false;
         for (res, span) in &self.filtered_tokens[self.pos..] {
             match res {
                 Ok(FilteredToken::Raw(_)) if span.start >= start => return span.start == start,
+                Ok(FilteredToken::Raw(Token::LBrackLess)) => in_attribute = true,
+                Ok(FilteredToken::Raw(Token::GreaterRBrack)) => in_attribute = false,
                 Ok(FilteredToken::Raw(_)) => {}
-                Ok(FilteredToken::Virtual(v)) if is_layout_virtual(v) => return false,
+                Ok(FilteredToken::Virtual(v)) if is_layout_virtual(v) && !in_attribute => {
+                    return false;
+                }
                 Ok(FilteredToken::Virtual(_)) => {}
                 Err(_) => return false,
             }

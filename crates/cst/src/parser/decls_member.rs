@@ -1432,10 +1432,11 @@ impl<'src> Parser<'src> {
         }
         // The accessor parser bumps everything through the `get`/`set`, so no
         // layout virtual (a dedent's `OEND`, `and private⏎set`) may sit in
-        // front of any of it on the filtered stream.
+        // front of any of it on the filtered stream, outside the attribute
+        // lists, whose argument expressions carry their own layout.
         next.is_some_and(|(token, start)| {
             matches!(ident_token_text(token), Some("get") | Some("set"))
-                && self.reaches_unbroken(start)
+                && self.reaches_unbroken_outside_attributes(start)
         })
     }
 
@@ -1481,8 +1482,19 @@ impl<'src> Parser<'src> {
         let is_getter = !matches!(accessor, Some("set"));
         match accessor {
             Some("set") => self.bump_into(SyntaxKind::SET_TOK),
-            // `get` (and the caller-guaranteed fallthrough) → the getter.
-            _ => self.bump_into(SyntaxKind::GET_TOK),
+            Some("get") => self.bump_into(SyntaxKind::GET_TOK),
+            // The head lookahead saw `get`/`set` on the raw stream, but the
+            // prefixes left the filtered cursor elsewhere: on a layout virtual
+            // an attribute argument's own layout carried past the `>]`, which
+            // the clause's close consumes. Stop the accessor here.
+            _ => {
+                self.errors.push(ParseError {
+                    message: "expected `get` or `set`".to_string(),
+                    span: get_span,
+                });
+                self.builder.finish_node(); // GET_SET_ACCESSOR
+                return;
+            }
         }
         // A getter must be a function — `get()` or `get(index)`. A bare `get`
         // with no argument pattern (`with get = e`, missing the `()`) is FCS's

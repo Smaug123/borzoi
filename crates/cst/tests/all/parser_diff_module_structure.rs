@@ -3417,7 +3417,8 @@ fn diff_ast_get_set_accessor_attribute() {
 /// Accessor prefixes the accessor-head lookahead must see through on the raw
 /// stream while checking the filtered stream holds no layout virtual before
 /// the `get`/`set`: attribute arguments, whose `)`s LexFilter swallows (so the
-/// raw and filtered token counts differ), and an access modifier after `and`.
+/// raw and filtered token counts differ) and whose expressions carry layout of
+/// their own, and an access modifier after `and`.
 #[test]
 fn diff_ast_get_set_accessor_prefixes() {
     for src in [
@@ -3425,6 +3426,7 @@ fn diff_ast_get_set_accessor_prefixes() {
         "type C() =\n  member _.P with [<A(1)>] get() = 1 and [<B(2)>] set (v: int) = ()\n",
         "type C() =\n  member _.P with get() = 1 and private set (v: int) = ()\n",
         "type C() =\n  member _.P with inline get() = 1\n",
+        "type C() =\n  member _.P with [<A(if true then 1 else 2)>] get() = 1\n",
     ] {
         assert_asts_match(src);
     }

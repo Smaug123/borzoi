@@ -435,6 +435,10 @@ fn the_known_virtual_stamp_witnesses_parse() {
         "type T =\n  static\nval y : int\n",
         // `parse_namespace_header`'s bare `global` (signature file, F# 4.6).
         "namespace\nglobal\n",
+        // `parse_get_set_accessor`: an attribute argument dedented to column 0
+        // inside an accessor's attribute list left an `OEND` where the `get`
+        // was bumped.
+        "type C() =\n    member x.Foo\n       with [<property: System.Obsolete\n(\"foo\")>] get() = 1\n       and set(v) = ()\n",
     ] {
         probe(src, &mut census);
     }
