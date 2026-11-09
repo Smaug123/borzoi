@@ -49,7 +49,7 @@ use crate::xml_doc_inheritdoc_diff::{
 };
 
 /// Cases per property in the normal suite: each case is a compilation and an
-/// expansion on the one oracle child, which every case group shares.
+/// expansion on an oracle child, of which the binary has a few.
 const DEFAULT_CASES: u32 = 48;
 
 /// Cases per property in the deep run.
