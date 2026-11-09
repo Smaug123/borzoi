@@ -572,31 +572,6 @@ fn sig_cell(
 
 // ---- grading ----------------------------------------------------------------
 
-/// The type grid's sites that commit wrongly through a defect outside this
-/// grid's subject: a dotted head `X.M` written in a later `namespace` block of
-/// the file declaring the type `X` commits that type, as if the earlier
-/// block's types were in lexical scope. FCS starts each block afresh: a block
-/// of the same namespace sees the type only through the implicit `open` of
-/// its namespace, which folds the `[<AutoOpen>]` module's value `X` over it,
-/// and a block of a descendant namespace does not see it at all.
-const SAME_FILE_LATER_BLOCK_HEADS: &[&str] = &[
-    "type/sameFileAfter/none/sameFile/sameNs/head",
-    "type/sameFileAfter/none/sameFile/subNs/noOpen/head",
-    "type/sameFileAfter/private/sameFile/sameNs/head",
-    "type/sameFileAfter/private/sameFile/subNs/noOpen/head",
-    "type/sameFileAfter/internal/sameFile/sameNs/head",
-    "type/sameFileAfter/internal/sameFile/subNs/noOpen/head",
-    "type/sameFileBefore/none/sameFile/sameNs/head",
-    "type/sameFileBefore/none/sameFile/subNs/noOpen/head",
-    "type/sameFileBefore/private/sameFile/sameNs/head",
-    "type/sameFileBefore/private/sameFile/subNs/noOpen/head",
-    "type/sameFileBefore/internal/sameFile/sameNs/head",
-    "type/sameFileBefore/internal/sameFile/subNs/noOpen/head",
-    "type/laterFile/none/sameFile/subNs/noOpen/head",
-    "type/laterFile/private/sameFile/subNs/noOpen/head",
-    "type/laterFile/internal/sameFile/subNs/noOpen/head",
-];
-
 #[test]
 fn value_accessibility_through_open_agrees_with_fcs() {
     let mut defs = FileBuilder::new(0);
@@ -654,7 +629,7 @@ fn type_contestant_accessibility_agrees_with_fcs() {
     );
     let count = |p: &dyn Fn(&Graded) -> bool| graded.iter().filter(|g| p(g)).count();
     assert!(count(&|g| matches!(g.fcs, FcsVerdict::Resolved(..))) > 0);
-    assert_sound_and_live("type contestant", &graded, SAME_FILE_LATER_BLOCK_HEADS, &[]);
+    assert_sound_and_live("type contestant", &graded, &[], &[]);
 }
 
 #[test]

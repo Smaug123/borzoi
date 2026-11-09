@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
-    DeclOrder, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity,
-    OpenTrace, Resolution, SlotClass, TypeSlot,
+    CaseKind, DeclOrder, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId,
+    OpenOpacity, OpenTrace, Resolution, SlotClass, TypeSlot,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
@@ -58,6 +58,107 @@ enum HeadSlot {
     /// value (an opened value has no in-file position) — defer, mirroring
     /// the member branch's positionless-contest arm.
     Unordered,
+}
+
+/// How an in-file type filed under a prefix of the container path reaches
+/// the current position ([`Resolver::in_file_type_reach`]).
+///
+/// FCS checks each top-level block of a file afresh
+/// (`CheckDeclarations.fs`, `SynModuleDecl.NamespaceFragment`): a block
+/// starts from the environment the previous block ended with, which has the
+/// earlier blocks' root namespaces registered but none of their contents,
+/// and then opens its own namespace (`ImplicitlyOpenOwnNamespace`) and
+/// nothing else. So only the current block's declarations are lexical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TypeReach {
+    /// Declared in the current block: in scope from its declaration.
+    Lexical,
+    /// Declared at the enclosing namespace by an earlier block: in scope
+    /// through the block's implicit open of the namespace, at the block's
+    /// start. That open adds the namespace's fragments in order (earlier
+    /// files', then this file's earlier blocks'), each fragment's types
+    /// before its `[<AutoOpen>]` modules' contents.
+    NamespaceOpen,
+    /// Declared at the root by an earlier `namespace global` block: added to
+    /// the environment when that block ends (`AddLocalRootModuleOrNamespace`
+    /// adds a root fragment's types), so in scope at the block's start, but
+    /// in an order against the block's implicit open that positions do not
+    /// record.
+    Boundary,
+    /// Declared by an earlier block anywhere else, an ancestor namespace
+    /// included: not in scope without an `open`.
+    Hidden,
+}
+
+impl TypeReach {
+    /// Whether the type is in scope at all without an `open`.
+    fn visible(self) -> bool {
+        self != TypeReach::Hidden
+    }
+}
+
+/// Where an `open` of a container adds a declaration to the environment, in
+/// FCS's order (`AddModuleOrNamespaceContentsToNameEnv`), which is
+/// last-write-wins: the container's fragments in Compile order, then within
+/// a fragment its types and union cases in declaration order, then the rest
+/// of its contents (a module's values, the `[<AutoOpen>]` modules').
+///
+/// A file's own later block reads each earlier block of it as a fragment of
+/// its own; a later file reads a whole earlier file as one, its blocks
+/// combined (`CombineCcuContentFragments`). Ordered field by field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct FoldOrder {
+    /// The fragment: its Compile-order file, then its block within the
+    /// current file (0 for an earlier file).
+    fragment: (usize, usize),
+    tier: FoldTier,
+    /// The declaration's rank within its fragment: an earlier file's
+    /// [`DeclOrder`] ordinal, or the current file's source offset.
+    rank: u32,
+}
+
+/// Which part of a fragment an `open` adds a declaration with
+/// ([`FoldOrder`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum FoldTier {
+    /// Types and union cases, in declaration order.
+    Types,
+    /// Everything after them: a module's values, the `[<AutoOpen>]`
+    /// modules' contents.
+    Contents,
+}
+
+impl FoldOrder {
+    /// An earlier file's type or union case, at its [`DeclOrder`].
+    fn earlier_file((file, ordinal): DeclOrder) -> FoldOrder {
+        FoldOrder {
+            fragment: (file, 0),
+            tier: FoldTier::Types,
+            rank: ordinal,
+        }
+    }
+}
+
+/// Where a value entered by an `open` sits in that open's fold
+/// ([`Resolver::value_fold_order`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValueFold {
+    /// Exactly there.
+    At(FoldOrder),
+    /// Somewhere before every fragment of the given Compile-order file: an
+    /// earlier file supplied it, by a route the walk does not record.
+    BeforeFile(usize),
+}
+
+impl ValueFold {
+    /// Whether the value was added before a type the fold adds at `ty`;
+    /// `None` when the walk cannot say.
+    fn precedes(self, ty: FoldOrder) -> Option<bool> {
+        match self {
+            ValueFold::At(at) => Some(at < ty),
+            ValueFold::BeforeFile(file) => (ty.fragment.0 >= file).then_some(true),
+        }
+    }
 }
 
 /// The [`SlotClass`] of a **referenced-assembly** type, from FCS's
@@ -3195,7 +3296,7 @@ impl<'a> Resolver<'a> {
             && !self.unmodelled_open_active
             && !head_staled
             && !self.head_contested_by_project_module(first, case_seg)
-            && let Some((type_id, case_res)) = self.type_case_path(first, case_seg)
+            && let Some((type_id, case_res, reach)) = self.type_case_path(first, case_seg)
         {
             // The value-vs-type qualifier rule differs by case kind (FCS, expression
             // position): an *enum* case wins the qualifier unless a value of that
@@ -3212,33 +3313,37 @@ impl<'a> Resolver<'a> {
             // The definite-non-case test is `case_classification == Some(false)` (the
             // same `head_is_definite_value` test the cross-file block below uses): it
             // catches an **opened** assembly / auto-open value too, which has no
-            // in-file `Def` range — so testing the classification, not
-            // `value_slot_position`, is what makes `open Demo.Auto (value Tag); type Tag =
+            // in-file `Def` range — so testing the classification, not a
+            // declaration position, is what makes `open Demo.Auto (value Tag); type Tag =
             // Case | Other; Tag.Case` defer to the opened value (FCS), not the case.
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
             let value_takes_qualifier = match self.case_resolution_kind(case_res) {
-                // An enum case loses the qualifier only to a *later* value; the
-                // position needs an in-file range (an opened value has none, and is
-                // never later than the same-file enum we model, so it does not take).
-                // A contributor mark the position cannot order against the
-                // enum keeps the qualifier: the path then declines at the mark.
-                // So does an unmodelled binder in scope (an instance member's
-                // `` ``base`` `` receiver): it has no position to order, and
-                // FCS binds it over any enum of the name.
+                // An enum case loses the qualifier only to a value that holds
+                // the slot over it ([`Self::head_value_slot`]): one written
+                // after it, or opened after it — an opened value enters where
+                // its `open` is written, not where it is declared. A contest
+                // the slot cannot order lets the value take it, and the path
+                // then declines further on.
                 Some(DefKind::EnumCase) => {
-                    head_is_value
-                        && match self.value_slot_position(head) {
-                            Some(vp) => vp > self.defs[type_id.index()].range.start(),
-                            None => self.lookup_entry(head).is_some_and(|e| {
-                                e.mark.is_some() || matches!(e.resolution, Resolution::Deferred(_))
-                            }),
-                        }
+                    head_is_value && !matches!(self.head_value_slot(head), HeadSlot::Evicted)
                 }
                 // A union case loses the qualifier to *any* definite non-case value.
                 _ => head_is_value,
             };
             if !value_takes_qualifier {
+                let type_pos = Self::reached_type_slot_pos(
+                    reach,
+                    u32::from(self.defs[type_id.index()].range.start()),
+                );
+                if let Some(cause) = self.reached_type_contested(head, reach, type_pos) {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(cause),
+                    );
+                    return;
+                }
                 if self.lower_arity_namesake_possible(head, type_id, None) {
                     self.defer_with_cause(
                         first.text_range(),
@@ -3265,71 +3370,75 @@ impl<'a> Resolver<'a> {
             && !self.unmodelled_open_active
             && !head_staled
             && !self.head_contested_by_project_module(first, member_seg)
-            && let Some((type_id, member_def)) =
+            && let Some((type_id, member_def, reach)) =
                 self.type_member_path(first, member_seg, first.text_range().start())
         {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
-            let type_takes_qualifier = !head_is_value
-                || self
-                    .value_slot_position(head)
-                    .is_some_and(|vr| vr <= self.defs[type_id.index()].range.start());
-            if type_takes_qualifier && self.lower_arity_namesake_possible(head, type_id, None) {
-                self.defer_with_cause(
-                    first.text_range(),
-                    segments,
-                    DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
-                );
-                return;
-            }
-            if head_is_value {
+            // Where the type entered the slot: its declaration, or the
+            // block's start for an earlier block's.
+            let type_pos = Self::reached_type_slot_pos(
+                reach,
+                u32::from(self.defs[type_id.index()].range.start()),
+            );
+            // Whether the type takes the qualifier: `None` when a value
+            // does, the cause when the contest is not decidable.
+            let takes = if head_is_value {
                 // FCS gives a value in scope the qualifier outright unless a
                 // type took its unqualified slot ([`Self::head_value_slot`]):
                 // a later constructible type does (M2d), a later value takes
                 // it back (M2c), and a record or union never takes it. The
                 // qualifier then goes to the latest type of the name, which
                 // an `open` may have brought after this one.
-                let type_pos = u32::from(self.defs[type_id.index()].range.start());
                 match self.head_value_slot(head) {
                     // Member access on the value — the intra-file fallback
                     // below resolves the head to it.
-                    HeadSlot::Held => {}
+                    HeadSlot::Held => None,
                     HeadSlot::Evicted if !self.lexical_type_is_latest(head, type_pos) => {
-                        self.defer_with_cause(
-                            first.text_range(),
-                            segments,
-                            DeclineSite::pre_walk(DeclineCause::ValueEvicted),
-                        );
-                        return;
+                        Some(Err(DeclineCause::ValueEvicted))
                     }
-                    HeadSlot::Evicted => {
-                        self.record_type_qualifier(
-                            first,
-                            member_seg,
-                            type_id,
-                            Resolution::Local(member_def),
-                        );
-                        return;
-                    }
-                    HeadSlot::Unordered => {
-                        // An unorderable contest between the head's two slots,
-                        // reached before the fallback that usually names it.
-                        self.defer_with_cause(
-                            first.text_range(),
-                            segments,
-                            DeclineSite::pre_walk(DeclineCause::HeadSlotUnordered),
-                        );
-                        return;
-                    }
+                    HeadSlot::Evicted => Some(Ok(())),
+                    // An unorderable contest between the head's two slots,
+                    // reached before the fallback that usually names it.
+                    HeadSlot::Unordered => Some(Err(DeclineCause::HeadSlotUnordered)),
                 }
             } else {
-                self.record_type_qualifier(
-                    first,
-                    member_seg,
-                    type_id,
-                    Resolution::Local(member_def),
-                );
-                return;
+                Some(Ok(()))
+            };
+            // A type that takes the qualifier is the one FCS reads only when
+            // no other type of the name entered after it
+            // ([`Self::reached_type_contested`]) and no namesake of lower
+            // arity is in scope, whichever way it took the qualifier.
+            let takes = takes.map(|takes| {
+                takes.and_then(
+                    |()| match self.reached_type_contested(head, reach, type_pos) {
+                        Some(cause) => Err(cause),
+                        None if self.lower_arity_namesake_possible(head, type_id, None) => {
+                            Err(DeclineCause::QualifierArityNamesake)
+                        }
+                        None => Ok(()),
+                    },
+                )
+            });
+            match takes {
+                None => {}
+                Some(Ok(())) => {
+                    self.record_type_qualifier(
+                        first,
+                        member_seg,
+                        type_id,
+                        Resolution::Local(member_def),
+                    );
+                    return;
+                }
+                Some(Err(cause)) => {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(cause),
+                    );
+                    return;
+                }
             }
         }
 
@@ -4100,9 +4209,19 @@ impl<'a> Resolver<'a> {
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
     ) -> bool {
-        let Some((type_id, case_res)) = self.type_case_path(type_seg, case_seg) else {
+        let Some((type_id, case_res, reach)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
+        let type_pos =
+            Self::reached_type_slot_pos(reach, u32::from(self.defs[type_id.index()].range.start()));
+        if let Some(cause) = self.reached_type_contested(&id_text(type_seg), reach, type_pos) {
+            self.defer_with_cause(
+                type_seg.text_range(),
+                &[type_seg.clone(), case_seg.clone()],
+                DeclineSite::pre_walk(cause),
+            );
+            return true;
+        }
         if self.lower_arity_namesake_possible(&id_text(type_seg), type_id, None) {
             self.defer_with_cause(
                 type_seg.text_range(),
@@ -5497,29 +5616,9 @@ impl<'a> Resolver<'a> {
         self.record(whole, case_res);
     }
 
-    /// The source range of the latest in-scope **value** named `name` (a value /
-    /// parameter / local / pattern binder), or `None` if none is in scope. Used
-    /// to break a value-vs-type qualifier collision by source order (latest
-    /// wins): see the enum-case branch of [`resolve_long_ident`](Self::resolve_long_ident).
-    /// Where the value [`Self::lookup`] finds for `name` entered the
-    /// environment, for ordering it against a same-named in-file type: its
-    /// in-file definition. `None` for an opened value — and for a contributor
-    /// mark unless a constructible type took the slot after it
-    /// ([`Self::head_value_slot`]), when it is the mark's position: a record
-    /// or union never takes the slot, so a mark before one still holds it.
-    pub(super) fn value_slot_position(&self, name: &str) -> Option<rowan::TextSize> {
-        let entry = self.lookup_entry(name)?;
-        if entry.mark.is_some() {
-            return matches!(self.head_value_slot(name), HeadSlot::Evicted)
-                .then(|| rowan::TextSize::from(entry.open_pos));
-        }
-        self.value_resolution_def_range(entry.resolution)
-            .map(|r| r.start())
-    }
-
-    /// The in-file definition range behind a value-frame resolution — the
-    /// range half of [`value_slot_position`](Self::value_slot_position), for callers
-    /// that already hold the resolution.
+    /// The in-file definition range behind a value-frame resolution: where a
+    /// value the frame binds was declared, `None` for one declared in no
+    /// earlier part of this file.
     fn value_resolution_def_range(&self, res: Resolution) -> Option<TextRange> {
         match res {
             Resolution::Local(id) => Some(self.defs[id.index()].range),
@@ -5569,11 +5668,16 @@ impl<'a> Resolver<'a> {
     /// nested module sees an enclosing namespace's enum, but an inner non-enum
     /// `Color` (or a module `Color`) shadowing an enclosing enum `Color` makes
     /// `Color.Red` defer. Cross-file `A.Color.Red` is a later slice.
+    ///
+    /// A type an earlier top-level block declared is skipped unless it is in
+    /// scope at all ([`Self::in_file_type_reach`]), and the reach of the one
+    /// found is returned with it, for the caller to order it where it entered
+    /// the environment ([`Self::reached_type_slot_pos`]).
     pub(super) fn type_case_path(
         &self,
         type_name: &SyntaxToken,
         case_name: &SyntaxToken,
-    ) -> Option<(DefId, Resolution)> {
+    ) -> Option<(DefId, Resolution, TypeReach)> {
         let tname = &*id_text(type_name);
         let cname = &*id_text(case_name);
         for k in (0..=self.container_path.len()).rev() {
@@ -5593,6 +5697,10 @@ impl<'a> Resolver<'a> {
             let Some(&type_id) = self.type_defs.get(prefix).and_then(|m| m.get(tname)) else {
                 continue; // no `Color` of any kind here — try the enclosing container
             };
+            let reach = self.in_file_type_reach_of(k, type_id);
+            if !reach.visible() {
+                continue;
+            }
             // Innermost type of this name: it shadows enclosing ones, so resolve
             // only when it is the type whose case this is (else the path defers).
             let case_res = self
@@ -5601,7 +5709,7 @@ impl<'a> Resolver<'a> {
                 .and_then(|m| m.get(tname))
                 .and_then(|c| c.get(cname))
                 .copied();
-            return case_res.map(|cres| (type_id, cres));
+            return case_res.map(|cres| (type_id, cres, reach));
         }
         None
     }
@@ -5624,12 +5732,91 @@ impl<'a> Resolver<'a> {
     /// (FCS-probed), so only a same-file type that positively owns the case
     /// blocks the fall-through.
     fn same_file_type_owns_case(&self, tname: &str, cname: &str) -> bool {
+        // Every type along the chain, the ones an earlier block declared
+        // included: one out of lexical reach ([`Self::in_file_type_reach`])
+        // may still be in scope through an `open`, which outranks the
+        // cross-file index's reading too.
         (0..=self.container_path.len()).rev().any(|k| {
             self.type_cases
                 .get(&self.container_path[..k])
                 .and_then(|m| m.get(tname))
                 .is_some_and(|c| c.contains_key(cname))
         })
+    }
+
+    /// How an in-file type filed under `self.container_path[..k]` and
+    /// declared at `pos` reaches the current position ([`TypeReach`]).
+    ///
+    /// Only the current block's declarations are lexical. An earlier block's
+    /// type is in scope through the current block's implicit open when it
+    /// sits at the enclosing namespace, and from the block boundary when it
+    /// sits at the root (a `namespace global` block's); anywhere else, an
+    /// ancestor namespace of the current block's included, it is not in
+    /// scope without an `open`.
+    pub(super) fn in_file_type_reach(&self, k: usize, pos: u32) -> TypeReach {
+        let block_start = self.block_starts.last().copied().unwrap_or(0);
+        if pos >= block_start {
+            debug_assert!(
+                k >= self.enclosing_namespace().len(),
+                "the current block files its types under its own namespace"
+            );
+            return TypeReach::Lexical;
+        }
+        let namespace = self.enclosing_namespace().len();
+        if k == namespace && namespace > 0 {
+            TypeReach::NamespaceOpen
+        } else if k == 0 {
+            TypeReach::Boundary
+        } else {
+            TypeReach::Hidden
+        }
+    }
+
+    /// [`Self::in_file_type_reach`] for the in-file type `id`.
+    pub(super) fn in_file_type_reach_of(&self, k: usize, id: DefId) -> TypeReach {
+        self.in_file_type_reach(k, u32::from(self.defs[id.index()].range.start()))
+    }
+
+    /// Where an in-file type declared at `pos` and reached as `reach` entered
+    /// FCS's unqualified slot: its declaration when it is lexical, and
+    /// otherwise the block's start, position 0, where everything the block's
+    /// implicit open adds sits too.
+    pub(super) fn reached_type_slot_pos(reach: TypeReach, pos: u32) -> u32 {
+        match reach {
+            TypeReach::Lexical => pos,
+            TypeReach::NamespaceOpen | TypeReach::Boundary | TypeReach::Hidden => 0,
+        }
+    }
+
+    /// Why a qualifier `name` that reaches an in-file type as `reach`,
+    /// entering the slot at `type_pos` ([`Self::reached_type_slot_pos`]),
+    /// may name another type instead; `None` when it cannot:
+    ///
+    /// - a type of the name entered after it: an `open` supplied one
+    ///   ([`Self::lexical_type_is_latest`]);
+    /// - a [`TypeReach::Boundary`] type is ordered against nothing the
+    ///   block's implicit open adds;
+    /// - a [`TypeReach::NamespaceOpen`] type comes in with its block's
+    ///   fragment, and that fragment's `[<AutoOpen>]` modules' types follow
+    ///   it, as do a later block's
+    ///   ([`Self::auto_open_type_shadow_names`] holds every same-file one
+    ///   re-entering at the block's start). An earlier file's fragment
+    ///   precedes it, so an earlier file's types lose to it.
+    pub(super) fn reached_type_contested(
+        &self,
+        name: &str,
+        reach: TypeReach,
+        type_pos: u32,
+    ) -> Option<DeclineCause> {
+        match reach {
+            TypeReach::Boundary | TypeReach::Hidden => Some(DeclineCause::EarlierBlockRootType),
+            TypeReach::NamespaceOpen if self.auto_open_type_shadow_names.contains_key(name) => {
+                Some(DeclineCause::SameFileAutoOpenType)
+            }
+            TypeReach::Lexical | TypeReach::NamespaceOpen => (!self
+                .lexical_type_is_latest(name, type_pos))
+            .then_some(DeclineCause::InFileTypeOpenedOver),
+        }
     }
 
     /// Whether the cross-file type-qualified-case index must stand down for the
@@ -5755,8 +5942,8 @@ impl<'a> Resolver<'a> {
     /// union/record/interface never does (probes M20k/M20l/M20o), and a
     /// statically-undecidable repr (abbreviation, delegate, unspecified-kind
     /// object model) makes the contest [`HeadSlot::Unordered`]. The latest
-    /// eviction-relevant position is compared against the value's
-    /// ([`Self::value_slot_position`]); a value with no in-file position (an
+    /// eviction-relevant position is compared against the value's (its
+    /// `open`'s, or its declaration's); a value with no in-file position (an
     /// opened module's value) cannot be ordered either, so any
     /// possibly-evicting type alongside one is likewise `Unordered` —
     /// mirroring the member branch's positionless defer. Deliberately **not**
@@ -5815,6 +6002,11 @@ impl<'a> Resolver<'a> {
             SlotClass::Unknown => unknown_pos = Some(unknown_pos.map_or(pos, |p| p.max(pos))),
             SlotClass::Keeps => {}
         };
+        // The types the block's start holds, each with where the block's
+        // implicit open of its namespace adds it ([`FoldOrder`]) when the
+        // walk knows. A value may have entered there too, so they are
+        // ordered once the value's position is known (below).
+        let mut at_block_start: Vec<(SlotClass, Option<FoldOrder>)> = Vec::new();
         for k in 0..=self.container_path.len() {
             let prefix = &self.container_path[..k];
             for &(pos, class) in self
@@ -5824,7 +6016,20 @@ impl<'a> Resolver<'a> {
                 .into_iter()
                 .flatten()
             {
-                note(pos, class);
+                match self.in_file_type_reach(k, pos) {
+                    TypeReach::Lexical => note(pos, class),
+                    TypeReach::Hidden => {}
+                    // An earlier block's type, through the implicit open.
+                    TypeReach::NamespaceOpen if class != SlotClass::Keeps => at_block_start
+                        .push((class, Some(self.same_file_fold_order(pos, FoldTier::Types)))),
+                    // Added when its `namespace global` block ended, before
+                    // the implicit open, in an order against it the walk
+                    // does not record.
+                    TypeReach::Boundary if class != SlotClass::Keeps => {
+                        at_block_start.push((class, None))
+                    }
+                    TypeReach::NamespaceOpen | TypeReach::Boundary => {}
+                }
             }
         }
         // Namespace opens AND project module opens both import *project* types
@@ -5833,32 +6038,33 @@ impl<'a> Resolver<'a> {
         // lists feed the project checks below.
         // The enclosing namespace is opened implicitly at the block's start
         // (`ImplicitlyOpenOwnNamespace`), and an earlier file's type there
-        // takes the slot exactly as one an explicit `open` brings — at the
-        // block's start, where the implicit auto-opens' values and the
-        // namespace's own folded values sit too, in an order the positions do
-        // not record.
+        // takes the slot exactly as one an explicit `open` brings, at the
+        // block's start.
         let namespace = self.enclosing_namespace();
-        let enclosing_type = {
+        if !namespace.is_empty() {
             let mut path = namespace.to_vec();
             path.push(head.to_string());
-            (!namespace.is_empty())
-                .then(|| self.preceding.exported_type_slot(&path))
-                .flatten()
+            if let Some(class) = self
+                .preceding
+                .exported_type_slot(&path)
                 .map(|slot| slot.class_at(&path, namespace))
                 .filter(|class| *class != SlotClass::Keeps)
-        };
-        if let Some(class) = enclosing_type {
-            note(0, class);
+            {
+                let order = self
+                    .preceding
+                    .exported_type_order(&path)
+                    .map(FoldOrder::earlier_file);
+                at_block_start.push((class, order));
+            }
         }
         let open_prefixes = self
             .explicit_open_prefixes
             .iter()
             .chain(&self.module_open_prefixes);
         // Where an opened *project* type of the name that may take the slot
-        // entered it, with the opened prefix and the type's declaration order
-        // where an earlier file declares it ([`ProjectItems::exported_type_order`])
-        // — what a project case the same `open` supplied is ordered against
-        // (below).
+        // entered it, with the opened prefix and where the open's fold adds
+        // the type ([`FoldOrder`]), when the walk knows — what a value the
+        // same `open` supplied is ordered against (below).
         let mut project_type_opens: Vec<(u32, Option<OrderedTypeOpen<'_>>)> = Vec::new();
         for (pos, prefix) in open_prefixes {
             let mut path = prefix.clone();
@@ -5879,10 +6085,25 @@ impl<'a> Resolver<'a> {
             let class = if let Some((_, _, slot)) =
                 self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
             {
-                Some((seen(*slot), None))
+                // This file's type: the open adds this file's earlier blocks
+                // one fragment at a time.
+                let order = self
+                    .type_defs
+                    .get(prefix.as_slice())
+                    .and_then(|m| m.get(head))
+                    .map(|&id| {
+                        self.same_file_fold_order(
+                            self.defs[id.index()].range.start().into(),
+                            FoldTier::Types,
+                        )
+                    });
+                Some((seen(*slot), order.map(|o| (prefix.as_slice(), o))))
             } else {
                 self.preceding.exported_type_slot(&path).map(|slot| {
-                    let order = self.preceding.exported_type_order(&path);
+                    let order = self
+                        .preceding
+                        .exported_type_order(&path)
+                        .map(FoldOrder::earlier_file);
                     (seen(slot), order.map(|o| (prefix.as_slice(), o)))
                 })
             };
@@ -5929,8 +6150,6 @@ impl<'a> Resolver<'a> {
         // before it loses (probes M20p/M20q, codex round 3) — while a source
         // binding sits at its definition's.
         let value_entry = self.lookup_entry(head);
-        let value_is_case = value_entry
-            .is_some_and(|e| matches!(e.resolution, Resolution::Item(id) if self.item_is_case(id)));
         let (value_pos, value_from_open) = match value_entry {
             // An expression-local binding enters scope after every type that
             // is in scope where it is bound — a type group's types enter
@@ -5946,33 +6165,34 @@ impl<'a> Resolver<'a> {
             ),
             None => (None, false),
         };
-        // A bare use of a union case the `open` of `prefix` added, which an
-        // earlier file declares directly in `prefix` after the same-named
-        // type declared at `type_at`: the open adds the container's types
-        // with their cases in declaration order, fragment by fragment, so the
-        // case is the later write and holds the slot (`type X()` then `type U
-        // = X of unit | O` binds the case).
-        let case_follows = |prefix: &[String], type_at: DeclOrder| {
-            let Some(Resolution::Item(id)) = value_entry.map(|e| e.resolution) else {
-                return false;
-            };
-            let mut path = prefix.to_vec();
-            path.push(head.to_string());
-            bare && self
-                .preceding
-                .union_case_order(&path, id)
-                .is_some_and(|case_at| type_at < case_at)
+        // Where the fold that entered the value put it, for ordering it
+        // against a type the same fold added: the block's implicit open of
+        // its namespace at position 0, an explicit `open` of `prefix`
+        // elsewhere ([`Self::value_fold_order`]).
+        let value_fold = |prefix: &[String]| {
+            value_entry.and_then(|e| self.value_fold_order(e, prefix, head, value_pos != Some(0)))
         };
-        if enclosing_type.is_some() && value_from_open && value_pos == Some(0) {
-            let ordered = {
-                let mut path = namespace.to_vec();
-                path.push(head.to_string());
-                self.preceding
-                    .exported_type_order(&path)
-                    .is_some_and(|type_at| case_follows(namespace, type_at))
+        // The types the block's start holds, against the value. A value the
+        // block writes or opens itself follows them all; one that entered
+        // there too — the implicit open supplied it, or it is an earlier
+        // block's union case the block re-took — is ordered by the fold.
+        let block_start = self.block_starts.last().copied().unwrap_or(0);
+        let (mut evicted_at_start, mut unordered_at_start) = (false, false);
+        for &(class, type_at) in &at_block_start {
+            let value_later = match value_pos {
+                None => {
+                    note(0, class);
+                    continue;
+                }
+                Some(v) if v >= block_start && v > 0 => Some(true),
+                Some(_) => type_at
+                    .and_then(|ty| value_fold(namespace)?.precedes(ty))
+                    .map(|precedes| !precedes),
             };
-            if !ordered {
-                return HeadSlot::Unordered;
+            match value_later {
+                Some(true) => {}
+                Some(false) if class == SlotClass::Evicts => evicted_at_start = true,
+                Some(false) | None => unordered_at_start = true,
             }
         }
         match value_pos {
@@ -5983,29 +6203,26 @@ impl<'a> Resolver<'a> {
                 // tie — distinct tokens never share an offset). FCS breaks
                 // the tie by reading priority (the higher reading's TYPE
                 // wins — probe M20x, codex round 9), which the slot ordering
-                // does not model — undecidable, defer. A bare use reads the
-                // open's fold instead, which adds a container's types before
-                // its `[<AutoOpen>]` modules' values and the project's
-                // fragment after the referenced assemblies', so such a value
-                // holds — but a project union or exception case enters with
-                // the project's types, in declaration order (`type U = X of
-                // unit | O` then `type X()` binds the class), which the
-                // positions do not record: only a case an earlier file
-                // declares after every such type holds ([`case_follows`]).
+                // does not model — undecidable, defer.
                 let same_open_tie = |p: u32| !bare && value_from_open && p == value_pos;
-                let case_tie = bare
-                    && value_is_case
+                // A bare use reads the open's fold instead
+                // ([`FoldOrder`]): the value holds only when the fold added
+                // it after the type, and a type it cannot order against the
+                // value leaves the contest open.
+                let fold_tie = bare
                     && value_from_open
-                    && project_type_opens.iter().any(|(p, order)| {
-                        *p == value_pos
-                            && !order.is_some_and(|(prefix, type_at)| case_follows(prefix, type_at))
+                    && project_type_opens.iter().any(|&(p, order)| {
+                        p == value_pos
+                            && order.and_then(|(prefix, ty)| value_fold(prefix)?.precedes(ty))
+                                != Some(false)
                     });
-                if evictor_pos.is_some_and(|p| p > value_pos) {
+                if evictor_pos.is_some_and(|p| p > value_pos) || evicted_at_start {
                     HeadSlot::Evicted
                 } else if unknown_pos.is_some_and(|p| p > value_pos)
                     || evictor_pos.is_some_and(same_open_tie)
                     || unknown_pos.is_some_and(same_open_tie)
-                    || case_tie
+                    || fold_tie
+                    || unordered_at_start
                 {
                     HeadSlot::Unordered
                 } else {
@@ -6019,9 +6236,94 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether the in-file type defined at `type_pos` is the latest type named
-    /// `head` in scope, of any slot class and from any source: an earlier or
-    /// enclosing block's, an opened project path's, an opened assembly
+    /// Where an `open` adds this file's declaration at `pos` ([`FoldOrder`]):
+    /// with the earlier block it sits in, the current file following every
+    /// earlier one.
+    fn same_file_fold_order(&self, pos: u32, tier: FoldTier) -> FoldOrder {
+        FoldOrder {
+            fragment: (
+                self.preceding.num_files(),
+                self.block_starts.partition_point(|&s| s <= pos),
+            ),
+            tier,
+            rank: pos,
+        }
+    }
+
+    /// Where the fold that entered the value `entry` put it ([`ValueFold`]),
+    /// for ordering it against a type of `head` the same fold added; `None`
+    /// when the walk cannot say. `prefix` is the container the fold opened,
+    /// and `explicit` says it is an `open` written in the block, rather than
+    /// the block's implicit open of its namespace, which shares position 0
+    /// with what earlier files put in the root scope.
+    ///
+    /// - A union case enters with its fragment's types, in declaration
+    ///   order: this file's at its declaration, an earlier file's at its
+    ///   [`DeclOrder`] ([`ProjectItems::union_case_order`](super::model::ProjectItems::union_case_order)).
+    ///   This holds whether the fold added it or an earlier block of this
+    ///   file declared it and the block re-took it from the namespace's
+    ///   frame.
+    /// - An exception does not: the fold adds a fragment's exceptions apart
+    ///   from its types.
+    /// - Any other value an `open` entered follows its fragment's types:
+    ///   this file's at its declaration, an earlier file's anywhere in that
+    ///   file's fragment of an explicitly opened container.
+    /// - Whatever else an earlier file supplied precedes every fragment of
+    ///   this file, and is not ordered against an earlier file's type.
+    /// - A contributor mark is not ordered.
+    fn value_fold_order(
+        &self,
+        entry: &ScopeEntry,
+        prefix: &[String],
+        head: &str,
+        explicit: bool,
+    ) -> Option<ValueFold> {
+        if entry.mark.is_some() {
+            return None;
+        }
+        let Resolution::Item(id) = entry.resolution else {
+            return None;
+        };
+        match id.index().checked_sub(self.item_base as usize) {
+            Some(local) => {
+                let item = self.items.get(local)?;
+                let pos = u32::from(self.defs[item.def()?.index()].range.start());
+                match item.case_kind() {
+                    Some(CaseKind::Union { .. }) => Some(ValueFold::At(
+                        self.same_file_fold_order(pos, FoldTier::Types),
+                    )),
+                    Some(CaseKind::Enum | CaseKind::Exception) => None,
+                    None => entry
+                        .from_open
+                        .then(|| ValueFold::At(self.same_file_fold_order(pos, FoldTier::Contents))),
+                }
+            }
+            None => {
+                let mut path = prefix.to_vec();
+                path.push(head.to_string());
+                if let Some(order) = self.preceding.union_case_order(&path, id) {
+                    return Some(ValueFold::At(FoldOrder::earlier_file(order)));
+                }
+                if !entry.from_open {
+                    return None;
+                }
+                Some(if explicit && !self.item_is_case(id) {
+                    ValueFold::At(FoldOrder {
+                        fragment: (self.preceding.file_of(id), 0),
+                        tier: FoldTier::Contents,
+                        rank: 0,
+                    })
+                } else {
+                    ValueFold::BeforeFile(self.preceding.num_files())
+                })
+            }
+        }
+    }
+
+    /// Whether the in-file type that entered the slot at `type_pos` is the
+    /// latest type named `head` in scope, of any slot class and from any
+    /// source: an enclosing container's, an earlier block's (position 0,
+    /// [`TypeReach`]), an opened project path's, an opened assembly
     /// namespace's, or the enclosing namespace's (position 0). A later one
     /// takes a type-qualified path from it.
     fn lexical_type_is_latest(&self, head: &str, type_pos: u32) -> bool {
@@ -6031,7 +6333,12 @@ impl<'a> Resolver<'a> {
                 .and_then(|m| m.get(head))
                 .into_iter()
                 .flatten()
-                .map(|&(pos, _)| pos)
+                .filter_map(move |&(pos, _)| {
+                    let reach = self.in_file_type_reach(k, pos);
+                    reach
+                        .visible()
+                        .then(|| Self::reached_type_slot_pos(reach, pos))
+                })
         });
         let opened = self
             .explicit_open_prefixes
@@ -6181,16 +6488,16 @@ impl<'a> Resolver<'a> {
     /// The 2-segment static-member analogue of [`type_case_path`](Self::type_case_path):
     /// resolve `Color.Red` where `Color` is an in-file type and `Red` an
     /// emit-eligible static member, walking the container chain innermost-first
-    /// with the same module-like shadowing rule. Returns the type's def and the
-    /// member's def. The innermost type of the name owns the segment: when it
-    /// lacks an emittable member the path declines (defers downstream) rather
-    /// than trying an enclosing type.
+    /// with the same module-like shadowing rule. Returns the type's def, the
+    /// member's def and how the type is in scope. The innermost type of the
+    /// name in scope owns the segment: when it lacks an emittable member the
+    /// path declines (defers downstream) rather than trying an enclosing type.
     fn type_member_path(
         &self,
         type_name: &SyntaxToken,
         member_name: &SyntaxToken,
         use_pos: TextSize,
-    ) -> Option<(DefId, DefId)> {
+    ) -> Option<(DefId, DefId, TypeReach)> {
         let tname = &*id_text(type_name);
         let mname = &*id_text(member_name);
         for k in (0..=self.container_path.len()).rev() {
@@ -6205,9 +6512,13 @@ impl<'a> Resolver<'a> {
             let Some(&type_id) = self.type_defs.get(prefix).and_then(|m| m.get(tname)) else {
                 continue;
             };
+            let reach = self.in_file_type_reach_of(k, type_id);
+            if !reach.visible() {
+                continue;
+            }
             return self
                 .emittable_type_member(prefix, tname, mname, use_pos)
-                .map(|member_def| (type_id, member_def));
+                .map(|member_def| (type_id, member_def, reach));
         }
         None
     }
@@ -6378,7 +6689,7 @@ pub(super) fn is_synthesized_name(name: &str) -> bool {
     generated_value || name.strip_prefix("_arg").is_some_and(digits)
 }
 
-/// An opened project type's prefix and declaration order, where an earlier
-/// file declares it: what [`Resolver::value_slot`] orders a case the same
-/// `open` brought against.
-type OrderedTypeOpen<'a> = (&'a [String], DeclOrder);
+/// An opened project type's prefix and where the open's fold adds it
+/// ([`FoldOrder`]): what [`Resolver::value_slot`] orders a value the same
+/// `open` entered against.
+type OrderedTypeOpen<'a> = (&'a [String], FoldOrder);
