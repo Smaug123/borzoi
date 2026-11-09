@@ -1925,8 +1925,8 @@ pub fn ensure_qualified_case_fixture_built() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/qualified_case_env");
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qualified_case_env");
             let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
             std::fs::write(
                 project.join("Generated.fs"),

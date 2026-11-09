@@ -4283,7 +4283,9 @@ impl<'a> Resolver<'a> {
                 .items
                 .iter()
                 .any(|i| i.qualified.as_deref() == Some(ty_path.as_slice()))
-                || self.preceding.qualified_read(&ty_path, &self.container_path)
+                || self
+                    .preceding
+                    .qualified_read(&ty_path, &self.container_path)
                     != QualifiedRead::Miss
             {
                 return Some(SameFileQualified::DeferStop);

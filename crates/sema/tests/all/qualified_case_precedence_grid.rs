@@ -42,9 +42,8 @@ use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    ensure_fsharp_core_dll, ensure_qualified_case_fixture_built,
-    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
-    unmodelled_project_binder_failures,
+    ensure_fsharp_core_dll, ensure_qualified_case_fixture_built, invoke_fcs_dump_project_with_refs,
+    parse_fcs_uses_project, temp_fs_tree, unmodelled_project_binder_failures,
 };
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
@@ -144,9 +143,7 @@ impl Extra {
             Extra::ValueFirst => Some("let GridC (x: int) = x"),
             Extra::ExnFirst | Extra::ExnLast => Some("exception GridC of string"),
             Extra::ApFirst | Extra::ApLast if sig => Some("val (|GridC|_|): obj -> unit option"),
-            Extra::ApFirst | Extra::ApLast => {
-                Some("let (|GridC|_|) (_: obj) : unit option = None")
-            }
+            Extra::ApFirst | Extra::ApLast => Some("let (|GridC|_|) (_: obj) : unit option = None"),
             Extra::AbbrevLast => Some("type GridA = GridU1"),
             Extra::AbbrevCaseFirst => Some("type GridA = GridC"),
             Extra::None | Extra::PrivateFirst | Extra::RqaFirst => None,
@@ -186,10 +183,10 @@ impl Setup {
             .then(|| "[<RequireQualifiedAccess>]".to_string());
         rqa.into_iter()
             .chain([
-            format!("type {private}GridU{n} ="),
-            format!("    | GridC{}", self.shapes[n - 1].fields()),
-            format!("    | GridD{n}"),
-        ])
+                format!("type {private}GridU{n} ="),
+                format!("    | GridC{}", self.shapes[n - 1].fields()),
+                format!("    | GridD{n}"),
+            ])
             .collect()
     }
 
@@ -359,7 +356,10 @@ impl Container {
     }
 
     fn is_assembly(self) -> bool {
-        matches!(self, Container::AssemblyModule | Container::AssemblyNamespace)
+        matches!(
+            self,
+            Container::AssemblyModule | Container::AssemblyNamespace
+        )
     }
 
     /// The qualified path of the container, for setup `k`.
@@ -727,7 +727,9 @@ fn every_qualified_case_use_agrees_with_fcs() {
                     cell.files
                 ));
             }
-            entries.push(format!("{label} | fcs {rendered} ({clean}) | ours {verdict}"));
+            entries.push(format!(
+                "{label} | fcs {rendered} ({clean}) | ours {verdict}"
+            ));
         }
     }
     if !failures.is_empty() {

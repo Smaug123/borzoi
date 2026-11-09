@@ -783,11 +783,7 @@ pub(crate) fn project_probe_agrees(files: &[(&str, &str)], probed: &str) -> Resu
 
 /// Assert certain-implies-exact for each attribute of `rows`, the union
 /// declared under it by `files_for`.
-fn assert_rows(
-    rows: &[&str],
-    probed: &str,
-    files_for: impl Fn(&str) -> Vec<(String, String)>,
-) {
+fn assert_rows(rows: &[&str], probed: &str, files_for: impl Fn(&str) -> Vec<(String, String)>) {
     let mut failures = Vec::new();
     for attr in rows {
         let files = files_for(attr);
