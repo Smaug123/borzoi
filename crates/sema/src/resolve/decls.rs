@@ -864,6 +864,8 @@ impl<'a> Resolver<'a> {
                         .map(|tok| tok.text_range()),
                 );
                 if let Some(name) = ext_name.last() {
+                    // A value of the container's, for the declared-name view.
+                    self.mark_decl(name).value = true;
                     let contribution = Contribution::of_value(name.clone());
                     let pos = u32::from(ext.syntax().text_range().start());
                     self.push_contribution(&contribution, pos);

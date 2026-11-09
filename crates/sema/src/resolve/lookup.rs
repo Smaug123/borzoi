@@ -4706,7 +4706,7 @@ impl<'a> Resolver<'a> {
             .and_then(|d| d.get(ty))
             .copied()
             .unwrap_or_default();
-        if seg.is_dottable_value() || (in_pattern && seg.active_pattern) {
+        if seg.is_dottable_value() || (in_pattern && (seg.active_pattern || seg.qualified_case)) {
             return Some(SameFileQualified::DeferStop);
         }
         // Is the same-file type `ty` inaccessible from the reference site? A

@@ -138,9 +138,13 @@ enum Shadow {
     OpenEmpty,
     /// An `[<AutoOpen>]` module whose namesake owns a residual of its own.
     AutoOpen,
+    /// A DllImport `extern` function.
+    Extern,
+    /// A case of a `[<RequireQualifiedAccess>]` union.
+    QualifiedCase,
 }
 
-const SHADOWS: [Shadow; 10] = [
+const SHADOWS: [Shadow; 12] = [
     Shadow::Value,
     Shadow::Class,
     Shadow::Module,
@@ -151,6 +155,8 @@ const SHADOWS: [Shadow; 10] = [
     Shadow::Open,
     Shadow::OpenEmpty,
     Shadow::AutoOpen,
+    Shadow::Extern,
+    Shadow::QualifiedCase,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +232,12 @@ fn shadow_text(shadow: Shadow, target: Target, name: &str, rest: &[&str]) -> Str
         Shadow::OpenEmpty => {
             format!("module Opened =\n    module {name} =\n        let z = 0\nopen Opened\n")
         }
+        Shadow::Extern => {
+            format!("[<System.Runtime.InteropServices.DllImport(\"x\")>]\nextern int {name}()\n")
+        }
+        Shadow::QualifiedCase => format!(
+            "[<RequireQualifiedAccess>]\ntype {name}Union =\n    | {name}\n    | {name}Other\n"
+        ),
         Shadow::AutoOpen => format!(
             "[<AutoOpen>]\nmodule Helper =\n{}",
             indented(
@@ -467,8 +479,10 @@ fn cells() -> Vec<Cell> {
                         // recovers from by dropping the value; sema keeps it
                         // (a separate defect), so those programs grade that
                         // recovery rather than the qualifier.
-                        if matches!(shadow, Shadow::Value | Shadow::ActivePattern)
-                            && slot_in_namespace(root, depth, target, pos)
+                        if matches!(
+                            shadow,
+                            Shadow::Value | Shadow::ActivePattern | Shadow::Extern
+                        ) && slot_in_namespace(root, depth, target, pos)
                         {
                             continue;
                         }
