@@ -39,8 +39,9 @@ use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    ensure_fsharp_core_dll, ensure_rqa_double_suffix_fixture_built, ensure_rqa_union_fixture_built, invoke_fcs_dump_project_with_refs,
-    parse_fcs_uses_project, temp_fs_tree, unmodelled_project_binder_failures,
+    ensure_fsharp_core_dll, ensure_rqa_double_suffix_fixture_built, ensure_rqa_union_fixture_built,
+    invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
+    unmodelled_project_binder_failures,
 };
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
@@ -177,7 +178,9 @@ impl Env {
                 "    inherit System.Attribute()",
             ],
             Env::ImpException => &["exception RequireQualifiedAccessAttribute of string"],
-            Env::RenamingAbbrev => &["type RequireQualifiedAccessAttribute = NoComparisonAttribute"],
+            Env::RenamingAbbrev => {
+                &["type RequireQualifiedAccessAttribute = NoComparisonAttribute"]
+            }
             Env::ImpEarlierFile => &["open GridImp"],
             Env::ImpDoubleSuffix => &[
                 "type RequireQualifiedAccessAttributeAttribute() =",
@@ -210,7 +213,10 @@ impl Env {
 
     /// Whether a `GridImp` module holding an impersonator exists.
     fn has_grid_imp(self) -> bool {
-        matches!(self, Env::ImpInScope | Env::ImpOutOfScope | Env::ImpEarlierFile)
+        matches!(
+            self,
+            Env::ImpInScope | Env::ImpOutOfScope | Env::ImpEarlierFile
+        )
     }
 }
 
@@ -457,7 +463,11 @@ fn setups() -> Vec<(Spelling, Env)> {
 fn cells() -> Vec<Cell> {
     let mut out = Vec::new();
     for (spelling, env) in setups() {
-        for location in [Location::SameModule, Location::Nested, Location::EarlierFile] {
+        for location in [
+            Location::SameModule,
+            Location::Nested,
+            Location::EarlierFile,
+        ] {
             for use_ in Use::ALL {
                 if use_.applies_to(location) {
                     out.push(cell(spelling, env, location, use_));

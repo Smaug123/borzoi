@@ -14,9 +14,7 @@ use super::model::{
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
 };
-use super::{
-    attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path,
-};
+use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path};
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
 /// Color` — the `ACCESS_TOK` *before* the name's `LONG_IDENT`). FCS does not
@@ -673,7 +671,11 @@ impl<'a> Resolver<'a> {
                         // absent, the cases enter it and every name they could
                         // take declines.
                         let rqa = self.require_qualified_access(defn.attributes());
-                        self.define_union_cases(defn, &name, rqa == RequireQualifiedAccess::Certain);
+                        self.define_union_cases(
+                            defn,
+                            &name,
+                            rqa == RequireQualifiedAccess::Certain,
+                        );
                         if rqa == RequireQualifiedAccess::Unknown {
                             self.unproven_bare_cases(defn);
                         }

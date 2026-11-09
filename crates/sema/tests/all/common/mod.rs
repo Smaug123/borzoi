@@ -1591,7 +1591,10 @@ pub fn ensure_rqa_union_fixture_built() -> &'static Path {
             let project =
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rqa_union_env");
             let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
-            dotnet_build(&project, "dotnet build union RequireQualifiedAccess fixture");
+            dotnet_build(
+                &project,
+                "dotnet build union RequireQualifiedAccess fixture",
+            );
             project
                 .join("bin")
                 .join("Release")

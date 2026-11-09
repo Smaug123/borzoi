@@ -20,9 +20,7 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{
-    CaseKind, ProjectItems, ResolvedFile, SyntaxRecovery, resolve_file,
-};
+use borzoi_sema::{CaseKind, ProjectItems, ResolvedFile, SyntaxRecovery, resolve_file};
 
 /// Parse `src` (asserting it is in the parser subset) and resolve it as a lone
 /// single file, against FSharp.Core: `[<RequireQualifiedAccess>]` is certain
