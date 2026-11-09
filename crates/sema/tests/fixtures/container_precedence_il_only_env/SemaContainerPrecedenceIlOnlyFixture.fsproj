@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The assembly container precedence grid's fixture
+       (tests/all/assembly_container_precedence_grid.rs) built without F#
+       signature data, so FCS imports it through IL.
+
+       `Generated.fs` is NOT checked in: it is emitted from the grid's setups
+       before this project is built. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaContainerPrecedenceIlOnlyFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <OtherFlags>$(OtherFlags) --nointerfacedata</OtherFlags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>

@@ -48,7 +48,8 @@ use std::path::{Path, PathBuf};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
 use crate::common::{
-    FileUses, ensure_container_precedence_fixture_built, ensure_fsharp_core_dll,
+    FileUses, ensure_container_precedence_fixture_built,
+    ensure_container_precedence_il_only_fixture_built, ensure_fsharp_core_dll,
     invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree,
 };
 use crate::resolve_signatures::project;
@@ -59,6 +60,8 @@ use rowan::{TextRange, TextSize};
 
 /// The fixture assembly's simple name.
 pub(crate) const FIXTURE_ASM: &str = "SemaContainerPrecedenceFixture";
+/// The simple name of the fixture's build without F# signature data.
+pub(crate) const IL_ONLY_FIXTURE_ASM: &str = "SemaContainerPrecedenceIlOnlyFixture";
 
 /// How a union declaring the case `GridC` is declared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -573,14 +576,81 @@ fn segment_runs(src: &str, span: TextRange) -> Vec<TextRange> {
     out
 }
 
+/// Which build of the fixture a run reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Build {
+    /// The ordinary build, with its F# signature data.
+    Pickled,
+    /// `--nointerfacedata`: no F# signature data, so FCS imports every entity
+    /// through IL — a module is a class, an exception or union is a class, and
+    /// the in-container order of [`AheadOfType`](borzoi_sema) no longer
+    /// applies. Only certain-implies-exact is graded: what FCS then reads is
+    /// not this grid's model.
+    IlOnly,
+}
+
+/// Pre-existing wrong commits against the fixture built without F# signature
+/// data, each pinned against the issue tracking it, so a fix fails the grid
+/// until its pin goes. Keyed by probe label (`S{k} … / {use}`).
+const IL_ONLY_KNOWN_WRONG: &[(&str, &str)] = &[
+    ("S1 Module [Val] / Bare", "#505"),
+    ("S4 Module [Exn] / Bare", "#505"),
+    ("S5 Module [SelfUnion] / Qual", "#505"),
+    ("S5 Module [SelfUnion] / OpenQual", "#505"),
+    ("S5 Module [SelfUnion] / Fallback", "#505"),
+    ("S6 Module [Record] / Fallback", "#505"),
+    ("S11 Module [Union(Unary), Record] / Fallback", "#505"),
+    ("S15 Module [Val, Class] / Tail", "#505"),
+    ("S15 Module [Val, Class] / Bare", "#505"),
+    ("S16 Module [Class, Val] / Tail", "#505"),
+    ("S16 Module [Class, Val] / Bare", "#505"),
+    ("S17 Module [Val, SubModule] / Tail", "#505"),
+    ("S17 Module [Val, SubModule] / Bare", "#505"),
+    ("S17 Module [Val, SubModule] / Fallback", "#505"),
+    ("S18 Module [Val, Union(Nullary)] / Bare", "#505"),
+    ("S19 Module [Union(Unary), Val] / Bare", "#505"),
+    ("S30 Module [Union(Rqa), Record] / Fallback", "#505"),
+    (
+        "S36 Module [Union(PrivateRepr), Union(Nullary), Record] / Fallback",
+        "#505",
+    ),
+    (
+        "S37 Module [Union(Private), Union(Nullary), Record] / Fallback",
+        "#505",
+    ),
+];
+
 /// Every use agrees with FCS wherever we commit, every control commits, and
 /// FCS's in-container readings are the ones the precedence order predicts.
 #[test]
 fn every_container_member_order_agrees_with_fcs() {
+    grade(Build::Pickled);
+}
+
+/// The same uses against the fixture built without F# signature data agree
+/// with FCS wherever we commit.
+#[test]
+fn every_container_member_order_agrees_with_fcs_without_interface_data() {
+    grade(Build::IlOnly);
+}
+
+fn grade(build: Build) {
     let setups = setups();
     let probes = probes(&setups);
     let fsharp_core = ensure_fsharp_core_dll();
-    let fixture = ensure_container_precedence_fixture_built();
+    let (fixture, manifest_name, test_name) = match build {
+        Build::Pickled => (
+            ensure_container_precedence_fixture_built(),
+            "assembly_container_precedence_grid",
+            "every_container_member_order_agrees_with_fcs",
+        ),
+        Build::IlOnly => (
+            ensure_container_precedence_il_only_fixture_built(),
+            "assembly_container_precedence_grid_il_only",
+            "every_container_member_order_agrees_with_fcs_without_interface_data",
+        ),
+    };
+    let modelled = build == Build::Pickled;
     let env = env_of(&[fsharp_core.as_path(), fixture]);
 
     let rel: Vec<(&str, &str)> = probes
@@ -623,7 +693,7 @@ fn every_container_member_order_agrees_with_fcs() {
         };
         let rendered = render_fcs(theirs);
         let read = render_fcs(fcs_at(fu, read_span));
-        if probe.use_.in_container() {
+        if modelled && probe.use_.in_container() {
             let expected = expected(setup, probe.use_);
             // The tail's `Make` is recorded over the whole path when a type or
             // module supplies it; anything else is read at the path without it.
@@ -639,6 +709,13 @@ fn every_container_member_order_agrees_with_fcs() {
             }
         }
 
+        let known = match build {
+            Build::IlOnly => IL_ONLY_KNOWN_WRONG
+                .iter()
+                .find(|(l, _)| *l == label)
+                .map(|(_, issue)| *issue),
+            Build::Pickled => None,
+        };
         let mut verdict = "decline";
         for range in segment_runs(&probe.src, probe.span) {
             let Some(res) = proj
@@ -673,7 +750,8 @@ fn every_container_member_order_agrees_with_fcs() {
                 // The partial reading's record of a type or module that is not
                 // a value, where FCS rejects the use and reads nothing.
                 None if probe.use_.in_container()
-                    && expected(setup, probe.use_) == Reading::Nothing
+                    && theirs.is_none()
+                    && (!modelled || expected(setup, probe.use_) == Reading::Nothing)
                     && matches!(res, Resolution::Entity(_))
                     && !fu.errors.is_empty() =>
                 {
@@ -681,6 +759,7 @@ fn every_container_member_order_agrees_with_fcs() {
                         verdict = "entity on error";
                     }
                 }
+                _ if known.is_some() => verdict = "WRONG",
                 _ => {
                     verdict = "WRONG";
                     failures.push(format!(
@@ -694,7 +773,17 @@ fn every_container_member_order_agrees_with_fcs() {
         if verdict == "commit" {
             commits += 1;
         }
-        if verdict == "decline" && control(setup, probe.use_) {
+        let verdict = match known {
+            Some(issue) if verdict == "WRONG" => format!("WRONG ({issue})"),
+            Some(issue) => {
+                failures.push(format!(
+                    "  {label} [NOW AGREES]: {issue} may be fixed; remove its pin"
+                ));
+                verdict.to_string()
+            }
+            None => verdict.to_string(),
+        };
+        if modelled && verdict == "decline" && control(setup, probe.use_) {
             failures.push(format!(
                 "  {label} [MUST COMMIT]\n    FCS:  {rendered}\n    ours: {:?}",
                 proj.file(idx).decline_site(probe.span)
@@ -724,10 +813,8 @@ fn every_container_member_order_agrees_with_fcs() {
     assert!(commits > 0, "the grid must commit somewhere");
     let manifest = Manifest::from_entries(entries).expect("manifest entries");
     check_manifest(
-        "assembly_container_precedence_grid",
+        manifest_name,
         &manifest,
-        &regenerate(
-            "assembly_container_precedence_grid::every_container_member_order_agrees_with_fcs",
-        ),
+        &regenerate(&format!("assembly_container_precedence_grid::{test_name}")),
     );
 }
