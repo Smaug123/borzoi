@@ -211,6 +211,7 @@ fn run(rows: &[Row]) -> Option<BTreeMap<String, String>> {
 fn check(cases: u32) {
     let config = Config {
         cases,
+        source_file: Some(file!()),
         failure_persistence: Some(Box::new(FileFailurePersistence::SourceParallel(
             "proptest-regressions",
         ))),
