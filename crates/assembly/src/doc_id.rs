@@ -171,12 +171,13 @@ pub fn type_doc_name(
     };
     // A nested type's metadata generic-parameter list repeats every enclosing
     // type's parameters, so its *own* arity — the count Roslyn's `` `n ``
-    // encodes — is the difference. A malformed row listing fewer than its
-    // encloser introduces none, and Roslyn reads it as carrying its
-    // encloser's (`PENamedTypeSymbolNonGeneric.MetadataArity`), which is
-    // what the types nested in it subtract.
+    // encodes — is the difference. A malformed row listing no more than its
+    // encloser introduces none. What the types nested in it subtract is
+    // Roslyn's `MetadataArity` of it: the count it lists
+    // (`PENamedTypeSymbolGeneric`), or its encloser's when it lists none
+    // (`PENamedTypeSymbolNonGeneric`).
     let own_arity = listed.saturating_sub(parent_arity);
-    let cumulative_arity = listed.max(parent_arity);
+    let cumulative_arity = if listed == 0 { parent_arity } else { listed };
     let name = type_segment(entity, own_arity, dialect)?;
     let full = if prefix.is_empty() {
         name
@@ -1217,6 +1218,25 @@ mod tests {
         y.metadata_name = Some("Y".into());
         let y = type_doc_name(&y, Some(&x), DocIdDialect::Metadata).unwrap();
         assert_eq!(y.type_id(), "T:N.W`1.X.Y");
+    }
+
+    #[test]
+    fn a_row_listing_some_parameters_carries_its_own_count() {
+        // Malformed: `Z` lists one parameter inside the two-parameter
+        // ``W`1.X`1``, so introduces none, but a type nested in it subtracts
+        // the one it lists, not the encloser's two.
+        let w = decl(&["N"], "W", 1);
+        let mut x = ent(&[], "X", 2);
+        x.metadata_name = Some("X`1".into());
+        let x = type_doc_name(&x, Some(&w), DocIdDialect::Metadata).unwrap();
+        let mut z = ent(&[], "Z", 1);
+        z.metadata_name = Some("Z".into());
+        let z = type_doc_name(&z, Some(&x), DocIdDialect::Metadata).unwrap();
+        assert_eq!(z.type_id(), "T:N.W`1.X`1.Z");
+        let mut q = ent(&[], "Q", 2);
+        q.metadata_name = Some("Q`1".into());
+        let q = type_doc_name(&q, Some(&z), DocIdDialect::Metadata).unwrap();
+        assert_eq!(q.type_id(), "T:N.W`1.X`1.Z.Q`1");
     }
 
     // ------------------------- suffixes the name owns -------------------------

@@ -32,7 +32,7 @@ use tempfile::TempDir;
 use crate::common::inheritdoc_oracle::oracle;
 
 /// Cases in the normal suite; `BORZOI_INHERITDOC_CASES` overrides it.
-const DEFAULT_CASES: u32 = 32;
+const DEFAULT_CASES: u32 = 64;
 
 /// Cases in the deep run.
 const DEEP_CASES: u32 = 384;
@@ -253,6 +253,14 @@ fn the_suffix_cases_key_as_roslyn_keys_them() {
             ..row("X", 0, Some(8))
         },
         row("Y", 1, Some(9)),
+        // Malformed: `Z` lists one parameter inside the two-parameter
+        // ``W`1.X`1``, and `Q`1` repeats that one and adds one.
+        row("X`1", 1, Some(8)),
+        Row {
+            repeats_encloser: false,
+            ..row("Z", 1, Some(11))
+        },
+        row("Q`1", 1, Some(12)),
     ];
     let roslyn = run(&rows);
     let expected = [
@@ -270,10 +278,12 @@ fn the_suffix_cases_key_as_roslyn_keys_them() {
         // Nested: the encloser's ID, then the type's own parameters.
         ("N|U`2/U`1", "T:N.U`2`1.U`1"),
         ("N|U/V", "T:N.U`1.V"),
-        // A nested type inherits at least its encloser's count, however few
-        // parameters its own row lists.
+        // A nested type listing no parameters carries its encloser's count.
         ("N|W`1/X", "T:N.W`1.X"),
         ("N|W`1/X/Y", "T:N.W`1.X.Y"),
+        // One listing some parameters, however few, carries its own count.
+        ("N|W`1/X`1/Z", "T:N.W`1.X`1.Z"),
+        ("N|W`1/X`1/Z/Q`1", "T:N.W`1.X`1.Z.Q`1"),
     ];
     for (path, id) in expected {
         assert_eq!(roslyn.get(path).map(String::as_str), Some(id), "{path}");
