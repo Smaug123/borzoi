@@ -340,7 +340,7 @@ tests/FSharp.Compiler.ComponentTests/Signatures/NestedTypeTests.fs@715 token	div
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/class_struct_interface.fsx@40 token	outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/generic-parameter-order.fsx@753 token	exact 11/11/12
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/hash_constraint_seq.fsx@104 token	exact 4/4/4
-tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/underscore_dot_lambda.fsx@160 token	outside-damage 3/3/5
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/underscore_dot_lambda.fsx@160 token	exact 3/3/5
 tests/FSharp.Compiler.ComponentTests/TypeChecks/PropertyShadowingTests.fs@65 token	exact 7/7/9
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Shadowing/LinqCount.fsx@40 token	exact 5/5/5
 tests/FSharp.Compiler.ComponentTests/TypeChecks/Shadowing/LinqCount.fsx@46 member	exact 4/4/5
