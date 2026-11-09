@@ -2542,10 +2542,11 @@ impl<'a> Gen<'a> {
                 .iter()
                 .map(|c| {
                     let tok = c.ident()?;
-                    self.own_case_at(tok.text_range()).filter(|case| match case {
-                        OwnCase::Item(_) => true,
-                        OwnCase::Def(def) => self.resolved.def(*def).range == tok.text_range(),
-                    })
+                    self.own_case_at(tok.text_range())
+                        .filter(|case| match case {
+                            OwnCase::Item(_) => true,
+                            OwnCase::Def(def) => self.resolved.def(*def).range == tok.text_range(),
+                        })
                 })
                 .collect();
             // The union's identity is its first case: without one, two of its

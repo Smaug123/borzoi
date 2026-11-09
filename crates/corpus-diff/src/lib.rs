@@ -3896,13 +3896,15 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             (inferred, loaded.parses.files[file_idx].file.as_impl())
         {
             comparison.inference_census.record(inferred);
-            comparison.inference_census_per_file.record(&infer_named_file(
-                impl_file,
-                rf,
-                &loaded.assembly_env,
-                &PrecedingTypes::default(),
-                &loaded.parses.files[file_idx].qnof,
-            ));
+            comparison
+                .inference_census_per_file
+                .record(&infer_named_file(
+                    impl_file,
+                    rf,
+                    &loaded.assembly_env,
+                    &PrecedingTypes::default(),
+                    &loaded.parses.files[file_idx].qnof,
+                ));
         }
         let shape = oracle_shape(file_uses);
         for u in &file_uses.uses {

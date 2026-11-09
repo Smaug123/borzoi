@@ -72,7 +72,10 @@ const USES: &[(&str, Model)] = &[
     ("let g{i} () = T3 (1, \"s\", 2.0)", Yes),
     ("let g{i} () = T0", Yes),
     ("let g{i} x = Node (Leaf, x, Leaf)", No),
-    ("let g{i} (x: string) = Node (Node (Leaf, x, Leaf), x, Leaf)", Yes),
+    (
+        "let g{i} (x: string) = Node (Node (Leaf, x, Leaf), x, Leaf)",
+        Yes,
+    ),
     ("let g{i} x = Has (Some x)", Yes),
     ("let g{i} () = Has None", Yes),
     ("let g{i} x = Nested (Wrap [x], Both (x, Wrap x))", No),
@@ -166,7 +169,12 @@ fn program(name: &str, header: &str, modelled: bool) -> (String, Vec<Cell>) {
                     Headered => !header.is_empty(),
                     No => false,
                 };
-            cells.push((line, format!("g{i}"), obligated, format!("{name}: {use_text}")));
+            cells.push((
+                line,
+                format!("g{i}"),
+                obligated,
+                format!("{name}: {use_text}"),
+            ));
         }
     }
     (text, cells)
@@ -195,7 +203,10 @@ fn headerless_file_types_agree_with_fcs_by_file_name() {
     floor += obligated(false);
     check(
         &[
-            ("Lib.fs".to_string(), "module Lib\nlet lib = 1\n".to_string()),
+            (
+                "Lib.fs".to_string(),
+                "module Lib\nlet lib = 1\n".to_string(),
+            ),
             ("Main.fs".to_string(), text),
         ],
         &cells,
@@ -228,7 +239,11 @@ fn ill_typed_uses_of_headerless_file_types_commit_only_what_fcs_kept() {
     .iter()
     .enumerate()
     {
-        let name = if i % 2 == 0 { "Program.fs" } else { "Two.Parts.fs" };
+        let name = if i % 2 == 0 {
+            "Program.fs"
+        } else {
+            "Two.Parts.fs"
+        };
         check(
             &[(name.to_string(), format!("{DECLS}{ill}\n"))],
             &[],
@@ -255,7 +270,54 @@ fn a_case_name_a_headerless_file_declares_again_agrees_with_fcs() {
         "type U = X | Y of int\nlet f () =\n    let X = 5\n    X\nlet g () = X\nlet h () = Y 2\n",
         "[<RequireQualifiedAccess>]\ntype Q = X | Z\ntype U = X | Y of int\nlet v = X\nlet w = Q.X\n",
     ] {
-        check(&[("Program.fs".to_string(), src.to_string())], &[], &mut tally);
+        check(
+            &[("Program.fs".to_string(), src.to_string())],
+            &[],
+            &mut tally,
+        );
+    }
+    assert_clean(&tally, 0);
+}
+
+/// A headerless file whose implicit module an earlier file already names:
+/// as a top-level module (FCS's FS0239, an implementation of `Program`
+/// already given), as a namespace, or as the head of a dotted module or
+/// namespace, or a type of its name. Whatever inference commits must be
+/// FCS's. Graded for agreement only.
+#[test]
+fn a_headerless_file_an_earlier_file_names_agrees_with_fcs() {
+    let mut tally = Tally::default();
+    let uses = "type R = { V: int }\ntype U = A of int | B\nlet g (r: R) = r.V\n\
+                let h () = A 1\nlet k u = match u with A n -> n | B -> 0\n";
+    for earlier in [
+        "module Program\nlet x = 1\n",
+        "namespace Program\ntype T = { W: int }\n",
+        "module Program.Inner\nlet x = 1\n",
+        "namespace Program.Sub\ntype T = { W: int }\n",
+        "namespace Other\nmodule Program =\n    let x = 1\n",
+        "namespace global\ntype Program = { W: int }\n",
+        "module Lib\ntype Program = { W: int }\n",
+    ] {
+        let sources = vec![
+            ("Lib.fs".to_string(), earlier.to_string()),
+            ("Program.fs".to_string(), uses.to_string()),
+        ];
+        check(&sources, &[], &mut tally);
+    }
+    // The same identity given twice by `module` headers, and by a headerless
+    // file before a `module` header: FCS checks nothing of the second file.
+    for (first, second) in [
+        (
+            "module Program\nlet x = 1\n",
+            format!("module Program\n{uses}"),
+        ),
+        (uses, format!("module Program\n{uses}")),
+    ] {
+        let sources = vec![
+            ("Program.fs".to_string(), first.to_string()),
+            ("Use.fs".to_string(), second),
+        ];
+        check(&sources, &[], &mut tally);
     }
     assert_clean(&tally, 0);
 }
