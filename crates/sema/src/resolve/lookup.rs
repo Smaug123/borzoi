@@ -6170,7 +6170,7 @@ impl<'a> Resolver<'a> {
         // its namespace at position 0, an explicit `open` of `prefix`
         // elsewhere ([`Self::value_fold_order`]).
         let value_fold = |prefix: &[String]| {
-            value_entry.and_then(|e| self.value_fold_order(e, prefix, head, value_pos != Some(0)))
+            value_entry.and_then(|e| self.value_fold_order(e, prefix, head, value_pos.unwrap_or(0)))
         };
         // The types the block's start holds, against the value. A value the
         // block writes or opens itself follows them all; one that entered
@@ -6251,32 +6251,40 @@ impl<'a> Resolver<'a> {
     }
 
     /// Where the fold that entered the value `entry` put it ([`ValueFold`]),
-    /// for ordering it against a type of `head` the same fold added; `None`
-    /// when the walk cannot say. `prefix` is the container the fold opened,
-    /// and `explicit` says it is an `open` written in the block, rather than
-    /// the block's implicit open of its namespace, which shares position 0
-    /// with what earlier files put in the root scope.
+    /// for ordering it against a type of `head` that the fold of `prefix`
+    /// added; `None` when the walk cannot say. `value_pos` is where the value
+    /// entered: 0 for the block's implicit open of its namespace, which shares
+    /// the position with what earlier files put in the root scope, and an
+    /// explicit `open`'s position otherwise.
     ///
-    /// - A union case enters with its fragment's types, in declaration
-    ///   order: this file's at its declaration, an earlier file's at its
-    ///   [`DeclOrder`] ([`ProjectItems::union_case_order`](super::model::ProjectItems::union_case_order)).
+    /// The value must be one the fold of `prefix` adds: an `open` with
+    /// several readings adds each reading's contents by the reading's
+    /// priority, not by declaration, so a value of another reading is not
+    /// ordered against `prefix`'s type at all.
+    ///
+    /// - A union case declared directly in `prefix` enters with its
+    ///   fragment's types, in declaration order: this file's at its
+    ///   declaration, an earlier file's at its [`DeclOrder`]
+    ///   ([`ProjectItems::union_case_order`](super::model::ProjectItems::union_case_order)).
     ///   This holds whether the fold added it or an earlier block of this
     ///   file declared it and the block re-took it from the namespace's
     ///   frame.
     /// - An exception does not: the fold adds a fragment's exceptions apart
     ///   from its types.
-    /// - Any other value an `open` entered follows its fragment's types:
-    ///   this file's at its declaration, an earlier file's anywhere in that
-    ///   file's fragment of an explicitly opened container.
-    /// - Whatever else an earlier file supplied precedes every fragment of
-    ///   this file, and is not ordered against an earlier file's type.
+    /// - Any other value the fold entered — a module's own, an `[<AutoOpen>]`
+    ///   module's, a union case of one — follows its fragment's types: this
+    ///   file's at its declaration, an earlier file's anywhere in that file's
+    ///   fragment of an explicitly opened container with one reading.
+    /// - Whatever else an earlier file supplied to the implicit open
+    ///   precedes every fragment of this file, and is not ordered against an
+    ///   earlier file's type.
     /// - A contributor mark is not ordered.
     fn value_fold_order(
         &self,
         entry: &ScopeEntry,
         prefix: &[String],
         head: &str,
-        explicit: bool,
+        value_pos: u32,
     ) -> Option<ValueFold> {
         if entry.mark.is_some() {
             return None;
@@ -6288,15 +6296,17 @@ impl<'a> Resolver<'a> {
             Some(local) => {
                 let item = self.items.get(local)?;
                 let pos = u32::from(self.defs[item.def()?.index()].range.start());
-                match item.case_kind() {
-                    Some(CaseKind::Union { .. }) => Some(ValueFold::At(
-                        self.same_file_fold_order(pos, FoldTier::Types),
-                    )),
-                    Some(CaseKind::Enum | CaseKind::Exception) => None,
-                    None => entry
-                        .from_open
-                        .then(|| ValueFold::At(self.same_file_fold_order(pos, FoldTier::Contents))),
-                }
+                let path = item.qualified.as_deref()?;
+                let in_prefix = path.len() > prefix.len() && path.starts_with(prefix);
+                let directly = in_prefix && path.len() == prefix.len() + 1;
+                let tier = match item.case_kind() {
+                    Some(CaseKind::Union { .. }) if directly => FoldTier::Types,
+                    Some(CaseKind::Union { .. }) | None if in_prefix && entry.from_open => {
+                        FoldTier::Contents
+                    }
+                    _ => return None,
+                };
+                Some(ValueFold::At(self.same_file_fold_order(pos, tier)))
             }
             None => {
                 let mut path = prefix.to_vec();
@@ -6307,14 +6317,23 @@ impl<'a> Resolver<'a> {
                 if !entry.from_open {
                     return None;
                 }
-                Some(if explicit && !self.item_is_case(id) {
+                if value_pos == 0 {
+                    return Some(ValueFold::BeforeFile(self.preceding.num_files()));
+                }
+                let readings = self
+                    .explicit_open_prefixes
+                    .iter()
+                    .chain(&self.module_open_prefixes)
+                    .filter(|(p, _)| *p == value_pos)
+                    .map(|(_, reading)| reading)
+                    .collect::<HashSet<_>>()
+                    .len();
+                (readings == 1 && !self.item_is_case(id)).then(|| {
                     ValueFold::At(FoldOrder {
                         fragment: (self.preceding.file_of(id), 0),
                         tier: FoldTier::Contents,
                         rank: 0,
                     })
-                } else {
-                    ValueFold::BeforeFile(self.preceding.num_files())
                 })
             }
         }

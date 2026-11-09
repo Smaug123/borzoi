@@ -597,6 +597,64 @@ fn a_constructor_of_an_earlier_block_agrees_with_fcs() {
     );
 }
 
+/// An `open I` from inside `namespace P{i}` has two readings, `P{i}.I` and
+/// the root `I`, each holding an `X`: FCS orders the readings by priority,
+/// not by where their declarations sit, so a bare `X` is never ordered by
+/// declaration across them. Each reading holds a class or a union case, in
+/// either declaration order, in the probe's file or an earlier one.
+#[test]
+fn a_multi_reading_open_agrees_with_fcs() {
+    const CLASS: &str = "type X() = class end";
+    const CASE: &str = "type U = X of int | Y";
+    let mut a = FileBuilder::new(0);
+    let mut b = FileBuilder::new(1);
+    let mut sites = Vec::new();
+    let mut i = 0;
+    for (relative, root) in [(CLASS, CASE), (CASE, CLASS)] {
+        for relative_first in [true, false] {
+            for earlier_file in [false, true] {
+                let tag = format!(
+                    "{}/{}/{}",
+                    if relative == CLASS {
+                        "relativeClass"
+                    } else {
+                        "relativeCase"
+                    },
+                    if relative_first {
+                        "relativeFirst"
+                    } else {
+                        "rootFirst"
+                    },
+                    if earlier_file {
+                        "earlierFile"
+                    } else {
+                        "sameFile"
+                    },
+                );
+                let decls = if earlier_file { &mut a } else { &mut b };
+                let blocks = [(format!("P{i}.I{i}"), relative), (format!("I{i}"), root)];
+                let order: &[usize] = if relative_first { &[0, 1] } else { &[1, 0] };
+                for &k in order {
+                    decls.line(&format!("namespace {}", blocks[k].0));
+                    decls.line(blocks[k].1);
+                }
+                b.line(&format!("namespace P{i}"));
+                b.line("module Probe =");
+                b.line(&format!("    open I{i}"));
+                b.probe("    let v = X", "X", tag, &mut sites);
+                i += 1;
+            }
+        }
+    }
+    let graded = grade("nbtm", &[("a.fs", a.text), ("b.fs", b.text)], &sites);
+    assert!(
+        graded
+            .iter()
+            .any(|g| matches!(g.fcs, FcsVerdict::Resolved(..)))
+    );
+    assert_sound_and_live("multi-reading open", &graded, &[], &[]);
+}
+
 /// A bare `X` after `type X() = class end` and then `exception X of int` in
 /// the same block: FCS binds the class, and the walk the exception, the later
 /// declaration. Lexical, so not about namespace blocks: a later block, which
