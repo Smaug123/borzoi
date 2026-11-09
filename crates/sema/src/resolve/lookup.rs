@@ -5452,9 +5452,11 @@ impl<'a> Resolver<'a> {
             .iter()
             .chain(&self.module_open_prefixes);
         // Where an opened *project* type of the name that may take the slot
-        // entered it — the positions a project case the same `open` supplied
-        // cannot be ordered against (below).
-        let mut project_type_opens: Vec<u32> = Vec::new();
+        // entered it, with the opened prefix and the type's declaration order
+        // where an earlier file declares it ([`ProjectItems::exported_type_order`])
+        // — what a project case the same `open` supplied is ordered against
+        // (below).
+        let mut project_type_opens: Vec<(u32, Option<(&[String], (usize, TextSize))>)> = Vec::new();
         for (pos, prefix) in open_prefixes {
             let mut path = prefix.clone();
             path.push(head.to_string());
@@ -5474,14 +5476,17 @@ impl<'a> Resolver<'a> {
             let class = if let Some((_, _, slot)) =
                 self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
             {
-                Some(seen(*slot))
+                Some((seen(*slot), None))
             } else {
-                self.preceding.exported_type_slot(&path).map(seen)
+                self.preceding.exported_type_slot(&path).map(|slot| {
+                    let order = self.preceding.exported_type_order(&path);
+                    (seen(slot), order.map(|o| (prefix.as_slice(), o)))
+                })
             };
-            if let Some(class) = class {
+            if let Some((class, order)) = class {
                 note(*pos, class);
                 if class != SlotClass::Keeps {
-                    project_type_opens.push(*pos);
+                    project_type_opens.push((*pos, order));
                 }
             } else if self
                 .type_defs
@@ -5495,7 +5500,7 @@ impl<'a> Resolver<'a> {
                 // was never exported (probe M20r), so treat the contest as
                 // undecidable rather than trust it.
                 note(*pos, SlotClass::Unknown);
-                project_type_opens.push(*pos);
+                project_type_opens.push((*pos, None));
             }
         }
         // …and a referenced-assembly type at an opened path. Assembly namespace
@@ -5538,8 +5543,34 @@ impl<'a> Resolver<'a> {
             ),
             None => (None, false),
         };
+        // A bare use of a union case the `open` of `prefix` added, which an
+        // earlier file declares directly in `prefix` after the same-named
+        // type declared at `type_at`: the open adds the container's types
+        // with their cases in declaration order, fragment by fragment, so the
+        // case is the later write and holds the slot (`type X()` then `type U
+        // = X of unit | O` binds the case).
+        let case_follows = |prefix: &[String], type_at: (usize, TextSize)| {
+            let Some(Resolution::Item(id)) = value_entry.map(|e| e.resolution) else {
+                return false;
+            };
+            let mut path = prefix.to_vec();
+            path.push(head.to_string());
+            bare && self
+                .preceding
+                .union_case_order(&path, id)
+                .is_some_and(|case_at| type_at < case_at)
+        };
         if enclosing_type.is_some() && value_from_open && value_pos == Some(0) {
-            return HeadSlot::Unordered;
+            let ordered = {
+                let mut path = namespace.to_vec();
+                path.push(head.to_string());
+                self.preceding
+                    .exported_type_order(&path)
+                    .is_some_and(|type_at| case_follows(namespace, type_at))
+            };
+            if !ordered {
+                return HeadSlot::Unordered;
+            }
         }
         match value_pos {
             Some(value_pos) => {
@@ -5556,12 +5587,16 @@ impl<'a> Resolver<'a> {
                 // holds — but a project union or exception case enters with
                 // the project's types, in declaration order (`type U = X of
                 // unit | O` then `type X()` binds the class), which the
-                // positions do not record either.
+                // positions do not record: only a case an earlier file
+                // declares after every such type holds ([`case_follows`]).
                 let same_open_tie = |p: u32| !bare && value_from_open && p == value_pos;
                 let case_tie = bare
                     && value_is_case
                     && value_from_open
-                    && project_type_opens.contains(&value_pos);
+                    && project_type_opens.iter().any(|(p, order)| {
+                        *p == value_pos
+                            && !order.is_some_and(|(prefix, type_at)| case_follows(prefix, type_at))
+                    });
                 if evictor_pos.is_some_and(|p| p > value_pos) {
                     HeadSlot::Evicted
                 } else if unknown_pos.is_some_and(|p| p > value_pos)

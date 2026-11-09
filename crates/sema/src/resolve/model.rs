@@ -56,6 +56,11 @@ pub(super) struct ExportRecord {
     pattern_only: bool,
     /// The export's [`fold_rank`].
     rank: u8,
+    /// Where the declaration sits in its file, for a union case declared in
+    /// the implementation itself (not a signature-derived identity): the key
+    /// an `open` orders it by against a same-named type of its container
+    /// ([`ProjectItems::union_case_order`]). `None` for anything else.
+    union_case_pos: Option<TextSize>,
 }
 
 /// Where a member sits in the order an `open` adds a module's contents to the
@@ -693,6 +698,32 @@ impl ProjectItems {
     /// brings it into scope (probes M20h–M20o).
     pub(super) fn exported_type_slot(&self, path: &[String]) -> Option<TypeSlot> {
         self.type_paths.get(path).map(|t| t.slot)
+    }
+
+    /// Where an `open` of its container adds the earlier-file type exported
+    /// at exactly `path`, relative to the container's other types: its
+    /// `(file, offset)`. FCS's `open` adds a module's or namespace's types,
+    /// each with its union cases, in declaration order, fragment by fragment
+    /// in Compile order (`AddModuleOrNamespaceContentsToNameEnv`), so this
+    /// orders it against [`Self::union_case_order`]. `None` when a signature
+    /// screens the type, whose order is then the signature's.
+    pub(super) fn exported_type_order(&self, path: &[String]) -> Option<(usize, TextSize)> {
+        let t = self.type_paths.get(path)?;
+        Some((t.file, t.pos?))
+    }
+
+    /// [`Self::exported_type_order`]'s counterpart for the earlier-file union
+    /// case `id` exported at exactly `path`: where the `open` of its container
+    /// adds it among the container's types. `None` when `id` is no such case:
+    /// a value, an exception, an active-pattern case, a signature-derived
+    /// identity, or an export at another path.
+    pub(super) fn union_case_order(
+        &self,
+        path: &[String],
+        id: ItemId,
+    ) -> Option<(usize, TextSize)> {
+        let record = self.value_exports.get(path)?.iter().find(|r| r.id == id)?;
+        Some((self.file_of(id), record.union_case_pos?))
     }
 
     /// The earlier-file types declared **directly** under `container` that an
@@ -1347,13 +1378,14 @@ impl ProjectItems {
         for (path, entry) in idx.type_qualified_cases {
             self.type_qualified_cases.insert(path, entry);
         }
-        for (path, (cases_enumerable, slot)) in idx.type_paths {
+        for (path, (cases_enumerable, slot), pos) in idx.type_paths {
             self.type_paths.insert(
                 path,
                 ExportedTypePath {
                     cases_enumerable,
                     slot,
                     file: file_idx,
+                    pos,
                 },
             );
         }
@@ -1644,7 +1676,7 @@ struct FileExportIndices {
     opaque_hidden_value_modules: Vec<Vec<String>>,
     opaque_cases: Vec<(Vec<String>, bool)>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
-    type_paths: Vec<(Vec<String>, (bool, TypeSlot))>,
+    type_paths: Vec<(Vec<String>, (bool, TypeSlot), Option<TextSize>)>,
     auto_open_module_paths: Vec<Vec<String>>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
@@ -1817,6 +1849,11 @@ impl FileExportIndices {
                                     // pattern-only — that is the AP-case branch below.
                                     pattern_only: false,
                                     rank: fold_rank(it.case),
+                                    union_case_pos: (matches!(
+                                        it.case,
+                                        Some(CaseKind::Union { .. })
+                                    ) && matches!(it.def, ExportDef::Own(_)))
+                                    .then_some(decl.pos),
                                 },
                             ));
                         }
@@ -1860,12 +1897,14 @@ impl FileExportIndices {
                             // nor its slot class may survive — both could
                             // turn a defer into a wrong commit. The path
                             // itself stays (a defer-only shadow).
-                            let payload = if screen.is_some() {
-                                (false, TypeSlot::UNKNOWN)
+                            // Its declaration order goes with them: the
+                            // signature's order is what an `open` reads.
+                            let (payload, pos) = if screen.is_some() {
+                                ((false, TypeSlot::UNKNOWN), None)
                             } else {
-                                (*cases_enumerable, *slot)
+                                ((*cases_enumerable, *slot), Some(decl.pos))
                             };
-                            fi.type_paths.push((decl.path.clone(), payload));
+                            fi.type_paths.push((decl.path.clone(), payload, pos));
                         }
                     }
                     if *auto_open {
@@ -1999,6 +2038,7 @@ impl FileExportIndices {
                                 is_case: true,
                                 pattern_only: true,
                                 rank: ACTIVE_PATTERN_RANK,
+                                union_case_pos: None,
                             },
                         ));
                         fi.case_item_ids.push(it.id);
@@ -2208,6 +2248,10 @@ pub(super) struct ExportedTypePath {
     pub(super) slot: TypeSlot,
     /// The declaring file's Compile-order index.
     pub(super) file: usize,
+    /// Where the declaration sits in its file, when the implementation is
+    /// what an `open` reads (no signature screens it): see
+    /// [`ProjectItems::exported_type_order`].
+    pub(super) pos: Option<TextSize>,
 }
 
 /// One declaration a file contributes to the cross-file boundary, in source
