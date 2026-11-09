@@ -1177,9 +1177,7 @@ impl Run {
 
 /// Property 1: a label that shows a signature shows FCS's — the handler's at
 /// a use, and the label it renders for the use's member.
-#[test]
-fn no_label_shows_a_signature_fcs_contradicts() {
-    let run = run();
+fn no_label_shows_a_signature_fcs_contradicts(run: &Run) -> Result<(), String> {
     let mut wrong = Vec::new();
     for (i, site) in run.universe.sites.iter().enumerate() {
         for source in [Source::Handler, Source::Label] {
@@ -1208,20 +1206,20 @@ fn no_label_shows_a_signature_fcs_contradicts() {
             ));
         }
     }
-    assert!(
-        wrong.is_empty(),
-        "{} label(s) over {} site(s) show a signature FCS does not:\n{}",
-        wrong.len(),
-        run.universe.sites.len(),
-        wrong.join("\n")
-    );
+    if !wrong.is_empty() {
+        return Err(format!(
+            "{} label(s) over {} site(s) show a signature FCS does not:\n{}",
+            wrong.len(),
+            run.universe.sites.len(),
+            wrong.join("\n")
+        ));
+    }
+    Ok(())
 }
 
 /// Property 2: every site the resolver reaches hovers as its member, and every
 /// site's member renders a label naming it.
-#[test]
-fn every_site_hovers_as_its_member() {
-    let run = run();
+fn every_site_hovers_as_its_member(run: &Run) -> Result<(), String> {
     let mut missing = Vec::new();
     for (i, site) in run.universe.sites.iter().enumerate() {
         let mut sources = vec![Source::Label];
@@ -1244,34 +1242,37 @@ fn every_site_hovers_as_its_member() {
             }
         }
     }
-    assert!(
-        run.universe.sites.iter().filter(|s| s.reached).count() > 100,
-        "too few sites are reached for the handler to be graded"
-    );
-    assert!(
-        missing.is_empty(),
-        "{} label(s) do not name their member:\n{}",
-        missing.len(),
-        missing.join("\n")
-    );
+    if run.universe.sites.iter().filter(|s| s.reached).count() <= 100 {
+        return Err("too few sites are reached for the handler to be graded".to_string());
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} label(s) do not name their member:\n{}",
+            missing.len(),
+            missing.join("\n")
+        ));
+    }
+    Ok(())
 }
 
 /// Property 3: every site's label shows a signature.
-#[test]
-fn every_site_shows_a_signature() {
-    let run = run();
-    assert!(run.universe.sites.len() > 150, "the universe is too small");
+fn every_site_shows_a_signature(run: &Run) -> Result<(), String> {
+    if run.universe.sites.len() <= 150 {
+        return Err("the universe is too small".to_string());
+    }
     let untyped: Vec<String> = (0..run.universe.sites.len())
         .filter(|&i| !matches!(run.label_from(i, Source::Label), Some((_, Some(_)))))
         .map(|i| format!("  {}: {:?}", run.universe.sites[i].label, run.labels[i]))
         .collect();
-    assert!(
-        untyped.is_empty(),
-        "{} site(s) show no signature, so the labels beside them prove nothing by \
-         showing one:\n{}",
-        untyped.len(),
-        untyped.join("\n")
-    );
+    if !untyped.is_empty() {
+        return Err(format!(
+            "{} site(s) show no signature, so the labels beside them prove nothing by \
+             showing one:\n{}",
+            untyped.len(),
+            untyped.join("\n")
+        ));
+    }
+    Ok(())
 }
 
 /// A label head's explicit type-parameter list (`member M<'a, 'b>: …`), empty
@@ -1302,9 +1303,7 @@ fn sig_type_vars(sig: &str) -> BTreeSet<String> {
 
 /// Property 4: a label's type-parameter list names exactly the type variables
 /// of its signature that are not its declaring type's.
-#[test]
-fn a_type_parameter_list_names_only_the_members_own() {
-    let run = run();
+fn a_type_parameter_list_names_only_the_members_own(run: &Run) -> Result<(), String> {
     let mut wrong = Vec::new();
     let mut graded_on_generic_target = 0usize;
     for (i, site) in run.universe.sites.iter().enumerate() {
@@ -1337,15 +1336,61 @@ fn a_type_parameter_list_names_only_the_members_own() {
             }
         }
     }
+    if graded_on_generic_target <= 10 {
+        return Err(
+            "too few labels use the generic target's type parameter to grade the list".to_string(),
+        );
+    }
+    if !wrong.is_empty() {
+        return Err(format!(
+            "{} label(s) list type parameters that are not the member's own:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        ));
+    }
+    Ok(())
+}
+
+/// A property of the shared [`run`]: `Err` names what it found wrong.
+type Property = fn(&Run) -> Result<(), String>;
+
+/// Every property above, over the one shared [`run`].
+///
+/// One test rather than one per property: the run builds a fixture, checks a
+/// probe with FCS and hovers every site, minutes in CI, and libtest gives each
+/// test a thread. Four tests sharing it started together, as tests of one
+/// module do, and held four threads blocked on one `OnceLock` while a fifth
+/// did the work, which on a four-core runner stalled the rest of the suite for
+/// the whole build. Each property still reports on its own, and every failing
+/// one is reported, not just the first.
+#[test]
+fn every_curried_hover_property_holds() {
+    let run = run();
+    let properties: [(&str, Property); 4] = [
+        (
+            "no_label_shows_a_signature_fcs_contradicts",
+            no_label_shows_a_signature_fcs_contradicts,
+        ),
+        (
+            "every_site_hovers_as_its_member",
+            every_site_hovers_as_its_member,
+        ),
+        ("every_site_shows_a_signature", every_site_shows_a_signature),
+        (
+            "a_type_parameter_list_names_only_the_members_own",
+            a_type_parameter_list_names_only_the_members_own,
+        ),
+    ];
+    let failures: Vec<String> = properties
+        .iter()
+        .filter_map(|(name, property)| property(run).err().map(|why| format!("{name}: {why}")))
+        .collect();
     assert!(
-        graded_on_generic_target > 10,
-        "too few labels use the generic target's type parameter to grade the list"
-    );
-    assert!(
-        wrong.is_empty(),
-        "{} label(s) list type parameters that are not the member's own:\n{}",
-        wrong.len(),
-        wrong.join("\n")
+        failures.is_empty(),
+        "{} of {} curried-hover properties fail:\n\n{}",
+        failures.len(),
+        properties.len(),
+        failures.join("\n\n")
     );
 }
 
