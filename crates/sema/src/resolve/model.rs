@@ -544,6 +544,11 @@ pub struct ProjectItems {
     /// suppress a case an opened module's own maybe-literal would out-fold
     /// (FCS folds a module's vals *after* its tycons).
     pub(super) attributed_value_ids: HashSet<ItemId>,
+    /// Each earlier-file case of a union whose representation is `private`, by
+    /// handle, to the union's container (see
+    /// [`ExportedItem::repr_access_root`]). Read by
+    /// [`Resolver::case_usable_here`](super::state::Resolver::case_usable_here).
+    pub(super) case_repr_roots: HashMap<ItemId, Vec<String>>,
     /// The recognizer [`ActivePatternShape`] of each earlier-file module-level
     /// **active-pattern case**, keyed by its project-global [`ItemId`] (Stage 3a,
     /// `docs/export-decl-model-plan.md`). AP cases ride [`Self::value_exports`] as
@@ -1456,11 +1461,21 @@ impl ProjectItems {
         for id in idx.attributed_value_ids {
             self.attributed_value_ids.insert(id);
         }
+        for (id, root) in idx.case_repr_roots {
+            self.case_repr_roots.insert(id, root);
+        }
         for (id, shape) in idx.active_pattern_shapes {
             self.active_pattern_shapes.insert(id, shape);
         }
         self.count +=
             u32::try_from(file.exports.items.len()).expect("more than u32::MAX items in one file");
+    }
+
+    /// The container outside which the earlier-file case `id` is unusable,
+    /// when its union's representation is `private` (see
+    /// [`Self::case_repr_roots`]).
+    pub(super) fn case_repr_root(&self, id: ItemId) -> Option<&[String]> {
+        self.case_repr_roots.get(&id).map(Vec::as_slice)
     }
 
     /// Whether `id` is an earlier file's exported **constructor case** (see
@@ -1604,6 +1619,7 @@ struct FileExportIndices {
     value_exports: Vec<(Vec<String>, ExportRecord)>,
     case_item_ids: Vec<ItemId>,
     attributed_value_ids: Vec<ItemId>,
+    case_repr_roots: Vec<(ItemId, Vec<String>)>,
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
     module_headers: Vec<Vec<String>>,
     nested_module_paths: Vec<Vec<String>>,
@@ -1795,6 +1811,9 @@ impl FileExportIndices {
                         }
                         if it.attributed {
                             fi.attributed_value_ids.push(it.id);
+                        }
+                        if let Some(root) = &it.repr_access_root {
+                            fi.case_repr_roots.push((it.id, root.clone()));
                         }
                         if let Some(tq) = type_qualified {
                             // The type-qualified case index is gated on the case's
@@ -2613,6 +2632,13 @@ pub enum DeclineCause {
     /// `[<AutoOpen>]` module may bring it into scope ahead of every implicit
     /// open and the root, and which one FCS binds is not modelled.
     EarlierTypeOutsideNamespace,
+    /// The name reached a union case whose representation is `private`
+    /// (`type U = private X | Y`) from outside the union's container. The type
+    /// is accessible, so an `open` still brings the case in and `U.X` still
+    /// finds it, and FCS rejects the use (FS1093); a module-qualified `M.X`
+    /// skips the case and looks on. Either way there is no case to commit
+    /// (`Resolver::case_usable_here`).
+    CaseRepresentationInaccessible,
 }
 
 impl DeclineCause {
@@ -2682,6 +2708,7 @@ impl DeclineCause {
         DeclineCause::EarlierTypeOpenedOver,
         DeclineCause::EarlierTypeNamespaceShared,
         DeclineCause::EarlierTypeOutsideNamespace,
+        DeclineCause::CaseRepresentationInaccessible,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2749,6 +2776,7 @@ impl DeclineCause {
             DeclineCause::EarlierTypeOpenedOver => "earlier_type_opened_over",
             DeclineCause::EarlierTypeNamespaceShared => "earlier_type_namespace_shared",
             DeclineCause::EarlierTypeOutsideNamespace => "earlier_type_outside_namespace",
+            DeclineCause::CaseRepresentationInaccessible => "case_representation_inaccessible",
         }
     }
 }
@@ -3073,6 +3101,19 @@ pub struct ExportedItem {
     /// / the collapse recovery filter through [`accessible_from`]. `internal` is
     /// intra-project-visible (one assembly), so only `private` narrows this.
     pub(super) access_root_len: Option<usize>,
+    /// For a case of a union whose **representation** is `private` (`type U =
+    /// private X | Y`), the union's container: a use outside it may not commit
+    /// to the case ([`Resolver::case_usable_here`](super::state::Resolver::case_usable_here)).
+    /// `None` for every other export.
+    ///
+    /// A dimension apart from [`Self::access_root_len`] because FCS treats it
+    /// apart. An inaccessible *type* (or enclosing module) hides its cases: an
+    /// `open` does not bring them in, so an earlier same-named name stays
+    /// visible. An inaccessible *representation* leaves the type visible, so
+    /// the `open` still brings the case in, shadowing that earlier name, and
+    /// the use is FS1093 — the selection queries must keep seeing the case,
+    /// and only the commit may not.
+    pub(super) repr_access_root: Option<Vec<String>>,
     /// `true` when the defining module-level `let` binding carried **any
     /// attribute list** (on the binding or its enclosing `let` decl) — a
     /// maybe-`[<Literal>]`. A literal value is an FCS *constant pattern*, which
@@ -3622,6 +3663,10 @@ impl ResolvedFile {
                 },
                 case: ex.case,
                 access_root_len: ex.access_root_len,
+                // A signature type with any accessibility token exports no
+                // case ([`collect_sig_container_exports`](super::collect_sig_container_exports)),
+                // so no signature-derived case has a restricted representation.
+                repr_access_root: None,
                 attributed: ex.attributed,
             });
             self.export_decls.push(ExportDecl {

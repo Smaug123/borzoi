@@ -57,6 +57,18 @@ pub(super) fn header_is_private(node: &borzoi_cst::syntax::SyntaxNode) -> bool {
     false
 }
 
+/// Whether `defn` is a union whose **representation** is `private` (`type U =
+/// private X | Y`, [`UnionRepr::access`](borzoi_cst::syntax::UnionRepr::access)):
+/// the type stays as accessible as its header says, and its cases are usable
+/// only within the type's container. `internal` restricts nothing within one
+/// project, and `public` nothing at all.
+pub(super) fn union_repr_is_private(defn: &TypeDefn) -> bool {
+    matches!(
+        defn.repr(),
+        Some(TypeDefnRepr::Union(u)) if u.access().is_some_and(|t| t.text() == "private")
+    )
+}
+
 /// Merge one auto-open type-shadow contribution into the scope's set.
 /// Same-name contributions merge **monotonically soundly** (codex round 3: a
 /// later `module private` sibling's depth-pinned entry must not evict an
@@ -225,6 +237,7 @@ impl<'a> Resolver<'a> {
         name: &str,
         def: DefId,
         type_is_private: bool,
+        repr_access_root: Option<Vec<String>>,
         kind: CaseKind,
     ) -> Option<ItemId> {
         let mut qualified = self.container_path.clone();
@@ -259,6 +272,7 @@ impl<'a> Resolver<'a> {
             // of a `private` type is scoped to the type's container) and any
             // enclosing `private` module (oracle-pinned D3/D5).
             access_root_len: self.export_access_root_len(type_is_private),
+            repr_access_root,
             attributed: false,
         });
         self.push_export_decl(
@@ -327,6 +341,7 @@ impl<'a> Resolver<'a> {
         def: DefId,
         type_name: &str,
         type_is_private: bool,
+        repr_access_root: Option<Vec<String>>,
         kind: CaseKind,
     ) -> Option<ItemId> {
         if self.anonymous_root {
@@ -347,6 +362,7 @@ impl<'a> Resolver<'a> {
             // namespace; the access-root is recorded for consistency (it is
             // reached only through the type-qualified index).
             access_root_len: self.export_access_root_len(type_is_private),
+            repr_access_root,
             attributed: false,
         });
         // The export-decl-list twin: a case `Item` decl (no value path). Its

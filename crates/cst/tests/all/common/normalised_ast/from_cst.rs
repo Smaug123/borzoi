@@ -1112,7 +1112,7 @@ fn normalise_type_repr(r: &TypeDefnRepr) -> NormalisedTypeRepr {
             fields: rec.fields().map(|f| normalise_field(&f)).collect(),
         },
         TypeDefnRepr::Union(u) => NormalisedTypeRepr::Union {
-            access: cst_access(u.syntax()),
+            access: u.access().map(|t| cst_access_from_token(&t)),
             cases: u.cases().map(|c| normalise_union_case(&c)).collect(),
         },
         TypeDefnRepr::Enum(e) => {

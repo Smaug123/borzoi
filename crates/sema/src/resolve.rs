@@ -2265,6 +2265,7 @@ impl<'a> Resolver<'a> {
             type_slot_classes: HashMap::new(),
             type_slot_history: HashMap::new(),
             type_access_roots: HashMap::new(),
+            case_repr_roots: HashMap::new(),
             container_decls: HashMap::new(),
             type_cases: HashMap::new(),
             type_members: HashMap::new(),
@@ -2725,8 +2726,49 @@ impl<'a> Resolver<'a> {
         self.record_path_decline(segs, site);
     }
 
+    /// Record that the occurrence at `range` resolves to `res`.
+    ///
+    /// The one writer of the resolution map, so the one place to refuse a
+    /// commit no route may make: a union case whose representation is
+    /// `private` to a container this site is outside
+    /// ([`Self::case_usable_here`]). Every route that reaches such a case —
+    /// an `open`, `U.X`, `M.X`, a pattern — declines here, with the cause.
     fn record(&mut self, range: TextRange, res: Resolution) {
+        let res = if self.case_usable_here(res) {
+            res
+        } else {
+            self.record_decline(
+                range,
+                model::DeclineSite::pre_walk(DeclineCause::CaseRepresentationInaccessible),
+            );
+            Resolution::Deferred(DeferredReason::UnboundName)
+        };
         self.resolutions.insert(range, res);
+    }
+
+    /// Whether a use at the current walk position may commit to `res`.
+    ///
+    /// `false` exactly for a union case whose representation is `private`
+    /// (`type U = private X | Y`) to a container the site is outside. FCS
+    /// keeps such a case where the type is visible — an `open` brings it in,
+    /// `U.X` finds it — and rejects the use (FS1093); a module-qualified `M.X`
+    /// skips it (`IsTyconReprAccessible`) and looks on. The selection queries
+    /// therefore keep seeing the case, so it shadows what FCS lets it shadow,
+    /// and every route asks this before it commits.
+    ///
+    /// The other ways a case is out of reach — a `private` type, a `private`
+    /// enclosing module — hide it from selection outright
+    /// ([`ExportedItem::access_root_len`]), so they never reach here.
+    pub(super) fn case_usable_here(&self, res: Resolution) -> bool {
+        let root = match res {
+            Resolution::Local(def) => self.case_repr_roots.get(&def).map(Vec::as_slice),
+            Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
+                Some(local) => self.items[local].repr_access_root.as_deref(),
+                None => self.preceding.case_repr_root(id),
+            },
+            _ => None,
+        };
+        root.is_none_or(|root| self.container_path.starts_with(root))
     }
 
     /// Record an **or-pattern alias**: a later alternative spelling a name the
