@@ -5027,23 +5027,41 @@ impl<'a> Resolver<'a> {
     ///   a segment;
     /// - earlier files declare exactly one type or exception of the name
     ///   ([`ProjectItems::earlier_types`](super::model::ProjectItems::earlier_types)
-    ///   counts placed and unplaced declarations, arities apart), and no module
+    ///   counts placed and unplaced declarations, arities apart), no module
     ///   or namespace of it
-    ///   ([`ProjectItems::may_name_module_or_namespace`](super::model::ProjectItems::may_name_module_or_namespace));
+    ///   ([`ProjectItems::may_name_module_or_namespace`](super::model::ProjectItems::may_name_module_or_namespace)),
+    ///   and no project-introduced name ending in it but `owner` itself
+    ///   ([`ProjectItems::nested_module_paths`](super::model::ProjectItems::nested_module_paths):
+    ///   module abbreviations, `extern`s, and every headerless file's
+    ///   implicit filename module);
     /// - no referenced assembly could supply it — a namespace, an entity, an
-    ///   `[<AutoOpen>]` child or a value — at the root, at any container prefix,
-    ///   or through any open, implicit opens included.
-    fn head_names_only_the_owner(&self, head: &str) -> bool {
+    ///   `[<AutoOpen>]` child, a value, or anything a retained manifest
+    ///   auto-open brings — at the root, at any container prefix, or through
+    ///   any open, implicit opens included; and no explicitly opened namespace
+    ///   could hide an abbreviation the metadata does not show.
+    fn head_names_only_the_owner(&self, head: &str, owner: &[String]) -> bool {
         let segment_is_head = |p: &Vec<String>| p.iter().any(|s| s == head);
         let this_file_names_it = self.own_type_simple_names.contains(head)
             || self.own_module_simple_names.contains(head)
             || self.container_path.iter().any(|s| s == head)
             || self.export_decls.iter().any(|d| segment_is_head(&d.path));
         let earlier_files_name_it_otherwise = self.preceding.may_name_module_or_namespace(head)
-            || self.preceding.earlier_types.get(head).map_or(0, Vec::len) != 1;
+            || self.preceding.earlier_types.get(head).map_or(0, Vec::len) != 1
+            || self
+                .preceding
+                .nested_module_paths
+                .iter()
+                .any(|p| p.last().is_some_and(|s| s == head) && p.as_slice() != owner);
         let assemblies_may_name_it = self
             .assemblies
             .assembly_bare_value_surface_could_supply(head)
+            || self
+                .assemblies
+                .retained_auto_open_could_supply_entity_named(head)
+            || self.explicit_open_reading_prefixes().any(|(_, prefix)| {
+                self.assemblies
+                    .unknowable_abbreviations_in_namespace(prefix)
+            })
             || self
                 .open_reading_prefixes()
                 .map(|(_, prefix)| prefix)
@@ -5089,7 +5107,6 @@ impl<'a> Resolver<'a> {
         if self.dotted_opacity.beyond_project_modules()
             || self.opaque_value_open
             || self.unmodelled_open_active
-            || !self.head_names_only_the_owner(head)
             || self.sig_screens_case_reading_of(written)
             || self.cross_file_case_shadowed_same_file(written)
         {
@@ -5101,7 +5118,8 @@ impl<'a> Resolver<'a> {
             return None;
         };
         let owner = &at[..at.len() - 1];
-        (self.opened_project_modules_leave_head(head, owner)
+        (self.head_names_only_the_owner(head, owner)
+            && self.opened_project_modules_leave_head(head, owner)
             && !self.preceding.declares_member_at(&at))
         .then_some(id)
     }
