@@ -74,11 +74,7 @@ impl QualifiedNameOfFile {
         let segments: Vec<String> = self.raw.split('.').map(str::to_string).collect();
         segments
             .iter()
-            .all(|s| {
-                !s.is_empty()
-                    && s.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            })
+            .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
             .then_some(segments)
     }
 }

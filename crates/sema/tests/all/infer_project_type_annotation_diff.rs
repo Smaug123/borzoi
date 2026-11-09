@@ -348,12 +348,9 @@ fn grade(programs: &[(String, String)], expect_errors: bool) -> Graded {
             continue;
         }
         let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-        let name = qualified_names(
-            &[SourceFile::Impl(file.clone())],
-            &[written[0].0.clone()],
-        )
-        .pop()
-        .expect("one name per file");
+        let name = qualified_names(&[SourceFile::Impl(file.clone())], &[written[0].0.clone()])
+            .pop()
+            .expect("one name per file");
         let inferred = infer_named_file(
             &file,
             &resolved,
