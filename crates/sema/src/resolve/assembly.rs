@@ -486,8 +486,10 @@ impl<'a> Resolver<'a> {
     ///
     /// `names` is the full prefix-plus-segments path, `base` the prefix length
     /// and `k` the index of the rooting segment (`names[k]`, source token
-    /// `segments[k - base]`). Never returns [`AssemblyPath::NoMatch`]: the
-    /// rooting is given, so the reading at minimum matches partially.
+    /// `segments[k - base]`). The rooting is given, so the reading at minimum
+    /// matches partially — unless FCS's in-namespace search reads a sibling
+    /// exception of the name instead ([`AheadOfType::SiblingException`]), when
+    /// this candidate is no reading at all: [`AssemblyPath::NoMatch`].
     fn assembly_path_records_from_root(
         &self,
         names: &[String],
@@ -504,7 +506,11 @@ impl<'a> Resolver<'a> {
         // or a union case of the name ahead of a type or module — see
         // [`AheadOfType`]. (A rooting at the written head is looked up in the
         // environment instead, where a type or module goes first.)
+        //
+        // An exception it reads owns the path whether or not the tail is
+        // there: FCS reads it and goes no further.
         let mut rqa_case_fallback = false;
+        let mut exception_read = false;
         if k > base {
             match self
                 .assemblies
@@ -512,8 +518,12 @@ impl<'a> Resolver<'a> {
             {
                 AheadOfType::Nothing => {}
                 AheadOfType::RqaCaseFallback => rqa_case_fallback = true,
-                AheadOfType::Possible => return Self::owned_deferral(segments, Vec::new()),
+                // The exception is a candidate at this rooting too, and its
+                // own reading is the one FCS takes.
+                AheadOfType::SiblingException => return AssemblyPath::NoMatch,
+                AheadOfType::Possible => return Self::owned_deferral(segments),
             }
+            exception_read = self.assemblies.entity(type_handle).kind == EntityKind::Exception;
         }
 
         // A type-abbreviation marker: the name binds, and FCS chases the
@@ -629,10 +639,11 @@ impl<'a> Resolver<'a> {
                     {
                         AheadOfType::Nothing => {}
                         AheadOfType::RqaCaseFallback => rqa_case_fallback = true,
-                        AheadOfType::Possible => {
-                            return Self::owned_deferral(&segments[(i - base)..], recs);
+                        AheadOfType::SiblingException | AheadOfType::Possible => {
+                            return Self::owned_deferral(segments);
                         }
                     }
+                    exception_read |= self.assemblies.entity(child).kind == EntityKind::Exception;
                 }
             }
             if let Some(child) = self
@@ -757,8 +768,11 @@ impl<'a> Resolver<'a> {
         // nothing: a tail it lacks, or a bare name that is not a value. FCS
         // reads the case there rather than going on elsewhere, so the path is
         // owned, but not by anything this reading names.
+        if exception_read {
+            owns_path = true;
+        }
         if rqa_case_fallback && (!owns_path || self.reading_stops_on_a_non_value(segments, &recs)) {
-            return Self::owned_deferral(segments, Vec::new());
+            return Self::owned_deferral(segments);
         }
         AssemblyPath::Resolved {
             payload: recs,
@@ -766,20 +780,25 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// A reading that **owns** the path but names no target in `rest`: the
-    /// records already made, then `rest`'s segments deferred.
-    fn owned_deferral(
-        rest: &[SyntaxToken],
-        mut recs: Vec<(TextRange, Resolution)>,
-    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
-        recs.extend(rest.iter().map(|seg| {
-            (
-                seg.text_range(),
-                Resolution::Deferred(DeferredReason::QualifiedAccess),
-            )
-        }));
+    /// A reading that **owns** the path but names no target in it: every
+    /// segment deferred, so no lower-priority reading commits the path either.
+    ///
+    /// The qualifiers are deferred too, not only the name: the owner is
+    /// uncertain, and where it is in fact nothing at all — an inaccessible
+    /// first union declaring the case, then a type that is no value — FCS
+    /// goes on to another reading of the qualifier, so naming this one would
+    /// be a wrong target.
+    fn owned_deferral(segments: &[SyntaxToken]) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
         AssemblyPath::Resolved {
-            payload: recs,
+            payload: segments
+                .iter()
+                .map(|seg| {
+                    (
+                        seg.text_range(),
+                        Resolution::Deferred(DeferredReason::QualifiedAccess),
+                    )
+                })
+                .collect(),
             owns_path: true,
         }
     }

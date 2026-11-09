@@ -28,9 +28,11 @@
 //! - the **container**: a module, or a namespace (no values there);
 //! - the **use**: the fully-qualified path, the path shortened by an `open`
 //!   of the enclosing namespace, the path with a member tail (`.Make ()`),
-//!   and the bare name after an `open` of the container — a different rule
-//!   (the name environment's latest write), graded only for
-//!   certain-implies-exact.
+//!   the bare name after an `open` of the container — a different rule (the
+//!   name environment's latest write), graded only for certain-implies-exact —
+//!   and, for a module, the path shortened by `open`s of two namespaces that
+//!   each declare a module of its name, the later one the setup's: where the
+//!   setup's module reads nothing, FCS goes on to the other.
 //!
 //! Every use is certain-implies-exact; the control uses must commit, so the
 //! grid cannot pass by declining; FCS's reading of every in-container use is
@@ -181,6 +183,10 @@ fn setups() -> Vec<Setup> {
         module(&[Union(PrivateRepr), Union(Nullary), Class]),
         module(&[Union(Private), Class]),
         module(&[Union(Private), Union(Nullary), Class]),
+        // An inaccessible first union, then a type that is no value: the
+        // module reads nothing, though a public union declares the case.
+        module(&[Union(PrivateRepr), Union(Nullary), Record]),
+        module(&[Union(Private), Union(Nullary), Record]),
         // The same shapes directly in a namespace.
         namespace(&[Class]),
         namespace(&[SubModule]),
@@ -260,8 +266,21 @@ pub(crate) fn fixture_source() -> String {
             }
         }
         src.push('\n');
+        if setup.container == Container::Module {
+            src.push_str(&format!(
+                "namespace {}\n\nmodule GridLib =\n    let GridC = 42\n\n",
+                fallback_namespace(k)
+            ));
+        }
     }
     src
+}
+
+/// The namespace holding setup `k`'s fallback: a module `GridLib` of its own
+/// with a value `GridC`, which a [`Use::Fallback`] probe opens ahead of the
+/// setup's.
+fn fallback_namespace(k: usize) -> String {
+    format!("AqFix.L{k}")
 }
 
 /// How a probe writes the name.
@@ -275,10 +294,20 @@ enum Use {
     Tail,
     /// `GridC` after an `open` of the container.
     Bare,
+    /// `GridLib.GridC` after an `open` of the fallback namespace and then of
+    /// the setup's: where the setup's module reads nothing, FCS goes on to the
+    /// fallback's `GridLib`. Modules only.
+    Fallback,
 }
 
 impl Use {
-    const ALL: [Use; 4] = [Use::Qual, Use::OpenQual, Use::Tail, Use::Bare];
+    const ALL: [Use; 5] = [
+        Use::Qual,
+        Use::OpenQual,
+        Use::Tail,
+        Use::Bare,
+        Use::Fallback,
+    ];
 
     /// Whether FCS reads it through `ResolveExprLongIdentInModuleOrNamespace`.
     fn in_container(self) -> bool {
@@ -299,6 +328,35 @@ enum Reading {
     Module,
     /// Nothing reads the name.
     Nothing,
+    /// The fallback module's value, read where the setup's module reads
+    /// nothing.
+    Fallback,
+}
+
+/// FCS's reading of `use_` in setup `setup`.
+///
+/// Where the setup's container reads nothing accessible, FCS goes on to the
+/// fallback module if the use has one; if not, it searches again ignoring
+/// accessibility (`AccessibleFromSomeFSharpCode`), and reports an inaccessible
+/// first union's case with an error.
+fn expected(setup: &Setup, use_: Use) -> Reading {
+    match fcs_reading(setup, use_ == Use::Tail) {
+        Reading::Nothing if use_ == Use::Fallback => Reading::Fallback,
+        Reading::Nothing => first_declaring_union(setup)
+            .filter(|&(_, kind)| matches!(kind, UnionKind::PrivateRepr | UnionKind::Private))
+            .map_or(Reading::Nothing, |(n, _)| Reading::Case(n)),
+        reading => reading,
+    }
+}
+
+/// The first union of setup `setup` declaring the case, numbered as
+/// [`Reading::Case`] numbers it, and how it is declared.
+fn first_declaring_union(setup: &Setup) -> Option<(usize, UnionKind)> {
+    setup.members.iter().find_map(|m| match m {
+        Union(kind) => Some((1, *kind)),
+        SelfUnion => Some((0, UnionKind::Nullary)),
+        _ => None,
+    })
 }
 
 /// FCS's reading of setup `setup` through `ResolveExprLongIdentInModuleOrNamespace`,
@@ -376,8 +434,11 @@ fn control(setup: &Setup, use_: Use) -> bool {
                     )
             })
     };
-    match fcs_reading(setup, use_ == Use::Tail) {
+    match expected(setup, use_) {
         Reading::Value => true,
+        // The setup's module is no reading at all, and nothing in it is
+        // uncertain.
+        Reading::Fallback => matches!(members, [Record] | [SubModule]),
         Reading::Type => unopposed(Class),
         Reading::Module => unopposed(SubModule),
         Reading::Exception => use_ != Use::Tail && members.iter().all(|m| *m == Exn),
@@ -406,6 +467,9 @@ fn rendered_is(rendered: &str, k: usize, setup: &Setup, reading: Reading) -> boo
         }
         Reading::Module => rendered == format!("{asm}:{container}.GridC.Make:member"),
         Reading::Nothing => rendered == "-",
+        Reading::Fallback => {
+            rendered == format!("{asm}:{}.GridLib.GridC:member", fallback_namespace(k))
+        }
     }
 }
 
@@ -431,6 +495,9 @@ fn probes(setups: &[Setup]) -> Vec<Probe> {
             Container::Namespace => format!("S{k}"),
         };
         for use_ in Use::ALL {
+            if use_ == Use::Fallback && setup.container != Container::Module {
+                continue;
+            }
             let (open, written, applied) = match use_ {
                 Use::Qual => (None, format!("{container}.GridC"), ""),
                 Use::OpenQual => {
@@ -442,6 +509,11 @@ fn probes(setups: &[Setup]) -> Vec<Probe> {
                 }
                 Use::Tail => (None, format!("{container}.GridC.Make"), " ()"),
                 Use::Bare => (Some(container.clone()), "GridC".to_string(), ""),
+                Use::Fallback => (
+                    Some(format!("{}\nopen {ns}", fallback_namespace(k))),
+                    "GridLib.GridC".to_string(),
+                    "",
+                ),
             };
             let module = format!("AqProbe{k}{use_:?}");
             let mut src = format!("module {module}\n\n");
@@ -544,7 +616,7 @@ fn every_container_member_order_agrees_with_fcs() {
         let rendered = render_fcs(theirs);
         let read = render_fcs(fcs_at(fu, read_span));
         if probe.use_.in_container() {
-            let expected = fcs_reading(setup, probe.use_ == Use::Tail);
+            let expected = expected(setup, probe.use_);
             // The tail's `Make` is recorded over the whole path when a type or
             // module supplies it; anything else is read at the path without it.
             let shown = match expected {
@@ -593,7 +665,7 @@ fn every_container_member_order_agrees_with_fcs() {
                 // The partial reading's record of a type or module that is not
                 // a value, where FCS rejects the use and reads nothing.
                 None if probe.use_.in_container()
-                    && fcs_reading(setup, probe.use_ == Use::Tail) == Reading::Nothing
+                    && expected(setup, probe.use_) == Reading::Nothing
                     && matches!(res, Resolution::Entity(_))
                     && !fu.errors.is_empty() =>
                 {

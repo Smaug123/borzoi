@@ -339,6 +339,10 @@ pub(crate) enum AheadOfType {
     /// FCS reaches the type, but reads such a case if the type (and, with a
     /// tail, the module) supplies nothing.
     RqaCaseFallback,
+    /// An exception of the name, in the same assembly, is read first. In a
+    /// namespace it is a top-level entity of the name itself, so the walk
+    /// reaches it as a sibling candidate at the same rooting.
+    SiblingException,
     /// A value, an exception or an ordinary union case of the name may be read
     /// first, or the container's members of that name cannot be enumerated.
     Possible,
@@ -6286,12 +6290,15 @@ impl AssemblyEnv {
     /// The exception and union half of [`Self::module_reads_ahead_of_type`] and
     /// [`Self::namespace_reads_ahead_of_type`], over one container's entities.
     ///
-    /// When `entity` is itself the exception of the name, FCS reads it at the
-    /// exception step, ahead of any union case of its own assembly, so only
-    /// another assembly's members of a namespace can come first.
-    /// A union in an assembly whose F# signature is not authoritative is a
-    /// possible reader whatever cases its IL appears to declare: its case list
-    /// is a heuristic, and so is its `[<RequireQualifiedAccess>]` exemption.
+    /// An exception of the name in `entity`'s own assembly is read at the
+    /// exception step, ahead of every union case there:
+    /// [`AheadOfType::SiblingException`] when it is not `entity` itself, and
+    /// when it is, only another assembly's members of a namespace can come
+    /// first.
+    /// A union in an assembly whose F# signature is not authoritative is read
+    /// by its IL case list, the best evidence there is of the names a pickle
+    /// FCS can read would declare, but never exempted as
+    /// `[<RequireQualifiedAccess>]`: that is a pickle fact.
     fn entities_read_ahead_of_type(
         &self,
         entities: &[EntityHandle],
@@ -6299,9 +6306,12 @@ impl AssemblyEnv {
         entity: EntityHandle,
     ) -> AheadOfType {
         let is_exception = self.entity(entity).kind == EntityKind::Exception;
+        let same_dll = |e: EntityHandle| self.distinct_dlls(&[e, entity]) == 1;
+        let mut sibling_exception = false;
+        let mut local_case = false;
         let mut rqa_case = false;
         for &e in entities {
-            if !self.is_public(e) || is_exception && self.distinct_dlls(&[e, entity]) == 1 {
+            if !self.is_public(e) || is_exception && same_dll(e) {
                 continue;
             }
             let ent = self.entity(e);
@@ -6309,27 +6319,36 @@ impl AssemblyEnv {
                 EntityKind::Exception
                     if ent.source_name.as_deref().unwrap_or(&ent.name) == name =>
                 {
-                    return AheadOfType::Possible;
+                    if !same_dll(e) {
+                        return AheadOfType::Possible;
+                    }
+                    sibling_exception = true;
                 }
                 EntityKind::Union => {
-                    let unreliable = self.fsharp_signature_unreliable(e);
-                    let declares = unreliable
-                        || match &ent.union_cases {
-                            UnionCases::Unknowable => true,
-                            UnionCases::Known(cases) => cases.iter().any(|c| c.name == name),
-                        };
+                    let declares = match &ent.union_cases {
+                        UnionCases::Unknowable => true,
+                        UnionCases::Known(cases) => cases.iter().any(|c| c.name == name),
+                    };
                     if !declares {
                         continue;
                     }
-                    if unreliable || !ent.is_require_qualified_access {
-                        return AheadOfType::Possible;
+                    if self.fsharp_signature_unreliable(e) || !ent.is_require_qualified_access {
+                        if !same_dll(e) {
+                            return AheadOfType::Possible;
+                        }
+                        local_case = true;
+                    } else {
+                        rqa_case = true;
                     }
-                    rqa_case = true;
                 }
                 _ => {}
             }
         }
-        if rqa_case {
+        if sibling_exception {
+            AheadOfType::SiblingException
+        } else if local_case {
+            AheadOfType::Possible
+        } else if rqa_case {
             AheadOfType::RqaCaseFallback
         } else {
             AheadOfType::Nothing
