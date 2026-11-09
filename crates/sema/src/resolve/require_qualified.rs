@@ -122,7 +122,13 @@ impl Resolver<'_> {
         idents: &[SyntaxToken],
         candidates: &[TierCandidate],
     ) {
-        if self.recursive_module_active || !self.recovery.proves_clean_parse() {
+        // FCS reports a duplicated module and checks nothing in its body, so an
+        // open there is reported for nothing else; the same caution covers a
+        // module whose path is also a namespace.
+        if self.recursive_module_active
+            || !self.recovery.proves_clean_parse()
+            || self.module_path_is_ambiguous(&self.container_path)
+        {
             return;
         }
         let (Some(first), Some(last)) = (idents.first(), idents.last()) else {

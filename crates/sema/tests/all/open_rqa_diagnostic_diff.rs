@@ -137,6 +137,13 @@ const CELLS: &[Cell] = &[
         expect: Expect::Clean,
     },
     Cell {
+        label: "same-file / an open in a duplicated module's body",
+        files: &[
+            "module {p}Top\n\nmodule A =\n    let x = 1\n\nmodule A =\n    open List\n    let y = 2\n",
+        ],
+        expect: Expect::Clean,
+    },
+    Cell {
         label: "same-file / a module opening itself",
         files: &[
             "module {p}Top\n\n[<RequireQualifiedAccess>]\nmodule M =\n    open M\n    let x = 1\n",
@@ -890,6 +897,12 @@ fn gen_modules(
         out.push_str(&format!("{indent}    let v{counter} = 1\n"));
         if t.chance(4) {
             out.push_str(&format!("{indent}    open {name}\n"));
+        }
+        // An assembly open in the body, owed nothing by the generator but
+        // graded by the file-wide subset check: inside a duplicated module,
+        // FCS checks nothing.
+        if t.chance(5) {
+            out.push_str(&format!("{indent}    open List\n"));
         }
         let mut path = container.to_vec();
         path.push(name);
