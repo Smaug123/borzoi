@@ -2149,7 +2149,7 @@ impl<'a> Resolver<'a> {
     /// latest-wins shadowing against locals and [`resolve_file`](super::resolve_file) does not leak them
     /// across same-named top-level blocks. The module may also hold submodules /
     /// types we do not model, so the caller sets
-    /// [`opaque_dotted_open`](Self::opaque_dotted_open) to keep dotted heads
+    /// [`dotted_opacity`](Self::dotted_opacity) to keep dotted heads
     /// through it conservative. Returns the number of values enumerated — zero
     /// means an empty / submodule-only module or a module *alias* (whose target we
     /// cannot see), which the caller treats fully conservatively.
@@ -3369,7 +3369,7 @@ impl<'a> Resolver<'a> {
         }
 
         // A head whose latest in-scope entry a generation barrier STALED gates
-        // every qualified channel below, exactly like `opaque_dotted_open` but
+        // every qualified channel below, exactly like `dotted_opacity` but
         // scoped to this head ([`Self::head_entry_staled`], codex round 10):
         // the barrier is coarser than what its open actually contests, so FCS
         // may still bind the staled entry — a local `X` after `let X = 5` —
@@ -3564,7 +3564,7 @@ impl<'a> Resolver<'a> {
         // falls through to member access when the head is not actually a module.
         // The qualified resolution is also skipped while an `opaque_value_open` is
         // in scope (it could provide the head as a value we cannot enumerate) or an
-        // `opaque_dotted_open` is (an opened project module could provide the head
+        // `dotted_opacity` is (an opened project module could provide the head
         // as one of its unmodelled submodules/types): resolving the path then risks
         // a wrong target.
         let head = &*id_text(first);
@@ -3643,7 +3643,7 @@ impl<'a> Resolver<'a> {
             //
             // Both guards apply. `!opaque_value_open`: an opaque open could shadow
             // the head with a value, making `head.rest` member access, not a module
-            // path. `!opaque_dotted_open`: a plain `open <project module>` could
+            // path. `!dotted_opacity.any()`: a plain `open <project module>` could
             // supply the head from content we do not model (a submodule, or a type
             // from an assembly the module's namespace merges with), so a head
             // resolved relative to the *enclosing namespace* could be the wrong
@@ -3941,7 +3941,7 @@ impl<'a> Resolver<'a> {
         // nullary case has no dottable members, so `Red.foo` (where `Red` is an
         // opened case) is a qualifier into a same-named module / type that we could
         // not resolve here (e.g. `open M` where `M` has both `type T = Red` and
-        // `module Red`, reached under an `opaque_dotted_open` that skips the
+        // `module Red`, reached under an `dotted_opacity` that skips the
         // module-path resolution above). FCS resolves it through the module
         // (`M.Red.foo`); we cannot, so defer the head rather than record a wrong
         // go-to-def onto the case. (A definite *value* head stays member access; an
@@ -5627,7 +5627,7 @@ impl<'a> Resolver<'a> {
 
     /// Whether an `open` of the project module `module` puts in scope exactly
     /// what the earlier files' indices list for it and its `[<AutoOpen>]`
-    /// descendants — the condition for [`DottedOpacity::add_project_module`]
+    /// descendants — the condition for [`DottedOpacity::add_project_module`](super::state::DottedOpacity::add_project_module)
     /// (see [`DottedOpacity`](super::state::DottedOpacity)): the module is an
     /// earlier file's (a header or a real nested module), this file has
     /// declared nothing under it, and nothing in its subtree carries a
@@ -5692,7 +5692,14 @@ impl<'a> Resolver<'a> {
     /// nothing else could take the head `Type`: no opened project module
     /// supplies the name but as that very type
     /// ([`Self::opened_project_modules_leave_head`]), this file declares no
-    /// type or module of it, no explicitly opened referenced-assembly
+    /// type or module of it, no earlier file declares a module or namespace
+    /// of it anywhere
+    /// ([`ProjectItems::may_name_module_or_namespace`](super::model::ProjectItems::may_name_module_or_namespace):
+    /// FCS searches every module of an expression head before its types,
+    /// whatever tier brings the module), the found type is the only earlier
+    /// declaration of its simple name (a `U<'T>` beside `U` shares the
+    /// case index's path, and FCS picks between them by position), no
+    /// explicitly opened referenced-assembly
     /// namespace has an entity of it, and the guards of the ordinary channel
     /// (the signature screen, a same-file type owning the case) are clear.
     /// The caller has ruled out a value or a staled entry taking the head.
@@ -5705,6 +5712,8 @@ impl<'a> Resolver<'a> {
             || self.unmodelled_open_active
             || self.own_type_simple_names.contains(head)
             || self.own_module_simple_names.contains(head)
+            || self.preceding.may_name_module_or_namespace(head)
+            || self.preceding.earlier_types.get(head).map_or(0, Vec::len) != 1
             || self.assembly_case_head_contends_at_an_open(head)
             || self.sig_screens_case_reading_of(written)
             || self.cross_file_case_shadowed_same_file(written)
@@ -6936,7 +6945,7 @@ impl<'a> Resolver<'a> {
     /// unaffected: the barrier staled nothing the qualified channels could
     /// mistake, so an enumerated group's own names (its namespace half's types
     /// included) keep resolving. Hidden-name groups (residue) still need the
-    /// blanket [`opaque_dotted_open`](Self::opaque_dotted_open) — a name we
+    /// blanket [`dotted_opacity`](Self::dotted_opacity) — a name we
     /// cannot list could be a head with no entry to go stale.
     pub(super) fn head_entry_staled(&self, head: &str) -> bool {
         self.latest_entry(head)

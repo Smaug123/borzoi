@@ -474,6 +474,26 @@ fn open_binds_the_last_union_declaring_a_case() {
 // Type-qualified cases reached through an `open`
 // ---------------------------------------------------------------------------
 
+#[test]
+fn type_qualified_case_beside_a_generic_type_of_the_same_name() {
+    // `U` and `U<'T>` share a path and a case name, and FCS splits them by
+    // position: the expression reads the non-generic type's `A`, the
+    // pattern the generic type's (`U.A` with no argument there is FCS's
+    // "applied to 0 argument(s) but expects 1").
+    check(&Cell {
+        name: "generic_namesake",
+        files: &[
+            "module Lib\ntype U = A | B\ntype U<'T> = A of 'T | C\n",
+            "module Use\nopen Lib\nlet a = U.A\nlet f x = match x with U.A _ -> 1 | _ -> 2\n",
+        ],
+        errors_expected: false,
+        pins: &[
+            binds(at(1, "U.A", 0), at(0, "A", 0)),
+            binds(at(1, "U.A", 1), at(0, "A", 1)),
+        ],
+    });
+}
+
 /// The using file for the type-qualified cells.
 const TYPE_QUALIFIED_USE: &str = "module Use\nopen Lib\n\
     let a = U.A\n\
@@ -641,12 +661,75 @@ fn type_qualified_case_past_an_opened_module_never_mis_binds() {
             "[<AutoOpen>]\nmodule Inner =\n    type U = A | C\n",
         ),
         ("dup_case", "type U2 = A | D\n"),
+        ("generic", "type U<'T> = A | G of 'T\n"),
     ];
-    const SECOND: &[(&str, &str)] = &[
-        ("none", ""),
-        ("type", "module L2\ntype U = A | E\n"),
-        ("module", "module L2\nmodule U =\n    let A = 6\n"),
-        ("unrelated", "module L2\nlet x = 1\n"),
+    // A second earlier file, what the consumer opens of it, and the
+    // consumer's header: the contenders an opened project module, an opened
+    // namespace, the enclosing namespace or the root bring.
+    struct Second {
+        name: &'static str,
+        file: &'static str,
+        open: Option<&'static str>,
+        header: &'static str,
+    }
+    const fn second(
+        name: &'static str,
+        file: &'static str,
+        open: Option<&'static str>,
+        header: &'static str,
+    ) -> Second {
+        Second {
+            name,
+            file,
+            open,
+            header,
+        }
+    }
+    const SECOND: &[Second] = &[
+        second("none", "", None, "module Use"),
+        second(
+            "type",
+            "module L2\ntype U = A | E\n",
+            Some("L2"),
+            "module Use",
+        ),
+        second(
+            "module",
+            "module L2\nmodule U =\n    let A = 6\n",
+            Some("L2"),
+            "module Use",
+        ),
+        second(
+            "unrelated",
+            "module L2\nlet x = 1\n",
+            Some("L2"),
+            "module Use",
+        ),
+        second("root_module", "module U\nlet A = 99\n", None, "module Use"),
+        second(
+            "ns_module",
+            "namespace NS\nmodule U =\n    let A = 8\n",
+            Some("NS"),
+            "module Use",
+        ),
+        second(
+            "ns_type",
+            "namespace NS\ntype U = A | H\n",
+            Some("NS"),
+            "module Use",
+        ),
+        second(
+            "ns_exception",
+            "namespace NS\nexception U of int\n",
+            Some("NS"),
+            "module Use",
+        ),
+        second(
+            "enclosing_module",
+            "namespace N\nmodule U =\n    let A = 9\n",
+            None,
+            "module N.Use",
+        ),
     ];
     const SAME_FILE: &[(&str, &str)] = &[
         ("none", ""),
@@ -657,27 +740,35 @@ fn type_qualified_case_past_an_opened_module_never_mis_binds() {
     let mut clean_cells = 0;
     let mut commits = 0;
     for (lib_name, lib_extra) in LIB_EXTRAS {
-        for (second_name, second) in SECOND {
-            let orders: &[bool] = if second.is_empty() {
+        for second in SECOND {
+            // Both orders of the two `open`s, or of the two files when the
+            // second is not opened.
+            let orders: &[bool] = if second.file.is_empty() {
                 &[false]
             } else {
                 &[false, true]
             };
             for &second_first in orders {
                 for (same_name, same) in SAME_FILE {
-                    let label = format!("{lib_name}_{second_name}_{second_first}_{same_name}");
+                    let label = format!("{lib_name}_{}_{second_first}_{same_name}", second.name);
                     let lib = format!("module Lib\ntype U = A | B\n{lib_extra}");
-                    let opens = match (second.is_empty(), second_first) {
-                        (true, _) => "open Lib\n".to_string(),
-                        (false, false) => "open Lib\nopen L2\n".to_string(),
-                        (false, true) => "open L2\nopen Lib\n".to_string(),
+                    let opens = match (second.open, second_first) {
+                        (None, _) => "open Lib\n".to_string(),
+                        (Some(o), false) => format!("open Lib\nopen {o}\n"),
+                        (Some(o), true) => format!("open {o}\nopen Lib\n"),
                     };
                     let user = format!(
-                        "module Use\n{opens}{same}let a = U.A\nlet f x = match x with U.A -> 1 | _ -> 2\n"
+                        "{}\n{opens}{same}let a = U.A\nlet f x = match x with U.A -> 1 | _ -> 2\n",
+                        second.header
                     );
                     let mut files = vec![lib];
-                    if !second.is_empty() {
-                        files.push((*second).to_string());
+                    if !second.file.is_empty() {
+                        let at = if second.open.is_none() && second_first {
+                            0
+                        } else {
+                            1
+                        };
+                        files.insert(at, second.file.to_string());
                     }
                     files.push(user);
                     let (clean, n) = grade_project(&label, &files, "U.A");

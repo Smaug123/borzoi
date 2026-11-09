@@ -173,7 +173,7 @@ fn dotted_head_through_open_module_does_not_mis_route_cross_file() {
     // Soundness: file0 exports `Sub.bar`. file1 opens a project module `Shared`
     // that has its *own* submodule `Sub`, then writes `Sub.bar`. FCS resolves
     // that to `Demo.Shared.Sub.bar` (in file1). We must NOT route it to file0's
-    // colliding `Sub.bar` — `opaque_dotted_open` keeps the dotted head conservative
+    // colliding `Sub.bar` — `dotted_opacity` keeps the dotted head conservative
     // (we defer; never a wrong cross-file Item).
     let src1 = "module Sub\nlet bar = 99\n";
     let src2 = "namespace Demo\nmodule Shared =\n    module Sub =\n        let bar = 7\nmodule N =\n    open Shared\n    let y = Sub.bar\n";

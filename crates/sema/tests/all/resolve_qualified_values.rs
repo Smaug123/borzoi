@@ -165,7 +165,7 @@ fn qualified_descendant_module_value_resolves() {
 #[test]
 fn qualified_value_defers_while_a_project_module_is_open() {
     // Conservative (codex review round 6): while a plain `open <project module>`
-    // is in scope (`open A` sets `opaque_dotted_open`), a qualified value whose
+    // is in scope (`open A` sets `dotted_opacity`), a qualified value whose
     // head is name-shortened relative to the enclosing scope is deferred — the
     // open could supply the head from content we do not model (a submodule, or a
     // type from a namespace the module merges with), so resolving it risks the
@@ -200,7 +200,7 @@ fn qualified_value_defers_with_a_colliding_opened_union_case() {
     // `open M` (M has `type T = Sub | …`) brings the union case `Sub`, and a
     // sibling `module Sub` exports `foo`. FCS resolves `Sub.foo` to the *module*
     // value `Demo.Sub.foo` (the module path wins over the opened case). We defer:
-    // `open M` is a project-module open (`opaque_dotted_open`), so under the
+    // `open M` is a project-module open (`dotted_opacity`), so under the
     // conservative policy the relative qualified-value resolution stands down — an
     // open could supply the head from content we cannot model. Sound (never the
     // wrong target / the case); a coverage gap.
