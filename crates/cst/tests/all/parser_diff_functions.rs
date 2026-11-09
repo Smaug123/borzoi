@@ -886,3 +886,118 @@ fn diff_ast_fun_lambda_recover_missing_body_tuple_arg() {
 fn diff_ast_fun_lambda_recover_missing_body_nested() {
     assert_asts_match_allow_errors("let x = fun a -> fun b ->\nlet y = 2\n");
 }
+
+// ---------------------------------------------------------------------------
+// Dotted long-ident heads as `fun` arguments
+// ---------------------------------------------------------------------------
+//
+// A `fun` argument is an `atomicPattern` (`pars.fsy`'s `FUN atomicPatterns
+// RARROW`), and `atomicPatternLongIdent` takes a whole `pathOp`: `fun X.Y -> …`
+// has one argument `SynPat.LongIdent(["X"; "Y"], Pats [])`, and `fun M.Some x
+// -> …` has *two* (`M.Some`, then `x`), because the argument list of a ctor
+// pattern belongs to `constrPattern`, one rung above an atomic pattern; only a
+// parenthesised `(M.Some x)` applies it. FCS's `SimplePatsOfPat` then lowers
+// each non-simple argument into a generated `match`, which the normaliser
+// reproduces (`normalise_fun`), so the grid grades the lowered body too.
+//
+// FCS decides every cell's verdict (`assert_parse_verdicts_match`), so a cell
+// we wrongly reject, wrongly accept, or accept with the wrong tree all fail.
+// The `_.`-rooted head (`fun _.M -> …`, FCS's `UNDERSCORE DOT pathOp`) is a
+// separate production with its own dispatch in `pat.rs`, outside this grid.
+
+/// The `pathOp` a grid cell puts in argument position: `root`, then `depth`
+/// segments, the last of which is `last`.
+fn dotted_lambda_path(root: Option<&str>, depth: usize, last: &str) -> String {
+    let mut segments: Vec<String> = root.iter().map(|r| r.to_string()).collect();
+    segments.extend((1..depth).map(|i| format!("N{i}")));
+    segments.push(last.to_string());
+    segments.join(".")
+}
+
+/// Every cell of the dotted-head grid, paired with whether it is a dotted path
+/// ending in an identifier (a shape FCS must accept). The dimensions are
+/// {root: none / `global`} × {depth: 1..3 segments past the root} × {final
+/// segment: identifier / operator name / active-pattern name} × {applied to an
+/// argument or not} × {parenthesised or not} × {site: the first `fun`
+/// argument, a later `fun` argument, a `function` clause, a `match` clause}.
+/// The last two sites are the non-lambda comparison: the same `pathOp` heads a
+/// `constrPattern` there, so an unparenthesised argument applies to it.
+fn dotted_lambda_grid() -> Vec<(String, bool)> {
+    let mut cells = Vec::new();
+    for root in [None, Some("global")] {
+        for depth in 1..=3 {
+            for (last, ident_last) in [("Case", true), ("(+)", false), ("(|A|_|)", false)] {
+                let path = dotted_lambda_path(root, depth, last);
+                // Depth counts segments past the root, so a `global` cell is
+                // always dotted; an unrooted one is dotted from depth 2.
+                let dotted = root.is_some() || depth > 1;
+                for applied in [false, true] {
+                    let pat = if applied {
+                        format!("{path} x")
+                    } else {
+                        path.clone()
+                    };
+                    for paren in [false, true] {
+                        let pat = if paren {
+                            format!("({pat})")
+                        } else {
+                            pat.clone()
+                        };
+                        for source in [
+                            format!("let f = fun {pat} -> 0\n"),
+                            format!("let f = fun a {pat} -> 0\n"),
+                            format!("let f = function {pat} -> 0\n"),
+                            format!("let f v = match v with {pat} -> 0\n"),
+                        ] {
+                            cells.push((source, dotted && ident_last));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cells
+}
+
+/// `fun X.Y -> …` and its neighbours agree with FCS cell for cell, verdict and
+/// lowered tree. FCS must accept every dotted path ending in an identifier,
+/// which keeps the grid on the shape it exists for rather than letting it pass
+/// by degenerating into agreed rejections.
+#[test]
+fn diff_ast_fun_lambda_dotted_head_grid() {
+    let cells = dotted_lambda_grid();
+    assert!(cells.iter().any(|(_, must_accept)| *must_accept));
+    for (source, must_accept) in &cells {
+        let fcs_accepts = crate::common::assert_parse_verdicts_match(source);
+        assert!(
+            fcs_accepts || !must_accept,
+            "FCS rejects {source:?}, a dotted identifier path the grid claims is valid",
+        );
+    }
+}
+
+/// The plain spellings, outside the grid: one dotted argument at each depth
+/// and root, and a dotted head followed by a second curried argument.
+#[test]
+fn diff_ast_fun_lambda_dotted_head() {
+    assert_asts_match("fun X.Y -> 0\n");
+    assert_asts_match("fun M.Some x -> x\n");
+    assert_asts_match("fun A.B.C -> 0\n");
+    assert_asts_match("fun global.X.Y -> 0\n");
+}
+
+/// Broken dotted heads in a `fun` argument: the declarations outside the
+/// damage recover as FCS recovers them, and the following `let` survives.
+#[test]
+fn recover_fun_lambda_broken_dotted_head() {
+    for source in [
+        "module M\nlet f = fun X. -> 0\nlet y = 2\n",
+        "module M\nlet f = fun X.Y. -> 0\nlet y = 2\n",
+        "module M\nlet f = fun a X. b -> 0\nlet y = 2\n",
+        "module M\nlet f = fun global. -> 0\nlet y = 2\n",
+        "module M\nlet f = fun (X.Y -> 0\nlet y = 2\n",
+        "module M\nlet f = fun X.Y\nlet y = 2\n",
+    ] {
+        crate::common::recovery::assert_recovered_trees_agree(source, 1);
+    }
+}

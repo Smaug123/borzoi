@@ -2776,11 +2776,8 @@ fn wrap_match(
 /// - everything else (a non-unit `Const`, `Null`, a `LongIdent` with
 ///   args or multiple segments, …) hits the generic catch-all
 ///   (`SyntaxTreeOps.fs:347`): it claims a slot and scrutinises the
-///   compiler-generated `Ident _argN`. A multi-segment `LongIdent` head now
-///   parses (dotted union-case patterns), but a bare `fun` arg is *atomic*, so
-///   reaching this arm through a lambda still needs the body-lowering
-///   scaffolding we don't yet emit (a known divergence); the differential
-///   corpus exercises only the const/null sub-cases here.
+///   compiler-generated `Ident _argN`. A dotted `fun X.Y -> …` argument lands
+///   here (graded by `parser_diff_functions::diff_ast_fun_lambda_dotted_head_grid`).
 fn classify_simple_pat(
     pat: &NormalisedPat,
     counter: &mut u32,

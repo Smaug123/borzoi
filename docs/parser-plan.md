@@ -163,7 +163,9 @@ All of phases 1–10 are complete. One line per phase:
    offside clause bodies, `SynExpr.MatchLambda`, the `SimplePatsOfPat` lowering
    for `fun`-args (`_argN` counter matching FCS's `SynArgNameGenerator`).
 6. **Patterns (`SynPat`)** — every in-scope variant; long-ident heads with
-   dotted paths; struct tuple patterns; the precedence-climbing infix tail.
+   dotted paths, in every atomic position (`fun X.Y -> …`, graded by
+   `parser_diff_functions::diff_ast_fun_lambda_dotted_head_grid`); struct
+   tuple patterns; the precedence-climbing infix tail.
 7. **Types (`SynType`)** — every variant reachable from the typed-paren surface;
    long-tail variants folded into their phase-9/10 consumers.
 8. **Module/namespace structure** — `open` (incl. `open type`), named-module /
