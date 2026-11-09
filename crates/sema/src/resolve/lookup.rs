@@ -14,7 +14,7 @@ use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
     DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity, OpenTrace,
-    Resolution, SlotClass,
+    Resolution, SlotClass, TypeSlot,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, MarkReach, OpenInterpretation, Resolver,
@@ -1486,7 +1486,11 @@ impl<'a> Resolver<'a> {
     /// concession `docs/assembly-module-open-plan.md` §8 already makes for
     /// the analogous assembly case.
     pub(super) fn project_namespace_contestant_names(&self, namespace: &[String]) -> Vec<String> {
-        let mut out = self.direct_project_type_contestants(namespace);
+        let mut out: Vec<String> = self
+            .direct_project_type_contestants(namespace)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
         for sub in self.project_auto_open_submodules_in(namespace) {
             out.extend(self.project_namespace_contestant_names(&sub));
         }
@@ -1495,7 +1499,9 @@ impl<'a> Resolver<'a> {
 
     /// The names of constructible project types (`SlotClass::Evicts` /
     /// `Unknown`) declared **directly** at `container` — same-file and
-    /// earlier-file, non-recursive. The one-container piece
+    /// earlier-file, non-recursive — that an `open` written here brings
+    /// (an inaccessible `private` type is not brought, [`TypeSlot::class_at`]),
+    /// each with its declaring file. The one-container piece
     /// [`Self::project_namespace_contestant_names`] flattens across a whole
     /// recursive fold (for the ASSEMBLY-facing contest, where only "is this
     /// name contested by *some* project source" matters, not which one), and
@@ -1505,17 +1511,24 @@ impl<'a> Resolver<'a> {
     /// fold position — flattening first and demoting second, as the
     /// assembly-facing surface does, cannot express "later evicts earlier"
     /// at all, only "some project source contests".
-    fn direct_project_type_contestants(&self, container: &[String]) -> Vec<String> {
-        let mut out = self.preceding.direct_type_contestants(container);
+    fn direct_project_type_contestants(&self, container: &[String]) -> Vec<(String, usize)> {
+        let site = &self.container_path;
+        let mut out = self.preceding.direct_type_contestants(container, site);
+        let current = self.preceding.num_files();
         out.extend(
             self.type_path_exports
                 .iter()
                 .filter(|(p, _, slot)| {
                     p.len() == container.len() + 1
                         && p.starts_with(container)
-                        && *slot != SlotClass::Keeps
+                        && slot.class_at(p, site) != SlotClass::Keeps
                 })
-                .map(|(p, _, _)| p.last().expect("non-empty qualified path").clone()),
+                .map(|(p, _, _)| {
+                    (
+                        p.last().expect("non-empty qualified path").clone(),
+                        current,
+                    )
+                }),
         );
         out
     }
@@ -1646,7 +1659,7 @@ impl<'a> Resolver<'a> {
             // models no project type constructor — so it can only ever DEFER the
             // value dimension, never let the direct case win it. (File-blind — an
             // over-defer is sound.)
-            for name in self.direct_project_type_contestants(&sub) {
+            for (name, _) in self.direct_project_type_contestants(&sub) {
                 out.entry(name).or_default().has_type = true;
             }
         }
@@ -2307,16 +2320,17 @@ impl<'a> Resolver<'a> {
         if is_namespace && self.preceding.signatured_namespaces.contains(namespace) {
             let mut contested: Vec<String> = self
                 .direct_project_type_contestants(namespace)
-                .iter()
+                .into_iter()
+                .map(|(name, _)| name)
                 .chain(
                     self.preceding
                         .signatured_slot_type_names
                         .get(namespace)
                         .into_iter()
-                        .flatten(),
+                        .flatten()
+                        .cloned(),
                 )
                 .filter(|name| self.latest_entry(name).is_some())
-                .cloned()
                 .collect();
             contested.sort();
             contested.dedup();
@@ -2355,6 +2369,7 @@ impl<'a> Resolver<'a> {
             let direct_types: HashSet<String> = self
                 .direct_project_type_contestants(namespace)
                 .into_iter()
+                .map(|(name, _)| name)
                 .collect();
             for (name, (id, direct_file)) in direct_tier {
                 let Some(sub) = contributions.get(&name) else {
@@ -2453,7 +2468,43 @@ impl<'a> Resolver<'a> {
         if !fragments_trusted {
             self.open_generation += 1;
         }
+        // The namespace's own constructible types fold file by file too: FCS
+        // folds each file's direct tier before that file's fragments, so a type
+        // evicts a same-named value of every fragment of an EARLIER file and
+        // loses to every fragment of its own file or a later one. Each such type
+        // is pushed as a decline just before the first fragment it precedes
+        // (sema models no project type constructor), or after them all. Only
+        // names some fragment supplies as a value are pushed: a type takes the
+        // slot from an earlier source's value too (a local, another `open`),
+        // but that contest is unmodelled here, and a decline pushed for every
+        // type name would bar each later `Type.Member` head.
+        let mut own_types: Vec<(String, usize)> =
+            if is_namespace && fragments_trusted && !fragments.is_empty() {
+                let fragment_values: HashSet<String> = self
+                    .submodule_contributions_at(namespace)
+                    .into_iter()
+                    .filter(|(_, fold)| fold.value_slot.is_some())
+                    .map(|(name, _)| name)
+                    .collect();
+                self.direct_project_type_contestants(namespace)
+                    .into_iter()
+                    .filter(|(name, _)| fragment_values.contains(name))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        own_types.sort_by_key(|(_, file)| std::cmp::Reverse(*file));
         for (frag_path, frag_file) in fragments.iter().filter(|_| fragments_trusted).cloned() {
+            while own_types.last().is_some_and(|(_, file)| *file <= frag_file) {
+                let (name, _) = own_types.pop().expect("checked non-empty");
+                let entry = ScopeEntry::opened_declined(
+                    name,
+                    DeclineCause::OpenedTypeName,
+                    self.open_generation,
+                    open_pos,
+                );
+                self.module_frame().entries.push(entry);
+            }
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2463,7 +2514,7 @@ impl<'a> Resolver<'a> {
                 let generation = self.open_generation;
                 let entries: Vec<ScopeEntry> = evicting_types
                     .into_iter()
-                    .map(|name| {
+                    .map(|(name, _)| {
                         ScopeEntry::opened_declined(
                             name,
                             DeclineCause::OpenedTypeName,
@@ -2481,6 +2532,16 @@ impl<'a> Resolver<'a> {
                 self.open_generation += 1;
             }
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
+        }
+        // The namespace's types of a file later than every fragment's.
+        for (name, _) in own_types {
+            let entry = ScopeEntry::opened_declined(
+                name,
+                DeclineCause::OpenedTypeName,
+                self.open_generation,
+                open_pos,
+            );
+            self.module_frame().entries.push(entry);
         }
         // What each fragment adds that this fold does not model
         // ([`Self::module_open_contributions`]). These are marks, so they go
@@ -5206,13 +5267,14 @@ impl<'a> Resolver<'a> {
         // block's start, where the implicit auto-opens' values and the
         // namespace's own folded values sit too, in an order the positions do
         // not record.
+        let namespace = self.enclosing_namespace();
         let enclosing_type = {
-            let ns = self.enclosing_namespace();
-            let mut path = ns.to_vec();
+            let mut path = namespace.to_vec();
             path.push(head.to_string());
-            (!ns.is_empty())
-                .then(|| self.preceding.exported_type_slot_class(&path))
+            (!namespace.is_empty())
+                .then(|| self.preceding.exported_type_slot(&path))
                 .flatten()
+                .map(|slot| slot.class_at(&path, namespace))
                 .filter(|class| *class != SlotClass::Keeps)
         };
         if let Some(class) = enclosing_type {
@@ -5233,11 +5295,16 @@ impl<'a> Resolver<'a> {
             // not decide the slot: within the file take the latest entry
             // (codex round 2), and a same-file export shadows an earlier
             // file's at the same path entirely (codex round 6).
-            if let Some((_, _, class)) = self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
+            // The `open` brings the type only if it is accessible where the
+            // `open` is written, which these prefixes do not record.
+            let seen = |slot: TypeSlot| {
+                slot.class_through_scoped_open(&path, namespace, &self.container_path)
+            };
+            if let Some((_, _, slot)) = self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
             {
-                note(*pos, *class);
-            } else if let Some(class) = self.preceding.exported_type_slot_class(&path) {
-                note(*pos, class);
+                note(*pos, seen(*slot));
+            } else if let Some(slot) = self.preceding.exported_type_slot(&path) {
+                note(*pos, seen(slot));
             } else if self
                 .type_defs
                 .get(prefix.as_slice())
@@ -5246,9 +5313,9 @@ impl<'a> Resolver<'a> {
                 // A same-file type filed under the opened module's container
                 // path but absent from the exports — an ANONYMOUS-ROOT
                 // module's type (`export_type_path` skips those files). Its
-                // slot class is in `type_slot_classes`, but the export-side
-                // `private` downgrade (probe M20r) never ran, so treat the
-                // contest as undecidable rather than trust it.
+                // slot class is in `type_slot_classes`, but its access root
+                // was never exported (probe M20r), so treat the contest as
+                // undecidable rather than trust it.
                 note(*pos, SlotClass::Unknown);
             }
         }
@@ -5342,7 +5409,7 @@ impl<'a> Resolver<'a> {
                 let mut path = prefix.clone();
                 path.push(head.to_string());
                 self.type_path_exports.iter().any(|(p, _, _)| *p == path)
-                    || self.preceding.exported_type_slot_class(&path).is_some()
+                    || self.preceding.exported_type_slot(&path).is_some()
                     || self
                         .type_defs
                         .get(prefix.as_slice())
@@ -5358,7 +5425,7 @@ impl<'a> Resolver<'a> {
             let ns = self.enclosing_namespace();
             let mut path = ns.to_vec();
             path.push(head.to_string());
-            (!ns.is_empty() && self.preceding.exported_type_slot_class(&path).is_some())
+            (!ns.is_empty() && self.preceding.exported_type_slot(&path).is_some())
                 .then_some(0)
         };
         lexical
