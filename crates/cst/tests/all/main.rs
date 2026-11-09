@@ -69,6 +69,7 @@ mod parser_diff_operator_matrix;
 mod parser_diff_operators;
 mod parser_diff_pat_opname_path;
 mod parser_diff_pat_typars;
+mod parser_diff_prefix_typars;
 mod parser_diff_quote_pat;
 mod parser_diff_ranges;
 mod parser_diff_raw_keyword_grid;

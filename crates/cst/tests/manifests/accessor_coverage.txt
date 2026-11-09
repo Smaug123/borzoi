@@ -320,6 +320,7 @@ TyparDecl::ident
 TyparDecl::intersection_constraints
 TyparDecl::is_head_type
 TyparDecls::constraint_clause
+TyparDecls::form
 TyparDecls::typars
 TyparExpr::ident
 TypeAbbrev::ty

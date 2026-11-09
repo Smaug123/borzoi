@@ -262,8 +262,6 @@ we keep), we do **not** degrade to match it — that is a leniency, not a bug.
   `default 'a : t`.
 - **`_.M` special-rooted pattern** — FCS's `UNDERSCORE DOT pathOp`, gated on the
   F# 4.7 `SingleUnderscorePattern` feature; rejects cleanly today.
-- **`('a,'b) T` PrefixList typar form** (`SynTyparDecls.PrefixList`) — a clean
-  error today.
 
 ## Known leniencies (well-formed tree, only a missing FCS diagnostic)
 

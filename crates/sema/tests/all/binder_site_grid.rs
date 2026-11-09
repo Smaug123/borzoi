@@ -503,6 +503,18 @@ const CONSTRUCTS: &[Construct] = &[
         status: Status::Interned,
     },
     Construct {
+        id: "type_parameter_on_type_single_prefix",
+        fcs: "SynComponentInfo typarDecls (SinglePrefix)",
+        template: "type «'T» C() =\n    member _.M(y: ‹'T›) = y\n",
+        status: Status::Interned,
+    },
+    Construct {
+        id: "type_parameter_on_type_prefix_list",
+        fcs: "SynComponentInfo typarDecls (PrefixList)",
+        template: "type ('U, «'T») C() =\n    member _.M(y: ‹'T›, z: 'U) = y\n",
+        status: Status::Interned,
+    },
+    Construct {
         id: "type_parameter_on_member",
         fcs: "SynValTyparDecls on a member",
         template: "type C() =\n    member _.M<«'T»>(y: ‹'T›) = y\n",
