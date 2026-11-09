@@ -676,6 +676,79 @@ fn a_self_open_of_the_enclosing_namespace_does_not_replay_its_auto_open_at_a_lat
     );
 }
 
+/// The cross-file twin of the shape above (#489): with `A` in an EARLIER file,
+/// FCS has registered it by the time `open N` is checked, so the `open` adds
+/// `A.x` again at its own position, over `Client`'s local `x` (fcs-dump:
+/// `reopened_namespace_grid`'s `aoValue/local/explicit/earlierFile` cells).
+#[test]
+fn a_self_open_in_a_later_file_re_adds_an_earlier_files_auto_open_value() {
+    let src0 = "namespace N\n\n[<AutoOpen>]\nmodule A =\n    let x = 1\n";
+    let src1 = "namespace N\n\nmodule Client =\n    let x = 2\n    open N\n    let y = x\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+
+    let i = src1.rfind('x').expect("`x` use");
+    let use_range = TextRange::new(
+        u32::try_from(i).unwrap().into(),
+        u32::try_from(i + 1).unwrap().into(),
+    );
+    let res = proj
+        .file(1)
+        .resolution_at(use_range)
+        .expect("a resolution at bare `x`");
+    let (file_idx, def) = proj
+        .item_def(res)
+        .unwrap_or_else(|| panic!("`x` names no cross-file item, got {res:?}"));
+    let di = src0.find("x =").expect("A's `x`");
+    assert_eq!(
+        (file_idx, def.range),
+        (
+            0,
+            TextRange::new(
+                u32::try_from(di).unwrap().into(),
+                u32::try_from(di + 1).unwrap().into(),
+            )
+        ),
+        "`open N` re-adds the earlier file's `A.x` over Client's local `x`"
+    );
+}
+
+/// An `open` of an alias of an earlier file's `module N`, inside `namespace
+/// N` (an FS0247 module/namespace clash, live mid-edit): the alias is no
+/// namespace reading, so nothing replays the namespace, and the module's own
+/// fold brings `N.x` over `Client`'s local `x` (FCS binds `N.x`; codex
+/// review).
+#[test]
+fn an_alias_open_of_the_enclosing_namespaces_module_still_folds_the_module() {
+    let src0 = "module N\n\nlet x = 1\n";
+    let src1 = "namespace N\n\nmodule Client =\n    module Alias = N\n    let x = 2\n    open Alias\n    let y = x\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+
+    let i = src1.rfind('x').expect("`x` use");
+    let use_range = TextRange::new(
+        u32::try_from(i).unwrap().into(),
+        u32::try_from(i + 1).unwrap().into(),
+    );
+    let res = proj
+        .file(1)
+        .resolution_at(use_range)
+        .expect("a resolution at bare `x`");
+    let (file_idx, def) = proj
+        .item_def(res)
+        .unwrap_or_else(|| panic!("`x` names no cross-file item, got {res:?}"));
+    let di = src0.find("x =").expect("N's `x`");
+    assert_eq!(
+        (file_idx, def.range),
+        (
+            0,
+            TextRange::new(
+                u32::try_from(di).unwrap().into(),
+                u32::try_from(di + 1).unwrap().into(),
+            )
+        ),
+        "`open Alias` folds the earlier file's `module N`"
+    );
+}
+
 /// Codex review round 4 of §7's machinery slice, confirmed via the review's own
 /// fcs-dump run: `private` restricts a module to its own enclosing container and that
 /// container's descendants — an UNRELATED `namespace Other` in the SAME FILE, opening

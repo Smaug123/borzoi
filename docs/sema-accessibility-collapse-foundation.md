@@ -175,8 +175,9 @@ twin and an anonymous-root file. Must-commit controls pin the routes that
 commit.
 
 The same grid found #489: in a later file, an `open` of the enclosing namespace
-does not re-add the namespace's earlier-file cases over an intervening `open`.
-It has nothing to do with accessibility, and it is pinned there.
+did not re-add the namespace's earlier-file cases over an intervening `open`.
+It has nothing to do with accessibility; `reopened_namespace_grid` grades it
+on its own axes.
 
 ## Stage 4 — landed (straddle resolution, #980; supersedes #973)
 

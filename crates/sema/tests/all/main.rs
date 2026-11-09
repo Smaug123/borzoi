@@ -69,6 +69,7 @@ mod operator_name_diff;
 mod overload_corpus_diff;
 mod overloads_oracle;
 mod project_half_matrix;
+mod reopened_namespace_grid;
 mod resolve_active_patterns;
 mod resolve_assembly;
 mod resolve_assembly_active_patterns;
