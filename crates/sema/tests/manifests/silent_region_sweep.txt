@@ -296,6 +296,7 @@ tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/A
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/AbstractClassMultipleConstructors01.fs type_defn x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/Misc/E_ExplicitConstructor.fs member-of-type
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/EnumTypes/BinaryOr01.fs attribute x4
+tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/EnumTypes/E_NamedTypeInScope.fs top
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01.fs type_defn x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/StructTypes/E_StructInheritance01b.fs type_defn x2
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/TypeExtensions/basic/E_ExtensionOperator01.fs member-of-augmentation x2
@@ -495,6 +496,7 @@ tests/fsharp/optimize/analyses/effects.fs type_defn x3
 tests/fsharp/optimize/inline/lib.fs attribute x15
 tests/fsharp/typecheck/sigs/neg06.fs attribute x8
 tests/fsharp/typecheck/sigs/neg07.fs attribute x7
+tests/fsharp/typecheck/sigs/neg09.fs let_decl x2
 tests/fsharp/typecheck/sigs/neg10.fs obj_expr
 tests/fsharp/typecheck/sigs/neg118.fs member-of-augmentation x5
 tests/fsharp/typecheck/sigs/neg12.fs obj_expr x2

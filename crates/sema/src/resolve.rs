@@ -112,6 +112,7 @@ pub fn resolve_file(
     let _phase = tracing::info_span!("resolver_new").entered();
     let mut r = Resolver::new(preceding, assemblies);
     r.recovery = recovery.clone();
+    r.dropped_decls = dropped_in_namespace(file);
     #[cfg(feature = "otel")]
     drop(_phase);
     #[cfg(feature = "otel")]
@@ -2259,6 +2260,7 @@ impl<'a> Resolver<'a> {
             or_pattern_aliases: HashSet::new(),
             opaque_binders: HashSet::new(),
             opaque_regions: Vec::new(),
+            dropped_decls: HashSet::new(),
             scopes: Vec::new(),
             typar_scopes: Vec::new(),
             type_defs: HashMap::new(),
@@ -2857,6 +2859,37 @@ fn type_long_ident_path(ty: &Type) -> Option<Vec<String>> {
         .map(|t| id_text(&t).to_string())
         .collect();
     (!segs.is_empty()).then_some(segs)
+}
+
+/// The ranges of the declarations in `file` that FCS drops unchecked: each
+/// `let`, `do`, standalone expression or `extern` directly in a namespace
+/// block (`namespace N`, `namespace rec N`, `namespace global`). FCS's
+/// `CheckLetOrDoInNamespace` reports FS0201 (bar a bare `do ()`) and the
+/// declaration contributes nothing: its binders join no environment and no
+/// module, and neither its attributes nor its right-hand side are checked. A
+/// standalone expression and an `extern` reach it as a `let`
+/// (`ElimSynModuleDeclExpr`, the parser's `cPrototype`). So a later use of a
+/// name it declares binds whatever else is in scope under the name.
+///
+/// Computed once per file: a block's kind is read from its header, which for
+/// a headerless file means scanning the whole block.
+pub(crate) fn dropped_in_namespace(file: &ImplFile) -> HashSet<TextRange> {
+    file.modules()
+        .filter(|block| {
+            matches!(
+                block.kind(),
+                ModuleOrNamespaceKind::DeclaredNamespace | ModuleOrNamespaceKind::GlobalNamespace
+            )
+        })
+        .flat_map(|block| block.decls().collect::<Vec<_>>())
+        .filter(|decl| {
+            matches!(
+                decl,
+                ModuleDecl::Let(_) | ModuleDecl::Expr(_) | ModuleDecl::Extern(_)
+            )
+        })
+        .map(|decl| decl.syntax().text_range())
+        .collect()
 }
 
 /// Every nested-module name declared anywhere under `decls` (all depths),

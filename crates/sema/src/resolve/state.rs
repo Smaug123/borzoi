@@ -862,6 +862,9 @@ pub(super) struct Resolver<'a> {
     pub(super) opaque_binders: HashSet<TextRange>,
     /// See [`ResolvedFile::opaque_regions`](super::ResolvedFile::opaque_regions).
     pub(super) opaque_regions: Vec<super::model::OpaqueRegion>,
+    /// The ranges of the file's declarations FCS drops unchecked
+    /// ([`super::dropped_in_namespace`]), which the walk does not enter.
+    pub(super) dropped_decls: HashSet<TextRange>,
     pub(super) scopes: Vec<Frame>,
     /// The **type-parameter** scope: a stack of frames, one per generic
     /// definition currently open (a `type` header, a generic `let`/function, a

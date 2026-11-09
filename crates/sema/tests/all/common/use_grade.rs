@@ -1,6 +1,7 @@
 //! Grading generated probe sites against FCS checking the same files as one
 //! project — the diagnostic-aware use oracle the accessibility grids share
-//! (`value_access_open_grid`, `case_access_grid`, `reopened_namespace_grid`).
+//! (`value_access_open_grid`, `case_access_grid`, `reopened_namespace_grid`,
+//! `namespace_value_grid`).
 //!
 //! FCS error-recovers an inaccessible use to its declaration, so a use-site
 //! accessibility error means the only correct answer is to decline. Otherwise
@@ -52,17 +53,23 @@ impl FileBuilder {
     /// Append `line` and record a probe at the last occurrence of `probe` in
     /// it.
     pub fn probe(&mut self, line: &str, probe: &str, label: String, sites: &mut Vec<Site>) {
+        sites.push(self.site_in_next(line, probe, label));
+        self.line(line);
+    }
+
+    /// The site of the last occurrence of `probe` in `line`, once `line` is
+    /// the next line appended.
+    pub fn site_in_next(&self, line: &str, probe: &str, label: String) -> Site {
         let at = line.rfind(probe).expect("probe text occurs in its line");
         let start = self.text.len() + at;
-        self.line(line);
-        sites.push(Site {
+        Site {
             file: self.index,
             range: TextRange::new(
                 u32::try_from(start).unwrap().into(),
                 u32::try_from(start + probe.len()).unwrap().into(),
             ),
             label,
-        });
+        }
     }
 }
 
@@ -196,13 +203,19 @@ pub fn grade(tag: &str, files: &[(&str, String)], sites: &[Site]) -> Vec<Graded>
                 })
                 .map(|(_, _, _, n)| *n)
                 .collect();
+            // A use at the site, or else a definition there: a name FCS reads
+            // as a fresh binder (an unbound uppercase pattern) is declared at
+            // the site itself.
             let decl = fcs
                 .iter()
                 .find(|f| f.path.file_name() == path.file_name())
                 .and_then(|f| {
+                    let at = |u: &&super::NormalisedProjectUse| u.start == start && u.end == end;
                     f.uses
                         .iter()
-                        .find(|u| u.start == start && u.end == end && !u.is_from_definition)
+                        .filter(at)
+                        .find(|u| !u.is_from_definition)
+                        .or_else(|| f.uses.iter().filter(at).find(|u| u.is_from_definition))
                 })
                 .and_then(|u| u.decl.as_ref());
             let fcs = if here.iter().any(|n| is_accessibility_error(*n)) {

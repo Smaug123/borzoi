@@ -3302,7 +3302,8 @@ pub enum OpaqueRegion {
     /// A range in which the walk resolves no name a binder there could
     /// capture: a member of a type augmentation or an exception, which it does
     /// not enter, or an attribute's argument. (An attribute's own name, a type
-    /// use, is resolved wherever it is.)
+    /// use, is resolved wherever it is, except in a declaration FCS drops
+    /// directly in a namespace, which the walk does not enter at all.)
     Range(TextRange),
 }
 

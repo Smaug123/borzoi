@@ -395,6 +395,16 @@ impl<'a> Resolver<'a> {
         // nested member left out of it would resolve to a colliding assembly
         // type instead. `resolve_project_assembly_diff.rs` is the FCS guard, but
         // its corpus is hand-written, so add a colliding nested-module case there.
+        if self.dropped_decls.contains(&decl.syntax().text_range()) {
+            // FCS drops it whole, binders, attributes and right-hand side
+            // alike, so the walk enters none of it: its names stay out of
+            // every scope, export and contribution, and a use inside it
+            // commits nothing, as FCS answers nothing there.
+            self.opaque_regions.push(super::model::OpaqueRegion::Range(
+                decl.syntax().text_range(),
+            ));
+            return;
+        }
         match decl {
             ModuleDecl::Expr(e) => {
                 if let Some(expr) = e.expr() {
