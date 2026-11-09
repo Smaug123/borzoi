@@ -58,15 +58,16 @@ pub use assets::{
 };
 pub use framework::{FrameworkParseError, NuGetFramework};
 pub use package::{
-    InstalledPackage, PackageCacheEntry, PackageCacheError, PackageDependency,
+    InstalledPackage, InstalledVersion, PackageCacheEntry, PackageCacheError, PackageDependency,
     PackageDependencyGroup, PackageId, PackageIdParseError, PackageIdentity, PackageNuspec,
     PackageNuspecParseError, PackagePaths, PackageReadError, PackageReferenceGroup,
-    list_committed_package_versions, parse_nuspec, read_installed_package,
+    list_committed_package_versions, list_installed_package_versions, parse_nuspec,
+    read_installed_package,
 };
 pub use range::{FloatBehavior, RangeParseError, VersionRange};
 pub use resolver::{
     DirectPackageRequirement, EdgeTarget, ProjectEdge, ProjectGraph, ProjectNode, ResolveDecline,
-    ResolvedPackage, ResolvedPackageClosure, TargetContext, resolve_graph, resolve_offline,
-    resolve_offline_in,
+    ResolvedDependency, ResolvedPackage, ResolvedPackageClosure, TargetContext, resolve_graph,
+    resolve_offline, resolve_offline_in,
 };
 pub use version::{NuGetVersion, VersionParseError};

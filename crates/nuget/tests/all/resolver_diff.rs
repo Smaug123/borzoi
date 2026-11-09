@@ -8,8 +8,9 @@
 //! with the .NET 10 SDK's default `DependencyGraphResolver`. The two engines
 //! disagree on roughly one generated graph in ten. The contract is the
 //! default engine's, the one a dependency-graph spec restores under (the key
-//! that selects the legacy one declines in `dgspec`); the legacy engine grades
-//! the declines that name one of its failures.
+//! that selects the legacy one declines in `dgspec`), and the resolver is
+//! that engine reimplemented; the legacy engine's outcome is recorded in the
+//! census, and pinned on the hand cases that document where the two part.
 //!
 //! The correctness policy (`docs/nuget-restore-plan.md`) is "resolve
 //! identically or degrade": whenever `resolve_offline` returns a closure it
@@ -20,13 +21,16 @@
 //!                                          the package set `S`.
 //!
 //! A decline is always permitted (we under-resolve, never mis-resolve). The
-//! only declines checked against the oracle are the four that name a legacy
-//! engine error, which must be one the legacy engine reports. A second, narrower sweep
+//! only declines checked against the oracle are the three that name a restore
+//! error (a cycle, a version conflict, a downgrade), which must be one the
+//! default engine reports. A second, narrower sweep
 //! (`completeness_on_consistent_acyclic_envelope`) additionally requires that
 //! we *do* resolve on the version-consistent, acyclic, fully-committed graphs
 //! that sit squarely inside the current envelope — extending the naive
 //! reachability proptest in `resolver.rs` with case-insensitive identity and
-//! multi-TFM dependency-group selection, now checked against real NuGet.
+//! multi-TFM dependency-group selection, now checked against real NuGet — and
+//! `multi_version_graphs_resolve_identically` requires a closure wherever the
+//! default engine writes one over committed, non-floating edges.
 //!
 //! The same nuspec string feeds both sides: the on-disk warm cache that
 //! `resolve_offline` reads and the oracle request, so the two can never
@@ -287,7 +291,9 @@ fn assert_examined_covers_what_restore_reads(
 }
 
 /// The resolved closure as a comparable set: `(lowercased id, normalised
-/// version)`, the same shape the oracle reports.
+/// lowercased version)`, the same shape the oracle reports. Release labels
+/// compare without case: the resolver spells a version as the packages folder
+/// does, restore as the nuspec does.
 fn closure_set(closure: &borzoi_nuget::ResolvedPackageClosure) -> BTreeSet<(String, String)> {
     closure
         .packages
@@ -295,7 +301,11 @@ fn closure_set(closure: &borzoi_nuget::ResolvedPackageClosure) -> BTreeSet<(Stri
         .map(|package| {
             (
                 package.identity.id.as_str().to_ascii_lowercase(),
-                package.identity.version.to_normalized_string(),
+                package
+                    .identity
+                    .version
+                    .to_normalized_string()
+                    .to_ascii_lowercase(),
             )
         })
         .collect()
@@ -309,7 +319,10 @@ fn oracle_set(oracle_packages: &serde_json::Value) -> BTreeSet<(String, String)>
         .map(|package| {
             (
                 package["id"].as_str().expect("id").to_owned(),
-                package["version"].as_str().expect("version").to_owned(),
+                package["version"]
+                    .as_str()
+                    .expect("version")
+                    .to_ascii_lowercase(),
             )
         })
         .collect()
@@ -437,15 +450,13 @@ impl RestoreOutcome {
 
 /// What `resolve_offline` did with a graph, split by what it *claims*.
 ///
-/// A closure claims to be the closure both restore engines write. Four declines
-/// claim more than "we cannot tell": that the *legacy* engine fails, and with
-/// which error. They claim nothing about the default engine, which may resolve
-/// the same graph or fail it differently. Every other decline claims nothing at
-/// all.
+/// A closure claims to be the closure the default engine writes. Three
+/// declines claim more than "we cannot tell": that the default engine fails,
+/// and with which error. Every other decline claims nothing at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OurOutcome {
     Resolved(BTreeSet<(String, String)>),
-    ClaimsLegacyFails(RestoreFailure),
+    ClaimsFails(RestoreFailure),
     Declined(&'static str),
 }
 
@@ -457,52 +468,27 @@ impl OurOutcome {
         };
         match decline {
             ResolveDecline::DependencyCycle { .. } => {
-                OurOutcome::ClaimsLegacyFails(RestoreFailure::Cycle)
+                OurOutcome::ClaimsFails(RestoreFailure::Cycle)
             }
             ResolveDecline::VersionConflict { .. } => {
-                OurOutcome::ClaimsLegacyFails(RestoreFailure::Conflict)
+                OurOutcome::ClaimsFails(RestoreFailure::Conflict)
             }
-            ResolveDecline::UndecidedConflict { .. } => {
-                OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided)
-            }
-            ResolveDecline::Downgrade { .. } => {
-                OurOutcome::ClaimsLegacyFails(RestoreFailure::Downgrade)
-            }
+            ResolveDecline::Downgrade { .. } => OurOutcome::ClaimsFails(RestoreFailure::Downgrade),
             ResolveDecline::UnsupportedProjectFramework { .. } => {
                 OurOutcome::Declined("unsupported-framework")
             }
             ResolveDecline::FloatingRange { .. } => OurOutcome::Declined("floating"),
-            ResolveDecline::OpenLowerBound { .. } => OurOutcome::Declined("open-lower"),
-            ResolveDecline::ExclusiveLowerBound { .. } => OurOutcome::Declined("exclusive-lower"),
-            ResolveDecline::UnsatisfiedLowerBound { .. } => {
-                OurOutcome::Declined("unsatisfied-lower")
-            }
             ResolveDecline::PackageRead { .. } => OurOutcome::Declined("package-read"),
+            ResolveDecline::EquivalentVersions { .. } => {
+                OurOutcome::Declined("equivalent-versions")
+            }
             ResolveDecline::DependencyWithoutRange { .. } => OurOutcome::Declined("no-range"),
-            ResolveDecline::DuplicateDependency { .. } => {
-                OurOutcome::Declined("duplicate-dependency")
-            }
-            ResolveDecline::UnresolvableLosingEdge { .. } => OurOutcome::Declined("losing-edge"),
-            ResolveDecline::TransitivePotentialDowngrade { .. } => {
-                OurOutcome::Declined("transitive-potential-downgrade")
-            }
-            ResolveDecline::FloatingRangeComparison { .. } => {
-                OurOutcome::Declined("floating-comparison")
-            }
             ResolveDecline::GraphTooLarge => OurOutcome::Declined("too-large"),
-            ResolveDecline::LegacyVerdictUnknown { .. } => {
-                OurOutcome::Declined("legacy-verdict-unknown")
-            }
-            ResolveDecline::LosingSubtreeContends { .. } => {
-                OurOutcome::Declined("losing-subtree-contends")
-            }
             // Project nodes, which this differential's graphs do not hold
             // (`dgspec_resolve_diff.rs` grades them).
             ResolveDecline::DuplicateProjectName { .. }
             | ResolveDecline::UnknownProject { .. }
-            | ResolveDecline::DependencyNamesAProject { .. }
-            | ResolveDecline::SuppressedEdgeReachable { .. }
-            | ResolveDecline::SuppressedCycle { .. } => {
+            | ResolveDecline::DependencyNamesAProject { .. } => {
                 unreachable!("a graph of packages alone has no project node: {decline}")
             }
         }
@@ -511,9 +497,7 @@ impl OurOutcome {
     fn class(&self) -> String {
         match self {
             OurOutcome::Resolved(_) => "resolved".to_owned(),
-            OurOutcome::ClaimsLegacyFails(failure) => {
-                format!("claims-legacy-{}", failure.name())
-            }
+            OurOutcome::ClaimsFails(failure) => format!("claims-{}", failure.name()),
             OurOutcome::Declined(why) => format!("declined-{why}"),
         }
     }
@@ -557,12 +541,11 @@ fn describe(tfm: &str, packages: &[Pkg], direct: &[(&str, &str)]) -> String {
 ///
 /// - A closure must be the closure the *default* engine writes. Where it
 ///   fails, or writes another closure, we must decline. The legacy engine's
-///   closure is recorded, not required: a losing version's subtree can fail
+///   outcome is recorded, not required: a losing version's subtree can fail
 ///   it where the default engine evicts the loser unwalked.
-/// - A decline that claims the legacy engine fails (a cycle, conflict or
-///   downgrade diagnosis) must be right: the legacy engine must fail, with that
-///   error among the ones it reports. The claim says nothing about the default
-///   engine, which the resolver does not model beyond knowing where it agrees.
+/// - A decline that claims the default engine fails (a cycle, conflict or
+///   downgrade diagnosis) must be right: that error must be among the ones
+///   the default engine reports.
 /// - Any other decline makes no claim, and is always permitted.
 fn compare(
     oracle: &mut Oracle,
@@ -589,43 +572,39 @@ fn compare(
     let result = resolve_offline(root.path(), &framework(tfm), &direct_reqs);
     let ours = OurOutcome::of(&result);
 
-    for (engine, outcome) in restore.engines() {
-        match (&ours, outcome) {
-            (OurOutcome::Resolved(_), _) if engine == "legacy" => {}
-            (OurOutcome::Resolved(mine), EngineOutcome::Resolved(theirs)) => {
-                assert_eq!(
-                    mine,
-                    theirs,
-                    "resolved closure differs from `dotnet restore` ({engine} engine).\n{}",
-                    describe(tfm, packages, direct),
-                );
-            }
-            (OurOutcome::Resolved(mine), theirs) => {
-                panic!(
-                    "resolve_offline produced a closure but `dotnet restore` does not write it \
-                     ({engine} engine: {}); over-resolution violates the correctness policy.\n\
-                     closure={mine:?}\n{}",
-                    theirs.class(),
-                    describe(tfm, packages, direct),
-                );
-            }
-            (OurOutcome::ClaimsLegacyFails(claim), theirs) if engine == "legacy" => {
-                let right = theirs.fails_with(*claim);
-                assert!(
-                    right,
-                    "resolve_offline declined claiming the legacy engine fails with {claim:?}, \
-                     but it {}.\ndecline={}\n{}",
-                    match theirs {
-                        EngineOutcome::Resolved(set) => format!("resolves to {set:?}"),
-                        EngineOutcome::Failed(failures) => format!("fails with {failures:?}"),
-                        EngineOutcome::Threw(exception) => format!("threw {exception}"),
-                    },
-                    result.as_ref().expect_err("a claim is a decline"),
-                    describe(tfm, packages, direct),
-                );
-            }
-            (OurOutcome::ClaimsLegacyFails(_), _) | (OurOutcome::Declined(_), _) => {}
+    match (&ours, &restore.default) {
+        (OurOutcome::Resolved(mine), EngineOutcome::Resolved(theirs)) => {
+            assert_eq!(
+                mine,
+                theirs,
+                "resolved closure differs from `dotnet restore` (default engine).\n{}",
+                describe(tfm, packages, direct),
+            );
         }
+        (OurOutcome::Resolved(mine), theirs) => {
+            panic!(
+                "resolve_offline produced a closure but `dotnet restore` does not write it \
+                 (default engine: {}); over-resolution violates the correctness policy.\n\
+                 closure={mine:?}\n{}",
+                theirs.class(),
+                describe(tfm, packages, direct),
+            );
+        }
+        (OurOutcome::ClaimsFails(claim), theirs) => {
+            assert!(
+                theirs.fails_with(*claim),
+                "resolve_offline declined claiming restore fails with {claim:?}, but the \
+                 default engine {}.\ndecline={}\n{}",
+                match theirs {
+                    EngineOutcome::Resolved(set) => format!("resolves to {set:?}"),
+                    EngineOutcome::Failed(failures) => format!("fails with {failures:?}"),
+                    EngineOutcome::Threw(exception) => format!("threw {exception}"),
+                },
+                result.as_ref().expect_err("a claim is a decline"),
+                describe(tfm, packages, direct),
+            );
+        }
+        (OurOutcome::Declined(_), _) => {}
     }
     if let (OurOutcome::Resolved(mine), Ok(resolved)) = (&ours, &result) {
         assert_examined_covers_what_restore_reads(
@@ -663,7 +642,7 @@ fn ours_resolved_to(packages: &[(&str, &str)]) -> OurOutcome {
     OurOutcome::Resolved(
         packages
             .iter()
-            .map(|(id_, version_)| (id_.to_ascii_lowercase(), (*version_).to_owned()))
+            .map(|(id_, version_)| (id_.to_ascii_lowercase(), version_.to_ascii_lowercase()))
             .collect(),
     )
 }
@@ -678,7 +657,7 @@ fn resolved_to(packages: &[(&str, &str)]) -> EngineOutcome {
     EngineOutcome::Resolved(
         packages
             .iter()
-            .map(|(id_, version_)| (id_.to_ascii_lowercase(), (*version_).to_owned()))
+            .map(|(id_, version_)| (id_.to_ascii_lowercase(), version_.to_ascii_lowercase()))
             .collect(),
     )
 }
@@ -901,10 +880,11 @@ fn case_insensitive_identity_resolves_identically() {
     );
 }
 
-/// A dependency group that names one package twice. NuGet keeps both edges,
-/// and the one with the lower bound pins the package below what its sibling
-/// asks for: a downgrade (`NU1605`), which fails restore under the SDK's
-/// default `WarningsAsErrors`. The `dgspec_resolve_diff` generator found it.
+/// A dependency group that names one package twice. NuGet keeps both edges:
+/// the engine chooses the first, and the second, sharing its path, cannot
+/// evict it, so the flattening reports the higher demand as a downgrade
+/// (`NU1605`), which fails restore under the SDK's default
+/// `WarningsAsErrors`. The `dgspec_resolve_diff` generator found it.
 #[test]
 fn a_group_naming_a_package_twice_is_a_downgrade() {
     let mut oracle = Oracle::spawn();
@@ -922,16 +902,12 @@ fn a_group_naming_a_package_twice_is_a_downgrade() {
         &[("A", "[1.0.0, )")],
     );
     assert_eq!(
-        comparison.ours,
-        OurOutcome::Declined("duplicate-dependency")
+        comparison.restore.default,
+        failed_with(&[RestoreFailure::Downgrade])
     );
-    assert!(
-        comparison
-            .restore
-            .default
-            .fails_with(RestoreFailure::Downgrade),
-        "{:?}",
-        comparison.restore.default
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::ClaimsFails(RestoreFailure::Downgrade)
     );
 }
 
@@ -1002,14 +978,13 @@ fn a_dependency_asset_filter_leaves_the_closure_alone() {
     );
 }
 
-/// A missing package below a rejected version does not fail restore, and the
-/// walk declines all the same.
+/// A missing package below a rejected version does not fail restore.
 ///
-/// A→G[1.0,) and B→G[2.0,): restore merges G to 2.0 and *rejects* G 1.0, so
-/// G 1.0's missing dependency dangles off a rejected branch and both engines
-/// still write `{A, B, G 2.0}`. The walk cannot tell a package absent from
-/// the packages folder from one restore would fetch from a source and read,
-/// so a loser's subtree it cannot read through declines.
+/// A→G[1.0,) and B→G[2.0,): the engine chooses G 1.0 first and enqueues its
+/// `Missing` edge, then B's G 2.0 evicts G 1.0 and drops that edge from the
+/// queue before it is dequeued. Both engines write `{A, B, G 2.0}`, and so
+/// do we: the missing package is never chosen, so its contents are never
+/// needed. (Whether a source holds it is B₁'s question, `check_sources`.)
 #[test]
 fn rejected_branch_missing_dependency_does_not_fail_restore() {
     let mut oracle = Oracle::spawn();
@@ -1028,7 +1003,7 @@ fn rejected_branch_missing_dependency_does_not_fail_restore() {
     assert_eq!(comparison.restore.default, both);
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
+        ours_resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("g", "2.0.0")])
     );
 }
 
@@ -1442,7 +1417,7 @@ fn multi_version_graphs_resolve_identically() {
     let mut oracle = Oracle::spawn();
     let mut resolved = 0usize;
     let mut total = 0usize;
-    // Graphs both engines resolve identically that we decline, by why.
+    // Graphs the default engine resolves that we decline, by why.
     let mut restore_only: std::collections::BTreeMap<&'static str, usize> =
         std::collections::BTreeMap::new();
 
@@ -1450,12 +1425,14 @@ fn multi_version_graphs_resolve_identically() {
         let mut rng = SplitMix64(seed);
         for _ in 0..150 {
             // `compare` is the soundness check: if we produce a closure it must
-            // be the one both engines write.
+            // be the one the default engine writes.
             let comparison = generate_multi_version(&mut rng).compare(&mut oracle);
             total += 1;
             match comparison.ours {
                 OurOutcome::Resolved(_) => resolved += 1,
-                OurOutcome::Declined(why) if comparison.restore.agreed_closure().is_some() => {
+                OurOutcome::Declined(why)
+                    if matches!(comparison.restore.default, EngineOutcome::Resolved(_)) =>
+                {
                     *restore_only.entry(why).or_default() += 1;
                 }
                 _ => {}
@@ -1466,19 +1443,13 @@ fn multi_version_graphs_resolve_identically() {
     eprintln!("multi-version: {resolved}/{total} resolved, restore-only declines {restore_only:?}");
 
     // Completeness, stated as strongly as it goes: on graphs whose every version
-    // is on disk, we resolve everything both engines resolve to the same
-    // closure, except where the engine-agreement envelope declines (see
-    // `engines_agree` in `resolver.rs`). That envelope is the one deliberate
-    // price of committing only to what both engines write; any other decline
-    // here is a completeness bug. The rest of the corpus is graphs restore
-    // itself fails, and there we must fail too, which `compare` has checked.
-    let other: Vec<_> = restore_only
-        .iter()
-        .filter(|(why, _)| !ENGINE_AGREEMENT_ENVELOPE.contains(why))
-        .collect();
+    // is on disk and every range is an inclusive lower bound, we resolve
+    // everything the default engine resolves. Any decline here is a
+    // completeness bug. The rest of the corpus is graphs restore itself fails,
+    // and there we must fail too, which `compare` has checked.
     assert!(
-        other.is_empty(),
-        "declined graph(s) both engines resolve, outside the engine-agreement envelope: {other:?}"
+        restore_only.is_empty(),
+        "declined graph(s) the default engine resolves: {restore_only:?}"
     );
     // And a sweep that resolved nothing would satisfy that vacuously.
     assert!(
@@ -1489,13 +1460,10 @@ fn multi_version_graphs_resolve_identically() {
 
 /// What a resolved closure needs from the versions it *rejected*, stated exactly.
 ///
-/// A losing version's *presence* is what tells us restore rejected the edge
-/// rather than bumping it up to the winner (see
-/// `a_losing_path_does_not_contribute_its_winners_dependencies`). Its
-/// contents are read for its dependency list (to know whether the legacy
-/// engine's verdict can be claimed) and its subtree, which must be inert
-/// (`losing_subtree_is_inert`); the default engine's restore reads the same
-/// before the eviction.
+/// A losing version is read when the engine chooses it, in some pass, before
+/// the edge that evicts it is dequeued, since its dependencies drive that
+/// pass; one skipped at dequeue, or never dequeued, is not read at all. The
+/// default engine's restore reads exactly the same.
 ///
 /// So, for every version the closure does not name, delete its nuspec (leaving
 /// the commit marker) and resolve again. The answer must be the same closure,
@@ -1597,8 +1565,8 @@ fn a_resolved_closure_reads_only_the_dependency_lists_of_the_versions_it_rejecte
 // Wide graphs: the version and range vocabulary real nuspecs use
 // ============================================================================
 
-/// One graph's versions: distinct under NuGet equality, sorted ascending, each
-/// with the spelling it was generated as.
+/// One graph's versions: distinct under NuGet's version identity, sorted
+/// ascending, each with the spelling it was generated as.
 ///
 /// Drawn from the parser soak's [`gen_version_string`] rather than from a
 /// hand-picked list, so graphs meet multi-digit and four-part versions, numeric
@@ -1608,10 +1576,20 @@ fn a_resolved_closure_reads_only_the_dependency_lists_of_the_versions_it_rejecte
 /// nuspec attribute and a nupkg file name carry verbatim. The whitespace- and
 /// noise-bearing ones exist to exercise the version parser, which
 /// `version_diff` does.
+///
+/// Half the pools also hold a pair of *twins*: two versions NuGet orders as
+/// one (a release label `-0` is the number 0, like `0`) but tells apart by
+/// identity (labels as strings), so each has a folder of its own. Restore's
+/// lookup, the engine's range keys and B₁'s lower-bound warnings all go by
+/// identity where the resolver's `NuGetVersion` ordering would collapse the
+/// two; review found three such slips one spelling at a time, so the pool
+/// grows them on purpose.
 fn gen_version_pool(rng: &mut SplitMix64, want: usize) -> Vec<(String, NuGetVersion)> {
     let mut pool: Vec<(String, NuGetVersion)> = Vec::new();
+    let twins = rng.below(2) == 0;
+    let want_generated = if twins { want - 2 } else { want };
     for _ in 0..want * 500 {
-        if pool.len() == want {
+        if pool.len() == want_generated {
             break;
         }
         let spelling = gen_version_string(rng);
@@ -1625,13 +1603,35 @@ fn gen_version_pool(rng: &mut SplitMix64, want: usize) -> Vec<(String, NuGetVers
         let Ok(parsed) = NuGetVersion::parse(&spelling) else {
             continue;
         };
-        if pool.iter().any(|(_, existing)| existing == &parsed) {
+        if pool.iter().any(|(_, existing)| existing.eq_strict(&parsed)) {
             continue;
         }
         pool.push((spelling, parsed));
     }
-    assert_eq!(pool.len(), want, "version pool generator degenerated");
-    pool.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(
+        pool.len(),
+        want_generated,
+        "version pool generator degenerated"
+    );
+    if twins {
+        // A pair with the numeric parts of a generated version, so that the
+        // twins sit among the pool's other versions rather than above them.
+        let base = rng.pick(&pool).1.clone();
+        let numbers = format!(
+            "{}.{}.{}.{}",
+            base.major(),
+            base.minor(),
+            base.patch(),
+            rng.below(3)
+        );
+        for spelling in [format!("{numbers}-0"), format!("{numbers}--0")] {
+            let parsed = NuGetVersion::parse(&spelling).expect("a twin parses");
+            if !pool.iter().any(|(_, existing)| existing.eq_strict(&parsed)) {
+                pool.push((spelling, parsed));
+            }
+        }
+    }
+    pool.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     pool
 }
 
@@ -1665,7 +1665,14 @@ fn gen_wide_range(
     let close = |rng: &mut SplitMix64| if rng.below(2) == 0 { ')' } else { ']' };
 
     let low = *rng.pick(committed);
-    let above: Vec<usize> = ((low + 1)..pool.len()).collect();
+    // An upper bound that orders with the lower one (its twin, see
+    // `gen_version_pool`) makes a range NuGet's parser rejects.
+    let strictly_above = |from: usize| -> Vec<usize> {
+        ((from + 1)..pool.len())
+            .filter(|&index| pool[index].1 != pool[from].1)
+            .collect()
+    };
+    let above = strictly_above(low);
     let absent: Vec<usize> = (0..pool.len()).filter(|i| !committed.contains(i)).collect();
 
     match rng.below(if clean { 65 } else { 100 }) {
@@ -1699,7 +1706,7 @@ fn gen_wide_range(
             true => format!("[{}, )", spell(rng, low)),
             false => {
                 let missing = *rng.pick(&absent);
-                let above_missing: Vec<usize> = ((missing + 1)..pool.len()).collect();
+                let above_missing = strictly_above(missing);
                 if above_missing.is_empty() || rng.below(2) == 0 {
                     format!("[{}, )", spell(rng, missing))
                 } else {
@@ -1886,6 +1893,11 @@ impl Generated {
         }
 
         Features {
+            twins: package_versions.iter().enumerate().any(|(index, version)| {
+                package_versions[index + 1..]
+                    .iter()
+                    .any(|other| other == version && !other.eq_strict(version))
+            }),
             bounded: parsed.iter().any(|r| {
                 !r.is_floating()
                     && r.has_lower_bound()
@@ -1909,6 +1921,9 @@ impl Generated {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Features {
+    /// Two package versions NuGet orders as one and tells apart by identity
+    /// (`1.0.0-0` and `1.0.0--0`); see [`gen_version_pool`].
+    twins: bool,
     /// An edge with distinct lower and upper bounds: `[1.0, 2.0)`.
     bounded: bool,
     /// An exact pin: `[1.2.3]`.
@@ -1943,6 +1958,7 @@ struct Census {
 
 #[derive(Debug, Default)]
 struct FeatureCounts {
+    twins: usize,
     bounded: usize,
     exact: usize,
     prerelease: usize,
@@ -1953,6 +1969,7 @@ struct FeatureCounts {
 
 impl FeatureCounts {
     fn add(&mut self, features: Features) {
+        self.twins += usize::from(features.twins);
         self.bounded += usize::from(features.bounded);
         self.exact += usize::from(features.exact);
         self.prerelease += usize::from(features.prerelease);
@@ -1963,6 +1980,7 @@ impl FeatureCounts {
 
     fn min(&self) -> usize {
         [
+            self.twins,
             self.bounded,
             self.exact,
             self.prerelease,
@@ -2170,45 +2188,19 @@ fn generate_cross_disputes(rng: &mut SplitMix64) -> Generated {
     }
 }
 
-/// The declines that are the engine-agreement envelope's deliberate price (see
-/// `engines_agree` in `resolver.rs`), rather than a gap in what we model.
-const ENGINE_AGREEMENT_ENVELOPE: [&str; 4] = [
-    "transitive-potential-downgrade",
-    "floating-comparison",
-    "losing-subtree-contends",
-    "legacy-verdict-unknown",
-];
-
-/// What we owe on a [`generate_cross_disputes`] graph, beyond soundness. Where
-/// both engines write one closure we must write it; where the legacy engine's
-/// only failure is an unsettled conflict pass we must say so, or write the
-/// default engine's closure where it writes one (the legacy engine fails on a
-/// loser's subtree the default engine never expands); in each case unless the
-/// engine-agreement envelope declines. Without the second, a resolver that
-/// declined every disputed graph for some other reason would pass.
+/// What we owe on a [`generate_cross_disputes`] graph, beyond soundness: every
+/// edge is an inclusive lower bound on a committed version, so wherever the
+/// default engine writes a closure we must write it, whatever the legacy
+/// engine's conflict pass made of the graph. Without this, a resolver that
+/// declined every disputed graph would pass.
 fn assert_cross_dispute_obligations(generated: &Generated, comparison: &Comparison) {
-    let within_envelope = |ours: &OurOutcome| matches!(ours, OurOutcome::Declined(why) if ENGINE_AGREEMENT_ENVELOPE.contains(why));
-    let mut owed: Vec<OurOutcome> = Vec::new();
-    if let Some(closure) = comparison.restore.agreed_closure() {
-        owed.push(OurOutcome::Resolved(closure.clone()));
-    }
-    if comparison.restore.legacy == failed_with(&[RestoreFailure::Undecided]) {
-        owed.push(OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided));
-        if let EngineOutcome::Resolved(closure) = &comparison.restore.default {
-            owed.push(OurOutcome::Resolved(closure.clone()));
-        }
-    }
-    if owed.is_empty() {
+    let EngineOutcome::Resolved(closure) = &comparison.restore.default else {
         return;
-    }
-    assert!(
-        owed.contains(&comparison.ours) || within_envelope(&comparison.ours),
-        "expected {} but got {}\n{}",
-        owed.iter()
-            .map(OurOutcome::class)
-            .collect::<Vec<_>>()
-            .join(" or "),
-        comparison.ours.class(),
+    };
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::Resolved(closure.clone()),
+        "the default engine resolves this graph\n{}",
         describe(
             &generated.tfm,
             &generated.packages,
@@ -2242,8 +2234,181 @@ fn cross_disputes_resolve_identically() {
         eprintln!("  ours {ours:<34} restore (legacy/default) {restore:<24} {count}");
     }
 
-    // The obligations hold vacuously on a generator that stopped reaching
-    // either side of the line the conflict pass draws.
+    // The obligation holds vacuously on a generator that stopped reaching
+    // either side of the line the legacy conflict pass draws: graphs it
+    // settles, and graphs it fails (NU1106) that the default engine resolves.
+    let count = |ours: &str, legacy: &str| -> usize {
+        census
+            .iter()
+            .filter(|((ours_, restore), _)| {
+                ours_ == ours && restore.split('/').next() == Some(legacy)
+            })
+            .map(|(_, count)| count)
+            .sum()
+    };
+    for legacy in ["undecided", "resolved"] {
+        assert!(
+            count("resolved", legacy) >= 20,
+            "generator degenerated: only {} of 200 graphs are resolved here with the legacy \
+             engine {legacy}",
+            count("resolved", legacy)
+        );
+    }
+}
+
+// ============================================================================
+// Twins: versions NuGet orders as one and tells apart by identity
+// ============================================================================
+
+/// Graphs over a package P with twin versions, `1.0.0-0` and `1.0.0--0`,
+/// which NuGet orders as one (a release label `-0` is the number 0) and tells
+/// apart by identity (labels as strings): each has a folder of its own, and
+/// restore's lookup, the engine's range keys and its same-range coalescing
+/// all go by identity where the resolver's `NuGetVersion` ordering would
+/// collapse the two. The twins differ in what they depend on, so taking the
+/// wrong one shows in the closure. Several parents reach P, directly or
+/// through a chain, each with a range spelled in one of the ways that tell
+/// the twins apart or fail to: a twin as inclusive or exclusive lower bound,
+/// as exact pin, as the bare version, or a bound below both, which no folder
+/// spells and both satisfy, where restore's best match keeps whichever it
+/// enumerated first and the resolver declines. Review found three slips in
+/// this class one spelling at a time (the lookup's exact lower bound, the
+/// range keys, B₁'s `NU1603`); the wide generator's pool meets the pair too
+/// rarely to catch them.
+fn generate_twins(rng: &mut SplitMix64) -> Generated {
+    const TWINS: [&str; 2] = ["1.0.0-0", "1.0.0--0"];
+    let mut packages = Vec::new();
+    // At least one twin is installed, usually both; each depends on nothing,
+    // on Q, or on R, drawn apart so the twins differ most of the time.
+    let installed: Vec<&str> = match rng.below(6) {
+        0 => vec![TWINS[0]],
+        1 => vec![TWINS[1]],
+        _ => TWINS.to_vec(),
+    };
+    for twin in &installed {
+        let deps = match rng.below(3) {
+            0 => vec![],
+            1 => vec![Dep::new("Q", "[1.0.0, )")],
+            _ => vec![Dep::new("R", "[1.0.0, )")],
+        };
+        packages.push(Pkg::simple("P", twin, deps));
+    }
+    if rng.below(3) == 0 {
+        packages.push(Pkg::simple("P", "2.0.0", vec![]));
+    }
+    packages.push(Pkg::simple("Q", "1.0.0", vec![]));
+    packages.push(Pkg::simple("R", "1.0.0", vec![]));
+
+    let mut direct = Vec::new();
+    let parents = 2 + rng.below(2);
+    for index in 0..parents {
+        let twin = *rng.pick(&TWINS);
+        let range = match rng.below(8) {
+            0 => format!("[{twin}]"),
+            1 => twin.to_owned(),
+            2 => format!("({twin}, )"),
+            3 => format!("[{twin}, 2.0.0)"),
+            4 => "[0.9.0-a, )".to_owned(),
+            5 => "[1.0.0, )".to_owned(),
+            _ => format!("[{twin}, )"),
+        };
+        let edge = Dep::new(&maybe_recase(rng, "P"), &range);
+        let parent = format!("A{index}");
+        if rng.below(3) == 0 {
+            // Through a chain, so the engine meets this occurrence deeper.
+            let middle = format!("M{index}");
+            packages.push(Pkg::simple(
+                &parent,
+                "1.0.0",
+                vec![Dep::new(&middle, "[1.0.0, )")],
+            ));
+            packages.push(Pkg::simple(&middle, "1.0.0", vec![edge]));
+        } else {
+            packages.push(Pkg::simple(&parent, "1.0.0", vec![edge]));
+        }
+        direct.push((parent, "[1.0.0, )".to_owned()));
+    }
+    if rng.below(4) == 0 {
+        direct.push(("P".to_owned(), format!("[{}, )", rng.pick(&TWINS))));
+    }
+    let rotate = rng.below(direct.len());
+    direct.rotate_left(rotate);
+
+    Generated {
+        tfm: "net8.0".to_owned(),
+        packages,
+        direct,
+    }
+}
+
+/// What we owe on a [`generate_twins`] graph, beyond soundness: every version
+/// is committed and no range floats, so wherever the default engine writes a
+/// closure we must write it. The one decline allowed is a tie
+/// (`equivalent-versions`), and only where some edge to P has a lower bound
+/// no installed folder spells (an exclusive one, or one below both twins):
+/// there restore's best match keeps whichever twin it enumerated first. An
+/// edge whose inclusive lower bound an installed twin spells resolves to that
+/// twin by restore's exact lookup, so a tie there is a resolver defect.
+fn assert_twin_obligations(generated: &Generated, comparison: &Comparison) {
+    let EngineOutcome::Resolved(closure) = &comparison.restore.default else {
+        return;
+    };
+    let installed: Vec<NuGetVersion> = generated
+        .packages
+        .iter()
+        .filter(|pkg| pkg.id == "P")
+        .map(|pkg| version(&pkg.version))
+        .collect();
+    let tie_prone = generated
+        .ranges()
+        .filter(|(id_, _)| id_.eq_ignore_ascii_case("P"))
+        .map(|(_, range_)| range(range_))
+        .any(|range| {
+            !range.is_min_inclusive()
+                || range.min_version().is_none_or(|bound| {
+                    !installed.iter().any(|installed| installed.eq_strict(bound))
+                })
+        });
+    let expected = OurOutcome::Resolved(closure.clone());
+    assert!(
+        comparison.ours == expected
+            || (tie_prone && comparison.ours == OurOutcome::Declined("equivalent-versions")),
+        "the default engine resolves this graph{}, and ours is {}\n{}",
+        if tie_prone {
+            ""
+        } else {
+            " and every edge to P spells an installed lower bound"
+        },
+        comparison.ours.class(),
+        describe(
+            &generated.tfm,
+            &generated.packages,
+            &generated.direct_refs()
+        ),
+    );
+}
+
+#[test]
+fn twin_versions_resolve_identically() {
+    let mut oracle = Oracle::spawn();
+    let mut census: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
+    for seed in [0x7a11_u64, 0x7a12, 0x7a13, 0x7a14] {
+        let mut rng = SplitMix64(seed);
+        for _ in 0..75 {
+            let generated = generate_twins(&mut rng);
+            let comparison = generated.compare(&mut oracle);
+            assert_twin_obligations(&generated, &comparison);
+            *census
+                .entry((comparison.ours.class(), comparison.restore.default.class()))
+                .or_default() += 1;
+        }
+    }
+    for ((ours, restore), count) in &census {
+        eprintln!("  ours {ours:<28} restore (default) {restore:<18} {count}");
+    }
+    // The obligation holds vacuously on a generator that stopped reaching
+    // either side of it.
     let ours = |class: &str| -> usize {
         census
             .iter()
@@ -2251,10 +2416,10 @@ fn cross_disputes_resolve_identically() {
             .map(|(_, count)| count)
             .sum()
     };
-    for class in ["claims-legacy-undecided", "resolved"] {
+    for class in ["resolved", "declined-equivalent-versions"] {
         assert!(
             ours(class) >= 20,
-            "generator degenerated: only {} of 200 graphs are {class}",
+            "generator degenerated: only {} of 300 graphs are {class}",
             ours(class)
         );
     }
@@ -2293,9 +2458,10 @@ fn randomised_soundness_soak() {
     for _ in 0..graphs {
         // The single-version graphs, the multi-version ones whose conflicts
         // slice 6b resolves, the cross disputes the legacy conflict pass can
-        // fail to settle, and the wide vocabulary. Only the last is counted:
-        // the floors below are about the shapes it exists to reach.
-        match rng.below(6) {
+        // fail to settle, the twins NuGet orders as one, and the wide
+        // vocabulary. Only the last is counted: the floors below are about
+        // the shapes it exists to reach.
+        match rng.below(7) {
             0 => {
                 generate(&mut rng).compare(&mut oracle);
             }
@@ -2306,6 +2472,11 @@ fn randomised_soundness_soak() {
                 let g = generate_cross_disputes(&mut rng);
                 let comparison = g.compare(&mut oracle);
                 assert_cross_dispute_obligations(&g, &comparison);
+            }
+            3 => {
+                let g = generate_twins(&mut rng);
+                let comparison = g.compare(&mut oracle);
+                assert_twin_obligations(&g, &comparison);
             }
             _ => {
                 let g = generate_wide(&mut rng);
@@ -2363,10 +2534,8 @@ fn a_losing_path_does_not_contribute_its_winners_dependencies() {
 /// and both engines write G 1.0. Carrying the previous round's map forward
 /// (which only ever rose) left G at 3.0, a closure restore never produces.
 ///
-/// The walk declines: P 1.0's subtree names G, which the closure holds, and
-/// the default engine does evict G 1.0 on P 1.0's `G[3]` before evicting P 1.0
-/// and undoing that eviction with it (`DependencyGraphResolver`'s eviction
-/// of an evictee's evictions), which the walk does not model.
+/// Here the engine chooses P 2.0 before P 1.0's edge arrives (B is the first
+/// direct reference), so P 1.0 is eclipsed and only P 2.0's `G[1]` is walked.
 #[test]
 fn a_settled_version_falls_when_the_edge_that_raised_it_disappears() {
     let mut oracle = Oracle::spawn();
@@ -2392,7 +2561,12 @@ fn a_settled_version_falls_when_the_edge_that_raised_it_disappears() {
     assert_eq!(comparison.restore.default, both);
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
+        ours_resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("g", "1.0.0"),
+            ("p", "2.0.0")
+        ])
     );
 }
 
@@ -2471,9 +2645,9 @@ fn a_downgrade_is_judged_against_surviving_edges_not_declared_ones() {
 ///
 /// `B → G[1.0]` sits beside `B → C`, so `C → G[2.0, 3.0)` is potentially
 /// downgraded by it; and `A → G[3.0]` is a cousin that raises G to 3.0, so
-/// B's edge loses. Both engines write `{A, B, C, G 3.0}`. G is not a direct
-/// reference, and a potential downgrade of a transitive package is where the
-/// engines' adjudications part ways, so we decline.
+/// B's edge loses. Both engines write `{A, B, C, G 3.0}`: the engine chooses
+/// G 3.0 first and eclipses both lower edges, and the flattening finds every
+/// edge to G at or below the chosen range.
 #[test]
 fn a_downgrade_to_a_rejected_version_does_not_fail_restore() {
     let mut oracle = Oracle::spawn();
@@ -2503,7 +2677,12 @@ fn a_downgrade_to_a_rejected_version_does_not_fail_restore() {
     assert_eq!(comparison.restore.default, both);
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("transitive-potential-downgrade")
+        ours_resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("c", "1.0.0"),
+            ("g", "3.0.0")
+        ])
     );
 }
 
@@ -2541,10 +2720,9 @@ fn a_downgrade_to_the_accepted_version_fails_on_both_sides() {
 /// (its parent) does, and Y 3.0 wins only if X 1.0 (its parent) does. The
 /// legacy engine's conflict pass accepts neither and fails with NU1106; the
 /// default engine writes `{A, B, X 1.0, Y 3.0}`. Both checked against a real
-/// `dotnet restore` on .NET 8 and on .NET 10 with each resolver. X 1.0 loses
-/// to an edge one level deeper than itself, so the default engine dequeues its
-/// `Y[3.0]` first, which evicts Y 1.0 and with it X 1.0's evicter; the walk's
-/// winners say `{X 2.0, Y 1.0}`, so the contending subtree declines.
+/// `dotnet restore` on .NET 8 and on .NET 10 with each resolver. X 1.0's
+/// `Y[3.0]` is dequeued before Y 1.0's `X[2.0]`, evicts Y 1.0, and drops
+/// X 1.0's evicter from the queue with it.
 #[test]
 fn mutually_dependent_cousin_conflicts_fail_restore() {
     let mut oracle = Oracle::spawn();
@@ -2575,7 +2753,12 @@ fn mutually_dependent_cousin_conflicts_fail_restore() {
     );
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
+        ours_resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("x", "1.0.0"),
+            ("y", "3.0.0")
+        ])
     );
 }
 
@@ -2588,8 +2771,9 @@ fn mutually_dependent_cousin_conflicts_fail_restore() {
 /// node is ambiguous, so Y 1.0 under the disputed X 2.0 makes every Y
 /// ambiguous, and X 1.0 under the disputed Y 2.0 makes every X ambiguous.
 /// Neither winner can then be accepted, no round makes progress, and the legacy
-/// engine fails with NU1106. Every loser being a leaf does not rule this out.
-/// Shrunk from the soak's seed 1793381246070433581.
+/// engine fails with NU1106. The default engine chooses both high versions and
+/// eclipses both low edges: `{A, B, X 2.0, Y 2.0}`. Shrunk from the soak's
+/// seed 1793381246070433581.
 #[test]
 fn cousin_conflicts_with_leaf_losers_beneath_each_other_fail_restore() {
     let mut oracle = Oracle::spawn();
@@ -2609,10 +2793,14 @@ fn cousin_conflicts_with_leaf_losers_beneath_each_other_fail_restore() {
         comparison.restore.legacy,
         failed_with(&[RestoreFailure::Undecided])
     );
-    assert_eq!(
-        comparison.ours,
-        OurOutcome::ClaimsLegacyFails(RestoreFailure::Undecided)
-    );
+    let closure = [
+        ("a", "1.0.0"),
+        ("b", "1.0.0"),
+        ("x", "2.0.0"),
+        ("y", "2.0.0"),
+    ];
+    assert_eq!(comparison.restore.default, resolved_to(&closure));
+    assert_eq!(comparison.ours, ours_resolved_to(&closure));
 }
 
 /// A potential downgrade of a transitive package, which the two engines
@@ -2622,9 +2810,9 @@ fn cousin_conflicts_with_leaf_losers_beneath_each_other_fail_restore() {
 /// downgraded under P2; P1 reaches the same P3 through a different range, and
 /// under P1 the `P4[2.0]` edge survives and raises P4 to 2.0. The legacy engine
 /// writes `{P1, P2, P3, P4 2.0}`. The default engine walks P3 once, under P2,
-/// keeps P4 1.0 and fails with NU1605. Both checked against a real
-/// `dotnet restore` on .NET 10. Without the transitive-downgrade rule in
-/// `engines_agree` we commit the legacy closure.
+/// where its `P4[2.0]` cannot evict the P4 1.0 chosen from the same branch,
+/// and fails with NU1605. Both checked against a real `dotnet restore` on
+/// .NET 10.
 #[test]
 fn a_potential_downgrade_the_engines_adjudicate_differently() {
     let mut oracle = Oracle::spawn();
@@ -2658,7 +2846,7 @@ fn a_potential_downgrade_the_engines_adjudicate_differently() {
     );
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("transitive-potential-downgrade")
+        OurOutcome::ClaimsFails(RestoreFailure::Downgrade)
     );
 }
 
@@ -2669,10 +2857,11 @@ fn a_potential_downgrade_the_engines_adjudicate_differently() {
 /// three levels deeper, so the default engine dequeues its `Z[1.0]` first.
 /// Z 1.0 is not installed, and restore resolves the edge against what is:
 /// Z 2.0, whose `Y[3.0]` evicts Y 1.0 and with it X 1.0's evicter, so the
-/// default engine writes `{A, B, X 1.0, Z 2.0, Y 3.0}`. The walk cannot name
-/// the version read, and declines. Found by review.
+/// default engine writes `{A, B, X 1.0, Z 2.0, Y 3.0}`. The edge resolves to
+/// the same version here, with the packages folder restore's only source.
+/// Found by review.
 #[test]
-fn an_uninstalled_version_below_a_loser_declines() {
+fn an_uninstalled_version_below_a_loser_resolves_to_the_next_installed() {
     let mut oracle = Oracle::spawn();
     let comparison = scenario(
         &mut oracle,
@@ -2688,20 +2877,15 @@ fn an_uninstalled_version_below_a_loser_declines() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert_eq!(
-        comparison.restore.default,
-        resolved_to(&[
-            ("a", "1.0.0"),
-            ("b", "1.0.0"),
-            ("x", "1.0.0"),
-            ("z", "2.0.0"),
-            ("y", "3.0.0")
-        ])
-    );
-    assert_eq!(
-        comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
-    );
+    let closure = [
+        ("a", "1.0.0"),
+        ("b", "1.0.0"),
+        ("x", "1.0.0"),
+        ("z", "2.0.0"),
+        ("y", "3.0.0"),
+    ];
+    assert_eq!(comparison.restore.default, resolved_to(&closure));
+    assert_eq!(comparison.ours, ours_resolved_to(&closure));
 }
 
 /// A losing version's subtree reaching a winner at the winner's own version.
@@ -2711,12 +2895,11 @@ fn an_uninstalled_version_below_a_loser_declines() {
 /// closure settles on. The default engine reaches Y first under X 1.0, skips
 /// the `X[3.0]` below it as a descendant of the chosen X 1.0, and coalesces
 /// the later Y onto that occurrence, so the edge the walk takes for X 1.0's
-/// evicter never takes effect: restore reports NU1605. A rule that admitted
-/// demands at or below the settled version committed `{X 3.0, Y 2.0}` here,
-/// so a loser's subtree may name no package the closure holds. Found by
-/// review.
+/// evicter never takes effect: restore reports NU1605, and so do we. (An
+/// envelope around the legacy walker's tree once committed `{X 3.0, Y 2.0}`
+/// here.) Found by review.
 #[test]
-fn a_losers_subtree_reaching_a_winner_at_its_version_declines() {
+fn a_losers_subtree_reaching_a_winner_at_its_version_is_a_downgrade() {
     let mut oracle = Oracle::spawn();
     let comparison = scenario(
         &mut oracle,
@@ -2737,7 +2920,7 @@ fn a_losers_subtree_reaching_a_winner_at_its_version_declines() {
     );
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
+        OurOutcome::ClaimsFails(RestoreFailure::Downgrade)
     );
 }
 
@@ -2746,10 +2929,11 @@ fn a_losers_subtree_reaching_a_winner_at_its_version_declines() {
 ///
 /// `A → X[1.0]` loses to `B → M → N → O → X[2.0]`, four levels deeper. X 1.0
 /// depends on P and Q; `P → R → Z` and `Q → Z` both reach Z, whose `Y[3.0]`
-/// evicts Y 1.0, which carries X 1.0's evicter. The default engine writes
-/// `{A, B, X 1.0, P, Q, R, Z, Y 3.0}`. A walk that stopped at a depth and
-/// visited Z first by the longer path, and not again, missed the demand.
-/// Found by review.
+/// evicts Y 1.0 before X 1.0 goes. Evicting X 1.0 then undoes that eviction
+/// with it (its path runs through X 1.0) and starts over, and the second pass
+/// never reaches Z, so Y settles at 1.0. (An envelope around the legacy
+/// walker's tree that stopped at a depth missed Z's demand; this is the
+/// engine's own walk.) Found by review.
 #[test]
 fn a_losers_subtree_is_read_at_its_shallowest_depth() {
     let mut oracle = Oracle::spawn();
@@ -2780,19 +2964,26 @@ fn a_losers_subtree_is_read_at_its_shallowest_depth() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert_eq!(
-        comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
-    );
+    let closure = [
+        ("a", "1.0.0"),
+        ("b", "1.0.0"),
+        ("m", "1.0.0"),
+        ("n", "1.0.0"),
+        ("o", "1.0.0"),
+        ("x", "2.0.0"),
+        ("y", "1.0.0"),
+    ];
+    assert_eq!(comparison.restore.default, resolved_to(&closure));
+    assert_eq!(comparison.ours, ours_resolved_to(&closure));
 }
 
 /// A loser evicted by an edge at its own depth may be dequeued before the
 /// evicter, so its children are enqueued and read, each at the version its
 /// edge resolves to among what is installed. `A → P[1.0] → T[1.0]` and
 /// `B → P[2.0]` put both P edges at one depth, and P 1.0 is dequeued first;
-/// with T installed only at 2.0.0 the version read is one the walk cannot
-/// name, so it declines. (A rule that held a loser's subtree inert when its
-/// evicter was no deeper than itself committed here.)
+/// with T installed only at 2.0.0 that is T 2.0, which must be among the
+/// versions examined; the eviction then drops T from the queue, and the
+/// closure is `{A, B, P 2.0}`.
 #[test]
 fn a_losers_children_at_the_evicters_depth_are_read() {
     let mut oracle = Oracle::spawn();
@@ -2813,19 +3004,18 @@ fn a_losers_children_at_the_evicters_depth_are_read() {
     );
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
+        ours_resolved_to(&[("a", "1.0.0"), ("b", "1.0.0"), ("p", "2.0.0")])
     );
 }
 
 /// A package missing from every source below a loser is never reported,
 /// however deep: `A → G[1.0] → H → Missing` and `B → Q → R → G[2.0]` put
 /// G 1.0's evicter two levels below it, so H is dequeued and the missing
-/// package's item dequeued in turn before the eviction restarts the walk, and
-/// both engines still write `{A, B, G 2.0, Q, R}`. The walk declines: absent
-/// from the packages folder is not absent from every source (a loser's
-/// subtree package that a source holds and the folder lacks is fetched, read,
-/// and can carry the closure elsewhere), and the walk cannot tell the two
-/// apart.
+/// package's item dequeued in turn, and chosen as unresolved, before the
+/// eviction restarts the walk; the second pass never reaches it, and both
+/// engines write `{A, B, G 2.0, Q, R}`. So do we: an unresolved item has no
+/// dependencies, and only one that stays in the graph fails restore.
+/// (Whether a source holds the package is B₁'s question, `check_sources`.)
 #[test]
 fn a_missing_package_dequeued_below_a_loser_does_not_fail_restore() {
     let mut oracle = Oracle::spawn();
@@ -2853,7 +3043,13 @@ fn a_missing_package_dequeued_below_a_loser_does_not_fail_restore() {
     assert_eq!(comparison.restore.default, both);
     assert_eq!(
         comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
+        ours_resolved_to(&[
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("g", "2.0.0"),
+            ("q", "1.0.0"),
+            ("r", "1.0.0")
+        ])
     );
 }
 
@@ -2919,12 +3115,12 @@ fn a_back_edge_to_the_loser_is_read_at_its_lower_bound() {
     );
 }
 
-/// A back edge whose lower bound is not installed declines like any other
-/// subtree edge: restore reads the edge's best match across the packages
-/// folder and the sources, which the walk cannot name. `Z → X[0.5, )` with
-/// X 0.5 absent (X 1.0 the loser, X 2.0 the winner). Found by review.
+/// A back edge whose lower bound is not installed resolves, like any other
+/// edge, to the lowest installed version satisfying it: `Z → X[0.5, )` with
+/// X 0.5 absent reads X 1.0, the loser itself, and changes nothing. Found by
+/// review.
 #[test]
-fn a_back_edge_whose_lower_bound_is_not_installed_declines() {
+fn a_back_edge_whose_lower_bound_is_not_installed_resolves_to_the_next_installed() {
     let mut oracle = Oracle::spawn();
     let comparison = scenario(
         &mut oracle,
@@ -2938,19 +3134,14 @@ fn a_back_edge_whose_lower_bound_is_not_installed_declines() {
         ],
         &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
     );
-    assert_eq!(
-        comparison.restore.default,
-        resolved_to(&[
-            ("a", "1.0.0"),
-            ("b", "1.0.0"),
-            ("c", "1.0.0"),
-            ("x", "2.0.0")
-        ])
-    );
-    assert_eq!(
-        comparison.ours,
-        OurOutcome::Declined("losing-subtree-contends")
-    );
+    let closure = [
+        ("a", "1.0.0"),
+        ("b", "1.0.0"),
+        ("c", "1.0.0"),
+        ("x", "2.0.0"),
+    ];
+    assert_eq!(comparison.restore.default, resolved_to(&closure));
+    assert_eq!(comparison.ours, ours_resolved_to(&closure));
 }
 
 /// Restore's best match takes a prerelease only where the range has a
@@ -3004,18 +3195,16 @@ fn a_minimum_client_version_on_a_read_version_throws() {
     }
 }
 
-/// A floating range in an eclipse comparison, which NuGet decides by the float's
-/// release prefix (`RemoteDependencyWalker.IsGreaterThanOrEqualTo`) and
-/// `is_at_least` does not model.
+/// A floating range anywhere in the graph declines: NuGet compares a float by
+/// its release prefix (`RemoteDependencyWalker.IsGreaterThanOrEqualTo`) and
+/// resolves it against feed state, neither of which the resolver models.
 ///
-/// `P0 → P2 *` sits beside `P0 → P1`, and `P1 → P2[3.0]` is checked against it:
-/// NuGet treats a bare `*` as at least as high as anything, so the deeper edge
-/// is eclipsed and the legacy engine writes `{P0, P1, P2 2.0}`. Comparing the
-/// float's resolved minimum instead makes the deeper edge a potential
-/// downgrade, and reports an NU1605 the legacy engine never reports. (The
-/// default engine does fail it, with NU1605.) Found by the fresh-seed soak.
+/// `P0 → P2 *` sits beside `P0 → P1`, and `P1 → P2[3.0]` is compared against
+/// it: NuGet treats a bare `*` as at least as high as anything, so the legacy
+/// engine eclipses the deeper edge and writes `{P0, P1, P2 2.0}`, while the
+/// default engine fails with NU1605. Found by the fresh-seed soak.
 #[test]
-fn a_floating_range_in_an_eclipse_comparison_declines() {
+fn a_floating_range_declines() {
     let mut oracle = Oracle::spawn();
     let comparison = scenario(
         &mut oracle,
@@ -3039,5 +3228,182 @@ fn a_floating_range_in_an_eclipse_comparison_declines() {
         comparison.restore.default,
         failed_with(&[RestoreFailure::Downgrade])
     );
-    assert_eq!(comparison.ours, OurOutcome::Declined("floating-comparison"));
+    assert_eq!(comparison.ours, OurOutcome::Declined("floating"));
+}
+
+// ============================================================================
+// The two verdicts an envelope around the legacy walker's tree got wrong
+// ============================================================================
+
+/// A cycle the default engine finds through a path the legacy walker never
+/// takes.
+///
+/// `P0 → P2[1.0]`, `P0 → P3[2.0, )`, `P1 → P2[1.0, 2.0]`, `P1 → P3[2.0, )`,
+/// `P2 → P3[2.0, )` and `P3 → P2[1.0]`: P2 and P3 depend on each other, but
+/// under the legacy walker P0's own `P3[2.0, )` eclipses P2's, and P0's
+/// `P2[1.0]` eclipses P3's, so neither is walked and it resolves. The default
+/// engine's item for P3 is replaced by each later occurrence at the same
+/// range from a path sharing no prefix with the chosen one, so P3 ends up
+/// chosen through P2, and the flattening then finds P3's `P2[1.0]`, which is
+/// the very range index on its path: NU1108. Shrunk from the soak's seed
+/// 1794148483370034000, where every edge to P2 but one carried one exact
+/// range.
+#[test]
+fn a_same_range_occurrence_moves_the_chosen_path_and_closes_a_cycle() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "P0",
+                "1.0.0",
+                vec![Dep::new("P2", "[1.0.0]"), Dep::new("P3", "[2.0.0, )")],
+            ),
+            Pkg::simple(
+                "P1",
+                "1.0.0",
+                vec![
+                    Dep::new("P2", "[1.0.0, 2.0.0]"),
+                    Dep::new("P3", "[2.0.0, )"),
+                ],
+            ),
+            Pkg::simple("P2", "1.0.0", vec![Dep::new("P3", "[2.0.0, )")]),
+            Pkg::simple("P3", "2.0.0", vec![Dep::new("P2", "[1.0.0]")]),
+        ],
+        &[("P0", "[1.0.0, )"), ("P1", "[1.0.0, )")],
+    );
+    assert_eq!(
+        comparison.restore.legacy,
+        resolved_to(&[
+            ("p0", "1.0.0"),
+            ("p1", "1.0.0"),
+            ("p2", "1.0.0"),
+            ("p3", "2.0.0")
+        ])
+    );
+    assert_eq!(
+        comparison.restore.default,
+        failed_with(&[RestoreFailure::Cycle])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::ClaimsFails(RestoreFailure::Cycle)
+    );
+}
+
+/// A deeper demand above a direct exact reference is a downgrade, whatever
+/// sits beside it.
+///
+/// The root pins `P2[1.0]`; `P0 → P1 → P2[2.0, )` demands more. P0 also
+/// depends on `P2 (, 1.0]`, an edge with no lower bound, which the legacy
+/// walker reads as at least as high as anything and so as eclipsing P1's
+/// demand, and it resolves. The default engine never enqueues an edge to a
+/// direct package reference, and its flattening compares P1's edge with the
+/// chosen `[1.0]`: NU1605. Shrunk from the soak's seed 1794151809963611000.
+#[test]
+fn a_deeper_demand_above_a_direct_exact_reference_is_a_downgrade() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple(
+                "P0",
+                "1.0.0",
+                vec![Dep::new("P1", "[1.0.0, )"), Dep::new("P2", "(, 1.0.0]")],
+            ),
+            Pkg::simple("P1", "1.0.0", vec![Dep::new("P2", "[2.0.0, )")]),
+            Pkg::simple("P2", "1.0.0", vec![]),
+            Pkg::simple("P2", "2.0.0", vec![]),
+        ],
+        &[("P0", "[1.0.0, )"), ("P2", "[1.0.0]")],
+    );
+    assert_eq!(
+        comparison.restore.legacy,
+        resolved_to(&[("p0", "1.0.0"), ("p1", "1.0.0"), ("p2", "1.0.0")])
+    );
+    assert_eq!(
+        comparison.restore.default,
+        failed_with(&[RestoreFailure::Downgrade])
+    );
+    assert_eq!(
+        comparison.ours,
+        OurOutcome::ClaimsFails(RestoreFailure::Downgrade)
+    );
+}
+
+// ============================================================================
+// What restore's lookup takes from the packages folder
+// ============================================================================
+
+/// Restore's lookup takes the range's inclusive lower bound itself when that
+/// version's folder is installed, before it compares anything
+/// (`SourceRepositoryDependencyProvider.FindLibraryCoreAsync`), so two
+/// installed versions that compare equal (`1.0.0-0` and `1.0.0--0`: `-0` is
+/// the number 0 in a release label) are told apart by their spelling, and
+/// `[1.0.0-0, )` resolves to `1.0.0-0`, whichever the folder enumerates
+/// first. Found by review.
+#[test]
+fn an_installed_lower_bound_is_taken_by_its_spelling() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0-0", vec![]),
+            Pkg::simple("A", "1.0.0--0", vec![Dep::new("B", "[1.0.0, )")]),
+            Pkg::simple("B", "1.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0-0, )")],
+    );
+    assert_eq!(comparison.restore.default, resolved_to(&[("a", "1.0.0-0")]));
+    assert_eq!(comparison.ours, ours_resolved_to(&[("a", "1.0.0-0")]));
+}
+
+/// Where no installed folder spells the lower bound, restore takes the best
+/// match over every installed version, and between two that compare equal it
+/// keeps whichever the folder enumerated first (`VersionRange.IsBetter`
+/// favours the lower, and neither is). The resolver declines rather than
+/// guess the enumeration order. Found by review.
+#[test]
+fn equivalent_installed_versions_with_no_folder_for_the_lower_bound_decline() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0-0", vec![Dep::new("B", "[1.0.0, )")]),
+            Pkg::simple("A", "1.0.0--0", vec![]),
+            Pkg::simple("B", "1.0.0", vec![]),
+        ],
+        &[("A", "[0.9.0-a, )")],
+    );
+    assert!(
+        matches!(comparison.restore.default, EngineOutcome::Resolved(_)),
+        "{:?}",
+        comparison.restore.default
+    );
+    assert_eq!(comparison.ours, OurOutcome::Declined("equivalent-versions"));
+}
+
+/// Two ranges whose lower bounds compare equal but are spelled apart are two
+/// ranges to the engine, which keys them by NuGet's version identity
+/// (`LibraryRangeComparer`, `VersionRangePreciseEquals`): `A → P[1.0.0-0, )`
+/// and `B → P[1.0.0--0, )` are a chosen item and a lower one it eclipses,
+/// not two occurrences of one range, so P is `1.0.0-0`, chosen under A, and
+/// `1.0.0--0`'s dependency Q is never walked. Found by review.
+#[test]
+fn ranges_whose_lower_bounds_compare_equal_but_are_spelled_apart_are_two_ranges() {
+    let mut oracle = Oracle::spawn();
+    let comparison = scenario(
+        &mut oracle,
+        &[
+            Pkg::simple("A", "1.0.0", vec![Dep::new("P", "[1.0.0-0, )")]),
+            Pkg::simple("B", "1.0.0", vec![Dep::new("P", "[1.0.0--0, )")]),
+            Pkg::simple("P", "1.0.0-0", vec![]),
+            Pkg::simple("P", "1.0.0--0", vec![Dep::new("Q", "[1.0.0, )")]),
+            Pkg::simple("Q", "1.0.0", vec![]),
+        ],
+        &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+    );
+    let closure = [("a", "1.0.0"), ("b", "1.0.0"), ("p", "1.0.0-0")];
+    assert_eq!(comparison.restore.default, resolved_to(&closure));
+    assert_eq!(comparison.ours, ours_resolved_to(&closure));
 }

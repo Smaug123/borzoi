@@ -280,11 +280,13 @@ pub enum DgSpecResolveDecline {
     },
     /// A local folder source holds `entry`, named like a package restore looks
     /// up past the packages folder (an edge whose inclusive lower bound is not
-    /// installed), or could not be listed (`entry` is `None`). Restore reads
-    /// such an edge at the lowest version satisfying it across the packages
-    /// folder and every source, so the resolver's account of what restore
-    /// reads ([`ResolvedPackageClosure::examined`]) holds only while no source
-    /// holds a version of the package. See `check_sources`.
+    /// installed), or does not exist or could not be listed (`entry` is
+    /// `None`). Restore resolves such an edge to the lowest version satisfying
+    /// it across the packages folder and every source, and fails (`NU1301`)
+    /// on a source it cannot read, so the resolver's account of the graph and
+    /// of what restore reads ([`ResolvedPackageClosure::examined`]) holds only
+    /// while every source is a folder holding no version of the package. See
+    /// `check_sources`.
     SourceHoldsPackage {
         target_alias: String,
         source: String,
@@ -397,7 +399,9 @@ impl fmt::Display for DgSpecResolveDecline {
                 entry: None,
             } => write!(
                 f,
-                "framework {target_alias:?}: source {source} could not be listed"
+                "framework {target_alias:?}: source {source} does not exist or could not be \
+                 listed, and restore consults it for a package it looks up past the packages \
+                 folder (NU1301)"
             ),
             DgSpecResolveDecline::Environment { decline } => write!(f, "{decline}"),
         }
@@ -562,6 +566,7 @@ pub fn resolve_dgspec(
             let warnings = if warnings_predictable {
                 predicted_warnings(
                     Path::new(packages_path),
+                    &package_spec.frameworks,
                     framework,
                     &context,
                     not_pruned,
@@ -890,10 +895,10 @@ fn check_sources(
             source: source.clone(),
             entry,
         };
-        let entries = match std::fs::read_dir(source) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(declined(None)),
+        // Restore consults every source for such a package and fails
+        // (`NU1301`) on one it cannot read, a missing folder included.
+        let Ok(entries) = std::fs::read_dir(source) else {
+            return Err(declined(None));
         };
         for entry in entries {
             let Ok(entry) = entry else {
@@ -1345,6 +1350,7 @@ fn is_local_absolute_path(source: &str) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn predicted_warnings(
     packages: &Path,
+    project_frameworks: &[TargetFrameworkInformation],
     framework: &TargetFrameworkInformation,
     context: &TargetContext,
     not_pruned: NotPrunedWarning,
@@ -1414,10 +1420,57 @@ fn predicted_warnings(
             }
         }
     }
+    // Restore's lower-bound warnings (`UnexpectedDependencyMessages`), in the
+    // order it checks them, each package warned about once:
+    // - `NU1604`: a direct package dependency of the project, in any of its
+    //   frameworks, without an inclusive lower bound;
+    // - `NU1602`/`NU1603`: a package of the final graph that did not resolve
+    //   to an inclusive lower bound of the range chosen for it, because the
+    //   range has none (`NU1602`) or it is not installed (`NU1603`).
+    // Its `NU1601` (a direct dependency resolved above its inclusive lower
+    // bound) cannot follow: a direct reference's own edge is the first the
+    // flattening meets for its package, so `NU1603` has covered it.
+    let code = |code: &str| NuGetLogCode::parse(code).expect("a NuGet log code");
+    let missing_lower_bound = |range: &VersionRange| {
+        !range.is_floating() && (!range.is_min_inclusive() || !range.has_lower_bound())
+    };
+    let mut warned: BTreeSet<PackageId> = BTreeSet::new();
+    for project_framework in project_frameworks {
+        for dependency in &project_framework.dependencies {
+            if missing_lower_bound(&dependency.range) {
+                warned.insert(dependency.id.clone());
+                if project_framework.target_alias == framework.target_alias {
+                    codes.insert(code("NU1604"));
+                }
+            }
+        }
+    }
+    for resolved in &closure.resolved_dependencies {
+        if resolved.range.is_floating() || warned.contains(&resolved.id) {
+            continue;
+        }
+        // NuGet's version identity compares release labels as strings
+        // (`VersionComparer.Equals`), where its ordering compares them as
+        // numbers: `1.0.0--0` orders with `1.0.0-0` and is not it.
+        if resolved.range.is_min_inclusive()
+            && resolved
+                .range
+                .min_version()
+                .is_some_and(|bound| bound.eq_strict(&resolved.version))
+        {
+            continue;
+        }
+        codes.insert(code(if missing_lower_bound(&resolved.range) {
+            "NU1602"
+        } else {
+            "NU1603"
+        }));
+        warned.insert(resolved.id.clone());
+    }
     match not_pruned {
         NotPrunedWarning::Never => {}
         NotPrunedWarning::Logged => {
-            codes.insert(NuGetLogCode::parse("NU1510").expect("NU1510 is a NuGet log code"));
+            codes.insert(code("NU1510"));
         }
         NotPrunedWarning::Unknown => return Ok(None),
     }
