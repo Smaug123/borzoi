@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use crate::binders::{BinderRole, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 
+use super::contributors::RequireQualifiedAccess;
 use super::id_text;
 use super::model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, EarlierType, ExportDeclKind,
@@ -323,11 +324,21 @@ impl<'a> Resolver<'a> {
     }
 
     /// Intern the cases of a union `type T = A | B of …` as [`DefKind::UnionCase`]
-    /// binders: each case's defining occurrence resolves to itself, and — unless
-    /// the union is `[<RequireQualifiedAccess>]` (`require_qualified`) — the case
-    /// is added to the current container's value frame ([`module_frame`](Self::module_frame))
+    /// binders: each case's defining occurrence resolves to itself, and — when
+    /// the union certainly is not `[<RequireQualifiedAccess>]` (`rqa`) — the
+    /// case is added to the current container's value frame ([`module_frame`](Self::module_frame))
     /// at its source position, so an unqualified use resolves to it. A non-union
     /// definition contributes no cases.
+    ///
+    /// A union whose attribute is undecided ([`RequireQualifiedAccess::Unknown`])
+    /// keeps the export its written attribute names imply
+    /// ([`RequireQualifiedAccess::exports_qualified_only`]), its cases count as
+    /// the container's bare names wherever contention is asked, and the caller
+    /// declines every bare name they could take
+    /// ([`Self::unproven_bare_cases`]). A qualified path through the container
+    /// (`M.Case`) is not decided by the attribute, so the export choice speaks
+    /// only to that path: FCS reads it as the case either way, cleanly or with
+    /// an error.
     ///
     /// Cases are value-namespace entries living in the same position-ordered,
     /// container-scoped frame as values (see [`Self::top_level`]); that gives
@@ -342,11 +353,12 @@ impl<'a> Resolver<'a> {
         &mut self,
         defn: &TypeDefn,
         type_name: &SyntaxToken,
-        require_qualified: bool,
+        rqa: RequireQualifiedAccess,
     ) {
         let Some(TypeDefnRepr::Union(u)) = defn.repr() else {
             return;
         };
+        let require_qualified = rqa.exports_qualified_only();
         // A case of a `private` union type is scoped to the type's container
         // (oracle-pinned D3), so its export inherits that privacy.
         let type_is_private = super::decls::header_is_private(defn.syntax());
@@ -453,13 +465,15 @@ impl<'a> Resolver<'a> {
             }
             // The defining occurrence resolves to itself.
             self.record(range, res);
-            if !require_qualified {
+            if rqa != RequireQualifiedAccess::Certain {
                 // A non-RQA union case is a bare-reachable constructor (value
                 // namespace) → record it in the container's declared-name view, so a
                 // same-named type elsewhere in the container is seen as contention.
                 // (RQA cases are reachable only as `Type.Case`, so they never collide
                 // with a module-qualifier segment — not recorded.)
                 self.mark_decl(&name).union_case = true;
+            }
+            if !require_qualified {
                 let generation = self.open_generation;
                 self.module_frame()
                     .entries

@@ -748,10 +748,12 @@ fn header_spellings_agree_with_fcs() {
     for ((label, src), file) in cells.iter().zip(&census) {
         let parsed = parse(src);
         let recovery = SyntaxRecovery::of(&parsed);
+        // FCS reads FSharp.Core, and `[<RequireQualifiedAccess>]` is certain
+        // only where FSharp.Core declares it.
         let rf = resolve_file(
             &ImplFile::cast(parsed.root).unwrap(),
             &ProjectItems::default(),
-            &AssemblyEnv::default(),
+            crate::common::fsharp_core_env(),
             &recovery,
         );
         let at = src.rfind("= A").unwrap() + 2;
