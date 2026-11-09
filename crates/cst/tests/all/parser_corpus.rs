@@ -49,6 +49,7 @@ use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::{Parse, parse, parse_sig};
 use borzoi_oracle_harness::manifest::Manifest;
+use borzoi_oracle_harness::par_map::par_map;
 
 use crate::common::corpus_manifest::{
     check_manifest, corpus_count_item, corpus_relative, regenerate_ignored, sort_by_corpus_key,
@@ -82,6 +83,13 @@ struct Tally {
     non_utf8: Vec<PathBuf>,
 }
 
+/// What parsing one corpus file found, for the serial [`Tally`].
+enum FileOutcome {
+    NonUtf8,
+    Panicked,
+    Parsed { round_trips: bool, clean: bool },
+}
+
 fn run_parse(path: &Path, src: &str) -> Parse {
     let is_sig = path.extension().and_then(|s| s.to_str()) == Some("fsi");
     if is_sig { parse_sig(src) } else { parse(src) }
@@ -100,35 +108,41 @@ fn parse_fsharp_corpus() {
 
     eprintln!("parsing {} files under {}", files.len(), root.display());
 
-    let mut tally = Tally::default();
-
-    for path in &files {
+    let outcomes = par_map(files.len(), |i| {
+        let path = &files[i];
         let src = match read_corpus_source(path) {
             Ok(src) => src,
-            Err(err) if err.is_non_utf8() => {
-                tally.non_utf8.push(path.clone());
-                continue;
-            }
+            Err(err) if err.is_non_utf8() => return FileOutcome::NonUtf8,
             Err(err) => panic!("{err}"),
         };
-        tally.total += 1;
-
-        let parsed = match catch_unwind_silent(|| run_parse(path, &src)) {
-            Ok(p) => p,
-            Err(_) => {
-                tally.panics.push(path.clone());
-                continue;
-            }
-        };
-
-        if parsed.root.text() != src.as_str() {
-            tally.roundtrip_failures.push(path.clone());
+        match catch_unwind_silent(|| run_parse(path, &src)) {
+            Ok(parsed) => FileOutcome::Parsed {
+                round_trips: parsed.root.text() == src.as_str(),
+                clean: parsed.errors.is_empty(),
+            },
+            Err(_) => FileOutcome::Panicked,
         }
+    });
 
-        if parsed.errors.is_empty() {
-            tally.clean += 1;
-        } else {
-            tally.files_with_errors.push(path.clone());
+    let mut tally = Tally::default();
+    for (path, outcome) in files.iter().zip(outcomes) {
+        match outcome {
+            FileOutcome::NonUtf8 => tally.non_utf8.push(path.clone()),
+            FileOutcome::Panicked => {
+                tally.total += 1;
+                tally.panics.push(path.clone());
+            }
+            FileOutcome::Parsed { round_trips, clean } => {
+                tally.total += 1;
+                if !round_trips {
+                    tally.roundtrip_failures.push(path.clone());
+                }
+                if clean {
+                    tally.clean += 1;
+                } else {
+                    tally.files_with_errors.push(path.clone());
+                }
+            }
         }
     }
 

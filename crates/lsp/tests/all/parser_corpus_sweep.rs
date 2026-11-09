@@ -102,50 +102,58 @@ fn parser_path_survives_fsharp_compiler_corpus() {
 
     let symbols = HashSet::from(["COMPILED".to_string()]);
 
-    let mut raw_panics = Vec::new();
-    let mut wrapper_panics = Vec::new();
-    let mut total_diags = 0usize;
-    let mut files_with_diags = 0usize;
-
-    // Silence per-file panic backtraces; we count panics ourselves. Per-thread,
-    // so a concurrent test's genuine panic still prints (see `panic_silence`).
-    //
-    // Scoped to the loop, and *not* held across the assertions below: a failing
-    // one must keep its payload and backtrace. (The hook this replaced was
-    // restored before them too.)
-    let _silence = silence_panics_here();
-
-    for path in &files {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
+    // Per file, whether the raw parser panicked and how many diagnostics the
+    // LSP path produced (`Err` where a panic escaped it); `None` for a file
+    // that does not read as UTF-8.
+    let swept = borzoi_oracle_harness::par_map::par_map(files.len(), |i| {
+        let text = std::fs::read_to_string(&files[i]).ok()?;
+        // Silence per-file panic backtraces; we count panics ourselves.
+        // Per-thread, so it is taken on the worker, and a concurrent test's
+        // genuine panic still prints (see `panic_silence`). It is not held
+        // across the assertions below: a failing one keeps its payload.
+        let _silence = silence_panics_here();
 
         // Informational: the raw parser may panic on incomplete constructs.
         // This is *why* the wrapper catches — we count it, we don't fail on it.
-        if catch_unwind(AssertUnwindSafe(|| borzoi_cst::parser::parse(&text))).is_err() {
-            raw_panics.push(path.clone());
-        }
+        let raw_panicked =
+            catch_unwind(AssertUnwindSafe(|| borzoi_cst::parser::parse(&text))).is_err();
 
         // The guarantee: the LSP path never panics, whatever the raw parser does.
         // The corpus is all `.fs` files, so parse under the implementation grammar.
-        match catch_unwind(AssertUnwindSafe(|| {
+        let diags = catch_unwind(AssertUnwindSafe(|| {
             parse_diagnostics(
                 &text,
                 &symbols,
                 SourceKind::Implementation,
                 LanguageVersion::Preview,
             )
-        })) {
-            Ok(diags) => {
-                if !diags.is_empty() {
+            .len()
+        }))
+        .map_err(|_| ());
+        Some((raw_panicked, diags))
+    });
+
+    let mut raw_panics = Vec::new();
+    let mut wrapper_panics = Vec::new();
+    let mut total_diags = 0usize;
+    let mut files_with_diags = 0usize;
+    for (path, outcome) in files.iter().zip(swept) {
+        let Some((raw_panicked, diags)) = outcome else {
+            continue;
+        };
+        if raw_panicked {
+            raw_panics.push(path.clone());
+        }
+        match diags {
+            Ok(n) => {
+                if n > 0 {
                     files_with_diags += 1;
                 }
-                total_diags += diags.len();
+                total_diags += n;
             }
-            Err(_) => wrapper_panics.push(path.clone()),
+            Err(()) => wrapper_panics.push(path.clone()),
         }
     }
-    drop(_silence);
 
     eprintln!(
         "corpus sweep: {} files | {} produced diagnostics | {} total diagnostics | {} raw-parser panics (caught)",

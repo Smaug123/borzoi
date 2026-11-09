@@ -34,6 +34,7 @@ pub mod manifest;
 pub mod module_tree;
 pub mod nuget_oracle;
 pub mod panic_silence;
+pub mod par_map;
 pub mod restore_globals;
 pub mod xml_pump;
 
