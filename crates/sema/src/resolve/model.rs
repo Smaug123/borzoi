@@ -283,6 +283,21 @@ pub(super) struct EarlierType {
     pub(super) access_root: Option<usize>,
 }
 
+/// Type declarations by simple name, each with its full path and generic
+/// arity.
+pub(super) type TypePlaces = HashMap<String, Vec<(Vec<String>, usize)>>;
+
+/// What a later file knows of one earlier type declaration's place and
+/// generic arity ([`ProjectItems::earlier_type_arities`]).
+#[derive(Debug, Clone)]
+pub(super) struct EarlierArity {
+    /// Its full path, when the declaring file placed it or its signature
+    /// gives it.
+    pub(super) path: Option<Vec<String>>,
+    /// Its generic arity, when known.
+    pub(super) arity: Option<usize>,
+}
+
 /// Exported project items visible to a file from *earlier* in Compile order.
 ///
 /// F# resolution is order-sensitive across files: a file may reference
@@ -373,6 +388,14 @@ pub struct ProjectItems {
     /// a type an earlier file declares is the **only** project type of its
     /// name ([`Resolver::earlier_file_type`](super::state::Resolver)).
     pub(super) earlier_types: HashMap<String, Vec<Option<EarlierType>>>,
+    /// Every earlier file's type declarations' generic arities, by simple
+    /// name: `Some` for each the declaring file placed, a signature-screened
+    /// one included (a signature must declare a type at its
+    /// implementation's arity, or hide it), and `None` for each it could not
+    /// place. What lets a later file bound the arities FCS weighs a
+    /// qualifier's namesakes by
+    /// ([`Resolver::lower_arity_namesake_possible`](super::state::Resolver)).
+    pub(super) earlier_type_arities: HashMap<String, Vec<EarlierArity>>,
     /// Every earlier-file project **module**'s simple name, from each file's
     /// syntactic whole-file pre-scan
     /// ([`ResolvedFile::own_module_simple_names`]). The dotted half of the
@@ -1342,12 +1365,35 @@ impl ProjectItems {
                 .entry(name.clone())
                 .or_default()
                 .push(entry);
+            self.earlier_type_arities
+                .entry(name.clone())
+                .or_default()
+                .push(EarlierArity {
+                    path: Some(t.path.clone()),
+                    arity: Some(t.arity),
+                });
         }
         for (name, &unplaced) in &file.unplaced_types {
             self.earlier_types
                 .entry(name.clone())
                 .or_default()
                 .extend(std::iter::repeat_n(None, unplaced));
+            let known = file
+                .unplaced_type_places
+                .get(name)
+                .map_or(&[][..], Vec::as_slice);
+            let arities = self.earlier_type_arities.entry(name.clone()).or_default();
+            arities.extend(known.iter().map(|(path, a)| EarlierArity {
+                path: Some(path.clone()),
+                arity: Some(*a),
+            }));
+            arities.extend(std::iter::repeat_n(
+                EarlierArity {
+                    path: None,
+                    arity: None,
+                },
+                unplaced.saturating_sub(known.len()),
+            ));
         }
         // The dotted half of the same shadow, fed from the same file in the
         // same call: the veto's soundness is that a name the project declares
@@ -2455,6 +2501,11 @@ pub enum DeclineCause {
     /// contest with a type of the same name, so the path may be read as
     /// module/type-qualified rather than as member access.
     HeadSlotUnordered,
+    /// A type qualifying a member or case with no type arguments written
+    /// (`T.M`, `T.Case`), where a namesake of lower generic arity may be in
+    /// scope: FCS tries same-named types fewest-generic-parameters first, so
+    /// the latest declaration of the name need not be the one it binds (#323).
+    QualifierArityNamesake,
     /// A dotted path whose head is a constructor **case**: a nullary case has
     /// no dottable members, so FCS reads it as a qualifier into a same-named
     /// module or type we could not resolve.
@@ -2606,6 +2657,7 @@ impl DeclineCause {
         DeclineCause::AttributeOpaqueLeaf,
         DeclineCause::OpaqueValueHead,
         DeclineCause::HeadSlotUnordered,
+        DeclineCause::QualifierArityNamesake,
         DeclineCause::CaseQualifierHead,
         DeclineCause::GlobalMarkerHead,
         DeclineCause::SignatureScreened,
@@ -2672,6 +2724,7 @@ impl DeclineCause {
             DeclineCause::AttributeOpaqueLeaf => "attribute_opaque_leaf",
             DeclineCause::OpaqueValueHead => "opaque_value_head",
             DeclineCause::HeadSlotUnordered => "head_slot_unordered",
+            DeclineCause::QualifierArityNamesake => "qualifier_arity_namesake",
             DeclineCause::CaseQualifierHead => "case_qualifier_head",
             DeclineCause::GlobalMarkerHead => "global_marker_head",
             DeclineCause::SignatureScreened => "signature_screened",
@@ -3180,6 +3233,11 @@ pub struct ResolvedFile {
     /// signature's, one the walk never reached), so a later file can never
     /// mistake "declared here, unplaced" for "not declared".
     pub(super) unplaced_types: HashMap<String, usize>,
+    /// The full paths and generic arities of those of
+    /// [`Self::unplaced_types`] whose place is known — a signature's types
+    /// and exceptions — by name; each name's remaining unplaced declarations
+    /// are of unknown place and arity.
+    pub(super) unplaced_type_places: TypePlaces,
     /// The file's syntactic whole-file module-simple-name pre-scan (see
     /// [`Resolver::own_module_simple_names`](super::state::Resolver)), carried
     /// into [`ProjectItems::project_module_simple_names`] by the Compile-order
@@ -3429,6 +3487,7 @@ impl ResolvedFile {
                 .zip(&other.placed_types)
                 .all(|(a, b)| a.same_for_later_files(b))
             && self.unplaced_types == other.unplaced_types
+            && self.unplaced_type_places == other.unplaced_type_places
             && self.own_module_simple_names == other.own_module_simple_names
             && self.contributions == other.contributions
             && self.declares_core_attribute_alias == other.declares_core_attribute_alias
@@ -3474,6 +3533,7 @@ impl ResolvedFile {
             placed_types: Vec::new(),
             // Filled by the fold from the signature's own declarations.
             unplaced_types: HashMap::new(),
+            unplaced_type_places: HashMap::new(),
             own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             contributions: FileContributions::default(),

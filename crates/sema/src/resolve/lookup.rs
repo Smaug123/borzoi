@@ -17,8 +17,8 @@ use super::model::{
     Resolution, SlotClass,
 };
 use super::state::{
-    ActivePatternShape, AssemblyPath, CaseTier, MarkReach, OpenInterpretation, Resolver,
-    SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
+    ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
+    Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -1856,9 +1856,8 @@ impl<'a> Resolver<'a> {
     /// at the same path is same-file / cross-file dependent and not order-decidable
     /// without declaration-block provenance, which sema does not model). FCS resolves
     /// some of these to the case; we say nothing (never a wrong target).
-    pub(super) fn cross_file_type_case(&self, written: &[String], rooted: bool) -> Option<ItemId> {
+    pub(super) fn cross_file_type_case(&self, written: &[String], rooted: bool) -> CrossFileCase {
         self.cross_file_type_case_tiered(written, rooted)
-            .map(|(_, id)| id)
     }
 
     /// [`Self::cross_file_type_case`], additionally reporting the [`CaseTier`]
@@ -1867,11 +1866,12 @@ impl<'a> Resolver<'a> {
     /// orders this project reading against a competing referenced-assembly one
     /// with. Callers that only bind the case (there is no assembly reading to
     /// contend with) take the tier-free wrapper.
-    fn cross_file_type_case_tiered(
-        &self,
-        written: &[String],
-        rooted: bool,
-    ) -> Option<(CaseTier, ItemId)> {
+    ///
+    /// A reading whose case exists but whose type a namesake FCS tries first
+    /// may displace ([`Self::earlier_case_type_namesake_possible`]) ends the
+    /// walk as [`CrossFileCase::Declined`]: a lower tier's reading is not
+    /// what FCS binds when a higher one holds the path.
+    fn cross_file_type_case_tiered(&self, written: &[String], rooted: bool) -> CrossFileCase {
         // An `open type T` (modelled or not) sets `unmodelled_open_active`: T's
         // unmodelled nested types could supply the head segment, shadowing the
         // project type for the qualifier (`open Lib; open type Demo.Thing; Inner.Red`
@@ -1879,12 +1879,20 @@ impl<'a> Resolver<'a> {
         // candidate could be redirected by that open, so defer — exactly as the
         // qualified-value branch does (`rooted || !unmodelled_open_active`).
         if !rooted && self.unmodelled_open_active {
-            return None;
+            return CrossFileCase::Miss;
         }
-        let hit = |full: &[String]| -> Option<ItemId> {
-            self.preceding
+        let hit = |full: &[String], tier: CaseTier| -> CrossFileCase {
+            match self
+                .preceding
                 .type_qualified_case(full, &self.container_path)
                 .filter(|_| !self.value_shadows_case(full))
+            {
+                None => CrossFileCase::Miss,
+                Some(_) if self.earlier_case_type_namesake_possible(full, written.len() > 2) => {
+                    CrossFileCase::Declined
+                }
+                Some(id) => CrossFileCase::Hit(tier, id),
+            }
         };
         if !rooted {
             // Tier 0 — a lexically in-scope **module alias** as the bare head:
@@ -1897,27 +1905,29 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                return hit(&full).map(|id| (CaseTier::Alias, id));
+                return hit(&full, CaseTier::Alias);
             }
             // Tier 1 — explicit opens, latest first.
             for prefix in self.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                if let Some(id) = hit(&full) {
-                    return Some((CaseTier::Namespace, id));
+                match hit(&full, CaseTier::Namespace) {
+                    CrossFileCase::Miss => {}
+                    found => return found,
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
             for k in (1..=self.container_path.len()).rev() {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
-                if let Some(id) = hit(&full) {
-                    return Some((CaseTier::Namespace, id));
+                match hit(&full, CaseTier::Namespace) {
+                    CrossFileCase::Miss => {}
+                    found => return found,
                 }
             }
         }
         // Tier 3 — the path as written (root / fully-qualified).
-        hit(written).map(|id| (CaseTier::Namespace, id))
+        hit(written, CaseTier::Namespace)
     }
 
     /// Bring the **direct** exported values of project module `module_path` into
@@ -3070,6 +3080,14 @@ impl<'a> Resolver<'a> {
                 _ => head_is_value,
             };
             if !value_takes_qualifier {
+                if self.lower_arity_namesake_possible(head, type_id, None) {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                    );
+                    return;
+                }
                 self.record_type_qualifier(first, case_seg, type_id, case_res);
                 return;
             }
@@ -3093,6 +3111,18 @@ impl<'a> Resolver<'a> {
         {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
+            let type_takes_qualifier = !head_is_value
+                || self
+                    .value_slot_position(head)
+                    .is_some_and(|vr| vr <= self.defs[type_id.index()].range.start());
+            if type_takes_qualifier && self.lower_arity_namesake_possible(head, type_id, None) {
+                self.defer_with_cause(
+                    first.text_range(),
+                    segments,
+                    DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                );
+                return;
+            }
             if head_is_value {
                 // FCS gives a value in scope the qualifier outright unless a
                 // type took its unqualified slot ([`Self::head_value_slot`]):
@@ -3353,8 +3383,17 @@ impl<'a> Resolver<'a> {
                 // same-file-rooted whichever reading F# takes, so an earlier
                 // file's same-written-path case is never the target.
                 && !self.cross_file_case_shadowed_same_file(&written_path)
-                && let Some(id) = self.cross_file_type_case(&written_path, false)
+                && let found = self.cross_file_type_case(&written_path, false)
+                && !matches!(found, CrossFileCase::Miss)
             {
+                let CrossFileCase::Hit(_, id) = found else {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                    );
+                    return;
+                };
                 let whole = TextRange::new(
                     first.text_range().start(),
                     segments.last().expect("non-empty path").text_range().end(),
@@ -3892,8 +3931,11 @@ impl<'a> Resolver<'a> {
     /// `case_seg`): the head → the enum *type* def and the whole span → the case
     /// def, mirroring FCS. Shared by expression ([`resolve_long_ident`](Self::resolve_long_ident))
     /// and pattern ([`resolve_pat_types`](Self::resolve_pat_types)) position, both
-    /// of which FCS resolves identically. Returns `true` (and records both) iff it
-    /// matched; otherwise records nothing (the path defers, never a wrong member).
+    /// of which FCS resolves identically. Returns `true` iff it matched: it then
+    /// records both, or — when a namesake of lower arity may be the type FCS
+    /// binds ([`Self::lower_arity_namesake_possible`]) — records the path's
+    /// decline. Otherwise it records nothing (the path defers, never a wrong
+    /// member).
     pub(super) fn record_type_case_path(
         &mut self,
         type_seg: &SyntaxToken,
@@ -3902,6 +3944,14 @@ impl<'a> Resolver<'a> {
         let Some((type_id, case_res)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
+        if self.lower_arity_namesake_possible(&id_text(type_seg), type_id, None) {
+            self.defer_with_cause(
+                type_seg.text_range(),
+                &[type_seg.clone(), case_seg.clone()],
+                DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+            );
+            return true;
+        }
         self.record_type_qualifier(type_seg, case_seg, type_id, case_res);
         true
     }
@@ -4411,6 +4461,13 @@ impl<'a> Resolver<'a> {
                     // (`Miss`) rather than emit a case with no type target.
                     return Some(SameFileQualified::Miss);
                 };
+                // FCS tries the module's same-named types fewest generic
+                // parameters first (#323).
+                if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
+                    return Some(SameFileQualified::Decline(
+                        DeclineCause::QualifierArityNamesake,
+                    ));
+                }
                 return Some(SameFileQualified::Emit { type_id, case_res });
             }
             if !in_pattern && seg.ty {
@@ -4426,6 +4483,11 @@ impl<'a> Resolver<'a> {
                     self.emittable_type_member(&module_path, ty, case, use_pos)
                     && let Some(&type_id) = self.type_defs.get(&module_path).and_then(|m| m.get(ty))
                 {
+                    if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
+                        return Some(SameFileQualified::Decline(
+                            DeclineCause::QualifierArityNamesake,
+                        ));
+                    }
                     return Some(SameFileQualified::Emit {
                         type_id,
                         case_res: Resolution::Local(member_def),
@@ -4497,6 +4559,16 @@ impl<'a> Resolver<'a> {
                 true
             }
             SameFileQualified::DeferStop => true,
+            SameFileQualified::Decline(cause) => {
+                if let Some(head_seg) = segments.first() {
+                    self.defer_with_cause(
+                        head_seg.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(cause),
+                    );
+                }
+                true
+            }
             SameFileQualified::Miss => false,
         }
     }
@@ -4571,7 +4643,17 @@ impl<'a> Resolver<'a> {
                 );
                 return;
             }
-            let project = self.cross_file_type_case_tiered(&written, false);
+            let project = match self.cross_file_type_case_tiered(&written, false) {
+                CrossFileCase::Hit(tier, id) => Some((tier, id)),
+                CrossFileCase::Miss => None,
+                CrossFileCase::Declined => {
+                    self.record_path_decline(
+                        segs,
+                        DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                    );
+                    return;
+                }
+            };
             // Order the project reading against the referenced assemblies by the
             // tier each reaches the head at. An `open` out-ranks the enclosing
             // namespace and the root, and a project module **alias** head

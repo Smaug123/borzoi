@@ -1788,15 +1788,18 @@ fn signature_slot(
         surface.exports,
     );
     contributors::signature_contributions(sig, preceding, assemblies, &mut rf);
-    rf.unplaced_types = signature_type_decls(sig);
+    (rf.unplaced_types, rf.unplaced_type_places) = signature_type_decls(sig);
     rf
 }
 
 /// A signature's type and exception names, each declaration unplaced: a
 /// later file sees the signature's type, which may not be the
-/// implementation's ([`ResolvedFile::unplaced_types`]).
-fn signature_type_decls(sig: &SigFile) -> HashMap<String, usize> {
-    let mut out: HashMap<String, usize> = HashMap::new();
+/// implementation's ([`ResolvedFile::unplaced_types`]). With them, each
+/// declaration's full path and generic arity where the module structure
+/// gives it ([`ResolvedFile::unplaced_type_places`]); an exception's arity
+/// is 0.
+fn signature_type_decls(sig: &SigFile) -> (HashMap<String, usize>, model::TypePlaces) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
     let type_names = sig
         .syntax()
         .descendants()
@@ -1808,9 +1811,71 @@ fn signature_type_decls(sig: &SigFile) -> HashMap<String, usize> {
         .filter_map(ExceptionDefnDecl::cast)
         .filter_map(|exn| exn.union_case().and_then(|c| c.ident()));
     for name in type_names.chain(exception_names) {
-        *out.entry(id_text(&name).to_string()).or_default() += 1;
+        *counts.entry(id_text(&name).to_string()).or_default() += 1;
     }
-    out
+    let mut places = model::TypePlaces::new();
+    for fragment in sig.modules() {
+        let container = match fragment.kind() {
+            ModuleOrNamespaceKind::NamedModule => header_long_id_path(&fragment),
+            ModuleOrNamespaceKind::DeclaredNamespace | ModuleOrNamespaceKind::GlobalNamespace => {
+                Some(
+                    fragment
+                        .long_id()
+                        .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
+                        .unwrap_or_default(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(container) = container {
+            signature_type_places(&container, fragment.sig_decls(), &mut places);
+        }
+    }
+    (counts, places)
+}
+
+/// The full path and generic arity of each type and exception `decls`
+/// declares under `container`, nested modules' included.
+fn signature_type_places(
+    container: &[String],
+    decls: impl Iterator<Item = SigDecl>,
+    places: &mut model::TypePlaces,
+) {
+    let mut place = |name: &SyntaxToken, arity: usize| {
+        let name = id_text(name).to_string();
+        let mut path = container.to_vec();
+        path.push(name.clone());
+        places.entry(name).or_default().push((path, arity));
+    };
+    let mut nested = Vec::new();
+    for decl in decls {
+        match decl {
+            SigDecl::Types(types) => {
+                for defn in types.defns() {
+                    if let Some(name) = defn.long_id().and_then(single_ident) {
+                        place(&name, defn.typar_decls().map_or(0, |t| t.typars().count()));
+                    }
+                }
+            }
+            SigDecl::Exception(exn) => {
+                if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
+                    place(&name, 0);
+                }
+            }
+            SigDecl::NestedModule(nm) => nested.push(nm),
+            SigDecl::Open(_)
+            | SigDecl::ModuleAbbrev(_)
+            | SigDecl::Val(_)
+            | SigDecl::HashDirective(_) => {}
+        }
+    }
+    for nm in nested {
+        if let Some(li) = nm.long_id() {
+            let mut path = container.to_vec();
+            path.extend(li.idents().map(|t| id_text(&t).to_string()));
+            signature_type_places(&path, nm.sig_decls(), places);
+        }
+    }
 }
 
 /// The **wholesale** extension-source signal one file threads to later
@@ -2534,6 +2599,7 @@ impl<'a> Resolver<'a> {
             attribute_resolutions: self.attribute_resolutions,
             placed_types: std::mem::take(&mut self.placed_types),
             unplaced_types,
+            unplaced_type_places: HashMap::new(),
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
