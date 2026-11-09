@@ -132,6 +132,14 @@
 ///      | {"ok":false,"exceptionType":s,"message":s,"nugetCommands":identity}
 ///          (restore threw, as it does for a package whose minimum client
 ///          version is above its own; `dotnet restore` fails then too)
+///   {"op":"globalPackagesFolder","root":dir,"environment":[[name,value|null], ..]}
+///     The global packages folder restore uses for a project in `dir` that
+///     sets no `RestorePackagesPath`: `SettingsUtility.GetGlobalPackagesFolder`
+///     over `Settings.LoadDefaultSettings(dir, null, XPlatMachineWideSetting())`,
+///     with `environment` applied for this request only.
+///     -> {"ok":true,"folder":s,"configFilePaths":[s..]}
+///      | {"ok":false,"exceptionType":s,"message":s}
+///          (loading the settings or reading the folder threw)
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -1057,6 +1065,57 @@ let private respondRestoreDgSpec (sdkDir: string) (root: JsonElement) : string =
         with _ ->
             ()
 
+/// The global packages folder NuGet's restore task uses for a project in
+/// `root` with no `RestorePackagesPath` and no `RestoreConfigFile`:
+/// `GetRestoreSettingsTask` loads the settings as
+/// `Settings.LoadDefaultSettings(root, null, XPlatMachineWideSetting())` and
+/// asks `SettingsUtility.GetGlobalPackagesFolder` of them. `environment` lists
+/// `[name, value]` pairs (`value` null to remove the variable) set for this
+/// request alone and restored afterwards; NuGet reads `NUGET_PACKAGES` and the
+/// variables a `%NAME%` in a config value names at the time of the call. The
+/// home folder and the machine-wide config folder are read once per process,
+/// so they are the oracle's own (`--env`).
+let private respondGlobalPackagesFolder (root: JsonElement) : string =
+    let directory = root.GetProperty("root").GetString()
+
+    let changes =
+        root.GetProperty("environment").EnumerateArray()
+        |> Seq.map (fun pair ->
+            let value = pair[1]
+
+            pair[0].GetString(),
+            (if value.ValueKind = JsonValueKind.Null then
+                 null
+             else
+                 value.GetString()))
+        |> Seq.toArray
+
+    let previous =
+        changes |> Array.map (fun (name, _) -> name, Environment.GetEnvironmentVariable name)
+
+    try
+        for (name, value) in changes do
+            Environment.SetEnvironmentVariable(name, value)
+
+        try
+            let settings =
+                Settings.LoadDefaultSettings(directory, null, XPlatMachineWideSetting())
+
+            let folder = SettingsUtility.GetGlobalPackagesFolder settings
+
+            JsonSerializer.Serialize
+                {| ok = true
+                   folder = folder
+                   configFilePaths = Array.ofSeq (settings.GetConfigFilePaths()) |}
+        with error ->
+            JsonSerializer.Serialize
+                {| ok = false
+                   exceptionType = error.GetType().FullName
+                   message = error.Message |}
+    finally
+        for (name, value) in previous do
+            Environment.SetEnvironmentVariable(name, value)
+
 /// The request loop. Kept out of `main` so that compiling `main` never needs a
 /// NuGet type, which would load NuGet before the `Resolving` handler exists.
 [<MethodImpl(MethodImplOptions.NoInlining)>]
@@ -1090,6 +1149,7 @@ let private serve (sdkDir: string) =
                     | "normaliseDgSpec" -> respondNormaliseDgSpec sdkDir root
                     | "nuGetLogCodes" -> respondNuGetLogCodes sdkDir
                     | "restoreDgSpec" -> respondRestoreDgSpec sdkDir root
+                    | "globalPackagesFolder" -> respondGlobalPackagesFolder root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}

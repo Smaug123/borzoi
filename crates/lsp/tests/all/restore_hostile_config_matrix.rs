@@ -76,20 +76,45 @@ enum Expect {
     Declines,
 }
 
-/// Write a hazard project (`App.fsproj` body + optional sibling files), run the
-/// on-demand restore against it, and assert both invariants: the project tree is
-/// byte-for-byte unchanged, and the outcome matches `expect`.
-fn assert_hazard(tag: &str, fsproj_body: &str, siblings: &[(&str, &str)], expect: Expect) {
+/// A fresh scratch folder for `tag`, by its real path: the on-demand restore
+/// declines a project whose directory is reached through a symlink, and the
+/// temporary directory is one on macOS.
+fn scratch_folder(tag: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-hostile-{tag}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
-    // By its real path: the on-demand restore declines a project whose
-    // directory is reached through a symlink, and the temporary directory is
-    // one on macOS.
-    let root = std::fs::canonicalize(&root).unwrap();
+    std::fs::canonicalize(&root).unwrap()
+}
+
+/// Write a hazard project (`App.fsproj` body + optional sibling files), run the
+/// on-demand restore against it, and assert both invariants: the project tree is
+/// byte-for-byte unchanged, and the outcome matches `expect`.
+fn assert_hazard(tag: &str, fsproj_body: &str, siblings: &[(&str, &str)], expect: Expect) {
+    let root = scratch_folder(tag);
+    let outcome = restore_hazard(
+        tag,
+        &root,
+        fsproj_body,
+        siblings,
+        SdkDiscoveryEnv::from_process_env(),
+    );
+    assert_outcome(tag, expect, &outcome);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Write the hazard project into `root`, run the on-demand restore under `env`,
+/// assert that the project tree is byte-for-byte unchanged, and return the
+/// outcome.
+fn restore_hazard(
+    tag: &str,
+    root: &Path,
+    fsproj_body: &str,
+    siblings: &[(&str, &str)],
+    env: SdkDiscoveryEnv,
+) -> RestoreOutcome {
     let fsproj = root.join("App.fsproj");
     std::fs::write(&fsproj, fsproj_body).unwrap();
     std::fs::write(root.join("App.fs"), "module App\n\nlet answer = 42\n").unwrap();
@@ -97,13 +122,13 @@ fn assert_hazard(tag: &str, fsproj_body: &str, siblings: &[(&str, &str)], expect
         std::fs::write(root.join(name), content).unwrap();
     }
 
-    let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
+    let mut workspace = Workspace::with_env(env);
     let served = workspace.served_tfm_for_project(&fsproj);
     let dotnet = dotnet_root();
 
-    let before = tree_snapshot(&root);
+    let before = tree_snapshot(root);
     let outcome = restore_to_scratch_assemblies(&fsproj, &dotnet, &served, Some(workspace.env()));
-    let after = tree_snapshot(&root);
+    let after = tree_snapshot(root);
 
     assert_eq!(
         before,
@@ -113,8 +138,12 @@ fn assert_hazard(tag: &str, fsproj_body: &str, siblings: &[(&str, &str)], expect
         after.difference(&before).collect::<Vec<_>>(),
         before.difference(&after).collect::<Vec<_>>(),
     );
+    outcome
+}
 
-    match (expect, &outcome) {
+/// Assert that `outcome` is what `expect` says.
+fn assert_outcome(tag: &str, expect: Expect, outcome: &RestoreOutcome) {
+    match (expect, outcome) {
         (Expect::Resolves, RestoreOutcome::Resolved(resolved)) => {
             let n = resolved.package_dlls.len() + resolved.framework_dlls.len();
             assert!(n > 0, "[{tag}] expected a non-empty resolve, got nothing");
@@ -129,8 +158,36 @@ fn assert_hazard(tag: &str, fsproj_body: &str, siblings: &[(&str, &str)], expect
             }
         ),
     }
+}
 
-    std::fs::remove_dir_all(&root).ok();
+/// The process environment with neither `NUGET_PACKAGES` nor
+/// `DOTNET_CLI_HOME`, and `home` as the home: the package folder then comes
+/// from the config files, and the user's own config is not read.
+fn env_choosing_the_folder_by_config(home: &Path) -> SdkDiscoveryEnv {
+    // .NET hands NuGet `HOME` only if it can read it.
+    std::fs::create_dir_all(home).unwrap();
+    let mut env = SdkDiscoveryEnv::from_process_env();
+    for name in ["NUGET_PACKAGES", "DOTNET_CLI_HOME", "HOME"] {
+        env.build_environment.remove(name);
+    }
+    env.nuget_packages_dir = None;
+    env.dotnet_cli_home = None;
+    env.home_dir = Some(home.to_owned());
+    env
+}
+
+/// Copy the folder `from` into `to`, recursively.
+fn copy_folder(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_folder(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
 }
 
 /// `net10.0` project body with the given extra `<PropertyGroup>` lines and item
@@ -244,9 +301,78 @@ fn repo_local_restore_packages_path_stays_in_cache() {
 }
 
 #[test]
+fn config_global_packages_folder_inside_the_project_declines() {
+    // With no `NUGET_PACKAGES`, a repo-local `globalPackagesFolder` is the
+    // folder NuGet would use, and restore could extract into it: decline,
+    // writing nothing.
+    let scratch = scratch_folder("config-gpf-inside");
+    let root = scratch.join("app");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = "<?xml version=\"1.0\"?>\n\
+                  <configuration><config>\
+                  <add key=\"globalPackagesFolder\" value=\"local-packages\" />\
+                  </config></configuration>\n";
+    let outcome = restore_hazard(
+        "config-gpf-inside",
+        &root,
+        &project("", &fsharp_core_ref()),
+        &[("nuget.config", config)],
+        env_choosing_the_folder_by_config(&scratch.join("home")),
+    );
+    assert_outcome("config-gpf-inside", Expect::Declines, &outcome);
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+#[test]
+fn config_global_packages_folder_is_the_folder_restore_reads() {
+    // With no `NUGET_PACKAGES`, the restore reads the folder the config names,
+    // and only that one: every package assembly resolves from it.
+    let scratch = scratch_folder("config-gpf-respected");
+    let root = scratch.join("app");
+    std::fs::create_dir_all(&root).unwrap();
+    let vendored = PathBuf::from(
+        std::env::var_os("NUGET_PACKAGES").expect("NUGET_PACKAGES unset — run under `nix develop`"),
+    );
+    let packages = scratch.join("packages");
+    copy_folder(
+        &vendored.join("fsharp.core").join(FSHARP_CORE_VERSION),
+        &packages.join("fsharp.core").join(FSHARP_CORE_VERSION),
+    );
+    let config = format!(
+        "<configuration><config>\
+         <add key=\"globalPackagesFolder\" value=\"{}\" />\
+         </config></configuration>\n",
+        packages.display()
+    );
+    let outcome = restore_hazard(
+        "config-gpf-respected",
+        &root,
+        &project("", &fsharp_core_ref()),
+        &[("nuget.config", &config)],
+        env_choosing_the_folder_by_config(&scratch.join("home")),
+    );
+    assert_outcome("config-gpf-respected", Expect::Resolves, &outcome);
+    let RestoreOutcome::Resolved(resolved) = outcome else {
+        unreachable!("asserted above")
+    };
+    assert!(
+        !resolved.package_dlls.is_empty()
+            && resolved
+                .package_dlls
+                .iter()
+                .all(|dll| dll.starts_with(&packages)),
+        "every package assembly must come from the configured folder {}: {:?}",
+        packages.display(),
+        resolved.package_dlls
+    );
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+#[test]
 fn config_global_packages_folder_stays_in_cache() {
-    // A repo-local `globalPackagesFolder` in NuGet.Config would likewise extract
-    // into the tree; the pinned `RestorePackagesPath` must override it.
+    // `NUGET_PACKAGES` (the devshell sets it) outranks a repo-local
+    // `globalPackagesFolder`, so the restore reads the cache it names and
+    // writes nothing in the tree.
     let config = "<?xml version=\"1.0\"?>\n\
                   <configuration><config>\
                   <add key=\"globalPackagesFolder\" value=\"local-packages\" />\

@@ -33,11 +33,27 @@
 //!   cold cache fails fast (~0.7s) with `NU1101` instead of stalling on the
 //!   network, which nothing could make fast anyway — so we decline and degrade.
 //!   `-p:NuGetAudit=false` keeps the audit from reaching its own sources.
-//! - **Package folder pinned.** `-p:RestorePackagesPath=<cache>` forces NuGet's
-//!   *package* folder to the resolved warm cache, overriding a project
-//!   `RestorePackagesPath` or a config `globalPackagesFolder` that would extract
-//!   packages into a repo-local directory — a source-tree write the output
-//!   redirects above do not cover.
+//! - **Package folder pinned to NuGet's own.** `-p:RestorePackagesPath=<folder>`
+//!   pins the *package* folder to the one NuGet itself would use for the
+//!   project — `$NUGET_PACKAGES`, else the `globalPackagesFolder` of the config
+//!   files NuGet loads, else `<home>/.nuget/packages` — computed by
+//!   [`borzoi_nuget::settings::global_packages_folder`], which declines what it
+//!   cannot say exactly (and then so does the restore). Reading another folder
+//!   would resolve against packages the user's own restore never sees: an
+//!   offline restore resolves what the folder holds, settling for a higher
+//!   version (`NU1603`) where the requested one is missing.
+//!
+//!   The pin masks a project's own `RestorePackagesPath` (residual: such a
+//!   project restores from the settings' folder, not its own). A folder inside
+//!   the project's directory declines: the SDK's `library-packs` sources
+//!   survive the source override below (its targets name
+//!   `RestoreAdditionalProjectSources` in `TreatAsLocalProperty`), so restore
+//!   can extract into the folder, and the project's tree is not ours to write.
+//!   After the restore, the config files its spec records must be the ones the
+//!   folder was computed from, or the result is discarded: MSBuild's settings
+//!   task loads them itself, so this catches a `RestoreConfigFile`, a
+//!   `RestoreRootConfigDirectory`, and any walk modelled differently from
+//!   NuGet's, with the real NuGet as the judge.
 //! - **No source-tree writes.** `-p:RestorePackagesWithLockFile=false` plus a
 //!   redirected `NuGetLockFilePath` keep a lock-file-enabled project from writing
 //!   `packages.lock.json` beside the project. A project that *already* has a
@@ -88,6 +104,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use borzoi_spawn::BoundedCommand;
+
+use borzoi_nuget::settings::{GlobalPackagesFolder, global_packages_folder};
 
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
@@ -203,7 +221,7 @@ pub fn restore_to_scratch_assemblies(
         &inputs.project,
         &scratch.path,
         dotnet_root,
-        &inputs.cache_root,
+        &inputs.packages.folder,
         env,
     ) {
         RunResult::Succeeded => {}
@@ -215,6 +233,12 @@ pub fn restore_to_scratch_assemblies(
             return RestoreOutcome::Declined;
         }
         RunResult::Transient => return RestoreOutcome::TransientFailure,
+    }
+
+    let spec = restored_spec_path(&scratch.path, project)
+        .and_then(|path| std::fs::read_to_string(path).ok());
+    if !spec.is_some_and(|spec| loads_the_modelled_config_files(&spec, &inputs)) {
+        return RestoreOutcome::Declined;
     }
 
     let assets_path = scratch.path.join("project.assets.json");
@@ -259,8 +283,9 @@ pub fn restore_to_scratch_assemblies(
 struct RestoreInputs {
     /// The project.
     project: PathBuf,
-    /// The warm cache the restore reads.
-    cache_root: PathBuf,
+    /// The global packages folder NuGet would use for the project, which the
+    /// restore is pinned to, and the config files it was computed from.
+    packages: GlobalPackagesFolder,
 }
 
 /// The inputs of an offline restore of `project`, or `None` if the project
@@ -296,23 +321,97 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
         return None;
     }
 
-    // The (absolute) warm cache to pin package extraction/read to. A project's
-    // `RestorePackagesPath` or a config `globalPackagesFolder` would otherwise
-    // point NuGet's *package* folder at a repo-local directory, extracting
-    // package files into the source tree (the output redirects only cover the
-    // *generated* restore output). Forcing it to the resolved cache keeps
-    // extraction out of the tree and reads from the warm cache the LSP knows.
-    let Some(cache_root) = cache_root(env) else {
+    // The package folder NuGet itself would use, under exactly the
+    // environment the restore runs in (see the module docs).
+    let directory = project.parent()?;
+    let packages = match global_packages_folder(directory, &restore_environment(env)) {
+        Ok(packages) => packages,
+        Err(decline) => {
+            tracing::info!(
+                project = %project.display(),
+                %decline,
+                "on-demand restore declined: the global packages folder NuGet would use is not known"
+            );
+            return None;
+        }
+    };
+    if is_within(&packages.folder, directory) {
         tracing::info!(
             project = %project.display(),
-            "on-demand restore declined: no global-packages cache root known"
+            folder = %packages.folder.display(),
+            "on-demand restore declined: the global packages folder is inside the project's directory"
         );
         return None;
-    };
+    }
     Some(RestoreInputs {
         project: project.to_path_buf(),
-        cache_root,
+        packages,
     })
+}
+
+/// Whether `path` is `directory` or beneath it, lexically or once the part of
+/// `path` that exists is resolved through its symbolic links. A path that
+/// cannot be resolved counts as inside.
+fn is_within(path: &Path, directory: &Path) -> bool {
+    let under = |path: &Path, directory: &Path| {
+        path.ancestors()
+            .any(|ancestor| paths_equal(ancestor, directory))
+    };
+    if under(path, directory) {
+        return true;
+    }
+    let Some(existing) = path.ancestors().find(|ancestor| ancestor.exists()) else {
+        return true;
+    };
+    let (Ok(real), Ok(real_directory)) = (
+        std::fs::canonicalize(existing),
+        std::fs::canonicalize(directory),
+    ) else {
+        return true;
+    };
+    let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
+    under(&real.join(rest), &real_directory)
+}
+
+/// Where a restore whose output is redirected to `scratch` writes the
+/// dependency-graph spec it read for `project`.
+fn restored_spec_path(scratch: &Path, project: &Path) -> Option<PathBuf> {
+    let mut name = project.file_name()?.to_os_string();
+    name.push(".nuget.dgspec.json");
+    Some(scratch.join(name))
+}
+
+/// Whether the dependency-graph spec `text`, written by MSBuild for the
+/// restore of `inputs.project`, records exactly the config files
+/// `inputs.packages` was computed from. MSBuild's settings task loads them
+/// itself, so a disagreement means the folder pinned may not be the one NuGet
+/// would have chosen (under a `RestoreConfigFile`, say), and the result must
+/// not be trusted.
+fn loads_the_modelled_config_files(text: &str, inputs: &RestoreInputs) -> bool {
+    let recorded = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|spec| {
+            let projects = spec.get("projects")?.as_object()?;
+            let (_, project) = projects
+                .iter()
+                .find(|(name, _)| paths_equal(Path::new(name), &inputs.project))?;
+            project
+                .pointer("/restore/configFilePaths")?
+                .as_array()?
+                .iter()
+                .map(|path| path.as_str().map(PathBuf::from))
+                .collect::<Option<Vec<PathBuf>>>()
+        });
+    let agree = recorded.as_deref() == Some(inputs.packages.config_files.as_slice());
+    if !agree {
+        tracing::info!(
+            project = %inputs.project.display(),
+            recorded = ?recorded,
+            modelled = ?inputs.packages.config_files,
+            "on-demand restore declined: restore loaded other config files than the package folder was computed from"
+        );
+    }
+    agree
 }
 
 /// `project`, made absolute and lexically normalised, if its directory is
@@ -414,12 +513,10 @@ pub fn restore_graph(
             )
         }
         RestoreGraphSource::Restored => {
-            let Some(file) = project.file_name() else {
+            let Some(written) = restored_spec_path(&scratch.path, project) else {
                 return RestoreGraph::Declined;
             };
-            let mut name = file.to_os_string();
-            name.push(".nuget.dgspec.json");
-            (Verb::Restore, scratch.path.join(name))
+            (Verb::Restore, written)
         }
     };
     let Some(cmd) = offline_restore_command(
@@ -427,7 +524,7 @@ pub fn restore_graph(
         project,
         &scratch.path,
         dotnet_root,
-        &inputs.cache_root,
+        &inputs.packages.folder,
         env,
     ) else {
         return RestoreGraph::TransientFailure;
@@ -439,8 +536,10 @@ pub fn restore_graph(
         (RunResult::Declined | RunResult::Succeeded, _) => {}
     }
     match std::fs::read_to_string(&written) {
-        Ok(text) => RestoreGraph::Written { text, scratch },
-        Err(_) => RestoreGraph::Declined,
+        Ok(text) if loads_the_modelled_config_files(&text, &inputs) => {
+            RestoreGraph::Written { text, scratch }
+        }
+        _ => RestoreGraph::Declined,
     }
 }
 
@@ -459,7 +558,7 @@ fn run_offline_restore(
     project: &Path,
     scratch: &Path,
     dotnet_root: &Path,
-    cache_root: &Path,
+    packages_folder: &Path,
     env: &SdkDiscoveryEnv,
 ) -> RunResult {
     let Some(cmd) = offline_restore_command(
@@ -467,7 +566,7 @@ fn run_offline_restore(
         project,
         scratch,
         dotnet_root,
-        cache_root,
+        packages_folder,
         env,
     ) else {
         return RunResult::Transient;
@@ -507,7 +606,7 @@ fn offline_restore_command(
     project: &Path,
     scratch: &Path,
     dotnet_root: &Path,
-    cache_root: &Path,
+    packages_folder: &Path,
     env: &SdkDiscoveryEnv,
 ) -> Option<Command> {
     // An empty local folder used as the *only* restore source. As an MSBuild
@@ -563,11 +662,12 @@ fn offline_restore_command(
     // assets into the source tree and leave scratch empty. Pin it to scratch
     // too so the whole output stays there regardless.
     .arg(property_arg("RestoreOutputPath", ext_path.as_os_str()))
-    // Pin the *package* folder (extraction + read) to the resolved warm
-    // cache, overriding a project `RestorePackagesPath` or config
-    // `globalPackagesFolder` that would otherwise extract packages into a
-    // repo-local directory (a source-tree write the output redirects miss).
-    .arg(property_arg("RestorePackagesPath", cache_root.as_os_str()))
+    // Pin the *package* folder (extraction and read) to the one NuGet would
+    // use (see the module docs).
+    .arg(property_arg(
+        "RestorePackagesPath",
+        packages_folder.as_os_str(),
+    ))
     .arg("-p:RestoreRecursive=false")
     .arg(property_arg("RestoreSources", empty_source.as_os_str()))
     .arg("-p:RestoreAdditionalProjectSources=")
@@ -600,27 +700,6 @@ fn with_trailing_slash(path: &Path) -> std::ffi::OsString {
     let mut s = path.as_os_str().to_os_string();
     s.push("/");
     s
-}
-
-/// The absolute global-packages cache to pin restore's package folder to:
-/// `$NUGET_PACKAGES` when the environment set it, else NuGet's documented
-/// default `<home>/.nuget/packages`. Absolutized (a relative value would, under
-/// the project-directory cwd, resolve inside the source tree). `None` when
-/// neither is known — the caller then declines rather than let a repo-local
-/// package folder take effect. An empty value counts as unavailable.
-fn cache_root(env: &SdkDiscoveryEnv) -> Option<PathBuf> {
-    let non_empty = |path: &Path| (!path.as_os_str().is_empty()).then(|| path.to_path_buf());
-    let root = env
-        .nuget_packages_dir
-        .as_deref()
-        .and_then(non_empty)
-        .or_else(|| {
-            env.home_dir
-                .as_deref()
-                .and_then(non_empty)
-                .map(|home| home.join(".nuget").join("packages"))
-        })?;
-    Some(std::path::absolute(&root).unwrap_or(root))
 }
 
 /// `-p:<name>=<value>` as a single argument (value may be a non-UTF-8 path).

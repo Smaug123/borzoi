@@ -30,10 +30,14 @@
 //!   NuGet's own reader reads it, or declined; and resolved
 //!   ([`dgspec::resolve_dgspec`]) where the resolver models every field that
 //!   bears on the closure.
+//! - [`settings`] — NuGet's settings files, read as far as the global
+//!   packages folder they choose for a project
+//!   ([`settings::global_packages_folder`]).
 //!
-//! This crate never reads `$NUGET_PACKAGES`, `$HOME`, or NuGet.config by
-//! itself. Callers own environment/config discovery and pass concrete roots
-//! and typed inputs here.
+//! This crate never reads the process environment. What depends on it (the
+//! global packages folder, the config files NuGet loads, a restore's
+//! environment-sensitive behaviour) takes the environment as an explicit map
+//! and the folder to start from as an explicit root.
 //!
 //! Self-contained by design: no dependencies on the other workspace crates,
 //! reusable outside this repo. Its crates.io dependencies are `roxmltree`
@@ -45,6 +49,7 @@ pub mod framework;
 pub mod package;
 pub mod range;
 pub mod resolver;
+pub mod settings;
 pub mod version;
 
 pub use assets::{
