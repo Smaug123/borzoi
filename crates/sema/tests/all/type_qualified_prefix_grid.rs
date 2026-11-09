@@ -488,14 +488,14 @@ fn cells() -> Vec<Cell> {
 }
 
 /// Shapes outside the grid's dimensions, each guarding one rule of the walk:
-/// `(label, qualifier, source)`, the source holding `USE` where the use of
-/// `qualifier.Color.Red` goes (rendered as an expression and as a pattern).
+/// `(label, written path, source)`, the source holding `USE` where the use
+/// goes (rendered as an expression and as a pattern).
 const SHAPES: &[(&str, &str, &str)] = &[
     // A `private` module segment is inaccessible from outside its container,
     // so FCS skips the nearer `Alpha` for the outer one.
     (
         "private-segment",
-        "Alpha.Beta",
+        "Alpha.Beta.Color.Red",
         "module Top\n\nmodule Alpha =\n    module Beta =\n        type Color = Red | Blue\n\
          module Mid =\n    module Alpha =\n        module private Beta =\n            \
          type Color = Red | Blue\n    module Use =\n        USE\n",
@@ -504,50 +504,69 @@ const SHAPES: &[(&str, &str, &str)] = &[
     // the namespace only once the block closes.
     (
         "head-namespace-block",
-        "Alpha.Beta",
+        "Alpha.Beta.Color.Red",
         "namespace Alpha\n\ntype Filler = Filler\n\nnamespace Alpha\n\nmodule Beta =\n    \
          type Color = Red | Blue\nmodule Use =\n    USE\n",
     ),
     // The namespace is declared only by the use's own block.
     (
         "own-block-namespace",
-        "Alpha.Beta",
+        "Alpha.Beta.Color.Red",
         "namespace Alpha.Beta\n\ntype Color = Red | Blue\nmodule Use =\n    USE\n",
     ),
     // An `open` in a `namespace global` block, after a root module.
     (
         "global-block-open",
-        "Alpha",
+        "Alpha.Color.Red",
         "namespace global\n\nmodule Alpha =\n    type Color = Red | Blue\nmodule Opened =\n    \
          module Alpha =\n        type Color = Red | Blue\nopen Opened\n\nnamespace Client\n\n\
          module Use =\n    USE\n",
     ),
+    // A type declared twice in the qualifier's last container (FS0037).
+    (
+        "redeclared-type",
+        "Alpha.Beta.Color.Red",
+        "module Top\n\nmodule Alpha =\n    module Beta =\n        type Color = Red | Blue\n        \
+         type Color = Red | Blue\nmodule Use =\n    USE\n",
+    ),
+    (
+        "redeclared-type-shallow",
+        "Alpha.Color.Red",
+        "module Top\n\nmodule Alpha =\n    type Color = Red | Blue\n    type Color = Red | Blue\n\
+         module Use =\n    USE\n",
+    ),
+    // A raw `global` head is the root marker, not an escaped ``global`` module.
+    (
+        "global-marker",
+        "global.System.String.Empty",
+        "module Top\n\nmodule ``global`` =\n    module System =\n        \
+         type String = Empty | Other\nmodule Use =\n    USE\n",
+    ),
     // A module segment declared twice in one container (FS0037).
     (
         "redeclared-segment",
-        "Alpha.Beta",
+        "Alpha.Beta.Color.Red",
         "module Top\n\nmodule Alpha =\n    module Beta =\n        type Color = Red | Blue\n    \
          module Beta =\n        type Color = Red | Blue\nmodule Use =\n    USE\n",
     ),
 ];
 
 /// A [`SHAPES`] entry as an expression and as a pattern program.
-fn shape(label: &str, qualifier: &str, src: &str) -> Vec<Program> {
+fn shape(label: &str, written: &str, src: &str) -> Vec<Program> {
     [UseKind::Expr, UseKind::Pattern]
         .into_iter()
         .map(|use_kind| {
             let at = src.find("USE").expect("a USE slot");
             let indent = &src[src[..at].rfind('\n').map_or(0, |i| i + 1)..at];
             let use_src = match use_kind {
-                UseKind::Expr => format!("let x = {qualifier}.Color.Red"),
+                UseKind::Expr => format!("let x = {written}"),
                 UseKind::Pattern => format!(
-                    "let f v =\n{indent}    match v with\n{indent}    | {qualifier}.Color.Red -> 1\n\
+                    "let f v =\n{indent}    match v with\n{indent}    | {written} -> 1\n\
                      {indent}    | _ -> 0"
                 ),
             };
             let src = src.replace("USE", &use_src);
-            let written = format!("{qualifier}.Color.Red");
-            let start = src.rfind(&written).expect("the use");
+            let start = src.rfind(written).expect("the use");
             Program {
                 label: format!("{label} {use_kind:?}"),
                 path_range: range_of(start, start + written.len()),
@@ -576,7 +595,7 @@ fn a_same_file_qualifier_of_any_depth_agrees_with_fcs() {
     programs.extend(
         SHAPES
             .iter()
-            .flat_map(|&(label, qualifier, src)| shape(label, qualifier, src)),
+            .flat_map(|&(label, written, src)| shape(label, written, src)),
     );
     let paths: Vec<PathBuf> = programs
         .iter()
