@@ -404,6 +404,25 @@ fn qualified_case_across_namespace_fragments() {
 }
 
 #[test]
+fn qualified_case_across_namespace_fragments_whose_earlier_union_requires_qualified_access() {
+    // Fragments are searched latest-first, so `N.X` is the later, non-RQA
+    // `U2.X`, and the program is clean. The RQA case in the later fragment is
+    // `union_rqa_attribute_grid::a_namespace_qualified_case_through_an_undecided_union`.
+    // This mirror guards #472's fix: once an RQA case has a qualified path, the
+    // earlier fragment's `U1.X` must not become the answer.
+    check(&Cell {
+        name: "namespace_fragments_rqa_earlier",
+        files: &[
+            "namespace N\n[<RequireQualifiedAccess>]\ntype U1 = X | Y\n",
+            "namespace N\ntype U2 = X | Z\n",
+            "module Use\nlet v = N.X\n",
+        ],
+        errors_expected: false,
+        pins: &[binds(at(2, "N.X", 0), at(1, "X", 0))],
+    });
+}
+
+#[test]
 fn qualified_case_whose_first_union_requires_qualified_access() {
     // `TryFindTypeWithUnionCase` stops at the first type declaring the case,
     // RQA or not, so the later non-RQA `U2.X` is never the answer.
