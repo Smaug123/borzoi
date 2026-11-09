@@ -921,8 +921,9 @@ enum Verdict {
     Agree,
     /// We serve a qualifier FCS records nothing at, in a file FCS rejects:
     /// error recovery drops the records of a rejected path's qualifiers, so
-    /// there is nothing to grade it against.
-    Ungraded,
+    /// there is nothing to grade it against. What we serve is pinned in the
+    /// manifest, so it cannot change unseen.
+    Ungraded(String),
     Wrong(String),
 }
 
@@ -967,23 +968,10 @@ const MUST_COMMIT: &[&str] = &[
 /// Pre-existing wrong answers, each with the issue tracking it. A pinned site
 /// that stops being wrong fails until its pin goes.
 ///
-/// - #505: without F# signature data, FCS imports the alias assembly through
-///   IL, where no `WidgetComp` exists (the companion module is the class
-///   `WidgetCompModule`); we still name it by its F# source name.
 /// - #514: with an assembly of the target's name that lacks the target, FCS's
 ///   `open AlLib` fails as a whole (FS0193) and adds nothing; we fold its
 ///   names.
 const KNOWN_WRONG: &[(&str, &str)] = &[
-    ("il-only WidgetComp Annot WidgetComp@0", "#505"),
-    ("il-only WidgetComp Bare WidgetComp@0", "#505"),
-    ("il-only WidgetComp Ctor WidgetComp@0", "#505"),
-    ("il-only WidgetComp Instance WidgetComp@0", "#505"),
-    ("il-only WidgetComp Static Make@0", "#505"),
-    ("il-only WidgetCompX Annot WidgetCompX@0", "#505"),
-    ("il-only WidgetCompX Bare WidgetCompX@0", "#505"),
-    ("il-only WidgetCompX Ctor WidgetCompX@0", "#505"),
-    ("il-only WidgetCompX Instance WidgetCompX@0", "#505"),
-    ("il-only WidgetCompX Static Make@0", "#505"),
     ("rootless-higher PointL OpenAnnot PointL@0", "#514"),
     ("rootless-higher PointL OpenStatic Make@0", "#514"),
     ("rootless-higher ShapeChain OpenAnnot ShapeChain@0", "#514"),
@@ -1140,7 +1128,7 @@ fn every_alias_use_agrees_with_fcs_under_every_reference_set() {
                                 ));
                             }
                             if recs.is_empty() && !clean && seg.end() != path.end() {
-                                Verdict::Ungraded
+                                Verdict::Ungraded(render_ours(&env, res))
                             } else if !path.contains_range(at) {
                                 Verdict::Wrong(format!(
                                     "served {at:?} outside the path {path:?}: {}",
@@ -1177,7 +1165,7 @@ fn every_alias_use_agrees_with_fcs_under_every_reference_set() {
                     let ours = match &verdict {
                         Verdict::Decline => "decline".to_string(),
                         Verdict::Agree => "agree".to_string(),
-                        Verdict::Ungraded => "ungraded".to_string(),
+                        Verdict::Ungraded(o) => format!("ungraded {o}"),
                         Verdict::Wrong(o) => match known {
                             Some(issue) => format!("WRONG ({issue}) {o}"),
                             None => format!("WRONG {o}"),

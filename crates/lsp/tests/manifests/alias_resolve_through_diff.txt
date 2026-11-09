@@ -32,9 +32,9 @@ base ShapeL OpenStatic	clean | ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree;
 base ShapeL Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours decline; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours decline
 base ShapeL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; Make=SemaAliasLib:AlLib.LShape.Make:member ours agree
 base ShapeN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
-base ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+base ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 base ShapeN Case	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours agree
-base ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+base ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 base ShapeN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
 base ShapeN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Make=SemaAliasTarget:AtTarget.Shape.Make:member ours decline
 base ShapeN Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours decline
@@ -358,14 +358,14 @@ il-only ShapeL OpenAnnot	erroring | ShapeL=- ours decline
 il-only ShapeL OpenStatic	erroring | ShapeL=- ours decline; Make=- ours decline
 il-only ShapeL Pattern	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; ShapeL=- ours decline; AlLib=SemaAliasLibIl:AlLib:namespace ours decline; ShapeL=- ours decline; LDot=- ours decline
 il-only ShapeL Static	erroring | AlLib=- ours decline; ShapeL=- ours decline; Make=- ours decline
-il-only ShapeN Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded; ShapeN=- ours decline
-il-only ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
-il-only ShapeN Case	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline; Dot=- ours decline
-il-only ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
-il-only ShapeN OpenAnnot	erroring | Nest=- ours decline; ShapeN=- ours decline
-il-only ShapeN OpenStatic	erroring | Nest=- ours decline; ShapeN=- ours decline; Make=- ours decline
-il-only ShapeN Pattern	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded; ShapeN=- ours decline; AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours decline; ShapeN=- ours decline; Dot=- ours decline
-il-only ShapeN Static	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline; Make=- ours decline
+il-only ShapeN Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline
+il-only ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline
+il-only ShapeN Case	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline; Dot=- ours decline
+il-only ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline
+il-only ShapeN OpenAnnot	erroring | Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline
+il-only ShapeN OpenStatic	erroring | Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline; Make=- ours decline
+il-only ShapeN Pattern	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline; AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours decline; ShapeN=- ours decline; Dot=- ours decline
+il-only ShapeN Static	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; ShapeN=- ours decline; Make=- ours decline
 il-only ShapeX Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; ShapeX=- ours decline
 il-only ShapeX Bare	erroring | AlLib=- ours decline; ShapeX=- ours decline
 il-only ShapeX Case	erroring | AlLib=- ours decline; ShapeX=- ours decline; Dot=- ours decline
@@ -381,20 +381,20 @@ il-only WidgetChain Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace our
 il-only WidgetChain OpenAnnot	erroring | WidgetChain=- ours decline
 il-only WidgetChain OpenStatic	erroring | WidgetChain=- ours decline; Make=- ours decline
 il-only WidgetChain Static	erroring | AlLib=- ours decline; WidgetChain=- ours decline; Make=- ours decline
-il-only WidgetComp Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetComp=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetComp:type
-il-only WidgetComp Bare	erroring | AlLib=- ours decline; WidgetComp=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetComp:type
-il-only WidgetComp Ctor	erroring | AlLib=- ours decline; WidgetComp=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetComp:type
-il-only WidgetComp Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetComp=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetComp:type; x=local:x:member ours agree; Ping=- ours decline
+il-only WidgetComp Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetComp=- ours decline
+il-only WidgetComp Bare	erroring | AlLib=- ours decline; WidgetComp=- ours decline
+il-only WidgetComp Ctor	erroring | AlLib=- ours decline; WidgetComp=- ours decline
+il-only WidgetComp Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetComp=- ours decline; x=local:x:member ours agree; Ping=- ours decline
 il-only WidgetComp OpenAnnot	erroring | WidgetComp=- ours decline
 il-only WidgetComp OpenStatic	erroring | WidgetComp=- ours decline; Make=- ours decline
-il-only WidgetComp Static	erroring | AlLib=- ours decline; WidgetComp=- ours ungraded; Make=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetComp.Make:member
-il-only WidgetCompX Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetCompX=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetCompX:type
-il-only WidgetCompX Bare	erroring | AlLib=- ours decline; WidgetCompX=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetCompX:type
-il-only WidgetCompX Ctor	erroring | AlLib=- ours decline; WidgetCompX=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetCompX:type
-il-only WidgetCompX Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetCompX=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetCompX:type; x=local:x:member ours agree; Ping=- ours decline
+il-only WidgetComp Static	erroring | AlLib=- ours decline; WidgetComp=- ours decline; Make=- ours decline
+il-only WidgetCompX Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetCompX=- ours decline
+il-only WidgetCompX Bare	erroring | AlLib=- ours decline; WidgetCompX=- ours decline
+il-only WidgetCompX Ctor	erroring | AlLib=- ours decline; WidgetCompX=- ours decline
+il-only WidgetCompX Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetCompX=- ours decline; x=local:x:member ours agree; Ping=- ours decline
 il-only WidgetCompX OpenAnnot	erroring | WidgetCompX=- ours decline
 il-only WidgetCompX OpenStatic	erroring | WidgetCompX=- ours decline; Make=- ours decline
-il-only WidgetCompX Static	erroring | AlLib=- ours decline; WidgetCompX=- ours ungraded; Make=- ours WRONG (#505) SemaAliasLibIl:AlLib.WidgetCompX.Make:member
+il-only WidgetCompX Static	erroring | AlLib=- ours decline; WidgetCompX=- ours decline; Make=- ours decline
 il-only WidgetHit Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetHit=- ours decline
 il-only WidgetHit Bare	erroring | AlLib=- ours decline; WidgetHit=- ours decline
 il-only WidgetHit Ctor	erroring | AlLib=- ours decline; WidgetHit=- ours decline
@@ -409,27 +409,27 @@ il-only WidgetL Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours de
 il-only WidgetL OpenAnnot	erroring | WidgetL=- ours decline
 il-only WidgetL OpenStatic	erroring | WidgetL=- ours decline; Make=- ours decline
 il-only WidgetL Static	erroring | AlLib=- ours decline; WidgetL=- ours decline; Make=- ours decline
-il-only WidgetN Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded; WidgetN=- ours decline
-il-only WidgetN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded; WidgetN=- ours decline
-il-only WidgetN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded; WidgetN=- ours decline
-il-only WidgetN Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded; WidgetN=- ours decline; x=local:x:member ours agree; Ping=- ours decline
-il-only WidgetN OpenAnnot	erroring | Nest=- ours decline; WidgetN=- ours decline
-il-only WidgetN OpenStatic	erroring | Nest=- ours decline; WidgetN=- ours decline; Make=- ours decline
-il-only WidgetN Static	erroring | AlLib=- ours decline; Nest=- ours ungraded; WidgetN=- ours decline; Make=- ours decline
-il-only WidgetNX Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded; WidgetNX=- ours decline
-il-only WidgetNX Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded; WidgetNX=- ours decline
-il-only WidgetNX Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded; WidgetNX=- ours decline
-il-only WidgetNX Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded; WidgetNX=- ours decline; x=local:x:member ours agree; Ping=- ours decline
-il-only WidgetNX OpenAnnot	erroring | Nest=- ours decline; WidgetNX=- ours decline
-il-only WidgetNX OpenStatic	erroring | Nest=- ours decline; WidgetNX=- ours decline; Make=- ours decline
-il-only WidgetNX Static	erroring | AlLib=- ours decline; Nest=- ours ungraded; WidgetNX=- ours decline; Make=- ours decline
+il-only WidgetN Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetN=- ours decline
+il-only WidgetN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetN=- ours decline
+il-only WidgetN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetN=- ours decline
+il-only WidgetN Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetN=- ours decline; x=local:x:member ours agree; Ping=- ours decline
+il-only WidgetN OpenAnnot	erroring | Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetN=- ours decline
+il-only WidgetN OpenStatic	erroring | Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetN=- ours decline; Make=- ours decline
+il-only WidgetN Static	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetN=- ours decline; Make=- ours decline
+il-only WidgetNX Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetNX=- ours decline
+il-only WidgetNX Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetNX=- ours decline
+il-only WidgetNX Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetNX=- ours decline
+il-only WidgetNX Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetNX=- ours decline; x=local:x:member ours agree; Ping=- ours decline
+il-only WidgetNX OpenAnnot	erroring | Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetNX=- ours decline
+il-only WidgetNX OpenStatic	erroring | Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetNX=- ours decline; Make=- ours decline
+il-only WidgetNX Static	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLibIl:AlLib.Nest:type; WidgetNX=- ours decline; Make=- ours decline
 il-only WidgetOver Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetOver=SemaAliasLibIl:AlLib.WidgetOver:type ours decline
 il-only WidgetOver Bare	clean | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetOver=SemaAliasLibIl:AlLib..ctor:ctor ours agree
 il-only WidgetOver Ctor	clean | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetOver=SemaAliasLibIl:AlLib..ctor:ctor ours agree
 il-only WidgetOver Instance	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetOver=SemaAliasLibIl:AlLib.WidgetOver:type ours decline; x=local:x:member ours agree; Ping=- ours decline
 il-only WidgetOver OpenAnnot	erroring | WidgetOver=SemaAliasLibIl:AlLib.WidgetOver:type ours decline
-il-only WidgetOver OpenStatic	erroring | WidgetOver=- ours decline; Make=- ours decline
-il-only WidgetOver Static	erroring | AlLib=- ours decline; WidgetOver=- ours ungraded; Make=- ours decline
+il-only WidgetOver OpenStatic	erroring | WidgetOver=- ours ungraded SemaAliasLibIl:AlLib.WidgetOver:type; Make=- ours decline
+il-only WidgetOver Static	erroring | AlLib=- ours decline; WidgetOver=- ours ungraded SemaAliasLibIl:AlLib.WidgetOver:type; Make=- ours decline
 il-only WidgetX Annot	erroring | AlLib=SemaAliasLibIl:AlLib:namespace ours decline; WidgetX=- ours decline
 il-only WidgetX Bare	erroring | AlLib=- ours decline; WidgetX=- ours decline
 il-only WidgetX Ctor	erroring | AlLib=- ours decline; WidgetX=- ours decline
@@ -468,9 +468,9 @@ lib-first ShapeL OpenStatic	clean | ShapeL=SemaAliasLib:AlLib.ShapeL:type ours a
 lib-first ShapeL Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours decline; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours decline
 lib-first ShapeL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; Make=SemaAliasLib:AlLib.LShape.Make:member ours agree
 lib-first ShapeN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
-lib-first ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+lib-first ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 lib-first ShapeN Case	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours agree
-lib-first ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+lib-first ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 lib-first ShapeN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
 lib-first ShapeN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Make=SemaAliasTarget:AtTarget.Shape.Make:member ours decline
 lib-first ShapeN Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours decline
@@ -769,7 +769,7 @@ rootless-higher PointL Bare	erroring | AlLib=- ours decline; PointL=- ours decli
 rootless-higher PointL Ctor	erroring | AlLib=- ours decline; PointL=- ours decline
 rootless-higher PointL Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LPoint.Ping:member ours decline
 rootless-higher PointL OpenAnnot	erroring | PointL=- ours WRONG (#514) SemaAliasLib:AlLib.PointL:type
-rootless-higher PointL OpenStatic	erroring | PointL=- ours ungraded; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LPoint.Make:member
+rootless-higher PointL OpenStatic	erroring | PointL=- ours ungraded SemaAliasLib:AlLib.PointL:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LPoint.Make:member
 rootless-higher PointL Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointL=SemaAliasLib:AlLib.PointL:type ours agree; Make=SemaAliasLib:AlLib.LPoint.Make:member ours agree
 rootless-higher PointX Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; PointX=SemaAliasLib:AlLib.PointX:type ours decline
 rootless-higher PointX Bare	erroring | AlLib=- ours decline; PointX=- ours decline
@@ -783,7 +783,7 @@ rootless-higher ShapeChain Bare	erroring | AlLib=- ours decline; ShapeChain=- ou
 rootless-higher ShapeChain Case	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeChain=SemaAliasLib:AlLib.ShapeChain:type ours agree; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours agree
 rootless-higher ShapeChain Ctor	erroring | AlLib=- ours decline; ShapeChain=- ours decline
 rootless-higher ShapeChain OpenAnnot	erroring | ShapeChain=- ours WRONG (#514) SemaAliasLib:AlLib.ShapeChain:type
-rootless-higher ShapeChain OpenStatic	erroring | ShapeChain=- ours ungraded; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LShape.Make:member
+rootless-higher ShapeChain OpenStatic	erroring | ShapeChain=- ours ungraded SemaAliasLib:AlLib.ShapeChain:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LShape.Make:member
 rootless-higher ShapeChain Pattern	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeChain=SemaAliasLib:AlLib.ShapeChain:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeChain=SemaAliasLib:AlLib.ShapeChain:type ours decline; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours decline
 rootless-higher ShapeChain Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeChain=SemaAliasLib:AlLib.ShapeChain:type ours agree; Make=SemaAliasLib:AlLib.LShape.Make:member ours agree
 rootless-higher ShapeL Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree
@@ -791,7 +791,7 @@ rootless-higher ShapeL Bare	erroring | AlLib=- ours decline; ShapeL=- ours decli
 rootless-higher ShapeL Case	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours agree
 rootless-higher ShapeL Ctor	erroring | AlLib=- ours decline; ShapeL=- ours decline
 rootless-higher ShapeL OpenAnnot	erroring | ShapeL=- ours WRONG (#514) SemaAliasLib:AlLib.ShapeL:type
-rootless-higher ShapeL OpenStatic	erroring | ShapeL=- ours ungraded; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LShape.Make:member
+rootless-higher ShapeL OpenStatic	erroring | ShapeL=- ours ungraded SemaAliasLib:AlLib.ShapeL:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LShape.Make:member
 rootless-higher ShapeL Pattern	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours decline; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours decline
 rootless-higher ShapeL Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; Make=SemaAliasLib:AlLib.LShape.Make:member ours agree
 rootless-higher ShapeN Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline
@@ -822,14 +822,14 @@ rootless-higher WidgetComp Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ou
 rootless-higher WidgetComp Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetComp Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
 rootless-higher WidgetComp OpenAnnot	erroring | WidgetComp=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetComp:type
-rootless-higher WidgetComp OpenStatic	erroring | WidgetComp=- ours ungraded; Make=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetComp.Make:member
+rootless-higher WidgetComp OpenStatic	erroring | WidgetComp=- ours ungraded SemaAliasLib:AlLib.WidgetComp:module; Make=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetComp.Make:member
 rootless-higher WidgetComp Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetComp=SemaAliasLib:AlLib.WidgetComp:type ours decline; Make=SemaAliasLib:AlLib.LWidget.Make:member ours decline
 rootless-higher WidgetCompX Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline
 rootless-higher WidgetCompX Bare	erroring | AlLib=- ours decline; WidgetCompX=- ours decline
 rootless-higher WidgetCompX Ctor	erroring | AlLib=- ours decline; WidgetCompX=- ours decline
 rootless-higher WidgetCompX Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetCompX=SemaAliasLib:AlLib.WidgetCompX:type ours decline; x=local:x:member ours agree; Ping=- ours decline
 rootless-higher WidgetCompX OpenAnnot	erroring | WidgetCompX=- ours decline
-rootless-higher WidgetCompX OpenStatic	erroring | WidgetCompX=- ours ungraded; Make=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetCompX.Make:member
+rootless-higher WidgetCompX OpenStatic	erroring | WidgetCompX=- ours ungraded SemaAliasLib:AlLib.WidgetCompX:module; Make=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetCompX.Make:member
 rootless-higher WidgetCompX Static	erroring | AlLib=- ours decline; WidgetCompX=- ours decline; Make=- ours decline
 rootless-higher WidgetHit Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetHit=SemaAliasLib:AlLib.WidgetHit:type ours decline
 rootless-higher WidgetHit Bare	erroring | AlLib=- ours decline; WidgetHit=- ours decline
@@ -843,13 +843,13 @@ rootless-higher WidgetL Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ours 
 rootless-higher WidgetL Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetL Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
 rootless-higher WidgetL OpenAnnot	erroring | WidgetL=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetL:type
-rootless-higher WidgetL OpenStatic	erroring | WidgetL=- ours ungraded; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LWidget.Make:member
+rootless-higher WidgetL OpenStatic	erroring | WidgetL=- ours ungraded SemaAliasLib:AlLib.WidgetL:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LWidget.Make:member
 rootless-higher WidgetL Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetL=SemaAliasLib:AlLib.WidgetL:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-higher WidgetN Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree
 rootless-higher WidgetN Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetN Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetN Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
-rootless-higher WidgetN OpenAnnot	erroring | Nest=- ours ungraded; WidgetN=- ours WRONG (#514) SemaAliasLib:AlLib.Nest.WidgetN:type
+rootless-higher WidgetN OpenAnnot	erroring | Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; WidgetN=- ours WRONG (#514) SemaAliasLib:AlLib.Nest.WidgetN:type
 rootless-higher WidgetN OpenStatic	erroring | Nest=- ours decline; WidgetN=- ours decline; Make=- ours decline
 rootless-higher WidgetN Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; WidgetN=SemaAliasLib:AlLib.Nest.WidgetN:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-higher WidgetNX Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours decline; WidgetNX=SemaAliasLib:AlLib.Nest.WidgetNX:type ours decline
@@ -864,7 +864,7 @@ rootless-higher WidgetOver Bare	erroring | AlLib=SemaAliasLib:AlLib:namespace ou
 rootless-higher WidgetOver Ctor	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib..ctor:ctor ours decline
 rootless-higher WidgetOver Instance	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; x=local:x:member ours agree; Ping=SemaAliasLib:AlLib.LWidget.Ping:member ours decline
 rootless-higher WidgetOver OpenAnnot	erroring | WidgetOver=- ours WRONG (#514) SemaAliasLib:AlLib.WidgetOver:type
-rootless-higher WidgetOver OpenStatic	erroring | WidgetOver=- ours ungraded; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LWidget.Make:member
+rootless-higher WidgetOver OpenStatic	erroring | WidgetOver=- ours ungraded SemaAliasLib:AlLib.WidgetOver:type; Make=- ours WRONG (#514) SemaAliasLib:AlLib.LWidget.Make:member
 rootless-higher WidgetOver Static	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetOver=SemaAliasLib:AlLib.WidgetOver:type ours agree; Make=SemaAliasLib:AlLib.LWidget.Make:member ours agree
 rootless-higher WidgetX Annot	erroring | AlLib=SemaAliasLib:AlLib:namespace ours decline; WidgetX=SemaAliasLib:AlLib.WidgetX:type ours decline
 rootless-higher WidgetX Bare	erroring | AlLib=- ours decline; WidgetX=- ours decline
@@ -904,9 +904,9 @@ rootless-lower ShapeL OpenStatic	clean | ShapeL=SemaAliasLib:AlLib.ShapeL:type o
 rootless-lower ShapeL Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours decline; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours decline
 rootless-lower ShapeL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; Make=SemaAliasLib:AlLib.LShape.Make:member ours agree
 rootless-lower ShapeN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
-rootless-lower ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+rootless-lower ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 rootless-lower ShapeN Case	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours agree
-rootless-lower ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+rootless-lower ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 rootless-lower ShapeN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
 rootless-lower ShapeN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Make=SemaAliasTarget:AtTarget.Shape.Make:member ours decline
 rootless-lower ShapeN Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours decline
@@ -1449,9 +1449,9 @@ twin-target ShapeL OpenStatic	clean | ShapeL=SemaAliasLib:AlLib.ShapeL:type ours
 twin-target ShapeL Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours decline; LDot=SemaAliasLib:AlLib.LShape.LDot:unioncase ours decline
 twin-target ShapeL Static	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; ShapeL=SemaAliasLib:AlLib.ShapeL:type ours agree; Make=SemaAliasLib:AlLib.LShape.Make:member ours agree
 twin-target ShapeN Annot	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
-twin-target ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+twin-target ShapeN Bare	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 twin-target ShapeN Case	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours agree
-twin-target ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded; ShapeN=- ours decline
+twin-target ShapeN Ctor	erroring | AlLib=- ours decline; Nest=- ours ungraded SemaAliasLib:AlLib.Nest:module; ShapeN=- ours decline
 twin-target ShapeN OpenAnnot	clean | Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree
 twin-target ShapeN OpenStatic	clean | Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Make=SemaAliasTarget:AtTarget.Shape.Make:member ours decline
 twin-target ShapeN Pattern	clean | AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours agree; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours agree; AlLib=SemaAliasLib:AlLib:namespace ours decline; Nest=SemaAliasLib:AlLib.Nest:module ours decline; ShapeN=SemaAliasLib:AlLib.Nest.ShapeN:type ours decline; Dot=SemaAliasTarget:AtTarget.Shape.Dot:unioncase ours decline
