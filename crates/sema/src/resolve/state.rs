@@ -1590,7 +1590,7 @@ pub(super) struct Resolver<'a> {
     /// so while one is in scope [`lookup`](Self::lookup) skips every *opened*
     /// ([`ScopeEntry::from_open`]) entry — resolving a modelled opened name could
     /// otherwise pick a target the opaque open shadows (correctness over
-    /// availability). It also implies [`Self::opaque_dotted_open`] (an unknown
+    /// availability). It also implies [`Self::dotted_opacity`] (an unknown
     /// bare value head could likewise be a dotted-path head we cannot resolve), so
     /// the dotted-path gate in [`resolve_long_ident`](Self::resolve_long_ident)
     /// checks both. A plain `open <namespace>` brings only *types*, no unqualified

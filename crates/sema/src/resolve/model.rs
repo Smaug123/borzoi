@@ -777,6 +777,21 @@ impl ProjectItems {
             .map(|r| r.id)
     }
 
+    /// Whether some earlier file could put a module or namespace called `name`
+    /// in scope anywhere: a nested module of the name
+    /// ([`Self::project_module_simple_names`]), or a module header or
+    /// namespace with `name` as any of its segments. Position-blind and
+    /// over-approximate: FCS searches every module and namespace of a dotted
+    /// expression head before any type of it, whichever tier brings it.
+    pub(super) fn may_name_module_or_namespace(&self, name: &str) -> bool {
+        self.project_module_simple_names.contains(name)
+            || self
+                .module_headers
+                .iter()
+                .chain(&self.namespace_paths)
+                .any(|p| p.iter().any(|s| s == name))
+    }
+
     /// Whether an earlier file declares a value- or constructor-space member
     /// at exactly `path` ([`ExportDecl::member_path`]), of any kind or
     /// accessibility.
@@ -3017,7 +3032,7 @@ impl DeclineSite {
 pub struct OpenOpacity {
     /// Set `opaque_value_open` — bare-name resolution skips opened entries.
     pub opaque_value: bool,
-    /// Set `opaque_dotted_open` — dotted-path heads defer.
+    /// Set `dotted_opacity` — dotted-path heads defer.
     pub opaque_dotted: bool,
     /// Set `unmodelled_open_active` — qualified paths defer.
     pub unmodelled: bool,

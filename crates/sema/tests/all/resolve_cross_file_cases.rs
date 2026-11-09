@@ -895,7 +895,7 @@ fn opened_case_does_not_mask_a_same_named_dotted_module() {
 #[test]
 fn opened_case_dotted_head_defers_under_an_opaque_module_open() {
     // Soundness (codex review): `open M` where `M` has both a case `Red` and a
-    // `module Red` sets `opaque_dotted_open`, so the module-path resolution is
+    // `module Red` sets `dotted_opacity`, so the module-path resolution is
     // skipped. FCS resolves `Red.foo` through the module (`Demo.M.Red.foo`); we
     // cannot under the opaque open, but we must NOT record the head `Red` as the
     // opened case (a wrong go-to-def) — it defers. (Single-file here so the case

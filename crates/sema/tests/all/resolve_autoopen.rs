@@ -2040,7 +2040,7 @@ fn opening_a_companion_module_does_not_suppress_implicit_namespace_readings() {
 #[test]
 fn opening_a_module_with_only_non_public_children_does_not_defer_unrelated_dotted_heads() {
     // Regression: `Seq.toList` deferring after `open Fantomas.FCS.Text.Range`.
-    // Opening an assembly module raises `opaque_dotted_open` (the Slice B gap — a
+    // Opening an assembly module raises `dotted_opacity` (the Slice B gap — a
     // dotted head *through* the opened module, `open M; Sub.f`, is not modelled),
     // which blanket-defers EVERY later dotted head. The trigger was
     // `!children(h).is_empty()`, which counted the **non-public** compiler-generated

@@ -645,7 +645,7 @@ fn an_evicted_opened_value_defers_behind_the_opaque_module_open() {
     // The opened value sits at its `open`'s position (M20p/M20q), so the
     // later written type EVICTS it — FCS binds the root module's `Color.Red`.
     // Sema cannot deliver that resolution (the project-module `open M` sets
-    // `opaque_dotted_open`, barring the qualified block — the documented
+    // `dotted_opacity`, barring the qualified block — the documented
     // pre-existing conservatism), so the head defers; it must never record
     // the evicted opened value.
     let src0 = "module Color\nlet Red = 99\n";
@@ -790,7 +790,7 @@ fn an_opened_value_before_the_type_is_evicted() {
     // Probe M20q: the same open BEFORE the type — the type evicts the opened
     // value at the open's position, and FCS binds the cross-file module's
     // Red. Sema cannot deliver that resolution (the project-module `open M`
-    // sets `opaque_dotted_open`, barring the qualified block — the documented
+    // sets `dotted_opacity`, barring the qualified block — the documented
     // pre-existing conservatism), so both the head and the whole span defer;
     // the head must never record the evicted opened value.
     let src0 = "module Color\nlet Red = 99\n";

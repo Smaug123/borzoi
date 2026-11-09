@@ -1973,7 +1973,7 @@ fn relative_open_does_not_reach_an_ancestor_namespace() {
 fn opaque_project_module_open_defers_assembly_type_resolution() {
     // An opened project module whose contents we cannot enumerate could supply a
     // *type* `Thing` that shadows the assembly `Demo.Thing`. While any opaque open
-    // is active — `unmodelled_open_active`, `opaque_dotted_open`, *or*
+    // is active — `unmodelled_open_active`, `dotted_opacity`, *or*
     // `opaque_value_open` (the last not implied by the others on the
     // `open_imports_project_values` fallback) — the type path must defer rather
     // than resolve `Thing` through the earlier `open Demo` (D5: FCS could bind
