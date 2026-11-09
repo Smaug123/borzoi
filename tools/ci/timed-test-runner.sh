@@ -20,6 +20,13 @@
 # changed build-script input would rebuild the cached `target/`.
 #
 # Row format: `<seconds>\t<package>/<binary>\t<test>\t<outcome>`.
+#
+# Per binary run it also appends a row to `<times>-binaries.tsv`: its wall
+# seconds and the machine's average busy cores over that time, from
+# `/proc/stat`. A suite whose binary keeps every core busy gains nothing from
+# running its tests more concurrently, and per-test wall times alone cannot
+# say whether it does. Row format:
+# `<seconds>\t<package>/<binary>\t<busy cores>\t<cores>\t<libtest args>`.
 set -uo pipefail
 
 bin=$1
@@ -32,8 +39,19 @@ fi
 out=${BORZOI_TEST_TIMES:-${RUNNER_TEMP:-/tmp}/test-times.tsv}
 log=$(mktemp)
 
+# Busy and total jiffies summed over every core; nothing where there is no
+# `/proc/stat` (macOS), which leaves the binaries table without that run.
+cpu_jiffies() {
+  awk '/^cpu / { busy = $2 + $3 + $4 + $7 + $8 + $9; print busy, busy + $5 + $6; exit }' \
+    /proc/stat 2>/dev/null || true
+}
+
+cpu_before=$(cpu_jiffies)
+started=$(date +%s)
 RUSTC_BOOTSTRAP=1 "$bin" "$@" -Zunstable-options --report-time | tee "$log"
 status=${PIPESTATUS[0]}
+cpu_after=$(cpu_jiffies)
+elapsed=$(($(date +%s) - started))
 
 target=$(basename "$bin")
 target=${target%-*} # strip cargo's `-<hash>` suffix
@@ -56,4 +74,14 @@ awk -v pkg="${CARGO_PKG_NAME:-?}" -v target="$target" '
   }
 ' "$log" >>"$out" || true
 rm -f "$log"
+
+if [[ -n "$cpu_before" && -n "$cpu_after" ]]; then
+  cores=$(nproc 2>/dev/null || echo 1)
+  read -r busy0 total0 <<<"$cpu_before"
+  read -r busy1 total1 <<<"$cpu_after"
+  awk -v b="$((busy1 - busy0))" -v t="$((total1 - total0))" -v cores="$cores" \
+    -v secs="$elapsed" -v name="${CARGO_PKG_NAME:-?}/$target" -v args="$*" \
+    'BEGIN { busy = t > 0 ? cores * b / t : 0; printf "%d\t%s\t%.2f\t%d\t%s\n", secs, name, busy, cores, args }' \
+    >>"${out%.tsv}-binaries.tsv" || true
+fi
 exit "$status"
