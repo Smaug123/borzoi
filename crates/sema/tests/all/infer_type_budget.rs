@@ -75,6 +75,10 @@ enum Family {
     /// `let gK x = g0 (g(K-1) x)` over `let g0 x = (x, x)`: a tuple whose
     /// node count doubles by the line while its depth grows by one.
     PairChain,
+    /// Top-level values that pair the one before: `let aK = (a(K-1),
+    /// a(K-1))`. Every unification is small; the type first passes the
+    /// budget when the read-off resolves the last value.
+    TopLevelPairs,
     /// One function whose locals pair the one before: `let aK = (a(K-1),
     /// a(K-1))`, over an `int` parameter. No generalisation is involved: the
     /// doubling is the table's own sharing, which resolving a local's type
@@ -87,11 +91,12 @@ enum Family {
 }
 
 impl Family {
-    const ALL: [Family; 6] = [
+    const ALL: [Family; 7] = [
         Family::Tuple,
         Family::Function,
         Family::Application,
         Family::PairChain,
+        Family::TopLevelPairs,
         Family::SharedLocal,
         Family::OpenLocal,
     ];
@@ -102,6 +107,7 @@ impl Family {
             Family::Function => "function",
             Family::Application => "application",
             Family::PairChain => "pair-chain",
+            Family::TopLevelPairs => "top-level-pairs",
             Family::SharedLocal => "shared-local",
             Family::OpenLocal => "open-local",
         }
@@ -131,6 +137,13 @@ impl Family {
                 let mut src = "let g0 x = (x, x)\n".to_string();
                 for k in 1..lines {
                     src.push_str(&format!("let g{k} x = g0 (g{j} x)\n", j = k - 1));
+                }
+                src
+            }
+            Family::TopLevelPairs => {
+                let mut src = "let a0 = 0\n".to_string();
+                for k in 1..lines {
+                    src.push_str(&format!("let a{k} = (a{j}, a{j})\n", j = k - 1));
                 }
                 src
             }
@@ -367,6 +380,17 @@ fn inference_declines_past_the_type_budget_within_bounds() {
             ));
             continue;
         };
+        // A walk that passed the budget counted the node it stopped at, so
+        // the file must say it declined.
+        for (lines, facts) in &runs {
+            let passed = facts.walked_nodes > MAX_TYPE_NODES || facts.walked_depth > MAX_TYPE_DEPTH;
+            if passed && facts.exceeded.is_none() {
+                failures.push(format!(
+                    "{} at {lines} lines walked past the budget but did not decline: {facts:?}",
+                    family.name()
+                ));
+            }
+        }
         let (within, over) = runs.split_at(first_over);
         for (lines, facts) in over {
             if facts.exceeded.is_none() || facts.published_nodes != 0 {
