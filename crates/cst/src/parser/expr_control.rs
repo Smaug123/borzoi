@@ -346,23 +346,17 @@ impl<'src> Parser<'src> {
         // pattern is a parse error but we still try to consume the
         // arrow + body so recovery produces a well-formed FUN_EXPR.
         //
-        // KNOWN DIVERGENCE — non-simple atomic patterns project
-        // faithfully at the *pattern* level but diverge at the *body*
-        // level. FCS runs `SimplePatsOfPat` (`pars.fsy:4310`) over the
-        // parsed args: simple cases (Named, Wildcard, Paren wrapping
-        // those, Unit, Tuple-paren of simples, Typed of simple) pass
-        // through unchanged; non-simple cases (`ConstPat`, `NullPat`,
-        // uppercase-`Ident` → `LongIdentPat`, paren-wrapped
-        // constructor pats like `(Some x)`) are kept as the parsed
-        // patterns but the lambda's body is rewritten to insert
-        // generated `match` scaffolding for each non-simple arg. We
-        // don't yet implement that lowering — so for inputs like
-        // `fun X -> X`, `fun 0 -> 1`, `fun (Some x) -> x`, the green
-        // tree is lossless but the typed-AST body shape diverges from
-        // `SynExpr.Lambda.body`. Tracked separately; not in scope for
-        // this slice. The five named shapes (Named lowercase,
-        // Wildcard, Paren unit, Paren tuple, plain Named) all match
-        // FCS exactly today.
+        // A dotted path is one atomic pattern (`atomicPatternLongIdent`
+        // takes the whole `pathOp`), so `fun M.Some x -> …` has two args,
+        // `M.Some` and `x`.
+        //
+        // The tree keeps the args as parsed. FCS also runs
+        // `SimplePatsOfPat` (`pars.fsy:4310`) over them, rewriting the
+        // body to insert a generated `match` for each non-simple arg
+        // (`ConstPat`, `NullPat`, a `LongIdentPat` such as `X` or `X.Y`,
+        // a paren-wrapped constructor pattern such as `(Some x)`). That
+        // rewrite is not a syntax-tree concern here; the differential
+        // normaliser reproduces it (`normalise_fun`) to compare bodies.
         let mut arg_count: u32 = 0;
         while self.try_emit_atomic_pat() {
             arg_count += 1;
