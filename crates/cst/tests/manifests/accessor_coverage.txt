@@ -347,6 +347,7 @@ UnionCase::ident
 UnionCase::operator_name
 UnionCaseField::ident
 UnionCaseField::ty
+UnionRepr::access
 UnionRepr::cases
 UpcastExpr::expr
 UpcastExpr::ty

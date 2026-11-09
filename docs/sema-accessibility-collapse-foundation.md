@@ -115,36 +115,68 @@ stay at their `main` tallies (Zoomies keeps its 2 pre-existing `prevVdom`
 alt-binders — a local-shadowing bug unrelated to this change; the others are
 zero-divergence, zero-alt-binder).
 
-### Residual: inherited privacy is still untracked (a case's `is_private`)
+### Case accessibility (#43, #474)
 
-A union/exception case is value-exported with `is_private = false` regardless of
-its type's accessibility (`type private T = X` → case `X` records public), and a
-value inside a `private` nested module likewise does not inherit the module's
-restriction. So `ExportRecord::is_private` is a *lower bound* on inaccessibility,
-not exact. Codex flagged this against the recovery (round 1 of this PR): a
-newest-first scan that skips a later inaccessible `private` value could recover
-an older inherited-private case.
+A union case can be out of reach for two kinds of reason, and FCS treats them
+differently, so the model keeps them apart.
 
-Verified false positive **for the recovery**: probing our own resolver
-(`resolution_at` + `item_def`) on the exact scenario — file 0 `type private T =
-X`, file 1 `let private X`, unrelated `open N.M; X` — we return
-`Deferred(UnboundName)`, *identical to `main`*, never committing the case; FCS
-reports `X` unbound (FS0039). The reason is orthogonal to the record flag: a
-case-declaring module is opened *hidden*, so a cross-file case is never
-committed into unqualified value scope through an `open` (it defers). Crucially,
-the model must **not** suppress case recovery to "fix" this — with a fallback
-`open A.F` supplying a public `X`, FCS binds the module's *own* public case
-(`open N.M` shadows the fallback); dropping the case from `direct_value_children`
-would let the fallback win a name the module provides — a wrong target. So the
-recovery deliberately returns the case (letting it shadow the fallback), and the
-hidden-open decline keeps the outcome sound. `resolve_module_opens.rs`'s
-`an_inherited_private_case_is_not_committed_through_a_collapsed_open` is the
-tripwire: it fires if cross-file case-through-`open` is ever made to resolve,
-flagging that *case privacy* (inherited from the type) must land first.
+**The case's type, or a module around it, is restricted** (`type private U =
+X | Y`, `module private A`, `module private A = module B = …`). The case
+inherits the restriction: its export's `access_root_len` is the type's
+container, or the `private` module's parent, whichever is deeper (Stage 3½).
+FCS's `open` adds only the types accessible where it is written
+(`IsEntityAccessible`), so the case is simply absent there. An earlier
+same-named name stays visible, and a module- or type-qualified path does not
+find it. The selection queries filter it out (`accessible_from`), exactly as
+they filter a `let private` value. An inherited case's `access_root_len` is
+therefore exact, not a lower bound.
 
-The pre-existing "a cross-file public union case is not brought into unqualified
-value scope through an `open`" gap (`open N.M; X` for `type T = X` defers, where
-FCS binds the case) is on `main` too and orthogonal to the collapse model.
+**The representation is restricted** (`type U = private X | Y`, the
+`SynTypeDefnSimpleRepr.Union` accessibility). The type stays visible, and FCS
+treats each route differently:
+
+| route | FCS |
+| --- | --- |
+| `open A; X`, bare or in a pattern | adds the case, shadowing an earlier `X`; the use is FS1093 |
+| `A.U.X` | finds the case; FS1093 |
+| `A.X`, expression or pattern | skips it (`IsTyconReprAccessible`) and looks on |
+
+The selection queries must keep seeing such a case, or a fallback `X` it
+shadows would win. So it is recorded apart, as `ExportedItem::repr_access_root`
+(the union's container; `ProjectItems::case_repr_roots` cross-file, and
+`Resolver::case_repr_roots` by binder in-file, which also covers an
+anonymous-root file's unexported cases). `Resolver::case_usable_here` answers
+whether the current site may commit to a resolution. `Resolver::record`, the one
+writer of the resolution map, consults it, so every route declines such a case
+with `DeclineCause::CaseRepresentationInaccessible`. On the module-qualified
+route, declining is safe but less than FCS does, since FCS may still bind
+something further on.
+
+`internal` restricts nothing within one project, and `public` nothing at all.
+A signature that writes any accessibility on a type exports none of its cases
+(`collect_sig_container_exports`), so the screen declines them. The same holds
+for a signature that hides the representation (`type U`) or leaves the type out.
+
+`crates/sema/tests/all/case_access_grid.rs` grades this against FCS. It crosses
+the restriction source (representation, type, the union's module at depth 1 and
+2, a module two levels out, an `[<AutoOpen>]` module, the namespace itself) with
+the modifier (`private`, `internal`, `public`). It runs every route (`A.X` as an
+expression and a pattern, `open A` then `X` in each and over an earlier `open`
+supplying a value `X`, `A.U.X`, a bare `X`, and an `open` of the namespace) from
+these sites:
+
+- inside the union's module, and a module nested in it;
+- the enclosing module;
+- a sibling, and a module nested in one;
+- a descendant namespace and an unrelated one;
+
+each in the same file and a later one. It also grades a signature-restricted
+twin and an anonymous-root file. Must-commit controls pin the routes that
+commit.
+
+The same grid found #489: in a later file, an `open` of the enclosing namespace
+does not re-add the namespace's earlier-file cases over an intervening `open`.
+It has nothing to do with accessibility, and it is pinned there.
 
 ## Stage 4 — landed (straddle resolution, #980; supersedes #973)
 
@@ -296,3 +328,7 @@ construction; the full `borzoi-sema` suite; codex.
   **hidden fold** (`extern` / active-pattern value producers) remain sound
   *defers* — availability gaps, never wrong targets. The same-file straddle is no
   longer among them (Stage 6).
+- **Case accessibility** is tracked on both axes: a restricted type or
+  enclosing module hides the case (`access_root_len`), and a restricted
+  representation leaves it visible but unusable (`repr_access_root`,
+  `Resolver::case_usable_here`). See "Case accessibility" above.

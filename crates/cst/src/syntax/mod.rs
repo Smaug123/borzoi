@@ -802,6 +802,19 @@ impl UnionRepr {
         accessor!("UnionRepr::cases");
         children(&self.0)
     }
+
+    /// The representation's accessibility modifier — FCS's
+    /// `SynTypeDefnSimpleRepr.Union.accessibility`, the `private` of
+    /// `type U = private X | Y`. The first direct [`SyntaxKind::ACCESS_TOK`]
+    /// child, whose text is the keyword; a modifier written on a case nests
+    /// inside its [`UnionCase`] and is not this.
+    pub fn access(&self) -> Option<SyntaxToken> {
+        accessor!("UnionRepr::access");
+        self.0
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|t| t.kind() == SyntaxKind::ACCESS_TOK)
+    }
 }
 
 impl UnionCase {

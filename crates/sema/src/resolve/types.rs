@@ -362,6 +362,10 @@ impl<'a> Resolver<'a> {
         // A case of a `private` union type is scoped to the type's container
         // (oracle-pinned D3), so its export inherits that privacy.
         let type_is_private = super::decls::header_is_private(defn.syntax());
+        // A `private` representation leaves the type visible but its cases
+        // usable only within the type's container.
+        let repr_access_root =
+            super::decls::union_repr_is_private(defn).then(|| self.container_path.clone());
         let type_key = id_text(type_name).to_string();
         // The type was just defined, so the name's latest binder is it.
         let own_key = self
@@ -383,6 +387,9 @@ impl<'a> Resolver<'a> {
             let name = def.key().to_string();
             let range = def.range;
             let id = self.intern(def);
+            if let Some(root) = &repr_access_root {
+                self.case_repr_roots.insert(id, root.clone());
+            }
             // An anonymous field has the name F# generates for it: `Item` when
             // it is the case's only field, `Item<n>` (its 1-based position)
             // among several. `Case(Item = e)` names it like any other field.
@@ -417,6 +424,7 @@ impl<'a> Resolver<'a> {
                     id,
                     &type_key,
                     type_is_private,
+                    repr_access_root.clone(),
                     CaseKind::Union {
                         require_qualified: true,
                     },
@@ -429,6 +437,7 @@ impl<'a> Resolver<'a> {
                     &name,
                     id,
                     type_is_private,
+                    repr_access_root.clone(),
                     CaseKind::Union {
                         require_qualified: false,
                     },
@@ -580,6 +589,9 @@ impl<'a> Resolver<'a> {
                 id,
                 &type_key,
                 type_is_private,
+                // An enum's representation takes no modifier
+                // (`parsEnumTypesCannotHaveVisibilityDeclarations`).
+                None,
                 CaseKind::Enum,
             ) {
                 Some(item_id) => Resolution::Item(item_id),
@@ -621,7 +633,7 @@ impl<'a> Resolver<'a> {
         // declaration, frame entry, and cross-file open (so find-references spans
         // its cross-file uses); an anonymous-root constructor stays `Local` and its
         // module is marked hidden.
-        let res = match self.export_case(&entry_name, id, is_private, CaseKind::Exception) {
+        let res = match self.export_case(&entry_name, id, is_private, None, CaseKind::Exception) {
             Some(item_id) => Resolution::Item(item_id),
             None => {
                 self.note_hidden_value_module(self.container_path.clone());
@@ -802,6 +814,7 @@ impl<'a> Resolver<'a> {
                         def: super::model::ExportDef::Own(use_id),
                         case: None,
                         access_root_len: self.export_access_root_len(is_private),
+                        repr_access_root: None,
                         attributed: false,
                     });
                     Some((item_idx, item_id))

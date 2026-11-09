@@ -228,6 +228,7 @@ impl<'a> Resolver<'a> {
                         access_root_len: self.export_access_root_len(
                             super::decls::header_is_private(binding.syntax()),
                         ),
+                        repr_access_root: None,
                         attributed,
                     });
                     // The export-decl-list twin of the `ExportedItem` push: an

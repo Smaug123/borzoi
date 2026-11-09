@@ -16,6 +16,7 @@ mod augmentation_scope_diff;
 mod auto_open_fold_back;
 mod auto_open_member_sweep;
 mod binder_site_grid;
+mod case_access_grid;
 mod classify_assembly_diff;
 mod classify_diff;
 mod commit_surface;

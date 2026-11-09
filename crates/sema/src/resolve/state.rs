@@ -891,6 +891,12 @@ pub(super) struct Resolver<'a> {
     /// resolution reads it so a `private` type inaccessible from the reference site
     /// (e.g. a sibling module) does not resolve its case/member (FCS FS1092).
     pub(super) type_access_roots: HashMap<Vec<String>, HashMap<String, Option<usize>>>,
+    /// Each in-file case of a union whose representation is `private`, by its
+    /// binder, to the union's container: the case is usable only from within it
+    /// ([`Self::case_usable_here`]). Keyed by binder rather than by export
+    /// because an anonymous-root file's cases have no export, and still reach a
+    /// sibling module through `A.U.X`.
+    pub(super) case_repr_roots: HashMap<DefId, Vec<String>>,
     /// The **complete declared-name view of each container** — keyed like
     /// [`Self::type_defs`], mapping each declared name to the namespaces it occupies
     /// ([`DeclKinds`]). Populated from the same declaration walk that fills
