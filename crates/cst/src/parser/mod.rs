@@ -48,7 +48,7 @@ use crate::lexer::{LexError, Token};
 use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
 };
-use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode, kind_interval};
+use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode};
 use dual_keyword::{DualKeyword, KeywordForm};
 use expr::decl_expr_keyword;
 
@@ -136,6 +136,7 @@ mod expr_app;
 mod expr_atom;
 mod expr_control;
 mod expr_op;
+mod feature_gates;
 mod measure;
 mod numeric;
 mod pat;
@@ -538,12 +539,13 @@ fn parse_inner_stopping_at(
             shape_depends_on_language_version,
         };
     }
-    // Build the root now: the node-surface gate below walks it for typed-node
-    // features that are out of surface at `lang` (today: nullness).
+    // Build the root now: the feature gates below walk it for constructs a
+    // language feature introduced after `lang`.
     let root = SyntaxNode::new_root(parser.builder.finish());
+    let gates = feature_gates::feature_gate_diagnostics(&root, lang);
     // Merge the directive errors (collected in source order above), the FS1161
     // tab errors (scanned off the whitespace trivia), the `#elif` trivia gate,
-    // and the typed-node surface gate with the productions' errors (emitted in
+    // and the feature gates with the productions' errors (emitted in
     // parse order), then re-sort by span start so the final list reads in source
     // order regardless of which producer found each problem.
     let mut errors = parser.errors;
@@ -551,7 +553,7 @@ fn parse_inner_stopping_at(
     errors.extend(tab_errors);
     errors.extend(operator_char_errors);
     errors.extend(langversion_errors);
-    errors.extend(node_surface_diagnostics(&root, lang));
+    errors.extend(gates);
     // Warnings come from the productions and the lex-filter's offside
     // diagnostics; directive/tab/langversion problems are all errors.
     let mut warnings = parser.warnings;
@@ -615,61 +617,6 @@ fn langversion_diagnostics(
             span: span.clone(),
         })
         .collect()
-}
-
-/// Language-version legality diagnostics for *typed-node* features: each node in
-/// `root` whose kind is out of surface at `lang` draws an FS3350 feature error.
-///
-/// Parallel to [`langversion_diagnostics`], which gates *trivia* features
-/// (`#elif`) via a span side-channel; a typed-node feature instead *is* a node in
-/// the tree, so the gate walks the green tree against the shared
-/// [`kind_interval`] table. This makes "the tree
-/// holds a node out of surface at `lang`" the same fact as "the `vN` projection
-/// is not total here" (`docs/ast-versioning-plan.md` P2). Like FCS's
-/// `CheckLanguageFeatureAndRecover` the report leaves the tree unchanged — and
-/// here the tree is *always* the maximal/preview parse (the version is a lens +
-/// diagnostic layer, never a reshape — see
-/// `docs/completed/ast-versioning-nullness-proof.md` D-proof-1).
-///
-/// Today the only gated kind is `WITH_NULL_TYPE` (nullness, F# 9.0). The message
-/// mirrors FCS's FS3350 template and feature name; the "Please use language
-/// version" tail is what the LSP routes past its overlap dedup.
-fn node_surface_diagnostics(root: &SyntaxNode, lang: LanguageVersion) -> Vec<ParseError> {
-    root.descendants()
-        .filter_map(|n| {
-            // Out of surface *because not yet introduced* at `lang`: the
-            // "use version N or greater" case. (No modelled kind is `removed`
-            // today; a removal would carry a different message.)
-            let introduced = kind_interval(n.kind()).introduced?;
-            if lang >= introduced {
-                return None;
-            }
-            // A gated kind without a feature name would be a wiring bug; skip it
-            // (under-report, never a wrong message) — kept consistent by a test.
-            let feature = feature_name_for_kind(n.kind())?;
-            let range = n.text_range();
-            Some(ParseError {
-                // FCS FS3350 `chkFeatureNotLanguageSupported`.
-                message: format!(
-                    "Feature '{feature}' is not available in F# {lang}. \
-                     Please use language version {introduced} or greater."
-                ),
-                span: usize::from(range.start())..usize::from(range.end()),
-            })
-        })
-        .collect()
-}
-
-/// The FCS feature display name for a version-gated [`SyntaxKind`], used in its
-/// FS3350 message — mirrors FCS `FSComp.SR.feature*` (e.g.
-/// `featureNullnessChecking` → "nullness checking"). `None` for kinds that are
-/// not version-gated (no `introduced` row); every gated kind must have an entry,
-/// asserted by a test so the two never drift.
-fn feature_name_for_kind(kind: SyntaxKind) -> Option<&'static str> {
-    match kind {
-        SyntaxKind::WITH_NULL_TYPE => Some("nullness checking"),
-        _ => None,
-    }
 }
 
 /// FS1161 "TABs are not allowed in F# code". FCS's lexer splits whitespace

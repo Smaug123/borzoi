@@ -437,14 +437,44 @@ too: the lex-filter differential runs every fixture at one version per band of
 those gates, comparing both the token stream and the FS0058 offside
 diagnostics. `#nowarn` / `#warnon` arguments record whether they need
 `ParsedHashDirectiveArgumentNonQuotes` (F# 9.0), and
-`Directive::warning_numbers` reads them at a version. The gate below is *not
-yet* version-aware — it is implemented at its latest-version form
-unconditionally, so it diverges only when a project sets an older
-`<LangVersion>`:
+`Directive::warning_numbers` reads them at a version. The features FCS
+checks while parsing (`CheckLanguageFeatureAndRecover`, and the lexer's dotless
+`float32` check) are version-aware: `while!`, constraint intersection,
+`static abstract`, attributes after `module`, unparenthesised `let!`/`return`
+annotations and `1f` literals each draw FCS's diagnostic below their version,
+over the same tree (`crates/cst/src/parser/feature_gates.rs`).
+`parser_diff_feature_gates` holds every fixture's whole diagnostic set and tree
+to FCS at every version. These remain divergent:
 
-- **Older typed-node feature pins are incomplete** — the interval gate covers
-  nullness, but other typed-node features introduced below the currently modelled
-  surfaces may still be treated as always-on until their interval rows are added.
+- **`_.M` and `for _ = …` are accepted at every version.** FCS gates the
+  accessor shorthand (`AccessorFunctionShorthand`, F# 8.0, FS3350 at the `_.`)
+  and a wildcard integer-`for` variable (`WildCardInForLoop`, F# 4.7, FS0525)
+  while parsing; we report neither. Modelling them is a trade-off not yet
+  decided: `diagnostics_are_version_invariant` compares F# 4.6 with `preview`,
+  so either gate would make every file using the construct version-dependent,
+  and a guessed language version (an orphan buffer, or a project whose
+  `LangVersion` the evaluator cannot pin) would then retain no diagnostics for
+  the file. `_.M` lambdas are common in modern code. Pinned by
+  `parser_diff_feature_gates::unmodelled_gates_are_pinned`.
+- **FS3535 on `static abstract` is not reported.** From F# 7.0 FCS warns on
+  every `static abstract` member. Code declaring such interfaces usually
+  silences it with `#nowarn "3535"`, and we do not consume `#nowarn` (see
+  "Directives / preprocessor"), so reporting it would flag what the build does
+  not.
+- **A dotless `float32` literal keeps its value below F# 5.0.** FCS's lexer
+  reports FS1153 and substitutes `0.0f`; we report FS1153 and keep the value
+  written. The file does not compile at that version either way.
+- **The extended interpolated string (`$$"""…"""`, F# 8.0) and the `>|}` /
+  `@>|}` anonymous-record closers (F# 10.0) are accepted at every version.**
+  Below 8.0, FCS's lexer reads a `$$"""` string as a plain triple-quoted one
+  with single-brace fills, so its FS1251 span depends on where that reading
+  first opens a fill. FCS reports the `>|}` gate at the lexer's current lexeme,
+  which is not always the closer's (`{| A = <@ 1 @>|}` reports at the `1`).
+- **`#nowarn` / `#warnon` diagnostics are not reported**, at any version:
+  FS3350 for an unquoted argument below F# 9.0, FS0203 for an `FS`-prefixed
+  one below 9.0 or an unparsable one from 9.0, and, below F# 10.0
+  (`ScopedNowarn`), FS3350 for a top-level `#warnon` and FS0236 for a
+  directive inside a nested module.
 
 A parser-level offside diagnostic that is not version-dependent is also
 unmodelled: FCS's `classDefnMembersAtLeastOne` (pars.fsy:1855) reports FS0058 on

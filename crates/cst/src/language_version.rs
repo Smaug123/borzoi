@@ -112,6 +112,12 @@ impl LanguageVersion {
         self >= LanguageVersion::V9_0
     }
 
+    /// Whether `feature` is available at this version (FCS's
+    /// `LanguageVersion.SupportsFeature`).
+    pub fn supports(self, feature: LanguageFeature) -> bool {
+        self >= feature.introduced()
+    }
+
     /// One version from each band of the gates that shape the lex-filter's
     /// token stream — `RelaxWhitespace2` (F# 6.0) and `StrictIndentation`
     /// (F# 8.0) — ascending. Two versions in the same band filter every source
@@ -207,6 +213,94 @@ impl LanguageVersion {
     }
 }
 
+/// A language feature FCS checks *while parsing* and then parses anyway, so
+/// that below its version the construct draws a diagnostic over an unchanged
+/// tree. Each variant mirrors the `LanguageFeature` case of the same name
+/// (`LanguageFeatures.fs`).
+///
+/// The gates with a predicate of their own on [`LanguageVersion`] are not here:
+/// the lex-filter's, which change the token stream (`RelaxWhitespace`,
+/// `RelaxWhitespace2`, `StrictIndentation`), `#elif`, and the `#nowarn`
+/// argument forms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LanguageFeature {
+    /// `1f`: an integer literal with a `float32` suffix (`lex.fsl`'s
+    /// `ieee32_dotless_no_exponent`).
+    DotlessFloat32Literal,
+    /// `module [<A>] M` (`pars.fsy` `moduleIntro`).
+    AttributesToRightOfModuleKeyword,
+    /// `static abstract` members (`pars.fsy` `abstractMemberFlags`).
+    InterfacesWithAbstractStaticMembers,
+    /// `'T & #I` in type position and in a type-parameter declaration.
+    ConstraintIntersectionOnFlexibleTypes,
+    /// `while!`.
+    WhileBang,
+    /// `string | null`.
+    NullnessChecking,
+    /// An unparenthesised annotation on a `let!` / `use!` / `and!` binding, or
+    /// on the expression of a `return` / `yield` (or their `!` forms).
+    AllowTypedLetUseAndBang,
+}
+
+impl LanguageFeature {
+    /// Every feature, each once.
+    pub const ALL: [LanguageFeature; 7] = [
+        LanguageFeature::DotlessFloat32Literal,
+        LanguageFeature::AttributesToRightOfModuleKeyword,
+        LanguageFeature::InterfacesWithAbstractStaticMembers,
+        LanguageFeature::ConstraintIntersectionOnFlexibleTypes,
+        LanguageFeature::WhileBang,
+        LanguageFeature::NullnessChecking,
+        LanguageFeature::AllowTypedLetUseAndBang,
+    ];
+
+    /// The first version with the feature (`featureVersionMap` in
+    /// `LanguageFeatures.fs`).
+    pub fn introduced(self) -> LanguageVersion {
+        match self {
+            LanguageFeature::DotlessFloat32Literal => LanguageVersion::V5_0,
+            LanguageFeature::AttributesToRightOfModuleKeyword => LanguageVersion::V6_0,
+            LanguageFeature::InterfacesWithAbstractStaticMembers => LanguageVersion::V7_0,
+            LanguageFeature::ConstraintIntersectionOnFlexibleTypes => LanguageVersion::V8_0,
+            LanguageFeature::WhileBang => LanguageVersion::V8_0,
+            LanguageFeature::NullnessChecking => LanguageVersion::V9_0,
+            LanguageFeature::AllowTypedLetUseAndBang => LanguageVersion::V10_0,
+        }
+    }
+
+    /// The name FCS's FS3350 "Feature '…' is not available" message gives the
+    /// feature (its `FSComp.SR.feature*` string).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            LanguageFeature::DotlessFloat32Literal => "dotless float32 literal",
+            LanguageFeature::AttributesToRightOfModuleKeyword => {
+                "attributes to the right of the 'module' keyword"
+            }
+            LanguageFeature::InterfacesWithAbstractStaticMembers => {
+                "static abstract interface members"
+            }
+            LanguageFeature::ConstraintIntersectionOnFlexibleTypes => {
+                "Constraint intersection on flexible types"
+            }
+            LanguageFeature::WhileBang => "'while!' expression",
+            LanguageFeature::NullnessChecking => "nullness checking",
+            LanguageFeature::AllowTypedLetUseAndBang => {
+                "Allow let! and use! type annotations without requiring parentheses"
+            }
+        }
+    }
+
+    /// FCS's FS3350 message for using the feature at `lang`
+    /// (`chkFeatureNotLanguageSupported`).
+    pub fn not_available_message(self, lang: LanguageVersion) -> String {
+        format!(
+            "Feature '{}' is not available in F# {lang}. Please use language version {} or greater.",
+            self.display_name(),
+            self.introduced(),
+        )
+    }
+}
+
 impl std::fmt::Display for LanguageVersion {
     /// The canonical `<LangVersion>` spelling: `"4.6"` … `"11.0"`, and
     /// `"preview"`. Round-trips through [`from_lang_version_text`] for every
@@ -234,6 +328,25 @@ impl std::fmt::Display for LanguageVersion {
 mod tests {
     use super::LanguageVersion::*;
     use super::*;
+
+    /// [`LanguageFeature::ALL`] lists every variant once: the match fails to
+    /// compile when a variant is added, and the position check fails when the
+    /// list misses or repeats one.
+    #[test]
+    fn all_features_are_listed_once() {
+        for (i, f) in LanguageFeature::ALL.into_iter().enumerate() {
+            let position = match f {
+                LanguageFeature::DotlessFloat32Literal => 0,
+                LanguageFeature::AttributesToRightOfModuleKeyword => 1,
+                LanguageFeature::InterfacesWithAbstractStaticMembers => 2,
+                LanguageFeature::ConstraintIntersectionOnFlexibleTypes => 3,
+                LanguageFeature::WhileBang => 4,
+                LanguageFeature::NullnessChecking => 5,
+                LanguageFeature::AllowTypedLetUseAndBang => 6,
+            };
+            assert_eq!(position, i, "{f:?}");
+        }
+    }
 
     /// The full `getVersionFromString` mapping, transcribed from
     /// `LanguageFeatures.fs`. This table *is* the oracle: every recognised

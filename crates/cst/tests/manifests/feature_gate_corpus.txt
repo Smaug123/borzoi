@@ -1,0 +1,72 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_diff_feature_gates:: -- --ignored
+(corpus)	files=6355
+tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/UseBindings/UseBang05.fs	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/ConstrainedAndInterfaceCalls.fs	agree
+tests/FSharp.Compiler.ComponentTests/Conformance/Types/TypeConstraints/IWSAMsAndSRTPs/Types.fs	agree
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/intersection_constraints.fsx	agree
+tests/FSharp.Core.UnitTests/FSharp.Core/NativeInterop.fs	agree
+tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModule1.fs	agree
+tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModule2.fs	agree
+tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleChecked.fs	agree
+tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModuleDynamic.fs	agree
+tests/fsharp/core/large/sequential/LargeSequential-maxtested.fs	fcs-error
+tests/fsharp/core/quotes/test.fsx	agree
+tests/fsharp/typecheck/sigs/neg134.fs	agree
+tests/fsharp/typecheck/sigs/neg135.fs	agree
+tests/fsharp/typecheck/sigs/pos41.fs	agree
+tests/service/data/SyntaxTree/Expression/Return 01.fs	agree
+tests/service/data/SyntaxTree/Expression/Return 07.fs	agree
+tests/service/data/SyntaxTree/Expression/ReturnBang 01.fs	agree
+tests/service/data/SyntaxTree/Expression/ReturnBang 03.fs	agree
+tests/service/data/SyntaxTree/Expression/WhileBang 01.fs	agree
+tests/service/data/SyntaxTree/Expression/WhileBang 02.fs	agree
+tests/service/data/SyntaxTree/Expression/WhileBang 03.fs	agree
+tests/service/data/SyntaxTree/Expression/WhileBang 04.fs	agree
+tests/service/data/SyntaxTree/Expression/WhileBang 05.fs	agree
+tests/service/data/SyntaxTree/Expression/WhileBang 06.fs	agree
+tests/service/data/SyntaxTree/Expression/Yield 01.fs	agree
+tests/service/data/SyntaxTree/Expression/Yield 02.fs	agree
+tests/service/data/SyntaxTree/Expression/Yield 05.fs	agree
+tests/service/data/SyntaxTree/Expression/Yield 06.fs	agree
+tests/service/data/SyntaxTree/Expression/YieldBang 01.fs	agree
+tests/service/data/SyntaxTree/Expression/YieldBang 03.fs	agree
+tests/service/data/SyntaxTree/Expression/YieldBang 05.fs	agree
+tests/service/data/SyntaxTree/Expression/YieldBang 06.fs	agree
+tests/service/data/SyntaxTree/LeadingKeyword/StaticAbstractKeyword.fs	agree
+tests/service/data/SyntaxTree/LeadingKeyword/StaticAbstractMemberKeyword.fs	agree
+tests/service/data/SyntaxTree/SynTyparDecl/Constraint intersection 01.fs	agree
+tests/service/data/SyntaxTree/SynType/Constraint intersection 01.fs	agree
+tests/service/data/SyntaxTree/SynType/Constraint intersection 02.fs	agree
+tests/service/data/SyntaxTree/SynType/Constraint intersection 03.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 01.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 04.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 05.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 06.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 08.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 11.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 12.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 13.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 14.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 15.fs	diverge
+tests/service/data/SyntaxTree/SynType/Typed LetBang 16.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 18.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang 20.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 01.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 04.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 05.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 08.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 09.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 10.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 11.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 14.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 15.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 16.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 17.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed LetBang AndBang 18.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed UseBang 01.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed UseBang 03.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed UseBang 04.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed UseBang 05.fs	agree
+tests/service/data/SyntaxTree/SynType/Typed UseBang 06.fs	agree

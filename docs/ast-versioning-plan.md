@@ -288,9 +288,12 @@ right before the surface count (and the cost of a mistake) grows.
 - **Union privacy decision.** The union facade is still publicly re-exported from
   `syntax` (no `pub(crate) mod union`). Decide whether to make that boundary
   private and, if so, how without breaking the rowan-substrate backstop (D7).
-- **Broaden interval data below 8.0.** The current rows cover only the 8.0/9.0
-  nullness slice; 4.6–7.0 are not yet modelled as separate facades. This is a
-  data-completeness task, not a mechanism change.
+- **Broaden interval data below 8.0.** The rows cover nullness (9.0) and the
+  two 8.0 kinds FCS gates while parsing, `WHILE_BANG_EXPR` and
+  `INTERSECTION_TYPE` (`kind_feature` in `syntax/kinds.rs` says why
+  `INTERP_STRING_EXPR` and `DOT_LAMBDA_EXPR` have none); 4.6–7.0 are not yet
+  modelled as separate facades. This is a data-completeness task, not a
+  mechanism change.
 
 ### Stage 4 remainder — single source of truth for intervals
 

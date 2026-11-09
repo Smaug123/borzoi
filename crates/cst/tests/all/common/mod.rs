@@ -856,6 +856,29 @@ pub fn fcs_diagnostics_with_severity(
         .collect()
 }
 
+/// Every `fcs-dump ast` diagnostic as `(byte span, message, severity)`, in the
+/// order FCS reported them — for an oracle that holds a fixture's *whole*
+/// diagnostic set to FCS rather than one error number's.
+pub fn fcs_all_diagnostics(
+    json: &str,
+    source: &str,
+) -> Vec<(std::ops::Range<usize>, String, String)> {
+    let dump: FcsAstDiagnostics =
+        serde_json::from_str(json).expect("fcs-dump ast diagnostics shape");
+    let line_index = LineIndex::new(source);
+    dump.diagnostics
+        .into_iter()
+        .map(|d| {
+            (
+                line_index.offset(d.range.start.line, d.range.start.col)
+                    ..line_index.offset(d.range.end.line, d.range.end.col),
+                d.message,
+                d.severity,
+            )
+        })
+        .collect()
+}
+
 /// [`parse_fcs_dump`] for a `tokens-lexfilter-internal-batch` record: the
 /// stream FCS's parser reads, put in the vocabulary our filter's output is
 /// named in.
