@@ -1026,7 +1026,8 @@ impl<'src> Parser<'src> {
         let is_range = matches!(
             self.nth_significant_raw_at_pos(1),
             Some(Token::Ident(_) | Token::QuotedIdent(_) | Token::Underscore)
-        ) && matches!(self.nth_significant_raw_at_pos(2), Some(Token::Equals));
+        ) && matches!(self.nth_significant_raw_at_pos(2), Some(Token::Equals))
+            && self.next_tokens_unbroken(3);
         if is_range {
             self.parse_for_range_loop();
         } else {

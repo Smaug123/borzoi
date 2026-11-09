@@ -116,7 +116,7 @@ impl<'src> Parser<'src> {
     /// `SynExpr.LibraryOnlyStaticOptimization` (`SyntaxTreeOps.mkSynBindingRhs`);
     /// we keep the surface flat shape `[<main-expr>, STATIC_OPT_WHEN_CLAUSE+]`
     /// and reproduce the nesting in the normaliser.
-    fn parse_static_optimization_clauses(&mut self, cp: rowan::Checkpoint) {
+    fn parse_static_optimization_clauses(&mut self, cp: Checkpoint) {
         self.builder.start_node_at(
             cp,
             FSharpLang::kind_to_raw(SyntaxKind::STATIC_OPTIMIZATION_EXPR),
@@ -429,7 +429,7 @@ impl<'src> Parser<'src> {
     /// `sequentialExpr` production).
     pub(super) fn finish_seq_block(
         &mut self,
-        cp: rowan::Checkpoint,
+        cp: Checkpoint,
         mut count: u32,
         allow_typed: bool,
         body: SeqBody,
@@ -754,7 +754,7 @@ impl<'src> Parser<'src> {
     /// an already-parsed `appExpr` LHS at `cp` (`appExpr` is a `tupleExpr`, so
     /// `:=` is its only outer continuation). Behaviourally identical to the inline
     /// tail it replaces.
-    fn continue_assign_expr(&mut self, cp: rowan::Checkpoint) {
+    fn continue_assign_expr(&mut self, cp: Checkpoint) {
         // `:=` binds the whole preceding tuple. The **swallowed-closer gate**
         // (`!at_swallowed_seq_closer`, the guard [`Self::parse_pratt_expr`]'s
         // `<-` block also applies) decides whether the `:=` belongs to *this*
@@ -825,7 +825,7 @@ impl<'src> Parser<'src> {
     /// [`Self::parse_app_head_brace`] for the computation-expression fallback,
     /// where the `appExpr` is the first statement's head, possibly extended by
     /// infix operators, a `..` range, a tuple `,`, or a `:=` assignment.
-    pub(super) fn continue_expr_after_app(&mut self, cp: rowan::Checkpoint) {
+    pub(super) fn continue_expr_after_app(&mut self, cp: Checkpoint) {
         self.continue_pratt_expr(cp, 0, false, false);
         self.continue_range_expr(cp);
         self.continue_tuple_expr(cp);
@@ -854,7 +854,7 @@ impl<'src> Parser<'src> {
     /// The `,` continuation of [`Self::parse_tuple_expr`], split out so the
     /// appExpr-headed brace handler can resume the climb from a pre-parsed
     /// `appExpr` LHS at `cp`. Behaviourally identical to the inline tail.
-    fn continue_tuple_expr(&mut self, cp: rowan::Checkpoint) {
+    fn continue_tuple_expr(&mut self, cp: Checkpoint) {
         if self.at_tuple_continuation() {
             self.builder
                 .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TUPLE_EXPR));
@@ -934,7 +934,7 @@ impl<'src> Parser<'src> {
     /// `appExpr` LHS at `cp`. Behaviourally identical to the inline tail. (The
     /// open-lower `..upper` head stays in [`Self::parse_range_expr`]: an `appExpr`
     /// LHS is never a leading `..`.)
-    fn continue_range_expr(&mut self, cp: rowan::Checkpoint) {
+    fn continue_range_expr(&mut self, cp: Checkpoint) {
         while self.at_range_op() {
             self.bump_into(SyntaxKind::DOT_DOT_TOK);
             // Open-upper `lower..`: no bound-starter after the `..` (e.g.
@@ -1140,7 +1140,7 @@ impl<'src> Parser<'src> {
     /// Behaviourally identical to the inline tail it replaces.
     fn continue_pratt_expr(
         &mut self,
-        cp: rowan::Checkpoint,
+        cp: Checkpoint,
         min_bp: u16,
         lhs_is_wildcard: bool,
         lhs_is_decl_construct: bool,

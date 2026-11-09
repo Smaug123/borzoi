@@ -27,7 +27,7 @@ impl<'src> Parser<'src> {
     /// (mirroring [`Self::parse_type_app_tail`]). The matching `>` was already
     /// found by LexFilter's adjacency walk (it is what made the marker fire), so
     /// it is present as a `Greater(true)` and bumped as `GREATER_TOK`.
-    pub(super) fn parse_measure_lit_tail(&mut self, cp: rowan::Checkpoint) {
+    pub(super) fn parse_measure_lit_tail(&mut self, cp: Checkpoint) {
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEASURE_LIT_EXPR));
         // HPA/HPTA virtual: consume as a zero-width ERROR placeholder.
@@ -90,8 +90,13 @@ impl<'src> Parser<'src> {
     fn parse_measure_type_expr(&mut self) {
         let cp = self.builder.checkpoint();
         self.parse_measure_operand();
-        // Left-associative `*` / `/` run.
+        // Left-associative `*` / `/` run. Each operator wraps the run so far in
+        // one more node without recursing, so the run is held to the tree bound
+        // here.
         loop {
+            if self.depth_limit_latched() {
+                break;
+            }
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::Op("*")) => {
                     self.builder

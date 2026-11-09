@@ -16,6 +16,7 @@ mod corpus_walk;
 mod fcs_divergence;
 mod kind_name_totality;
 mod langversion_gate;
+mod layout_perturbation_sweep;
 mod lexer_diff;
 mod lexfilter_corpus;
 mod lexfilter_depth;
@@ -97,6 +98,7 @@ mod parser_diff_underscore_pat;
 mod parser_diff_when_constraints;
 mod parser_ifdef;
 mod parser_panic_sweep;
+mod parser_tree_height;
 mod recovery_sweep;
 mod shape_sensitivity;
 

@@ -415,6 +415,42 @@ fn the_known_panic_witnesses_parse() {
     );
 }
 
+/// The shapes that have tripped `bump_into`'s stamp check: a production gated
+/// on the *raw* stream consumed a layout virtual parked between two tokens the
+/// raw stream sees as adjacent, stamping it as a real token. Pinned by
+/// spelling, as above.
+#[test]
+fn the_known_virtual_stamp_witnesses_parse() {
+    let mut census = Census::default();
+    for src in [
+        // `at_dot_lambda`: the `OBLOCKSEP` before the `.` became the `DOT_TOK`.
+        "_\n.\n",
+        // `parse_var_type`: the `OBLOCKSEP` before `a` became the typar name.
+        "x:?'\na",
+        // `climb_pat_tail`, dispatching on the raw stream: the `OEND` before
+        // the `:` became the typed pattern's `COLON_TOK` (F# 4.6).
+        "function?\n:\n",
+        // The object-model item classifier: a dedent between `static` and
+        // `val` put an `OBLOCKEND` where `parse_val_field_at` bumped the `val`.
+        "type T =\n  static\nval y : int\n",
+        // `parse_namespace_header`'s bare `global` (signature file, F# 4.6).
+        "namespace\nglobal\n",
+        // `parse_get_set_accessor`: an attribute argument dedented to column 0
+        // inside an accessor's attribute list left an `OEND` where the `get`
+        // was bumped.
+        "type C() =\n    member x.Foo\n       with [<property: System.Obsolete\n(\"foo\")>] get() = 1\n       and set(v) = ()\n",
+        // `peek_is_record_repr_start`: a dedent between the access modifier
+        // and the `{` put an `OBLOCKEND` where the record's `{` was bumped.
+        "type T = private\n { X : int }\nlet unaffected = 42\n",
+        // `parse_trait_call_expr`: a line break before the member signature's
+        // `(` put an `OBLOCKSEP` where the `(` was bumped (F# 4.6).
+        "let testFunc (a : ^x) =\n    (^x : \n     (static member someFunc : unit -> ^x) ())\n",
+    ] {
+        probe(src, &mut census);
+    }
+    assert_no_failures("known virtual-stamp witnesses", &census);
+}
+
 /// A fresh-seed random walk over [`WIDE`] at lengths the exhaustive halves
 /// cannot reach.
 ///

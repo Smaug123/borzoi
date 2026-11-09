@@ -943,7 +943,7 @@ impl<'src> Parser<'src> {
     /// inside tuple/`as` operands — token order no longer matches the tree, and
     /// the climber is required (e.g. `a, b :: c` ⇒ `Tuple[a, ListCons(b,c)]`,
     /// not `ListCons(Tuple[a,b], c)`).
-    pub(super) fn wrap_pat_tail(&mut self, cp: rowan::Checkpoint, ctx: PatCtx) {
+    pub(super) fn wrap_pat_tail(&mut self, cp: Checkpoint, ctx: PatCtx) {
         self.climb_pat_tail(cp, 0, ctx);
     }
 
@@ -1016,8 +1016,21 @@ impl<'src> Parser<'src> {
     /// selects the `: type` arm (all but [`PatCtx::Head`]) and, in
     /// [`Self::emit_pat_atom`], which operands admit a leading `[<…>]` attribute
     /// prefix (`Paren`/`Clause`, never the bare `Head`).
-    pub(super) fn climb_pat_tail(&mut self, cp: rowan::Checkpoint, min_bp: u8, ctx: PatCtx) {
+    pub(super) fn climb_pat_tail(&mut self, cp: Checkpoint, min_bp: u8, ctx: PatCtx) {
         loop {
+            // Every arm below dispatches on the raw stream; a layout virtual at
+            // the cursor ends the pattern (`function ?⏎:`, where an `OEND`
+            // precedes the `:`), as the parser will consume it next.
+            if self.parked_on_layout_virtual() {
+                break;
+            }
+            // `|`, `&`, `as` and `,` wrap the pattern so far in one more node
+            // per repeat; an operand that fails to parse (`a | | |`) skips the
+            // operand's own safe point, so the run is held to the tree bound
+            // here.
+            if self.depth_limit_latched() {
+                break;
+            }
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::ColonColon) if Self::PAT_BP_CONS >= min_bp => {
                     self.builder
@@ -1051,6 +1064,7 @@ impl<'src> Parser<'src> {
                     while self
                         .next_non_trivia_raw_at_pos()
                         .is_some_and(|t| matches!(t, Token::Comma))
+                        && self.next_tokens_unbroken(1)
                     {
                         self.bump_into(SyntaxKind::COMMA_TOK);
                         self.drain_block_sep_after_tuple_comma();
@@ -1086,6 +1100,7 @@ impl<'src> Parser<'src> {
                     while self
                         .next_non_trivia_raw_at_pos()
                         .is_some_and(|t| matches!(t, Token::Amp))
+                        && self.next_tokens_unbroken(1)
                     {
                         self.bump_into(SyntaxKind::AMP_TOK);
                         // Reuse the comma run's `Virtual::BlockSep` drain for a
@@ -1353,7 +1368,7 @@ impl<'src> Parser<'src> {
     /// pattern. The raw stream still surfaces the `)`, so the inner bails
     /// cleanly — the `ATTRIB_PAT` gets no inner pat, the `)` closes the
     /// delimiter, and `x` survives as the next element / argument.
-    pub(super) fn emit_attrib_pat(&mut self, cp: rowan::Checkpoint, ctx: PatCtx) {
+    pub(super) fn emit_attrib_pat(&mut self, cp: Checkpoint, ctx: PatCtx) {
         self.parse_attribute_lists();
         // FCS's `attributeList` carries a trailing `opt_OBLOCKSEP`, so the
         // attributed pattern may sit on a fresh offside line (`([<A>]⏎  x)`).
@@ -1437,6 +1452,7 @@ impl<'src> Parser<'src> {
         if self
             .next_non_trivia_raw_at_pos()
             .is_some_and(|t| matches!(t, Token::Colon))
+            && self.next_tokens_unbroken(1)
         {
             self.builder
                 .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPED_PAT));

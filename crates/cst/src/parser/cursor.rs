@@ -17,7 +17,7 @@ impl<'src> Parser<'src> {
             filtered_tokens,
             pos: 0,
             raw_consumed_end: 0,
-            builder: GreenNodeBuilder::new(),
+            builder: TreeBuilder::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
             interp_nest: Vec::new(),
@@ -26,7 +26,34 @@ impl<'src> Parser<'src> {
             depth: 0,
             depth_limit_hit: false,
             depth_limit_span: None,
+            tree_height_stop: TREE_HEIGHT_STOP,
         }
+    }
+
+    /// A fresh parser over the same tokens that stops at tree height `stop`
+    /// (see [`parse_inner`]); this one's partial tree and diagnostics are
+    /// dropped.
+    pub(super) fn restart(self, stop: usize) -> Self {
+        // The tree being thrown away is too tall by construction, perhaps far
+        // too tall to drop by rowan's recursive free.
+        self.builder.discard();
+        Self {
+            tree_height_stop: stop,
+            ..Self::new(self.source, self.raw_tokens, self.filtered_tokens)
+        }
+    }
+
+    /// Build the whole file as a root holding the source as one `ERROR` token,
+    /// with the depth limit latched: the last resort of [`parse_inner`] for a
+    /// file whose tree no stop height keeps under [`MAX_TREE_HEIGHT`].
+    pub(super) fn give_up_whole(&mut self, file_kind: FileKind) {
+        let root = match file_kind {
+            FileKind::Impl => SyntaxKind::IMPL_FILE,
+            FileKind::Sig => SyntaxKind::SIG_FILE,
+        };
+        self.builder.start_node(FSharpLang::kind_to_raw(root));
+        self.trigger_depth_limit();
+        self.builder.finish_node();
     }
 
     /// Run `body` one recursion level deeper, bounding the hand-written
@@ -44,7 +71,7 @@ impl<'src> Parser<'src> {
     /// three are mutually recursive via `(e : T)`, lambda parameters, match
     /// arms). See [`Self::with_depth_bool`] for the `bool`-returning variant.
     pub(super) fn with_depth(&mut self, body: impl FnOnce(&mut Self)) {
-        if self.depth_limit_hit {
+        if self.depth_limit_latched() {
             return;
         }
         self.depth += 1;
@@ -62,7 +89,7 @@ impl<'src> Parser<'src> {
     /// element loops (they also see EOF after the drain, so this is belt and
     /// braces).
     pub(super) fn with_depth_bool(&mut self, body: impl FnOnce(&mut Self) -> bool) -> bool {
-        if self.depth_limit_hit {
+        if self.depth_limit_latched() {
             return false;
         }
         self.depth += 1;
@@ -74,6 +101,24 @@ impl<'src> Parser<'src> {
         };
         self.depth -= 1;
         result
+    }
+
+    /// Whether the depth limit is latched, latching it first if the tree being
+    /// built has reached its stop height (`tree_height_stop`, normally
+    /// [`TREE_HEIGHT_STOP`]; see [`MAX_TREE_HEIGHT`]).
+    ///
+    /// Latching drains the rest of the input, so it may only happen where a
+    /// production is ready to see end of input next: at a recursion chokepoint
+    /// ([`Self::with_depth`]), or at the head of a loop that wraps one more
+    /// node per repeat, before it looks for the next repeat — such a chain
+    /// grows the tree without recursing. Never mid-production: a production
+    /// that has looked ahead and then bumps a token may rely on the tokens it
+    /// saw still following.
+    pub(super) fn depth_limit_latched(&mut self) -> bool {
+        if !self.depth_limit_hit && self.builder.height_if_closed_now() >= self.tree_height_stop {
+            self.trigger_depth_limit();
+        }
+        self.depth_limit_hit
     }
 
     /// Record the depth-limit breach (latch + capture the breach span) and drain
@@ -200,11 +245,41 @@ impl<'src> Parser<'src> {
     ///   span, see `Filter::insert_token`). No raw token is consumed; the
     ///   virtual lands as a zero-width green-tree token so its bytes
     ///   aren't double-counted when the next Raw filtered token follows.
+    ///
+    /// A virtual may only be stamped [`SyntaxKind::ERROR`] or its own marker
+    /// kind ([`virtual_marker_kind`]), and a real token never a marker kind.
+    /// The productions gate on the *raw* stream as well as the filtered one, so
+    /// a raw-stream lookahead can approve a `bump_into` while the filtered
+    /// cursor is parked on a layout virtual, which would then land as a
+    /// zero-width real token. [`stamp_mismatch`] catches that whole class here:
+    /// a debug build panics, so the differential suites fail loudly; a release
+    /// build stamps `ERROR` and records the internal error as a parse error,
+    /// keeping the tree lossless and the file marked broken rather than
+    /// handing consumers a zero-width identifier or keyword.
+    #[track_caller]
     pub(super) fn bump_into(&mut self, kind: SyntaxKind) {
         let Some((res, span)) = self.filtered_tokens.get(self.pos).cloned() else {
             return;
         };
         let is_virtual = matches!(&res, Ok(FilteredToken::Virtual(_)));
+        let kind = match stamp_mismatch(&res, kind) {
+            None => kind,
+            Some(message) => {
+                if cfg!(debug_assertions) {
+                    // The caller's location names the production that
+                    // approved the bump (`bump_into` is `#[track_caller]`).
+                    panic!(
+                        "{message}, from {}, at {span:?}",
+                        std::panic::Location::caller()
+                    );
+                }
+                self.errors.push(ParseError {
+                    message: format!("internal parser error: {message}"),
+                    span: span.clone(),
+                });
+                SyntaxKind::ERROR
+            }
+        };
 
         // Virtuals are inserted *just before* the next real filtered token.
         // For LF (`42\n43`) BlockSep is at [3..3) and draining to span.start
@@ -717,5 +792,269 @@ impl<'src> Parser<'src> {
             message: format!("unexpected end of input inside {construct}; expected `{closer}`"),
             span: end..end,
         });
+    }
+}
+
+/// The kind of the zero-width marker token a virtual becomes when the tree
+/// keeps it as a marker; `None` for the virtuals the tree records as a
+/// zero-width [`SyntaxKind::ERROR`] (the layout virtuals, and the relabels
+/// whose backing raw keyword a dedicated emitter takes instead, such as
+/// [`Parser::emit_let_keyword`]). Exhaustive, so a new virtual has to choose.
+fn virtual_marker_kind(virtual_token: &Virtual) -> Option<SyntaxKind> {
+    match virtual_token {
+        Virtual::HighPrecedenceParenApp => Some(SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK),
+        Virtual::HighPrecedenceBrackApp => Some(SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK),
+        Virtual::Let
+        | Virtual::Binder
+        | Virtual::AndBang
+        | Virtual::BlockBegin
+        | Virtual::BlockEnd
+        | Virtual::DeclEnd
+        | Virtual::BlockSep
+        | Virtual::Do
+        | Virtual::DoBang
+        | Virtual::Then
+        | Virtual::Else
+        | Virtual::Fun
+        | Virtual::Function
+        | Virtual::Lazy
+        | Virtual::Assert
+        | Virtual::End
+        | Virtual::With
+        | Virtual::JoinIn
+        | Virtual::InterfaceMember
+        | Virtual::RightBlockEnd
+        | Virtual::HighPrecedenceTyApp => None,
+    }
+}
+
+/// What a virtual stands for, relative to the raw stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VirtualClass {
+    /// A block opener, closer or separator LexFilter inserts with no raw token
+    /// behind it.
+    Layout,
+    /// A relabel of the raw keyword at the same span (`Let`, `Then`, `With`,
+    /// …): the raw stream still shows what comes next.
+    Relabel,
+    /// An adjacency marker just before the raw token it precedes
+    /// (`HighPrecedence*`), with no raw token of its own.
+    Marker,
+}
+
+/// Exhaustive, so a new virtual has to choose.
+fn virtual_class(virtual_token: &Virtual) -> VirtualClass {
+    match virtual_token {
+        Virtual::BlockBegin
+        | Virtual::BlockEnd
+        | Virtual::DeclEnd
+        | Virtual::BlockSep
+        | Virtual::End
+        | Virtual::RightBlockEnd => VirtualClass::Layout,
+        Virtual::Let
+        | Virtual::Binder
+        | Virtual::AndBang
+        | Virtual::Do
+        | Virtual::DoBang
+        | Virtual::Then
+        | Virtual::Else
+        | Virtual::Fun
+        | Virtual::Function
+        | Virtual::Lazy
+        | Virtual::Assert
+        | Virtual::With
+        | Virtual::JoinIn
+        | Virtual::InterfaceMember => VirtualClass::Relabel,
+        Virtual::HighPrecedenceParenApp
+        | Virtual::HighPrecedenceBrackApp
+        | Virtual::HighPrecedenceTyApp => VirtualClass::Marker,
+    }
+}
+
+/// Whether `virtual_token` is pure layout ([`VirtualClass::Layout`]).
+fn is_layout_virtual(virtual_token: &Virtual) -> bool {
+    virtual_class(virtual_token) == VirtualClass::Layout
+}
+
+impl Parser<'_> {
+    /// Whether the filtered cursor sits on a layout virtual
+    /// ([`is_layout_virtual`]). A production that dispatches on the raw stream
+    /// at the cursor must not commit there: the raw token it sees is not the
+    /// next one the parser consumes, and bumping it would stamp the virtual
+    /// instead (see [`Self::bump_into`]). The raw lookaheads themselves do not
+    /// stop at one, since many productions read past a layout virtual on
+    /// purpose, to decide whether to consume it.
+    pub(super) fn parked_on_layout_virtual(&self) -> bool {
+        matches!(self.peek(), Some((Ok(FilteredToken::Virtual(v)), _)) if is_layout_virtual(v))
+    }
+
+    /// Whether the filtered cursor meets the next `n` raw tokens with no layout
+    /// virtual ([`VirtualClass::Layout`]) before any of them. A production that
+    /// approves `n` tokens through a raw-stream lookahead and then bumps them
+    /// all needs this too: the raw check proves which tokens they are (and that
+    /// no LexFilter-swallowed closer sits between), this proves no dedent or
+    /// block separator was inserted in front of one, where the bump would
+    /// stamp it instead. A relabelling virtual (`Virtual::Let`, …) stands for
+    /// its raw keyword and counts as one of the `n`; an adjacency marker
+    /// (`HighPrecedence*`) has no raw token and is passed over.
+    pub(super) fn next_tokens_unbroken(&self, n: usize) -> bool {
+        let mut met = 0;
+        for (res, _) in &self.filtered_tokens[self.pos..] {
+            if met == n {
+                return true;
+            }
+            match res {
+                Ok(FilteredToken::Raw(_)) => met += 1,
+                Ok(FilteredToken::Virtual(v)) => match virtual_class(v) {
+                    VirtualClass::Layout => return false,
+                    VirtualClass::Relabel => met += 1,
+                    VirtualClass::Marker => {}
+                },
+                Err(_) => return false,
+            }
+        }
+        met == n
+    }
+
+    /// Whether the filtered cursor reaches the real token starting at byte
+    /// `start` with no layout virtual in front of it or of anything before it,
+    /// except inside attribute lists (`[< … >]`), whose arguments are
+    /// expressions with their own layout. The span-keyed form of
+    /// [`Self::next_tokens_unbroken`], for a lookahead whose run may cross an
+    /// attribute list (where a LexFilter-swallowed closer makes the raw and
+    /// filtered token counts disagree).
+    pub(super) fn reaches_unbroken_outside_attributes(&self, start: usize) -> bool {
+        let mut in_attribute = false;
+        for (res, span) in &self.filtered_tokens[self.pos..] {
+            match res {
+                Ok(FilteredToken::Raw(_)) if span.start >= start => return span.start == start,
+                Ok(FilteredToken::Raw(Token::LBrackLess)) => in_attribute = true,
+                Ok(FilteredToken::Raw(Token::GreaterRBrack)) => in_attribute = false,
+                Ok(FilteredToken::Raw(_)) => {}
+                Ok(FilteredToken::Virtual(v)) if is_layout_virtual(v) && !in_attribute => {
+                    return false;
+                }
+                Ok(FilteredToken::Virtual(_)) => {}
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+}
+
+/// Why stamping `kind` onto the filtered entry `entry` would be wrong, or
+/// `None` when it is right: a virtual takes only `ERROR` or its own
+/// [`virtual_marker_kind`], and a real token never takes a marker kind (it has
+/// width; a marker has none). A lex error takes whatever the production chose.
+fn stamp_mismatch(entry: &Result<FilteredToken<'_>, LexError>, kind: SyntaxKind) -> Option<String> {
+    match entry {
+        Ok(FilteredToken::Virtual(v)) => (kind != SyntaxKind::ERROR
+            && virtual_marker_kind(v) != Some(kind))
+        .then(|| format!("bump_into stamped {kind:?} onto the layout virtual {v:?}")),
+        Ok(FilteredToken::Raw(t)) => matches!(
+            kind,
+            SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK | SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK
+        )
+        .then(|| format!("bump_into stamped the marker kind {kind:?} onto the real token {t:?}")),
+        Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_virtual_takes_only_error_or_its_own_marker_kind() {
+        let virtual_entry = |v| Ok(FilteredToken::Virtual(v));
+        let block_sep = virtual_entry(Virtual::BlockSep);
+        assert_eq!(stamp_mismatch(&block_sep, SyntaxKind::ERROR), None);
+        assert!(stamp_mismatch(&block_sep, SyntaxKind::IDENT_TOK).is_some());
+        assert!(stamp_mismatch(&block_sep, SyntaxKind::SEMI_TOK).is_some());
+        assert!(stamp_mismatch(&block_sep, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK).is_some());
+
+        let paren_app = virtual_entry(Virtual::HighPrecedenceParenApp);
+        assert_eq!(stamp_mismatch(&paren_app, SyntaxKind::ERROR), None);
+        assert_eq!(
+            stamp_mismatch(&paren_app, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK),
+            None
+        );
+        assert!(stamp_mismatch(&paren_app, SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK).is_some());
+
+        let brack_app = virtual_entry(Virtual::HighPrecedenceBrackApp);
+        assert_eq!(
+            stamp_mismatch(&brack_app, SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK),
+            None
+        );
+        assert!(stamp_mismatch(&brack_app, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK).is_some());
+    }
+
+    #[test]
+    fn a_real_token_never_takes_a_marker_kind() {
+        let ident = Ok(FilteredToken::Raw(Token::Ident("a")));
+        assert_eq!(stamp_mismatch(&ident, SyntaxKind::IDENT_TOK), None);
+        assert_eq!(stamp_mismatch(&ident, SyntaxKind::ERROR), None);
+        assert!(stamp_mismatch(&ident, SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK).is_some());
+        assert!(stamp_mismatch(&ident, SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK).is_some());
+    }
+
+    /// `a` with an offside block opening at it: the filtered cursor starts on
+    /// the zero-width `OBLOCKBEGIN` while the raw cursor already sees the `a`,
+    /// which is the misalignment the stamp guard exists for.
+    fn parser_parked_on_a_virtual() -> Parser<'static> {
+        let mut parser = Parser::new(
+            "a",
+            vec![(Ok(TriviaToken::Lexed(Token::Ident("a"))), 0..1)],
+            vec![
+                (Ok(FilteredToken::Virtual(Virtual::BlockBegin)), 0..1),
+                (Ok(FilteredToken::Raw(Token::Ident("a"))), 0..1),
+            ],
+        );
+        parser
+            .builder
+            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IMPL_FILE));
+        parser
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "bump_into stamped IDENT_TOK onto the layout virtual BlockBegin")]
+    fn stamping_a_real_kind_onto_a_virtual_panics_in_a_debug_build() {
+        parser_parked_on_a_virtual().bump_into(SyntaxKind::IDENT_TOK);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn stamping_a_real_kind_onto_a_virtual_is_an_error_in_a_release_build() {
+        let mut parser = parser_parked_on_a_virtual();
+        parser.bump_into(SyntaxKind::IDENT_TOK);
+        parser.bump_into(SyntaxKind::IDENT_TOK);
+        parser.builder.finish_node();
+        let root = SyntaxNode::new_root(parser.builder.finish());
+        let kinds: Vec<_> = root
+            .children_with_tokens()
+            .map(|t| (t.kind(), t.to_string()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (SyntaxKind::ERROR, String::new()),
+                (SyntaxKind::IDENT_TOK, "a".to_string())
+            ]
+        );
+        assert_eq!(parser.errors.len(), 1);
+        assert!(
+            parser.errors[0]
+                .message
+                .starts_with("internal parser error: bump_into stamped IDENT_TOK")
+        );
+    }
+
+    #[test]
+    fn stamping_error_onto_a_virtual_is_silent() {
+        let mut parser = parser_parked_on_a_virtual();
+        parser.bump_into(SyntaxKind::ERROR);
+        parser.bump_into(SyntaxKind::IDENT_TOK);
+        assert!(parser.errors.is_empty());
     }
 }

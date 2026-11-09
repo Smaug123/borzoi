@@ -78,6 +78,32 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(_)), _)) => return None,
             _ => {}
         }
+        // The item parsers bump their leading keyword run (`static member val`,
+        // `static abstract`, `override val`, …) unconditionally once
+        // classified, so the run the raw scan classifies must also be unbroken
+        // on the filtered stream: a dedent between `static` and `member` puts an
+        // `OBLOCKEND` there, which would be stamped as the `member`. Each
+        // keyword appears in a run at most once, so a repeat (`val⏎val`, the
+        // second starting the next item) ends it, and no run is longer than
+        // `static member val`.
+        let mut seen: Vec<&Token<'src>> = Vec::new();
+        for i in 0..3 {
+            match self.nth_significant_raw_at_pos(i) {
+                Some(
+                    keyword @ (Token::Static
+                    | Token::Member
+                    | Token::Val
+                    | Token::Abstract
+                    | Token::Default
+                    | Token::Override),
+                ) if !seen.contains(&keyword) => seen.push(keyword),
+                _ => break,
+            }
+        }
+        let raw_run = seen.len();
+        if !self.next_tokens_unbroken(raw_run) {
+            return None;
+        }
         self.classify_object_model_item_from_raw()
     }
 
@@ -459,7 +485,8 @@ impl<'src> Parser<'src> {
     /// expression, so a `#` after `(` is unambiguously inline IL there.)
     pub(super) fn peek_is_inline_il_repr_start(&self) -> bool {
         let mut sig = self.significant_raw_from_cursor();
-        matches!(sig.next(), Some(Token::LParen))
+        self.next_tokens_unbroken(3)
+            && matches!(sig.next(), Some(Token::LParen))
             && matches!(sig.next(), Some(Token::Hash))
             && matches!(
                 sig.next(),
@@ -887,7 +914,7 @@ impl<'src> Parser<'src> {
     /// `outer_cp = Some(checkpoint)` (the `static do` form) reopens the node *at*
     /// the checkpoint so a leading `STATIC_TOK` the caller bumped becomes the
     /// `MEMBER_DO`'s first child; `None` is the plain `do`.
-    fn parse_member_do(&mut self, outer_cp: Option<rowan::Checkpoint>) {
+    fn parse_member_do(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -914,7 +941,7 @@ impl<'src> Parser<'src> {
     /// a record field). The first `bump_into` (`static` / `val`) drains any
     /// leading trivia itself, so no cursor realignment is needed. `None` is the
     /// plain (unattributed) form.
-    pub(super) fn parse_val_field_at(&mut self, outer_cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_val_field_at(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -1014,7 +1041,7 @@ impl<'src> Parser<'src> {
     /// The first `bump_into` (the `[static] member` / `override` / `default`
     /// leading keyword) drains any leading trivia itself, so no cursor realignment
     /// is needed. `None` is the plain (unattributed) form.
-    fn parse_auto_property_at(&mut self, outer_cp: Option<rowan::Checkpoint>) -> bool {
+    fn parse_auto_property_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -1199,7 +1226,7 @@ impl<'src> Parser<'src> {
     /// `SynBinding.attributes`; for a get/set property it duplicates the attribute
     /// onto both accessor bindings). `None` is the plain (unattributed) form.
     /// Mirrors [`Self::parse_let_decl_at`].
-    fn parse_member_defn_at(&mut self, outer_cp: Option<rowan::Checkpoint>) -> bool {
+    fn parse_member_defn_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         let cp = outer_cp.unwrap_or_else(|| self.builder.checkpoint());
         // Leading keyword: `[static] member` (9.7/9.9a), or `override`/`default`
         // (9.10a) — the latter introduce a member with no `member` keyword, the
@@ -1372,28 +1399,45 @@ impl<'src> Parser<'src> {
     /// stream so the clause loop can decide whether another accessor follows an
     /// `and` without committing to consume the prefixes.
     fn peek_is_get_set_accessor(&self) -> bool {
-        let mut sig = self.significant_raw_from_cursor();
-        let mut tok = sig.next();
+        // `significant_raw_from_cursor`, keeping each token's start.
+        let consumed = self.raw_consumed_end;
+        let mut sig = self
+            .raw_tokens
+            .iter()
+            .skip(self.raw_pos)
+            .filter(move |(_, span)| span.start >= consumed)
+            .filter_map(|(res, span)| {
+                let token = raw_significant(res.as_ref().ok()?)?;
+                Some((token, span.start))
+            });
+        let mut next = sig.next();
         loop {
-            match tok {
+            match next {
                 // Skip an attribute list `[< … >]` (to its closing `>]`).
-                Some(Token::LBrackLess) => {
+                Some((Token::LBrackLess, _)) => {
                     loop {
                         match sig.next() {
-                            Some(Token::GreaterRBrack) => break,
+                            Some((Token::GreaterRBrack, _)) => break,
                             None => return false,
                             _ => {}
                         }
                     }
-                    tok = sig.next();
+                    next = sig.next();
                 }
-                Some(Token::Private | Token::Internal | Token::Public | Token::Inline) => {
-                    tok = sig.next();
+                Some((Token::Private | Token::Internal | Token::Public | Token::Inline, _)) => {
+                    next = sig.next();
                 }
                 _ => break,
             }
         }
-        matches!(tok.and_then(ident_token_text), Some("get") | Some("set"))
+        // The accessor parser bumps everything through the `get`/`set`, so no
+        // layout virtual (a dedent's `OEND`, `and private⏎set`) may sit in
+        // front of any of it on the filtered stream, outside the attribute
+        // lists, whose argument expressions carry their own layout.
+        next.is_some_and(|(token, start)| {
+            matches!(ident_token_text(token), Some("get") | Some("set"))
+                && self.reaches_unbroken_outside_attributes(start)
+        })
     }
 
     /// Parse one get/set accessor `[<attrs>] [access] [inline] get[(args)] =
@@ -1438,8 +1482,19 @@ impl<'src> Parser<'src> {
         let is_getter = !matches!(accessor, Some("set"));
         match accessor {
             Some("set") => self.bump_into(SyntaxKind::SET_TOK),
-            // `get` (and the caller-guaranteed fallthrough) → the getter.
-            _ => self.bump_into(SyntaxKind::GET_TOK),
+            Some("get") => self.bump_into(SyntaxKind::GET_TOK),
+            // The head lookahead saw `get`/`set` on the raw stream, but the
+            // prefixes left the filtered cursor elsewhere: on a layout virtual
+            // an attribute argument's own layout carried past the `>]`, which
+            // the clause's close consumes. Stop the accessor here.
+            _ => {
+                self.errors.push(ParseError {
+                    message: "expected `get` or `set`".to_string(),
+                    span: get_span,
+                });
+                self.builder.finish_node(); // GET_SET_ACCESSOR
+                return;
+            }
         }
         // A getter must be a function — `get()` or `get(index)`. A bare `get`
         // with no argument pattern (`with get = e`, missing the `()`) is FCS's
@@ -1718,7 +1773,7 @@ impl<'src> Parser<'src> {
     /// FCS — so its terminator must not consume a (non-existent) RHS-close
     /// `OBLOCKEND`. The caller threads this into
     /// [`Self::consume_object_model_item_terminator`]'s `has_rhs_block`.
-    fn parse_new_ctor_at(&mut self, outer_cp: Option<rowan::Checkpoint>) -> bool {
+    fn parse_new_ctor_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -1825,7 +1880,7 @@ impl<'src> Parser<'src> {
     /// abstract-slot attribute in `SynValSig.attributes`). `bump_into(ABSTRACT_TOK)`
     /// drains any leading trivia itself, so no cursor realignment is needed. `None`
     /// is the plain (unattributed) form.
-    fn parse_abstract_slot_at(&mut self, outer_cp: Option<rowan::Checkpoint>) {
+    fn parse_abstract_slot_at(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
             Some(cp) => self
                 .builder
@@ -2085,7 +2140,7 @@ impl<'src> Parser<'src> {
             Some(Token::Base) => (true, false),
             _ => (false, false),
         };
-        if alias_present {
+        if alias_present && self.next_tokens_unbroken(1) {
             self.bump_into(SyntaxKind::IDENT_TOK);
         }
         if !valid_base_alias {

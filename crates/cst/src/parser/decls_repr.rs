@@ -17,10 +17,12 @@ impl<'src> Parser<'src> {
             Some((
                 Ok(FilteredToken::Raw(Token::Internal | Token::Private | Token::Public)),
                 span,
-            )) => matches!(
-                self.next_non_trivia_raw_after(span.end),
-                Some(Token::LBrace)
-            ),
+            )) => {
+                matches!(
+                    self.next_non_trivia_raw_after(span.end),
+                    Some(Token::LBrace)
+                ) && self.next_tokens_unbroken(2)
+            }
             _ => false,
         }
     }
@@ -671,7 +673,7 @@ impl<'src> Parser<'src> {
     /// [`Self::parse_type_defn_at`], but `exception` is a real filtered token (not
     /// swallowed by LexFilter), so the caller skips the inter-line `BlockSep`
     /// itself and we simply `bump_into` the keyword.
-    pub(super) fn parse_exception_defn_at(&mut self, cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_exception_defn_at(&mut self, cp: Option<Checkpoint>) {
         match cp {
             Some(cp) => self
                 .builder
@@ -811,7 +813,7 @@ impl<'src> Parser<'src> {
     /// `EXCEPTION_DEFN` is opened *at* that checkpoint so the attribute lists
     /// become its leading children (FCS homes them in
     /// `SynExceptionDefnRepr.attributes`). `None` is the plain form.
-    pub(super) fn parse_sig_exception_defn_at(&mut self, cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_sig_exception_defn_at(&mut self, cp: Option<Checkpoint>) {
         match cp {
             Some(cp) => self
                 .builder
@@ -953,6 +955,7 @@ impl<'src> Parser<'src> {
                 self.next_non_trivia_raw_after(id_span.end),
                 Some(Token::Colon)
             )
+            && self.next_tokens_unbroken(2)
         {
             self.bump_into(SyntaxKind::IDENT_TOK);
             self.bump_into(SyntaxKind::COLON_TOK);

@@ -366,6 +366,18 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             parser_panic_sweep::fresh_seed -- --ignored --nocapture
 
+      - name: Sweep the parser for panics on layout damage
+        if: steps.gate.outputs.run == 'true'
+        # A line break pushed before a token makes LexFilter insert block
+        # closers and separators there, which a production that looks ahead on
+        # the raw stream would otherwise stamp as a real token (`bump_into`
+        # panics on that in a debug build). The soup above reaches that state
+        # only by chance; this puts every production in the corpus in front of
+        # it.
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            layout_perturbation_sweep:: -- --ignored --nocapture
+
       - name: Report the slowest tests
         if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
         run: bash tools/ci/slowest-tests.sh >> "$GITHUB_STEP_SUMMARY"
