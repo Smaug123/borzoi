@@ -1,11 +1,14 @@
 //! Driver for `tools/inheritdoc-oracle`: Roslyn's IDE `<inheritdoc>`
 //! expansion, its XPath selection, and a C# compiler for purpose-built
-//! fixtures, as one resident JSONL child. Built once per source fingerprint
-//! (the content-bearing-marker scheme the other oracle harnesses use).
+//! fixtures, as a pool of resident JSONL children ([`OraclePool`]). Built once
+//! per source fingerprint (the content-bearing-marker scheme the other oracle
+//! harnesses use).
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LockResult, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::Duration;
 
 use borzoi_oracle_harness::BatchChild;
@@ -111,27 +114,93 @@ pub enum Expanded {
     Ambiguous,
 }
 
-/// The resident oracle child.
+/// One resident oracle child.
 pub struct Oracle {
     child: BatchChild,
 }
 
-/// One oracle per test binary, behind a mutex (its requests and responses are
-/// matched positionally).
-pub fn oracle() -> &'static Mutex<Oracle> {
-    static ORACLE: OnceLock<Mutex<Oracle>> = OnceLock::new();
-    ORACLE.get_or_init(|| {
+/// The resident oracle children: [`OraclePool::lock`] hands each thread the
+/// same child every time.
+///
+/// A child serves one request at a time (its requests and responses are matched
+/// positionally), and every `<inheritdoc>` case is a compilation and an
+/// expansion on it, so one child for the whole binary serialises every case
+/// group on it. A pool lets them run side by side.
+///
+/// **A thread keeps its child.** A child caches each DLL it has read until a
+/// request of *its own* writes that path (`Program.Rewritten` in the oracle),
+/// so a path written through one child and then read through another could be
+/// read stale. libtest runs each test on a thread of its own, so pinning the
+/// thread keeps a test's write-then-read sequences on one child; what tests
+/// share is written once (behind a `OnceLock`) before anyone reads it.
+pub struct OraclePool {
+    slots: Vec<Mutex<Oracle>>,
+}
+
+/// How many children the pool may hold: one per core, at most four by default
+/// (each holds a compilation over a whole reference pack), overridden by
+/// `BORZOI_INHERITDOC_CHILDREN`.
+fn pool_size() -> usize {
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::env::var("BORZOI_INHERITDOC_CHILDREN")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| cores.min(4))
+}
+
+/// The pool, one per test binary. Its children spawn on their first request.
+pub fn oracle() -> &'static OraclePool {
+    static POOL: OnceLock<OraclePool> = OnceLock::new();
+    POOL.get_or_init(|| {
         let bin = ensure_built().to_path_buf();
-        let factory = move || Command::new(&bin);
-        Mutex::new(Oracle {
-            child: BatchChild::with_factory(
-                Box::new(factory),
-                "inheritdoc-oracle",
-                REQUEST_TIMEOUT,
-                2,
-            ),
-        })
+        OraclePool {
+            slots: (0..pool_size())
+                .map(|_| {
+                    let bin = bin.clone();
+                    let factory = move || Command::new(&bin);
+                    Mutex::new(Oracle {
+                        child: BatchChild::with_factory(
+                            Box::new(factory),
+                            "inheritdoc-oracle",
+                            REQUEST_TIMEOUT,
+                            2,
+                        ),
+                    })
+                })
+                .collect(),
+        }
     })
+}
+
+impl OraclePool {
+    /// This thread's child, locked. A thread's first call picks an idle child
+    /// if there is one (else the next in turn) and keeps it from then on.
+    pub fn lock(&'static self) -> LockResult<MutexGuard<'static, Oracle>> {
+        thread_local! {
+            static SLOT: Cell<Option<usize>> = const { Cell::new(None) };
+        }
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        if let Some(i) = SLOT.get() {
+            return self.slots[i].lock();
+        }
+        for (i, slot) in self.slots.iter().enumerate() {
+            match slot.try_lock() {
+                Ok(guard) => {
+                    SLOT.set(Some(i));
+                    return Ok(guard);
+                }
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    SLOT.set(Some(i));
+                    return Err(poisoned);
+                }
+                Err(TryLockError::WouldBlock) => {}
+            }
+        }
+        let i = NEXT.fetch_add(1, Ordering::Relaxed) % self.slots.len();
+        SLOT.set(Some(i));
+        self.slots[i].lock()
+    }
 }
 
 impl Oracle {
