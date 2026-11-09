@@ -22,6 +22,19 @@ use super::state::{
     TieredResolution,
 };
 
+/// The part of a qualified case path after its head — `B….Color.Red` of
+/// `Alpha.B….Color.Red` — as the same-file candidate walk reads it
+/// ([`Resolver::classify_module_qualified_residual`]).
+#[derive(Clone, Copy)]
+struct QualifiedResidual<'r> {
+    /// The module (or namespace) segments between the head and the type.
+    mids: &'r [String],
+    /// The type segment.
+    ty: &'r str,
+    /// The case (or member) segment.
+    case: &'r str,
+}
+
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
 /// classified as a definite value. FCS's `eUnqualifiedItems` is **one**
 /// source-ordered latest-wins slot across the value and type namespaces
@@ -4103,8 +4116,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// Classify a **same-file module-qualified** type-qualified case `Pal.Color.Red`
-    /// (exactly three segments) against the complete per-container declared-name view
-    /// [`Self::container_decls`]. This is Gap A of
+    /// — or one with a longer qualifier, `A.B.Color.Red` — against the complete
+    /// per-container declared-name view [`Self::container_decls`]. This is Gap A of
     /// `docs/type-qualified-case-prefix-plan.md`, closed for the clean case — sound by
     /// construction (decide on certainty, defer on any contention).
     ///
@@ -4127,8 +4140,15 @@ impl<'a> Resolver<'a> {
     ///    first same-named module whose residual resolves, so stopping at the
     ///    nearest one navigated cross-file while FCS bound an outer same-file
     ///    module.
-    /// 2. **Segment** `Color` in each candidate module → see
+    /// 2. **Residual** `B.Color.Red` in each candidate module → see
+    ///    [`classify_module_qualified_residual`](Self::classify_module_qualified_residual):
+    ///    each segment before the type must be solely a module (or, under a
+    ///    namespace, a sub-namespace) of the container the previous one named, and
+    ///    the type segment is then read by
     ///    [`classify_module_qualified_segment`](Self::classify_module_qualified_segment).
+    /// 3. When no lexical module or `open` owns the residual, a **same-file
+    ///    namespace** named like the head is the last candidate
+    ///    ([`Self::namespace_head_candidate`]).
     ///
     /// **`DeferStop` vs `Miss` matters for soundness:** when the head binds same-file,
     /// the reference is same-file-rooted, so the caller must **not** fall through to
@@ -4138,22 +4158,60 @@ impl<'a> Resolver<'a> {
     /// outward / cross-file), or the segment is a submodule a qualified-value branch
     /// resolves same-file.
     ///
-    /// Restricted to exactly three segments: the 2-segment `Color.Red` is owned by
-    /// [`type_case_path`](Self::type_case_path), and a 4+-segment (multi-module-head)
-    /// path defers (a later stage).
+    /// Three segments or more: the 2-segment `Color.Red` is owned by
+    /// [`type_case_path`](Self::type_case_path).
+    ///
+    /// Inside a `module rec` / `namespace rec` the view is not complete at the
+    /// use — FCS puts the block's later modules and `open`s in scope at it — so
+    /// an emit declines there ([`DeclineCause::RecursiveModuleActive`]); the walk
+    /// still decides whether the path is same-file-rooted.
     fn classify_same_file_module_qualified_case(
         &self,
         segments: &[SyntaxToken],
         in_pattern: bool,
     ) -> SameFileQualified {
-        let [head_seg, type_seg, case_seg] = segments else {
+        let [head_seg, quals @ .., type_seg, case_seg] = segments else {
             return SameFileQualified::Miss;
         };
-        let head = &*id_text(head_seg);
-        let ty = &*id_text(type_seg);
-        let case = &*id_text(case_seg);
-        let use_pos = head_seg.text_range().start();
+        let mids: Vec<String> = quals.iter().map(|t| id_text(t).to_string()).collect();
+        let res = QualifiedResidual {
+            mids: &mids,
+            ty: &id_text(type_seg),
+            case: &id_text(case_seg),
+        };
+        let outcome = self.classify_qualified_case_from_head(
+            &id_text(head_seg),
+            res,
+            in_pattern,
+            head_seg.text_range().start(),
+        );
+        match outcome {
+            SameFileQualified::Emit { .. } if self.recursive_module_active => {
+                SameFileQualified::Decline(DeclineCause::RecursiveModuleActive)
+            }
+            outcome => outcome,
+        }
+    }
 
+    /// The candidate walk of
+    /// [`classify_same_file_module_qualified_case`](Self::classify_same_file_module_qualified_case)
+    /// over the written path `head . mids… . ty . case`.
+    fn classify_qualified_case_from_head(
+        &self,
+        head: &str,
+        res: QualifiedResidual<'_>,
+        in_pattern: bool,
+        use_pos: TextSize,
+    ) -> SameFileQualified {
+        // A same-file `[<AutoOpen>]` module around the use that declares a module
+        // of the head's name brings it into scope where the lexical chain does not
+        // look (its contents are opened into its container at its declaration,
+        // so it contests the lexical candidates by position) — FCS-graded by
+        // `type_qualified_prefix_grid`: the opened namesake wins over an earlier
+        // lexical module. Same-file-rooted either way, so defer.
+        if self.same_file_auto_open_supplies_head(head) {
+            return SameFileQualified::DeferStop;
+        }
         // Resolve the head to the innermost same-file container whose declaration of
         // it *stops the dotted-head walk* ([`DeclKinds::stops_dotted_head`]): the
         // module namespace (module / alias) plus — in expression position — a `let`
@@ -4200,6 +4258,25 @@ impl<'a> Resolver<'a> {
             };
             if !kinds.stops_dotted_head(in_pattern) {
                 continue; // a namespace that cannot own or hide a dotted head — skip
+            }
+            // A root module beside a same-file root namespace of its name
+            // (FS0247), or below what an earlier `namespace global` block opened
+            // (which FCS carries into later blocks): FCS-graded, the namespace
+            // or the opened module wins over a later root module, which the
+            // positional contest does not model.
+            if k == 0
+                && (self.global_block_opened
+                    || self
+                        .namespace_paths
+                        .iter()
+                        .any(|p| p.len() == 1 && p[0] == head))
+            {
+                return SameFileQualified::DeferStop;
+            }
+            // A second `module Pal` here (FS0037): FCS reads the first, the view
+            // records the latest — undecidable, and same-file-rooted either way.
+            if kinds.module_redeclared {
+                return SameFileQualified::DeferStop;
             }
             if !kinds.is_clean_module_head(in_pattern) {
                 // The walk stopped on something that redirects the head away from a
@@ -4248,14 +4325,13 @@ impl<'a> Resolver<'a> {
                 .rev() // latest open first — the winner under latest-wins
                 .filter(|(open_pos, _)| kinds.module_pos.is_none_or(|p| *open_pos > p))
                 .find_map(|(_, prefix)| {
-                    self.open_contests_candidate(prefix, head, ty, case, in_pattern, use_pos)
+                    self.open_contests_candidate(prefix, head, res, in_pattern, use_pos)
                 });
             if let Some(outcome) = contest {
                 return outcome;
             }
 
-            match self.classify_module_qualified_segment(module_path, ty, case, in_pattern, use_pos)
-            {
+            match self.classify_module_qualified_residual(module_path, res, in_pattern, use_pos) {
                 Some(outcome) => return outcome,
                 // This candidate does not own the residual — F# searches outward
                 // to the next same-named module (same-file first, then cross-file).
@@ -4275,9 +4351,12 @@ impl<'a> Resolver<'a> {
             .iter()
             .rev()
             .find_map(|(_, prefix)| {
-                self.open_contests_candidate(prefix, head, ty, case, in_pattern, use_pos)
+                self.open_contests_candidate(prefix, head, res, in_pattern, use_pos)
             })
         {
+            return outcome;
+        }
+        if let Some(outcome) = self.namespace_head_candidate(head, res, in_pattern, use_pos) {
             return outcome;
         }
         SameFileQualified::Miss // no same-file candidate owns it — cross-file may try
@@ -4327,15 +4406,20 @@ impl<'a> Resolver<'a> {
     ///   `ty`.
     ///   Neither the cross-file lower tiers nor a farther candidate may win
     ///   then — defer, and stop the search.
+    ///
+    /// With a longer residual (`Pal.B.Color.Red`), a same-file target walks it
+    /// exactly as a lexical candidate does; a cross-file or assembly target is
+    /// judged by its next segment `B` alone: owning nothing there it is
+    /// transparent, owning anything it defers (its submodules are not walked).
     fn open_contests_candidate(
         &self,
         prefix: &[String],
         head: &str,
-        ty: &str,
-        case: &str,
+        res: QualifiedResidual<'_>,
         in_pattern: bool,
         use_pos: TextSize,
     ) -> Option<SameFileQualified> {
+        let QualifiedResidual { mids, ty, case } = res;
         let mut full = prefix.to_vec();
         full.push(head.to_string());
         // A same-file module target is a FULL candidate: sema holds the complete
@@ -4364,7 +4448,7 @@ impl<'a> Resolver<'a> {
             if self.container_path.starts_with(&full) {
                 return Some(SameFileQualified::DeferStop);
             }
-            return self.classify_module_qualified_segment(full, ty, case, in_pattern, use_pos);
+            return self.classify_module_qualified_residual(full, res, in_pattern, use_pos);
         }
         // A **same-file-only namespace** target also earns the complete
         // treatment: a namespace spans files, but when it exists in no earlier
@@ -4385,8 +4469,11 @@ impl<'a> Resolver<'a> {
             if self.container_path.starts_with(&full) {
                 return Some(SameFileQualified::DeferStop);
             }
-            return self.classify_module_qualified_segment(full, ty, case, in_pattern, use_pos);
+            return self.classify_module_qualified_residual(full, res, in_pattern, use_pos);
         }
+        // The segment after the head the target is judged by: the type, or the
+        // first module segment of a longer residual.
+        let seg = mids.first().map_or(ty, String::as_str);
         // A cross-file project module, or a project namespace (namespaces span
         // files, so even a same-file one is not a complete view of the residual
         // when the namespace also exists elsewhere). The residual decides
@@ -4404,6 +4491,7 @@ impl<'a> Resolver<'a> {
             || self.is_project_namespace_path(&full)
         {
             let mut case_path = full.clone();
+            case_path.extend(mids.iter().cloned());
             case_path.push(ty.to_string());
             case_path.push(case.to_string());
             // The exact type-qualified case positively exists AND is accessible from
@@ -4441,12 +4529,12 @@ impl<'a> Resolver<'a> {
             if self
                 .container_decls
                 .get(&full)
-                .is_some_and(|d| d.contains_key(ty))
+                .is_some_and(|d| d.contains_key(seg))
             {
                 return Some(SameFileQualified::DeferStop);
             }
             let mut ty_path = full.clone();
-            ty_path.push(ty.to_string());
+            ty_path.push(seg.to_string());
             // A value / constructor at the segment commits member access (the
             // same-file `is_dottable_value` rule; Gap C's value-wins probes).
             if self
@@ -4486,8 +4574,9 @@ impl<'a> Resolver<'a> {
             // cannot prove member absence), and an abbreviation's cases live on
             // its unchased target (FCS commits through it, probes CF8/CF8pat),
             // so both defer.
+            // A type at a module segment of a longer residual is contention.
             match self.preceding.exported_type_at(&ty_path) {
-                Some(cases_enumerable) if in_pattern && cases_enumerable => {}
+                Some(cases_enumerable) if in_pattern && cases_enumerable && mids.is_empty() => {}
                 Some(_) => return Some(SameFileQualified::DeferStop),
                 // Anything ELSE the conflated name-shadow set holds at the
                 // segment (an `extern` prototype, an earlier file's module
@@ -4504,18 +4593,200 @@ impl<'a> Resolver<'a> {
                 }
                 None => {}
             }
-            // Nothing project-side owns `ty` — fall through to the assembly arm.
+            // Nothing project-side owns `seg` — fall through to the assembly arm.
         }
         // An assembly type (module / static class) or namespace: the env is
-        // complete for referenced assemblies, so absence at `ty` is provable.
+        // complete for referenced assemblies, so absence at `seg` is provable.
         if self.opened_assembly_type(&full).is_some() || self.assemblies.has_namespace(&full) {
             let mut ty_path = full.clone();
-            ty_path.push(ty.to_string());
+            ty_path.push(seg.to_string());
             let owns = self.opened_assembly_type(&ty_path).is_some()
                 || self.assemblies.has_namespace(&ty_path);
             return owns.then_some(SameFileQualified::DeferStop);
         }
         None
+    }
+
+    /// Classify the residual `B….Color.Red` of a qualified case **within one
+    /// same-file candidate container** `path` (a module the head named, or a
+    /// same-file namespace), segment by segment: `None` when the container does
+    /// not own the residual — FCS then tries the next candidate — and otherwise
+    /// the outcome that ends the search.
+    ///
+    /// Each module segment `B` is read in the container the previous segment
+    /// named. Nothing of the name there → `None`. Solely a real nested module
+    /// ([`DeclKinds::is_sole_module`](super::state::DeclKinds::is_sole_module)),
+    /// or a same-file sub-namespace with nothing else of the name beside it →
+    /// the walk descends; a `module private` one only from inside the
+    /// container declaring it ([`DeferStop`](SameFileQualified::DeferStop)
+    /// otherwise — FCS skips an inaccessible module, which this does not
+    /// model). A module **abbreviation** alone → [`Miss`](SameFileQualified::Miss),
+    /// leaving the path to the qualified-value machinery that follows
+    /// abbreviations. Anything else of the name — a value, a type, a union
+    /// case, an exception, an active pattern, a redeclared module, a module
+    /// beside a namespace — is contention FCS orders in ways not modelled →
+    /// `DeferStop`. Once the segments are spent, the type segment is read by
+    /// [`classify_module_qualified_segment`](Self::classify_module_qualified_segment).
+    fn classify_module_qualified_residual(
+        &self,
+        path: Vec<String>,
+        res: QualifiedResidual<'_>,
+        in_pattern: bool,
+        use_pos: TextSize,
+    ) -> Option<SameFileQualified> {
+        let Some((seg, mids)) = res.mids.split_first() else {
+            return self
+                .classify_module_qualified_segment(path, res.ty, res.case, in_pattern, use_pos);
+        };
+        let kinds = self
+            .container_decls
+            .get(&path)
+            .and_then(|d| d.get(seg))
+            .copied();
+        let private_reachable = self.container_path.starts_with(&path);
+        let mut next = path;
+        next.push(seg.clone());
+        let namespace = self.namespace_paths.iter().any(|p| p == &next);
+        let rest = QualifiedResidual { mids, ..res };
+        match kinds {
+            None if !namespace => None,
+            None => self.classify_module_qualified_residual(next, rest, in_pattern, use_pos),
+            Some(k) if !namespace && k.is_sole_module() => {
+                if k.module_private && !private_reachable {
+                    return Some(SameFileQualified::DeferStop);
+                }
+                self.classify_module_qualified_residual(next, rest, in_pattern, use_pos)
+            }
+            Some(k)
+                if !namespace
+                    && k.alias
+                    && !k.module
+                    && !k.value
+                    && !k.exception_ctor
+                    && !k.ty
+                    && !k.union_case
+                    && !k.active_pattern =>
+            {
+                Some(SameFileQualified::Miss)
+            }
+            Some(_) => Some(SameFileQualified::DeferStop),
+        }
+    }
+
+    /// The last candidate for the head of a qualified case: a **same-file
+    /// namespace** of the head's name (`namespace Alpha.Beta` … `Alpha.Beta.Color.Red`
+    /// from a later block, #70).
+    ///
+    /// FCS adds a root namespace to its environment when the block declaring
+    /// it closes, so it is in scope only if an *earlier* block declared it,
+    /// and everything the current block brings into scope — its lexical
+    /// modules, its `open`s, and what entering the enclosing namespace opens —
+    /// comes later and is tried first. The lexical modules and `open`s have
+    /// been judged by the time this runs; the rest must provably not name the
+    /// head ([`Self::namespace_head_has_rival`]).
+    ///
+    /// The residual is walked through [`Self::container_decls`]
+    /// ([`classify_module_qualified_residual`](Self::classify_module_qualified_residual)),
+    /// which is the namespace's whole content only when nothing else
+    /// contributes to it: no earlier file, no referenced assembly, no root
+    /// module of the name (FS0247), and not the current block — whose own
+    /// declarations land in the view as the walk passes them but join the
+    /// namespace FCS sees only once the block closes. Where any of that fails,
+    /// a residual this file's declarations own still makes the path
+    /// same-file-rooted, so it defers ([`DeferStop`](SameFileQualified::DeferStop));
+    /// otherwise nothing is claimed.
+    fn namespace_head_candidate(
+        &self,
+        head: &str,
+        res: QualifiedResidual<'_>,
+        in_pattern: bool,
+        use_pos: TextSize,
+    ) -> Option<SameFileQualified> {
+        let ns = vec![head.to_string()];
+        if !self.namespace_paths[..self.block_namespace_start].contains(&ns) {
+            return None;
+        }
+        let mut qualifier = ns.clone();
+        qualifier.extend(res.mids.iter().cloned());
+        let block_header = &self.container_path[..self.block_container_len];
+        let root_module = self
+            .container_decls
+            .get(&[][..])
+            .and_then(|d| d.get(head))
+            .is_some_and(|k| k.module || k.alias);
+        let incomplete = root_module
+            || self.preceding.is_namespace(&ns)
+            || self.preceding.is_exact_project_module(&ns)
+            || !self.assemblies_provably_lack_module_path(&ns)
+            || (!block_header.is_empty() && qualifier.starts_with(block_header))
+            || self.namespace_head_has_rival(head);
+        let walk = self.classify_module_qualified_residual(ns, res, in_pattern, use_pos);
+        match walk {
+            Some(SameFileQualified::Emit { .. } | SameFileQualified::Decline(_)) if incomplete => {
+                Some(SameFileQualified::DeferStop)
+            }
+            walk => walk,
+        }
+    }
+
+    /// Whether something FCS brings into scope *after* a root namespace `head`
+    /// — so ahead of it in the search — may name `head` without the lexical
+    /// walk having judged it: a module or namespace that an earlier file, an
+    /// earlier block of this file or a referenced assembly declares at
+    /// `container ++ [head]` for the enclosing namespace or a module around the
+    /// use, or an `[<AutoOpen>]` module — this file's, in a container around the
+    /// use, or an earlier file's, in the enclosing namespace — whose nested
+    /// modules are not enumerated here.
+    fn namespace_head_has_rival(&self, head: &str) -> bool {
+        let tiers = self.namespace_depth.max(1)..=self.container_path.len();
+        let declared = tiers.into_iter().any(|k| {
+            let mut p = self.container_path[..k].to_vec();
+            p.push(head.to_string());
+            self.preceding.is_exact_project_module(&p)
+                || self.preceding.is_exact_nested_module(&p)
+                || self.is_project_namespace_path(&p)
+                || !self.assemblies_provably_lack_module_path(&p)
+        });
+        let same_file_auto_open = self.auto_open_module_paths.iter().any(|(p, _)| {
+            p.split_last()
+                .is_some_and(|(_, parent)| self.container_path.starts_with(parent))
+        });
+        let enclosing = &self.container_path[..self.namespace_depth];
+        let earlier_auto_open = !enclosing.is_empty()
+            && !self
+                .preceding
+                .auto_open_modules_directly_in(enclosing)
+                .is_empty();
+        declared || same_file_auto_open || earlier_auto_open || self.global_block_opened
+    }
+
+    /// Whether a same-file `[<AutoOpen>]` module that is opened into a
+    /// container around the use — directly, or through a chain of
+    /// `[<AutoOpen>]` parents — declares a module or module abbreviation named
+    /// `head`. Only those declared before the use are recorded yet, which are
+    /// the ones in scope.
+    fn same_file_auto_open_supplies_head(&self, head: &str) -> bool {
+        let reaches = |p: &[String]| -> bool {
+            let mut parent = &p[..p.len().saturating_sub(1)];
+            loop {
+                if self.container_path.starts_with(parent) {
+                    return true;
+                }
+                if !self.lexical_auto_open_paths.iter().any(|q| q == parent) {
+                    return false;
+                }
+                parent = &parent[..parent.len().saturating_sub(1)];
+            }
+        };
+        self.lexical_auto_open_paths.iter().any(|p| {
+            !p.is_empty()
+                && reaches(p)
+                && self
+                    .container_decls
+                    .get(p)
+                    .and_then(|d| d.get(head))
+                    .is_some_and(|k| k.module || k.alias)
+        })
     }
 
     /// Classify the residual `Color.Red` of a module-qualified `Pal.Color.Red`
@@ -4677,7 +4948,7 @@ impl<'a> Resolver<'a> {
     /// Resolve a same-file module-qualified case for expression / pattern position,
     /// per [`classify_same_file_module_qualified_case`](Self::classify_same_file_module_qualified_case).
     /// On [`Emit`](SameFileQualified::Emit) record the whole `Pal.Color.Red` span →
-    /// the case, the type segment → its def, and the leading module segment →
+    /// the case, the type segment → its def, and each qualifier segment before it →
     /// `Deferred` (no module-as-def). Returns `true` when the path is **same-file
     /// rooted** — either recorded (`Emit`) or deferred on contention (`DeferStop`) —
     /// so the caller must STOP and not fall through to the cross-file branches.
@@ -4691,17 +4962,22 @@ impl<'a> Resolver<'a> {
     ) -> bool {
         match self.classify_same_file_module_qualified_case(segments, in_pattern) {
             SameFileQualified::Emit { type_id, case_res } => {
-                let [head_seg, type_seg, case_seg] = segments else {
+                let [qualifier @ .., type_seg, case_seg] = segments else {
+                    return false;
+                };
+                let Some(head_seg) = qualifier.first() else {
                     return false;
                 };
                 let whole =
                     TextRange::new(head_seg.text_range().start(), case_seg.text_range().end());
                 self.record(whole, case_res);
                 self.record(type_seg.text_range(), Resolution::Local(type_id));
-                self.record(
-                    head_seg.text_range(),
-                    Resolution::Deferred(DeferredReason::QualifiedAccess),
-                );
+                for seg in qualifier {
+                    self.record(
+                        seg.text_range(),
+                        Resolution::Deferred(DeferredReason::QualifiedAccess),
+                    );
+                }
                 true
             }
             SameFileQualified::DeferStop => true,
