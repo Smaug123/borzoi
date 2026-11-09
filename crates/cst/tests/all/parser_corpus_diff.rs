@@ -90,7 +90,8 @@ use crate::common::corpus_manifest::{
 use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
 use crate::common::recovery::{Relation, grade};
 use crate::common::{
-    ast_ranges_match, collect_fsharp_corpus_files, corpus_root, fcs_ast_batch, read_corpus_source,
+    ast_ranges_match, collect_fsharp_corpus_files, corpus_root, fcs_ast_batch, par_map,
+    read_corpus_source,
 };
 
 /// How many paths per bucket to print for investigation.
@@ -377,17 +378,17 @@ fn parser_matches_fcs_over_corpus() {
     let mut range_messages: Vec<(&PathBuf, String)> = Vec::new();
     let mut recovery_divergences: Vec<(&PathBuf, String)> = Vec::new();
     let mut projected: BTreeSet<&'static str> = BTreeSet::new();
-    for path in &files {
+    let classified = par_map(files.len(), |i| {
+        let path = &files[i];
         let src = match read_corpus_source(path) {
             Ok(src) => src,
-            Err(err) if err.is_non_utf8() => {
-                outcomes.push((path, Bucket::NonUtf8, None));
-                continue;
-            }
+            Err(err) if err.is_non_utf8() => return Outcome::bucket(Bucket::NonUtf8),
             Err(err) => panic!("{err}"),
         };
         let line = fcs_ast_batch(path);
-        let outcome = classify(path, &src, &line, &compiled_symbols, &script_symbols);
+        classify(path, &src, &line, &compiled_symbols, &script_symbols)
+    });
+    for (path, outcome) in files.iter().zip(classified) {
         projected.extend(&outcome.reads);
         if let Some(message) = outcome.range_message {
             range_messages.push((path, message));

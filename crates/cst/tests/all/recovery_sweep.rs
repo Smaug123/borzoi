@@ -68,7 +68,7 @@ use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
 use crate::common::recovery::{Damage, grade};
 use crate::common::{
     catch_unwind_silent, collect_fsharp_corpus_files, corpus_root, fcs_ast_batch,
-    fcs_parse_had_errors, read_corpus_source,
+    fcs_parse_had_errors, par_map, read_corpus_source,
 };
 
 /// Token positions drawn per file by the default (gating) FCS-free sample.
@@ -155,24 +155,26 @@ fn parse_as(path: &Path, src: &str) -> Option<Parse> {
 }
 
 /// Every corpus file our parser reads without an error, in corpus-key order.
-fn clean_files(root: &Path) -> Vec<CleanFile> {
+/// Every corpus file, in corpus-key order. Which of them are clean is decided
+/// per file by [`clean_file`], on the worker that sweeps it: a [`Parse`] is a
+/// rowan tree, which cannot cross threads.
+fn corpus_paths(root: &Path) -> Vec<PathBuf> {
     let mut files = collect_fsharp_corpus_files(root)
         .unwrap_or_else(|err| panic!("walk F# corpus under {}: {err}", root.display()));
     sort_by_corpus_key(root, &mut files);
     files
-        .into_iter()
-        .filter_map(|path| {
-            let key = corpus_relative(root, &path);
-            let src = read_corpus_source(&path).ok()?;
-            let parse = parse_as(&path, &src)?;
-            parse.errors.is_empty().then_some(CleanFile {
-                path,
-                key,
-                src,
-                parse,
-            })
-        })
-        .collect()
+}
+
+/// `path`, read and parsed, when it is UTF-8 and parses without error.
+fn clean_file(root: &Path, path: &Path) -> Option<CleanFile> {
+    let src = read_corpus_source(path).ok()?;
+    let parse = parse_as(path, &src)?;
+    parse.errors.is_empty().then(|| CleanFile {
+        path: path.to_path_buf(),
+        key: corpus_relative(root, path),
+        src,
+        parse,
+    })
 }
 
 /// Significant (non-trivia, non-empty) tokens in source order.
@@ -482,8 +484,7 @@ fn soak_all() -> bool {
 #[ignore = "corpus sweep; run with --ignored under nix develop"]
 fn deletion_keeps_undamaged_declarations() {
     let root = corpus_root();
-    let files = clean_files(&root);
-    assert!(!files.is_empty(), "no clean corpus files under {root:?}");
+    let paths = corpus_paths(&root);
     let (token_k, member_k) = if soak_all() {
         (None, None)
     } else {
@@ -492,21 +493,30 @@ fn deletion_keeps_undamaged_declarations() {
             Some(MEMBER_POSITIONS_PER_FILE),
         )
     };
-    let mut cases = 0usize;
-    let mut violations: Vec<String> = Vec::new();
     let started = std::time::Instant::now();
-    for file in &files {
+    // Per clean file, its case count and violations.
+    let swept: Vec<(usize, Vec<String>)> = par_map(paths.len(), |i| {
+        let file = clean_file(&root, &paths[i])?;
         let clean = cst_units(&file.parse);
-        for case in cases_for(file, token_k, member_k) {
+        let mut cases = 0usize;
+        let mut violations = Vec::new();
+        for case in cases_for(&file, token_k, member_k) {
             cases += 1;
-            for v in stability_violations(file, &clean, &case) {
+            for v in stability_violations(&file, &clean, &case) {
                 violations.push(format!("{}@{} {v}", file.key, case.deleted.start));
             }
         }
-    }
+        Some((cases, violations))
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    assert!(!swept.is_empty(), "no clean corpus files under {root:?}");
+    let cases: usize = swept.iter().map(|(n, _)| n).sum();
+    let clean_files = swept.len();
+    let violations: Vec<String> = swept.into_iter().flat_map(|(_, v)| v).collect();
     eprintln!(
-        "deletion stability: {} clean files, {cases} cases, {} violations, {:.1?}",
-        files.len(),
+        "deletion stability: {clean_files} clean files, {cases} cases, {} violations, {:.1?}",
         violations.len(),
         started.elapsed()
     );
@@ -520,78 +530,104 @@ fn deletion_keeps_undamaged_declarations() {
     );
 }
 
+/// One sampled file's part of [`recovered_trees_match_fcs_under_deletion`]:
+/// each case's manifest entry (`<key>@<offset> <family>`, verdict token) with
+/// its family, and the first lines of its divergences.
+struct FileRecovery {
+    entries: Vec<(String, &'static str, String)>,
+    divergences: Vec<String>,
+}
+
+/// Grade `file`'s deletion cases against FCS, or `None` when its clean trees
+/// do not already agree: FCS must read the clean file cleanly, and both trees
+/// must match, or a divergence under damage says nothing new.
+fn recover_file(file: &CleanFile) -> Option<FileRecovery> {
+    let clean_json = fcs_ast_batch(&file.path);
+    if fcs_parse_had_errors(&clean_json) {
+        return None;
+    }
+    // FCS's side first: its JSON read fails cleanly on a tree too deep for
+    // `serde_json`, which keeps our own recursive projections off input deep
+    // enough to overflow the stack.
+    let fcs_norm = catch_unwind_silent(|| normalise_fcs_dump(&clean_json)).ok()?;
+    if catch_unwind_silent(|| normalise_parse(&file.parse)).ok() != Some(fcs_norm) {
+        return None;
+    }
+    let ext = file
+        .path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("fs");
+    let mut out = FileRecovery {
+        entries: Vec::new(),
+        divergences: Vec::new(),
+    };
+    for case in cases_for(file, Some(1), Some(1)) {
+        let damaged_src = delete(&file.src, &case.deleted);
+        let mut tmp = NamedTempFile::with_suffix(format!(".{ext}")).expect("tempfile");
+        std::io::Write::write_all(&mut tmp, damaged_src.as_bytes()).expect("write");
+        let json = fcs_ast_batch(tmp.path());
+        let damaged = parse_as(&file.path, &damaged_src).expect("damaged parse panicked");
+        let token = match catch_unwind_silent(|| {
+            grade(&damaged, &symbols_for(&file.path), &json, &damaged_src)
+        }) {
+            Ok(Ok(v)) => {
+                if let Some(d) = &v.first_divergence {
+                    out.divergences.push(format!(
+                        "{}@{} {}: {}",
+                        file.key,
+                        case.deleted.start,
+                        case.family.name(),
+                        d.lines().next().unwrap_or("")
+                    ));
+                }
+                v.token()
+            }
+            Ok(Err(_)) => "fcs-unreadable".to_string(),
+            Err(_) => "grade-panicked".to_string(),
+        };
+        out.entries.push((
+            format!("{}@{} {}", file.key, case.deleted.start, case.family.name()),
+            case.family.name(),
+            token,
+        ));
+    }
+    Some(out)
+}
+
 /// The recovery relation against FCS, over a deterministic sample of files
 /// whose clean trees already agree.
 #[test]
 #[ignore = "corpus sweep against FCS; run with --ignored under nix develop"]
 fn recovered_trees_match_fcs_under_deletion() {
     let root = corpus_root();
-    let files = clean_files(&root);
+    let paths = corpus_paths(&root);
+    // The sampled files, by key alone, before any of them is read.
+    let sampled: Vec<&PathBuf> = paths
+        .iter()
+        .filter(|p| fnv(corpus_relative(&root, p).as_bytes()).is_multiple_of(FCS_FILE_STRIDE))
+        .collect();
+    // Per sampled clean file whose clean trees agree, its cases' manifest
+    // entries and first divergences, in case order.
+    let swept: Vec<FileRecovery> = par_map(sampled.len(), |i| {
+        let file = clean_file(&root, sampled[i])?;
+        recover_file(&file)
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    let baselines = swept.len();
     let mut entries: Vec<(String, String)> = Vec::new();
-    let mut baselines = 0usize;
     let mut tally: BTreeMap<String, usize> = BTreeMap::new();
     let mut divergences: Vec<String> = Vec::new();
-    for file in files
-        .iter()
-        .filter(|f| fnv(f.key.as_bytes()).is_multiple_of(FCS_FILE_STRIDE))
-    {
-        // The baseline: FCS reads the clean file cleanly, and both trees
-        // agree. Otherwise a divergence under damage says nothing new.
-        let clean_json = fcs_ast_batch(&file.path);
-        if fcs_parse_had_errors(&clean_json) {
-            continue;
-        }
-        // FCS's side first: its JSON read fails cleanly on a tree too deep
-        // for `serde_json`, which keeps our own recursive projections off
-        // input deep enough to overflow the stack.
-        let Ok(fcs_norm) = catch_unwind_silent(|| normalise_fcs_dump(&clean_json)) else {
-            continue;
-        };
-        if catch_unwind_silent(|| normalise_parse(&file.parse)).ok() != Some(fcs_norm) {
-            continue;
-        }
-        baselines += 1;
-        let ext = file
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("fs");
-        for case in cases_for(file, Some(1), Some(1)) {
-            let damaged_src = delete(&file.src, &case.deleted);
-            let mut tmp = NamedTempFile::with_suffix(format!(".{ext}")).expect("tempfile");
-            std::io::Write::write_all(&mut tmp, damaged_src.as_bytes()).expect("write");
-            let json = fcs_ast_batch(tmp.path());
-            let damaged = parse_as(&file.path, &damaged_src).expect("damaged parse panicked");
-            let token = match catch_unwind_silent(|| {
-                grade(&damaged, &symbols_for(&file.path), &json, &damaged_src)
-            }) {
-                Ok(Ok(v)) => {
-                    if let Some(d) = &v.first_divergence {
-                        divergences.push(format!(
-                            "{}@{} {}: {}",
-                            file.key,
-                            case.deleted.start,
-                            case.family.name(),
-                            d.lines().next().unwrap_or("")
-                        ));
-                    }
-                    v.token()
-                }
-                Ok(Err(_)) => "fcs-unreadable".to_string(),
-                Err(_) => "grade-panicked".to_string(),
-            };
+    for file in swept {
+        for (key, family, token) in file.entries {
             *tally
-                .entry(format!(
-                    "{} {}",
-                    case.family.name(),
-                    token.split(' ').next().unwrap()
-                ))
+                .entry(format!("{family} {}", token.split(' ').next().unwrap()))
                 .or_default() += 1;
-            entries.push((
-                format!("{}@{} {}", file.key, case.deleted.start, case.family.name()),
-                token,
-            ));
+            entries.push((key, token));
         }
+        divergences.extend(file.divergences);
     }
     eprintln!(
         "recovery vs FCS: {baselines} baseline files, {} cases",
