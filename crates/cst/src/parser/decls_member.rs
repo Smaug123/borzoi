@@ -82,22 +82,25 @@ impl<'src> Parser<'src> {
         // `static abstract`, `override val`, …) unconditionally once
         // classified, so the run the raw scan classifies must also be unbroken
         // on the filtered stream: a dedent between `static` and `member` puts an
-        // `OBLOCKEND` there, which would be stamped as the `member`.
-        let raw_run = (0..)
-            .take_while(|&i| {
-                matches!(
-                    self.nth_significant_raw_at_pos(i),
-                    Some(
-                        Token::Static
-                            | Token::Member
-                            | Token::Val
-                            | Token::Abstract
-                            | Token::Default
-                            | Token::Override
-                    )
-                )
-            })
-            .count();
+        // `OBLOCKEND` there, which would be stamped as the `member`. Each
+        // keyword appears in a run at most once, so a repeat (`val⏎val`, the
+        // second starting the next item) ends it, and no run is longer than
+        // `static member val`.
+        let mut seen: Vec<&Token<'src>> = Vec::new();
+        for i in 0..3 {
+            match self.nth_significant_raw_at_pos(i) {
+                Some(
+                    keyword @ (Token::Static
+                    | Token::Member
+                    | Token::Val
+                    | Token::Abstract
+                    | Token::Default
+                    | Token::Override),
+                ) if !seen.contains(&keyword) => seen.push(keyword),
+                _ => break,
+            }
+        }
+        let raw_run = seen.len();
         if !self.next_tokens_unbroken(raw_run) {
             return None;
         }
@@ -1396,36 +1399,44 @@ impl<'src> Parser<'src> {
     /// stream so the clause loop can decide whether another accessor follows an
     /// `and` without committing to consume the prefixes.
     fn peek_is_get_set_accessor(&self) -> bool {
-        let mut sig = self.significant_raw_from_cursor();
-        // Every raw token the scan reads, through the `get`/`set`: the accessor
-        // parser bumps them all, so none may have a layout virtual (a dedent's
-        // `OEND`, `and private⏎set`) in front of it on the filtered stream.
-        let mut scanned = 1;
-        let mut tok = sig.next();
+        // `significant_raw_from_cursor`, keeping each token's start.
+        let consumed = self.raw_consumed_end;
+        let mut sig = self
+            .raw_tokens
+            .iter()
+            .skip(self.raw_pos)
+            .filter(move |(_, span)| span.start >= consumed)
+            .filter_map(|(res, span)| {
+                let token = raw_significant(res.as_ref().ok()?)?;
+                Some((token, span.start))
+            });
+        let mut next = sig.next();
         loop {
-            match tok {
+            match next {
                 // Skip an attribute list `[< … >]` (to its closing `>]`).
-                Some(Token::LBrackLess) => {
+                Some((Token::LBrackLess, _)) => {
                     loop {
-                        scanned += 1;
                         match sig.next() {
-                            Some(Token::GreaterRBrack) => break,
+                            Some((Token::GreaterRBrack, _)) => break,
                             None => return false,
                             _ => {}
                         }
                     }
-                    scanned += 1;
-                    tok = sig.next();
+                    next = sig.next();
                 }
-                Some(Token::Private | Token::Internal | Token::Public | Token::Inline) => {
-                    scanned += 1;
-                    tok = sig.next();
+                Some((Token::Private | Token::Internal | Token::Public | Token::Inline, _)) => {
+                    next = sig.next();
                 }
                 _ => break,
             }
         }
-        matches!(tok.and_then(ident_token_text), Some("get") | Some("set"))
-            && self.next_tokens_unbroken(scanned)
+        // The accessor parser bumps everything through the `get`/`set`, so no
+        // layout virtual (a dedent's `OEND`, `and private⏎set`) may sit in
+        // front of any of it on the filtered stream.
+        next.is_some_and(|(token, start)| {
+            matches!(ident_token_text(token), Some("get") | Some("set"))
+                && self.reaches_unbroken(start)
+        })
     }
 
     /// Parse one get/set accessor `[<attrs>] [access] [inline] get[(args)] =

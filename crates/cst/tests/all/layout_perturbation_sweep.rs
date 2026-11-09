@@ -21,7 +21,7 @@
 //! `nix develop`), a few minutes in a debug build.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use borzoi_cst::language_version::LanguageVersion;
@@ -65,7 +65,7 @@ struct Witness {
 
 /// Parse `src` with a newline at each insertion point, at each version,
 /// recording each failure under its cause.
-fn sweep_file(file: &PathBuf, src: &str, failures: &Mutex<BTreeMap<String, Witness>>) {
+fn sweep_file(file: &Path, src: &str, failures: &Mutex<BTreeMap<String, Witness>>) {
     let kind = if file.extension().is_some_and(|e| e == "fsi") {
         FileKind::Sig
     } else {
@@ -99,7 +99,7 @@ fn sweep_file(file: &PathBuf, src: &str, failures: &Mutex<BTreeMap<String, Witne
             failures
                 .entry(cause)
                 .or_insert_with(|| Witness {
-                    file: file.clone(),
+                    file: file.to_path_buf(),
                     offset,
                     lang,
                     count: 0,

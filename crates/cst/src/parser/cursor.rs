@@ -902,6 +902,24 @@ impl Parser<'_> {
         }
         met == n
     }
+
+    /// Whether the filtered cursor reaches the real token starting at byte
+    /// `start` with no layout virtual in front of it or of anything before it.
+    /// The span-keyed form of [`Self::next_tokens_unbroken`], for a lookahead
+    /// whose run may cross a LexFilter-swallowed closer (which the raw stream
+    /// holds and the filtered one does not, so token counts disagree).
+    pub(super) fn reaches_unbroken(&self, start: usize) -> bool {
+        for (res, span) in &self.filtered_tokens[self.pos..] {
+            match res {
+                Ok(FilteredToken::Raw(_)) if span.start >= start => return span.start == start,
+                Ok(FilteredToken::Raw(_)) => {}
+                Ok(FilteredToken::Virtual(v)) if is_layout_virtual(v) => return false,
+                Ok(FilteredToken::Virtual(_)) => {}
+                Err(_) => return false,
+            }
+        }
+        false
+    }
 }
 
 /// Why stamping `kind` onto the filtered entry `entry` would be wrong, or
