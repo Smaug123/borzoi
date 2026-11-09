@@ -81,3 +81,50 @@ fn well_formed_snippets_survive_a_latch_at_every_height() {
         probe(src, 0..=nodes).unwrap_or_else(|failure| panic!("{failure}"));
     }
 }
+
+fn height(root: &SyntaxNode) -> usize {
+    let (mut depth, mut height) = (0usize, 0usize);
+    for event in root.preorder() {
+        match event {
+            rowan::WalkEvent::Enter(_) => {
+                depth += 1;
+                height = height.max(depth);
+            }
+            rowan::WalkEvent::Leave(_) => depth -= 1,
+        }
+    }
+    height
+}
+
+/// An or-pattern whose operands are all missing: no operand reaches its own
+/// safe point, so only the pattern-tail loop's check stops the run. It must
+/// stop near the bound in the first parse, not fall back to a lower stop or to
+/// giving the file up (each fallback costs a whole reparse).
+#[test]
+fn a_chain_of_missing_pattern_operands_stops_at_the_bound() {
+    let src = format!("let f (a{}) = 0\n", " |".repeat(1018));
+    let symbols = HashSet::new();
+    let parsed = parse_inner(&src, &symbols, FileKind::Impl, LanguageVersion::Preview);
+    let h = height(&parsed.root);
+    assert!(h <= MAX_TREE_HEIGHT, "height {h}");
+    assert!(
+        h > TREE_HEIGHT_STOP / 2,
+        "height {h}: the parse gave up far below the bound"
+    );
+    assert_eq!(parsed.root.text(), src.as_str());
+}
+
+/// The last resort keeps the whole source, losslessly, in a two-level tree.
+#[test]
+fn giving_a_file_up_whole_is_lossless_and_flat() {
+    let src = "let x = f a b c\n";
+    let symbols = HashSet::new();
+    let raw: Vec<RawTok<'_>> = lex_with_symbols_full_trivia(src, &symbols).collect();
+    let filtered = filter_collect(src, LanguageVersion::Preview, active_tokens(&raw)).tokens;
+    let mut parser = Parser::new(src, raw, filtered);
+    parser.give_up_whole(FileKind::Impl);
+    let root = SyntaxNode::new_root(parser.builder.finish());
+    assert_eq!(root.text(), src);
+    assert_eq!(height(&root), 2);
+    assert!(parser.depth_limit_hit);
+}

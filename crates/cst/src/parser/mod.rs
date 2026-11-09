@@ -488,27 +488,35 @@ fn parse_inner_stopping_at(
 
     let mut parser = Parser::new(source, raw_tokens, filtered_tokens);
     parser.tree_height_stop = initial_stop;
-    loop {
+    // The parse stops once the tree would reach `tree_height_stop`, but that
+    // measure can only count the ancestors already open, and only at a safe
+    // point: a production that wraps finished children under a node it opens
+    // afterwards (`start_node_at`, as a nested module does around its body)
+    // adds levels the parse never saw coming, and a loop that grows the tree
+    // without reaching a safe point is not stopped at all. So the finished
+    // height is checked here, and an over-tall parse is redone once, stopping
+    // lower by the excess. If that is still too tall, the file is given up
+    // whole: a root holding the source as one `ERROR` token, with the depth
+    // diagnostic. At most two parses, then; on real input never more than one.
+    for round in 0.. {
         match file_kind {
             FileKind::Impl => parser.parse_impl_file(),
             FileKind::Sig => parser.parse_sig_file(),
         }
-        // The parse stops once the tree would reach `tree_height_stop`, but
-        // that measure can only count the ancestors already open: a production
-        // that wraps finished children under a node it opens afterwards
-        // (`start_node_at`, as a nested module does around its body) adds
-        // levels the parse never saw coming. So the finished height is checked
-        // here, and an over-tall parse is redone stopping lower by the excess.
-        // The stop falls strictly each round and a stop of 0 halts at the first
-        // token, so this terminates; on real input it never repeats.
         let height = parser.builder.height_if_closed_now();
         if height <= MAX_TREE_HEIGHT {
             break;
         }
-        let stop = parser
-            .tree_height_stop
-            .saturating_sub(height - MAX_TREE_HEIGHT);
-        parser = parser.restart(stop);
+        if round == 0 {
+            let stop = parser
+                .tree_height_stop
+                .saturating_sub(height - MAX_TREE_HEIGHT);
+            parser = parser.restart(stop);
+        } else {
+            parser = parser.restart(0);
+            parser.give_up_whole(file_kind);
+            break;
+        }
     }
     // If the depth guard fired (the recursion bound or the tree-height bound),
     // the parse stopped at the breach and drained the rest of the input to EOF;

@@ -1024,6 +1024,13 @@ impl<'src> Parser<'src> {
             if self.parked_on_layout_virtual() {
                 break;
             }
+            // `|`, `&`, `as` and `,` wrap the pattern so far in one more node
+            // per repeat; an operand that fails to parse (`a | | |`) skips the
+            // operand's own safe point, so the run is held to the tree bound
+            // here.
+            if self.depth_limit_latched() {
+                break;
+            }
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::ColonColon) if Self::PAT_BP_CONS >= min_bp => {
                     self.builder

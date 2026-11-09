@@ -43,6 +43,19 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Build the whole file as a root holding the source as one `ERROR` token,
+    /// with the depth limit latched: the last resort of [`parse_inner`] for a
+    /// file whose tree no stop height keeps under [`MAX_TREE_HEIGHT`].
+    pub(super) fn give_up_whole(&mut self, file_kind: FileKind) {
+        let root = match file_kind {
+            FileKind::Impl => SyntaxKind::IMPL_FILE,
+            FileKind::Sig => SyntaxKind::SIG_FILE,
+        };
+        self.builder.start_node(FSharpLang::kind_to_raw(root));
+        self.trigger_depth_limit();
+        self.builder.finish_node();
+    }
+
     /// Run `body` one recursion level deeper, bounding the hand-written
     /// recursive descent. The increment/decrement are paired here in one place
     /// so no production can leak depth. Past [`MAX_PARSE_DEPTH`] the body is
