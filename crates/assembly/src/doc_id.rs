@@ -162,7 +162,7 @@ pub fn type_doc_name(
     enclosing: Option<&TypeDocName>,
     dialect: DocIdDialect,
 ) -> Option<TypeDocName> {
-    let cumulative_arity = entity.generic_parameters.len();
+    let listed = entity.generic_parameters.len();
     let (prefix, parent_arity) = match enclosing {
         Some(parent) => (parent.full.clone(), parent.cumulative_arity),
         // A top-level type's namespace is its prefix; the global namespace ([])
@@ -171,9 +171,12 @@ pub fn type_doc_name(
     };
     // A nested type's metadata generic-parameter list repeats every enclosing
     // type's parameters, so its *own* arity — the count Roslyn's `` `n ``
-    // encodes — is the difference. `saturating_sub` keeps malformed metadata
-    // (a child with fewer parameters than its parent) from panicking.
-    let own_arity = cumulative_arity.saturating_sub(parent_arity);
+    // encodes — is the difference. A malformed row listing fewer than its
+    // encloser introduces none, and Roslyn reads it as carrying its
+    // encloser's (`PENamedTypeSymbolNonGeneric.MetadataArity`), which is
+    // what the types nested in it subtract.
+    let own_arity = listed.saturating_sub(parent_arity);
+    let cumulative_arity = listed.max(parent_arity);
     let name = type_segment(entity, own_arity, dialect)?;
     let full = if prefix.is_empty() {
         name
@@ -1199,6 +1202,21 @@ mod tests {
         inner.metadata_name = Some("Inner`1".into());
         let inner = type_doc_name(&inner, Some(&outer), DocIdDialect::Metadata).unwrap();
         assert_eq!(inner.type_id(), "T:N.Box`1.Inner`1");
+    }
+
+    #[test]
+    fn a_row_listing_fewer_than_its_encloser_carries_the_enclosers() {
+        // Malformed: `X` lists none of `W`1`'s parameter, `Y` one. Roslyn
+        // reads `X` as carrying `W`1`'s one, so `Y` introduces none.
+        let outer = decl(&["N"], "W", 1);
+        let mut x = ent(&[], "X", 0);
+        x.metadata_name = Some("X".into());
+        let x = type_doc_name(&x, Some(&outer), DocIdDialect::Metadata).unwrap();
+        assert_eq!(x.type_id(), "T:N.W`1.X");
+        let mut y = ent(&[], "Y", 1);
+        y.metadata_name = Some("Y".into());
+        let y = type_doc_name(&y, Some(&x), DocIdDialect::Metadata).unwrap();
+        assert_eq!(y.type_id(), "T:N.W`1.X.Y");
     }
 
     // ------------------------- suffixes the name owns -------------------------

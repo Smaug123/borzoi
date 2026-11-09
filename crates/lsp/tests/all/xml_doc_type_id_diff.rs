@@ -245,6 +245,14 @@ fn the_suffix_cases_key_as_roslyn_keys_them() {
         row("V`01", 1, None),
         row("U`1", 1, Some(0)),
         row("V", 0, Some(1)),
+        // Malformed: `X` lists none of `W`1`'s parameter, and `Y` one, which
+        // Roslyn reads as `W`1`'s inherited through `X`.
+        row("W`1", 1, None),
+        Row {
+            repeats_encloser: false,
+            ..row("X", 0, Some(8))
+        },
+        row("Y", 1, Some(9)),
     ];
     let roslyn = run(&rows);
     let expected = [
@@ -262,6 +270,10 @@ fn the_suffix_cases_key_as_roslyn_keys_them() {
         // Nested: the encloser's ID, then the type's own parameters.
         ("N|U`2/U`1", "T:N.U`2`1.U`1"),
         ("N|U/V", "T:N.U`1.V"),
+        // A nested type inherits at least its encloser's count, however few
+        // parameters its own row lists.
+        ("N|W`1/X", "T:N.W`1.X"),
+        ("N|W`1/X/Y", "T:N.W`1.X.Y"),
     ];
     for (path, id) in expected {
         assert_eq!(roslyn.get(path).map(String::as_str), Some(id), "{path}");
