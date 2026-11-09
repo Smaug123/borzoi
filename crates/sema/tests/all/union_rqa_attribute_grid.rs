@@ -379,11 +379,6 @@ struct Cell {
     control: bool,
     /// The assembly referenced beside FSharp.Core.
     fixture: Fixture,
-    /// The issue tracking a known divergence at a dotted probe's last
-    /// segment: a case exported qualified-only has no value path, so a later
-    /// file's `GridLib.GridC` reaches past it to the referenced class (#472).
-    /// The cell's leaf verdict is pinned in the manifest instead of failing.
-    known_leaf: Option<&'static str>,
 }
 
 /// The probe file: the fallback union when `fallback`, `body`, then the use.
@@ -473,8 +468,6 @@ fn cell(spelling: Spelling, env: Env, location: Location, use_: Use) -> Cell {
         files,
         probe,
         control,
-        known_leaf: (location == Location::EarlierNamespace && use_ == Use::ModuleQualified)
-            .then_some("#472"),
         fixture: match location {
             Location::Assembly(_) => Fixture::Union,
             Location::EarlierNamespace => Fixture::Collision,
@@ -688,7 +681,6 @@ fn every_union_rqa_cell_agrees_with_fcs() {
         // symbol too (FCS keys the access by the whole path).
         let probe_src = &cell.files.last().expect("the probe file").1;
         let probe_text = &probe_src[usize::from(cell.probe.start())..usize::from(cell.probe.end())];
-        let mut leaf_verdict = String::new();
         if let Some(dot) = probe_text.rfind('.') {
             let leaf = TextRange::new(
                 cell.probe.start() + rowan::TextSize::from(u32::try_from(dot + 1).unwrap()),
@@ -701,15 +693,12 @@ fn every_union_rqa_cell_agrees_with_fcs() {
                 .filter(|r| !matches!(r, Resolution::Deferred(_) | Resolution::Unresolved))
                 && !at_leaf.is_some_and(|u| agrees(env, &proj, &file_paths, probe_idx, res, u))
             {
-                match cell.known_leaf {
-                    Some(issue) => leaf_verdict = format!(" | leaf WRONG ({issue})"),
-                    None => failures.push(format!(
-                        "  {} [WRONG LEAF]\n    FCS:  {}\n    ours: {res:?}\n    errors: {errors:?}\n    files: {:?}",
-                        cell.label,
-                        render_fcs(at_leaf),
-                        cell.files
-                    )),
-                }
+                failures.push(format!(
+                    "  {} [WRONG LEAF]\n    FCS:  {}\n    ours: {res:?}\n    errors: {errors:?}\n    files: {:?}",
+                    cell.label,
+                    render_fcs(at_leaf),
+                    cell.files
+                ));
             }
         }
         let clean = if errors.is_empty() {
@@ -718,7 +707,7 @@ fn every_union_rqa_cell_agrees_with_fcs() {
             "erroring"
         };
         entries.push(format!(
-            "{} | fcs {rendered} ({clean}) | ours {verdict}{leaf_verdict}",
+            "{} | fcs {rendered} ({clean}) | ours {verdict}",
             cell.label
         ));
     }
@@ -792,50 +781,45 @@ fn project_probe_agrees(files: &[(&str, &str)], probed: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Assert each `(attribute, known)` row of `rows`, the union declared under
-/// `attribute` by `files_for`: certain-implies-exact where `known` is `None`,
-/// and where it names an issue, the pre-existing qualified-path divergence
-/// that issue tracks — pinned, so that fixing it fails here until the row
-/// moves.
+/// Assert certain-implies-exact for each attribute of `rows`, the union
+/// declared under it by `files_for`.
 fn assert_rows(
-    rows: &[(&str, Option<&str>)],
+    rows: &[&str],
     probed: &str,
     files_for: impl Fn(&str) -> Vec<(String, String)>,
 ) {
     let mut failures = Vec::new();
-    for (attr, known) in rows {
+    for attr in rows {
         let files = files_for(attr);
         let rel: Vec<(&str, &str)> = files
             .iter()
             .map(|(p, s)| (p.as_str(), s.as_str()))
             .collect();
-        match (project_probe_agrees(&rel, probed), known) {
-            (Ok(()), None) | (Err(_), Some(_)) => {}
-            (Err(e), None) => failures.push(format!("{attr}: {e}")),
-            (Ok(()), Some(issue)) => {
-                failures.push(format!("{attr}: now agrees with FCS; {issue} may be fixed"))
-            }
+        if let Err(e) = project_probe_agrees(&rel, probed) {
+            failures.push(format!("{attr}: {e}"));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The attributes a probe through an earlier union crosses.
+const ROW_ATTRIBUTES: [&str; 5] = [
+    "[<RequireQualifiedAccess>]",
+    "[<Microsoft.FSharp.Core.RequireQualifiedAccess>]",
+    "[<RequireQualifiedAccess(); NoComparison>]",
+    "[<GridRqa>]",
+    "[<NoComparison>]",
+];
+
 /// `GridLib.GridC` where `GridLib` declares an earlier union with the case
 /// too: FCS reads the first union's case (`TryFindTypeWithUnionCase`),
 /// whatever the later union's attribute. The grid keeps its fallback out of
 /// the container for this probe (see [`FALLBACK`]), so the shape is graded
-/// here. A union exported with a value path takes the path from the earlier
-/// one, the walk's latest-wins reading of a module-qualified case (#469).
+/// here; the walk reads the first union too, whatever the second's verdict
+/// (`qualified_case_precedence_grid` crosses the precedence itself).
 #[test]
 fn a_module_qualified_case_through_an_undecided_union() {
-    let rows = [
-        ("[<RequireQualifiedAccess>]", None),
-        ("[<Microsoft.FSharp.Core.RequireQualifiedAccess>]", None),
-        ("[<RequireQualifiedAccess(); NoComparison>]", None),
-        ("[<GridRqa>]", Some("#469")),
-        ("[<NoComparison>]", Some("#469")),
-    ];
-    assert_rows(&rows, "GridLib.GridC", |attr| {
+    assert_rows(&ROW_ATTRIBUTES, "GridLib.GridC", |attr| {
         vec![
             (
                 "GridLib.fs".to_string(),
@@ -853,21 +837,12 @@ fn a_module_qualified_case_through_an_undecided_union() {
 
 /// `N.GridC` where two earlier files' fragments of `namespace N` each declare
 /// a union with the case: FCS reads the later fragment's, whatever its
-/// attribute. A union exported qualified-only leaves the path to the earlier
-/// fragment's case (#472).
+/// attribute. A union exported qualified-only stands first in the later
+/// fragment, so the walk declines the path rather than reaching the earlier
+/// fragment's case; committing FCS's reading is #472.
 #[test]
 fn a_namespace_qualified_case_through_an_undecided_union() {
-    let rows = [
-        ("[<RequireQualifiedAccess>]", Some("#472")),
-        (
-            "[<Microsoft.FSharp.Core.RequireQualifiedAccess>]",
-            Some("#472"),
-        ),
-        ("[<RequireQualifiedAccess(); NoComparison>]", Some("#472")),
-        ("[<GridRqa>]", None),
-        ("[<NoComparison>]", None),
-    ];
-    assert_rows(&rows, "N.GridC", |attr| {
+    assert_rows(&ROW_ATTRIBUTES, "N.GridC", |attr| {
         vec![
             (
                 "First.fs".to_string(),

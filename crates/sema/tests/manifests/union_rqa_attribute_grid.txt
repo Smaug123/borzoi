@@ -429,207 +429,207 @@ EarlierNamespace / Absent / RenamingAbbrev / TypeQualified | fcs GridLib.fs:136:
 EarlierNamespace / CoreQualified / DoubleSuffixAbbrev / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / DoubleSuffixAbbrev / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / DoubleSuffixAbbrev / FullyQualified | fcs GridLib.fs:157:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:157:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:157:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / DoubleSuffixAbbrev / TypeQualified | fcs GridLib.fs:194:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpDoubleSuffix / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpDoubleSuffix / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpDoubleSuffix / FullyQualified | fcs GridLib.fs:168:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:168:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:168:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / ImpDoubleSuffix / TypeQualified | fcs GridLib.fs:205:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpEarlierFile / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpEarlierFile / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpEarlierFile / FullyQualified | fcs GridLib.fs:100:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:100:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:100:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / ImpEarlierFile / TypeQualified | fcs GridLib.fs:137:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpException / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpException / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpException / FullyQualified | fcs GridLib.fs:139:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / ImpException / ModuleQualified | fcs GridLib.fs:139:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / ImpException / ModuleQualified | fcs GridLib.fs:139:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / ImpException / TypeQualified | fcs GridLib.fs:176:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpInScope / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpInScope / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpInScope / FullyQualified | fcs GridLib.fs:197:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / ImpInScope / ModuleQualified | fcs GridLib.fs:197:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / ImpInScope / ModuleQualified | fcs GridLib.fs:197:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / ImpInScope / TypeQualified | fcs GridLib.fs:234:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpOutOfScope / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpOutOfScope / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpOutOfScope / FullyQualified | fcs GridLib.fs:184:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:184:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:184:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / ImpOutOfScope / TypeQualified | fcs GridLib.fs:221:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpShort / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpShort / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / ImpShort / FullyQualified | fcs GridLib.fs:150:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / ImpShort / ModuleQualified | fcs GridLib.fs:150:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / ImpShort / ModuleQualified | fcs GridLib.fs:150:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / ImpShort / TypeQualified | fcs GridLib.fs:187:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / Plain / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / Plain / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / Plain / FullyQualified | fcs GridLib.fs:87:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / Plain / ModuleQualified | fcs GridLib.fs:87:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / Plain / ModuleQualified | fcs GridLib.fs:87:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / Plain / TypeQualified | fcs GridLib.fs:124:GridLib.GridU.GridC:unioncase (clean) | ours commit
 EarlierNamespace / CoreQualified / RenamingAbbrev / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / RenamingAbbrev / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualified / RenamingAbbrev / FullyQualified | fcs GridLib.fs:148:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualified / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:148:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualified / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:148:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualified / RenamingAbbrev / TypeQualified | fcs GridLib.fs:185:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / DoubleSuffixAbbrev / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / DoubleSuffixAbbrev / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / DoubleSuffixAbbrev / FullyQualified | fcs GridLib.fs:166:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:166:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:166:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / DoubleSuffixAbbrev / TypeQualified | fcs GridLib.fs:203:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpDoubleSuffix / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpDoubleSuffix / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpDoubleSuffix / FullyQualified | fcs GridLib.fs:177:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:177:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:177:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpDoubleSuffix / TypeQualified | fcs GridLib.fs:214:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpEarlierFile / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpEarlierFile / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpEarlierFile / FullyQualified | fcs GridLib.fs:109:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:109:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:109:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpEarlierFile / TypeQualified | fcs GridLib.fs:146:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpException / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpException / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpException / FullyQualified | fcs GridLib.fs:148:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / ImpException / ModuleQualified | fcs GridLib.fs:148:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / ImpException / ModuleQualified | fcs GridLib.fs:148:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpException / TypeQualified | fcs GridLib.fs:185:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpInScope / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpInScope / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpInScope / FullyQualified | fcs GridLib.fs:206:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / ImpInScope / ModuleQualified | fcs GridLib.fs:206:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / ImpInScope / ModuleQualified | fcs GridLib.fs:206:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpInScope / TypeQualified | fcs GridLib.fs:243:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpOutOfScope / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpOutOfScope / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpOutOfScope / FullyQualified | fcs GridLib.fs:193:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:193:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:193:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpOutOfScope / TypeQualified | fcs GridLib.fs:230:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpShort / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpShort / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpShort / FullyQualified | fcs GridLib.fs:159:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / ImpShort / ModuleQualified | fcs GridLib.fs:159:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / ImpShort / ModuleQualified | fcs GridLib.fs:159:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / ImpShort / TypeQualified | fcs GridLib.fs:196:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / Plain / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / Plain / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / Plain / FullyQualified | fcs GridLib.fs:96:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / Plain / ModuleQualified | fcs GridLib.fs:96:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / Plain / ModuleQualified | fcs GridLib.fs:96:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / Plain / TypeQualified | fcs GridLib.fs:133:GridLib.GridU.GridC:unioncase (clean) | ours commit
 EarlierNamespace / CoreQualifiedLong / RenamingAbbrev / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / RenamingAbbrev / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / CoreQualifiedLong / RenamingAbbrev / FullyQualified | fcs GridLib.fs:157:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / CoreQualifiedLong / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:157:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / CoreQualifiedLong / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:157:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / CoreQualifiedLong / RenamingAbbrev / TypeQualified | fcs GridLib.fs:194:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / FSharpQualified / Plain / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / FSharpQualified / Plain / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / FSharpQualified / Plain / FullyQualified | fcs GridLib.fs:77:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / FSharpQualified / Plain / ModuleQualified | fcs GridLib.fs:77:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / FSharpQualified / Plain / ModuleQualified | fcs GridLib.fs:77:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / FSharpQualified / Plain / TypeQualified | fcs GridLib.fs:114:GridLib.GridU.GridC:unioncase (clean) | ours commit
 EarlierNamespace / ImpQualified / ImpEarlierFile / BareExpr | fcs GridLib.fs:123:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpEarlierFile / BarePat | fcs GridLib.fs:123:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpEarlierFile / FullyQualified | fcs GridLib.fs:86:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / ImpQualified / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:86:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / ImpQualified / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:86:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpEarlierFile / TypeQualified | fcs GridLib.fs:123:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpInScope / BareExpr | fcs GridLib.fs:220:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpInScope / BarePat | fcs GridLib.fs:220:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpInScope / FullyQualified | fcs GridLib.fs:183:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / ImpQualified / ImpInScope / ModuleQualified | fcs GridLib.fs:183:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / ImpQualified / ImpInScope / ModuleQualified | fcs GridLib.fs:183:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpInScope / TypeQualified | fcs GridLib.fs:220:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpOutOfScope / BareExpr | fcs GridLib.fs:207:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpOutOfScope / BarePat | fcs GridLib.fs:207:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpOutOfScope / FullyQualified | fcs GridLib.fs:170:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / ImpQualified / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:170:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / ImpQualified / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:170:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / ImpQualified / ImpOutOfScope / TypeQualified | fcs GridLib.fs:207:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / DoubleSuffixAbbrev / BareExpr | fcs GridLib.fs:181:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / DoubleSuffixAbbrev / BarePat | fcs GridLib.fs:181:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / DoubleSuffixAbbrev / FullyQualified | fcs GridLib.fs:144:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:144:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:144:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / DoubleSuffixAbbrev / TypeQualified | fcs GridLib.fs:181:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpDoubleSuffix / BareExpr | fcs GridLib.fs:192:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpDoubleSuffix / BarePat | fcs GridLib.fs:192:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpDoubleSuffix / FullyQualified | fcs GridLib.fs:155:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:155:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:155:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpDoubleSuffix / TypeQualified | fcs GridLib.fs:192:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpEarlierFile / BareExpr | fcs GridLib.fs:124:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpEarlierFile / BarePat | fcs GridLib.fs:124:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpEarlierFile / FullyQualified | fcs GridLib.fs:87:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:87:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:87:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpEarlierFile / TypeQualified | fcs GridLib.fs:124:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpException / BareExpr | fcs GridLib.fs:163:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Long / ImpException / BarePat | fcs GridLib.fs:163:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Long / ImpException / FullyQualified | fcs GridLib.fs:126:GridLib.GridU.GridC:unioncase (erroring) | ours commit
-EarlierNamespace / Long / ImpException / ModuleQualified | fcs GridLib.fs:126:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / ImpException / ModuleQualified | fcs GridLib.fs:126:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Long / ImpException / TypeQualified | fcs GridLib.fs:163:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Long / ImpInScope / BareExpr | fcs GridLib.fs:221:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpInScope / BarePat | fcs GridLib.fs:221:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpInScope / FullyQualified | fcs GridLib.fs:184:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / ImpInScope / ModuleQualified | fcs GridLib.fs:184:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / ImpInScope / ModuleQualified | fcs GridLib.fs:184:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpInScope / TypeQualified | fcs GridLib.fs:221:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpOutOfScope / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpOutOfScope / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpOutOfScope / FullyQualified | fcs GridLib.fs:171:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:171:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:171:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Long / ImpOutOfScope / TypeQualified | fcs GridLib.fs:208:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpShort / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpShort / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / ImpShort / FullyQualified | fcs GridLib.fs:137:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / ImpShort / ModuleQualified | fcs GridLib.fs:137:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / ImpShort / ModuleQualified | fcs GridLib.fs:137:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Long / ImpShort / TypeQualified | fcs GridLib.fs:174:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / Plain / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours commit
 EarlierNamespace / Long / Plain / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours commit
 EarlierNamespace / Long / Plain / FullyQualified | fcs GridLib.fs:74:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / Plain / ModuleQualified | fcs GridLib.fs:74:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / Plain / ModuleQualified | fcs GridLib.fs:74:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Long / Plain / TypeQualified | fcs GridLib.fs:111:GridLib.GridU.GridC:unioncase (clean) | ours commit
 EarlierNamespace / Long / RenamingAbbrev / BareExpr | fcs GridLib.fs:172:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / RenamingAbbrev / BarePat | fcs GridLib.fs:172:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / RenamingAbbrev / FullyQualified | fcs GridLib.fs:135:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Long / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:135:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Long / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:135:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Long / RenamingAbbrev / TypeQualified | fcs GridLib.fs:172:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / DoubleSuffixAbbrev / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / DoubleSuffixAbbrev / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / DoubleSuffixAbbrev / FullyQualified | fcs GridLib.fs:135:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:135:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / DoubleSuffixAbbrev / ModuleQualified | fcs GridLib.fs:135:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / DoubleSuffixAbbrev / TypeQualified | fcs GridLib.fs:172:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpDoubleSuffix / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpDoubleSuffix / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpDoubleSuffix / FullyQualified | fcs GridLib.fs:146:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:146:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / ImpDoubleSuffix / ModuleQualified | fcs GridLib.fs:146:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / ImpDoubleSuffix / TypeQualified | fcs GridLib.fs:183:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpEarlierFile / BareExpr | fcs GridLib.fs:115:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpEarlierFile / BarePat | fcs GridLib.fs:115:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpEarlierFile / FullyQualified | fcs GridLib.fs:78:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:78:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / ImpEarlierFile / ModuleQualified | fcs GridLib.fs:78:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpEarlierFile / TypeQualified | fcs GridLib.fs:115:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpException / BareExpr | fcs GridLib.fs:154:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / ImpException / BarePat | fcs GridLib.fs:154:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / ImpException / FullyQualified | fcs GridLib.fs:117:GridLib.GridU.GridC:unioncase (erroring) | ours commit
-EarlierNamespace / Short / ImpException / ModuleQualified | fcs GridLib.fs:117:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / ImpException / ModuleQualified | fcs GridLib.fs:117:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / ImpException / TypeQualified | fcs GridLib.fs:154:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / ImpInScope / BareExpr | fcs GridLib.fs:212:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpInScope / BarePat | fcs GridLib.fs:212:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpInScope / FullyQualified | fcs GridLib.fs:175:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / ImpInScope / ModuleQualified | fcs GridLib.fs:175:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / ImpInScope / ModuleQualified | fcs GridLib.fs:175:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpInScope / TypeQualified | fcs GridLib.fs:212:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpOutOfScope / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpOutOfScope / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpOutOfScope / FullyQualified | fcs GridLib.fs:162:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:162:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / ImpOutOfScope / ModuleQualified | fcs GridLib.fs:162:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / ImpOutOfScope / TypeQualified | fcs GridLib.fs:199:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpShort / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpShort / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / ImpShort / FullyQualified | fcs GridLib.fs:128:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / ImpShort / ModuleQualified | fcs GridLib.fs:128:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / ImpShort / ModuleQualified | fcs GridLib.fs:128:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / ImpShort / TypeQualified | fcs GridLib.fs:165:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / Plain / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours commit
 EarlierNamespace / Short / Plain / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours commit
 EarlierNamespace / Short / Plain / FullyQualified | fcs GridLib.fs:65:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / Plain / ModuleQualified | fcs GridLib.fs:65:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / Plain / ModuleQualified | fcs GridLib.fs:65:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / Short / Plain / TypeQualified | fcs GridLib.fs:102:GridLib.GridU.GridC:unioncase (clean) | ours commit
 EarlierNamespace / Short / RenamingAbbrev / BareExpr | fcs GridLib.fs:163:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / RenamingAbbrev / BarePat | fcs GridLib.fs:163:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / RenamingAbbrev / FullyQualified | fcs GridLib.fs:126:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / Short / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:126:GridLib.GridU.GridC:unioncase (clean) | ours decline | leaf WRONG (#472)
+EarlierNamespace / Short / RenamingAbbrev / ModuleQualified | fcs GridLib.fs:126:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Short / RenamingAbbrev / TypeQualified | fcs GridLib.fs:163:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / TypeTarget / Plain / BareExpr | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / TypeTarget / Plain / BarePat | fcs GridLib.fs:38:GridLib.GridE.GridC:unioncase (clean) | ours decline
 EarlierNamespace / TypeTarget / Plain / FullyQualified | fcs GridLib.fs:71:GridLib.GridU.GridC:unioncase (clean) | ours commit
-EarlierNamespace / TypeTarget / Plain / ModuleQualified | fcs GridLib.fs:71:GridLib.GridU.GridC:unioncase (erroring) | ours decline | leaf WRONG (#472)
+EarlierNamespace / TypeTarget / Plain / ModuleQualified | fcs GridLib.fs:71:GridLib.GridU.GridC:unioncase (erroring) | ours decline
 EarlierNamespace / TypeTarget / Plain / TypeQualified | fcs GridLib.fs:108:GridLib.GridU.GridC:unioncase (clean) | ours commit
 EarlierNamespace / Unrelated / DoubleSuffixAbbrev / BareExpr | fcs GridLib.fs:162:GridLib.GridU.GridC:unioncase (clean) | ours decline
 EarlierNamespace / Unrelated / DoubleSuffixAbbrev / BarePat | fcs GridLib.fs:162:GridLib.GridU.GridC:unioncase (clean) | ours decline

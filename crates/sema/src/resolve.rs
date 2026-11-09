@@ -852,7 +852,7 @@ enum SigValAccess {
     /// binds *cleanly*, and a direct outside reading is FS1094 (never
     /// clean). The shared accessibility machinery
     /// ([`accessible_from`](model::accessible_from) through
-    /// `latest_accessible_value`) delivers all three verdicts per site.
+    /// `qualified_read`) delivers all three verdicts per site.
     Private,
     /// An access-token shape we cannot place (more than one token, or one
     /// that does not precede the ident). Skip the decl; its names stay

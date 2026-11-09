@@ -1688,7 +1688,7 @@ impl<'a> Resolver<'a> {
     /// non-value member (a nested type, a deeper module not yet exported) must
     /// still defer rather than fall through to a colliding referenced-assembly
     /// member — the `assembly_path_records` soundness tripwire. An exported
-    /// value resolves first (via `lookup_qualified_path`) before that check runs,
+    /// value resolves first (via `qualified_read`) before that check runs,
     /// so the shadow never suppresses a resolution it should make.
     pub(super) fn nested_module(&mut self, nm: &NestedModuleDecl) {
         let Some(li) = nm.long_id() else {

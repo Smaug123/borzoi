@@ -68,6 +68,7 @@ mod operator_name_diff;
 mod overload_corpus_diff;
 mod overloads_oracle;
 mod project_half_matrix;
+mod qualified_case_precedence_grid;
 mod resolve_active_patterns;
 mod resolve_assembly;
 mod resolve_assembly_active_patterns;

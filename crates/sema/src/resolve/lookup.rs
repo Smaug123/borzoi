@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity, OpenTrace,
-    Resolution, SlotClass,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ItemId,
+    OpenOpacity, OpenTrace, QualifiedRead, Resolution, SlotClass, UnionCaseEntry,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, MarkReach, OpenInterpretation, Resolver,
@@ -2577,41 +2577,83 @@ impl<'a> Resolver<'a> {
         count
     }
 
-    /// The [`ItemId`] of the value `value` exported **directly** by project module
-    /// `module_path` (its qualified export path is exactly `[module_path…,
-    /// value]`), or `None`. Searches this file's [`Self::items`] first, then
-    /// earlier Compile-order files ([`ProjectItems::lookup_qualified_path`](super::model::ProjectItems::lookup_qualified_path)) — the
-    /// value an already-name-shortened `Mod.value` resolves to. Only `let` values
-    /// are recorded with qualified paths, so a `value` that is actually a nested
-    /// module / type yields `None` (the path then defers, never a wrong member).
-    pub(super) fn qualified_value_in(&self, module_path: &[String], value: &str) -> Option<ItemId> {
+    /// What `Mod.value` reads, `value` a member exported **directly** by
+    /// project module `module_path` (its qualified export path is exactly
+    /// `[module_path…, value]`): this file's members there first, as the
+    /// newest fragment, then earlier Compile-order files'
+    /// ([`ProjectItems::qualified_read`](super::model::ProjectItems::qualified_read)).
+    /// Within a fragment FCS's order holds ([`read_fragment`](super::model::read_fragment)):
+    /// a value, then an exception, then the first union's case. Only values and
+    /// cases are recorded with qualified paths, so a `value` that is actually a
+    /// nested module / type is a [`QualifiedRead::Miss`] (the path then defers,
+    /// never a wrong member).
+    pub(super) fn qualified_value_in(&self, module_path: &[String], value: &str) -> QualifiedRead {
         let mut full = module_path.to_vec();
         full.push(value.to_string());
-        // `last`, not `find`: a same-file name can be exported more than once at
-        // the same path — a union case and a later `let` of the same name (`type T
-        // = Red`; `let Red = 0`). F# resolves the *latest* such binding in
-        // expression position, and `self.items` is source-ordered, so take the last
-        // match before falling back to an earlier file's export.
-        self.items
+        // `self.items` is source-ordered. An accessibility gate as the
+        // cross-file read's: a `let private` value is invisible to a *sibling*
+        // module (FCS FS1094), and a public value under a later inaccessible
+        // `private` one is still recovered.
+        let exports: Vec<(ItemId, Option<usize>, u8)> = self
+            .items
             .iter()
-            .rfind(|i| {
-                i.qualified.as_deref() == Some(full.as_slice())
-                    // Accessibility-gate the same-file qualified value exactly as the
-                    // cross-file `lookup_qualified_path` does: a `let private` value
-                    // is invisible to a *sibling* module (FCS FS1094). `rfind` takes
-                    // the source-latest *accessible* match, so a public value shadowed
-                    // by a later inaccessible `private` one is still recovered.
-                    && super::model::accessible_from(
-                        i.access_root_len,
-                        &full,
-                        &self.container_path,
-                    )
-            })
-            .map(|i| i.id)
-            .or_else(|| {
-                self.preceding
-                    .lookup_qualified_path(&full, &self.container_path)
-            })
+            .filter(|i| i.qualified.as_deref() == Some(full.as_slice()))
+            .map(|i| (i.id, i.access_root_len, super::model::fold_rank(i.case)))
+            .collect();
+        // The first union case declared at the path, qualified-only and
+        // possible ones included: the export decls list them in source order.
+        let first_union = self
+            .export_decls
+            .iter()
+            .filter(|d| !d.anonymous_root && d.path == full)
+            .find_map(|d| match d.kind {
+                ExportDeclKind::Item {
+                    item: Some(idx), ..
+                } => {
+                    let it = &self.items[idx];
+                    matches!(it.case, Some(CaseKind::Union { .. })).then(|| UnionCaseEntry {
+                        plain: it.qualified.is_some().then_some(it.id),
+                        access_root_len: it.access_root_len,
+                    })
+                }
+                ExportDeclKind::OpaqueCase => Some(UnionCaseEntry {
+                    plain: None,
+                    access_root_len: None,
+                }),
+                _ => None,
+            });
+        match super::model::read_fragment(&exports, first_union, &full, &self.container_path) {
+            QualifiedRead::Miss => self.preceding.qualified_read(&full, &self.container_path),
+            read => read,
+        }
+    }
+
+    /// Record what a qualified expression path `segments` reads, and whether
+    /// that settles it. A member commits over the whole path, the qualifier
+    /// segments deferring (no module-as-def model); a contested one declines
+    /// the path, so no later reading may commit in its place; a miss records
+    /// nothing and leaves the path to the readings after this one.
+    fn record_qualified_read(&mut self, read: QualifiedRead, segments: &[SyntaxToken]) -> bool {
+        let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
+            return false;
+        };
+        let whole = TextRange::new(first.text_range().start(), last.text_range().end());
+        match read {
+            QualifiedRead::Miss => return false,
+            QualifiedRead::Commit(id) => self.record(whole, Resolution::Item(id)),
+            QualifiedRead::Decline => self.defer_with_cause(
+                whole,
+                segments,
+                DeclineSite::pre_walk(DeclineCause::QualifiedCaseContested),
+            ),
+        }
+        for seg in &segments[..segments.len() - 1] {
+            self.record(
+                seg.text_range(),
+                Resolution::Deferred(DeferredReason::QualifiedAccess),
+            );
+        }
+        true
     }
 
     /// Whether a same-file companion value at the exact path `full` is **provably
@@ -3269,19 +3311,11 @@ impl<'a> Resolver<'a> {
                     // the head, now rejected.
                     && let head_len = module_path.len() - prefix.len() + 1
                     && !self.container_path.starts_with(&module_path[..head_len])
-                    && let Some(id) =
-                        self.qualified_value_in(&module_path, &id_text(value_seg))
                 {
-                    let whole =
-                        TextRange::new(first.text_range().start(), value_seg.text_range().end());
-                    self.record(whole, Resolution::Item(id));
-                    for seg in prefix_segs {
-                        self.record(
-                            seg.text_range(),
-                            Resolution::Deferred(DeferredReason::QualifiedAccess),
-                        );
+                    let read = self.qualified_value_in(&module_path, &id_text(value_seg));
+                    if self.record_qualified_read(read, segments) {
+                        return;
                     }
-                    return;
                 }
             }
 
@@ -3299,21 +3333,13 @@ impl<'a> Resolver<'a> {
             // parse in expression position yet — see the parser's
             // `global_headed_app_source_does_not_panic` — so it never reaches here;
             // it can be handled when the parser supports `global` as an expr atom.)
-            if let Some(last) = rest.last()
-                && !sig_screened
-                && let Some(id) = self
+            if !rest.is_empty() && !sig_screened {
+                let read = self
                     .preceding
-                    .lookup_qualified_path(&written_path, &self.container_path)
-            {
-                let whole = TextRange::new(first.text_range().start(), last.text_range().end());
-                self.record(whole, Resolution::Item(id));
-                for seg in segments.iter().take(segments.len() - 1) {
-                    self.record(
-                        seg.text_range(),
-                        Resolution::Deferred(DeferredReason::QualifiedAccess),
-                    );
+                    .qualified_read(&written_path, &self.container_path);
+                if self.record_qualified_read(read, segments) {
+                    return;
                 }
-                return;
             }
 
             // The TYPE-SIDE fallbacks below are barred for an EVICTED head
@@ -4257,10 +4283,8 @@ impl<'a> Resolver<'a> {
                 .items
                 .iter()
                 .any(|i| i.qualified.as_deref() == Some(ty_path.as_slice()))
-                || self
-                    .preceding
-                    .lookup_qualified_path(&ty_path, &self.container_path)
-                    .is_some()
+                || self.preceding.qualified_read(&ty_path, &self.container_path)
+                    != QualifiedRead::Miss
             {
                 return Some(SameFileQualified::DeferStop);
             }
