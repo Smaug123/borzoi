@@ -287,7 +287,8 @@ pub(super) struct EarlierType {
 /// generic arity ([`ProjectItems::earlier_type_arities`]).
 #[derive(Debug, Clone)]
 pub(super) struct EarlierArity {
-    /// Its full path, when the declaring file placed it.
+    /// Its full path, when the declaring file placed it or its signature
+    /// gives it.
     pub(super) path: Option<Vec<String>>,
     /// Its generic arity, when known.
     pub(super) arity: Option<usize>,
@@ -1374,13 +1375,13 @@ impl ProjectItems {
                 .or_default()
                 .extend(std::iter::repeat_n(None, unplaced));
             let known = file
-                .unplaced_type_arities
+                .unplaced_type_places
                 .get(name)
                 .map_or(&[][..], Vec::as_slice);
             let arities = self.earlier_type_arities.entry(name.clone()).or_default();
-            arities.extend(known.iter().map(|&a| EarlierArity {
-                path: None,
-                arity: Some(a),
+            arities.extend(known.iter().map(|(path, a)| EarlierArity {
+                path: Some(path.clone()),
+                arity: Some(*a),
             }));
             arities.extend(std::iter::repeat_n(
                 EarlierArity {
@@ -3228,10 +3229,11 @@ pub struct ResolvedFile {
     /// signature's, one the walk never reached), so a later file can never
     /// mistake "declared here, unplaced" for "not declared".
     pub(super) unplaced_types: HashMap<String, usize>,
-    /// The generic arities of those of [`Self::unplaced_types`] whose arity
-    /// is known — a signature's types and exceptions — by name; each name's
-    /// remaining unplaced declarations are of unknown arity.
-    pub(super) unplaced_type_arities: HashMap<String, Vec<usize>>,
+    /// The full paths and generic arities of those of
+    /// [`Self::unplaced_types`] whose place is known — a signature's types
+    /// and exceptions — by name; each name's remaining unplaced declarations
+    /// are of unknown place and arity.
+    pub(super) unplaced_type_places: HashMap<String, Vec<(Vec<String>, usize)>>,
     /// The file's syntactic whole-file module-simple-name pre-scan (see
     /// [`Resolver::own_module_simple_names`](super::state::Resolver)), carried
     /// into [`ProjectItems::project_module_simple_names`] by the Compile-order
@@ -3481,7 +3483,7 @@ impl ResolvedFile {
                 .zip(&other.placed_types)
                 .all(|(a, b)| a.same_for_later_files(b))
             && self.unplaced_types == other.unplaced_types
-            && self.unplaced_type_arities == other.unplaced_type_arities
+            && self.unplaced_type_places == other.unplaced_type_places
             && self.own_module_simple_names == other.own_module_simple_names
             && self.contributions == other.contributions
             && self.declares_core_attribute_alias == other.declares_core_attribute_alias
@@ -3527,7 +3529,7 @@ impl ResolvedFile {
             placed_types: Vec::new(),
             // Filled by the fold from the signature's own declarations.
             unplaced_types: HashMap::new(),
-            unplaced_type_arities: HashMap::new(),
+            unplaced_type_places: HashMap::new(),
             own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             contributions: FileContributions::default(),
