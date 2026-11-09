@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::{AssemblyEnv, resolve_project};
 use rowan::TextRange;
 
@@ -30,81 +31,105 @@ struct Case {
     must_commit: bool,
 }
 
-impl Case {
-    /// FCS's answer is pinned, and ours must be FCS's or nothing (only
-    /// FCS's, with `must_commit`). FCS reports a dotted use over the whole
-    /// access, so its record is the one ending where the probe ends.
-    fn grade(&self) {
-        let label = self.label;
-        let paths: Vec<PathBuf> = self
-            .files
-            .iter()
-            .enumerate()
-            .map(|(i, src)| temp_fs_file(&format!("{label}_{i}"), src))
-            .collect();
-        let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        let sources: Vec<(PathBuf, String)> = paths
-            .iter()
-            .cloned()
-            .zip(self.files.iter().map(|s| s.to_string()))
-            .collect();
-        let fcs = parse_fcs_uses_project(&invoke_fcs_dump_project(&refs), &sources);
-        for fu in &fcs {
-            assert!(fu.errors.is_empty(), "{label}: FCS errors: {:?}", fu.errors);
-        }
-        let last = self.files.len() - 1;
-        let at = self.files[last].rfind(self.probe).expect("the probe");
-        let end = at + self.probe.len();
-        let decl = fcs[last]
+/// FCS's binding of a probe and ours, as `(file, declaration start)`.
+struct Graded {
+    /// `Err` when FCS reports a diagnostic in any file, or binds the probe to
+    /// no project declaration.
+    fcs: Result<(usize, usize), String>,
+    ours: Option<(usize, usize)>,
+    /// Our raw resolution, for messages.
+    raw: String,
+}
+
+/// Grade the last occurrence of `probe` in the last of `files`, a name or a
+/// dotted path whose last segment is the use. FCS reports a dotted use over
+/// the whole access, so its record is the one ending where the probe ends.
+fn grade(label: &str, files: &[&str], probe: &str) -> Graded {
+    let paths: Vec<PathBuf> = files
+        .iter()
+        .enumerate()
+        .map(|(i, src)| temp_fs_file(&format!("{label}_{i}"), src))
+        .collect();
+    let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    let sources: Vec<(PathBuf, String)> = paths
+        .iter()
+        .cloned()
+        .zip(files.iter().map(|s| s.to_string()))
+        .collect();
+    let fcs_files = parse_fcs_uses_project(&invoke_fcs_dump_project(&refs), &sources);
+    let last = files.len() - 1;
+    let at = files[last].rfind(probe).expect("the probe");
+    let end = at + probe.len();
+    let errors: Vec<_> = fcs_files.iter().flat_map(|f| f.errors.iter()).collect();
+    let fcs = if errors.is_empty() {
+        fcs_files[last]
             .uses
             .iter()
             .find(|u| u.end == end && u.start >= at)
             .and_then(|u| u.decl.as_ref())
-            .unwrap_or_else(|| panic!("{label}: FCS binds no in-project decl at the probe"));
-        let fcs_file = paths
-            .iter()
-            .position(|p| p.file_name() == decl.file.file_name())
-            .expect("a project file");
+            .and_then(|decl| {
+                let file = paths
+                    .iter()
+                    .position(|p| p.file_name() == decl.file.file_name())?;
+                Some((file, decl.start))
+            })
+            .ok_or_else(|| "FCS binds no project declaration at the probe".to_string())
+    } else {
+        Err(format!("FCS errors: {errors:?}"))
+    };
+
+    let impls: Vec<ImplFile> = files
+        .iter()
+        .map(|s| {
+            let parsed = parse(s);
+            assert!(parsed.errors.is_empty(), "{label}: parse errors");
+            ImplFile::cast(parsed.root).expect("impl file")
+        })
+        .collect();
+    let proj = resolve_project(&impls, &AssemblyEnv::default());
+    let segment = at + probe.rfind('.').map_or(0, |i| i + 1);
+    let span = TextRange::new(
+        u32::try_from(segment).unwrap().into(),
+        u32::try_from(end).unwrap().into(),
+    );
+    let res = proj.file(last).resolution_at(span);
+    let ours = res.and_then(|res| {
+        proj.item_def(res)
+            .or_else(|| proj.file(last).resolved_def(res).map(|d| (last, d)))
+            .map(|(file, def)| (file, usize::from(def.range.start())))
+    });
+    Graded {
+        fcs,
+        ours,
+        raw: format!("{res:?}"),
+    }
+}
+
+impl Case {
+    /// FCS's answer is pinned, and ours must be FCS's or nothing (only
+    /// FCS's, with `must_commit`).
+    fn grade(&self) {
+        let label = self.label;
+        let graded = grade(label, self.files, self.probe);
+        let fcs = graded.fcs.unwrap_or_else(|e| panic!("{label}: {e}"));
         let want_at = self.files[self.want_file]
             .rfind(self.want)
             .expect("the wanted decl");
         assert_eq!(
-            (fcs_file, decl.start),
+            fcs,
             (self.want_file, want_at),
             "{label}: FCS binds something other than the pinned declaration"
         );
-
-        let impls: Vec<ImplFile> = self
-            .files
-            .iter()
-            .map(|s| {
-                let parsed = parse(s);
-                assert!(parsed.errors.is_empty(), "{label}: parse errors");
-                ImplFile::cast(parsed.root).expect("impl file")
-            })
-            .collect();
-        let proj = resolve_project(&impls, &AssemblyEnv::default());
-        let segment = at + self.probe.rfind('.').map_or(0, |i| i + 1);
-        let span = TextRange::new(
-            u32::try_from(segment).unwrap().into(),
-            u32::try_from(end).unwrap().into(),
-        );
-        let ours = proj.file(last).resolution_at(span);
-        let named = ours.and_then(|res| {
-            proj.item_def(res)
-                .or_else(|| proj.file(last).resolved_def(res).map(|d| (last, d)))
-                .map(|(file, def)| (file, usize::from(def.range.start())))
-        });
-        match named {
-            Some(ours_at) => assert_eq!(
-                ours_at,
-                (fcs_file, decl.start),
-                "{label}: we bind a different declaration from FCS ({ours:?})"
+        match graded.ours {
+            Some(ours) => assert_eq!(
+                ours, fcs,
+                "{label}: we bind a different declaration from FCS ({})",
+                graded.raw
             ),
             None => assert!(
                 !self.must_commit,
-                "{label}: we decline where FCS binds {:?} ({ours:?})",
-                self.want
+                "{label}: we decline where FCS binds {:?} ({})",
+                self.want, graded.raw
             ),
         }
     }
@@ -364,4 +389,217 @@ fn a_dotted_head_through_a_short_name_is_never_wrong() {
             must_commit: false,
         },
     ]);
+}
+
+/// The `[<AutoOpen>] module A` whose `Child` a short name may reach, in
+/// namespace `N` or in the global namespace.
+const FRAGMENTS: &[&str] = &[
+    "namespace N\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        let Nn = 1\n",
+    "namespace global\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        let Nn = 1\n",
+];
+
+/// Another module `Child` that contests the short name, and how it may be
+/// laid out.
+#[derive(Clone, Copy, Debug)]
+enum Competitor {
+    /// `N.Child`, a direct child of the namespace.
+    Direct,
+    /// A second, plain `module N.A` holding its own `Child`: another
+    /// fragment of the path, which folding the auto-open one does not reach.
+    PlainFragment,
+    /// A second `[<AutoOpen>]` module of the namespace holding a `Child`.
+    SecondFragment,
+    /// A `Child` in the global namespace, reached as written.
+    Global,
+    /// A top-level `module Child` file.
+    RootFile,
+    /// A `module N.A.Child` header file.
+    HeaderFile,
+}
+
+impl Competitor {
+    const ALL: &'static [Competitor] = &[
+        Competitor::Direct,
+        Competitor::PlainFragment,
+        Competitor::SecondFragment,
+        Competitor::Global,
+        Competitor::RootFile,
+        Competitor::HeaderFile,
+    ];
+
+    fn block(self) -> &'static str {
+        match self {
+            Competitor::Direct => "namespace N\n\nmodule Child =\n    let Nn = 2\n",
+            Competitor::PlainFragment => {
+                "namespace N\n\nmodule A =\n    module Child =\n        let Nn = 2\n"
+            }
+            Competitor::SecondFragment => {
+                "namespace N\n\n[<AutoOpen>]\nmodule B =\n    module Child =\n        let Nn = 2\n"
+            }
+            Competitor::Global => "namespace global\n\nmodule Child =\n    let Nn = 2\n",
+            Competitor::RootFile => "module Child\n\nlet Nn = 2\n",
+            Competitor::HeaderFile => "module N.A.Child\n\nlet Nn = 2\n",
+        }
+    }
+
+    /// A top-level module must be a file's only block.
+    fn owns_its_file(self) -> bool {
+        matches!(self, Competitor::RootFile | Competitor::HeaderFile)
+    }
+}
+
+/// Where the `open Child` is, and what the probing block declares itself.
+#[derive(Clone, Copy, Debug)]
+enum Opener {
+    /// A later `module Demo` file opening `Child` alone.
+    Bare,
+    /// A later `module Demo` file: `open N` then `open Child`.
+    Explicit,
+    /// As [`Self::Explicit`], with a local `Child` declared between the
+    /// two `open`s.
+    ExplicitLocalAfter,
+    /// As [`Self::Explicit`], with a local `Child` declared first.
+    ExplicitLocalBefore,
+    /// A later `namespace N` file, folding the namespace implicitly.
+    ImplicitFile,
+    /// A further `namespace N` block in the file of the last declaration.
+    ImplicitBlock,
+}
+
+impl Opener {
+    const ALL: &'static [Opener] = &[
+        Opener::Bare,
+        Opener::Explicit,
+        Opener::ExplicitLocalAfter,
+        Opener::ExplicitLocalBefore,
+        Opener::ImplicitFile,
+        Opener::ImplicitBlock,
+    ];
+
+    fn block(self) -> &'static str {
+        match self {
+            Opener::Bare => "module Demo\n\nlet Nn = 99\n\nopen Child\n\nlet probe = Nn\n",
+            Opener::Explicit => {
+                "module Demo\n\nlet Nn = 99\n\nopen N\nopen Child\n\nlet probe = Nn\n"
+            }
+            Opener::ExplicitLocalAfter => {
+                "module Demo\n\nlet Nn = 99\n\nopen N\n\nmodule Child =\n    let Nn = 3\n\n\
+                 open Child\n\nlet probe = Nn\n"
+            }
+            Opener::ExplicitLocalBefore => {
+                "module Demo\n\nlet Nn = 99\n\nmodule Child =\n    let Nn = 3\n\nopen N\n\
+                 open Child\n\nlet probe = Nn\n"
+            }
+            Opener::ImplicitFile | Opener::ImplicitBlock => {
+                "namespace N\n\nmodule Demo =\n    let Nn = 99\n    open Child\n    let probe = Nn\n"
+            }
+        }
+    }
+}
+
+/// One grid cell's files, or `None` where the layout cannot be written.
+fn layout(
+    fragment: &str,
+    competitor: Competitor,
+    fragment_first: bool,
+    share_file: bool,
+    opener: Opener,
+) -> Option<Vec<String>> {
+    if share_file && competitor.owns_its_file() {
+        return None;
+    }
+    let (first, second) = if fragment_first {
+        (fragment, competitor.block())
+    } else {
+        (competitor.block(), fragment)
+    };
+    let mut files: Vec<String> = if share_file {
+        vec![format!("{first}\n{second}")]
+    } else {
+        vec![first.to_string(), second.to_string()]
+    };
+    match opener {
+        Opener::ImplicitBlock => {
+            let last = files.last_mut().expect("a file");
+            if last.starts_with("module ") {
+                return None;
+            }
+            last.push('\n');
+            last.push_str(opener.block());
+        }
+        _ => files.push(opener.block().to_string()),
+    }
+    Some(files)
+}
+
+/// Every placement of a contesting `Child` against the folded `A.Child`, in
+/// every order, sharing a file or not, under every way of opening the short
+/// name: the walk names what FCS names, or nothing. FCS errors (a layout F#
+/// rejects) skip the cell. Every cell's verdict is pinned in the exact
+/// manifest `tests/manifests/auto_open_short_name_grid.txt`, so a lost commit
+/// fails as loudly as a wrong answer.
+///
+/// The global-namespace fragment declines throughout: the walk has no channel
+/// for an earlier file's global `[<AutoOpen>]` module, so an `open` of a
+/// short name it may lend goes opaque.
+#[test]
+fn every_contest_for_a_short_name_agrees_with_fcs() {
+    let mut wrong: Vec<String> = Vec::new();
+    let mut verdicts: Vec<String> = Vec::new();
+    let (mut commits, mut declines, mut skipped) = (0usize, 0usize, 0usize);
+    let mut cell = 0usize;
+    for (fragment_tag, fragment) in ["in-N", "global"].into_iter().zip(FRAGMENTS) {
+        for &competitor in Competitor::ALL {
+            for fragment_first in [true, false] {
+                for share_file in [false, true] {
+                    for &opener in Opener::ALL {
+                        let Some(files) =
+                            layout(fragment, competitor, fragment_first, share_file, opener)
+                        else {
+                            continue;
+                        };
+                        cell += 1;
+                        let tag = format!(
+                            "{fragment_tag} {competitor:?} fragment_first={fragment_first} \
+                         share={share_file} {opener:?}"
+                        );
+                        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+                        let graded = grade(&format!("short_grid_{cell}"), &refs, "Nn");
+                        match (graded.fcs, graded.ours) {
+                            (Err(_), _) => {
+                                skipped += 1;
+                                verdicts.push(format!("{tag}: fcs-error"));
+                            }
+                            (Ok(_), None) => {
+                                declines += 1;
+                                verdicts.push(format!("{tag}: decline"));
+                            }
+                            (Ok(fcs), Some(ours)) if fcs == ours => {
+                                commits += 1;
+                                verdicts.push(format!("{tag}: commit"));
+                            }
+                            (Ok(fcs), Some(ours)) => wrong.push(format!(
+                                "{tag}: FCS {fcs:?}, ours {ours:?} ({})",
+                                graded.raw
+                            )),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "short-name grid: {cell} cells, {commits} commits, {declines} declines, \
+         {skipped} skipped (FCS errors)"
+    );
+    assert!(wrong.is_empty(), "wrong answers:\n{}", wrong.join("\n"));
+    let manifest =
+        Manifest::from_entries(verdicts).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    borzoi_oracle_harness::manifest::check(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/manifests/auto_open_short_name_grid.txt"),
+        &manifest,
+        "BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all \
+         auto_open_short_name::every_contest_for_a_short_name_agrees_with_fcs",
+    );
 }

@@ -410,6 +410,7 @@ pub fn resolve_file(
         // `[<AutoOpen>]` modules as shortening prefixes too
         // (`Resolver::auto_open_shortening_prefixes`).
         r.open_shortening_prefixes = implicit_shortening_prefixes(r.assemblies);
+        r.block_start = u32::from(module.syntax().text_range().start());
         // Block-scoped like every other open state: an incomplete module opened in one
         // top-level block must not veto a sibling block's opens (review round 11).
         r.incomplete_open_prefixes = Vec::new();
@@ -2275,6 +2276,7 @@ impl<'a> Resolver<'a> {
             type_access_roots: HashMap::new(),
             case_repr_roots: HashMap::new(),
             container_decls: HashMap::new(),
+            block_start: 0,
             type_cases: HashMap::new(),
             type_members: HashMap::new(),
             unindexed_augmented_names: HashSet::new(),

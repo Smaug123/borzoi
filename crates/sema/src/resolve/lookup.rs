@@ -702,8 +702,9 @@ impl<'a> Resolver<'a> {
     /// the fold ([`Self::enter_fragment_child_modules`]), and then the open's
     /// reading opens the module. Where it does not run the fold (written
     /// attribute names untrusted, an anonymous root, an open `rec` block, a
-    /// signature-screened file), or the child is `private`, or the `open` sits
-    /// where the fold has not reached, it cannot follow such an `open`, and
+    /// signature-screened file), or the child is `private` or left out by the
+    /// fold (`enter_fragment_child_modules`), or the `open` sits where the
+    /// fold has not reached, it cannot follow such an `open`, and
     /// what it brings could replace anything in scope. Blind to position and
     /// scope, which can only over-decline: every parent of a project module
     /// named `path`'s head that is, or may be, auto-open is a candidate
@@ -1097,17 +1098,19 @@ impl<'a> Resolver<'a> {
     /// FCS keeps one short-name table, latest entry first: an `open` or a fold
     /// enters its containers' modules at its position, and a nested module
     /// enters itself at its declaration (`AddLocalSubModule`). So a module
-    /// named `head` that this file declares directly in an enclosing container
-    /// ranks by its declaration, above every prefix that entered scope before
-    /// it: `open H; module Child = …; open Child` opens both, and the local
-    /// `Child` wins a collision. Every other container base ranks below every
-    /// prefix: what it reaches was entered by the enclosing namespace's
-    /// implicit open, at the start of the block, or from an earlier file. So
-    /// does a module the walk is inside, which FCS enters only at its close.
+    /// named `head` that this block declares directly in an enclosing
+    /// container ranks by its declaration, above every prefix that entered
+    /// scope before it: `open H; module Child = …; open Child` opens both, and
+    /// the local `Child` wins a collision. That holds in the global container
+    /// too, below `min_k`, whose module the as-written root reading names
+    /// otherwise last. Every other container base ranks below every prefix:
+    /// what it reaches was entered by the enclosing namespace's implicit open,
+    /// at the start of the block, or by an earlier block or file. So does a
+    /// module the walk is inside, which FCS enters only at its close.
     pub(super) fn relative_bases(&self, head: &str, min_k: usize) -> Vec<RelativeBase<'_>> {
         let mut positioned: Vec<(usize, u32)> = Vec::new();
         let mut unpositioned: Vec<usize> = Vec::new();
-        for k in (min_k..=self.container_path.len()).rev() {
+        for k in (0..=self.container_path.len()).rev() {
             let container = &self.container_path[..k];
             let enclosing = self.container_path.get(k).is_some_and(|seg| seg == head);
             match self
@@ -1116,9 +1119,11 @@ impl<'a> Resolver<'a> {
                 .and_then(|decls| decls.get(head))
                 .filter(|kinds| kinds.module && !enclosing)
                 .and_then(|kinds| kinds.module_pos)
+                .filter(|&pos| pos >= self.block_start)
             {
-                Some(pos) => positioned.push((k, pos)),
-                None => unpositioned.push(k),
+                Some(pos) if k == 0 || k >= min_k => positioned.push((k, pos)),
+                _ if k >= min_k => unpositioned.push(k),
+                _ => {}
             }
         }
         positioned.sort_by_key(|&(_, pos)| std::cmp::Reverse(pos));
@@ -1653,40 +1658,94 @@ impl<'a> Resolver<'a> {
         out
     }
 
+    /// This file's module declarations so far, as `(path, position,
+    /// enterable)`: a header or a nested module, `enterable` for a
+    /// non-`private` nested one ([`ModuleDeclRecord::enterable`](super::model::ModuleDeclRecord::enterable)).
+    /// None under an anonymous root, whose nested modules carry no qualified
+    /// paths.
+    fn current_module_decls(&self) -> impl Iterator<Item = (&[String], TextSize, bool)> + '_ {
+        self.export_decls.iter().filter_map(|d| match d.kind {
+            super::model::ExportDeclKind::Module {
+                header, private, ..
+            } if !d.anonymous_root => Some((d.path.as_slice(), d.pos, !header && !private)),
+            _ => None,
+        })
+    }
+
     /// The short names of the non-`private` modules that the module fragment
     /// `(path, file)` declares itself, `file` being this file or an earlier
     /// one ([`ProjectItems::fragment_child_modules`](super::model::ProjectItems::fragment_child_modules)).
-    /// None for a file with an anonymous root, whose nested modules carry no
-    /// qualified paths.
     fn fragment_child_modules(&self, path: &[String], file: usize) -> Vec<String> {
         if file < self.preceding.num_files() {
             return self.preceding.fragment_child_modules(path, file);
         }
-        if self.anonymous_root {
-            return Vec::new();
-        }
-        self.export_decls
-            .iter()
-            .filter(|d| {
-                matches!(
-                    d.kind,
-                    super::model::ExportDeclKind::Module {
-                        header: false,
-                        private: false,
-                        ..
-                    }
-                ) && super::model::is_directly_in(&d.path, path)
-            })
-            .filter_map(|d| d.path.last().cloned())
+        self.current_module_decls()
+            .filter(|&(p, _, enterable)| enterable && super::model::is_directly_in(p, path))
+            .filter_map(|(p, _, _)| p.last().cloned())
             .collect()
     }
 
     /// Enter the modules that the module fragment `(path, file)` declares
     /// under their short names, as folding it does
     /// (`AddModuleOrNamespaceRefsToNameEnv`): a prefix restricted to those
-    /// children, at `pos`.
-    pub(super) fn enter_fragment_child_modules(&mut self, path: &[String], file: usize, pos: u32) {
-        let children = self.fragment_child_modules(path, file);
+    /// children, at `pos`. `container` is what the fold opened, for a fold an
+    /// `open` (or the enclosing namespace's implicit one) runs; `None` for a
+    /// module's fold-back at its close.
+    ///
+    /// A child the walk cannot open as FCS does is left out, so an `open` of
+    /// its short name goes opaque instead ([`Self::may_name_unlent_module`]):
+    ///
+    /// - one whose path another declaration shares (a plain `module A` in
+    ///   another file holding its own `Child`, a `module N.A.Child` header):
+    ///   the module open folds every declaration at the path, FCS only the
+    ///   fragment's own;
+    /// - one whose name a direct module of `container` takes in a later
+    ///   fragment: FCS enters each fragment's direct modules and then its
+    ///   auto-open children's, fragment by fragment — earlier files merged
+    ///   per file, this file's blocks each their own — so that module
+    ///   outranks the child, where the walk ranks the child above the
+    ///   container's every module. A later declaration in this file counts
+    ///   as later fragment wherever the fragment itself is this file's.
+    pub(super) fn enter_fragment_child_modules(
+        &mut self,
+        path: &[String],
+        file: usize,
+        pos: u32,
+        container: Option<&[String]>,
+    ) {
+        let current = self.preceding.num_files();
+        let fragment_pos = self
+            .current_module_decls()
+            .find(|&(p, _, _)| file == current && p == path)
+            .map(|(_, pos, _)| pos);
+        let declarations = |full: &[String]| {
+            self.preceding.module_declarations(full).count()
+                + self
+                    .current_module_decls()
+                    .filter(|&(p, _, _)| p == full)
+                    .count()
+        };
+        let later_direct = |container: &[String], child: &str| {
+            let mut direct = container.to_vec();
+            direct.push(child.to_string());
+            self.preceding
+                .module_declarations(&direct)
+                .any(|g| g > file)
+                || self
+                    .current_module_decls()
+                    .filter(|&(p, _, _)| p == direct.as_slice())
+                    .any(|(_, at, _)| file < current || fragment_pos.is_none_or(|f| at > f))
+        };
+        let children: Vec<String> = self
+            .fragment_child_modules(path, file)
+            .into_iter()
+            .filter(|child| {
+                let mut full = path.to_vec();
+                full.push(child.clone());
+                declarations(&full) == 1
+                    && container.is_none_or(|container| !later_direct(container, child))
+            })
+            .collect();
         if children.is_empty() {
             return;
         }
@@ -2855,7 +2914,7 @@ impl<'a> Resolver<'a> {
                 self.open_generation += 1;
             }
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
-            self.enter_fragment_child_modules(&frag_path, frag_file, open_pos);
+            self.enter_fragment_child_modules(&frag_path, frag_file, open_pos, Some(namespace));
         }
         // The namespace's types of a file later than every fragment's.
         for (name, _) in own_types {

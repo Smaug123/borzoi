@@ -1172,6 +1172,10 @@ pub(super) struct Resolver<'a> {
     /// can decide a head/segment with *certainty* — emit only when unambiguous, defer
     /// on any contention (Gap A of `docs/type-qualified-case-prefix-plan.md`).
     pub(super) container_decls: HashMap<Vec<String>, HashMap<String, DeclKinds>>,
+    /// Where the active top-level block starts. A module an earlier block
+    /// declared entered the short-name table before anything this block
+    /// opens, however late in the file it sits ([`Self::relative_bases`]).
+    pub(super) block_start: u32,
     /// In-file **type-qualified cases**, keyed by enclosing container path then by
     /// *type* name then by case name → the case's defining binder. Holds every
     /// `enum` case **and** every union case (`[<RequireQualifiedAccess>]` or not),
