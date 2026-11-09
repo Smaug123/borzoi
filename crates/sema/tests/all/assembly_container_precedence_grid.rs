@@ -87,10 +87,14 @@ enum Member {
     ActivePattern,
     /// A union `GridU{n}` declaring the case `GridC`.
     Union(UnionKind),
-    /// `exception GridC of int`.
+    /// `exception GridC of int with static member Make`: its static member
+    /// is no reading, since FCS takes the exception constructor and stops.
     Exn,
     /// `type GridC() = static member Make () = 1`.
     Class,
+    /// `type GridC<'T>() = static member Make () = 1`: beside an exception
+    /// of the name, which FCS takes first.
+    GenericClass,
     /// `type GridC = { GridX: int } with static member Make`.
     Record,
     /// `type GridC = System.Version`.
@@ -171,6 +175,7 @@ fn setups() -> Vec<Setup> {
         // An exception takes the name ahead of a case.
         module(&[Union(Unary), Exn]),
         module(&[Exn, Union(Nullary)]),
+        module(&[Exn, GenericClass]),
         // A case FCS reads past: the first union declaring it requires
         // qualified access, or hides its representation, or is private.
         module(&[Union(Rqa), Class]),
@@ -199,6 +204,8 @@ fn setups() -> Vec<Setup> {
         namespace(&[Union(Unary), Abbrev]),
         namespace(&[Union(Unary), SubModule]),
         namespace(&[Union(Unary), Exn]),
+        namespace(&[Exn, GenericClass]),
+        namespace(&[GenericClass, Exn]),
         namespace(&[Union(Rqa), Class]),
         namespace(&[Union(Rqa), Union(Nullary), Class]),
         namespace(&[Union(Rqa), SubModule]),
@@ -233,8 +240,9 @@ fn member_source(member: Member, union_no: usize) -> String {
         Union(Rqa) => union("[<RequireQualifiedAccess>]\n", "", "", "GridC"),
         Union(PrivateRepr) => union("", "", "private ", "GridC"),
         Union(Private) => union("", "private ", "", "GridC"),
-        Exn => "exception GridC of int\n".to_string(),
+        Exn => "exception GridC of int\n    with\n        static member Make () = 1\n".to_string(),
         Class => "type GridC() =\n    static member Make () = 1\n".to_string(),
+        GenericClass => "type GridC<'T>() =\n    static member Make () = 1\n".to_string(),
         Record => "type GridC =\n    { GridX: int }\n    static member Make () = 1\n".to_string(),
         Abbrev => "type GridC = System.Version\n".to_string(),
         SelfUnion => "type GridC =\n    | GridC\n    | GridE\n".to_string(),
@@ -393,7 +401,7 @@ fn fcs_reading(setup: &Setup, tail: bool) -> Reading {
         }
     }
     let type_reads = members.iter().any(|m| match m {
-        Class => true,
+        Class | GenericClass => true,
         // A record has no constructor to read, but its static member does.
         Record => tail,
         // `System.Version` has a constructor, but no `Make`.

@@ -6214,6 +6214,14 @@ impl AssemblyEnv {
         })
     }
 
+    /// Whether `handle` is an F# **exception** we may rely on being one: on an
+    /// assembly whose F# signature is not authoritative the kind is an IL
+    /// heuristic, and FCS imports the type as an ordinary class.
+    pub(crate) fn is_authoritative_exception(&self, handle: EntityHandle) -> bool {
+        self.entity(handle).kind == EntityKind::Exception
+            && !self.fsharp_signature_unreliable(handle)
+    }
+
     /// What FCS's in-module expression search can read for `name` in module
     /// `module` ahead of its child `child` of that name — see [`AheadOfType`].
     ///
@@ -6294,7 +6302,9 @@ impl AssemblyEnv {
     /// exception step, ahead of every union case there:
     /// [`AheadOfType::SiblingException`] when it is not `entity` itself, and
     /// when it is, only another assembly's members of a namespace can come
-    /// first.
+    /// first. Only an authoritative exception
+    /// ([`Self::is_authoritative_exception`]) is one: anything else of the
+    /// kind is a possible reader of unknown rank.
     /// A union in an assembly whose F# signature is not authoritative is read
     /// by its IL case list, the best evidence there is of the names a pickle
     /// FCS can read would declare, but never exempted as
@@ -6305,7 +6315,7 @@ impl AssemblyEnv {
         name: &str,
         entity: EntityHandle,
     ) -> AheadOfType {
-        let is_exception = self.entity(entity).kind == EntityKind::Exception;
+        let is_exception = self.is_authoritative_exception(entity);
         let same_dll = |e: EntityHandle| self.distinct_dlls(&[e, entity]) == 1;
         let mut sibling_exception = false;
         let mut local_case = false;
@@ -6319,7 +6329,7 @@ impl AssemblyEnv {
                 EntityKind::Exception
                     if ent.source_name.as_deref().unwrap_or(&ent.name) == name =>
                 {
-                    if !same_dll(e) {
+                    if !same_dll(e) || self.fsharp_signature_unreliable(e) {
                         return AheadOfType::Possible;
                     }
                     sibling_exception = true;

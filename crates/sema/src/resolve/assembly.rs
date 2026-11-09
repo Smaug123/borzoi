@@ -507,10 +507,9 @@ impl<'a> Resolver<'a> {
         // [`AheadOfType`]. (A rooting at the written head is looked up in the
         // environment instead, where a type or module goes first.)
         //
-        // An exception it reads owns the path whether or not the tail is
-        // there: FCS reads it and goes no further.
+        // An exception it reads is the whole reading: FCS takes the exception
+        // constructor and goes no further, whatever tail follows.
         let mut rqa_case_fallback = false;
-        let mut exception_read = false;
         if k > base {
             match self
                 .assemblies
@@ -523,7 +522,9 @@ impl<'a> Resolver<'a> {
                 AheadOfType::SiblingException => return AssemblyPath::NoMatch,
                 AheadOfType::Possible => return Self::owned_deferral(segments),
             }
-            exception_read = self.assemblies.entity(type_handle).kind == EntityKind::Exception;
+            if self.assemblies.is_authoritative_exception(type_handle) {
+                return Self::exception_reading(segments, k - base, type_handle);
+            }
         }
 
         // A type-abbreviation marker: the name binds, and FCS chases the
@@ -643,7 +644,9 @@ impl<'a> Resolver<'a> {
                             return Self::owned_deferral(segments);
                         }
                     }
-                    exception_read |= self.assemblies.entity(child).kind == EntityKind::Exception;
+                    if self.assemblies.is_authoritative_exception(child) {
+                        return Self::exception_reading(segments, i - base, child);
+                    }
                 }
             }
             if let Some(child) = self
@@ -768,15 +771,39 @@ impl<'a> Resolver<'a> {
         // nothing: a tail it lacks, or a bare name that is not a value. FCS
         // reads the case there rather than going on elsewhere, so the path is
         // owned, but not by anything this reading names.
-        if exception_read {
-            owns_path = true;
-        }
         if rqa_case_fallback && (!owns_path || self.reading_stops_on_a_non_value(segments, &recs)) {
             return Self::owned_deferral(segments);
         }
         AssemblyPath::Resolved {
             payload: recs,
             owns_path,
+        }
+    }
+
+    /// The reading of an exception FCS's in-container search takes at
+    /// `segments[at]`: the exception there, every other segment deferred, and
+    /// the path owned. FCS reads the exception constructor and goes no
+    /// further; a tail after it is an error, never a member of the exception
+    /// type.
+    fn exception_reading(
+        segments: &[SyntaxToken],
+        at: usize,
+        exception: EntityHandle,
+    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
+        AssemblyPath::Resolved {
+            payload: segments
+                .iter()
+                .enumerate()
+                .map(|(j, seg)| {
+                    let res = if j == at {
+                        Resolution::Entity(exception)
+                    } else {
+                        Resolution::Deferred(DeferredReason::QualifiedAccess)
+                    };
+                    (seg.text_range(), res)
+                })
+                .collect(),
+            owns_path: true,
         }
     }
 
