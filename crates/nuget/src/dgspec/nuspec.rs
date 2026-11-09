@@ -184,7 +184,7 @@ fn admitted_text(bytes: &[u8]) -> Result<&str, NuspecDecline> {
 // The XML declaration
 // ----------------------------------------------------------------------------
 
-fn admitted_declaration(text: &str) -> Result<(), NuspecDecline> {
+pub(crate) fn admitted_declaration(text: &str) -> Result<(), NuspecDecline> {
     let Some(rest) = text.strip_prefix("<?xml") else {
         return Ok(());
     };

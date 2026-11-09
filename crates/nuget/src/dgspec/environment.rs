@@ -193,12 +193,7 @@ pub(super) fn check_environment(
 fn user_config_folder(
     environment: &BTreeMap<OsString, OsString>,
 ) -> Result<PathBuf, EnvironmentDecline> {
-    let home = HOME_VARIABLES
-        .iter()
-        .find_map(|name| environment.get(OsStr::new(name)))
-        .map(Path::new)
-        .filter(|home| home.is_absolute())
-        .ok_or(EnvironmentDecline::HomeUnknown)?;
+    let home = crate::settings::nuget_home(environment).ok_or(EnvironmentDecline::HomeUnknown)?;
     Ok(home.join(".nuget").join("NuGet"))
 }
 
