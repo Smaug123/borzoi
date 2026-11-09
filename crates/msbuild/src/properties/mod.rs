@@ -36,6 +36,7 @@ pub(crate) mod path_fixup;
 
 use escaping::Escaped;
 
+#[cfg(feature = "test-support")]
 pub use expr::MAX_EXPRESSION_NESTING;
 pub(crate) use expr::{is_referenceable_name, property_references};
 
