@@ -126,7 +126,10 @@ This is a Cargo workspace with nine members:
   `.nuspec` reading, the conservative offline resolver, and compile-asset
   selection (NuGet's content model), and the dependency-graph spec reader
   (`dgspec`, `docs/nuget-dgspec-boundary-plan.md`) and its resolver
-  (`dgspec::resolve_dgspec`). Everything either resolves
+  (`dgspec::resolve_dgspec`), and NuGet's settings as far as the global
+  packages folder they choose (`settings::global_packages_folder`, which the
+  LSP's on-demand restore pins its package folder to; graded by
+  `settings_diff`). Everything either resolves
   *identically* to `dotnet restore` or declines. `resolve_dgspec` commits only
   for a NuGet on its verified list (`src/dgspec/verified_nuget.txt`), which
   `dgspec_resolve_diff` derives from the oracle, so a devshell SDK bump fails
@@ -167,6 +170,12 @@ This is a Cargo workspace with nine members:
   an entry (Nix's macOS `~nix~case~hack~` suffix decoded). And `nuget_oracle`,
   the `tools/nuget-oracle` driver, which lives here because both
   `borzoi-nuget`'s differentials and the LSP's restore-graph oracle drive it.
+  And `xml_pump`: every short element path of an XML input repeated thousands
+  of levels deep, run on a 2 MiB stack. `roxmltree` (≥ 0.21.2) parses
+  iteratively, so a deep file overflows only through a walk of ours that
+  recurses per element; `borzoi-msbuild`'s `xml_nesting_pump` and
+  `borzoi-nuget`'s `dgspec::xml_nesting_pump` hold every reader of untrusted
+  XML to that without naming the recursive paths. A new reader belongs in one.
 - `crates/sema/` — `borzoi-sema`. Semantic analysis (name resolution
   today, type inference later) over the `borzoi-cst` AST. `resolve_file`
   builds a position-ordered scope tree and resolves each name use to its

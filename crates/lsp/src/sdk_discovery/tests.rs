@@ -352,30 +352,227 @@ fn discovery_never_executes_a_dotnet_shim_on_path() {
     }
 }
 
-#[test]
-fn nuget_packages_dir_explicit_env_wins() {
-    let env = env_with(|e| {
-        e.nuget_packages_dir = Some(PathBuf::from("/explicit/nuget"));
-        e.home_dir = Some(PathBuf::from("/home/user"));
-    });
-    let resolved = resolve_nuget_packages_dir(&env);
-    assert_eq!(resolved.as_deref(), Some(Path::new("/explicit/nuget")));
+/// Materialise an MSBuild SDK package in the global packages folder `folder`,
+/// as `{folder}/{id lower-cased}/{version}/Sdk/Sdk.{props,targets}`, and return
+/// its `Sdk.props`.
+fn install_sdk_package(folder: &Path, id: &str, version: &str) -> PathBuf {
+    let sdk = folder
+        .join(id.to_ascii_lowercase())
+        .join(version)
+        .join("Sdk");
+    fs::create_dir_all(&sdk).unwrap();
+    fs::write(sdk.join("Sdk.props"), "<Project/>").unwrap();
+    fs::write(sdk.join("Sdk.targets"), "<Project/>").unwrap();
+    sdk.join("Sdk.props")
 }
 
+/// A config file choosing `value` as the global packages folder.
+fn config_choosing(value: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration><config>\
+         <add key=\"globalPackagesFolder\" value=\"{value}\" />\
+         </config></configuration>\n"
+    )
+}
+
+/// The layout the global-packages-folder tests share: a dotnet root holding
+/// `Microsoft.NET.Sdk`, a readable home folder (NuGet reads its settings only
+/// from one it can read) whose default packages folder holds `My.Custom.Sdk`
+/// 1.2.3, and a project directory beneath a `global.json` that stops the walk.
+struct PackagesLayout {
+    tmp: TempDir,
+    dotnet: PathBuf,
+    home: PathBuf,
+    /// `My.Custom.Sdk` 1.2.3's `Sdk.props` in the home's default folder.
+    home_copy: PathBuf,
+    project: PathBuf,
+}
+
+impl PackagesLayout {
+    fn new() -> Self {
+        let tmp = TempDir::new().unwrap();
+        let dotnet = tmp.path().join("dotnet");
+        install_sdk(&dotnet, "8.0.401", "Microsoft.NET.Sdk");
+        let home = tmp.path().join("home");
+        let home_copy = install_sdk_package(
+            &home.join(".nuget").join("packages"),
+            "My.Custom.Sdk",
+            "1.2.3",
+        );
+        let project = tmp.path().join("proj").join("App.fsproj");
+        fs::create_dir_all(project.parent().unwrap()).unwrap();
+        fs::write(tmp.path().join("global.json"), "{}").unwrap();
+        Self {
+            tmp,
+            dotnet,
+            home,
+            home_copy,
+            project,
+        }
+    }
+
+    /// An env with this layout's dotnet root and home, and no
+    /// `NUGET_PACKAGES`.
+    fn env(&self) -> SdkDiscoveryEnv {
+        env_with(|e| {
+            e.dotnet_root = Some(self.dotnet.clone());
+            e.home_dir = Some(self.home.clone());
+        })
+    }
+
+    fn write_project_config(&self, text: &str) {
+        fs::write(self.project.parent().unwrap().join("NuGet.Config"), text).unwrap();
+    }
+
+    fn discovery(&self, env: &SdkDiscoveryEnv) -> SdkDiscovery {
+        SdkDiscovery::for_project(&self.project, env).expect("discovery")
+    }
+}
+
+/// NuGet's MSBuild SDK resolver reads `Sdk="Name/Version"` packages from the
+/// global packages folder of the settings it loads for the project, which a
+/// config file beside the project can move. A different copy of the package in
+/// the home's default folder must not be read.
 #[test]
-fn nuget_packages_dir_falls_back_to_home_default() {
-    let env = env_with(|e| e.home_dir = Some(PathBuf::from("/home/user")));
-    let resolved = resolve_nuget_packages_dir(&env);
-    assert_eq!(
-        resolved.as_deref(),
-        Some(Path::new("/home/user/.nuget/packages"))
+fn pinned_sdk_resolves_from_the_global_packages_folder_a_config_names() {
+    let layout = PackagesLayout::new();
+    let configured = layout.tmp.path().join("configured");
+    let configured_copy = install_sdk_package(&configured, "My.Custom.Sdk", "1.2.3");
+    layout.write_project_config(&config_choosing(configured.to_str().unwrap()));
+    fs::write(
+        layout.tmp.path().join("global.json"),
+        r#"{ "msbuild-sdks": { "My.Custom.Sdk": "1.2.3" } }"#,
+    )
+    .unwrap();
+
+    let disc = layout.discovery(&layout.env());
+    // Both version sources: the per-import pin and the `msbuild-sdks` entry.
+    for sdk_ref in ["My.Custom.Sdk/1.2.3", "My.Custom.Sdk"] {
+        let paths = single_root(disc.resolve(sdk_ref).expect("resolves"));
+        assert_eq!(
+            paths.props,
+            configured_copy,
+            "{sdk_ref} must resolve from the configured folder, not {}",
+            layout.home_copy.display()
+        );
+    }
+}
+
+/// A relative `globalPackagesFolder` resolves against the folder of the config
+/// file that declares it, which may be an ancestor of the project's.
+#[test]
+fn a_relative_global_packages_folder_resolves_against_its_config_file() {
+    let layout = PackagesLayout::new();
+    let configured_copy = install_sdk_package(
+        &layout.tmp.path().join(".packages"),
+        "My.Custom.Sdk",
+        "1.2.3",
     );
+    fs::write(
+        layout.tmp.path().join("NuGet.Config"),
+        config_choosing(".packages"),
+    )
+    .unwrap();
+
+    let disc = layout.discovery(&layout.env());
+    let paths = single_root(disc.resolve("My.Custom.Sdk/1.2.3").expect("resolves"));
+    assert_eq!(paths.props, configured_copy);
 }
 
+/// Where the configured folder lacks the package, the copy in the home's
+/// default folder must not be read. Nor is the SDK absent: NuGet would look in
+/// its fallback folders (which may well be the home's) and then download it,
+/// neither of which is modelled, so resolution declines.
 #[test]
-fn nuget_packages_dir_none_when_neither() {
-    let env = env_with(|_| {});
-    assert!(resolve_nuget_packages_dir(&env).is_none());
+fn pinned_sdk_absent_from_the_configured_folder_declines() {
+    let layout = PackagesLayout::new();
+    let configured = layout.tmp.path().join("configured");
+    fs::create_dir_all(&configured).unwrap();
+    layout.write_project_config(&config_choosing(configured.to_str().unwrap()));
+    // Another version in the folder: absence of the pinned one still declines.
+    install_sdk_package(&configured, "My.Custom.Sdk", "1.0.0");
+
+    let disc = layout.discovery(&layout.env());
+    match disc.resolve("My.Custom.Sdk/1.2.3") {
+        Err(SdkResolveError::UnsupportedLayout { reason }) => {
+            assert!(reason.contains("fallback folders"), "{reason}")
+        }
+        other => panic!("expected a decline, got {other:?}"),
+    }
+}
+
+/// `NUGET_PACKAGES` outranks every config file.
+#[test]
+fn nuget_packages_outranks_a_configured_folder() {
+    let layout = PackagesLayout::new();
+    let configured = layout.tmp.path().join("configured");
+    install_sdk_package(&configured, "My.Custom.Sdk", "1.2.3");
+    layout.write_project_config(&config_choosing(configured.to_str().unwrap()));
+    let from_environment = layout.tmp.path().join("from-environment");
+    let environment_copy = install_sdk_package(&from_environment, "My.Custom.Sdk", "1.2.3");
+
+    let mut env = layout.env();
+    env.nuget_packages_dir = Some(from_environment);
+    let disc = layout.discovery(&env);
+    let paths = single_root(disc.resolve("My.Custom.Sdk/1.2.3").expect("resolves"));
+    assert_eq!(paths.props, environment_copy);
+}
+
+/// Without a config naming a folder, the folder is NuGet's default under the
+/// home.
+#[test]
+fn pinned_sdk_resolves_from_the_home_default_without_a_config() {
+    let layout = PackagesLayout::new();
+    let disc = layout.discovery(&layout.env());
+    let paths = single_root(disc.resolve("My.Custom.Sdk/1.2.3").expect("resolves"));
+    assert_eq!(paths.props, layout.home_copy);
+}
+
+/// Where the NuGet settings model cannot say which folder NuGet would use, a
+/// name NuGet would resolve declines, naming why, rather than guess at the
+/// home's default folder. A name NuGet has no version for reads no folder, so
+/// it resolves as before.
+#[test]
+fn pinned_sdk_declines_where_the_settings_model_declines() {
+    let layout = PackagesLayout::new();
+    // An unset `%NAME%` is outside the modelled value domain.
+    layout.write_project_config(&config_choosing("%BORZOI_UNSET_VARIABLE%/packages"));
+    fs::write(
+        layout.tmp.path().join("global.json"),
+        r#"{ "msbuild-sdks": { "My.Custom.Sdk": "1.2.3" } }"#,
+    )
+    .unwrap();
+
+    let disc = layout.discovery(&layout.env());
+    for sdk_ref in ["My.Custom.Sdk/1.2.3", "My.Custom.Sdk"] {
+        match disc.resolve(sdk_ref) {
+            Err(SdkResolveError::UnsupportedLayout { reason }) => assert!(
+                reason.contains("global packages folder")
+                    && reason.contains("BORZOI_UNSET_VARIABLE"),
+                "{sdk_ref}: the decline must say why: {reason}"
+            ),
+            other => panic!("{sdk_ref}: expected a decline, got {other:?}"),
+        }
+    }
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk")
+            .expect("in-box SDK resolves"),
+    );
+    assert!(paths.props.starts_with(&layout.dotnet));
+}
+
+/// No home folder NuGet can read: NuGet's settings cannot be said, so a pinned
+/// name declines.
+#[test]
+fn pinned_sdk_declines_without_a_readable_home() {
+    let layout = PackagesLayout::new();
+    let mut env = layout.env();
+    env.home_dir = Some(layout.tmp.path().join("no-such-home"));
+    let disc = layout.discovery(&env);
+    assert!(matches!(
+        disc.resolve("My.Custom.Sdk/1.2.3"),
+        Err(SdkResolveError::UnsupportedLayout { .. })
+    ));
 }
 
 #[test]
@@ -715,9 +912,13 @@ fn e2e_msbuild_sdks_pin_overrides_caller_spec() {
     )
     .unwrap();
 
+    // NuGet loads its settings only under a home folder it can read.
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
     let env = env_with(|e| {
         e.dotnet_root = Some(dotnet);
         e.nuget_packages_dir = Some(nuget.clone());
+        e.home_dir = Some(home);
     });
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
@@ -1788,9 +1989,13 @@ fn msbuild_sdks_pinned_resolution_declines_under_the_override() {
     )
     .unwrap();
 
+    // NuGet loads its settings only under a home folder it can read.
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
     let env = env_with(|e| {
         e.dotnet_root = Some(dotnet);
         e.nuget_packages_dir = Some(nuget.clone());
+        e.home_dir = Some(home);
         e.build_environment = HashMap::from([(
             "MSBuildSDKsPath".to_string(),
             "/nonexistent/Sdks".to_string(),

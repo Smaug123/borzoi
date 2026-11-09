@@ -123,6 +123,14 @@ pub fn resolve_file(
     // FooAttribute` is declared before or after it, or in a sibling block.
     // Over-approximate (an augmentation target's last segment counts too),
     // which is sound: a spurious match only adds a defer.
+    if file
+        .syntax()
+        .descendants()
+        .filter_map(ExceptionDefnDecl::cast)
+        .any(|e| exception_named_like_core_attribute(&e))
+    {
+        r.declares_core_attribute_alias = true;
+    }
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
         if type_defn_renames_core_attribute(&defn) {
             r.declares_core_attribute_alias = true;
@@ -1788,15 +1796,18 @@ fn signature_slot(
         surface.exports,
     );
     contributors::signature_contributions(sig, preceding, assemblies, &mut rf);
-    rf.unplaced_types = signature_type_decls(sig);
+    (rf.unplaced_types, rf.unplaced_type_places) = signature_type_decls(sig);
     rf
 }
 
 /// A signature's type and exception names, each declaration unplaced: a
 /// later file sees the signature's type, which may not be the
-/// implementation's ([`ResolvedFile::unplaced_types`]).
-fn signature_type_decls(sig: &SigFile) -> HashMap<String, usize> {
-    let mut out: HashMap<String, usize> = HashMap::new();
+/// implementation's ([`ResolvedFile::unplaced_types`]). With them, each
+/// declaration's full path and generic arity where the module structure
+/// gives it ([`ResolvedFile::unplaced_type_places`]); an exception's arity
+/// is 0.
+fn signature_type_decls(sig: &SigFile) -> (HashMap<String, usize>, model::TypePlaces) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
     let type_names = sig
         .syntax()
         .descendants()
@@ -1808,9 +1819,71 @@ fn signature_type_decls(sig: &SigFile) -> HashMap<String, usize> {
         .filter_map(ExceptionDefnDecl::cast)
         .filter_map(|exn| exn.union_case().and_then(|c| c.ident()));
     for name in type_names.chain(exception_names) {
-        *out.entry(id_text(&name).to_string()).or_default() += 1;
+        *counts.entry(id_text(&name).to_string()).or_default() += 1;
     }
-    out
+    let mut places = model::TypePlaces::new();
+    for fragment in sig.modules() {
+        let container = match fragment.kind() {
+            ModuleOrNamespaceKind::NamedModule => header_long_id_path(&fragment),
+            ModuleOrNamespaceKind::DeclaredNamespace | ModuleOrNamespaceKind::GlobalNamespace => {
+                Some(
+                    fragment
+                        .long_id()
+                        .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
+                        .unwrap_or_default(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(container) = container {
+            signature_type_places(&container, fragment.sig_decls(), &mut places);
+        }
+    }
+    (counts, places)
+}
+
+/// The full path and generic arity of each type and exception `decls`
+/// declares under `container`, nested modules' included.
+fn signature_type_places(
+    container: &[String],
+    decls: impl Iterator<Item = SigDecl>,
+    places: &mut model::TypePlaces,
+) {
+    let mut place = |name: &SyntaxToken, arity: usize| {
+        let name = id_text(name).to_string();
+        let mut path = container.to_vec();
+        path.push(name.clone());
+        places.entry(name).or_default().push((path, arity));
+    };
+    let mut nested = Vec::new();
+    for decl in decls {
+        match decl {
+            SigDecl::Types(types) => {
+                for defn in types.defns() {
+                    if let Some(name) = defn.long_id().and_then(single_ident) {
+                        place(&name, defn.typar_decls().map_or(0, |t| t.typars().count()));
+                    }
+                }
+            }
+            SigDecl::Exception(exn) => {
+                if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
+                    place(&name, 0);
+                }
+            }
+            SigDecl::NestedModule(nm) => nested.push(nm),
+            SigDecl::Open(_)
+            | SigDecl::ModuleAbbrev(_)
+            | SigDecl::Val(_)
+            | SigDecl::HashDirective(_) => {}
+        }
+    }
+    for nm in nested {
+        if let Some(li) = nm.long_id() {
+            let mut path = container.to_vec();
+            path.extend(li.idents().map(|t| id_text(&t).to_string()));
+            signature_type_places(&path, nm.sig_decls(), places);
+        }
+    }
 }
 
 /// The **wholesale** extension-source signal one file threads to later
@@ -2192,6 +2265,7 @@ impl<'a> Resolver<'a> {
             type_slot_classes: HashMap::new(),
             type_slot_history: HashMap::new(),
             type_access_roots: HashMap::new(),
+            case_repr_roots: HashMap::new(),
             container_decls: HashMap::new(),
             type_cases: HashMap::new(),
             type_members: HashMap::new(),
@@ -2534,6 +2608,7 @@ impl<'a> Resolver<'a> {
             attribute_resolutions: self.attribute_resolutions,
             placed_types: std::mem::take(&mut self.placed_types),
             unplaced_types,
+            unplaced_type_places: HashMap::new(),
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
@@ -2651,8 +2726,49 @@ impl<'a> Resolver<'a> {
         self.record_path_decline(segs, site);
     }
 
+    /// Record that the occurrence at `range` resolves to `res`.
+    ///
+    /// The one writer of the resolution map, so the one place to refuse a
+    /// commit no route may make: a union case whose representation is
+    /// `private` to a container this site is outside
+    /// ([`Self::case_usable_here`]). Every route that reaches such a case —
+    /// an `open`, `U.X`, `M.X`, a pattern — declines here, with the cause.
     fn record(&mut self, range: TextRange, res: Resolution) {
+        let res = if self.case_usable_here(res) {
+            res
+        } else {
+            self.record_decline(
+                range,
+                model::DeclineSite::pre_walk(DeclineCause::CaseRepresentationInaccessible),
+            );
+            Resolution::Deferred(DeferredReason::UnboundName)
+        };
         self.resolutions.insert(range, res);
+    }
+
+    /// Whether a use at the current walk position may commit to `res`.
+    ///
+    /// `false` exactly for a union case whose representation is `private`
+    /// (`type U = private X | Y`) to a container the site is outside. FCS
+    /// keeps such a case where the type is visible — an `open` brings it in,
+    /// `U.X` finds it — and rejects the use (FS1093); a module-qualified `M.X`
+    /// skips it (`IsTyconReprAccessible`) and looks on. The selection queries
+    /// therefore keep seeing the case, so it shadows what FCS lets it shadow,
+    /// and every route asks this before it commits.
+    ///
+    /// The other ways a case is out of reach — a `private` type, a `private`
+    /// enclosing module — hide it from selection outright
+    /// ([`ExportedItem::access_root_len`]), so they never reach here.
+    pub(super) fn case_usable_here(&self, res: Resolution) -> bool {
+        let root = match res {
+            Resolution::Local(def) => self.case_repr_roots.get(&def).map(Vec::as_slice),
+            Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
+                Some(local) => self.items[local].repr_access_root.as_deref(),
+                None => self.preceding.case_repr_root(id),
+            },
+            _ => None,
+        };
+        root.is_none_or(|root| self.container_path.starts_with(root))
     }
 
     /// Record an **or-pattern alias**: a later alternative spelling a name the
@@ -2742,23 +2858,6 @@ fn type_long_ident_path(ty: &Type) -> Option<Vec<String>> {
     (!segs.is_empty()).then_some(segs)
 }
 
-/// Whether any attribute in `attrs` is `[<RequireQualifiedAccess>]` (or its
-/// `…Attribute` long form), matched on the attribute name's last segment. Such a
-/// union keeps its cases out of the unqualified value scope, so they must not be
-/// added to the case index.
-fn attrs_require_qualified_access(attrs: impl Iterator<Item = AttributeList>) -> bool {
-    attrs
-        .flat_map(|list| list.attributes().collect::<Vec<_>>())
-        .filter_map(|attr| attr.type_name())
-        .filter_map(|li| li.idents().last())
-        .any(|seg| {
-            matches!(
-                &*id_text(&seg),
-                "RequireQualifiedAccess" | "RequireQualifiedAccessAttribute"
-            )
-        })
-}
-
 /// Every nested-module name declared anywhere under `decls` (all depths),
 /// for the `rec`-block pre-scan ([`Resolver::rec_module_names`]): inside
 /// `module rec` / `namespace rec`, a later-declared module is already in
@@ -2793,6 +2892,17 @@ pub(crate) fn collect_nested_module_names(
 /// read: using an attribute renames nothing.
 pub(super) fn type_defn_renames_core_attribute(defn: &TypeDefn) -> bool {
     type_defn_renames_attribute(defn, crate::assembly_env::CORE_ATTRIBUTE_NAMES)
+}
+
+/// Whether an `exception` is named like a core attribute
+/// ([`crate::assembly_env::CORE_ATTRIBUTE_NAMES`]): it declares a type, which
+/// an attribute's written name resolves to as readily as a `type`'s, so the
+/// name proves nothing (FCS-graded: FCS then rejects the attribute rather than
+/// reading it as FSharp.Core's).
+pub(super) fn exception_named_like_core_attribute(exn: &ExceptionDefnDecl) -> bool {
+    exn.union_case()
+        .and_then(|case| case.ident())
+        .is_some_and(|name| crate::assembly_env::CORE_ATTRIBUTE_NAMES.contains(&&*id_text(&name)))
 }
 
 /// [`type_defn_renames_core_attribute`], for the attributes written `names`.

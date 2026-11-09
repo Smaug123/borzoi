@@ -283,6 +283,21 @@ pub(super) struct EarlierType {
     pub(super) access_root: Option<usize>,
 }
 
+/// Type declarations by simple name, each with its full path and generic
+/// arity.
+pub(super) type TypePlaces = HashMap<String, Vec<(Vec<String>, usize)>>;
+
+/// What a later file knows of one earlier type declaration's place and
+/// generic arity ([`ProjectItems::earlier_type_arities`]).
+#[derive(Debug, Clone)]
+pub(super) struct EarlierArity {
+    /// Its full path, when the declaring file placed it or its signature
+    /// gives it.
+    pub(super) path: Option<Vec<String>>,
+    /// Its generic arity, when known.
+    pub(super) arity: Option<usize>,
+}
+
 /// Exported project items visible to a file from *earlier* in Compile order.
 ///
 /// F# resolution is order-sensitive across files: a file may reference
@@ -373,6 +388,14 @@ pub struct ProjectItems {
     /// a type an earlier file declares is the **only** project type of its
     /// name ([`Resolver::earlier_file_type`](super::state::Resolver)).
     pub(super) earlier_types: HashMap<String, Vec<Option<EarlierType>>>,
+    /// Every earlier file's type declarations' generic arities, by simple
+    /// name: `Some` for each the declaring file placed, a signature-screened
+    /// one included (a signature must declare a type at its
+    /// implementation's arity, or hide it), and `None` for each it could not
+    /// place. What lets a later file bound the arities FCS weighs a
+    /// qualifier's namesakes by
+    /// ([`Resolver::lower_arity_namesake_possible`](super::state::Resolver)).
+    pub(super) earlier_type_arities: HashMap<String, Vec<EarlierArity>>,
     /// Every earlier-file project **module**'s simple name, from each file's
     /// syntactic whole-file pre-scan
     /// ([`ResolvedFile::own_module_simple_names`]). The dotted half of the
@@ -521,6 +544,11 @@ pub struct ProjectItems {
     /// suppress a case an opened module's own maybe-literal would out-fold
     /// (FCS folds a module's vals *after* its tycons).
     pub(super) attributed_value_ids: HashSet<ItemId>,
+    /// Each earlier-file case of a union whose representation is `private`, by
+    /// handle, to the union's container (see
+    /// [`ExportedItem::repr_access_root`]). Read by
+    /// [`Resolver::case_usable_here`](super::state::Resolver::case_usable_here).
+    pub(super) case_repr_roots: HashMap<ItemId, Vec<String>>,
     /// The recognizer [`ActivePatternShape`] of each earlier-file module-level
     /// **active-pattern case**, keyed by its project-global [`ItemId`] (Stage 3a,
     /// `docs/export-decl-model-plan.md`). AP cases ride [`Self::value_exports`] as
@@ -554,7 +582,7 @@ pub struct ProjectItems {
     /// [`SlotClass`], so a later
     /// file can decide whether `open`ing this type's container EVICTS a
     /// same-named local value from FCS's unqualified slot (probes M20h–M20o).
-    pub(super) type_paths: HashMap<Vec<String>, (bool, SlotClass)>,
+    pub(super) type_paths: HashMap<Vec<String>, ExportedTypePath>,
     /// The **signature screens** of earlier `.fsi` files, in Compile order
     /// (`docs/fsi-signature-restriction-plan.md` Stage 1). Each records the
     /// module roots a signature constrains and an over-approximation of every
@@ -657,23 +685,26 @@ impl ProjectItems {
     /// Whether an earlier file exports a **type** at exactly `path`, and if so
     /// whether its case set is fully indexed (see [`Self::type_paths`]).
     pub(super) fn exported_type_at(&self, path: &[String]) -> Option<bool> {
-        self.type_paths.get(path).map(|(cases, _)| *cases)
+        self.type_paths.get(path).map(|t| t.cases_enumerable)
     }
 
-    /// The [`SlotClass`] of the earlier-file type exported at exactly `path`,
-    /// if any — whether its name enters FCS's unqualified slot when brought
-    /// into scope by an `open` (probes M20h–M20o).
-    pub(super) fn exported_type_slot_class(&self, path: &[String]) -> Option<SlotClass> {
-        self.type_paths.get(path).map(|(_, slot)| *slot)
+    /// The [`TypeSlot`] of the earlier-file type exported at exactly `path`,
+    /// if any — whether its name enters FCS's unqualified slot when an `open`
+    /// brings it into scope (probes M20h–M20o).
+    pub(super) fn exported_type_slot(&self, path: &[String]) -> Option<TypeSlot> {
+        self.type_paths.get(path).map(|t| t.slot)
     }
 
-    /// The names of earlier-file types declared **directly** under `container`
-    /// whose [`SlotClass`] is not [`SlotClass::Keeps`] — a class/struct/enum
-    /// (`Evicts`) or an abbreviation/delegate/undecidable-kind (`Unknown`), the
-    /// same construction-capable set `type_name_is_value_slot_contestant`'s
-    /// referenced-assembly mirror tests. `Keeps` types (unions, records,
-    /// interfaces) never enter FCS's unqualified constructor slot, so they are
-    /// never contestants. Feeds
+    /// The earlier-file types declared **directly** under `container` that an
+    /// `open` written in `site` brings into FCS's unqualified slot, each with
+    /// its declaring file: those whose [`SlotClass`] seen from `site`
+    /// ([`TypeSlot::class_at`]) is not [`SlotClass::Keeps`] — a
+    /// class/struct/enum (`Evicts`) or an abbreviation/delegate/undecidable-kind
+    /// (`Unknown`), the same construction-capable set
+    /// `type_name_is_value_slot_contestant`'s referenced-assembly mirror tests.
+    /// `Keeps` types (unions, records, interfaces) never enter FCS's unqualified
+    /// constructor slot, and an `open` brings no type inaccessible where it is
+    /// written, so neither is a contestant. Feeds
     /// [`Resolver::project_namespace_contestant_names`](super::state::Resolver) —
     /// codex review of §7's machinery slice: a project namespace's own
     /// constructible type can evict a same-named value from a DIFFERENT
@@ -681,15 +712,19 @@ impl ProjectItems {
     /// assembly namespace's constructible types already do
     /// ([`crate::assembly_env::AssemblyEnv::open_namespace_fold_surfaces`]),
     /// so it must join the fold's `contestant_names`, not be left uncounted.
-    pub(super) fn direct_type_contestants(&self, container: &[String]) -> Vec<String> {
+    pub(super) fn direct_type_contestants(
+        &self,
+        container: &[String],
+        site: &[String],
+    ) -> Vec<(String, usize)> {
         self.type_paths
             .iter()
-            .filter(|(p, (_, slot))| {
+            .filter(|(p, t)| {
                 p.len() == container.len() + 1
                     && p.starts_with(container)
-                    && *slot != SlotClass::Keeps
+                    && t.slot.class_at(p, site) != SlotClass::Keeps
             })
-            .map(|(p, _)| p.last().expect("non-empty qualified path").clone())
+            .map(|(p, t)| (p.last().expect("non-empty qualified path").clone(), t.file))
             .collect()
     }
 
@@ -1312,8 +1347,15 @@ impl ProjectItems {
         for (path, entry) in idx.type_qualified_cases {
             self.type_qualified_cases.insert(path, entry);
         }
-        for (path, info) in idx.type_paths {
-            self.type_paths.insert(path, info);
+        for (path, (cases_enumerable, slot)) in idx.type_paths {
+            self.type_paths.insert(
+                path,
+                ExportedTypePath {
+                    cases_enumerable,
+                    slot,
+                    file: file_idx,
+                },
+            );
         }
         // The attribute resolution's cross-file project-type guard
         // ([`Resolver::project_type_named`](super::state::Resolver)): a bare
@@ -1342,12 +1384,35 @@ impl ProjectItems {
                 .entry(name.clone())
                 .or_default()
                 .push(entry);
+            self.earlier_type_arities
+                .entry(name.clone())
+                .or_default()
+                .push(EarlierArity {
+                    path: Some(t.path.clone()),
+                    arity: Some(t.arity),
+                });
         }
         for (name, &unplaced) in &file.unplaced_types {
             self.earlier_types
                 .entry(name.clone())
                 .or_default()
                 .extend(std::iter::repeat_n(None, unplaced));
+            let known = file
+                .unplaced_type_places
+                .get(name)
+                .map_or(&[][..], Vec::as_slice);
+            let arities = self.earlier_type_arities.entry(name.clone()).or_default();
+            arities.extend(known.iter().map(|(path, a)| EarlierArity {
+                path: Some(path.clone()),
+                arity: Some(*a),
+            }));
+            arities.extend(std::iter::repeat_n(
+                EarlierArity {
+                    path: None,
+                    arity: None,
+                },
+                unplaced.saturating_sub(known.len()),
+            ));
         }
         // The dotted half of the same shadow, fed from the same file in the
         // same call: the veto's soundness is that a name the project declares
@@ -1410,11 +1475,21 @@ impl ProjectItems {
         for id in idx.attributed_value_ids {
             self.attributed_value_ids.insert(id);
         }
+        for (id, root) in idx.case_repr_roots {
+            self.case_repr_roots.insert(id, root);
+        }
         for (id, shape) in idx.active_pattern_shapes {
             self.active_pattern_shapes.insert(id, shape);
         }
         self.count +=
             u32::try_from(file.exports.items.len()).expect("more than u32::MAX items in one file");
+    }
+
+    /// The container outside which the earlier-file case `id` is unusable,
+    /// when its union's representation is `private` (see
+    /// [`Self::case_repr_roots`]).
+    pub(super) fn case_repr_root(&self, id: ItemId) -> Option<&[String]> {
+        self.case_repr_roots.get(&id).map(Vec::as_slice)
     }
 
     /// Whether `id` is an earlier file's exported **constructor case** (see
@@ -1558,6 +1633,7 @@ struct FileExportIndices {
     value_exports: Vec<(Vec<String>, ExportRecord)>,
     case_item_ids: Vec<ItemId>,
     attributed_value_ids: Vec<ItemId>,
+    case_repr_roots: Vec<(ItemId, Vec<String>)>,
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
     module_headers: Vec<Vec<String>>,
     nested_module_paths: Vec<Vec<String>>,
@@ -1568,7 +1644,7 @@ struct FileExportIndices {
     opaque_hidden_value_modules: Vec<Vec<String>>,
     opaque_cases: Vec<(Vec<String>, bool)>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
-    type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
+    type_paths: Vec<(Vec<String>, (bool, TypeSlot))>,
     auto_open_module_paths: Vec<Vec<String>>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
@@ -1750,6 +1826,9 @@ impl FileExportIndices {
                         if it.attributed {
                             fi.attributed_value_ids.push(it.id);
                         }
+                        if let Some(root) = &it.repr_access_root {
+                            fi.case_repr_roots.push((it.id, root.clone()));
+                        }
                         if let Some(tq) = type_qualified {
                             // The type-qualified case index is gated on the case's
                             // accessibility (#1000); its `access_root_len` equals the
@@ -1782,7 +1861,7 @@ impl FileExportIndices {
                             // turn a defer into a wrong commit. The path
                             // itself stays (a defer-only shadow).
                             let payload = if screen.is_some() {
-                                (false, SlotClass::Unknown)
+                                (false, TypeSlot::UNKNOWN)
                             } else {
                                 (*cases_enumerable, *slot)
                             };
@@ -2045,6 +2124,92 @@ pub(super) enum SlotClass {
     Unknown,
 }
 
+/// An exported type's claim on FCS's unqualified slot, as seen from wherever
+/// an `open` of its container is written.
+///
+/// FCS's `open` adds only the types accessible at the `open`
+/// (`AddModuleOrNamespaceContentsToNameEnv` filters them by
+/// `IsEntityAccessible`), so a `type private C` evicts a same-named value from
+/// a site under its container and from nowhere else. The class is therefore
+/// stored as declared, with the access root beside it, and each reader asks
+/// from its own site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TypeSlot {
+    /// The class the type has wherever it is accessible.
+    pub(super) class: SlotClass,
+    /// The type's access root as a prefix length of its own path, as
+    /// [`ExportedItem::access_root_len`]: `None` when public or `internal`,
+    /// `Some(k)` when a `private` (its own, or an enclosing module's) confines
+    /// it to code under `path[..k]`.
+    pub(super) access_root_len: Option<usize>,
+}
+
+impl TypeSlot {
+    /// A slot nothing is known about: undecidable class, accessible everywhere.
+    pub(super) const UNKNOWN: TypeSlot = TypeSlot {
+        class: SlotClass::Unknown,
+        access_root_len: None,
+    };
+
+    /// Whether an `open` written in `site` brings the type exported at `path`
+    /// into scope.
+    pub(super) fn accessible_from(self, path: &[String], site: &[String]) -> bool {
+        self.access_root_len.is_none_or(|k| {
+            debug_assert!(
+                k < path.len(),
+                "an access root is a proper prefix of the type's path"
+            );
+            site.starts_with(&path[..k])
+        })
+    }
+
+    /// The class an `open` written in `site` sees: [`SlotClass::Keeps`] when
+    /// that `open` does not bring the type at all.
+    pub(super) fn class_at(self, path: &[String], site: &[String]) -> SlotClass {
+        if self.accessible_from(path, site) {
+            self.class
+        } else {
+            SlotClass::Keeps
+        }
+    }
+
+    /// The class an `open` in scope at `site` sees when where it was written
+    /// is not recorded. Every such `open` was written in `site` or one of its
+    /// ancestors no shallower than `namespace` (the enclosing namespace), so a
+    /// type accessible from `namespace` is seen by any of them and one
+    /// inaccessible from `site` by none; in between it depends on the `open`,
+    /// and a contest against it is undecidable.
+    pub(super) fn class_through_scoped_open(
+        self,
+        path: &[String],
+        namespace: &[String],
+        site: &[String],
+    ) -> SlotClass {
+        debug_assert!(
+            site.starts_with(namespace),
+            "a site lies in its enclosing namespace"
+        );
+        if self.class == SlotClass::Keeps || self.accessible_from(path, namespace) {
+            self.class
+        } else if !self.accessible_from(path, site) {
+            SlotClass::Keeps
+        } else {
+            SlotClass::Unknown
+        }
+    }
+}
+
+/// An earlier file's exported type, as [`ProjectItems::type_paths`] holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExportedTypePath {
+    /// Whether every case the type owns is indexed (see
+    /// [`ProjectItems::type_paths`]).
+    pub(super) cases_enumerable: bool,
+    pub(super) slot: TypeSlot,
+    /// The declaring file's Compile-order index.
+    pub(super) file: usize,
+}
+
 /// One declaration a file contributes to the cross-file boundary, in source
 /// order (`docs/export-decl-model-plan.md` Stage 2). A single per-file
 /// `Vec<ExportDecl>` is the currency [`ProjectItems::extend_with`] folds; every
@@ -2104,7 +2269,7 @@ pub(super) enum ExportDeclKind {
     /// nested-module shadow. `auto_open` marks a `[<AutoOpen>]` type, whose
     /// container is hidden.
     Type {
-        info: Option<(bool, SlotClass)>,
+        info: Option<(bool, TypeSlot)>,
         auto_open: bool,
     },
     /// A `type … with` **augmentation** head. `path` = container + the head's
@@ -2455,6 +2620,11 @@ pub enum DeclineCause {
     /// contest with a type of the same name, so the path may be read as
     /// module/type-qualified rather than as member access.
     HeadSlotUnordered,
+    /// A type qualifying a member or case with no type arguments written
+    /// (`T.M`, `T.Case`), where a namesake of lower generic arity may be in
+    /// scope: FCS tries same-named types fewest-generic-parameters first, so
+    /// the latest declaration of the name need not be the one it binds (#323).
+    QualifierArityNamesake,
     /// A dotted path whose head is a constructor **case**: a nullary case has
     /// no dottable members, so FCS reads it as a qualifier into a same-named
     /// module or type we could not resolve.
@@ -2562,6 +2732,13 @@ pub enum DeclineCause {
     /// `[<AutoOpen>]` module may bring it into scope ahead of every implicit
     /// open and the root, and which one FCS binds is not modelled.
     EarlierTypeOutsideNamespace,
+    /// The name reached a union case whose representation is `private`
+    /// (`type U = private X | Y`) from outside the union's container. The type
+    /// is accessible, so an `open` still brings the case in and `U.X` still
+    /// finds it, and FCS rejects the use (FS1093); a module-qualified `M.X`
+    /// skips the case and looks on. Either way there is no case to commit
+    /// (`Resolver::case_usable_here`).
+    CaseRepresentationInaccessible,
 }
 
 impl DeclineCause {
@@ -2606,6 +2783,7 @@ impl DeclineCause {
         DeclineCause::AttributeOpaqueLeaf,
         DeclineCause::OpaqueValueHead,
         DeclineCause::HeadSlotUnordered,
+        DeclineCause::QualifierArityNamesake,
         DeclineCause::CaseQualifierHead,
         DeclineCause::GlobalMarkerHead,
         DeclineCause::SignatureScreened,
@@ -2630,6 +2808,7 @@ impl DeclineCause {
         DeclineCause::EarlierTypeOpenedOver,
         DeclineCause::EarlierTypeNamespaceShared,
         DeclineCause::EarlierTypeOutsideNamespace,
+        DeclineCause::CaseRepresentationInaccessible,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2672,6 +2851,7 @@ impl DeclineCause {
             DeclineCause::AttributeOpaqueLeaf => "attribute_opaque_leaf",
             DeclineCause::OpaqueValueHead => "opaque_value_head",
             DeclineCause::HeadSlotUnordered => "head_slot_unordered",
+            DeclineCause::QualifierArityNamesake => "qualifier_arity_namesake",
             DeclineCause::CaseQualifierHead => "case_qualifier_head",
             DeclineCause::GlobalMarkerHead => "global_marker_head",
             DeclineCause::SignatureScreened => "signature_screened",
@@ -2696,6 +2876,7 @@ impl DeclineCause {
             DeclineCause::EarlierTypeOpenedOver => "earlier_type_opened_over",
             DeclineCause::EarlierTypeNamespaceShared => "earlier_type_namespace_shared",
             DeclineCause::EarlierTypeOutsideNamespace => "earlier_type_outside_namespace",
+            DeclineCause::CaseRepresentationInaccessible => "case_representation_inaccessible",
         }
     }
 }
@@ -3020,6 +3201,19 @@ pub struct ExportedItem {
     /// / the collapse recovery filter through [`accessible_from`]. `internal` is
     /// intra-project-visible (one assembly), so only `private` narrows this.
     pub(super) access_root_len: Option<usize>,
+    /// For a case of a union whose **representation** is `private` (`type U =
+    /// private X | Y`), the union's container: a use outside it may not commit
+    /// to the case ([`Resolver::case_usable_here`](super::state::Resolver::case_usable_here)).
+    /// `None` for every other export.
+    ///
+    /// A dimension apart from [`Self::access_root_len`] because FCS treats it
+    /// apart. An inaccessible *type* (or enclosing module) hides its cases: an
+    /// `open` does not bring them in, so an earlier same-named name stays
+    /// visible. An inaccessible *representation* leaves the type visible, so
+    /// the `open` still brings the case in, shadowing that earlier name, and
+    /// the use is FS1093 — the selection queries must keep seeing the case,
+    /// and only the commit may not.
+    pub(super) repr_access_root: Option<Vec<String>>,
     /// `true` when the defining module-level `let` binding carried **any
     /// attribute list** (on the binding or its enclosing `let` decl) — a
     /// maybe-`[<Literal>]`. A literal value is an FCS *constant pattern*, which
@@ -3180,6 +3374,11 @@ pub struct ResolvedFile {
     /// signature's, one the walk never reached), so a later file can never
     /// mistake "declared here, unplaced" for "not declared".
     pub(super) unplaced_types: HashMap<String, usize>,
+    /// The full paths and generic arities of those of
+    /// [`Self::unplaced_types`] whose place is known — a signature's types
+    /// and exceptions — by name; each name's remaining unplaced declarations
+    /// are of unknown place and arity.
+    pub(super) unplaced_type_places: TypePlaces,
     /// The file's syntactic whole-file module-simple-name pre-scan (see
     /// [`Resolver::own_module_simple_names`](super::state::Resolver)), carried
     /// into [`ProjectItems::project_module_simple_names`] by the Compile-order
@@ -3429,6 +3628,7 @@ impl ResolvedFile {
                 .zip(&other.placed_types)
                 .all(|(a, b)| a.same_for_later_files(b))
             && self.unplaced_types == other.unplaced_types
+            && self.unplaced_type_places == other.unplaced_type_places
             && self.own_module_simple_names == other.own_module_simple_names
             && self.contributions == other.contributions
             && self.declares_core_attribute_alias == other.declares_core_attribute_alias
@@ -3474,6 +3674,7 @@ impl ResolvedFile {
             placed_types: Vec::new(),
             // Filled by the fold from the signature's own declarations.
             unplaced_types: HashMap::new(),
+            unplaced_type_places: HashMap::new(),
             own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             contributions: FileContributions::default(),
@@ -3562,6 +3763,10 @@ impl ResolvedFile {
                 },
                 case: ex.case,
                 access_root_len: ex.access_root_len,
+                // A signature type with any accessibility token exports no
+                // case ([`collect_sig_container_exports`](super::collect_sig_container_exports)),
+                // so no signature-derived case has a restricted representation.
+                repr_access_root: None,
                 attributed: ex.attributed,
             });
             self.export_decls.push(ExportDecl {

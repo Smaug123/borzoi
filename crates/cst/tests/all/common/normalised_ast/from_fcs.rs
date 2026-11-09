@@ -263,6 +263,7 @@ fn fcs_sig_type_defn(v: &Value) -> NormalisedTypeDefn {
     let component_info = fields(&f[0]);
     let attributes = fcs_attribute_lists(&component_info[0]);
     let typars = fcs_typar_decls(&component_info[1]);
+    let typar_form = fcs_typar_form(&component_info[1]);
     let constraints = fcs_type_defn_constraints(&component_info[1], &component_info[2]);
     let long_id = fcs_ident_list_texts(&component_info[3]);
     // `SynComponentInfo.accessibility` (field 6) — the type header's own access.
@@ -285,6 +286,7 @@ fn fcs_sig_type_defn(v: &Value) -> NormalisedTypeDefn {
         access,
         long_id,
         typars,
+        typar_form,
         constraints,
         repr,
         members,
@@ -812,6 +814,7 @@ fn fcs_type_defn(v: &Value) -> NormalisedTypeDefn {
     // `SynComponentInfo` field 0 is `attributes: SynAttributes` (phase 10.7a).
     let attributes = fcs_attribute_lists(&component_info[0]);
     let typars = fcs_typar_decls(&component_info[1]);
+    let typar_form = fcs_typar_form(&component_info[1]);
     let constraints = fcs_type_defn_constraints(&component_info[1], &component_info[2]);
     let long_id = fcs_ident_list_texts(&component_info[3]);
     // `SynComponentInfo.accessibility` (field 6) — `type internal Foo`.
@@ -844,6 +847,7 @@ fn fcs_type_defn(v: &Value) -> NormalisedTypeDefn {
         access,
         long_id,
         typars,
+        typar_form,
         constraints,
         repr,
         members,
@@ -979,7 +983,8 @@ fn fcs_type_constraint(v: &Value) -> NormalisedTypeConstraint {
 /// Project `SynComponentInfo.typeParams` (`SynTyparDecls option`, phase 9.3) to
 /// the flat typar list. `null` → empty; otherwise the `PostfixList`/`PrefixList`
 /// (field 0 = `SynTyparDecl list`) or `SinglePrefix` (field 0 = one
-/// `SynTyparDecl`) cases. The variant and `preferPostfix` are elided.
+/// `SynTyparDecl`) cases. The variant is [`fcs_typar_form`]'s; `preferPostfix`
+/// is elided.
 fn fcs_typar_decls(v: &Value) -> Vec<NormalisedTypar> {
     // `option` is serialised as `null` (None) or `{Case:"Some", Fields:[inner]}`.
     if v.is_null() {
@@ -1001,6 +1006,25 @@ fn fcs_typar_decls(v: &Value) -> Vec<NormalisedTypar> {
         "SinglePrefix" => vec![fcs_typar(&f[0])],
         other => panic!("unknown SynTyparDecls case {other:?}"),
     }
+}
+
+/// The `SynTyparDecls` case of `SynComponentInfo.typeParams` (`SynTyparDecls
+/// option`): `None` for a non-generic definition.
+fn fcs_typar_form(v: &Value) -> Option<NormalisedTyparForm> {
+    if v.is_null() {
+        return None;
+    }
+    let inner = match case_name(v) {
+        "Some" => &fields(v)[0],
+        "None" => return None,
+        other => panic!("unexpected SynComponentInfo.typeParams Option case {other:?}"),
+    };
+    Some(match case_name(inner) {
+        "PostfixList" => NormalisedTyparForm::Postfix,
+        "PrefixList" => NormalisedTyparForm::PrefixList,
+        "SinglePrefix" => NormalisedTyparForm::SinglePrefix,
+        other => panic!("unknown SynTyparDecls case {other:?}"),
+    })
 }
 
 /// Project `SynPat.LongIdent.typars` (`SynValTyparDecls option`, field 2) to the

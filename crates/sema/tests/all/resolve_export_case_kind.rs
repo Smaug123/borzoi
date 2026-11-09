@@ -20,12 +20,11 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{
-    AssemblyEnv, CaseKind, ProjectItems, ResolvedFile, SyntaxRecovery, resolve_file,
-};
+use borzoi_sema::{CaseKind, ProjectItems, ResolvedFile, SyntaxRecovery, resolve_file};
 
 /// Parse `src` (asserting it is in the parser subset) and resolve it as a lone
-/// single file.
+/// single file, against FSharp.Core: `[<RequireQualifiedAccess>]` is certain
+/// only where FSharp.Core declares it.
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);
     assert!(
@@ -38,7 +37,7 @@ fn resolve(src: &str) -> ResolvedFile {
     resolve_file(
         &file,
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery,
     )
 }

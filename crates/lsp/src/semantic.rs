@@ -1431,12 +1431,14 @@ fn build_parses(
     // `LangVersion` provenance is the third axis, gated per *source shape*
     // below rather than here: the language version shapes the token stream
     // (the lex-filter's `relaxWhitespace2` pops at the F# 6 boundary and its
-    // strict-indentation push decision at F# 8), so an unknowable version can mis-shape the fold — but the
-    // provenance mark alone can't gate wholesale, because a real SDK's own
-    // conditional LangVersion default trips it for EVERY project (probed,
-    // dotnet 10.0.301, even with a cleanly body-pinned value —
-    // `sdk_project_fold_e2e` pins that plain projects must fold). Instead,
-    // each parse reports whether its shape actually depends on the version
+    // strict-indentation push decision at F# 8), so an unknowable version can
+    // mis-shape the fold. An ordinary SDK project's provenance is trusted (the
+    // SDK's own `LangVersion` writes sit under gates the walker decides —
+    // `sdk_project_fold_e2e::ordinary_sdk_projects_have_trusted_langversion_provenance`),
+    // so this axis bites only on a project whose `LangVersion` write sits under
+    // a gate the walker cannot pin. Even there the mark alone would refuse
+    // every file, however version-invariant; instead each parse reports
+    // whether its shape actually depends on the version
     // (`Parse::shape_depends_on_language_version`, whose `false` *proves*
     // version-invariance), and the fold refuses only the intersection:
     // untrusted provenance × a file that genuinely straddles the boundary.
@@ -1541,9 +1543,9 @@ fn build_parses(
         // `LangVersion` provenance can't tell us which version the real build
         // uses. The flag is a sound *over*-approximation (an EOF-anchored push
         // — `module M =` at end of file, a common mid-edit state — differs as
-        // a stack operation but reconverges via the EOF cascade), and real SDK
-        // projects are always provenance-tainted, so acting on the flag alone
-        // would flicker the fold off while the user types. Verify: re-parse
+        // a stack operation but reconverges via the EOF cascade), so acting on
+        // the flag alone would flicker an untrusted project's fold off while
+        // the user types. Verify: re-parse
         // at the representative of every *other* shape band (those gates are
         // the only shape inputs, so one version per band decides) and refuse
         // only genuine divergence — folding then could export bindings from a
@@ -4527,9 +4529,10 @@ mod tests {
     /// version (`Parse::shape_depends_on_language_version` — an offside
     /// a lex-filter decision across the F# 6 or F# 8 boundary).
     /// Version-invariant files keep folding under the same untrusted
-    /// provenance — which is what keeps real SDK projects folding, since a
-    /// real SDK's conditional LangVersion default marks the provenance for
-    /// every project (`sdk_project_fold_e2e`).
+    /// provenance, so a project with an unpinnable `LangVersion` write loses
+    /// only the files whose tree the version actually moves. (An ordinary SDK
+    /// project's provenance is trusted and never reaches this gate —
+    /// `sdk_project_fold_e2e`.)
     #[test]
     fn untrusted_lang_version_refuses_the_fold_only_for_straddling_files() {
         // The straddling fixture: verified by the cst crate's
@@ -4581,8 +4584,8 @@ mod tests {
         // common mid-edit state — `module M =` at end of file) sets it, yet
         // the EOF force-closure cascade reconverges to identical trees on
         // both sides of the boundary. The fold must verify genuine
-        // divergence before refusing, or every real SDK project (always
-        // provenance-tainted) would lose resolution while the user types.
+        // divergence before refusing, or every untrusted-provenance project
+        // would lose resolution while the user types.
         let midedit = tmp.path().join("MidEdit/P.fsproj");
         write(
             &midedit,
@@ -4597,8 +4600,8 @@ mod tests {
         );
 
         // Straddling file but a cleanly pinned version: the version is known
-        // (SDK-less fixture — no SDK taint), so the shape dependence is
-        // resolved and the fold proceeds.
+        // (an unconditional body write), so the shape dependence is resolved
+        // and the fold proceeds.
         let pinned = tmp.path().join("Pinned/P.fsproj");
         write(
             &pinned,

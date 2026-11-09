@@ -16,8 +16,8 @@ use borzoi_cst::syntax::{
     NewExpr, ObjExpr, OpenDecl, ParenExpr, ParenPat, Pat, RationalConst, RecordField,
     RecordFieldDecl, SigDecl, SigFile, StaticOptCondition, StaticOptimizationExpr, SyntaxKind,
     SyntaxToken, TraitCallExpr, TupleExpr, TuplePat, TupleSegment, TupleType, TyparConstraint,
-    TyparConstraintKind, TyparDecl, Type, TypeAppExpr, TypeDefn, TypeDefnRepr, TypeTestExpr,
-    TypedExpr, TypedPat, UnionCase, UnionCaseField, UpcastExpr, ValField, VarType,
+    TyparConstraintKind, TyparDecl, TyparDeclsForm, Type, TypeAppExpr, TypeDefn, TypeDefnRepr,
+    TypeTestExpr, TypedExpr, TypedPat, UnionCase, UnionCaseField, UpcastExpr, ValField, VarType,
 };
 
 use super::decode::*;
@@ -402,12 +402,18 @@ fn normalise_module(m: &ModuleOrNamespace) -> NormalisedModule {
     }
 }
 
-/// Each module-level definition is one FCS `moduleDefn`, at whose head
-/// the `SynArgNameGenerator` is `.Reset()` (`pars.fsy:1310`/`:1318`). So
-/// the `_argN` counter for `fun`-lambda body-lowering ([`normalise_fun`])
-/// starts fresh per decl and is *shared* across everything inside it —
-/// including an `and`-chain (one `ModuleDecl::Let` with several bindings)
-/// and any nested/sibling lambdas in a binding RHS.
+/// Each module-level definition is one FCS `moduleDefn`. The `_argN` counter
+/// for `fun`-lambda body-lowering ([`normalise_fun`]) starts fresh per decl
+/// and is *shared* across everything inside it — including an `and`-chain
+/// (one `ModuleDecl::Let` with several bindings) and any nested/sibling
+/// lambdas in a binding RHS.
+///
+/// FCS's `SynArgNameGenerator.Reset()` (`pars.fsy:1313`/`:1321`) runs only in
+/// the module-level `let` production's action, which fires once the bindings
+/// have reduced, so a count is carried into a `let` out of a preceding `type`
+/// and across a type's members. The fresh counters this projector seeds (here,
+/// and per member) differ from FCS there, which is immaterial because the
+/// index is canonicalised away (see [`normalise_fun`]).
 fn normalise_decl(d: &ModuleDecl) -> NormalisedDecl {
     normalise_decl_with(d, true)
 }
@@ -895,6 +901,11 @@ fn normalise_type_defn(d: &TypeDefn) -> NormalisedTypeDefn {
         .typar_decls()
         .map(|ds| ds.typars().map(|t| normalise_typar(&t)).collect())
         .unwrap_or_default();
+    let typar_form = d.typar_decls().map(|ds| match ds.form() {
+        TyparDeclsForm::Postfix => NormalisedTyparForm::Postfix,
+        TyparDeclsForm::PrefixList => NormalisedTyparForm::PrefixList,
+        TyparDeclsForm::SinglePrefix => NormalisedTyparForm::SinglePrefix,
+    });
     let constraints = d
         .constraints()
         .map(|c| normalise_type_constraint(&c))
@@ -938,6 +949,7 @@ fn normalise_type_defn(d: &TypeDefn) -> NormalisedTypeDefn {
         access: cst_type_header_access(d.syntax()),
         long_id,
         typars,
+        typar_form,
         constraints,
         repr,
         members,
@@ -1100,7 +1112,7 @@ fn normalise_type_repr(r: &TypeDefnRepr) -> NormalisedTypeRepr {
             fields: rec.fields().map(|f| normalise_field(&f)).collect(),
         },
         TypeDefnRepr::Union(u) => NormalisedTypeRepr::Union {
-            access: cst_access(u.syntax()),
+            access: u.access().map(|t| cst_access_from_token(&t)),
             cases: u.cases().map(|c| normalise_union_case(&c)).collect(),
         },
         TypeDefnRepr::Enum(e) => {
@@ -2529,11 +2541,18 @@ fn normalise_expr(e: &Expr, counter: &mut u32) -> NormalisedExpr {
 /// `fun 0 -> fun 1 -> 2` lowers to outer `_arg2` / inner `_arg1` because
 /// the inner lambda reduces first.
 ///
-/// Known gap (unprojected, no test): function-form binding heads
-/// (`let f 0 = …`) also consume this generator before their RHS, but
-/// [`normalise_binding`] does no binding-head lowering yet. Value bindings
-/// (`let f = fun …`) are unaffected — the `Named` head is simple and
-/// claims no slot, so the RHS lambda still starts at `_arg1`.
+/// A function-form binding head (`let f 0 = …`) consumes none of this
+/// generator: FCS lowers a head only while type checking
+/// (`PushCurriedPatternsToExpr cenv.synArgNameGenerator`, the checker's own
+/// generator), so the parse tree keeps the head pattern and the parser's count
+/// is untouched; [`normalise_binding`] correspondingly lowers nothing.
+///
+/// The index this counter produces never reaches the comparison: every
+/// generated scrutinee goes through [`super::canonicalise_scrutinee`]. That is
+/// what keeps the per-decl reset in [`normalise_decl`] sound where it differs
+/// from FCS (a count carried out of a `type` into the next `let`, or across a
+/// type's members). `parser_diff_arg_name_generator` holds both halves over a
+/// grid of binding heads, right-hand sides and binding contexts.
 fn normalise_fun(f: &FunExpr, counter: &mut u32) -> NormalisedExpr {
     let args: Vec<NormalisedPat> = f.args().map(|p| normalise_pat(&p, counter)).collect();
     // A missing body is the `fun … ->` recovery hole — FCS fills it with
@@ -2770,11 +2789,8 @@ fn wrap_match(
 /// - everything else (a non-unit `Const`, `Null`, a `LongIdent` with
 ///   args or multiple segments, …) hits the generic catch-all
 ///   (`SyntaxTreeOps.fs:347`): it claims a slot and scrutinises the
-///   compiler-generated `Ident _argN`. A multi-segment `LongIdent` head now
-///   parses (dotted union-case patterns), but a bare `fun` arg is *atomic*, so
-///   reaching this arm through a lambda still needs the body-lowering
-///   scaffolding we don't yet emit (a known divergence); the differential
-///   corpus exercises only the const/null sub-cases here.
+///   compiler-generated `Ident _argN`. A dotted `fun X.Y -> …` argument lands
+///   here (graded by `parser_diff_functions::diff_ast_fun_lambda_dotted_head_grid`).
 fn classify_simple_pat(
     pat: &NormalisedPat,
     counter: &mut u32,

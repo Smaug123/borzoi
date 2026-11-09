@@ -379,6 +379,9 @@ impl SpawnFree {
                         format!("compatibility-unproven:{}", package_label(package))
                     }
                     DgSpecResolveDecline::PackageRead { .. } => "package-read".to_owned(),
+                    DgSpecResolveDecline::SourceHoldsPackage { .. } => {
+                        "source-holds-package".to_owned()
+                    }
                     DgSpecResolveDecline::PackageMetadata { package, .. } => {
                         format!("package-metadata:{}", package_label(package))
                     }

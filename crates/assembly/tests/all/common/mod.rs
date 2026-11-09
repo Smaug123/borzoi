@@ -888,9 +888,10 @@ pub enum Lang {
 }
 
 /// `(project file, source file, project XML)` for a generated source. Mirrors
-/// the fixture projects' shape (same TFM, deterministic, no docs/PDB) so a
-/// generated build behaves exactly like a pinned fixture.
-fn generated_project(lang: Lang) -> (&'static str, &'static str, String) {
+/// the fixture projects' shape (same TFM, deterministic, no PDB) so a
+/// generated build behaves exactly like a pinned fixture. `docs` asks the
+/// compiler for its documentation file, `Generated.xml` beside the DLL.
+fn generated_project(lang: Lang, docs: bool) -> (&'static str, &'static str, String) {
     let (proj, source, items) = match lang {
         Lang::FSharp => (
             "Generated.fsproj",
@@ -907,7 +908,7 @@ fn generated_project(lang: Lang) -> (&'static str, &'static str, String) {
     <AssemblyName>Generated</AssemblyName>
     <RootNamespace>Generated</RootNamespace>
     <Deterministic>true</Deterministic>
-    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GenerateDocumentationFile>{docs}</GenerateDocumentationFile>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
@@ -921,15 +922,25 @@ fn generated_project(lang: Lang) -> (&'static str, &'static str, String) {
 /// Compile `source` to a DLL in a content-addressed directory under
 /// `CARGO_TARGET_TMPDIR`, returning the DLL path. Re-running the same source
 /// (a proptest shrink step revisiting a candidate, a rerun of a deterministic
-/// matrix) hits the cache. The key hashes the language and the source; on the
-/// (theoretical) collision the stored source differs and we rebuild over the
-/// top, so a collision costs time, not correctness.
+/// matrix) hits the cache. The key hashes the project file and the source; on
+/// the (theoretical) collision the stored source differs and we rebuild over
+/// the top, so a collision costs time, not correctness.
 pub fn compile_generated(lang: Lang, source: &str) -> Result<PathBuf, String> {
+    compile_generated_inner(lang, source, false)
+}
+
+/// [`compile_generated`], with the compiler's documentation file written
+/// beside the DLL (the DLL's path with an `.xml` extension).
+pub fn compile_generated_documented(lang: Lang, source: &str) -> Result<PathBuf, String> {
+    compile_generated_inner(lang, source, true)
+}
+
+fn compile_generated_inner(lang: Lang, source: &str, docs: bool) -> Result<PathBuf, String> {
     use std::hash::{DefaultHasher, Hash, Hasher};
 
-    let (proj, file, xml) = generated_project(lang);
+    let (proj, file, xml) = generated_project(lang, docs);
     let mut hasher = DefaultHasher::new();
-    proj.hash(&mut hasher);
+    xml.hash(&mut hasher);
     source.hash(&mut hasher);
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("generative-source-diff")

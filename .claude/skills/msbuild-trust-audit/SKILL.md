@@ -87,18 +87,26 @@ diagnostic undecides. The catalogue lives in the
 
 ## 2. Never gate a fold on the generic provenance seam
 
-`ParsedProject::property_provenance_untrusted` fires **unconditionally for real
-SDK projects**: probed on dotnet 10.0.301, `LangVersion` reads untrusted for
-every SDK project, even one with a cleanly body-pinned value. SDK-file
-uncertainty is tolerated by design, so a wholesale refusal (`build_parses` and
-friends) needs a second signal separating real risk from SDK noise.
+`ParsedProject::property_provenance_untrusted` fires for **dozens of
+properties on every real SDK project**: a plain `net10.0` library marks 84,
+`DefineConstants`, `OutputPath`, `OutDir`, `TargetFrameworkMoniker` and
+`IntermediateOutputPath` among them (dotnet 10.0.301). SDK-file uncertainty is
+tolerated by design, so a wholesale refusal (`build_parses` and friends) keyed
+on one of those needs a second signal separating real risk from SDK noise.
+Which properties it marks is per-property, not per-project: `LangVersion` is
+*not* marked on an ordinary SDK project, because the SDK's own writes of it sit
+under gates the walker decides
+(`sdk_project_fold_e2e::ordinary_sdk_projects_have_trusted_langversion_provenance`
+pins this). Probe the specific property before assuming either way.
 
 Two patterns that work:
 
 - **A user-authored-only channel.** `define_constants_uncertain` sets
   `!in_sdk_subtree` at every set site.
 - **A consequence-side flag**, computed where the uncertain value is consumed —
-  often cheaper *and* exact. The LangVersion case used
+  often cheaper *and* exact, and it still earns its place where the generic
+  mark is rare: an untrusted `LangVersion` would otherwise refuse every file
+  of that project. The LangVersion case uses
   `Parse::shape_depends_on_language_version`: the lex-filter records reaching a
   version-gated decision (an offside strict push, or a `relaxWhitespace2` pop
   that matters). `false` **proves** the tree is version-invariant

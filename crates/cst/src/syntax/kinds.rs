@@ -931,13 +931,14 @@ pub enum SyntaxKind {
 
     /// `SynTyparDecls` — a type definition's type-parameter declarations
     /// (`SyntaxTree.fsi:448`, phase 9.3). Holds one or more
-    /// [`SyntaxKind::TYPAR_DECL`] children. Three source shapes, all projected
-    /// to the same flat typar list (the `PostfixList`/`PrefixList`/`SinglePrefix`
-    /// variant and `SynComponentInfo.preferPostfix` are elided): postfix
-    /// `T<'a, 'b>` (`[<ERROR HPA>, LESS_TOK, TYPAR_DECL (COMMA_TOK TYPAR_DECL)*,
-    /// GREATER_TOK]`, via the phase-7.6 `HighPrecedenceTyApp` machinery) and
-    /// single-prefix `'a T` (`[TYPAR_DECL]`, the typar before the name).
-    /// Parenthesised-prefix `('a, 'b) T` is deferred (its `)` is swallowed).
+    /// [`SyntaxKind::TYPAR_DECL`] children. Three source shapes, told apart by
+    /// their delimiter (`TyparDecls::form`): postfix `T<'a, 'b>` (`[<ERROR
+    /// HPA>, LESS_TOK, TYPAR_DECL (COMMA_TOK TYPAR_DECL)*, GREATER_TOK]`, via the
+    /// phase-7.6 `HighPrecedenceTyApp` machinery), single-prefix `'a T`
+    /// (`[TYPAR_DECL]`, the typar before the name), and parenthesised prefix
+    /// `('a, 'b) T` (`[LPAREN_TOK, TYPAR_DECL (COMMA_TOK TYPAR_DECL)*,
+    /// RPAREN_TOK]`, before the name; the `)` comes from the raw stream, as
+    /// LexFilter swallows it).
     TYPAR_DECLS,
 
     /// `SynTyparDecl` — one type-parameter declaration (`SyntaxTree.fsi:390`,

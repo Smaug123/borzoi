@@ -244,10 +244,15 @@ impl<'src> Parser<'src> {
     ///   (`SynTyparDecls.PostfixList`), opened by the `HighPrecedenceTyApp`
     ///   virtual LexFilter emits before an adjacent `<`.
     ///
-    /// Parenthesised-prefix `('a, 'b) T` (`SynTyparDecls.PrefixList`) is
-    /// deferred: its `)` is LexFilter-swallowed, so it needs swallowed-closer
-    /// recovery — a `(` here falls through to [`Self::parse_long_ident_path`],
-    /// which records a clean "expected identifier" error (no panic).
+    /// * **parenthesised prefix** `type ('a, 'b) T` / `type ('a) T` — a
+    ///   comma-separated list in parentheses before the name
+    ///   (`SynTyparDecls.PrefixList`, `pars.fsy`'s `prefixTyparDecls: LPAREN
+    ///   typarDeclList rparen`); see [`Self::parse_typar_decls_prefix_list`].
+    ///
+    /// A `(` that does not open a typar list (`type (int * int) with …`, the
+    /// tuple-extension form FCS rejects) falls through to
+    /// [`Self::parse_long_ident_path`], which records a clean "expected
+    /// identifier" error.
     ///
     /// Returns whether an after-keyword attribute's trailing offside `BlockSep`
     /// (FCS's `opt_OBLOCKSEP`) was drained — i.e. this is the column-0 offside
@@ -313,6 +318,12 @@ impl<'src> Parser<'src> {
             ))
         ) {
             self.bump_into(SyntaxKind::ACCESS_TOK);
+        }
+        // Parenthesised prefix typars: `('a, 'b) T`.
+        if self.at_prefix_typar_list() {
+            self.parse_typar_decls_prefix_list();
+            self.parse_long_ident_path("type");
+            return drained_offside_attr_sep;
         }
         // Prefix single typar: a leading `'`/`^` sigil before the name.
         if matches!(
@@ -668,6 +679,76 @@ impl<'src> Parser<'src> {
                 span,
             });
         }
+        self.builder.finish_node(); // TYPAR_DECLS
+    }
+
+    /// Whether the cursor (a type header, past any accessibility) opens a
+    /// parenthesised prefix typar list: `(`, then a typar declaration's head —
+    /// an optional `[< … >]` attribute run, a `'`/`^` sigil and its identifier —
+    /// followed by what may follow a `typarDecl` in FCS's `typarDeclList`: a
+    /// `,`, the closing `)`, or an intersection constraint's `&`.
+    ///
+    /// The lookahead stops short of FCS's grammar on one point only: a `(` whose
+    /// typar is followed by anything else (`('a * 'b) with …`, a tuple-type
+    /// extension, which FCS rejects) is left to the name parser's clean error
+    /// rather than claimed as a list that then fails at the `*`.
+    fn at_prefix_typar_list(&self) -> bool {
+        if !matches!(
+            self.peek(),
+            Some((Ok(FilteredToken::Raw(Token::LParen)), _))
+        ) {
+            return false;
+        }
+        let mut sig = self.significant_raw_from_cursor().peekable();
+        sig.next(); // `(`
+        while matches!(sig.peek(), Some(Token::LBrackLess)) {
+            sig.next(); // `[<`
+            for t in sig.by_ref() {
+                if matches!(t, Token::GreaterRBrack) {
+                    break;
+                }
+            }
+        }
+        matches!(sig.next(), Some(Token::Quote | Token::Op("^")))
+            && matches!(sig.next(), Some(Token::Ident(_) | Token::QuotedIdent(_)))
+            && matches!(sig.next(), Some(Token::Comma | Token::RParen | Token::Amp))
+    }
+
+    /// Parse a parenthesised prefix typar list — FCS's `prefixTyparDecls: LPAREN
+    /// typarDeclList rparen` (`SynTyparDecls.PrefixList`), `type ('a, 'b) T` —
+    /// into a [`SyntaxKind::TYPAR_DECLS`] node `[LPAREN_TOK, TYPAR_DECL,
+    /// (COMMA_TOK, TYPAR_DECL)*, RPAREN_TOK]`. The caller has checked
+    /// [`Self::at_prefix_typar_list`].
+    ///
+    /// Each element is a full `typarDecl` (attributes, `& …` intersection
+    /// constraints), as in the postfix list. Unlike the postfix list there is no
+    /// inside-the-parens `when` clause: a constraint follows the name
+    /// (`SynComponentInfo.constraints`). The `)` is LexFilter-swallowed, so it is
+    /// read from the raw stream; a list not closed by one records an error
+    /// without consuming the offender.
+    fn parse_typar_decls_prefix_list(&mut self) {
+        // The trivia before the `(` belongs to the header, not the list.
+        if let Some((_, span)) = self.peek().cloned() {
+            self.drain_raw_up_to(span.start);
+        }
+        self.builder
+            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_DECLS));
+        self.bump_into(SyntaxKind::LPAREN_TOK);
+        self.parse_typar_decl(true);
+        // Gate the separator on the raw stream too: a `,` the filtered stream
+        // shows after a swallowed `)` belongs to whatever follows the list.
+        while matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Comma)), _)))
+            && matches!(self.next_non_trivia_raw_at_pos(), Some(Token::Comma))
+        {
+            self.bump_into(SyntaxKind::COMMA_TOK);
+            self.parse_typar_decl(true);
+        }
+        self.bump_swallowed_closer(
+            SyntaxKind::RPAREN_TOK,
+            |t| matches!(t, Token::RParen),
+            ")",
+            "type parameter list",
+        );
         self.builder.finish_node(); // TYPAR_DECLS
     }
 

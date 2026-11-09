@@ -500,14 +500,30 @@ our reimplementation.
   exposes these only as raw IL blobs (not decoded attributes), so the oracle fails
   loud rather than silently diverge from the (correct) Rust projection.
   (`2a52321`)
-- **CST diff-normaliser `_argN` binding-head gap** — the `normalised_ast.rs`
-  normaliser shares FCS's `SynArgNameGenerator` per module decl, but binding-head
-  patterns (`let f 0 = …`) don't yet consume it, so a non-simple arg in a binding
-  head mis-numbers an RHS lambda (no test exercises this). (`5595b91`)
 
 ## Resolved since introduction
 
 Documented early, since closed — listed so readers don't chase ghosts.
+
+- **CST diff-normaliser `_argN` binding-head gap (never a divergence):** a
+  function-form binding head (`let f 0 = …`) does not consume FCS's parse-time
+  `SynArgNameGenerator`. Its only consumer is the `fun` productions
+  (`mkSynFunMatchLambdas`, `pars.fsy` `anonLambdaExpr`); a binding head is
+  lowered while type checking, with the checker's own generator
+  (`CheckExpressions.fs`, `PushCurriedPatternsToExpr cenv.synArgNameGenerator`),
+  so the parse tree keeps the head pattern and the RHS lambda's numbering is
+  unaffected (`let f 0 = fun 1 -> 2` scrutinises `_arg1`). Nor could a wrong
+  index show: both projectors canonicalise a generated scrutinee to `_arg`. The
+  normaliser's counter does differ from FCS's where FCS carries the count out of
+  a `type` into the next `let` (the `Reset()` runs when a module-level `let`
+  reduces, after its bindings) and across a type's members, which is immaterial
+  for the same reason. `parser_diff_arg_name_generator` grades a grid of binding
+  heads × right-hand sides × binding contexts against FCS, and asserts that no
+  indexed `_argN` reaches the comparison and that only a `fun` parameter lowers.
+  With the canonicalisation disabled, the two projections disagree only in that
+  grid's `type`-carried and member-carried cells, and there whatever the
+  binding head.
+  (#22)
 
 - **Lex-filter multi-line cursor:** the line/column cursor counts the `\n`
   bytes *inside* each token (mirroring FCS's `incrLine` on `newline = '\n' |

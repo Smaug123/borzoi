@@ -129,12 +129,16 @@ fn target_mentions(
 
 /// The written names of the two FSharp.Core attributes whose presence changes
 /// what an `open` brings into bare scope: `[<AutoOpen>]` and
-/// `[<RequireQualifiedAccess>]`, with and without the `Attribute` suffix.
+/// `[<RequireQualifiedAccess>]`, with and without the `Attribute` suffix —
+/// and `RequireQualifiedAccessAttributeAttribute`, which FCS looks the long
+/// spelling `[<RequireQualifiedAccessAttribute>]` up under first, so that a
+/// type of that name withdraws trust in the long spelling too.
 pub(crate) const CORE_ATTRIBUTE_NAMES: &[&str] = &[
     "AutoOpen",
     "AutoOpenAttribute",
     "RequireQualifiedAccess",
     "RequireQualifiedAccessAttribute",
+    "RequireQualifiedAccessAttributeAttribute",
 ];
 
 /// See [`AssemblyEnv::augmentation_member_names`].
@@ -2583,6 +2587,35 @@ impl AssemblyEnv {
             .first_by_arity
             .get(&arity)
             .copied()
+    }
+
+    /// Whether some referenced assembly declares a top-level entity named
+    /// `name` in `namespace` with fewer than `arity` generic parameters —
+    /// public or not, a module or not, so that `false` proves no such entity.
+    ///
+    /// FCS looks a qualifier written without type arguments (`T.M`, `T()`)
+    /// up among every same-named type in scope, fewest generic parameters
+    /// first, and binds the first that has the member. So a generic type is
+    /// only the first candidate when nothing of lower arity bears its name.
+    pub fn declares_type_below_arity(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> bool {
+        self.type_arities_named(namespace, name).any(|a| a < arity)
+    }
+
+    /// The generic arity of every top-level entity named `name` in
+    /// `namespace`, public or not, a module or not.
+    pub fn type_arities_named(
+        &self,
+        namespace: &[String],
+        name: &str,
+    ) -> impl Iterator<Item = usize> + '_ {
+        self.types_named(namespace, name)
+            .iter()
+            .map(|&handle| self.entity(handle).generic_parameters.len())
     }
 
     /// Whether some referenced assembly declares a **public** top-level type

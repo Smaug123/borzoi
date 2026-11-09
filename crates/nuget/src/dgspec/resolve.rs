@@ -136,10 +136,9 @@ pub enum UnmodelledField {
     /// folder from the environment and config files, or holds a control
     /// character.
     PackagesPath,
-    /// A source that is not a local absolute path. A local folder can only
-    /// add versions, and every version the resolver relies on is the lowest
-    /// a range accepts and is in the packages folder, where NuGet looks first;
-    /// a remote source can fail the restore by being unreachable.
+    /// A source that is not a local absolute path. A local folder is read
+    /// only for a package the graph names, which [`DgSpecResolveDecline::SourceHoldsPackage`]
+    /// declines; a remote source can fail the restore by being unreachable.
     Sources,
     /// Fallback package folders, which NuGet reads packages from as though
     /// they were the packages folder.
@@ -279,6 +278,18 @@ pub enum DgSpecResolveDecline {
         package: Box<PackageIdentity>,
         source: Box<PackageReadError>,
     },
+    /// A local folder source holds `entry`, named like a package restore looks
+    /// up past the packages folder (an edge whose inclusive lower bound is not
+    /// installed), or could not be listed (`entry` is `None`). Restore reads
+    /// such an edge at the lowest version satisfying it across the packages
+    /// folder and every source, so the resolver's account of what restore
+    /// reads ([`ResolvedPackageClosure::examined`]) holds only while no source
+    /// holds a version of the package. See `check_sources`.
+    SourceHoldsPackage {
+        target_alias: String,
+        source: String,
+        entry: Option<String>,
+    },
     /// The environment restore would run under is outside what B₁ admits.
     Environment { decline: EnvironmentDecline },
 }
@@ -370,6 +381,23 @@ impl fmt::Display for DgSpecResolveDecline {
                 f,
                 "framework {target_alias:?}: package {} {} could not be read: {source}",
                 package.id, package.version
+            ),
+            DgSpecResolveDecline::SourceHoldsPackage {
+                target_alias,
+                source,
+                entry: Some(entry),
+            } => write!(
+                f,
+                "framework {target_alias:?}: source {source} holds {entry}, named like a package \
+                 restore looks up past the packages folder, so it may read from it"
+            ),
+            DgSpecResolveDecline::SourceHoldsPackage {
+                target_alias,
+                source,
+                entry: None,
+            } => write!(
+                f,
+                "framework {target_alias:?}: source {source} could not be listed"
             ),
             DgSpecResolveDecline::Environment { decline } => write!(f, "{decline}"),
         }
@@ -513,6 +541,15 @@ pub fn resolve_dgspec(
                 nuget,
                 Path::new(packages_path),
                 &framework.target_alias,
+                &closure,
+            )?;
+            check_sources(
+                Path::new(packages_path),
+                &package_spec.restore.sources,
+                &framework.target_alias,
+                &framework.framework,
+                &context,
+                &graph,
                 &closure,
             )?;
             check_compatibility(
@@ -770,6 +807,107 @@ fn check_metadata(
             .map_err(|decline| declined(PackageMetadataDecline::Nuspec(decline)))?;
         if !commit_marker_is_admitted(&package.paths.metadata_path) {
             return Err(declined(PackageMetadataDecline::CommitMarker));
+        }
+    }
+    Ok(())
+}
+
+/// No local folder source holds anything named like a package that restore
+/// looks up past the packages folder.
+///
+/// Restore looks an edge up in the packages folder first and takes what it
+/// finds there when it is the edge's lower bound; otherwise it asks every
+/// source as well and reads the lowest version satisfying the edge across
+/// them. [`ResolvedPackageClosure::examined`] is that version among the
+/// installed ones, which is restore's only while no source holds a version
+/// of the package. So the edges that matter are those whose inclusive lower
+/// bound is not installed, among the graph's package edges and the
+/// dependencies of every version restore may read; an SDK's `library-packs`
+/// folder holds `FSharp.Core`, which every F# graph names through an edge
+/// whose lower bound is installed, and passes.
+///
+/// A folder feed's entries are `<id>.<version>.nupkg` files or `<id>`
+/// folders, so an entry is taken to name `id` when, ignoring case, it is `id`
+/// or starts with `id` followed by a dot; a package id containing another as
+/// a prefix declines more than restore would read.
+fn check_sources(
+    packages: &Path,
+    sources: &[String],
+    target_alias: &str,
+    framework: &NuGetFramework,
+    context: &TargetContext,
+    graph: &ProjectGraph,
+    closure: &ResolvedPackageClosure,
+) -> Result<(), DgSpecResolveDecline> {
+    let mut edges: Vec<(PackageId, VersionRange)> = graph
+        .package_edges()
+        .map(|(id, range)| (id.clone(), range.clone()))
+        .collect();
+    for identity in &closure.examined {
+        let package = read_installed_package(packages, identity.clone()).map_err(|source| {
+            DgSpecResolveDecline::PackageRead {
+                target_alias: target_alias.to_owned(),
+                package: Box::new(identity.clone()),
+                source: Box::new(source),
+            }
+        })?;
+        for dependency in context.dependencies(&package.nuspec, framework) {
+            if let Some(range) = dependency.version_range {
+                edges.push((dependency.id, range));
+            }
+        }
+    }
+    // The packages restore looks up past the packages folder.
+    let mut consulted: BTreeSet<String> = BTreeSet::new();
+    for (id, range) in &edges {
+        let installed_bound = match range.min_version() {
+            Some(bound) if range.is_min_inclusive() => {
+                let paths =
+                    PackagePaths::new(packages, &PackageIdentity::new(id.clone(), bound.clone()));
+                paths
+                    .is_committed()
+                    .map_err(|source| DgSpecResolveDecline::PackageRead {
+                        target_alias: target_alias.to_owned(),
+                        package: Box::new(PackageIdentity::new(id.clone(), bound.clone())),
+                        source: Box::new(PackageReadError::Io {
+                            path: paths.metadata_path.clone(),
+                            source,
+                        }),
+                    })?
+            }
+            _ => false,
+        };
+        if !installed_bound {
+            consulted.insert(id.as_str().to_ascii_lowercase());
+        }
+    }
+    if consulted.is_empty() {
+        return Ok(());
+    }
+    for source in sources {
+        let declined = |entry: Option<String>| DgSpecResolveDecline::SourceHoldsPackage {
+            target_alias: target_alias.to_owned(),
+            source: source.clone(),
+            entry,
+        };
+        let entries = match std::fs::read_dir(source) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(declined(None)),
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return Err(declined(None));
+            };
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if consulted
+                .iter()
+                .any(|id| name == *id || name.starts_with(&format!("{id}.")))
+            {
+                return Err(declined(Some(
+                    entry.file_name().to_string_lossy().into_owned(),
+                )));
+            }
         }
     }
     Ok(())

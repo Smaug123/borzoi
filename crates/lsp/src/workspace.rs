@@ -663,11 +663,12 @@ impl Workspace {
     /// ([`LanguageVersion::strict_indentation_is_error`] /
     /// `reports_invalid_decls_in_type_definitions`), and `DEFAULT` discards
     /// an evaluated value that is still the best single guess (the gate the
-    /// walker couldn't pin usually *does* run). And the generic provenance
-    /// mark could not gate anything alone anyway: a real SDK's own
-    /// conditional LangVersion default trips it for **every** project
-    /// (probed, dotnet 10.0.301, even with a cleanly body-pinned value) —
-    /// see `sdk_project_fold_e2e`. The version does shape the *token
+    /// walker couldn't pin usually *does* run). Untrusted provenance is the
+    /// exception rather than the rule: an ordinary SDK project's is trusted,
+    /// because the SDK's own `LangVersion` writes sit under gates the walker
+    /// decides (`sdk_project_fold_e2e::ordinary_sdk_projects_have_trusted_langversion_provenance`),
+    /// so it marks a project whose own (or imported) write sits under a gate
+    /// the walker cannot pin. The version does shape the *token
     /// stream* (the lex-filter's `relaxWhitespace2` pops at F# 6 and its
     /// strict-indentation push decision at F# 8); the cross-file fold
     /// covers that exactly, refusing only untrusted provenance × a file

@@ -190,8 +190,9 @@ proptest! {
 /// which answers the same question about the tree.
 ///
 /// A consumer that reads "this file reported no errors" as proof a declaration
-/// parsed cleanly needs it: the language version can be a *guess* (an untrusted
-/// `LangVersion` provenance, which is every real SDK project), and a guess that
+/// parsed cleanly needs it: the language version can be a *guess* (a buffer
+/// with no project, or a project whose `LangVersion` is written under a gate
+/// the evaluator cannot pin), and a guess that
 /// lands on the wrong side of a feature threshold turns a rejected file into a
 /// clean-looking one **without changing the tree at all** — so the shape flag
 /// cannot see it.
@@ -317,6 +318,29 @@ mod diagnostics_version_dependence {
                 "{source:?} must {} report errors",
                 if errors { "" } else { "not" }
             );
+            assert!(
+                !version_dependent(source),
+                "{source:?} must be version-invariant"
+            );
+        }
+    }
+
+    /// A `_.`-rooted pattern, the member self-id `member _.M` above all, is
+    /// accepted at every version (a known leniency below F# 4.7,
+    /// `docs/parser-plan.md`). Modelling the pinned FCS's 4.7 gate would make
+    /// every file holding a `member _.M` version-dependent, so a guessed
+    /// language version would retain no diagnostics for it and the LSP would
+    /// drop what it reads off a clean parse there (hover's binder types in an
+    /// orphan buffer).
+    #[test]
+    fn an_underscore_rooted_pattern_is_version_invariant() {
+        for source in [
+            "module M\ntype T() =\n    member _.M = 1\n",
+            "module M\nlet f x =\n    match x with\n    | _.M -> 1\n    | _ -> 2\n",
+            "module M\nlet x = { new System.IDisposable with member _.Dispose() = () }\n",
+        ] {
+            let lo = parse_at(source, LanguageVersion::MIN);
+            assert!(lo.errors.is_empty(), "{source:?}: {:?}", lo.errors);
             assert!(
                 !version_dependent(source),
                 "{source:?} must be version-invariant"

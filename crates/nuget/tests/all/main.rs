@@ -30,6 +30,7 @@ mod range_properties;
 mod resolver;
 mod resolver_complexity;
 mod resolver_diff;
+mod settings_diff;
 mod soak;
 mod version_diff;
 mod version_properties;

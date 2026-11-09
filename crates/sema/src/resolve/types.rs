@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use crate::binders::{BinderRole, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 
+use super::contributors::RequireQualifiedAccess;
 use super::id_text;
 use super::model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, EarlierType, ExportDeclKind,
@@ -323,11 +324,21 @@ impl<'a> Resolver<'a> {
     }
 
     /// Intern the cases of a union `type T = A | B of …` as [`DefKind::UnionCase`]
-    /// binders: each case's defining occurrence resolves to itself, and — unless
-    /// the union is `[<RequireQualifiedAccess>]` (`require_qualified`) — the case
-    /// is added to the current container's value frame ([`module_frame`](Self::module_frame))
+    /// binders: each case's defining occurrence resolves to itself, and — when
+    /// the union certainly is not `[<RequireQualifiedAccess>]` (`rqa`) — the
+    /// case is added to the current container's value frame ([`module_frame`](Self::module_frame))
     /// at its source position, so an unqualified use resolves to it. A non-union
     /// definition contributes no cases.
+    ///
+    /// A union whose attribute is undecided ([`RequireQualifiedAccess::Unknown`])
+    /// keeps the export its written attribute names imply
+    /// ([`RequireQualifiedAccess::exports_qualified_only`]), its cases count as
+    /// the container's bare names wherever contention is asked, and the caller
+    /// declines every bare name they could take
+    /// ([`Self::unproven_bare_cases`]). A qualified path through the container
+    /// (`M.Case`) is not decided by the attribute, so the export choice speaks
+    /// only to that path: FCS reads it as the case either way, cleanly or with
+    /// an error.
     ///
     /// Cases are value-namespace entries living in the same position-ordered,
     /// container-scoped frame as values (see [`Self::top_level`]); that gives
@@ -342,14 +353,19 @@ impl<'a> Resolver<'a> {
         &mut self,
         defn: &TypeDefn,
         type_name: &SyntaxToken,
-        require_qualified: bool,
+        rqa: RequireQualifiedAccess,
     ) {
         let Some(TypeDefnRepr::Union(u)) = defn.repr() else {
             return;
         };
+        let require_qualified = rqa.exports_qualified_only();
         // A case of a `private` union type is scoped to the type's container
         // (oracle-pinned D3), so its export inherits that privacy.
         let type_is_private = super::decls::header_is_private(defn.syntax());
+        // A `private` representation leaves the type visible but its cases
+        // usable only within the type's container.
+        let repr_access_root =
+            super::decls::union_repr_is_private(defn).then(|| self.container_path.clone());
         let type_key = id_text(type_name).to_string();
         // The type was just defined, so the name's latest binder is it.
         let own_key = self
@@ -371,6 +387,9 @@ impl<'a> Resolver<'a> {
             let name = def.key().to_string();
             let range = def.range;
             let id = self.intern(def);
+            if let Some(root) = &repr_access_root {
+                self.case_repr_roots.insert(id, root.clone());
+            }
             // An anonymous field has the name F# generates for it: `Item` when
             // it is the case's only field, `Item<n>` (its 1-based position)
             // among several. `Case(Item = e)` names it like any other field.
@@ -405,6 +424,7 @@ impl<'a> Resolver<'a> {
                     id,
                     &type_key,
                     type_is_private,
+                    repr_access_root.clone(),
                     CaseKind::Union {
                         require_qualified: true,
                     },
@@ -417,6 +437,7 @@ impl<'a> Resolver<'a> {
                     &name,
                     id,
                     type_is_private,
+                    repr_access_root.clone(),
                     CaseKind::Union {
                         require_qualified: false,
                     },
@@ -453,13 +474,15 @@ impl<'a> Resolver<'a> {
             }
             // The defining occurrence resolves to itself.
             self.record(range, res);
-            if !require_qualified {
+            if rqa != RequireQualifiedAccess::Certain {
                 // A non-RQA union case is a bare-reachable constructor (value
                 // namespace) → record it in the container's declared-name view, so a
                 // same-named type elsewhere in the container is seen as contention.
                 // (RQA cases are reachable only as `Type.Case`, so they never collide
                 // with a module-qualifier segment — not recorded.)
                 self.mark_decl(&name).union_case = true;
+            }
+            if !require_qualified {
                 let generation = self.open_generation;
                 self.module_frame()
                     .entries
@@ -566,6 +589,9 @@ impl<'a> Resolver<'a> {
                 id,
                 &type_key,
                 type_is_private,
+                // An enum's representation takes no modifier
+                // (`parsEnumTypesCannotHaveVisibilityDeclarations`).
+                None,
                 CaseKind::Enum,
             ) {
                 Some(item_id) => Resolution::Item(item_id),
@@ -607,7 +633,7 @@ impl<'a> Resolver<'a> {
         // declaration, frame entry, and cross-file open (so find-references spans
         // its cross-file uses); an anonymous-root constructor stays `Local` and its
         // module is marked hidden.
-        let res = match self.export_case(&entry_name, id, is_private, CaseKind::Exception) {
+        let res = match self.export_case(&entry_name, id, is_private, None, CaseKind::Exception) {
             Some(item_id) => Resolution::Item(item_id),
             None => {
                 self.note_hidden_value_module(self.container_path.clone());
@@ -788,6 +814,7 @@ impl<'a> Resolver<'a> {
                         def: super::model::ExportDef::Own(use_id),
                         case: None,
                         access_root_len: self.export_access_root_len(is_private),
+                        repr_access_root: None,
                         attributed: false,
                     });
                     Some((item_idx, item_id))
@@ -3054,6 +3081,158 @@ impl<'a> Resolver<'a> {
             file: u32::try_from(candidate.file).expect("more than u32::MAX files"),
             index: candidate.index,
         })
+    }
+
+    /// Whether a type FCS tries before in-file type `type_id` may bear its
+    /// name, when the name qualifies a member or case with no type arguments
+    /// written (`T.M`, `T.Case`, `| T.Case ->`; #323).
+    ///
+    /// FCS looks such a qualifier up among every same-named type the scope
+    /// holds (`LookupTypeNameInEnvNoArity`, or `LookupTypeNameInEntityNoArity`
+    /// in `module`'s own types when a module path qualifies it), sorts them
+    /// by generic arity — a stable sort over a latest-first list
+    /// (`CheckForTypeLegitimacyAndMultipleGenericTypeAmbiguities`) — and binds
+    /// the first that has the member. The in-file walks pick the latest
+    /// declaration of the name in the innermost container declaring it, which
+    /// is FCS's first candidate only when no namesake of lower arity is in
+    /// scope: `type CT` beside a later `type CT<'a>` makes `CT.M` the
+    /// non-generic type's `M`.
+    ///
+    /// So for `type_id` of arity 0 nothing outranks it by arity. For a
+    /// generic one, any namesake of lower arity this cannot rule out answers
+    /// `true`: one declared anywhere in this file (any container, any
+    /// position, so a forward `rec` declaration and an opened module count),
+    /// an `exception` of the name, any earlier file's (or one the earlier file
+    /// could not place), and — for an unqualified head — a referenced
+    /// assembly's under any prefix the walk visits, an `[<AutoOpen>]` surface
+    /// that may declare the name, or a dropped type that may be one.
+    pub(super) fn lower_arity_namesake_possible(
+        &self,
+        name: &str,
+        type_id: DefId,
+        module: Option<&[String]>,
+    ) -> bool {
+        let Some(&arity) = self.type_def_arities.get(&type_id) else {
+            return true;
+        };
+        if arity == 0 {
+            return false;
+        }
+        if let Some(module) = module {
+            return self
+                .type_decl_counts
+                .get(module)
+                .and_then(|m| m.get(name))
+                .is_none_or(|by_arity| by_arity.keys().any(|&a| a < arity));
+        }
+        self.namesake_below_arity_possible(name, arity)
+    }
+
+    /// Whether an earlier file's type-qualified case at `full` (`[container..,
+    /// type, case]`) may not be the case FCS binds there, because the type's
+    /// name may be borne by a type FCS tries first
+    /// ([`Self::lower_arity_namesake_possible`]). The index keeps one case per
+    /// path, the latest declaration's, so two arities of the name in play
+    /// decline.
+    ///
+    /// `qualified` says the written path names the type through a module or
+    /// namespace (`A.T.Case`): FCS then weighs only that container's types of
+    /// the name (`LookupTypeNameInEntityNoArity`) — every earlier file's at
+    /// `container`, this file's, a referenced assembly's (namespaces span all
+    /// three), and one an earlier file could not place. Otherwise (`T.Case`,
+    /// through an `open` or the enclosing namespace) it weighs every
+    /// same-named type in scope: the earlier files' at more than one arity,
+    /// or at one they could not place, decline, as does a generic one with a
+    /// namesake of lower arity possible anywhere.
+    pub(super) fn earlier_case_type_namesake_possible(
+        &self,
+        full: &[String],
+        qualified: bool,
+    ) -> bool {
+        let [container @ .., name, _] = full else {
+            return false;
+        };
+        let decls = self
+            .preceding
+            .earlier_type_arities
+            .get(name)
+            .map_or(&[][..], Vec::as_slice);
+        let mut arities = std::collections::BTreeSet::new();
+        if qualified {
+            for d in decls {
+                let here = d
+                    .path
+                    .as_deref()
+                    .is_none_or(|p| p.len() == container.len() + 1 && p.starts_with(container));
+                match (here, d.arity) {
+                    (false, _) => {}
+                    (true, Some(a)) => {
+                        arities.insert(a);
+                    }
+                    (true, None) => return true,
+                }
+            }
+            if let Some(by_arity) = self
+                .type_decl_counts
+                .get(container)
+                .and_then(|m| m.get(name))
+            {
+                arities.extend(by_arity.keys().copied());
+            }
+            let mut path = container.to_vec();
+            path.push(name.clone());
+            if (self.recursive_module_active && self.own_type_simple_names.contains(name))
+                || self.dropped_type_could_root_this_path(&path)
+            {
+                return true;
+            }
+            arities.extend(self.assemblies.type_arities_named(container, name));
+            return arities.len() > 1;
+        }
+        for d in decls {
+            match d.arity {
+                Some(a) => {
+                    arities.insert(a);
+                }
+                None => return true,
+            }
+        }
+        match arities.into_iter().collect::<Vec<_>>().as_slice() {
+            [] | [0] => false,
+            [arity] => self.namesake_below_arity_possible(name, *arity),
+            _ => true,
+        }
+    }
+
+    /// Whether a type named `name` with fewer than `arity` generic parameters
+    /// may be in scope anywhere FCS's unqualified type-name lookup reads —
+    /// see [`Self::lower_arity_namesake_possible`] for the channels.
+    fn namesake_below_arity_possible(&self, name: &str, arity: usize) -> bool {
+        let in_file = self
+            .own_type_scoped
+            .keys()
+            .any(|(n, a)| n == name && *a < arity)
+            || self.own_exception_simple_names.contains(name);
+        let earlier = self
+            .preceding
+            .earlier_type_arities
+            .get(name)
+            .is_some_and(|decls| decls.iter().any(|d| d.arity.is_none_or(|a| a < arity)));
+        let names = [name.to_string()];
+        let assemblies = self.assemblies.manifest_auto_open_target_is_uncertain()
+            || self.assemblies.contested_auto_open_is_uncertain()
+            || self
+                .assemblies
+                .manifest_auto_open_surface_declares(name, ManifestSurfacePosition::TypeAnyArity)
+            || self
+                .assemblies
+                .contested_auto_open_surface_declares(name, ManifestSurfacePosition::TypeAnyArity)
+            || self.dropped_type_could_root_this_path(&names)
+            || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
+                self.assemblies
+                    .declares_type_below_arity(prefix, name, arity)
+            });
+        in_file || earlier || assemblies
     }
 
     /// The in-file `type` def a single-segment type name at `arity` binds, if

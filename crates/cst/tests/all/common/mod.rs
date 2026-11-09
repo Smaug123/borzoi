@@ -46,6 +46,44 @@ use borzoi_oracle_harness::{BatchChild, BoundedCommand};
 /// with sema's and the LSP's sweeps, because a hook swap races once a crate's
 /// cases share one test binary. See that module for the whole story.
 pub use borzoi_oracle_harness::panic_silence::catch_unwind_silent;
+
+/// `f` applied to each of `0..len`, on one worker per core, returned in index
+/// order: the corpus sweeps' files are independent, and a serial walk leaves
+/// all but one core (and all but one `fcs-dump` child) idle.
+///
+/// `f` runs on worker threads, so whatever it builds must be `Send` to come
+/// back; a rowan tree is not, so a sweep hands it an index and parses there.
+/// A panic in `f` is re-raised here with its own payload.
+pub fn par_map<T: Send>(len: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(len)
+        .max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut out: Vec<(usize, T)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= len {
+                            return mine;
+                        }
+                        mine.push((i, f(i)));
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect()
+    });
+    out.sort_by_key(|(i, _)| *i);
+    assert_eq!(out.len(), len, "every index has a result");
+    out.into_iter().map(|(_, t)| t).collect()
+}
 use serde::Deserialize;
 use tempfile::NamedTempFile;
 
@@ -1270,6 +1308,13 @@ pub fn fmt_token(t: &NormalisedToken) -> String {
 /// Assert our parser and FCS agree on the normalised AST for `source`, and
 /// that our parser reports no errors.
 pub fn assert_asts_match(source: &str) {
+    assert_asts_match_projecting(source);
+}
+
+/// [`assert_asts_match`], returning the normalised AST both sides agreed on,
+/// for a caller that asserts a further property of the comparison currency
+/// itself.
+pub fn assert_asts_match_projecting(source: &str) -> normalised_ast::NormalisedRoot {
     let mut tmp = NamedTempFile::with_suffix(".fs").expect("create tempfile");
     tmp.write_all(source.as_bytes()).expect("write source");
     let path = tmp.path();
@@ -1290,6 +1335,7 @@ pub fn assert_asts_match(source: &str) {
         rust, fcs,
         "AST divergence for source {source:?}\n  rust: {rust:#?}\n  fcs:  {fcs:#?}",
     );
+    rust
 }
 
 /// Assert our parser and FCS reach the same **verdict** on `source` (both clean

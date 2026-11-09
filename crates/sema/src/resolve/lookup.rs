@@ -14,11 +14,11 @@ use super::contributors::Contribution;
 use super::id_text;
 use super::model::{
     DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, OpenOpacity, OpenTrace,
-    Resolution, SlotClass,
+    Resolution, SlotClass, TypeSlot,
 };
 use super::state::{
-    ActivePatternShape, AssemblyPath, CaseTier, MarkReach, OpenInterpretation, Resolver,
-    SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
+    ActivePatternShape, AssemblyPath, CaseTier, CrossFileCase, MarkReach, OpenInterpretation,
+    Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -1486,7 +1486,11 @@ impl<'a> Resolver<'a> {
     /// concession `docs/assembly-module-open-plan.md` §8 already makes for
     /// the analogous assembly case.
     pub(super) fn project_namespace_contestant_names(&self, namespace: &[String]) -> Vec<String> {
-        let mut out = self.direct_project_type_contestants(namespace);
+        let mut out: Vec<String> = self
+            .direct_project_type_contestants(namespace)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
         for sub in self.project_auto_open_submodules_in(namespace) {
             out.extend(self.project_namespace_contestant_names(&sub));
         }
@@ -1495,7 +1499,9 @@ impl<'a> Resolver<'a> {
 
     /// The names of constructible project types (`SlotClass::Evicts` /
     /// `Unknown`) declared **directly** at `container` — same-file and
-    /// earlier-file, non-recursive. The one-container piece
+    /// earlier-file, non-recursive — that an `open` written here brings
+    /// (an inaccessible `private` type is not brought, [`TypeSlot::class_at`]),
+    /// each with its declaring file. The one-container piece
     /// [`Self::project_namespace_contestant_names`] flattens across a whole
     /// recursive fold (for the ASSEMBLY-facing contest, where only "is this
     /// name contested by *some* project source" matters, not which one), and
@@ -1505,17 +1511,19 @@ impl<'a> Resolver<'a> {
     /// fold position — flattening first and demoting second, as the
     /// assembly-facing surface does, cannot express "later evicts earlier"
     /// at all, only "some project source contests".
-    fn direct_project_type_contestants(&self, container: &[String]) -> Vec<String> {
-        let mut out = self.preceding.direct_type_contestants(container);
+    fn direct_project_type_contestants(&self, container: &[String]) -> Vec<(String, usize)> {
+        let site = &self.container_path;
+        let mut out = self.preceding.direct_type_contestants(container, site);
+        let current = self.preceding.num_files();
         out.extend(
             self.type_path_exports
                 .iter()
                 .filter(|(p, _, slot)| {
                     p.len() == container.len() + 1
                         && p.starts_with(container)
-                        && *slot != SlotClass::Keeps
+                        && slot.class_at(p, site) != SlotClass::Keeps
                 })
-                .map(|(p, _, _)| p.last().expect("non-empty qualified path").clone()),
+                .map(|(p, _, _)| (p.last().expect("non-empty qualified path").clone(), current)),
         );
         out
     }
@@ -1646,7 +1654,7 @@ impl<'a> Resolver<'a> {
             // models no project type constructor — so it can only ever DEFER the
             // value dimension, never let the direct case win it. (File-blind — an
             // over-defer is sound.)
-            for name in self.direct_project_type_contestants(&sub) {
+            for (name, _) in self.direct_project_type_contestants(&sub) {
                 out.entry(name).or_default().has_type = true;
             }
         }
@@ -1856,9 +1864,8 @@ impl<'a> Resolver<'a> {
     /// at the same path is same-file / cross-file dependent and not order-decidable
     /// without declaration-block provenance, which sema does not model). FCS resolves
     /// some of these to the case; we say nothing (never a wrong target).
-    pub(super) fn cross_file_type_case(&self, written: &[String], rooted: bool) -> Option<ItemId> {
+    pub(super) fn cross_file_type_case(&self, written: &[String], rooted: bool) -> CrossFileCase {
         self.cross_file_type_case_tiered(written, rooted)
-            .map(|(_, id)| id)
     }
 
     /// [`Self::cross_file_type_case`], additionally reporting the [`CaseTier`]
@@ -1867,11 +1874,12 @@ impl<'a> Resolver<'a> {
     /// orders this project reading against a competing referenced-assembly one
     /// with. Callers that only bind the case (there is no assembly reading to
     /// contend with) take the tier-free wrapper.
-    fn cross_file_type_case_tiered(
-        &self,
-        written: &[String],
-        rooted: bool,
-    ) -> Option<(CaseTier, ItemId)> {
+    ///
+    /// A reading whose case exists but whose type a namesake FCS tries first
+    /// may displace ([`Self::earlier_case_type_namesake_possible`]) ends the
+    /// walk as [`CrossFileCase::Declined`]: a lower tier's reading is not
+    /// what FCS binds when a higher one holds the path.
+    fn cross_file_type_case_tiered(&self, written: &[String], rooted: bool) -> CrossFileCase {
         // An `open type T` (modelled or not) sets `unmodelled_open_active`: T's
         // unmodelled nested types could supply the head segment, shadowing the
         // project type for the qualifier (`open Lib; open type Demo.Thing; Inner.Red`
@@ -1879,12 +1887,20 @@ impl<'a> Resolver<'a> {
         // candidate could be redirected by that open, so defer — exactly as the
         // qualified-value branch does (`rooted || !unmodelled_open_active`).
         if !rooted && self.unmodelled_open_active {
-            return None;
+            return CrossFileCase::Miss;
         }
-        let hit = |full: &[String]| -> Option<ItemId> {
-            self.preceding
+        let hit = |full: &[String], tier: CaseTier| -> CrossFileCase {
+            match self
+                .preceding
                 .type_qualified_case(full, &self.container_path)
                 .filter(|_| !self.value_shadows_case(full))
+            {
+                None => CrossFileCase::Miss,
+                Some(_) if self.earlier_case_type_namesake_possible(full, written.len() > 2) => {
+                    CrossFileCase::Declined
+                }
+                Some(id) => CrossFileCase::Hit(tier, id),
+            }
         };
         if !rooted {
             // Tier 0 — a lexically in-scope **module alias** as the bare head:
@@ -1897,27 +1913,29 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                return hit(&full).map(|id| (CaseTier::Alias, id));
+                return hit(&full, CaseTier::Alias);
             }
             // Tier 1 — explicit opens, latest first.
             for prefix in self.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                if let Some(id) = hit(&full) {
-                    return Some((CaseTier::Namespace, id));
+                match hit(&full, CaseTier::Namespace) {
+                    CrossFileCase::Miss => {}
+                    found => return found,
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
             for k in (1..=self.container_path.len()).rev() {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
-                if let Some(id) = hit(&full) {
-                    return Some((CaseTier::Namespace, id));
+                match hit(&full, CaseTier::Namespace) {
+                    CrossFileCase::Miss => {}
+                    found => return found,
                 }
             }
         }
         // Tier 3 — the path as written (root / fully-qualified).
-        hit(written).map(|id| (CaseTier::Namespace, id))
+        hit(written, CaseTier::Namespace)
     }
 
     /// Bring the **direct** exported values of project module `module_path` into
@@ -2307,16 +2325,17 @@ impl<'a> Resolver<'a> {
         if is_namespace && self.preceding.signatured_namespaces.contains(namespace) {
             let mut contested: Vec<String> = self
                 .direct_project_type_contestants(namespace)
-                .iter()
+                .into_iter()
+                .map(|(name, _)| name)
                 .chain(
                     self.preceding
                         .signatured_slot_type_names
                         .get(namespace)
                         .into_iter()
-                        .flatten(),
+                        .flatten()
+                        .cloned(),
                 )
                 .filter(|name| self.latest_entry(name).is_some())
-                .cloned()
                 .collect();
             contested.sort();
             contested.dedup();
@@ -2355,6 +2374,7 @@ impl<'a> Resolver<'a> {
             let direct_types: HashSet<String> = self
                 .direct_project_type_contestants(namespace)
                 .into_iter()
+                .map(|(name, _)| name)
                 .collect();
             for (name, (id, direct_file)) in direct_tier {
                 let Some(sub) = contributions.get(&name) else {
@@ -2453,7 +2473,43 @@ impl<'a> Resolver<'a> {
         if !fragments_trusted {
             self.open_generation += 1;
         }
+        // The namespace's own constructible types fold file by file too: FCS
+        // folds each file's direct tier before that file's fragments, so a type
+        // evicts a same-named value of every fragment of an EARLIER file and
+        // loses to every fragment of its own file or a later one. Each such type
+        // is pushed as a decline just before the first fragment it precedes
+        // (sema models no project type constructor), or after them all. Only
+        // names some fragment supplies as a value are pushed: a type takes the
+        // slot from an earlier source's value too (a local, another `open`),
+        // but that contest is unmodelled here, and a decline pushed for every
+        // type name would bar each later `Type.Member` head.
+        let mut own_types: Vec<(String, usize)> =
+            if is_namespace && fragments_trusted && !fragments.is_empty() {
+                let fragment_values: HashSet<String> = self
+                    .submodule_contributions_at(namespace)
+                    .into_iter()
+                    .filter(|(_, fold)| fold.value_slot.is_some())
+                    .map(|(name, _)| name)
+                    .collect();
+                self.direct_project_type_contestants(namespace)
+                    .into_iter()
+                    .filter(|(name, _)| fragment_values.contains(name))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        own_types.sort_by_key(|(_, file)| std::cmp::Reverse(*file));
         for (frag_path, frag_file) in fragments.iter().filter(|_| fragments_trusted).cloned() {
+            while own_types.last().is_some_and(|(_, file)| *file <= frag_file) {
+                let (name, _) = own_types.pop().expect("checked non-empty");
+                let entry = ScopeEntry::opened_declined(
+                    name,
+                    DeclineCause::OpenedTypeName,
+                    self.open_generation,
+                    open_pos,
+                );
+                self.module_frame().entries.push(entry);
+            }
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2463,7 +2519,7 @@ impl<'a> Resolver<'a> {
                 let generation = self.open_generation;
                 let entries: Vec<ScopeEntry> = evicting_types
                     .into_iter()
-                    .map(|name| {
+                    .map(|(name, _)| {
                         ScopeEntry::opened_declined(
                             name,
                             DeclineCause::OpenedTypeName,
@@ -2481,6 +2537,16 @@ impl<'a> Resolver<'a> {
                 self.open_generation += 1;
             }
             count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
+        }
+        // The namespace's types of a file later than every fragment's.
+        for (name, _) in own_types {
+            let entry = ScopeEntry::opened_declined(
+                name,
+                DeclineCause::OpenedTypeName,
+                self.open_generation,
+                open_pos,
+            );
+            self.module_frame().entries.push(entry);
         }
         // What each fragment adds that this fold does not model
         // ([`Self::module_open_contributions`]). These are marks, so they go
@@ -3070,6 +3136,14 @@ impl<'a> Resolver<'a> {
                 _ => head_is_value,
             };
             if !value_takes_qualifier {
+                if self.lower_arity_namesake_possible(head, type_id, None) {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                    );
+                    return;
+                }
                 self.record_type_qualifier(first, case_seg, type_id, case_res);
                 return;
             }
@@ -3093,6 +3167,18 @@ impl<'a> Resolver<'a> {
         {
             let head = &*id_text(first);
             let head_is_value = self.head_case_classification(head) == Some(false);
+            let type_takes_qualifier = !head_is_value
+                || self
+                    .value_slot_position(head)
+                    .is_some_and(|vr| vr <= self.defs[type_id.index()].range.start());
+            if type_takes_qualifier && self.lower_arity_namesake_possible(head, type_id, None) {
+                self.defer_with_cause(
+                    first.text_range(),
+                    segments,
+                    DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                );
+                return;
+            }
             if head_is_value {
                 // FCS gives a value in scope the qualifier outright unless a
                 // type took its unqualified slot ([`Self::head_value_slot`]):
@@ -3353,8 +3439,17 @@ impl<'a> Resolver<'a> {
                 // same-file-rooted whichever reading F# takes, so an earlier
                 // file's same-written-path case is never the target.
                 && !self.cross_file_case_shadowed_same_file(&written_path)
-                && let Some(id) = self.cross_file_type_case(&written_path, false)
+                && let found = self.cross_file_type_case(&written_path, false)
+                && !matches!(found, CrossFileCase::Miss)
             {
+                let CrossFileCase::Hit(_, id) = found else {
+                    self.defer_with_cause(
+                        first.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                    );
+                    return;
+                };
                 let whole = TextRange::new(
                     first.text_range().start(),
                     segments.last().expect("non-empty path").text_range().end(),
@@ -3892,8 +3987,11 @@ impl<'a> Resolver<'a> {
     /// `case_seg`): the head → the enum *type* def and the whole span → the case
     /// def, mirroring FCS. Shared by expression ([`resolve_long_ident`](Self::resolve_long_ident))
     /// and pattern ([`resolve_pat_types`](Self::resolve_pat_types)) position, both
-    /// of which FCS resolves identically. Returns `true` (and records both) iff it
-    /// matched; otherwise records nothing (the path defers, never a wrong member).
+    /// of which FCS resolves identically. Returns `true` iff it matched: it then
+    /// records both, or — when a namesake of lower arity may be the type FCS
+    /// binds ([`Self::lower_arity_namesake_possible`]) — records the path's
+    /// decline. Otherwise it records nothing (the path defers, never a wrong
+    /// member).
     pub(super) fn record_type_case_path(
         &mut self,
         type_seg: &SyntaxToken,
@@ -3902,6 +4000,14 @@ impl<'a> Resolver<'a> {
         let Some((type_id, case_res)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
+        if self.lower_arity_namesake_possible(&id_text(type_seg), type_id, None) {
+            self.defer_with_cause(
+                type_seg.text_range(),
+                &[type_seg.clone(), case_seg.clone()],
+                DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+            );
+            return true;
+        }
         self.record_type_qualifier(type_seg, case_seg, type_id, case_res);
         true
     }
@@ -4411,6 +4517,13 @@ impl<'a> Resolver<'a> {
                     // (`Miss`) rather than emit a case with no type target.
                     return Some(SameFileQualified::Miss);
                 };
+                // FCS tries the module's same-named types fewest generic
+                // parameters first (#323).
+                if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
+                    return Some(SameFileQualified::Decline(
+                        DeclineCause::QualifierArityNamesake,
+                    ));
+                }
                 return Some(SameFileQualified::Emit { type_id, case_res });
             }
             if !in_pattern && seg.ty {
@@ -4426,6 +4539,11 @@ impl<'a> Resolver<'a> {
                     self.emittable_type_member(&module_path, ty, case, use_pos)
                     && let Some(&type_id) = self.type_defs.get(&module_path).and_then(|m| m.get(ty))
                 {
+                    if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
+                        return Some(SameFileQualified::Decline(
+                            DeclineCause::QualifierArityNamesake,
+                        ));
+                    }
                     return Some(SameFileQualified::Emit {
                         type_id,
                         case_res: Resolution::Local(member_def),
@@ -4497,6 +4615,16 @@ impl<'a> Resolver<'a> {
                 true
             }
             SameFileQualified::DeferStop => true,
+            SameFileQualified::Decline(cause) => {
+                if let Some(head_seg) = segments.first() {
+                    self.defer_with_cause(
+                        head_seg.text_range(),
+                        segments,
+                        DeclineSite::pre_walk(cause),
+                    );
+                }
+                true
+            }
             SameFileQualified::Miss => false,
         }
     }
@@ -4571,7 +4699,17 @@ impl<'a> Resolver<'a> {
                 );
                 return;
             }
-            let project = self.cross_file_type_case_tiered(&written, false);
+            let project = match self.cross_file_type_case_tiered(&written, false) {
+                CrossFileCase::Hit(tier, id) => Some((tier, id)),
+                CrossFileCase::Miss => None,
+                CrossFileCase::Declined => {
+                    self.record_path_decline(
+                        segs,
+                        DeclineSite::pre_walk(DeclineCause::QualifierArityNamesake),
+                    );
+                    return;
+                }
+            };
             // Order the project reading against the referenced assemblies by the
             // tier each reaches the head at. An `open` out-ranks the enclosing
             // namespace and the root, and a project module **alias** head
@@ -5206,13 +5344,14 @@ impl<'a> Resolver<'a> {
         // block's start, where the implicit auto-opens' values and the
         // namespace's own folded values sit too, in an order the positions do
         // not record.
+        let namespace = self.enclosing_namespace();
         let enclosing_type = {
-            let ns = self.enclosing_namespace();
-            let mut path = ns.to_vec();
+            let mut path = namespace.to_vec();
             path.push(head.to_string());
-            (!ns.is_empty())
-                .then(|| self.preceding.exported_type_slot_class(&path))
+            (!namespace.is_empty())
+                .then(|| self.preceding.exported_type_slot(&path))
                 .flatten()
+                .map(|slot| slot.class_at(&path, namespace))
                 .filter(|class| *class != SlotClass::Keeps)
         };
         if let Some(class) = enclosing_type {
@@ -5233,11 +5372,16 @@ impl<'a> Resolver<'a> {
             // not decide the slot: within the file take the latest entry
             // (codex round 2), and a same-file export shadows an earlier
             // file's at the same path entirely (codex round 6).
-            if let Some((_, _, class)) = self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
+            // The `open` brings the type only if it is accessible where the
+            // `open` is written, which these prefixes do not record.
+            let seen = |slot: TypeSlot| {
+                slot.class_through_scoped_open(&path, namespace, &self.container_path)
+            };
+            if let Some((_, _, slot)) = self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
             {
-                note(*pos, *class);
-            } else if let Some(class) = self.preceding.exported_type_slot_class(&path) {
-                note(*pos, class);
+                note(*pos, seen(*slot));
+            } else if let Some(slot) = self.preceding.exported_type_slot(&path) {
+                note(*pos, seen(slot));
             } else if self
                 .type_defs
                 .get(prefix.as_slice())
@@ -5246,9 +5390,9 @@ impl<'a> Resolver<'a> {
                 // A same-file type filed under the opened module's container
                 // path but absent from the exports — an ANONYMOUS-ROOT
                 // module's type (`export_type_path` skips those files). Its
-                // slot class is in `type_slot_classes`, but the export-side
-                // `private` downgrade (probe M20r) never ran, so treat the
-                // contest as undecidable rather than trust it.
+                // slot class is in `type_slot_classes`, but its access root
+                // was never exported (probe M20r), so treat the contest as
+                // undecidable rather than trust it.
                 note(*pos, SlotClass::Unknown);
             }
         }
@@ -5342,7 +5486,7 @@ impl<'a> Resolver<'a> {
                 let mut path = prefix.clone();
                 path.push(head.to_string());
                 self.type_path_exports.iter().any(|(p, _, _)| *p == path)
-                    || self.preceding.exported_type_slot_class(&path).is_some()
+                    || self.preceding.exported_type_slot(&path).is_some()
                     || self
                         .type_defs
                         .get(prefix.as_slice())
@@ -5358,8 +5502,7 @@ impl<'a> Resolver<'a> {
             let ns = self.enclosing_namespace();
             let mut path = ns.to_vec();
             path.push(head.to_string());
-            (!ns.is_empty() && self.preceding.exported_type_slot_class(&path).is_some())
-                .then_some(0)
+            (!ns.is_empty() && self.preceding.exported_type_slot(&path).is_some()).then_some(0)
         };
         lexical
             .chain(opened)

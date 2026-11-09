@@ -17,7 +17,7 @@ use crate::diagnostics::SemaDiagnostic;
 use super::contributors::{FileContributions, RecBlock};
 use super::model::{
     DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
-    ItemId, OpenTrace, ProjectItems, Resolution, SlotClass,
+    ItemId, OpenTrace, ProjectItems, Resolution, SlotClass, TypeSlot,
 };
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
@@ -763,6 +763,18 @@ impl DeclKinds {
     }
 }
 
+/// What the cross-file type-qualified case index reads a path as — the
+/// result of [`Resolver::cross_file_type_case`].
+pub(super) enum CrossFileCase {
+    /// An earlier file's case reads the path, at this tier.
+    Hit(CaseTier, ItemId),
+    /// An earlier file's case reads the path, but a namesake of its type may
+    /// be what FCS binds: decline, and try no lower tier.
+    Declined,
+    /// No earlier file's case reads the path.
+    Miss,
+}
+
 /// How a same-file module-qualified `Pal.Color.Red` classifies — the result of
 /// [`Resolver::classify_same_file_module_qualified_case`]. The `DeferStop`/`Miss`
 /// split is the soundness keystone (see that method): when the head binds same-file,
@@ -777,6 +789,9 @@ pub(super) enum SameFileQualified {
     /// The head binds same-file but the path is contended / unresolvable —
     /// same-file-rooted, so defer **and stop** (do not try cross-file branches).
     DeferStop,
+    /// As [`Self::DeferStop`], for a named guard whose cause the path's
+    /// decline records.
+    Decline(DeclineCause),
     /// Nothing same-file claims the head (or the segment is a submodule a
     /// qualified-value branch resolves) — the caller may try cross-file branches.
     Miss,
@@ -876,6 +891,12 @@ pub(super) struct Resolver<'a> {
     /// resolution reads it so a `private` type inaccessible from the reference site
     /// (e.g. a sibling module) does not resolve its case/member (FCS FS1092).
     pub(super) type_access_roots: HashMap<Vec<String>, HashMap<String, Option<usize>>>,
+    /// Each in-file case of a union whose representation is `private`, by its
+    /// binder, to the union's container: the case is usable only from within it
+    /// ([`Self::case_usable_here`]). Keyed by binder rather than by export
+    /// because an anonymous-root file's cases have no export, and still reach a
+    /// sibling module through `A.U.X`.
+    pub(super) case_repr_roots: HashMap<DefId, Vec<String>>,
     /// The **complete declared-name view of each container** — keyed like
     /// [`Self::type_defs`], mapping each declared name to the namespaces it occupies
     /// ([`DeclKinds`]). Populated from the same declaration walk that fills
@@ -1106,9 +1127,9 @@ pub(super) struct Resolver<'a> {
     /// ([`Resolver::open_contests_candidate`](Self::open_contests_candidate)).
     /// Source-ordered ([`define_type`](Self::define_type)'s last-wins carries
     /// over); empty for an anonymous-root file (no cross-file path). Each
-    /// entry also carries the type's [`SlotClass`], consumed by
+    /// entry also carries the type's [`TypeSlot`], consumed by
     /// [`head_value_slot`](Self::head_value_slot) to decide eviction.
-    pub(super) type_path_exports: Vec<(Vec<String>, bool, SlotClass)>,
+    pub(super) type_path_exports: Vec<(Vec<String>, bool, TypeSlot)>,
     /// Opened namespace reading-groups in scope, **one [`OpenGroup`] per
     /// `open`**, in source order — F#'s implicit auto-opens first, then the
     /// file's explicit `open` decls (an `open` is in scope for the decls after

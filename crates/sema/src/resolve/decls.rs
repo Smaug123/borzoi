@@ -7,25 +7,22 @@ use borzoi_cst::syntax::{
 
 use crate::def::{DefId, DefKind};
 
-use super::contributors::Contribution;
+use super::contributors::{Contribution, RequireQualifiedAccess};
 use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
+    TypeSlot,
 };
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
 };
-use super::{
-    attrs_auto_open, attrs_require_qualified_access, id_text, is_type_augmentation, single_ident,
-    type_long_ident_path,
-};
+use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path};
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
 /// Color` — the `ACCESS_TOK` *before* the name's `LONG_IDENT`). FCS does not
-/// import a private type at an `open` from outside its declaration group
-/// (probe M20r, codex round 4), so [`Resolver::export_type_path`]
-/// downgrades its slot class to [`SlotClass::Keeps`]; within its own
-/// container the type is fully visible and still evicts (probe M20s), so
-/// [`Resolver::define_type`]'s class is untouched. The *after-name* slot
+/// import a private type at an `open` from outside its container (probe M20r,
+/// codex round 4), but does from under it (probe M20s, and an `open` of the
+/// namespace from a descendant one), so the export carries the type's access
+/// root beside its class ([`TypeSlot`]). The *after-name* slot
 /// (`type C private = …`, an `ACCESS_TOK` after the `LONG_IDENT`) is
 /// FCS-discarded — the type stays public — and must not count; a ctor's or
 /// repr's modifier nests inside its own node and never appears as a direct
@@ -58,6 +55,18 @@ pub(super) fn header_is_private(node: &borzoi_cst::syntax::SyntaxNode) -> bool {
         }
     }
     false
+}
+
+/// Whether `defn` is a union whose **representation** is `private` (`type U =
+/// private X | Y`, [`UnionRepr::access`](borzoi_cst::syntax::UnionRepr::access)):
+/// the type stays as accessible as its header says, and its cases are usable
+/// only within the type's container. `internal` restricts nothing within one
+/// project, and `public` nothing at all.
+pub(super) fn union_repr_is_private(defn: &TypeDefn) -> bool {
+    matches!(
+        defn.repr(),
+        Some(TypeDefnRepr::Union(u)) if u.access().is_some_and(|t| t.text() == "private")
+    )
 }
 
 /// Merge one auto-open type-shadow contribution into the scope's set.
@@ -228,6 +237,7 @@ impl<'a> Resolver<'a> {
         name: &str,
         def: DefId,
         type_is_private: bool,
+        repr_access_root: Option<Vec<String>>,
         kind: CaseKind,
     ) -> Option<ItemId> {
         let mut qualified = self.container_path.clone();
@@ -262,6 +272,7 @@ impl<'a> Resolver<'a> {
             // of a `private` type is scoped to the type's container) and any
             // enclosing `private` module (oracle-pinned D3/D5).
             access_root_len: self.export_access_root_len(type_is_private),
+            repr_access_root,
             attributed: false,
         });
         self.push_export_decl(
@@ -304,7 +315,7 @@ impl<'a> Resolver<'a> {
     /// live on its target, which sema does not chase cross-file, so it passes
     /// `false` (present, but case-opaque). Skipped in an anonymous-root file (no
     /// real cross-file container path), like [`Self::export_case`].
-    pub(super) fn export_type_path(&mut self, name: &str, cases_enumerable: bool, slot: SlotClass) {
+    pub(super) fn export_type_path(&mut self, name: &str, cases_enumerable: bool, slot: TypeSlot) {
         if self.anonymous_root {
             return;
         }
@@ -330,6 +341,7 @@ impl<'a> Resolver<'a> {
         def: DefId,
         type_name: &str,
         type_is_private: bool,
+        repr_access_root: Option<Vec<String>>,
         kind: CaseKind,
     ) -> Option<ItemId> {
         if self.anonymous_root {
@@ -350,6 +362,7 @@ impl<'a> Resolver<'a> {
             // namespace; the access-root is recorded for consistency (it is
             // reached only through the type-qualified index).
             access_root_len: self.export_access_root_len(type_is_private),
+            repr_access_root,
             attributed: false,
         });
         // The export-decl-list twin: a case `Item` decl (no value path). Its
@@ -624,15 +637,13 @@ impl<'a> Resolver<'a> {
                                     | TypeDefnRepr::Delegate(_)
                             )
                         );
-                        // A `private` type is invisible to an `open` from
-                        // outside its declaration group (probe M20r), so the
-                        // cross-file export provably keeps the slot; the
-                        // in-container class (`define_type` above) is
-                        // untouched — the type still evicts locally (M20s).
-                        let export_slot = if type_header_is_private(defn) {
-                            SlotClass::Keeps
-                        } else {
-                            slot
+                        // An `open` brings a `private` type only where it is
+                        // accessible (probes M20r/M20s): the export keeps its
+                        // class and carries the access root each reader asks
+                        // from its own site.
+                        let export_slot = TypeSlot {
+                            class: slot,
+                            access_root_len: type_access_root,
                         };
                         self.export_type_path(&id_text(&name), cases_enumerable, export_slot);
                         // The export-decl-list twin: a genuine `Type` decl feeding
@@ -670,10 +681,15 @@ impl<'a> Resolver<'a> {
                         // so a qualified `Color.Red` resolves (for unions and enums
                         // uniformly); `[<RequireQualifiedAccess>]` keeps the cases
                         // out of the *value* frame — reachable then only as `T.Case`.
-                        let require_qualified = attrs_require_qualified_access(defn.attributes());
-                        self.define_union_cases(defn, &name, require_qualified);
-                        if !require_qualified {
-                            self.unproven_bare_cases(defn);
+                        // Where the attribute is neither certain nor certainly
+                        // absent, every name the cases could take declines.
+                        let rqa = self.require_qualified_access(defn.attributes());
+                        self.define_union_cases(defn, &name, rqa);
+                        if matches!(rqa, RequireQualifiedAccess::Unknown { .. }) {
+                            self.unproven_bare_cases(
+                                defn,
+                                u32::from(types.syntax().text_range().start()),
+                            );
                         }
                         // An enum's cases (`Color = Red = 0 | …`) populate the same
                         // [`Self::type_cases`] index — never the value frame, so a
@@ -693,8 +709,8 @@ impl<'a> Resolver<'a> {
                     if !is_type_augmentation(defn)
                         && let Some(name) = defn.long_id().and_then(single_ident)
                     {
-                        let require_qualified =
-                            self.certainly_require_qualified_access(defn.attributes());
+                        let require_qualified = self.require_qualified_access(defn.attributes())
+                            == RequireQualifiedAccess::Certain;
                         self.shadow_abbreviation_case(defn, &name, require_qualified);
                     }
                 }
@@ -2046,8 +2062,9 @@ impl Resolver<'_> {
             return;
         }
         self.opaque_binders.insert(case.text_range());
-        // A type that requires qualified access puts no bare case in scope.
-        if attrs_require_qualified_access(defn.attributes()) {
+        // A type that certainly requires qualified access puts no bare case
+        // in scope.
+        if self.require_qualified_access(defn.attributes()) == RequireQualifiedAccess::Certain {
             return;
         }
         let contribution = Contribution {

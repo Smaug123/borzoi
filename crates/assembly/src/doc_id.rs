@@ -76,10 +76,10 @@
 //! member left without its pickled key falls back to the computed (Roslyn)
 //! form, which for the F# dialect's shapes is not the key: a member of an
 //! assembly whose signature pickle does not decode, a same-name same-arity
-//! overload group whose keys cannot be told apart, and an entity or member the
-//! projection does not carry at all (type and measure abbreviations without a
-//! marker, non-public union cases, members fsc compiles as statics such as
-//! `FSharpOption.IsSome`).
+//! overload group whose keys its members' signatures cannot tell apart (see
+//! `pair_keys_by_fit`), and an entity or member the projection does not carry
+//! at all (type and measure abbreviations without a marker, non-public union
+//! cases).
 //!
 //! The ID format cannot tell every pair of members apart — a static and an
 //! instance method with one signature share an ID, and fsc sometimes writes one
@@ -407,6 +407,52 @@ pub(crate) fn recorded_method_key_fits(
         erased_typars,
         true,
     )
+}
+
+/// For the keys recorded by the vals of one overload slot and the members
+/// occupying it, the index of the key each member owns, when the members'
+/// signatures force the pairing; `None` otherwise.
+///
+/// The vals sharing a slot (one name, arity and staticness) compile to its
+/// members in an order neither the IL nor the pickle records, so the slot
+/// alone cannot say which val is which member. A val's key spells its
+/// parameter types, and `fits` ([`recorded_key_fits`]) reads them against a
+/// member's IL signature, so the keys can: the pairing is forced when there
+/// are as many keys as members, no two keys are alike, and the fit relation is
+/// a perfect matching in which every member fits exactly one key and every key
+/// fits exactly one member. Then a member's own val's key is the one it fits,
+/// unless that key fails to fit its own member *and* fits a sibling instead —
+/// a parameter shape outside the dialect rules `fits` reads, spelled exactly by
+/// a sibling's IL, for every member of the cycle at once.
+///
+/// Anything looser declines: a member fitting two keys (current fsc spells a
+/// 2-D array `[0:]` and a 3-D one `[0:,0:]`, and the 3-D key fits a 2-D member
+/// under the older spelling), a key fitting none, or a repeated key.
+pub(crate) fn pair_keys_by_fit<K: PartialEq, M>(
+    keys: &[K],
+    members: &[M],
+    fits: impl Fn(&K, &M) -> bool,
+) -> Option<Vec<usize>> {
+    if keys.len() != members.len()
+        || keys.is_empty()
+        || keys.iter().enumerate().any(|(i, k)| keys[..i].contains(k))
+    {
+        return None;
+    }
+    let fit: Vec<Vec<bool>> = members
+        .iter()
+        .map(|m| keys.iter().map(|k| fits(k, m)).collect())
+        .collect();
+    let mut pairing = Vec::with_capacity(members.len());
+    for row in &fit {
+        let mut fitting = row.iter().enumerate().filter(|(_, f)| **f);
+        match (fitting.next(), fitting.next()) {
+            (Some((k, _)), None) => pairing.push(k),
+            _ => return None,
+        }
+    }
+    let each_key_once = (0..keys.len()).all(|k| fit.iter().filter(|row| row[k]).count() == 1);
+    each_key_once.then_some(pairing)
 }
 
 fn key_fits(

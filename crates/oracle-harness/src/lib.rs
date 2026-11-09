@@ -20,6 +20,10 @@
 //! [`nuget_oracle`] is the one oracle driver kept here rather than beside its
 //! crate's tests, because more than one crate grades against it.
 //!
+//! [`xml_pump`] is not about oracles either: it builds the deeply nested
+//! documents that hold every reader of untrusted XML to bounded recursion, for
+//! `borzoi-msbuild` and `borzoi-nuget` alike.
+//!
 //! Test-only: a `dev-dependency` of the harnesses — and a regular dependency of
 //! `borzoi-corpus-diff`, which is itself an unpublished test shell whose gate
 //! runs in its binary — never of shipping code.
@@ -30,7 +34,9 @@ pub mod manifest;
 pub mod module_tree;
 pub mod nuget_oracle;
 pub mod panic_silence;
+pub mod par_map;
 pub mod restore_globals;
+pub mod xml_pump;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};

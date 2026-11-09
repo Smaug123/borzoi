@@ -163,7 +163,9 @@ All of phases 1–10 are complete. One line per phase:
    offside clause bodies, `SynExpr.MatchLambda`, the `SimplePatsOfPat` lowering
    for `fun`-args (`_argN` counter matching FCS's `SynArgNameGenerator`).
 6. **Patterns (`SynPat`)** — every in-scope variant; long-ident heads with
-   dotted paths; struct tuple patterns; the precedence-climbing infix tail.
+   dotted paths, in every atomic position (`fun X.Y -> …`, graded by
+   `parser_diff_functions::diff_ast_fun_lambda_dotted_head_grid`); struct
+   tuple patterns; the precedence-climbing infix tail.
 7. **Types (`SynType`)** — every variant reachable from the typed-paren surface;
    long-tail variants folded into their phase-9/10 consumers.
 8. **Module/namespace structure** — `open` (incl. `open type`), named-module /
@@ -247,8 +249,10 @@ we keep), we do **not** degrade to match it — that is a leniency, not a bug.
 
 ## Open slices (small, PR-sized, harness-verifiable)
 
-(Two former open slices have since landed and are no longer open:
-`global.`-rooted patterns (#915) and module/class-scope `let … in` (#681).)
+(Three former open slices have since landed and are no longer open:
+`global.`-rooted patterns (#915), module/class-scope `let … in` (#681), and
+`_`-rooted patterns (`_.M`, FCS's `UNDERSCORE DOT pathOp`, #8). The last
+carries a known leniency below F# 4.7; see "Known leniencies".)
 
 - **Non-block CE binders** — `let!`/`use!`/`and!` outside block position
   (`(let! x = m in x)`, `when let! …`, an infix RHS `e + let! …`) arrive as a
@@ -260,10 +264,6 @@ we keep), we do **not** degrade to match it — that is a leniency, not a bug.
 - **Niche type-defn forms** — `SynMemberDefn.NestedType` (`static type …`
   inside a class); the narrow residual `SynTypeConstraint` gap
   `default 'a : t`.
-- **`_.M` special-rooted pattern** — FCS's `UNDERSCORE DOT pathOp`, gated on the
-  F# 4.7 `SingleUnderscorePattern` feature; rejects cleanly today.
-- **`('a,'b) T` PrefixList typar form** (`SynTyparDecls.PrefixList`) — a clean
-  error today.
 
 ## Known leniencies (well-formed tree, only a missing FCS diagnostic)
 
@@ -286,6 +286,19 @@ fuller divergence catalogue is `docs/fcs-divergences.md`.)
   second interface on a layout rule we don't replicate.
 - **`use mutable` / `use rec`** accepted where FCS errors (the modifier path is
   shared with `let`).
+- **`_.`-rooted patterns below F# 4.7** — `_.M`, `private _.M`, and the member
+  self-id `member _.M`. The FCS that `tools/fcs-dump` pins (43.12.204) gates
+  FCS's `UNDERSCORE DOT pathOp` on `SingleUnderscorePattern` and reports the
+  `.` as FS0010 at `<LangVersion>4.6`; upstream FCS removed that gate
+  (dotnet/fsharp#20222). Our tree is identical at every version, and we report
+  nothing. Modelling the gate would make every file holding a `member _.M`
+  version-dependent under `diagnostics_are_version_invariant`, so a guessed
+  version would retain no diagnostics there (for example, hover would lose the
+  binder types of an orphan buffer). That is a cost paid at every version,
+  to flag a project that literally pins 4.6. Pinned by
+  `parser_diff_underscore_pat::underscore_pat_below_4_7_is_lenient_lossless`,
+  which fails once the fcs-dump pin moves past dotnet/fsharp#20222 and FCS
+  stops erroring: delete this entry and that test then.
 
 ## Risks carried forward
 

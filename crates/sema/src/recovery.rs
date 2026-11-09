@@ -79,8 +79,13 @@ impl SyntaxRecovery {
     }
 
     /// The reading to use when the language version the tree was parsed
-    /// against is a **guess** rather than a known fact — an untrusted
-    /// `LangVersion` provenance, or a file with no project at all.
+    /// against is a **guess** rather than a known fact. The LSP has two such
+    /// callers: the project fold, for a project whose `LangVersion` is written
+    /// under a gate the evaluator cannot pin (untrusted provenance), and the
+    /// single-file hover fallback, which serves orphan buffers and any file
+    /// project hover could not answer for. An ordinary SDK project's provenance
+    /// is trusted (`sdk_project_fold_e2e::ordinary_sdk_projects_have_trusted_langversion_provenance`
+    /// in the `borzoi` crate), so its fold reads [`of`](Self::of) instead.
     ///
     /// A version-gated legality check reports a feature error and parses the
     /// construct anyway, so a guess landing on the wrong side of a feature
@@ -93,11 +98,11 @@ impl SyntaxRecovery {
     /// So the source is asked whether its diagnostics depend on the version at
     /// all — by comparing whole diagnostic sets across the version ladder, which
     /// costs two extra parses and is why this is not the default constructor.
-    /// Almost no file's diagnostics do depend on it, which is what makes this a
+    /// Few files' diagnostics do depend on it, which is what makes this a
     /// per-file question rather than a blanket
-    /// [`Unretained`](Self::Unretained) for every untrusted project: untrusted
-    /// is the *normal* state, since every real SDK project's conditional
-    /// `LangVersion` default taints provenance.
+    /// [`Unretained`](Self::Unretained) for every guessed version: an
+    /// orphan buffer is always a guess, so a blanket answer would withhold
+    /// every annotation from every one of them.
     pub fn of_guessed_version(
         parse: &Parse,
         source: &str,

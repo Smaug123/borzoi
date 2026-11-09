@@ -2061,3 +2061,169 @@ fn proptest_resolver_matches_layered_oracle() {
         "distribution skew: dotnet_pick={d}, nuget_pick={n}, version_not_satisfied={r}, not_found={nf}"
     );
 }
+
+/// `nuget_package_version` returning `None` is a claim that the resolution
+/// reads no NuGet package folder: `resolve_sdk` answers the same whatever
+/// folder it is handed, `None` included. A caller that cannot say which folder
+/// NuGet would use (the LSP, when the NuGet settings model declines) passes
+/// `None` for exactly those names and declines the rest, so this is the
+/// property that makes that decline sound rather than merely plausible.
+///
+/// Swept over every way a name can carry (or fail to carry) a version: no pin,
+/// a per-import pin present or absent on disk, an unparseable or empty
+/// per-import pin, an `msbuild-sdks` pin under the name or under another
+/// casing of it, a host spec, and a workload locator name, against packages
+/// installed in the dotnet root, the NuGet folder, both or neither.
+#[test]
+fn a_name_without_a_nuget_version_never_reads_the_nuget_folder() {
+    use super::workloads::WorkloadEnvironment;
+    use super::{nuget_package_version, resolve_sdk};
+    use std::collections::BTreeMap;
+
+    const NAMES: [&str; 3] = [
+        "Foo.Sdk",
+        "Microsoft.NET.Sdk",
+        "Microsoft.NET.SDK.WorkloadAutoImportPropsLocator",
+    ];
+    const VERSIONS: [&str; 2] = ["1.0.0", "2.0.0"];
+    // `None` is no per-import pin; the rest are the text after the `/`.
+    const PER_IMPORT: [Option<&str>; 6] = [
+        None,
+        Some("1.0.0"),
+        Some("2.0"),
+        Some("3.0.0"),
+        Some("garbage"),
+        Some(""),
+    ];
+
+    #[derive(Clone, Copy, Debug)]
+    enum Place {
+        Dotnet,
+        Nuget,
+        Both,
+        Neither,
+    }
+    #[derive(Clone, Copy, Debug)]
+    enum Pins {
+        None,
+        Exact(usize),
+        /// Keyed by the name in another casing: `msbuild-sdks` keys match
+        /// exactly.
+        OtherCase(usize),
+    }
+
+    let strategy = (
+        0..NAMES.len(),
+        proptest::collection::vec(
+            prop_oneof![
+                Just(Place::Dotnet),
+                Just(Place::Nuget),
+                Just(Place::Both),
+                Just(Place::Neither),
+            ],
+            VERSIONS.len(),
+        ),
+        0..PER_IMPORT.len(),
+        prop_oneof![
+            Just(Pins::None),
+            (0..VERSIONS.len()).prop_map(Pins::Exact),
+            (0..VERSIONS.len()).prop_map(Pins::OtherCase),
+        ],
+        any::<bool>(),
+    );
+
+    let unread_with_packages = Cell::new(0usize);
+    let read_and_decisive = Cell::new(0usize);
+    let mut runner = TestRunner::new(PtConfig {
+        cases: 512,
+        ..PtConfig::default()
+    });
+    runner
+        .run(
+            &strategy,
+            |(name, installs, per_import, pins, host_spec)| {
+                let name = NAMES[name];
+                let tmp = TempDir::new().unwrap();
+                let dotnet_root = tmp.path().join("dotnet");
+                let nuget_dir = tmp.path().join("nuget");
+                fs::create_dir_all(&dotnet_root).unwrap();
+                fs::create_dir_all(&nuget_dir).unwrap();
+                let mut nuget_has_packages = false;
+                for (version, place) in VERSIONS.iter().zip(&installs) {
+                    if matches!(place, Place::Dotnet | Place::Both) {
+                        install_sdk(&dotnet_root, version, name);
+                    }
+                    if matches!(place, Place::Nuget | Place::Both) {
+                        install_sdk_nuget(&nuget_dir, version, name);
+                        nuget_has_packages = true;
+                    }
+                }
+                let sdk_ref = match PER_IMPORT[per_import] {
+                    Some(version) => format!("{name}/{version}"),
+                    None => name.to_owned(),
+                };
+                let pinned = |key: String, i: usize| {
+                    BTreeMap::from([(key, SdkVersion::parse(VERSIONS[i]).unwrap())])
+                };
+                let msbuild_sdks: BTreeMap<String, SdkVersion> = match pins {
+                    Pins::None => BTreeMap::new(),
+                    Pins::Exact(i) => pinned(name.to_owned(), i),
+                    Pins::OtherCase(i) => pinned(name.to_ascii_uppercase(), i),
+                };
+                let spec = host_spec.then(|| {
+                    VersionSpec::with_version(
+                        SdkVersion::parse(VERSIONS[0]).unwrap(),
+                        RollForward::Disable,
+                        true,
+                    )
+                });
+                let workload_env = WorkloadEnvironment {
+                    user_dotnet_root: None,
+                    overrides_present: false,
+                    global_json_pins_workload_set: false,
+                };
+                let resolve = |nuget: Option<&Path>| {
+                    resolve_sdk(
+                        &dotnet_root,
+                        nuget,
+                        &sdk_ref,
+                        spec.as_ref(),
+                        Some(&msbuild_sdks),
+                        &workload_env,
+                    )
+                };
+                let with_folder = resolve(Some(&nuget_dir));
+                let without_folder = resolve(None);
+                match nuget_package_version(&sdk_ref, Some(&msbuild_sdks)) {
+                    None => {
+                        prop_assert_eq!(
+                            &with_folder,
+                            &without_folder,
+                            "{} has no NuGet version, yet the NuGet folder moved its resolution",
+                            sdk_ref
+                        );
+                        if nuget_has_packages {
+                            unread_with_packages.set(unread_with_packages.get() + 1);
+                        }
+                    }
+                    Some(_) => {
+                        if with_folder != without_folder {
+                            read_and_decisive.set(read_and_decisive.get() + 1);
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    // Non-vacuity: the property is tested only on cases whose NuGet folder
+    // holds a package it could have read, and the predicate is worth something
+    // only if, where it says `Some`, the folder does sometimes decide.
+    assert!(
+        unread_with_packages.get() >= 50 && read_and_decisive.get() >= 20,
+        "unread_with_packages={}, read_and_decisive={}",
+        unread_with_packages.get(),
+        read_and_decisive.get()
+    );
+}

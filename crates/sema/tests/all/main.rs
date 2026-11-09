@@ -16,6 +16,7 @@ mod augmentation_scope_diff;
 mod auto_open_fold_back;
 mod auto_open_member_sweep;
 mod binder_site_grid;
+mod case_access_grid;
 mod classify_assembly_diff;
 mod classify_diff;
 mod commit_surface;
@@ -116,14 +117,17 @@ mod resolve_union_cases;
 mod sig_namespace_fold_diff;
 mod silent_region_sweep;
 mod tier_order_diff;
+mod type_arity_route_grid;
 mod type_name_env_grid;
 mod types_census;
+mod union_rqa_attribute_grid;
 mod unmodelled_contributor_grid;
 mod use_rec;
 mod uses_census;
 mod uses_census_project;
 mod uses_project_smoke;
 mod uses_smoke;
+mod value_access_open_grid;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is
 /// silently never compiled or run. See the module for why that is worth a test.

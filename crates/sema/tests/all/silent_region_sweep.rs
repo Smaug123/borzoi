@@ -203,25 +203,25 @@ fn silent_regions_over_corpus() {
     sort_by_corpus_key(&root, &mut files);
     assert!(!files.is_empty(), "no .fs files under {root:?}");
 
-    let mut items = Vec::new();
-    let mut by_bucket: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
-    let mut clean = 0usize;
-    for path in &files {
-        let Ok(src) = std::fs::read_to_string(path) else {
-            continue;
-        };
+    // Per clean file, its corpus key and silent heads, in file order.
+    let swept = borzoi_oracle_harness::par_map::par_map(files.len(), |i| {
+        let path = &files[i];
+        let src = std::fs::read_to_string(path).ok()?;
         // A file our parser rejects is the parser gate's; its tree is
         // recovery, and silence there says nothing about the walk.
         let parsed = parse(&src);
         if !parsed.errors.is_empty() {
-            continue;
+            return None;
         }
-        if ImplFile::cast(parsed.root.clone()).is_none() {
-            continue;
-        }
+        ImplFile::cast(parsed.root.clone())?;
+        Some((corpus_relative(&root, path), silent_heads(&src, &parsed)))
+    });
+    let mut items = Vec::new();
+    let mut by_bucket: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    let mut clean = 0usize;
+    for (rel, heads) in swept.into_iter().flatten() {
         clean += 1;
-        let rel = corpus_relative(&root, path);
-        for h in silent_heads(&src, &parsed) {
+        for h in heads {
             items.push(format!("{rel} {}", h.bucket));
             let (n, sample) = by_bucket.entry(h.bucket).or_default();
             *n += 1;

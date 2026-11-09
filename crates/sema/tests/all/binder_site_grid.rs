@@ -503,6 +503,18 @@ const CONSTRUCTS: &[Construct] = &[
         status: Status::Interned,
     },
     Construct {
+        id: "type_parameter_on_type_single_prefix",
+        fcs: "SynComponentInfo typarDecls (SinglePrefix)",
+        template: "type «'T» C() =\n    member _.M(y: ‹'T›) = y\n",
+        status: Status::Interned,
+    },
+    Construct {
+        id: "type_parameter_on_type_prefix_list",
+        fcs: "SynComponentInfo typarDecls (PrefixList)",
+        template: "type ('U, «'T») C() =\n    member _.M(y: ‹'T›, z: 'U) = y\n",
+        status: Status::Interned,
+    },
+    Construct {
         id: "type_parameter_on_member",
         fcs: "SynValTyparDecls on a member",
         template: "type C() =\n    member _.M<«'T»>(y: ‹'T›) = y\n",
@@ -1214,6 +1226,11 @@ fn binders_declined_in_one_file_stay_declined_in_the_next() {
 /// A project's `(file name, source)` pairs, in Compile order.
 type Files = &'static [(&'static str, &'static str)];
 
+/// The [`MUST_COMMIT_CASES`] that commit only where FSharp.Core is read: the
+/// empty environment cannot show their `[<RequireQualifiedAccess>]` is
+/// FSharp.Core's, so a bare name there declines.
+const NEEDS_FSHARP_CORE: &[&str] = &["qualified_access_case_leaves_the_bare_name_alone"];
+
 const MUST_COMMIT_CASES: &[(&str, Files, &str)] = &[
     (
         "later_value_shadows_an_abbreviation_case",
@@ -1288,6 +1305,9 @@ fn possible_cases_decline_only_what_they_can_capture() {
             .and_then(|u| u.decl.clone())
             .unwrap_or_else(|| panic!("{id}: FCS binds the probe in-project"));
         for (env_name, env) in environments() {
+            if env_name == "empty-env" && NEEDS_FSHARP_CORE.contains(id) {
+                continue;
+            }
             let proj = resolve_project_files(&project(files), env);
             let ours = match proj.file(last).resolution_at(range) {
                 Some(res @ Resolution::Item(_)) => proj

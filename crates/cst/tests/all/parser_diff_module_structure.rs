@@ -1078,10 +1078,10 @@ fn diff_ast_type_and_chain_offside() {
 // `SynComponentInfo.typeParams: SynTyparDecls option`. Postfix `type T<'a>`
 // (`PostfixList`, via the phase-7.6 `HighPrecedenceTyApp` + `< … >` machinery)
 // and single-prefix `type 'a T` (`SinglePrefix`); each typar is a `SynTyparDecl`
-// wrapping a `SynTypar(ident, staticReq, _)`. The `preferPostfix` flag and the
-// `SynTyparDecls` *variant* are elided — the flat typar list (name + head-type)
-// is what's projected. (Parenthesised-prefix `('a, 'b) T` is deferred — its
-// `)` is LexFilter-swallowed; see `prefix_list_typars_are_a_clean_error`.)
+// wrapping a `SynTypar(ident, staticReq, _)`. The flat typar list (name +
+// head-type) and the `SynTyparDecls` case are projected; `preferPostfix` is
+// elided. Parenthesised prefix `type ('a, 'b) T` (`PrefixList`) has its own
+// case group, `parser_diff_prefix_typars`.
 
 /// Phase 9.3 — a single postfix type parameter: `T<'a>`.
 #[test]
@@ -3855,6 +3855,29 @@ fn diff_ast_nested_module_after_kw_attr_in_namespace() {
 #[test]
 fn diff_ast_nested_module_after_kw_attr_rec() {
     assert_asts_match("module [<A>] rec M =\n  let x = 1\n");
+}
+
+/// An after-keyword attribute whose argument is a generic type application
+/// (`typeof<int>`, `1.0<m>`, `f<int>(1)`): FCS's lex filter marks the `<…>`
+/// as a type application inside the attribute brackets too, so these parse
+/// cleanly, in every module-header form.
+#[test]
+fn diff_ast_module_after_kw_attr_type_application_arg() {
+    for src in [
+        "module [<A(typeof<int>)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>)>] M =\n  let x = 1\n",
+        "namespace N\nmodule [<A(typeof<int>)>] M =\n  let x = 1\n",
+        "module [<A(typeof<List<int>>)>] M\nlet x = 1\n",
+        "module [<A(typeof<Map<int, string>>)>] M\nlet x = 1\n",
+        "module [<A(typedefof<List<_>>)>] M\nlet x = 1\n",
+        "module [<A(1.0<m>)>] M\nlet x = 1\n",
+        "module [<A(f<int>(1))>] M\nlet x = 1\n",
+        "module [<A(x < y)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>); B(typeof<string>)>] M\nlet x = 1\n",
+        "module [<A(typeof<int>)>] rec M\nlet x = 1\n",
+    ] {
+        assert_asts_match(src);
+    }
 }
 
 /// Phase 10.7k — an after-keyword attribute on a module *abbreviation*

@@ -27,6 +27,9 @@ borzoi-msbuild = { path = ".", features = ["test-support"] }
 # `borzoi-spawn`), so every wait on a child runs under a deadline and
 # every launch takes the one process-global spawn lock.
 borzoi-oracle-harness.workspace = true
+# NuGet's settings model, for the global packages folder the corpus
+# differential's real `dotnet msbuild` resolves versioned SDKs from.
+borzoi-nuget.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 serde.workspace = true

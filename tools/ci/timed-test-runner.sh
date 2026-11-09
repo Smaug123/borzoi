@@ -74,7 +74,6 @@ awk -v pkg="${CARGO_PKG_NAME:-?}" -v target="$target" '
   }
 ' "$log" >>"$out" || true
 rm -f "$log"
-
 if [[ -n "$cpu_before" && -n "$cpu_after" ]]; then
   cores=$(nproc 2>/dev/null || echo 1)
   read -r busy0 total0 <<<"$cpu_before"

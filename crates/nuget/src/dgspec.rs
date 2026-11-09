@@ -35,8 +35,10 @@
 mod environment;
 mod json;
 mod log_code;
-mod nuspec;
+pub(crate) mod nuspec;
 mod resolve;
+#[cfg(test)]
+mod xml_nesting_pump;
 
 pub use environment::{
     EnvironmentDecline, EnvironmentVariable, INERT_ENVIRONMENT_VARIABLES, environment_variable,

@@ -62,8 +62,9 @@ use crate::fsharp_pickle::model::{
 use crate::model::{
     AbbreviationTarget, Access, ArgGroup, ArgGroups, AssemblyIdentity, Augmentation, CaseFields,
     CompilerMessage, CurriedArg, CurriedArgs, Entity, EntityKind, EqualityComparison,
-    FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, NamedTypeHead, Obsolete,
-    ReadValFacts, SkippedMember, TypeParameter, TypeRef, UnionCase, UnionCases, ValMeasures,
+    FSharpConstraints, FsharpSourceRange, Member, MemberMeasures, MethodLike, NamedTypeHead,
+    Obsolete, ReadValFacts, SkippedMember, TypeParameter, TypeRef, UnionCase, UnionCases,
+    ValMeasures,
 };
 use std::collections::HashMap;
 
@@ -2234,6 +2235,10 @@ fn rebuild_module_member_list(
         })
         .collect();
     let mut members = Vec::new();
+    // Per slot whose vals carry different doc keys, the positions in `members`
+    // of the methods they claimed, which are paired with the keys once every
+    // val has claimed (see the key's stamp below).
+    let mut unpaired: HashMap<(&str, ClaimShape), Vec<usize>> = HashMap::new();
     for v in &target.vals {
         // A `[<Literal>]` val compiles to a **static literal field**, not a method:
         // it claims that field. FCS brings it into scope (fsi: `open M` then bare
@@ -2368,10 +2373,13 @@ fn rebuild_module_member_list(
                 // getter has no sequence point and for whom this range is the
                 // only source location — always keep theirs.
                 m.definition_range = facts.definition_range.clone().flatten().map(Box::new);
-                // The key fsc wrote for the val — under-set, like the range,
-                // when the group's vals disagree, since which val claimed which
-                // MethodDef is then unprovable. Two vals sharing one key is
-                // fsc's own collision, and the doc XML holds one entry for both.
+                // The key fsc wrote for the val. Which val claimed which
+                // MethodDef is unprovable inside a group, so the key is a group
+                // fact: vals agreeing on one key hand it to each method they
+                // claimed (two vals sharing one key is fsc's own collision, and
+                // the doc XML holds one entry for both), while vals with keys of
+                // their own are paired with the group's methods by signature
+                // once every val has claimed (below).
                 //
                 // The claim itself is by name and arity, so the key must also
                 // fit the claimed method's signature: a helper the signature
@@ -2384,13 +2392,24 @@ fn rebuild_module_member_list(
                 // a guess the key's parameter types cannot always settle (fsc's
                 // array-rank spelling changed across versions). A refused method
                 // of the slot's name vetoes it too.
-                let key = facts.xml_doc_sig.clone().flatten();
                 let unambiguous = slot_candidates.get(&(name, shape))
                     == vals_per_slot.get(&(name, shape))
                     && !refused.contains(name);
-                m.xml_doc_sig = key.filter(|k| {
-                    unambiguous && crate::doc_id::recorded_method_key_fits(k, &m, v.measure_typars)
-                });
+                m.xml_doc_sig = match &facts.xml_doc_sig {
+                    Some(key) => key.clone().filter(|k| {
+                        unambiguous
+                            && crate::doc_id::recorded_method_key_fits(k, &m, v.measure_typars)
+                    }),
+                    None => {
+                        if unambiguous {
+                            unpaired
+                                .entry((name, shape))
+                                .or_default()
+                                .push(members.len());
+                        }
+                        None
+                    }
+                };
                 if facts.extension == Some(true) {
                     m.is_extension_method = true;
                 }
@@ -2412,6 +2431,39 @@ fn rebuild_module_member_list(
                     v.logical_name
                 ),
             }),
+        }
+    }
+    // Pair each disagreeing group's keys with the methods its vals claimed,
+    // when every val of the slot claimed one, every val is documented, and the
+    // methods' signatures force which key is whose (`doc_id::pair_keys_by_fit`).
+    for ((name, shape), claimed) in unpaired {
+        let Some(keys) = target
+            .vals
+            .iter()
+            .filter(|v| !v.is_literal && v.il_name() == name && claim_shape(v) == shape)
+            .map(|v| v.xml_doc_sig.as_deref().map(|k| (k, v.measure_typars)))
+            .collect::<Option<Vec<(&str, usize)>>>()
+        else {
+            continue;
+        };
+        let methods: Vec<&MethodLike> = claimed
+            .iter()
+            .map(|&i| match &members[i] {
+                Member::Method(m) => &**m,
+                _ => unreachable!("`unpaired` records claimed methods only"),
+            })
+            .collect();
+        let Some(pairing) =
+            crate::doc_id::pair_keys_by_fit(&keys, &methods, |&(key, erased), m| {
+                crate::doc_id::recorded_method_key_fits(key, m, erased)
+            })
+        else {
+            continue;
+        };
+        for (&i, k) in claimed.iter().zip(pairing) {
+            if let Member::Method(m) = &mut members[i] {
+                m.xml_doc_sig = Some(keys[k].0.to_string());
+            }
         }
     }
     for slot in pool.into_iter().flatten() {
@@ -4151,12 +4203,15 @@ enum SlotRole {
 /// `MembersOfFSharpTyconSorted` reads); a class's or struct's `val` fields are
 /// its object-model fields, keyed `F:` although an immutable one compiles to a
 /// property. Each val is matched to the projected member occupying its
-/// [`DocSlot`], and a slot is stamped only when that is unambiguous: every val
-/// sharing the slot carries the one key, and exactly as many members occupy
-/// the slot as vals claim it. Two documented `Add` overloads share the slot
-/// `Add/1` with different keys, so neither is stamped — handing a method its
-/// sibling's key would show the sibling's documentation — and both keep their
-/// computed IDs.
+/// [`DocSlot`], and a slot is stamped only when that is unambiguous: exactly as
+/// many members occupy the slot as vals claim it, and either every val sharing
+/// the slot carries the one key, or each carries its own and the members'
+/// signatures force which key is whose ([`crate::doc_id::pair_keys_by_fit`]).
+/// Two documented `Add` overloads share the slot `Add/1`; `Add(int)` and
+/// `Add(string)` each take the key that spells their parameter, while two
+/// whose keys cannot be told apart by signature are not stamped — handing a
+/// method its sibling's key would show the sibling's documentation — and keep
+/// their computed IDs.
 ///
 /// The type is located by `(namespace, containers, name, arity)` and must be
 /// the only row at that key ([`locate_type_row`]). A type with an erased
@@ -4868,16 +4923,13 @@ fn stamp_doc_sigs(
     physical: &PhysicalMethods,
     reshaped: &[bool],
 ) {
-    // Per slot: how many vals claim it, and their key if they all agree.
-    #[allow(clippy::type_complexity)]
-    let mut slots: HashMap<&DocSlot, (usize, Option<(Option<&String>, usize)>)> = HashMap::new();
+    // Per slot: each claiming val's key and erased type parameters.
+    let mut slots: HashMap<&DocSlot, Vec<(Option<&String>, usize)>> = HashMap::new();
     for k in keys {
-        let fact = (k.key.as_ref(), k.erased_typars);
-        let entry = slots.entry(&k.slot).or_insert((0, Some(fact)));
-        entry.0 += 1;
-        if entry.1 != Some(fact) {
-            entry.1 = None;
-        }
+        slots
+            .entry(&k.slot)
+            .or_default()
+            .push((k.key.as_ref(), k.erased_typars));
     }
     // How many distinct slots reach each projected member's key, per key it
     // carries (a property's setter key is its own). A member two slots both
@@ -4893,8 +4945,15 @@ fn stamp_doc_sigs(
             }
         }
     }
-    for (slot, (vals, fact)) in slots {
-        let Some((Some(key), erased_typars)) = fact else {
+    for (slot, facts) in slots {
+        let vals = facts.len();
+        // Undocumented vals stamp nothing, and a slot whose vals are not all
+        // documented cannot be paired key by key.
+        let Some(slot_keys) = facts
+            .iter()
+            .map(|&(key, erased)| key.map(|k| (k, erased)))
+            .collect::<Option<Vec<(&String, usize)>>>()
+        else {
             continue;
         };
         if entity.members.iter().enumerate().any(|(i, m)| {
@@ -4906,8 +4965,8 @@ fn stamp_doc_sigs(
         // recorded as skipped, or deliberately elided — while a member the
         // signature file hides sits in the same slot. The count below cannot
         // tell that member from the val's. A recorded skip under the slot's
-        // name declines the slot outright; otherwise the key's parameter types
-        // must fit every occupant (`type_member_stamp_never_hands_a_member_another_vals_key`
+        // name declines the slot outright; otherwise each occupant must fit
+        // the key it is handed (`type_member_stamp_never_hands_a_member_another_vals_key`
         // pins both).
         let slot_name = match slot {
             DocSlot::Method { name, .. }
@@ -4936,31 +4995,44 @@ fn stamp_doc_sigs(
         // Every method implementing the slot must be a claimed val's —
         // counted physically, since the member projection can elide the val's
         // own member without a record and leave a signature-hidden one in its
-        // place. And the key encodes the val's parameter types, so it refutes a
-        // member that merely shares the slot (`doc_id::recorded_key_fits`).
-        if occupants.len() != vals
-            || physical_occupants(entity, slot, physical) != vals
-            || occupants
-                .iter()
-                .any(|m| !crate::doc_id::recorded_key_fits(key, m, keyed_as, erased_typars))
-        {
+        // place.
+        if occupants.len() != vals || physical_occupants(entity, slot, physical) != vals {
             continue;
         }
-        for (_, member) in entity
+        // The key encodes the val's parameter types, so it refutes a member
+        // that merely shares the slot (`doc_id::recorded_key_fits`). Vals that
+        // agree on one key hand it to every occupant, each of which it must
+        // fit; vals with keys of their own hand each occupant the one key its
+        // signature forces (`doc_id::pair_keys_by_fit`).
+        let fits = |&(key, erased): &(&String, usize), m: &&Member| {
+            crate::doc_id::recorded_key_fits(key, m, keyed_as, erased)
+        };
+        let handed: Vec<&String> = if slot_keys.iter().all(|k| *k == slot_keys[0]) {
+            if !occupants.iter().all(|m| fits(&slot_keys[0], m)) {
+                continue;
+            }
+            vec![slot_keys[0].0; occupants.len()]
+        } else {
+            match crate::doc_id::pair_keys_by_fit(&slot_keys, &occupants, fits) {
+                Some(pairing) => pairing.into_iter().map(|k| slot_keys[k].0).collect(),
+                None => continue,
+            }
+        };
+        for ((_, member), key) in entity
             .members
             .iter_mut()
             .enumerate()
             .filter(|(i, m)| holds(reshaped, *i, m, slot))
+            .zip(handed)
         {
+            let key = Some(key.clone());
             match (member, slot) {
-                (Member::Method(m), DocSlot::Method { .. }) => m.xml_doc_sig = Some(key.clone()),
+                (Member::Method(m), DocSlot::Method { .. }) => m.xml_doc_sig = key,
                 (Member::Property(p), DocSlot::Getter { .. } | DocSlot::ValField(_)) => {
-                    p.xml_doc_sig = Some(key.clone())
+                    p.xml_doc_sig = key
                 }
-                (Member::Property(p), DocSlot::Setter { .. }) => {
-                    p.setter_xml_doc_sig = Some(key.clone())
-                }
-                (Member::Event(e), DocSlot::Getter { .. }) => e.xml_doc_sig = Some(key.clone()),
+                (Member::Property(p), DocSlot::Setter { .. }) => p.setter_xml_doc_sig = key,
+                (Member::Event(e), DocSlot::Getter { .. }) => e.xml_doc_sig = key,
                 _ => unreachable!("`occupies` pairs each slot with its member kind"),
             }
         }
@@ -7521,11 +7593,14 @@ mod tests {
     /// Doc-comment keys ride the claim like definition ranges: a unanimous
     /// claim group stamps its val's pickled `XmlDocSig`, an undocumented val
     /// (empty sig) stamps nothing, and a same-`(name, shape)` group whose
-    /// documented overloads carry different keys under-sets — handing either
-    /// method the other's key would show the sibling's docs. A val whose own
-    /// method the projection elided, beside a hidden method of the same slot,
-    /// stamps nothing either: the physical census counts two methods for one
-    /// val, though only the hidden one is projected.
+    /// documented overloads carry different keys hands each method the key its
+    /// signature fits — whichever val claimed it, since claiming is by name and
+    /// arity — or, where the signatures do not force the pairing (both
+    /// `Shared` methods take an `int`), under-sets: handing either method the
+    /// other's key would show the sibling's docs. A val whose own method the
+    /// projection elided, beside a hidden method of the same slot, stamps
+    /// nothing either: the physical census counts two methods for one val,
+    /// though only the hidden one is projected.
     #[test]
     fn member_list_stamps_doc_sigs_by_claim_group() {
         let mut value = ext_test_val_arity(None, 0, None, &[]);
@@ -7542,11 +7617,19 @@ mod tests {
         let mut lone = ext_test_val_arity(Some("Lone"), 0, None, &[1]);
         lone.logical_name = "lone".to_string();
         lone.xmldoc_sig = "M:NS.M.Lone(System.Int32)".to_string();
+        // Declared in the opposite order to their methods, so the first val
+        // claims the method whose signature fits the second's key.
+        let mut c = ext_test_val_arity(Some("Paired"), 0, None, &[1]);
+        c.logical_name = "third".to_string();
+        c.xmldoc_sig = "M:NS.M.Paired(System.String)".to_string();
+        let mut d = ext_test_val_arity(Some("Paired"), 0, None, &[1]);
+        d.logical_name = "fourth".to_string();
+        d.xmldoc_sig = "M:NS.M.Paired(System.Int32)".to_string();
 
         let module = make_entity(
             "M",
             PickledTyconRepr::NoRepr,
-            module_with_vals(vec![0, 1, 2, 3, 4]),
+            module_with_vals(vec![0, 1, 2, 3, 4, 5, 6]),
         );
         let mut ns_modul = empty_modul_typ();
         ns_modul.entities = vec![2];
@@ -7554,7 +7637,11 @@ mod tests {
         let mut root_modul = empty_modul_typ();
         root_modul.entities = vec![1];
         let root = make_entity("Test", PickledTyconRepr::NoRepr, root_modul);
-        let ccu = make_ccu(vec![root, ns, module], vec![value, bare, a, b, lone], 0);
+        let ccu = make_ccu(
+            vec![root, ns, module],
+            vec![value, bare, a, b, lone, c, d],
+            0,
+        );
 
         // The physical methods: one per projected member, plus `lone`'s own
         // `Lone`, which the projection elided — the projected `Lone` is a
@@ -7565,8 +7652,16 @@ mod tests {
             ("Shared", 1),
             ("Shared", 1),
             ("Lone", 1),
+            ("Paired", 1),
+            ("Paired", 1),
             ("Lone", 1),
         ];
+        let string_param = |mut m: Member| {
+            if let Member::Method(mm) = &mut m {
+                mm.signature.parameters[0].ty = TypeRef::Primitive(Primitive::String);
+            }
+            m
+        };
         let physical: PhysicalMethods = physical_slots
             .iter()
             .enumerate()
@@ -7591,6 +7686,8 @@ mod tests {
                 make_ecma_method_arity("Shared", 1),
                 make_ecma_method_arity("Shared", 1),
                 make_ecma_method_arity("Lone", 1),
+                make_ecma_method_arity("Paired", 1),
+                string_param(make_ecma_method_arity("Paired", 1)),
             ];
             e.method_def_tokens = (0..physical_slots.len() as u32).collect();
             e
@@ -7613,6 +7710,8 @@ mod tests {
                 ("Shared", None),
                 ("Shared", None),
                 ("Lone", None),
+                ("Paired", Some("M:NS.M.Paired(System.Int32)")),
+                ("Paired", Some("M:NS.M.Paired(System.String)")),
             ]
         );
     }
@@ -7673,6 +7772,12 @@ mod tests {
         /// that receives a key is the member of a val that carries that key.
         /// Each val's key encodes its parameter types as fsc writes them, and no
         /// two IL methods share an identity, as in real metadata.
+        ///
+        /// And liveness, where the answer is certain: a slot whose every method
+        /// is a documented val's kept member, with no array parameter whose key
+        /// spelling could fit two ranks and no refused member of its name,
+        /// stamps each method with its own key — overloads included, since
+        /// their keys spell different parameters.
         #[test]
         fn type_member_stamp_never_hands_a_member_another_vals_key(
             items in proptest::collection::vec(doc_slot_item(), 0..8)
@@ -7752,6 +7857,8 @@ mod tests {
             // The key each projected member truly carries: `Some(k)` for the
             // kept member of a val keyed `k`, `None` otherwise.
             let mut truth = Vec::new();
+            // Per projected member, the item it compiles.
+            let mut owners = Vec::new();
             for item in &items {
                 let slot = DocSlot::Method {
                     name: format!("M{}", item.name),
@@ -7773,6 +7880,7 @@ mod tests {
                             ValMember::Kept => {
                                 entity.members.push(method_of(item));
                                 truth.push(key);
+                                owners.push(item);
                             }
                             ValMember::Refused => entity.skipped_members.push(SkippedMember {
                                 name: format!("M{}", item.name),
@@ -7784,18 +7892,114 @@ mod tests {
                     None => {
                         entity.members.push(method_of(item));
                         truth.push(None);
+                        owners.push(item);
                     }
                 }
             }
             let reshaped = vec![false; entity.members.len()];
             stamp_doc_sigs(&mut entity, &keys, &physical, &reshaped);
-            for (member, truth) in entity.members.iter().zip(&truth) {
+            let same_slot = |a: &DocSlotItem, b: &DocSlotItem| {
+                (a.name, a.params.len(), a.is_static) == (b.name, b.params.len(), b.is_static)
+            };
+            // A refused member declines every slot of its name, whatever its
+            // arity or staticness: the record names it, nothing more.
+            let certain = |owner: &DocSlotItem| {
+                items.iter().filter(|i| same_slot(i, owner)).all(|i| {
+                    matches!(i.val, Some((true, ValMember::Kept))) && i.params.iter().all(|p| *p < 2)
+                }) && !items
+                    .iter()
+                    .any(|i| i.name == owner.name && matches!(i.val, Some((_, ValMember::Refused))))
+            };
+            for ((member, truth), owner) in entity.members.iter().zip(&truth).zip(&owners) {
                 let Member::Method(m) = member else {
                     unreachable!("the generator builds methods only")
                 };
                 if let Some(stamped) = &m.xml_doc_sig {
                     prop_assert_eq!(Some(stamped), truth.as_ref(), "{:?}", items);
                 }
+                if certain(owner) {
+                    prop_assert_eq!(m.xml_doc_sig.as_ref(), truth.as_ref(), "{:?}", items);
+                }
+            }
+        }
+
+        /// Liveness of the overload pairing, which the soundness property's
+        /// generator rarely reaches: two to four documented overloads sharing a
+        /// slot, each a kept member with its own `int`/`string` parameter list,
+        /// in any order relative to their vals, are each stamped with their own
+        /// val's key.
+        #[test]
+        fn type_member_stamp_pairs_documented_overloads(
+            (arity, params, order) in (1usize..4).prop_flat_map(|arity| {
+                let lists = proptest::collection::vec(
+                    proptest::collection::vec(any::<bool>(), arity),
+                    2..5,
+                );
+                (Just(arity), lists).prop_flat_map(|(arity, lists)| {
+                    let mut seen = std::collections::HashSet::new();
+                    let lists: Vec<Vec<bool>> =
+                        lists.into_iter().filter(|l| seen.insert(l.clone())).collect();
+                    let order = Just((0..lists.len()).collect::<Vec<usize>>()).prop_shuffle();
+                    (Just(arity), Just(lists), order)
+                })
+            })
+        ) {
+            prop_assume!(params.len() >= 2);
+            let enc = |is_string: bool| if is_string { "System.String" } else { "System.Int32" };
+            let key_of = |list: &[bool]| {
+                let encoded: Vec<&str> = list.iter().map(|s| enc(*s)).collect();
+                format!("M:N.T.M({})", encoded.join(","))
+            };
+            let mut entity = make_ecma_entity(vec!["N"], "T", EntityKind::Class);
+            for list in &params {
+                let mut m = make_ecma_method_arity("M", arity);
+                if let Member::Method(mm) = &mut m {
+                    for (p, is_string) in mm.signature.parameters.iter_mut().zip(list) {
+                        if *is_string {
+                            p.ty = TypeRef::Primitive(Primitive::String);
+                        }
+                    }
+                }
+                entity.members.push(m);
+            }
+            let physical: PhysicalMethods = (0..params.len() as u32)
+                .map(|t| {
+                    (
+                        t,
+                        PhysicalMethod {
+                            declaring_type: "T".to_string(),
+                            name: "M".to_string(),
+                            params: Some(arity),
+                            is_static: true,
+                            accessor_of: None,
+                        },
+                    )
+                })
+                .collect();
+            entity.method_def_tokens = (0..params.len() as u32).collect();
+            // The vals in `order`: the pickle's order need not be the IL's.
+            let keys: Vec<DocKey> = order
+                .iter()
+                .map(|&i| DocKey {
+                    slot: DocSlot::Method {
+                        name: "M".to_string(),
+                        arity,
+                        is_static: true,
+                        compiled: Compiled::AsDeclared,
+                    },
+                    key: Some(key_of(&params[i])),
+                    erased_typars: 0,
+                    curried: None,
+                    role: SlotRole::Plain,
+                })
+                .collect();
+            let reshaped = vec![false; entity.members.len()];
+            stamp_doc_sigs(&mut entity, &keys, &physical, &reshaped);
+            for (member, list) in entity.members.iter().zip(&params) {
+                let Member::Method(m) = member else {
+                    unreachable!("the test builds methods only")
+                };
+                prop_assert_eq!(m.xml_doc_sig.clone(), Some(key_of(list)), "{:?}", params);
             }
         }
     }

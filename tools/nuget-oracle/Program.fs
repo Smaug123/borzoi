@@ -106,6 +106,9 @@
 ///      | {"ok":true,"resolved":false,"errors":["NU1107", ..],
 ///         "nugetCommands":identity}
 ///          (every error-level code restore logged)
+///      | {"ok":false,"exceptionType":s,"message":s,"nugetCommands":identity}
+///          (restore threw, as it does on reading a package whose minimum
+///          client version is above its own)
 ///     where identity = {"informationalVersion":s,"path":s}: the
 ///     `AssemblyInformationalVersion` and load path of the `NuGet.Commands`
 ///     assembly that ran the restore.
@@ -132,6 +135,14 @@
 ///      | {"ok":false,"exceptionType":s,"message":s,"nugetCommands":identity}
 ///          (restore threw, as it does for a package whose minimum client
 ///          version is above its own; `dotnet restore` fails then too)
+///   {"op":"globalPackagesFolder","root":dir,"environment":[[name,value|null], ..]}
+///     The global packages folder restore uses for a project in `dir` that
+///     sets no `RestorePackagesPath`: `SettingsUtility.GetGlobalPackagesFolder`
+///     over `Settings.LoadDefaultSettings(dir, null, XPlatMachineWideSetting())`,
+///     with `environment` applied for this request only.
+///     -> {"ok":true,"folder":s,"configFilePaths":[s..]}
+///      | {"ok":false,"exceptionType":s,"message":s}
+///          (loading the settings or reading the folder threw)
 ///
 /// Any per-request exception is reported as {"error":..} on that line; the
 /// process itself never dies mid-batch.
@@ -520,6 +531,14 @@ let private nugetCommandsIdentity (sdkDir: string) =
 /// error (the SDK's default `WarningsAsErrors`). Audit is disabled; the SDK's
 /// framework references, fallback imports and pruning list are omitted, since
 /// none of them names a package in the synthetic universe.
+/// The exception restore threw, out of the `AggregateException` the task
+/// machinery wraps it in.
+let rec private innermostException (e: exn) : exn =
+    match e with
+    | :? AggregateException as aggregate when aggregate.InnerExceptions.Count = 1 ->
+        innermostException aggregate.InnerExceptions[0]
+    | e -> e
+
 let private respondRestore (sdkDir: string) (root: JsonElement) : string =
     let framework = NuGetFramework.Parse(root.GetProperty("framework").GetString())
     let legacy =
@@ -623,13 +642,29 @@ let private respondRestore (sdkDir: string) (root: JsonElement) : string =
             DependencyGraphSpecRequestProvider(RestoreCommandProvidersCache(), dgSpec, NullSettings.Instance)
         )
 
-        let requests =
-            RestoreRunner.GetRequests args |> Async.AwaitTask |> Async.RunSynchronously
+        // Restore refuses some packages by throwing rather than by failing a
+        // result (a minimum client version above its own, read as the package
+        // is enqueued). `dotnet restore` fails then too.
+        let outcome =
+            try
+                let requests =
+                    RestoreRunner.GetRequests args |> Async.AwaitTask |> Async.RunSynchronously
 
-        let results =
-            RestoreRunner.RunWithoutCommit(requests, args)
-            |> Async.AwaitTask
-            |> Async.RunSynchronously
+                RestoreRunner.RunWithoutCommit(requests, args)
+                |> Async.AwaitTask
+                |> Async.RunSynchronously
+                |> Ok
+            with error ->
+                Error(innermostException error)
+
+        match outcome with
+        | Error error ->
+            JsonSerializer.Serialize
+                {| ok = false
+                   exceptionType = error.GetType().FullName
+                   message = error.Message
+                   nugetCommands = nugetCommandsIdentity sdkDir |}
+        | Ok results ->
 
         let result = (Seq.exactlyOne results).Result
         let lockFile = result.LockFile
@@ -1020,13 +1055,7 @@ let private respondRestoreDgSpec (sdkDir: string) (root: JsonElement) : string =
                 // Restore refuses some packages by throwing rather than by
                 // failing a result (a minimum client version above its own).
                 // `dotnet restore` fails then too.
-                let rec innermost (e: exn) =
-                    match e with
-                    | :? AggregateException as aggregate when aggregate.InnerExceptions.Count = 1 ->
-                        innermost aggregate.InnerExceptions[0]
-                    | e -> e
-
-                Error(innermost error)
+                Error(innermostException error)
 
         match outcome with
         | Ok results ->
@@ -1056,6 +1085,57 @@ let private respondRestoreDgSpec (sdkDir: string) (root: JsonElement) : string =
             File.Delete path
         with _ ->
             ()
+
+/// The global packages folder NuGet's restore task uses for a project in
+/// `root` with no `RestorePackagesPath` and no `RestoreConfigFile`:
+/// `GetRestoreSettingsTask` loads the settings as
+/// `Settings.LoadDefaultSettings(root, null, XPlatMachineWideSetting())` and
+/// asks `SettingsUtility.GetGlobalPackagesFolder` of them. `environment` lists
+/// `[name, value]` pairs (`value` null to remove the variable) set for this
+/// request alone and restored afterwards; NuGet reads `NUGET_PACKAGES` and the
+/// variables a `%NAME%` in a config value names at the time of the call. The
+/// home folder and the machine-wide config folder are read once per process,
+/// so they are the oracle's own (`--env`).
+let private respondGlobalPackagesFolder (root: JsonElement) : string =
+    let directory = root.GetProperty("root").GetString()
+
+    let changes =
+        root.GetProperty("environment").EnumerateArray()
+        |> Seq.map (fun pair ->
+            let value = pair[1]
+
+            pair[0].GetString(),
+            (if value.ValueKind = JsonValueKind.Null then
+                 null
+             else
+                 value.GetString()))
+        |> Seq.toArray
+
+    let previous =
+        changes |> Array.map (fun (name, _) -> name, Environment.GetEnvironmentVariable name)
+
+    try
+        for (name, value) in changes do
+            Environment.SetEnvironmentVariable(name, value)
+
+        try
+            let settings =
+                Settings.LoadDefaultSettings(directory, null, XPlatMachineWideSetting())
+
+            let folder = SettingsUtility.GetGlobalPackagesFolder settings
+
+            JsonSerializer.Serialize
+                {| ok = true
+                   folder = folder
+                   configFilePaths = Array.ofSeq (settings.GetConfigFilePaths()) |}
+        with error ->
+            JsonSerializer.Serialize
+                {| ok = false
+                   exceptionType = error.GetType().FullName
+                   message = error.Message |}
+    finally
+        for (name, value) in previous do
+            Environment.SetEnvironmentVariable(name, value)
 
 /// The request loop. Kept out of `main` so that compiling `main` never needs a
 /// NuGet type, which would load NuGet before the `Resolving` handler exists.
@@ -1090,6 +1170,7 @@ let private serve (sdkDir: string) =
                     | "normaliseDgSpec" -> respondNormaliseDgSpec sdkDir root
                     | "nuGetLogCodes" -> respondNuGetLogCodes sdkDir
                     | "restoreDgSpec" -> respondRestoreDgSpec sdkDir root
+                    | "globalPackagesFolder" -> respondGlobalPackagesFolder root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}

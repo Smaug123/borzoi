@@ -297,13 +297,15 @@ fn a_type_in_type_argument_positions_keeps_its_doc() {
 
 #[test]
 fn a_qualifier_whose_member_only_a_generic_namesake_declares_shows_no_doc() {
-    // `CN.M` binds `CN<'a>`, the one declaring `M` (#323).
+    // `CN.M` binds `CN<'a>`, the one declaring `M`: FCS tries the
+    // non-generic `CN` first (#323). Resolution declines a qualifier with a
+    // namesake of lower arity, so the use reaches no doc at all; `every`
+    // still grades the declarations.
     let src = "module M\n/// plain\ntype CN =\n    static member Other = 0\n/// generic\ntype CN<'a> =\n    static member M = 1\nlet x = CN.M\n";
     let sites = every(src, "CN");
     let use_site = src.find("CN.M").unwrap();
-    let (_, _, verdict, fcs) = sites.iter().find(|s| s.0 == use_site).expect("graded");
-    assert_eq!(fcs, &[" generic"]);
-    assert!(matches!(verdict, Verdict::Declined(_)), "{verdict:?}");
+    assert!(sites.iter().all(|s| s.0 != use_site), "{sites:?}");
+    assert!(!sites.is_empty(), "{sites:?}");
 }
 
 #[test]
@@ -417,16 +419,17 @@ fn a_byte_order_mark_moves_no_line_one_verdict() {
 
 #[test]
 fn a_member_reached_through_a_namesake_of_another_arity_shows_no_other_doc() {
-    // FCS binds `T.M` to the non-generic `T`'s `M`; resolution may pick the
-    // generic one's. `every` fails on any doc FCS does not attach.
+    // FCS binds `T.M` to the non-generic `T`'s `M`, where the latest `T`
+    // is the generic one (#323). Resolution declines the qualifier, so the
+    // use reaches neither `M`'s doc; `every` fails on any doc FCS does not
+    // attach.
     let src = "module M\ntype T =\n    /// plain M\n    static member M = 1\ntype T<'a> =\n    /// generic M\n    static member M = 2\nlet x = T.M\n";
     let sites = every(src, "M");
     let use_site = src.find("T.M").unwrap();
-    let graded: Vec<_> = sites.iter().filter(|s| s.0 == use_site).collect();
-    assert!(!graded.is_empty(), "{sites:?}");
-    for (_, _, _, fcs) in graded {
-        assert_eq!(fcs, &[" plain M"]);
-    }
+    assert!(
+        sites.iter().all(|s| s.0 < use_site || s.0 > use_site + 3),
+        "{sites:?}"
+    );
 }
 
 #[test]

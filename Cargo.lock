@@ -239,6 +239,7 @@ name = "borzoi-msbuild"
 version = "0.1.0"
 dependencies = [
  "borzoi-msbuild",
+ "borzoi-nuget",
  "borzoi-oracle-harness",
  "proptest",
  "roxmltree",
@@ -266,6 +267,7 @@ dependencies = [
  "borzoi-spawn",
  "proc-macro2",
  "proptest",
+ "roxmltree",
  "serde_json",
  "tempfile",
 ]
