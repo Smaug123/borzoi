@@ -4173,6 +4173,12 @@ impl<'a> Resolver<'a> {
         let [head_seg, quals @ .., type_seg, case_seg] = segments else {
             return SameFileQualified::Miss;
         };
+        // A raw `global` head is the namespace-root marker, never a lexical
+        // module (an escaped ``global`` one reads the same through `id_text`):
+        // the rooted handling owns the path.
+        if head_seg.text() == "global" {
+            return SameFileQualified::Miss;
+        }
         let mids: Vec<String> = quals.iter().map(|t| id_text(t).to_string()).collect();
         let res = QualifiedResidual {
             mids: &mids,
@@ -4760,6 +4766,16 @@ impl<'a> Resolver<'a> {
         declared || same_file_auto_open || earlier_auto_open || self.global_block_opened
     }
 
+    /// Whether `container` declares a type named `ty` more than once at one
+    /// arity (FS0037): FCS reads the first, [`Self::type_defs`] keeps the
+    /// latest.
+    fn type_name_reused_in(&self, container: &[String], ty: &str) -> bool {
+        self.type_decl_counts
+            .get(container)
+            .and_then(|m| m.get(ty))
+            .is_some_and(|by_arity| by_arity.values().any(|&n| n > 1))
+    }
+
     /// Whether a same-file `[<AutoOpen>]` module that is opened into a
     /// container around the use — directly, or through a chain of
     /// `[<AutoOpen>]` parents — declares a module or module abbreviation named
@@ -4885,6 +4901,11 @@ impl<'a> Resolver<'a> {
                         DeclineCause::QualifierArityNamesake,
                     ));
                 }
+                if self.type_name_reused_in(&module_path, ty) {
+                    return Some(SameFileQualified::Decline(
+                        DeclineCause::InFileTypeNameReused,
+                    ));
+                }
                 return Some(SameFileQualified::Emit { type_id, case_res });
             }
             if !in_pattern && seg.ty {
@@ -4903,6 +4924,11 @@ impl<'a> Resolver<'a> {
                     if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
                         return Some(SameFileQualified::Decline(
                             DeclineCause::QualifierArityNamesake,
+                        ));
+                    }
+                    if self.type_name_reused_in(&module_path, ty) {
+                        return Some(SameFileQualified::Decline(
+                            DeclineCause::InFileTypeNameReused,
                         ));
                     }
                     return Some(SameFileQualified::Emit {
@@ -4980,7 +5006,17 @@ impl<'a> Resolver<'a> {
                 }
                 true
             }
-            SameFileQualified::DeferStop => true,
+            SameFileQualified::DeferStop => {
+                // Same-file-rooted but undecided: the head defers here, since no
+                // later branch runs to record it.
+                if let Some(head_seg) = segments.first() {
+                    self.record(
+                        head_seg.text_range(),
+                        Resolution::Deferred(DeferredReason::QualifiedAccess),
+                    );
+                }
+                true
+            }
             SameFileQualified::Decline(cause) => {
                 if let Some(head_seg) = segments.first() {
                     self.defer_with_cause(
