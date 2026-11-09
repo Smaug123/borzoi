@@ -1591,10 +1591,7 @@ impl<'src> Parser<'src> {
         // into one `SynLongIdent`, `["x"; "op_Addition"]` / `["x"; "|Foo|Bar|"]`).
         // The non-dotted forms above never reach here (their head is the `(`); a
         // dotted one has an ident/`_` self-id, so it falls through to this check.
-        // `allow_underscore_head`: a member self-id may be `_` (`member _.(+)`),
-        // unlike a `let`-pattern head, whose `_.`-rooted form is language-version
-        // gated (see [`Self::peek_dotted_opname_pat_head`]).
-        if let Some(kind) = self.peek_dotted_opname_pat_head(true) {
+        if let Some(kind) = self.peek_dotted_opname_pat_head() {
             self.open_dotted_opname_pat_head(kind);
             // The same tails as the plain member head: explicit value-typar decls
             // (`member x.(+)<'T> …`), then the curried argument patterns.

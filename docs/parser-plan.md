@@ -249,8 +249,13 @@ we keep), we do **not** degrade to match it — that is a leniency, not a bug.
 
 ## Open slices (small, PR-sized, harness-verifiable)
 
-(Two former open slices have since landed and are no longer open:
-`global.`-rooted patterns (#915) and module/class-scope `let … in` (#681).)
+(Three former open slices have since landed and are no longer open:
+`global.`-rooted patterns (#915), module/class-scope `let … in` (#681), and
+`_`-rooted patterns (`_.M`, FCS's `UNDERSCORE DOT pathOp`, #8). The last is
+gated on F# 4.7's `SingleUnderscorePattern` in the FCS that `tools/fcs-dump`
+pins; the gate is a diagnostic read off the tree, so the tree never depends on
+the version. Later compilers drop the gate (dotnet/fsharp#20222), and
+`parser_diff_underscore_pat`'s version grid fails when the pin moves past it.)
 
 - **Non-block CE binders** — `let!`/`use!`/`and!` outside block position
   (`(let! x = m in x)`, `when let! …`, an infix RHS `e + let! …`) arrive as a
@@ -262,8 +267,6 @@ we keep), we do **not** degrade to match it — that is a leniency, not a bug.
 - **Niche type-defn forms** — `SynMemberDefn.NestedType` (`static type …`
   inside a class); the narrow residual `SynTypeConstraint` gap
   `default 'a : t`.
-- **`_.M` special-rooted pattern** — FCS's `UNDERSCORE DOT pathOp`, gated on the
-  F# 4.7 `SingleUnderscorePattern` feature; rejects cleanly today.
 
 ## Known leniencies (well-formed tree, only a missing FCS diagnostic)
 

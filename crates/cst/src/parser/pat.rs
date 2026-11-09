@@ -160,12 +160,11 @@ impl<'src> Parser<'src> {
         // child, invisible to the node-based pattern projection). The grammar
         // permits access only before a `pathOp`, so `private _` / `private (x)`
         // (a paren *pattern*, not a `pathOp`) / `private 1` have no access
-        // production and stay clean errors. (The rooted `global.N` head is now a
-        // recognised pattern — see [`Self::pat_head_has_dotted_tail`] — but the
-        // *access-prefixed* form `access GLOBAL DOT pathOp` stays an edge: this
-        // gate keys on an ident head, so `private global.N` isn't consumed here.
-        // `_.M` and its access-prefixed form remain deferred behind the F# 4.7
-        // gate.) The gate consults *both* streams, like the
+        // production and stay clean errors. FCS's `access underscoreLongIdentPat`
+        // admits a `_`-rooted path after the modifier too (`let private _.M = …`,
+        // [`Self::underscore_rooted_path_at`]), but there is no `access GLOBAL DOT
+        // pathOp`, so `private global.N` is not consumed here. The gate consults
+        // *both* streams, like the
         // function-form promotion below: the **raw** lookahead (past the keyword
         // span) rejects a LexFilter-swallowed `)` — in `let f (private) x = …`
         // the inner `private`'s raw-after is the `)`, not the *outer* `x` the
@@ -212,7 +211,14 @@ impl<'src> Parser<'src> {
                             Some((Ok(FilteredToken::Raw(Token::LParenStarRParen)), _))
                         ) || self.at_paren_op_value_pat(j)
                     });
-            if before_ident || before_active_pat || op_target {
+            // A `_`-rooted path after the modifier (`let private _.M = …`) — the
+            // raw lookahead must be the `_` itself (rejecting the swallowed-`)`
+            // hazard); the path check runs on the filtered stream from there.
+            let before_underscore_path = matches!(raw_after, Some(Token::Underscore))
+                && self
+                    .next_non_trivia_filtered_index_after(self.pos)
+                    .is_some_and(|j| self.underscore_rooted_path_at(j));
+            if before_ident || before_active_pat || op_target || before_underscore_path {
                 self.bump_into(SyntaxKind::ACCESS_TOK);
             }
         }
@@ -258,16 +264,14 @@ impl<'src> Parser<'src> {
         }
 
         // A dotted path whose *final* segment is an `opName` — `A.B.(+) y`,
-        // `A.B.(|Foo|_|) y`, `global.A.(*)` (FCS's `pathOp` ending in an `opName`,
-        // folded into one `SynLongIdent`: `["A"; "B"; "op_Addition"]` /
+        // `A.B.(|Foo|_|) y`, `global.A.(*)`, `_.(+) y` (FCS's `pathOp` ending in an
+        // `opName`, folded into one `SynLongIdent`: `["A"; "B"; "op_Addition"]` /
         // `["A"; "B"; "|Foo|_|"]`). The *un*-dotted spellings are taken by the
         // operator / active-pattern head dispatches above (their head is the `(`);
-        // a dotted one has an ident / `global` head, so it falls through to here —
-        // ahead of the ident dispatch below, whose long-ident sweep admits only
-        // ident segments after a `.` and would report a trailing dot.
-        // `allow_underscore_head = false`: the `_.`-rooted path stays deferred
-        // behind its F# 4.7 gate (see [`Self::peek_dotted_opname_pat_head`]).
-        if let Some(kind) = self.peek_dotted_opname_pat_head(false) {
+        // a dotted one has an ident / `global` / `_` head, so it falls through to
+        // here — ahead of the ident dispatch below, whose long-ident sweep admits
+        // only ident segments after a `.` and would report a trailing dot.
+        if let Some(kind) = self.peek_dotted_opname_pat_head() {
             self.open_dotted_opname_pat_head(kind);
             // The `constrPattern` tail, exactly as for an ident head: the explicit
             // value typars FCS takes after the whole `pathOp`, then the argument
@@ -321,27 +325,21 @@ impl<'src> Parser<'src> {
         // The single-ident function-form check keys on the *first* ident's end,
         // so it would miss args after a dotted path; routing dotted heads
         // straight to the long-ident branch sidesteps that.
-        // A `global.`-rooted head (FCS's `GLOBAL DOT pathOp`) is a long-ident
-        // path too, so it must take the long-ident branch below — otherwise a
-        // curried arg after the path (`global.M.Case x`) is left unswept.
-        // `head_ident_end` is `None` for the `global` keyword head (it isn't an
-        // `Ident`), so it needs its own gate. A *bare* `global` (no dotted tail)
-        // is not a rooted head: it falls to `emit_atomic_pat` (the bare-`global`
-        // error). (The `_.`-rooted sibling is deferred behind its F# 4.7 gate.)
-        //
-        // A `global.`-rooted head routes through the same long-ident machinery as
-        // any other dotted head, so it inherits that machinery's *pre-existing*,
-        // not-`global`-specific limitation (which also rejects the ordinary
-        // `A.B.…` form FCS accepts, and belongs to a separate follow-up): an
-        // `opName` / active-pattern final segment (`global.N.(|Foo|_|)` /
-        // `A.B.(|Foo|_|)`) — `sweep_long_ident_dot_continuation` accepts only
-        // ident segments after a dot, so a `(`-led final segment errors.
-        let rooted_global_head = matches!(
+        // A `global.`- or `_.`-rooted head (FCS's `GLOBAL DOT pathOp` /
+        // `UNDERSCORE DOT pathOp`) is a long-ident path too, so it must take the
+        // long-ident branch below — otherwise a curried arg after the path
+        // (`global.M.Case x`, `_.M x`) is left unswept. `head_ident_end` is `None`
+        // for a keyword or `_` head (neither is an `Ident`), so it needs its own
+        // gate. A *bare* `global` or `_` (no dotted tail) is not a rooted head: it
+        // falls to `emit_atomic_pat` (the bare-`global` error, the wildcard). A
+        // path whose final segment is an `opName` (`global.N.(|Foo|_|)`, `_.(+)`)
+        // never reaches here: the dotted-`opName` dispatch above claims it.
+        let rooted_keyword_head = matches!(
             self.peek(),
-            Some((Ok(FilteredToken::Raw(Token::Global)), _))
+            Some((Ok(FilteredToken::Raw(Token::Global | Token::Underscore)), _))
         ) && self.pat_head_has_dotted_tail();
         let dotted_head =
-            (head_ident_end.is_some() && self.pat_head_has_dotted_tail()) || rooted_global_head;
+            (head_ident_end.is_some() && self.pat_head_has_dotted_tail()) || rooted_keyword_head;
         // Explicit value-typar declarations on the head — `let f<'a> …`,
         // `let h<'a> = …` (FCS's `headBindingPattern … opt_explicitValTyparDecls`,
         // landing in `SynPat.LongIdent`'s `typars: SynValTyparDecls option` slot).
@@ -1466,16 +1464,18 @@ impl<'src> Parser<'src> {
     ///
     /// Head-token agnostic: it inspects only the tokens *after* the head, so it
     /// gates the `pathOp` alternative (an *ident*-rooted path) **and** FCS's
-    /// `GLOBAL DOT pathOp` (`global.N.Case`). `global` lexes as [`Token::Global`];
-    /// the dispatch arm in [`Self::try_emit_atomic_pat_inner`] (and the
-    /// `rooted_global_head` gate in [`Self::try_emit_head_binding_pat_element`],
-    /// for the applied `global.M.Case x` form) consults this to route the head to
-    /// the same `LONG_IDENT_PAT` emission as an ident path. A *bare* `global` (no
-    /// dotted tail) is an error (FCS FS0010), never a pattern name.
+    /// `GLOBAL DOT pathOp` (`global.N.Case`) and `UNDERSCORE DOT pathOp` (`_.M`).
+    /// The dispatch arms in [`Self::try_emit_atomic_pat_inner`] (and the
+    /// `rooted_keyword_head` gate in [`Self::try_emit_head_binding_pat_element`],
+    /// for the applied `global.M.Case x` / `_.M x` forms) consult this to route
+    /// the head to the same `LONG_IDENT_PAT` emission as an ident path. A *bare*
+    /// `global` (no dotted tail) is an error (FCS FS0010), never a pattern name;
+    /// a bare `_` is the wildcard.
     ///
-    /// FCS's sibling `UNDERSCORE DOT pathOp` (`_.M`) is **not** handled here: it
-    /// is gated on the F# 4.7 `SingleUnderscorePattern` feature (`pars.fsy:2255`)
-    /// and lands with that language-version gate in a later slice.
+    /// The `_.`-rooted form is gated on the F# 4.7 `SingleUnderscorePattern`
+    /// feature; the productions accept it at every version and the gate is a
+    /// diagnostic read off the tree (`underscore_pat_diagnostics` in
+    /// `parser/mod.rs`).
     pub(super) fn pat_head_has_dotted_tail(&self) -> bool {
         matches!(
             self.next_non_trivia_filtered_after_pos(),
@@ -1499,24 +1499,19 @@ impl<'src> Parser<'src> {
     /// binding head, a curried atomic argument, and the member self-id head
     /// (`member x.(+)`, whose `<self-id> .` is just this path's first segment).
     ///
-    /// `allow_underscore_head` admits a `_` head segment: a *member* self-id may be
-    /// `_` (`member _.(+) …`), whereas a pattern's `_.`-rooted path is FCS's
-    /// `UNDERSCORE DOT pathOp`, gated on the F# 4.7 `SingleUnderscorePattern`
-    /// feature (`pars.fsy:2255`) and deferred here with its sibling forms — see
-    /// [`Self::pat_head_has_dotted_tail`]. Pure lookahead, no consumption.
-    pub(super) fn peek_dotted_opname_pat_head(
-        &self,
-        allow_underscore_head: bool,
-    ) -> Option<DottedOpNameHead> {
-        let head_ok = match self.peek() {
-            Some((Ok(FilteredToken::Raw(Token::Underscore)), _)) => allow_underscore_head,
+    /// The head may also be `_`: a member self-id (`member _.(+) …`) and FCS's
+    /// `UNDERSCORE DOT pathOp` (`_.(+)`) both fold it in as the first segment.
+    /// Pure lookahead, no consumption.
+    pub(super) fn peek_dotted_opname_pat_head(&self) -> Option<DottedOpNameHead> {
+        if !matches!(
+            self.peek(),
             Some((
-                Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_) | Token::Global)),
+                Ok(FilteredToken::Raw(
+                    Token::Ident(_) | Token::QuotedIdent(_) | Token::Global | Token::Underscore
+                )),
                 _,
-            )) => true,
-            _ => false,
-        };
-        if !head_ok {
+            ))
+        ) {
             return None;
         }
         // Walk the dotted path `<head> (. ident)*` to the *final* `.`, whose
@@ -1549,6 +1544,41 @@ impl<'src> Parser<'src> {
             }
             seg_idx = after_idx;
         }
+    }
+
+    /// Whether filtered index `idx` holds a `_` that roots a pattern path — FCS's
+    /// `UNDERSCORE DOT pathOp`: a `.` follows, then an identifier (`_.M`) or an
+    /// `opName` (`_.(+)`, `_.(|A|_|)`). The cursor-independent twin of
+    /// [`Self::pat_head_has_dotted_tail`] plus [`Self::peek_dotted_opname_pat_head`],
+    /// for the access-prefixed head (`let private _.M`), where the `_` sits one
+    /// token past the cursor. Like them it reads the `.` off the filtered stream
+    /// (so an offside `_⏎.M` is not a path) and the segment after it off the raw
+    /// stream (so a LexFilter-swallowed closer is never mistaken for one).
+    fn underscore_rooted_path_at(&self, idx: usize) -> bool {
+        let Some((Ok(FilteredToken::Raw(Token::Underscore)), underscore)) =
+            self.filtered_tokens.get(idx)
+        else {
+            return false;
+        };
+        let Some(dot_idx) = self.next_non_trivia_filtered_index_after(idx) else {
+            return false;
+        };
+        let Some((Ok(FilteredToken::Raw(Token::Dot)), dot)) = self.filtered_tokens.get(dot_idx)
+        else {
+            return false;
+        };
+        if !matches!(
+            self.next_non_trivia_raw_after(underscore.end),
+            Some(Token::Dot)
+        ) {
+            return false;
+        }
+        matches!(
+            self.next_non_trivia_raw_after(dot.end),
+            Some(Token::Ident(_) | Token::QuotedIdent(_))
+        ) || self
+            .next_non_trivia_filtered_index_after(dot_idx)
+            .is_some_and(|after| self.opname_pat_kind_at(after).is_some())
     }
 
     /// The `opName` kind at filtered index `idx` — an operator-value (`( op )`,
@@ -1829,26 +1859,32 @@ impl<'src> Parser<'src> {
             self.builder.finish_node(); // NAMED_PAT
             return true;
         }
-        // A dotted path ending in an `opName` (`let f A.B.(+) y = …`, `[ A.(*) ]`):
+        // A dotted path ending in an `opName` (`let f A.B.(+) y = …`, `[ A.(*) ]`,
+        // `let f _.(+) y = …`):
         // FCS's `atomicPattern: atomicPatternLongIdent` reduction, which takes the
         // whole `pathOp` — including its `opName` final segment — but **no** typars
         // and **no** args (those belong to `constrPattern`, one rung up in
         // [`Self::try_emit_head_binding_pat_element`]). So the head is emitted
         // nullary: the following `y` stays the *next* curried argument of the
         // enclosing head rather than being swept into this one.
-        if let Some(kind) = self.peek_dotted_opname_pat_head(false) {
+        if let Some(kind) = self.peek_dotted_opname_pat_head() {
             self.open_dotted_opname_pat_head(kind);
             self.builder.finish_node(); // LONG_IDENT_PAT
             return true;
         }
         match self.peek().cloned() {
+            Some((Ok(FilteredToken::Raw(Token::Underscore)), _))
+                if self.pat_head_has_dotted_tail() =>
+            {
+                // `_.M` — FCS's `UNDERSCORE DOT pathOp`
+                // (`SynPat.LongIdent(["_"; …])`), the `_`-rooted sibling of the
+                // `global.` head below. Its F# 4.7 gate is a diagnostic read off
+                // the tree (see [`Self::pat_head_has_dotted_tail`]).
+                self.emit_rooted_long_ident_pat();
+                true
+            }
             Some((Ok(FilteredToken::Raw(Token::Underscore)), _)) => {
-                // `_` is the wildcard. FCS's `UNDERSCORE DOT pathOp` (`_.M`) is a
-                // sibling rooted long-ident head, but it is gated on the F# 4.7
-                // `SingleUnderscorePattern` feature (`pars.fsy:2255`, a hard parse
-                // error below 4.7); implementing it needs the language-version
-                // machinery, so it lands with its gate in a later slice — see
-                // [`Self::pat_head_has_dotted_tail`].
+                // A bare `_` is the wildcard.
                 self.builder
                     .start_node(FSharpLang::kind_to_raw(SyntaxKind::WILDCARD_PAT));
                 self.bump_into(SyntaxKind::UNDERSCORE_TOK);
