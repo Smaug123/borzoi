@@ -48,6 +48,8 @@ test_ci_steps() {
   while IFS= read -r step; do
     expected+=$'\n'"bash tools/ci/project-corpus-gate.sh $step"
   done < <(bash "$here/project-corpus-gate.sh" --list)
+  # The job's one step after its gates reports on them and gates nothing.
+  expected+=$'\n''bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"'
   # Exact, not a subset: a gate added to the job as its own `run:` would be
   # one the local script never runs, which is the drift this guards against.
   assert_eq "corpus-diff job runs the setup, then every gate step in order" \

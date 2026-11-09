@@ -27,6 +27,15 @@ on:
 permissions:
   contents: read
 
+# Every `cargo test` in the workflow, `project-corpus-gate.sh`'s included, runs
+# its test binaries through `timed-test-runner.sh`, which records each test's
+# wall-clock time; each test job's last step renders the slowest into the job
+# summary, and into the log, where the API can read it. The triple matches
+# every runner here: a job on another one would record nothing, and its
+# summary step says so.
+env:
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/tools/ci/timed-test-runner.sh
+
 jobs:
   changes:
     name: Detect changes
@@ -358,6 +367,10 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             parser_panic_sweep::fresh_seed -- --ignored --nocapture
 
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   test-msbuild:
     name: Test msbuild
     needs: changes
@@ -434,6 +447,10 @@ jobs:
           nix develop --command cargo test -p borzoi-msbuild \
             --test sdk_chain_decline_attribution -- --ignored --nocapture
 
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   test-nuget:
     name: Test nuget
     needs: changes
@@ -504,6 +521,10 @@ jobs:
           nix develop --command cargo test -p borzoi-nuget --test all \
             resolver_diff::randomised_soundness_soak -- --ignored --nocapture
 
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   test-astgen:
     name: Test astgen
     needs: changes
@@ -555,6 +576,10 @@ jobs:
         run: |
           nix develop --command cargo test -p borzoi-astgen --verbose
 
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   test-stats:
     name: Test stats
     needs: changes
@@ -602,6 +627,10 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: |
           nix develop --command cargo test --locked -p borzoi-stats --verbose
+
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   test-assembly:
     name: Test assembly
@@ -662,6 +691,10 @@ jobs:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
         run: |
           nix develop --command cargo test -p borzoi-assembly --all-features --verbose
+
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   test-sema:
     name: Test sema
@@ -794,6 +827,10 @@ jobs:
           nix develop --command cargo test -p borzoi-sema --test all \
             infer_corpus_diff:: -- --ignored --nocapture
 
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   test-lsp:
     name: Test lsp
     needs: [changes, fcs-dump]
@@ -912,6 +949,10 @@ jobs:
             xml_doc_inheritdoc_sweep:: xml_doc_inheritdoc_cref_diff::deep_ \
             xml_doc_inheritdoc_generated_diff:: xml_doc_inheritdoc_metadata_diff::deep_
 
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
     needs: changes
@@ -998,6 +1039,10 @@ jobs:
         run: |
           nix develop --command cargo test -p borzoi-spawn --verbose
 
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   test-oracle-harness:
     name: Test oracle-harness
     needs: changes
@@ -1046,6 +1091,10 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: |
           nix develop --command cargo test -p borzoi-oracle-harness --verbose
+
+      - name: Report the slowest tests
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   nix-build:
     name: Nix Build
@@ -1128,6 +1177,10 @@ jobs:
 
       - name: Gate on whole-project source docs
         run: bash tools/ci/project-corpus-gate.sh xml-doc-source
+
+      - name: Report the slowest tests
+        if: ${{ !cancelled() }}
+        run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   all-required-checks-complete:
     if: ${{ always() }}
