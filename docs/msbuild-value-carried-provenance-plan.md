@@ -1038,10 +1038,12 @@ greppable decision rather than a silent default.
 
 1. **Trust is not a substitute for consequence-side flags.** The
    `msbuild-trust-audit` skill warns *never gate a fold on the generic
-   provenance seam* — `property_provenance_untrusted` fires for essentially
-   every real SDK project, which is why `LangVersion`'s fold-safety today uses
-   a bespoke consequence-side mechanism (`shape_depends_on_language_version`)
-   instead. So P3 must say, per site, whether carried `Trust` **replaces** or
+   provenance seam* — `property_provenance_untrusted` marks dozens of
+   properties on every real SDK project. `LangVersion` is not one of them on an
+   ordinary project, but where it is untrusted its fold-safety still rests on a
+   bespoke consequence-side mechanism (`shape_depends_on_language_version`)
+   that refuses only the files the version actually reshapes, not the whole
+   project. So P3 must say, per site, whether carried `Trust` **replaces** or
    **coexists with** the bespoke signal. At least one of the twelve needs
    coexistence. A uniform "P3 closes all twelve the same way" is wrong.
 2. **`Provenanced<Escaped>` must not create a new way to strip either
