@@ -50,9 +50,15 @@
 //! ever.
 //!
 //! Where the folder lacks the package, NuGet looks in its fallback folders
-//! and then downloads the package into the folder. Neither is modelled: the
-//! NuGet half of resolution then finds nothing, which is a failure to
-//! resolve, never a resolution to some other copy.
+//! and then downloads the package into the folder. Neither is modelled, so a
+//! versioned reference that neither the folder nor a dotnet root resolves
+//! declines rather than reporting the SDK absent.
+//!
+//! Residual: the settings model reads only the `config` section of each
+//! file, and its answer holds only if NuGet loads the files at all. A config
+//! file NuGet fails to load (say, an `add` without a `value` in
+//! `packageSources`) fails the real resolver outright, while discovery still
+//! resolves the package from the folder the `config` sections choose.
 //!
 //! [`locate_dotnet_sdk`]: borzoi_msbuild::locate_dotnet_sdk
 //! [`SdkResolver`]: borzoi_msbuild::SdkResolver
@@ -540,10 +546,11 @@ impl SdkDiscovery {
         // folder, so where that folder cannot be said, so cannot the
         // resolution. Any other name reads no NuGet folder, and resolves the
         // same with none.
+        let nuget_version = nuget_package_version(sdk_name, Some(&self.msbuild_sdks));
         let nuget_packages = match &self.nuget_packages {
             Ok(folder) => Some(folder.as_path()),
             Err(decline) => {
-                if nuget_package_version(sdk_name, Some(&self.msbuild_sdks)).is_some() {
+                if nuget_version.is_some() {
                     return Err(SdkResolveError::UnsupportedLayout {
                         reason: format!(
                             "NuGet resolves this versioned SDK from its global packages \
@@ -569,7 +576,24 @@ impl SdkDiscovery {
                 &workload_env,
             )
         };
-        resolve_across_roots(&self.roots, sdk_name, &locate)
+        let resolved = resolve_across_roots(&self.roots, sdk_name, &locate);
+        match (resolved, nuget_version) {
+            // NuGet's resolver does not stop at a global packages folder that
+            // lacks the version: it looks in its fallback folders, then
+            // downloads the package. Neither is modelled, so the absence of
+            // a versioned SDK is not something to commit to.
+            (
+                Err(SdkResolveError::NotFound | SdkResolveError::VersionNotSatisfied { .. }),
+                Some(version),
+            ) => Err(SdkResolveError::UnsupportedLayout {
+                reason: format!(
+                    "the global packages folder does not hold version {version}; NuGet \
+                     would look for it in its fallback folders and then download it, \
+                     which is not modelled"
+                ),
+            }),
+            (resolved, _) => resolved,
+        }
     }
 
     /// The ordered list of SDK install roots [`Self::resolve`] consults.

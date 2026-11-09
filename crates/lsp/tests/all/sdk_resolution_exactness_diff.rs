@@ -10,7 +10,9 @@
 //!   `Sdk.props` path.
 //! - We return `NotFound` / `VersionNotSatisfied` (a committed "does not
 //!   resolve") ⟹ MSBuild also fails to resolve it.
-//! - We return `UnsupportedLayout` (a pure decline) ⟹ no claim.
+//! - We return `UnsupportedLayout` (a pure decline) ⟹ no claim. A pinned
+//!   version neither the global packages folder nor the dotnet root holds is
+//!   one: NuGet would go on to its fallback folders and a download.
 //!
 //! Pin forms exercised: per-import `Sdk="Name/Version"`, `msbuild-sdks`, and
 //! both at once (per-import must win). Each may also carry a `global.json`

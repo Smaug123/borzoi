@@ -2913,8 +2913,9 @@ mod tests {
         // a client matching case-sensitively reports only the spellings named.
         for name in borzoi_nuget::settings::WALK_FILE_NAMES {
             assert!(
-                globs.iter().any(|g| g.contains(&format!(",{name},"))
-                    || g.contains(&format!(",{name}}}"))),
+                globs
+                    .iter()
+                    .any(|g| g.contains(&format!(",{name},")) || g.contains(&format!(",{name}}}"))),
                 "no watcher names {name}: {globs:?}"
             );
             assert_eq!(

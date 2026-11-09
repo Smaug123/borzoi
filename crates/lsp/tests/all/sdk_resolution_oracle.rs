@@ -90,8 +90,13 @@ struct FolderCase {
     configured_holds_it: bool,
     /// Whether `NUGET_PACKAGES` names a third folder holding it.
     environment_folder: bool,
+    /// Whether the config names the home's default folder as a fallback
+    /// package folder.
+    home_is_a_fallback: bool,
     /// Where real MSBuild finds the probe SDK, `None` for nowhere.
     expect: Option<Folder>,
+    /// Whether `SdkDiscovery` declines rather than commit to an answer.
+    we_decline: bool,
 }
 
 const FOLDER_CASES: &[FolderCase] = &[
@@ -100,35 +105,55 @@ const FOLDER_CASES: &[FolderCase] = &[
         configured_value: Some("{configured}"),
         configured_holds_it: true,
         environment_folder: false,
+        home_is_a_fallback: false,
         expect: Some(Folder::Configured),
+        we_decline: false,
     },
     FolderCase {
         label: "a relative configured folder resolves against its config file",
         configured_value: Some("../configured"),
         configured_holds_it: true,
         environment_folder: false,
+        home_is_a_fallback: false,
         expect: Some(Folder::Configured),
+        we_decline: false,
     },
     FolderCase {
         label: "a configured folder without the package does not fall back to the home's",
         configured_value: Some("{configured}"),
         configured_holds_it: false,
         environment_folder: false,
+        home_is_a_fallback: false,
         expect: None,
+        // Fallback folders and the download are not modelled.
+        we_decline: true,
+    },
+    FolderCase {
+        label: "a configured folder without the package falls back to a fallback folder",
+        configured_value: Some("{configured}"),
+        configured_holds_it: false,
+        environment_folder: false,
+        home_is_a_fallback: true,
+        expect: Some(Folder::Home),
+        we_decline: true,
     },
     FolderCase {
         label: "no configured folder is the home's",
         configured_value: None,
         configured_holds_it: false,
         environment_folder: false,
+        home_is_a_fallback: false,
         expect: Some(Folder::Home),
+        we_decline: false,
     },
     FolderCase {
         label: "NUGET_PACKAGES outranks a configured folder",
         configured_value: Some("{configured}"),
         configured_holds_it: true,
         environment_folder: true,
+        home_is_a_fallback: false,
         expect: Some(Folder::Environment),
+        we_decline: false,
     },
 ];
 
@@ -192,12 +217,21 @@ fn versioned_sdk_resolves_from_the_folder_nuget_settings_choose() {
                 )
             })
             .unwrap_or_default();
+        let fallback_section = if case.home_is_a_fallback {
+            format!(
+                "<fallbackPackageFolders><add key=\"home\" value=\"{}\" /></fallbackPackageFolders>",
+                home.join(".nuget").join("packages").display()
+            )
+        } else {
+            String::new()
+        };
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(
             proj_dir.join("NuGet.Config"),
             format!(
                 "<?xml version=\"1.0\"?><configuration>\
-                 <packageSources><clear/></packageSources>{config_section}</configuration>"
+                 <packageSources><clear/></packageSources>\
+                 {config_section}{fallback_section}</configuration>"
             ),
         )
         .unwrap();
@@ -218,18 +252,9 @@ fn versioned_sdk_resolves_from_the_folder_nuget_settings_choose() {
         let theirs = oracle
             .resolve(&sdk_ref, &project_path)
             .map(|props| canon(&props));
-        let ours = match SdkDiscovery::for_project(&project_path, &env)
+        let ours = SdkDiscovery::for_project(&project_path, &env)
             .expect("discovery")
-            .resolve(&sdk_ref)
-        {
-            Ok(SdkResolution::Single(paths)) => Some(canon(&paths.props)),
-            Ok(other) => panic!(
-                "{}: expected a single-root resolution, got {other:?}",
-                case.label
-            ),
-            Err(borzoi_msbuild::SdkResolveError::NotFound) => None,
-            Err(err) => panic!("{}: expected a commitment, got {err:?}", case.label),
-        };
+            .resolve(&sdk_ref);
         let expected = case.expect.map(|want| {
             let (_, props) = copies
                 .iter()
@@ -242,10 +267,23 @@ fn versioned_sdk_resolves_from_the_folder_nuget_settings_choose() {
             "{}: real MSBuild did not resolve the copy the case names",
             case.label
         );
-        assert_eq!(
-            ours, theirs,
-            "{}: SdkDiscovery and real MSBuild resolve different copies",
-            case.label
-        );
+        match ours {
+            Err(borzoi_msbuild::SdkResolveError::UnsupportedLayout { .. }) if case.we_decline => {}
+            Ok(SdkResolution::Single(paths)) if !case.we_decline => assert_eq!(
+                Some(canon(&paths.props)),
+                theirs,
+                "{}: SdkDiscovery and real MSBuild resolve different copies",
+                case.label
+            ),
+            other => panic!(
+                "{}: expected {}, got {other:?}",
+                case.label,
+                if case.we_decline {
+                    "a decline"
+                } else {
+                    "a single-root resolution"
+                }
+            ),
+        }
     }
 }

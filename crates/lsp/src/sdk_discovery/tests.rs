@@ -479,21 +479,26 @@ fn a_relative_global_packages_folder_resolves_against_its_config_file() {
     assert_eq!(paths.props, configured_copy);
 }
 
-/// Where the configured folder lacks the package, NuGet does not fall back to
-/// the home's default folder (it would download into the configured one), so
-/// the copy there must not be read.
+/// Where the configured folder lacks the package, the copy in the home's
+/// default folder must not be read. Nor is the SDK absent: NuGet would look in
+/// its fallback folders (which may well be the home's) and then download it,
+/// neither of which is modelled, so resolution declines.
 #[test]
-fn pinned_sdk_absent_from_the_configured_folder_does_not_resolve_from_home() {
+fn pinned_sdk_absent_from_the_configured_folder_declines() {
     let layout = PackagesLayout::new();
     let configured = layout.tmp.path().join("configured");
     fs::create_dir_all(&configured).unwrap();
     layout.write_project_config(&config_choosing(configured.to_str().unwrap()));
+    // Another version in the folder: absence of the pinned one still declines.
+    install_sdk_package(&configured, "My.Custom.Sdk", "1.0.0");
 
     let disc = layout.discovery(&layout.env());
-    assert_eq!(
-        disc.resolve("My.Custom.Sdk/1.2.3").unwrap_err(),
-        SdkResolveError::NotFound
-    );
+    match disc.resolve("My.Custom.Sdk/1.2.3") {
+        Err(SdkResolveError::UnsupportedLayout { reason }) => {
+            assert!(reason.contains("fallback folders"), "{reason}")
+        }
+        other => panic!("expected a decline, got {other:?}"),
+    }
 }
 
 /// `NUGET_PACKAGES` outranks every config file.
