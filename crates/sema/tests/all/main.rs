@@ -128,6 +128,7 @@ mod uses_census_project;
 mod uses_project_smoke;
 mod uses_smoke;
 mod value_access_open_grid;
+mod walk_stack_bound;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is
 /// silently never compiled or run. See the module for why that is worth a test.

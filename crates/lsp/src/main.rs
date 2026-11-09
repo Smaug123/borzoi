@@ -2,7 +2,8 @@ use std::error::Error;
 
 use borzoi::log_info;
 use borzoi::server::{
-    State, client_capabilities_from_initialize, server_capabilities, workspace_roots_from_init,
+    SERVER_STACK_BYTES, State, client_capabilities_from_initialize, server_capabilities,
+    workspace_roots_from_init,
 };
 use lsp_server::Connection;
 use lsp_types::InitializeParams;
@@ -12,6 +13,19 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // unless built with `--features otel`.
     let _telemetry = borzoi::telemetry::init();
 
+    // Every request is answered on this one thread, and answering walks the
+    // parsed tree recursively, so its stack is sized for the tallest tree the
+    // parser returns rather than left to the platform's main-thread default.
+    std::thread::Builder::new()
+        .name("borzoi".into())
+        .stack_size(SERVER_STACK_BYTES)
+        .spawn(serve)?
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Initialise over stdio and run the request loop until the client exits.
+fn serve() -> Result<(), Box<dyn Error + Send + Sync>> {
     log_info!("starting on stdio");
 
     let (connection, io_threads) = Connection::stdio();
