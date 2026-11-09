@@ -539,8 +539,10 @@ fn report(results: &[(PathBuf, Outcome)], projected: usize) {
 /// non-authoritative, so every such image costs the projection its F#-specific
 /// readings; the census names each one, and **fails** on any, since fsc writes
 /// one row per such entity and refuses two rows of one full name — an unjoined
-/// entity in real output means the join's model of fsc is wrong. Prints usage
-/// and returns green when the variable is unset.
+/// entity in real output means the join's model of fsc is wrong. It fails too
+/// on an F# assembly whose census or projection errored or panicked, keeping
+/// whatever verdicts it did read. Prints usage and returns green when the
+/// variable is unset.
 #[test]
 #[ignore = "needs a populated local package cache; run explicitly"]
 fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
@@ -584,34 +586,57 @@ fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
         keys.values().filter(|&&n| n > 1).sum()
     }
 
+    /// What one assembly told the census. An assembly the reader cannot parse
+    /// at all is the projection-skip gate's business, and one with no host
+    /// pickle has nothing to join; everything else is either a full reading or
+    /// a failure the census reports, so no image's verdicts are lost to a later
+    /// step failing.
+    enum Probe {
+        NotFSharp,
+        Read {
+            verdicts: BTreeMap<JoinVerdict, usize>,
+            /// `Err` when the projection itself failed, with the reason.
+            projected: Result<(usize, usize), String>,
+        },
+        Failed(String),
+    }
+    fn probe(bytes: &[u8]) -> Probe {
+        let Ok(asm) = Ecma335Assembly::parse(bytes) else {
+            return Probe::NotFSharp;
+        };
+        match asm.pickle_join_census() {
+            Ok(None) => Probe::NotFSharp,
+            Err(e) => Probe::Failed(format!("join census: {e}")),
+            Ok(Some(census)) => Probe::Read {
+                verdicts: census.verdicts,
+                projected: asm
+                    .enumerate_type_defs_with_skips()
+                    .map(|(entities, skips)| {
+                        (key_collisions(&entities), skips.dropped_types.len())
+                    })
+                    .map_err(|e| e.to_string()),
+            },
+        }
+    }
+
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let chunks: Vec<&[PathBuf]> = files.chunks(files.len().div_ceil(threads).max(1)).collect();
-    type Row = (PathBuf, BTreeMap<JoinVerdict, usize>, usize, usize);
-    let rows: Vec<Row> = std::thread::scope(|scope| {
+    let probes: Vec<(PathBuf, Probe)> = std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
             .iter()
             .map(|chunk| {
                 scope.spawn(move || {
-                    let mut out = Vec::new();
-                    for path in chunk.iter() {
-                        let Ok(bytes) = std::fs::read(path) else {
-                            continue;
-                        };
-                        let probed = catch_unwind_silent(|| {
-                            let asm = Ecma335Assembly::parse(&bytes).ok()?;
-                            let census = asm.pickle_join_census().ok()??;
-                            let (entities, skips) = asm.enumerate_type_defs_with_skips().ok()?;
-                            Some((
-                                census.verdicts,
-                                key_collisions(&entities),
-                                skips.dropped_types.len(),
-                            ))
-                        });
-                        if let Ok(Some((verdicts, collisions, dropped))) = probed {
-                            out.push((path.clone(), verdicts, collisions, dropped));
-                        }
-                    }
-                    out
+                    chunk
+                        .iter()
+                        .map(|path| {
+                            let probed = match std::fs::read(path) {
+                                Err(e) => Probe::Failed(format!("read: {e}")),
+                                Ok(bytes) => catch_unwind_silent(|| probe(&bytes))
+                                    .unwrap_or_else(|_| Probe::Failed("panicked".to_string())),
+                            };
+                            (path.clone(), probed)
+                        })
+                        .collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -620,6 +645,28 @@ fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
             .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     });
+
+    let mut failures: Vec<(&Path, String)> = Vec::new();
+    let mut rows: Vec<(PathBuf, BTreeMap<JoinVerdict, usize>, usize, usize)> = Vec::new();
+    for (path, probed) in &probes {
+        match probed {
+            Probe::NotFSharp => {}
+            Probe::Failed(why) => failures.push((path.as_path(), why.clone())),
+            Probe::Read {
+                verdicts,
+                projected,
+            } => {
+                let (collisions, drops) = match projected {
+                    Ok(counts) => *counts,
+                    Err(why) => {
+                        failures.push((path.as_path(), format!("projection: {why}")));
+                        (0, 0)
+                    }
+                };
+                rows.push((path.clone(), verdicts.clone(), collisions, drops));
+            }
+        }
+    }
 
     let mut totals: BTreeMap<JoinVerdict, usize> = BTreeMap::new();
     let mut unjoined: Vec<(&Path, Vec<(JoinVerdict, usize)>)> = Vec::new();
@@ -651,10 +698,15 @@ fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
     for (path, bad) in &unjoined {
         eprintln!("[join-census] unjoined {bad:?} in {}", path.display());
     }
+    for (path, why) in &failures {
+        eprintln!("[join-census] failed: {why} in {}", path.display());
+    }
     assert!(
-        unjoined.is_empty(),
-        "{} F# assemblies have pickled entities the join cannot attribute to a row",
-        unjoined.len()
+        unjoined.is_empty() && failures.is_empty(),
+        "{} F# assemblies have pickled entities the join cannot attribute to a row, and {} \
+         could not be read through",
+        unjoined.len(),
+        failures.len()
     );
 }
 
