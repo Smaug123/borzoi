@@ -1261,35 +1261,47 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         self.is_long_ident_equals_loop()
     }
 
-    /// FCS's inner `loop` (LexFilter.fs:1331-1350). Pops one token, classifies
-    /// it (EQUALS → true; DOT IDENT → recurse; anything else → false), then
-    /// re-queues it with `delay_token`. The DOT branch pops a second token to
-    /// check for IDENT and likewise re-queues. All paths restore the stream.
+    /// FCS's inner `loop` (LexFilter.fs:1331-1350): EQUALS → true; DOT IDENT →
+    /// look at the next pair; anything else (or end of input) → false. Every
+    /// token popped is re-queued, last popped first, so the stream is restored.
+    ///
+    /// FCS's `loop` recurses once per `DOT IDENT` pair; this walks them in a
+    /// loop instead, holding the popped tokens here, so a long dotted path
+    /// (`a.b.c.…`) cannot overflow the stack. The tokens are popped and
+    /// re-queued in the order the recursion pops and re-queues them.
     fn is_long_ident_equals_loop(&mut self) -> bool {
-        let Some(tt) = self.pop_next_token_tup() else {
-            return false;
-        };
-        let res = match &tt.token {
-            TokenContent::Eof => false,
-            TokenContent::Real(Token::Equals) => true,
-            TokenContent::Real(Token::Dot) => {
-                let Some(after_dot) = self.pop_next_token_tup() else {
-                    self.delay_token(tt);
-                    return false;
-                };
-                let after_dot_res = match &after_dot.token {
-                    TokenContent::Eof => false,
-                    TokenContent::Real(Token::Ident(_) | Token::QuotedIdent(_)) => {
-                        self.is_long_ident_equals_loop()
-                    }
-                    _ => false,
-                };
-                self.delay_token(after_dot);
-                after_dot_res
+        let mut popped = Vec::new();
+        let res = loop {
+            let Some(tt) = self.pop_next_token_tup() else {
+                break false;
+            };
+            let is_dot = match &tt.token {
+                TokenContent::Real(Token::Equals) => {
+                    popped.push(tt);
+                    break true;
+                }
+                TokenContent::Real(Token::Dot) => true,
+                _ => false,
+            };
+            popped.push(tt);
+            if !is_dot {
+                break false;
             }
-            _ => false,
+            let Some(after_dot) = self.pop_next_token_tup() else {
+                break false;
+            };
+            let is_ident = matches!(
+                &after_dot.token,
+                TokenContent::Real(Token::Ident(_) | Token::QuotedIdent(_))
+            );
+            popped.push(after_dot);
+            if !is_ident {
+                break false;
+            }
         };
-        self.delay_token(tt);
+        while let Some(tt) = popped.pop() {
+            self.delay_token(tt);
+        }
         res
     }
 

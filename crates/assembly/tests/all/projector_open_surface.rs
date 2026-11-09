@@ -351,8 +351,8 @@ fn case_marker_fields(entity: &Entity) -> Vec<&str> {
         .collect()
 }
 
-/// The row a key-only match selects first must not be handed the *other*
-/// union's cases.
+/// Neither of two unions whose rows strip to one name and arity is handed the
+/// *other* union's cases.
 ///
 /// [`arity_overloaded_unions_keep_their_own_cases`] fixed this defect at the
 /// name-only level by adding generic arity to the key. `(name, arity)` is not
@@ -360,12 +360,15 @@ fn case_marker_fields(entity: &Entity) -> Vec<&str> {
 /// puts a second union at one key, and this is that shape. F# forbids two types
 /// of one name and arity in a namespace, so nothing but a deliberate
 /// `[<CompiledName>]` reaches it — but it compiles with no warning, and the
-/// consequence is not a silence. `union_cases` is what
+/// consequence of a misattached list is not a silence. `union_cases` is what
 /// `AssemblyEnv::authoritative_union_case` answers "is this a case of that
 /// union" from, and what `open_fold_surface` contributes as *bare* names, so a
 /// misattached list is a wrong go-to-definition target with a source location.
+///
+/// The rows' metadata names (`V` and ``V`0``) are their identity, so each
+/// union's cases go to its own row.
 #[test]
-fn two_unions_at_one_projected_key_attach_no_cases() {
+fn two_unions_at_one_projected_key_keep_their_own_cases() {
     let entities = load(ensure_key_collision_built());
     let rows = entities_named(&entities, "V");
     assert_eq!(
@@ -390,21 +393,8 @@ fn two_unions_at_one_projected_key_attach_no_cases() {
         .find(|e| case_marker_fields(e) == ["R", "S"])
         .expect("a row whose singleton fields are _unique_R / _unique_S — source W");
 
-    // The pickle's case list fits either row as readily, so applying it to the
-    // one the key happened to find first is a guess. `None` is the decline, and
-    // every consumer already treats it as "unknowable" rather than "empty".
-    assert_eq!(
-        v.union_cases,
-        UnionCases::Unknowable,
-        "source V was handed a case list on an ambiguous key: {:?}",
-        v.union_cases
-    );
-    assert_eq!(
-        w.union_cases,
-        UnionCases::Unknowable,
-        "source W was handed a case list on an ambiguous key: {:?}",
-        w.union_cases
-    );
+    assert_eq!(case_names(v), Some(vec!["X".to_string(), "Y".to_string()]));
+    assert_eq!(case_names(w), Some(vec!["R".to_string(), "S".to_string()]));
 }
 
 /// A **class** at a pickled union's key keeps the members it declares.

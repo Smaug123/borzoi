@@ -22,6 +22,7 @@ use crate::model::{
     SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCaseMaker,
     UnionCases, ValFacts, Variance, Version,
 };
+use crate::pickle_join::{PickleJoin, RowPath};
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
     AssemblyRefId, CallConv, Constant, CustomMod, DeclSemantics, DecodedAttribute,
@@ -69,6 +70,11 @@ pub struct Ecma335Assembly {
     image: Image,
     /// Pre-projected so [`EcmaView::identity`] can hand back a borrow.
     identity: AssemblyIdentity,
+    /// Whether the image carries an `FSharpInterfaceDataVersionAttribute`, read
+    /// once at parse. Without it FCS imports the image through IL
+    /// ([`FSharpReading::Il`]), and every member projection must read the IL
+    /// alone, as FCS does.
+    fsharp_marker: bool,
 }
 
 impl Ecma335Assembly {
@@ -93,7 +99,16 @@ impl Ecma335Assembly {
                 });
             }
         };
-        Ok(Self { image, identity })
+        let mut asm = Self {
+            image,
+            identity,
+            fsharp_marker: false,
+        };
+        // An undecodable marker fails every enumeration anyway
+        // (`fsharp_resources`); here it reads as present, the reading that
+        // honours fsc's IL markers.
+        asm.fsharp_marker = !matches!(asm.fsharp_interface_data_version(), Ok(None));
+        Ok(asm)
     }
 
     /// The decoded image, mutably — the seam the modifier metamorphic probe
@@ -303,19 +318,41 @@ impl Ecma335Assembly {
                 )
             });
 
+        // Which row each pickled entity compiled to, certified against every
+        // `TypeDef` row of the image. Every overlay below reaches a row through
+        // this and nothing else.
+        type Joined = Result<(PickledCcu, PickleJoin), ImportError>;
+        let decoded: Option<(String, Joined)> = match decoded {
+            Some((name, Ok(ccu))) => {
+                let join = PickleJoin::certify(&ccu, &self.type_def_row_paths())?;
+                Some((name, Ok((ccu, join))))
+            }
+            Some((name, Err(error))) => Some((name, Err(error))),
+            None => None,
+        };
+
         // The host pickle is authoritative for source-name and F#-native
-        // extension overlays only when it decoded *and* it describes the whole
-        // image — a single-CCU assembly. When it did not decode, or the image
-        // is an `fsc --standalone` build that also embeds *foreign* dependency
-        // CCU pickles (copied TypeDefs the host pickle does not describe),
-        // projection keeps the IL-name heuristic for the whole image — its
-        // behaviour there unchanged from before this fix. The decode failure
-        // is recorded below as a skipped F# overlay instead of silently
-        // disappearing. When authoritative, the per-module source-name /
-        // extension overlay sets the source name and extension flag instead,
-        // so projection suppresses the heuristic.
-        let authoritative = matches!(&decoded, Some((_, Ok(_))))
+        // extension overlays only when it decoded, it describes the whole
+        // image — a single-CCU assembly — and every row it describes is one the
+        // join attributes to it ([`PickleJoin::is_total`]). When it did not
+        // decode, the image is an `fsc --standalone` build that also embeds
+        // *foreign* dependency CCU pickles (copied TypeDefs the host pickle
+        // does not describe), or some described row is one the overlays cannot
+        // reach, projection keeps the IL-name heuristic for the whole image and
+        // the completeness flags below report what the pickle cannot vouch for.
+        // The decode failure is recorded below as a skipped F# overlay instead
+        // of silently disappearing. When authoritative, the per-module
+        // source-name / extension overlay sets the source name and extension
+        // flag instead, so projection suppresses the heuristic.
+        let authoritative = matches!(&decoded, Some((_, Ok((_, join)))) if join.is_total())
             && !foreign_signature_data_present(&resources, &self.identity.name);
+        let reading = if !self.fsharp_marker {
+            FSharpReading::Il
+        } else if authoritative {
+            FSharpReading::Pickle
+        } else {
+            FSharpReading::Heuristic
+        };
 
         let mut out = Vec::new();
         let mut dropped_types = Vec::new();
@@ -333,7 +370,7 @@ impl Ecma335Assembly {
             match self.project_entity(
                 i as usize,
                 0,
-                !authoritative,
+                reading,
                 &mut dropped_types,
                 &td.name.namespace,
             ) {
@@ -443,7 +480,7 @@ impl Ecma335Assembly {
         let mut records_settled = false;
         if let Some((resource_name, decoded)) = decoded {
             match decoded {
-                Ok(ccu) => {
+                Ok((ccu, join)) => {
                     // F# source-name overlay and the pickle-driven module
                     // member list: set each entity's `source_name` from the
                     // host pickle, then rebuild every module's member list
@@ -453,10 +490,11 @@ impl Ecma335Assembly {
                     // projection skipped on the authoritative path. These
                     // borrow the CCU, so they run before the measure overlay.
                     if authoritative {
-                        crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu, &join)?;
                         crate::fsharp_pickle_merge::apply_module_member_projection(
                             &mut out,
                             &ccu,
+                            &join,
                             &self.physical_methods(),
                         )?;
                     }
@@ -464,7 +502,7 @@ impl Ecma335Assembly {
                     // `TyparKind::Measure` markers to upgrade matching
                     // entities from `Class` to `Measure`. A decoded pickle
                     // that disagrees with the ECMA tree remains fatal.
-                    crate::fsharp_pickle_merge::apply_measure_overlay(&mut out, &ccu)?;
+                    crate::fsharp_pickle_merge::apply_measure_overlay(&mut out, &ccu, &join)?;
                     // Declaration-order overlay: metadata row order is not
                     // source order (nested modules come out reversed), but
                     // FCS's later-wins rules — most visibly the recursive
@@ -474,7 +512,7 @@ impl Ecma335Assembly {
                     // absent from the host pickle and must keep their
                     // metadata order.
                     if authoritative {
-                        crate::fsharp_pickle_merge::apply_declaration_order(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_declaration_order(&mut out, &ccu, &join)?;
                     }
                     // Abbreviation shadow markers: synthesise a name-only
                     // entity for each public metadata-invisible type
@@ -485,6 +523,7 @@ impl Ecma335Assembly {
                     crate::fsharp_pickle_merge::apply_abbreviation_markers(
                         &mut out,
                         &ccu,
+                        &join,
                         &self.identity,
                     )?;
                     // F#-native instance extension-member name index (OV-0.5):
@@ -494,7 +533,9 @@ impl Ecma335Assembly {
                     // abbreviation markers, so it runs even on the
                     // non-authoritative path; its cross-assembly completeness is
                     // bounded by `fsharp_abbreviations_unknowable` (set above).
-                    crate::fsharp_pickle_merge::apply_extension_member_index(&mut out, &ccu)?;
+                    crate::fsharp_pickle_merge::apply_extension_member_index(
+                        &mut out, &ccu, &join,
+                    )?;
                     // Union case names (module-open plan, Slice B): each
                     // union's case names from the pickle — the ECMA
                     // projection cannot see them, and the module-open fold
@@ -503,33 +544,28 @@ impl Ecma335Assembly {
                     // images still get their host unions' cases; foreign-CCU
                     // unions stay empty (= unknowable, bounded by
                     // `fsharp_abbreviations_unknowable`).
-                    crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
+                    crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu, &join)?;
                     if authoritative {
                         // Record and exception member properties, vouched for
-                        // by the pickle's published member list. Authoritative-
-                        // only: the row is located by a reconstructed name key.
-                        crate::fsharp_pickle_merge::settle_record_properties(&mut out, Some(&ccu))?;
+                        // by the pickle's published member list.
+                        crate::fsharp_pickle_merge::settle_record_properties(
+                            &mut out,
+                            Some((&ccu, &join)),
+                        )?;
                         records_settled = true;
                         // The doc-comment keys fsc pickled for each type's
                         // members (module members get theirs from the member
-                        // list above). Authoritative-only, like the other
-                        // overlays that locate a row by a reconstructed name key.
-                        // After the record settle, so only the properties that
-                        // survive it are stamped.
+                        // list above). After the record settle, so only the
+                        // properties that survive it are stamped.
                         crate::fsharp_pickle_merge::apply_type_member_overlays(
                             &mut out,
                             &ccu,
+                            &join,
                             &self.physical_methods(),
                         )?;
                         // Whether a unit of measure was erased from any F#
-                        // type's member signatures. Authoritative-only for the
-                        // reason the doc keys are: it locates a row by a
-                        // reconstructed name key.
-                        crate::fsharp_pickle_merge::apply_member_measures(
-                            &mut out,
-                            &ccu,
-                            &self.physical_methods(),
-                        )?;
+                        // type's member signatures.
+                        crate::fsharp_pickle_merge::apply_member_measures(&mut out, &ccu, &join)?;
                         // F#-only typar constraints (`when 'T : comparison` and
                         // friends), which have no IL encoding at all.
                         //
@@ -538,16 +574,11 @@ impl Ecma335Assembly {
                         // creates it.
                         //
                         // Authoritative-only, like the source-name and
-                        // declaration-order overlays and for the same reason:
-                        // this one locates a row by a reconstructed name key,
-                        // and a non-authoritative image holds copied foreign
-                        // TypeDefs the host pickle never describes — a container
-                        // or a row of theirs can sit at a host entity's key and
-                        // take its reading. Every row was blanked to
+                        // declaration-order overlays. Every row was blanked to
                         // `Unknowable` before this, so declining a
                         // `--standalone` image costs coverage, never
                         // correctness.
-                        crate::fsharp_pickle_merge::apply_typar_constraints(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_typar_constraints(&mut out, &ccu, &join)?;
                     }
                 }
                 Err(error) => {
@@ -577,6 +608,60 @@ impl Ecma335Assembly {
         ))
     }
 
+    /// The [`RowPath`] of every `TypeDef` row of the image, dropped and skipped
+    /// rows included, for [`PickleJoin::certify`].
+    ///
+    /// A row whose enclosing chain does not reach a top-level row within
+    /// [`MAX_NESTING_DEPTH`] links — a nesting cycle, which no projected row is
+    /// part of, since projection descends from the top level — has no identity
+    /// and is left out: it is neither a row a pickled path can name nor one the
+    /// projected tree holds.
+    fn type_def_row_paths(&self) -> Vec<RowPath> {
+        let defs = &self.image.type_defs;
+        let mut out = Vec::with_capacity(defs.len());
+        'rows: for td in defs {
+            // The chain from this row out to its top-level row, innermost first.
+            let mut chain = vec![td];
+            let mut current = td;
+            while let Some(TypeDefId(enclosing)) = current.enclosing {
+                let Some(outer) = defs.get(enclosing as usize) else {
+                    continue 'rows;
+                };
+                if chain.len() > MAX_NESTING_DEPTH {
+                    continue 'rows;
+                }
+                chain.push(outer);
+                current = outer;
+            }
+            let mut rows = chain.iter().rev();
+            let top = rows.next().expect("the chain holds the row itself");
+            let mut path = RowPath::top_level(&top.name.namespace, &top.name.name);
+            for nested in rows {
+                path = path.nested(&nested.name.namespace, &nested.name.name);
+            }
+            out.push(path);
+        }
+        out
+    }
+
+    /// How the host pickle's entities join to this image's `TypeDef` rows (the
+    /// `pickle_join` module): `None` when the image has no decodable host
+    /// pickle. Test-support only — the census the projection-skip sweep reports.
+    #[cfg(feature = "test-support")]
+    pub fn pickle_join_census(&self) -> Result<Option<crate::JoinCensus>, ImportError> {
+        let resources = self.fsharp_resources()?;
+        let Some(sig) = primary_signature_resource_for_host(&resources, &self.identity.name) else {
+            return Ok(None);
+        };
+        let stream_b = b_stream_signature_resource_for_host(&resources, &self.identity.name);
+        let Ok(ccu) = crate::fsharp_pickle::unpickle_signature(&sig.payload, stream_b) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            PickleJoin::certify(&ccu, &self.type_def_row_paths())?.census(),
+        ))
+    }
+
     /// Every `MethodDef`'s IL slot, by token — the physical census the doc-key
     /// overlays count, which sees the methods the member projection refuses or
     /// elides.
@@ -596,7 +681,6 @@ impl Ecma335Assembly {
                 out.insert(
                     m.token,
                     crate::fsharp_pickle_merge::PhysicalMethod {
-                        declaring_type: td.name.name.clone(),
                         name: m.name.clone(),
                         params: m.signature.as_ref().ok().map(|s| s.parameters.len()),
                         is_static: m.is_static,
@@ -654,6 +738,27 @@ impl Ecma335Assembly {
 // ============================================================================
 // Type-tree projection (stage 7.3)
 // ============================================================================
+
+/// Where the projection reads an image's F# facts from, decided by what FCS
+/// itself reads (`TcImports.RegisterAndImportReferencedAssemblies`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FSharpReading {
+    /// No `FSharpInterfaceDataVersionAttribute` (a C# or BCL image, or F#
+    /// built with `--nointerfacedata` or `--standalone`): FCS imports the
+    /// image through IL (`PrepareToImportReferencedILAssembly`), honouring
+    /// none of fsc's IL markers — not a `CompilationMappingAttribute`'s kind,
+    /// nor a `CompilationSourceNameAttribute`'s name. So the projection reads
+    /// the IL alone, and that is exactly FCS's view.
+    Il,
+    /// The marker, and a host pickle the projection reads authoritatively:
+    /// FCS reads the signature data, and so does the projection.
+    Pickle,
+    /// The marker, but no authoritative host pickle (it is undecodable, its
+    /// join is partial, or foreign CCUs ride beside it): FCS reads signature
+    /// data the projection cannot, so the projection reads fsc's IL markers,
+    /// which are a heuristic for it.
+    Heuristic,
+}
 
 /// Maximum type-nesting depth [`Ecma335Assembly::project_entity`] will follow.
 /// Real assemblies nest only a handful of levels deep; a chain deeper than this
@@ -716,7 +821,7 @@ impl Ecma335Assembly {
         &self,
         idx: usize,
         depth: usize,
-        il_heuristic: bool,
+        reading: FSharpReading,
         entity_skips: &mut Vec<SkippedProjectionItem>,
         // The **top-level** enclosing type's namespace, threaded down the nesting
         // recursion. A nested `TypeDef` carries an *empty* `TypeNamespace`, so a
@@ -738,7 +843,7 @@ impl Ecma335Assembly {
             Some(Ok(sig)) => Some(self.project_type_ref(sig)?),
             Some(Err(e)) => return Err(sig_error(e, "base type")),
         };
-        let kind = self.project_entity_kind(td, base_type.as_ref())?;
+        let kind = self.project_entity_kind(td, base_type.as_ref(), reading)?;
         let interfaces = td
             .implements
             .iter()
@@ -767,7 +872,12 @@ impl Ecma335Assembly {
             kept: members,
             skipped: skipped_members,
         } = if is_fsharp_kind(kind) {
-            self.project_fsharp_members(kind, td, type_context, il_heuristic)?
+            self.project_fsharp_members(
+                kind,
+                td,
+                type_context,
+                reading == FSharpReading::Heuristic,
+            )?
         } else {
             self.project_il_members(td, type_context)?
         };
@@ -788,7 +898,7 @@ impl Ecma335Assembly {
             match self.project_entity(
                 child as usize,
                 depth + 1,
-                il_heuristic,
+                reading,
                 entity_skips,
                 top_namespace,
             ) {
@@ -827,10 +937,10 @@ impl Ecma335Assembly {
         // this (an entity's `IsType::FSharpModuleWithSuffix` / `compiled_name`),
         // so we leave it `None` and let `apply_entity_overlay` fill it —
         // mirroring how the extension-member flag is left to its overlay. The
-        // IL-name attribute heuristic is the fallback when no host pickle
-        // applies (`il_heuristic`).
+        // IL-name attribute heuristic is the fallback when FCS reads a host
+        // pickle the projection cannot ([`FSharpReading::Heuristic`]).
         let name = strip_arity(&td.name.name).to_string();
-        let source_name = if il_heuristic {
+        let source_name = if reading == FSharpReading::Heuristic {
             self.detect_module_suffix_source_name(&td.attributes, kind, &name)?
         } else {
             None
@@ -880,7 +990,7 @@ impl Ecma335Assembly {
                 "Microsoft.FSharp.Core",
                 "AutoOpenAttribute",
             )?,
-            metadata_arity_suffix: metadata_arity_suffix(&td.name.name),
+            metadata_name: Some(td.name.name.clone()),
             is_require_qualified_access: self.has_attribute(
                 &td.attributes,
                 "Microsoft.FSharp.Core",
@@ -939,12 +1049,22 @@ impl Ecma335Assembly {
     /// delegate) overlaid with the F# kind from `CompilationMappingAttribute`
     /// (Module/Record/Union/Exception). The kind is foundational — the nested
     /// filter and the member projection both depend on it.
+    ///
+    /// An image FCS imports through IL ([`FSharpReading::Il`]) keeps the ECMA
+    /// discriminant: FCS's IL import gives every `TypeDef` an IL
+    /// representation whatever its attributes say, so an F# module, record,
+    /// union or exception there is the plain type its IL declares — one an
+    /// `open` cannot name, with no values, fields or cases of its own.
     fn project_entity_kind(
         &self,
         td: &TypeDef,
         base: Option<&TypeRef>,
+        reading: FSharpReading,
     ) -> Result<EntityKind, ImportError> {
         let il_kind = project_kind(td, base);
+        if reading == FSharpReading::Il {
+            return Ok(il_kind);
+        }
         // `SourceConstructFlags` low 5 bits are the kind tag (bit 5 is a
         // visibility hint we ignore).
         match self.decode_compilation_mapping_kind(td)? {
@@ -2564,7 +2684,9 @@ impl Ecma335Assembly {
             if accessors.contains(&(i as u32)) {
                 continue;
             }
-            if is_fsharp_witness_duplicate(&m.name, &real_method_names) {
+            // A witness twin is pure codegen the pickle never names; FCS's IL
+            // import, which reads no pickle, lists it like any other method.
+            if self.fsharp_marker && is_fsharp_witness_duplicate(&m.name, &real_method_names) {
                 continue;
             }
             out.push_or_skip(
@@ -2744,7 +2866,14 @@ impl Ecma335Assembly {
             experimental: self.detect_experimental(&m.attributes)?,
             sets_required_members: self.has_sets_required_members(&m.attributes)?,
             compiler_feature_required,
-            source_name: self.detect_compilation_source_name(&m.attributes)?,
+            // fsc's record of a `[<CompiledName>]` rename. FCS's IL import
+            // names a method by its IL name, so without the marker the
+            // attribute names nothing FCS can see.
+            source_name: if self.fsharp_marker {
+                self.detect_compilation_source_name(&m.attributes)?
+            } else {
+                None
+            },
             custom_attrs: Vec::new(),
             metadata_token: m.token,
             implements,
@@ -2922,12 +3051,14 @@ impl Ecma335Assembly {
         // a .NET optional is the `Optional` flag and/or a `Constant` default
         // value (a C# `x = <value>`; the flag alone is common in COM/VB
         // metadata). The two are distinct calling conventions, so keep them
-        // apart, carrying the decoded default value for the .NET form.
-        let default = if self.has_attribute(
-            &p.attributes,
-            "Microsoft.FSharp.Core",
-            "OptionalArgumentAttribute",
-        )? {
+        // apart, carrying the decoded default value for the .NET form. FCS's IL
+        // import ([`FSharpReading::Il`]) reads only the .NET form.
+        let default = if self.fsharp_marker
+            && self.has_attribute(
+                &p.attributes,
+                "Microsoft.FSharp.Core",
+                "OptionalArgumentAttribute",
+            )? {
             ParamDefault::FSharpOptional
         } else if let Some(value) = &p.default_value {
             ParamDefault::Optional(Some(project_constant(value)))
@@ -4738,8 +4869,8 @@ fn canonical_suffix(name: &str) -> Option<(usize, usize)> {
 /// [`Entity::metadata_arity_suffix`] of a `TypeDef` named `name`: its
 /// canonical suffix, or 0 for a name with no suffix. A name [`strip_arity`]
 /// strips of a non-canonical suffix (`Foo`0`, `Foo`01`) projects as the bare
-/// name, which another `TypeDef` may genuinely spell, so it records none.
-fn metadata_arity_suffix(name: &str) -> Option<usize> {
+/// name, which another `TypeDef` may genuinely spell, so it has none.
+pub(crate) fn metadata_arity_suffix(name: &str) -> Option<usize> {
     match canonical_suffix(name) {
         Some((_, n)) => Some(n),
         None if strip_arity(name).len() == name.len() => Some(0),
@@ -4875,7 +5006,7 @@ mod tests {
     //! unit tests pin refuse-loud paths the fixture corpus cannot reach (no real
     //! compiler emits them), driven directly against synthetic input.
 
-    use super::Ecma335Assembly;
+    use super::{Ecma335Assembly, FSharpReading};
     use crate::ImportError;
     use crate::model::{
         Entity, FSharpConstraints, FsharpOverlayKind, Member, Nullability, ParamDefault, Parameter,
@@ -5056,13 +5187,14 @@ mod tests {
             .find(|&&TypeDefId(i)| view.image.type_defs[i as usize].name.name == "Values")
             .expect("the LiteralConsts.Values module");
 
-        // Force the non-authoritative path: this DLL *has* a good host pickle, so only a
-        // direct call reaches the heuristic the `--standalone` image would take.
+        // Force the heuristic path: this DLL *has* a good host pickle, so only a
+        // direct call reaches the heuristic that an image whose pickle FCS reads
+        // but the projection cannot would take.
         let entity = view
             .project_entity(
                 values as usize,
                 0,
-                true,
+                FSharpReading::Heuristic,
                 &mut Vec::new(),
                 &view.image.type_defs[values as usize].name.namespace,
             )
@@ -6031,13 +6163,25 @@ mod tests {
             .find(|&&TypeDefId(i)| {
                 !super::is_skipped_type(&view.image.type_defs[i as usize])
                     && view
-                        .project_entity(i as usize, 0, true, &mut Vec::new(), "")
+                        .project_entity(
+                            i as usize,
+                            0,
+                            FSharpReading::Heuristic,
+                            &mut Vec::new(),
+                            "",
+                        )
                         .is_ok()
             })
             .expect("a projectable, non-skipped top-level type");
         view.image.type_defs[top as usize].nested = vec![TypeDefId(top)];
         match view
-            .project_entity(top as usize, 0, true, &mut Vec::new(), "")
+            .project_entity(
+                top as usize,
+                0,
+                FSharpReading::Heuristic,
+                &mut Vec::new(),
+                "",
+            )
             .expect_err("a cyclic nested-type chain must be refused")
         {
             ImportError::CyclicTypeNesting { detail } => {

@@ -770,23 +770,25 @@ pub struct AssemblyProjectionSkips {
     /// members exist to miss) and for any F# assembly whose pickle decoded.
     pub fsharp_extension_index_unknowable: bool,
     /// `true` when the host F# signature pickle was **not authoritative** for this
-    /// image — absent, undecodable, or a `--standalone` build that embeds foreign
-    /// dependency CCUs. When so, the pickle overlay never ran, and the projected
-    /// F# facts that depend on it — most visibly a module's kind
-    /// (`EntityKind::Module`, otherwise set from the IL `CompilationMappingAttribute`)
-    /// and its value/function member split — are IL heuristics, *not* what FCS
-    /// sees: FCS imports such an assembly through IL, where a module reads as a
-    /// plain type and its `let`s as ordinary members (verified against real
-    /// `--standalone` output). A semantic-token classifier must therefore not trust
-    /// `EntityKind::Module` here.
+    /// image — absent, undecodable, partially joined, or beside foreign
+    /// dependency CCUs. The pickle overlay then never ran, and the projection
+    /// reads the image one of two ways, by what FCS reads:
+    ///
+    /// - without the assembly-level `FSharpInterfaceDataVersionAttribute` (C#,
+    ///   the BCL, or F# built with `--nointerfacedata` or `--standalone`), FCS
+    ///   imports the image through IL and honours none of fsc's IL markers, so
+    ///   the projection reads the IL alone: no entity has an F# kind, and a
+    ///   member's name is its IL name. That is FCS's view exactly.
+    /// - with the marker, FCS reads the signature data the projection could
+    ///   not, so the projection's F# facts — an entity's kind (from the IL
+    ///   `CompilationMappingAttribute`), a module's value/function member split
+    ///   — are heuristics for FCS's. A consumer must not act on them.
     ///
     /// This is plain `!authoritative` — deliberately *not* gated on the assembly
     /// being *detected* as F# (unlike [`Self::fsharp_extension_index_unknowable`]
-    /// and [`Self::fsharp_abbreviations_unknowable`]). A `--standalone` image can
-    /// lose its assembly-level `FSharpInterfaceDataVersionAttribute` while keeping
-    /// per-type `CompilationMappingAttribute` module markers, so an F#-detection
-    /// gate misses it; keying only on pickle authority catches it. Harmless for a
-    /// C#/BCL image, which is non-authoritative but declares no modules to gate.
+    /// and [`Self::fsharp_abbreviations_unknowable`]): a C#/BCL image is
+    /// non-authoritative too, and so is an F# image FCS reads through IL, which
+    /// the projection reads as it reads a C# one.
     pub fsharp_signature_non_authoritative: bool,
 }
 
@@ -1006,16 +1008,19 @@ pub struct Entity {
     /// `FSharp.Core` itself and consumed by name elsewhere in FCS), so
     /// the well-known-attribute sync test does not cover it.
     pub is_require_qualified_access: bool,
-    /// The backtick arity suffix of the `TypeDef` name this entity was read
-    /// from, as written (`C`2` → `Some(2)`, `Enumerator` → `Some(0)`):
-    /// [`Self::name`] has it stripped, and it need not equal the number of
-    /// type parameters the entity introduces (F#'s `[<CompiledName("C`2")>]`
-    /// on a one-parameter type). `None` for an entity no `TypeDef` row stands
-    /// behind: an F# abbreviation or exception-abbreviation marker from the
-    /// pickle. A consumer binding metadata names matches this, not the
-    /// parameter count.
+    /// The name of the `TypeDef` row this entity was read from, exactly as the
+    /// metadata spells it (``FSharpList`1``, `Enumerator`, ``Foo`0``):
+    /// [`Self::name`] is this with its backtick arity suffix stripped. `None`
+    /// for an entity no `TypeDef` row stands behind: an F# abbreviation or
+    /// exception-abbreviation marker from the pickle.
+    ///
+    /// Together with the namespace and the enclosing rows' own metadata names
+    /// this is the row's identity, which [`Self::name`] is not: ``U`0`` and
+    /// `U`, or ``Dropped`2`` on a one-parameter type and a two-parameter
+    /// `Dropped`, strip alike. See [`Self::metadata_arity_suffix`] for the
+    /// suffix as an arity.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub metadata_arity_suffix: Option<usize>,
+    pub metadata_name: Option<String>,
     /// `true` when the entity carries
     /// `[Microsoft.FSharp.Core.NoEqualityAttribute]`. F# emits this to
     /// suppress the auto-derived `Equals` / `GetHashCode` (and the
@@ -1242,6 +1247,22 @@ pub struct Entity {
     /// entity's, so a consumer typing an inherited member asks the base that
     /// declares it.
     pub member_measures: MemberMeasures,
+}
+
+impl Entity {
+    /// The backtick arity suffix of [`Self::metadata_name`], as written
+    /// (``C`2`` → `Some(2)`, `Enumerator` → `Some(0)`). It need not equal the
+    /// number of type parameters the entity introduces (F#'s
+    /// `[<CompiledName("C`2")>]` on a one-parameter type), so a consumer
+    /// binding metadata names by arity matches this, not the parameter count.
+    ///
+    /// `None` for an entity no `TypeDef` row stands behind, and for a row
+    /// whose suffix is not canonical (``Foo`0``, ``Foo`01``): such a row strips
+    /// to the same [`Self::name`] as one genuinely named `Foo`, so no arity can
+    /// stand for it.
+    pub fn metadata_arity_suffix(&self) -> Option<usize> {
+        crate::ecma335_assembly::metadata_arity_suffix(self.metadata_name.as_deref()?)
+    }
 }
 
 /// How confidently a projected module member is known to be an **F#-native

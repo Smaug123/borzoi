@@ -50,6 +50,7 @@ mod sdk_project_fold_e2e;
 mod sdk_resolution_exactness_diff;
 mod sdk_resolution_oracle;
 mod sdk_resolution_override_classification;
+mod walk_stack_bound;
 mod watched_assembly_refresh_e2e;
 mod workspace_diagnostic_sweep;
 mod xml_doc_inheritdoc_cref_diff;

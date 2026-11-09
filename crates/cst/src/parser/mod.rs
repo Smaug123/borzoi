@@ -1,8 +1,8 @@
 //! Hand-written recursive-descent parser over the [`FilteredToken`] stream.
 //!
 //! Per `docs/parser-plan.md`, the parser builds a rowan green tree via
-//! [`GreenNodeBuilder`] and exposes a typed AST in [`crate::syntax`]. Phase 2
-//! grows the Phase 1 scaffold (empty file + lone int literal) one literal
+//! [`rowan::GreenNodeBuilder`] (wrapped to track the tree's height) and
+//! exposes a typed AST in [`crate::syntax`]. Phase 2 grows the Phase 1 scaffold (empty file + lone int literal) one literal
 //! form at a time; see the table in `docs/parser-plan.md` for the running
 //! list of supported `SynConst` variants.
 //!
@@ -40,7 +40,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use rowan::{GreenNodeBuilder, Language};
+use rowan::Language;
 
 use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia};
 use crate::language_version::LanguageVersion;
@@ -141,6 +141,7 @@ mod numeric;
 mod pat;
 mod sign_fold;
 mod strings;
+mod tree_builder;
 mod types;
 
 use classify::{
@@ -162,6 +163,7 @@ use numeric::{
     validate_xint_int32,
 };
 use pat::PatCtx;
+use tree_builder::{Checkpoint, TreeBuilder};
 
 /// Outcome of a parse. Holds the tree plus diagnostics partitioned by
 /// severity; the tree is always present (errors become [`SyntaxKind::ERROR`]
@@ -401,6 +403,20 @@ fn parse_inner(
     file_kind: FileKind,
     lang: LanguageVersion,
 ) -> Parse {
+    parse_inner_stopping_at(source, symbols, file_kind, lang, TREE_HEIGHT_STOP)
+}
+
+/// [`parse_inner`] with the tree height at which the parse first tries
+/// stopping given explicitly. A low stop makes the depth limit latch early, at
+/// whichever safe point comes first, which is how the parser's own tests reach
+/// every production's handling of a latch.
+fn parse_inner_stopping_at(
+    source: &str,
+    symbols: &HashSet<String>,
+    file_kind: FileKind,
+    lang: LanguageVersion,
+    initial_stop: usize,
+) -> Parse {
     // Non-`Lex` preprocessor errors — malformed directive lines (`#if *FOO*`),
     // orphan `#else`/`#elif`/`#endif`, bad chains, and `#if` unclosed at EOF —
     // are dropped from the raw stream but re-attached to `Parse::errors` below.
@@ -471,23 +487,50 @@ fn parse_inner(
     let langversion_errors = langversion_diagnostics(&elif_directives, lang);
 
     let mut parser = Parser::new(source, raw_tokens, filtered_tokens);
-    match file_kind {
-        FileKind::Impl => parser.parse_impl_file(),
-        FileKind::Sig => parser.parse_sig_file(),
+    parser.tree_height_stop = initial_stop;
+    // The parse stops once the tree would reach `tree_height_stop`, but that
+    // measure can only count the ancestors already open, and only at a safe
+    // point: a production that wraps finished children under a node it opens
+    // afterwards (`start_node_at`, as a nested module does around its body)
+    // adds levels the parse never saw coming, and a loop that grows the tree
+    // without reaching a safe point is not stopped at all. So the finished
+    // height is checked here, and an over-tall parse is redone once, stopping
+    // lower by the excess. If that is still too tall, the file is given up
+    // whole: a root holding the source as one `ERROR` token, with the depth
+    // diagnostic. At most two parses, then; on real input never more than one.
+    for round in 0.. {
+        match file_kind {
+            FileKind::Impl => parser.parse_impl_file(),
+            FileKind::Sig => parser.parse_sig_file(),
+        }
+        let height = parser.builder.height_if_closed_now();
+        if height <= MAX_TREE_HEIGHT {
+            break;
+        }
+        if round == 0 {
+            let stop = parser
+                .tree_height_stop
+                .saturating_sub(height - MAX_TREE_HEIGHT);
+            parser = parser.restart(stop);
+        } else {
+            parser = parser.restart(0);
+            parser.give_up_whole(file_kind);
+            break;
+        }
     }
-    // If the recursion-depth guard fired, the parse stopped at the breach and
-    // drained the rest of the input to EOF; the unwinding productions emitted a
-    // cascade of "expected closer" errors against that EOF. Collapse the whole
-    // diagnostic set to the single depth error — the file is pathologically
-    // nested and already an error; one characterised diagnostic is the useful
-    // signal. (The tree stays lossless regardless.)
+    // If the depth guard fired (the recursion bound or the tree-height bound),
+    // the parse stopped at the breach and drained the rest of the input to EOF;
+    // the unwinding productions emitted a cascade of "expected closer" errors
+    // against that EOF. Collapse the whole diagnostic set to the single depth
+    // error — the file is pathologically nested and already an error; one
+    // characterised diagnostic is the useful signal. (The tree stays lossless
+    // regardless.)
     if parser.depth_limit_hit {
         let span = parser.depth_limit_span.clone().unwrap_or(0..source.len());
         return Parse {
             root: SyntaxNode::new_root(parser.builder.finish()),
             errors: vec![ParseError {
-                message: "expression, type, or pattern nesting is too deep; parsing stopped here"
-                    .to_string(),
+                message: "nesting is too deep; parsing stopped here".to_string(),
                 span,
             }],
             warnings: Vec::new(),
@@ -665,7 +708,11 @@ fn tab_diagnostics(source: &str, raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
     for (res, span) in raw_tokens {
+        // The directive-line test scans back to the start of the line, so it
+        // runs only for whitespace that holds a tab; run for every whitespace
+        // token, it would make a long line quadratic.
         if !matches!(res, Ok(TriviaToken::Lexed(Token::Whitespace)))
+            || !bytes[span.clone()].contains(&b'\t')
             || whitespace_on_directive_line(bytes, span.start)
         {
             continue;
@@ -854,7 +901,7 @@ struct Parser<'src> {
     /// [s+1,e)` (LexFilter.fs:2757 `UseShiftedLocation(..., 1, 0)`) — don't
     /// double-count the shared byte and break `text(tree) == source`.
     raw_consumed_end: usize,
-    builder: GreenNodeBuilder<'static>,
+    builder: TreeBuilder,
     errors: Vec<ParseError>,
     /// Warning-severity diagnostics (FCS `warning(...)` cases that leave
     /// `hadErrors` false). Kept separate from `errors` — see [`Parse`].
@@ -889,7 +936,8 @@ struct Parser<'src> {
     /// process — it does not unwind, so the LSP's `catch_unwind` parser wrapper
     /// could not recover from it). See [`MAX_PARSE_DEPTH`].
     depth: u32,
-    /// Latched once [`MAX_PARSE_DEPTH`] is breached. While set, every guarded
+    /// Latched once [`MAX_PARSE_DEPTH`] is breached or the tree reaches
+    /// [`TREE_HEIGHT_STOP`]. While set, every guarded
     /// entry is a no-op: the breach drained the remaining input to EOF (so the
     /// productions' token loops terminate), and the unwinding parse must not do
     /// further work or re-trigger.
@@ -897,6 +945,10 @@ struct Parser<'src> {
     /// Span of the token where the depth limit was breached, for the single
     /// collapsed diagnostic [`parse_inner`] emits. `None` until a breach.
     depth_limit_span: Option<Range<usize>>,
+    /// The tree height at which the parse stops: [`TREE_HEIGHT_STOP`], or lower
+    /// on a parse [`parse_inner`] redoes because its tree came out taller than
+    /// [`MAX_TREE_HEIGHT`].
+    tree_height_stop: usize,
 }
 
 /// Maximum nesting depth of the recursive-descent productions (expression /
@@ -905,13 +957,49 @@ struct Parser<'src> {
 ///
 /// Calibration: the worst construct (nested `if`/`then`/`else`, the most stack
 /// per level) overflows an 8 MiB stack at roughly 2000–4000 levels in a debug
-/// build; the LSP runs the parser on its single 8 MiB main thread. 512 keeps
-/// the deepest reachable parse to well under a quarter of that budget (more in
+/// build; the LSP runs the parser on a 32 MiB thread
+/// (`borzoi::server::SERVER_STACK_BYTES`), and the tests on 8 MiB. 512 keeps
+/// the deepest reachable parse to well under a quarter of 8 MiB (more in
 /// release, where frames are smaller), while sitting far above any real source
 /// — anything past ~128 levels already exceeds `serde_json`'s default depth, so
 /// such files are absent from the FCS differential corpus entirely and this
 /// bound introduces no comparison regression.
 const MAX_PARSE_DEPTH: u32 = 512;
+
+/// The tallest tree any parse returns: no root-to-leaf path holds more than
+/// this many nodes.
+///
+/// The recursion bound (`MAX_PARSE_DEPTH`) does not bound the
+/// tree: application chains (`f a a a`), left-associative operator chains,
+/// postfix type applications (`int list list`) and the like are built in a
+/// loop, one wrapping node per repeat, so they are as deep as they are long.
+/// rowan frees a green tree recursively, so dropping a tall enough one
+/// overflows the stack and aborts the process, which `catch_unwind` cannot
+/// catch; any consumer walking the tree recursively has the same exposure.
+/// The parser therefore also stops, with the depth-limit diagnostic, once the
+/// tree it is building nears this height.
+///
+/// Calibration, all in a debug build: rowan drops a 4 000-node-deep tree on a
+/// 2 MiB stack (a Rust thread's default) and overflows by 8 000, but the
+/// tighter limit is `borzoi-sema`'s walks, which need about 8 MiB for a tree
+/// of this height (an operator chain under four hundred nested modules). The
+/// LSP answers requests on a thread of `borzoi_sema::WALK_STACK_BYTES`
+/// (32 MiB), and sema's `walk_stack_bound` test holds the walks to half of
+/// that over every repetition form of the grammar at this bound. The
+/// tallest tree in the pinned F# corpus that parses cleanly is 259 nodes deep;
+/// the tallest of all is 666, in a file the recursion guard already stops.
+pub const MAX_TREE_HEIGHT: usize = 1024;
+
+/// The tree height at which the parser first tries stopping (see
+/// [`MAX_TREE_HEIGHT`]). It is measured as
+/// [`TreeBuilder::height_if_closed_now`], which counts the open nodes the
+/// unwinding productions go on to close; the margin covers the few nodes they
+/// add on the way out. Nodes a production opens around children it has already
+/// finished are not countable in advance, so [`parse_inner`] checks the
+/// finished height and redoes a parse that came out too tall with a lower
+/// stop. `tests/all/parser_tree_height.rs` checks the guarantee over the
+/// grammar's repetition forms, alone and nested in modules.
+const TREE_HEIGHT_STOP: usize = MAX_TREE_HEIGHT - 64;
 
 #[cfg(test)]
 mod tests;

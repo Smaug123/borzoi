@@ -294,11 +294,11 @@ fn exception_abbreviation_marker_carries_the_pickled_range() {
 }
 
 #[test]
-fn arity_twins_decline_the_range() {
+fn arity_twins_each_carry_their_own_range() {
     // Two source types (`ArityTwin` and `[<CompiledName("ArityTwin`1")>]
-    // ArityTwinG<'T>`) whose IL names both strip to `ArityTwin`: the collected
-    // pickle targets and the ECMA rows both collapse onto one name, so the
-    // overlay declines both rather than navigate to the wrong twin (D5).
+    // ArityTwinG<'T>`) whose IL names both strip to `ArityTwin`. Their rows'
+    // metadata names (`ArityTwin`, ``ArityTwin`1``) still tell them apart, so
+    // each navigates to its own binder, never to its twin's.
     let entities = load_entity_ranges();
     let twins: Vec<&Entity> = entities
         .iter()
@@ -312,11 +312,12 @@ fn arity_twins_decline_the_range() {
         .collect();
     assert_eq!(twins.len(), 2, "the fixture defines two arity twins");
     for t in twins {
-        assert_eq!(
-            t.definition_range, None,
-            "arity-ambiguous entity {:?} (src={:?}) must decline the range",
-            t.name, t.source_name
-        );
+        let binder = match t.metadata_name.as_deref() {
+            Some("ArityTwin") => "ArityTwin",
+            Some("ArityTwin`1") => "ArityTwinG",
+            other => panic!("unexpected twin row {other:?}"),
+        };
+        assert_entity_range_spans(t, "type ", binder);
     }
 }
 

@@ -1,0 +1,24 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all assembly_container_precedence_grid::every_auto_open_route_agrees_with_fcs
+il-only open [AqFix.AutoMod.GridLib] GridA | fcs - (erroring) | ours decline
+il-only open [AqFix.AutoMod] GridLib.GridAuto.GridA | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.AutoMod.GridLib.GridAuto.GridA:member (clean) | ours decline
+il-only open [AqFix.AutoNs] GridA | fcs - (erroring) | ours decline
+il-only open [AqFix.AutoNs] GridAuto.GridA | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.AutoNs.GridAuto.GridA:member (clean) | ours decline
+il-only open [] GridAsm.GridD | fcs SemaContainerPrecedenceIlOnlyFixture:AqFix.AutoAsm.GridAsm.GridD:member (clean) | ours commit
+il-only open [] GridAsmLib.GridB | fcs - (erroring) | ours decline
+il-only open [] GridB | fcs - (erroring) | ours decline
+pickled open [AqFix.AutoMod.GridLib] GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoMod.GridLib.GridAuto.GridA:member (clean) | ours commit
+pickled open [AqFix.AutoMod] GridLib.GridAuto.GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoMod.GridLib.GridAuto.GridA:member (clean) | ours decline
+pickled open [AqFix.AutoNs] GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoNs.GridAuto.GridA:member (clean) | ours commit
+pickled open [AqFix.AutoNs] GridAuto.GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoNs.GridAuto.GridA:member (clean) | ours commit
+pickled open [] GridAsm.GridD | fcs SemaContainerPrecedenceFixture:AqFix.AutoAsm.GridAsm.GridD:member (clean) | ours commit
+pickled open [] GridAsmLib.GridB | fcs - (erroring) | ours decline
+pickled open [] GridB | fcs SemaContainerPrecedenceFixture:AqFix.AutoAsmMod.GridAsmLib.GridB:member (clean) | ours decline
+unread open [AqFix.AutoMod.GridLib] GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoMod.GridLib.GridAuto.GridA:member (clean) | ours decline
+unread open [AqFix.AutoMod] GridLib.GridAuto.GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoMod.GridLib.GridAuto.GridA:member (clean) | ours decline
+unread open [AqFix.AutoNs] GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoNs.GridAuto.GridA:member (clean) | ours decline
+unread open [AqFix.AutoNs] GridAuto.GridA | fcs SemaContainerPrecedenceFixture:AqFix.AutoNs.GridAuto.GridA:member (clean) | ours decline
+unread open [] GridAsm.GridD | fcs SemaContainerPrecedenceFixture:AqFix.AutoAsm.GridAsm.GridD:member (clean) | ours decline
+unread open [] GridAsmLib.GridB | fcs - (erroring) | ours decline
+unread open [] GridB | fcs SemaContainerPrecedenceFixture:AqFix.AutoAsmMod.GridAsmLib.GridB:member (clean) | ours decline

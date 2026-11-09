@@ -52,6 +52,7 @@ mod projector_open_surface;
 mod projector_overload_flags;
 mod projector_ref_nullability;
 mod projector_required_members;
+mod projector_row_identity;
 mod projector_source_names;
 mod projector_type_shapes;
 mod projector_typeref_shapes;

@@ -30,64 +30,9 @@
 //! certain-implies-exact: a committed target must be FCS's `(file, range)`,
 //! and a site FCS leaves unbound must not commit.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-use crate::common::{LineIndex, invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_tree};
-use borzoi_cst::parser::{parse, parse_sig};
-use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
-use borzoi_sema::{
-    AssemblyEnv, ProjectFile, Resolution, SourceFile, SyntaxRecovery, qualified_names,
-    resolve_project_files,
+use crate::common::use_grade::{
+    FcsVerdict, FileBuilder, Graded, OurVerdict, Site, assert_sound_and_live, grade,
 };
-use rowan::TextRange;
-
-/// A probed reference: which generated file, the byte range FCS reports the
-/// use at (the whole dotted path for a qualified reference, the identifier
-/// otherwise), and a label naming the grid cell.
-#[derive(Clone, Debug)]
-struct Site {
-    file: usize,
-    range: TextRange,
-    label: String,
-}
-
-/// A generated file under construction, recording probe sites as lines are
-/// appended.
-struct FileBuilder {
-    index: usize,
-    text: String,
-}
-
-impl FileBuilder {
-    fn new(index: usize) -> Self {
-        Self {
-            index,
-            text: String::new(),
-        }
-    }
-
-    fn line(&mut self, line: &str) {
-        self.text.push_str(line);
-        self.text.push('\n');
-    }
-
-    /// Append `line` and record a probe at the last occurrence of `probe` in
-    /// it.
-    fn probe(&mut self, line: &str, probe: &str, label: String, sites: &mut Vec<Site>) {
-        let at = line.rfind(probe).expect("probe text occurs in its line");
-        let start = self.text.len() + at;
-        self.line(line);
-        sites.push(Site {
-            file: self.index,
-            range: TextRange::new(
-                u32::try_from(start).unwrap().into(),
-                u32::try_from(start + probe.len()).unwrap().into(),
-            ),
-            label,
-        });
-    }
-}
 
 // ---- the value half ---------------------------------------------------------
 
@@ -627,260 +572,6 @@ fn sig_cell(
 
 // ---- grading ----------------------------------------------------------------
 
-/// FCS's use-site accessibility errors (type, union case or field, value,
-/// member "not accessible").
-fn is_accessibility_error(number: i64) -> bool {
-    matches!(number, 491 | 1092 | 1093 | 1094)
-}
-
-/// Every error diagnostic FCS reported, as `(file name, byte range, number)`.
-fn error_diagnostics(
-    json: &str,
-    sources: &[(PathBuf, String)],
-) -> Vec<(PathBuf, usize, usize, i64)> {
-    let dump: serde_json::Value = serde_json::from_str(json).expect("uses-project JSON");
-    let mut out = Vec::new();
-    for file in dump["Files"].as_array().expect("Files array") {
-        for d in file["Diagnostics"].as_array().into_iter().flatten() {
-            if d["Severity"] != "Error" {
-                continue;
-            }
-            let number = d["ErrorNumber"].as_i64().unwrap_or(-1);
-            let range = &d["Range"];
-            let name = PathBuf::from(
-                Path::new(range["File"].as_str().expect("diagnostic file"))
-                    .file_name()
-                    .expect("file name"),
-            );
-            let Some((_, src)) = sources
-                .iter()
-                .find(|(p, _)| p.file_name() == Some(name.as_os_str()))
-            else {
-                continue;
-            };
-            let idx = LineIndex::new(src);
-            let pos = |p: &serde_json::Value| {
-                idx.offset(
-                    u32::try_from(p["Line"].as_u64().unwrap()).unwrap(),
-                    u32::try_from(p["Col"].as_u64().unwrap()).unwrap(),
-                )
-            };
-            out.push((name, pos(&range["Start"]), pos(&range["End"]), number));
-        }
-    }
-    out
-}
-
-/// What FCS says at one site.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum FcsVerdict {
-    /// Resolved, cleanly, to a declaration in `(file index, range)`.
-    Resolved(usize, TextRange),
-    /// A use-site accessibility error: inaccessible here.
-    Inaccessible,
-    /// No use recorded at the site (unbound), or an error at the site.
-    Rejected,
-}
-
-/// What we say at one site.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum OurVerdict {
-    Committed(usize, TextRange),
-    Declined,
-}
-
-struct Graded {
-    label: String,
-    fcs: FcsVerdict,
-    ours: OurVerdict,
-}
-
-/// Fold `files` (Compile order, `(relative name, source)`; a `.fsi` is a
-/// signature) as one project, both through FCS and through sema, and grade
-/// every site.
-fn grade(files: &[(&str, String)], sites: &[Site]) -> Vec<Graded> {
-    let tree: Vec<(&str, &str)> = files.iter().map(|(n, s)| (*n, s.as_str())).collect();
-    let (root, written) = temp_fs_tree("vaog", &tree);
-    let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
-    let json = invoke_fcs_dump_project(&paths);
-    let fcs = parse_fcs_uses_project(&json, &written);
-    let errors = error_diagnostics(&json, &written);
-    let parsed: Vec<(SourceFile, SyntaxRecovery)> = files
-        .iter()
-        .map(|(name, src)| {
-            if name.ends_with(".fsi") {
-                let p = parse_sig(src);
-                assert!(p.errors.is_empty(), "{name}: {:?}\n{src}", p.errors);
-                let recovery = SyntaxRecovery::of(&p);
-                (
-                    SourceFile::Sig(SigFile::cast(p.root).expect("sig file")),
-                    recovery,
-                )
-            } else {
-                let p = parse(src);
-                assert!(p.errors.is_empty(), "{name}: {:?}\n{src}", p.errors);
-                let recovery = SyntaxRecovery::of(&p);
-                (
-                    SourceFile::Impl(ImplFile::cast(p.root).expect("impl file")),
-                    recovery,
-                )
-            }
-        })
-        .collect();
-    let disk: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
-    let sources: Vec<SourceFile> = parsed.iter().map(|(f, _)| f.clone()).collect();
-    let qnofs = qualified_names(&sources, &disk);
-    let project: Vec<ProjectFile> = parsed
-        .into_iter()
-        .zip(qnofs)
-        .map(|((file, recovery), qnof)| ProjectFile::new(file, qnof, recovery))
-        .collect();
-    let proj = resolve_project_files(&project, &AssemblyEnv::default());
-    let _ = std::fs::remove_dir_all(&root);
-    let index_of = |path: &Path| {
-        written
-            .iter()
-            .position(|(p, _)| p.file_name() == path.file_name())
-            .expect("declaration in a generated file")
-    };
-
-    sites
-        .iter()
-        .map(|site| {
-            let path = &written[site.file].0;
-            let start = usize::from(site.range.start());
-            let end = usize::from(site.range.end());
-            let here: Vec<i64> = errors
-                .iter()
-                .filter(|(f, s, e, _)| {
-                    path.file_name() == Some(f.as_os_str()) && *s < end && start < *e
-                })
-                .map(|(_, _, _, n)| *n)
-                .collect();
-            let decl = fcs
-                .iter()
-                .find(|f| f.path.file_name() == path.file_name())
-                .and_then(|f| {
-                    f.uses
-                        .iter()
-                        .find(|u| u.start == start && u.end == end && !u.is_from_definition)
-                })
-                .and_then(|u| u.decl.as_ref());
-            let fcs = if here.iter().any(|n| is_accessibility_error(*n)) {
-                FcsVerdict::Inaccessible
-            } else if !here.is_empty() {
-                FcsVerdict::Rejected
-            } else {
-                match decl {
-                    Some(d) => FcsVerdict::Resolved(
-                        index_of(&d.file),
-                        TextRange::new(
-                            u32::try_from(d.start).unwrap().into(),
-                            u32::try_from(d.end).unwrap().into(),
-                        ),
-                    ),
-                    None => FcsVerdict::Rejected,
-                }
-            };
-            let res = proj.file(site.file).resolution_at(site.range);
-            let ours = match res {
-                Some(r @ Resolution::Item(_)) => {
-                    proj.item_def(r).map_or(OurVerdict::Declined, |(f, def)| {
-                        OurVerdict::Committed(f, def.range)
-                    })
-                }
-                Some(r @ Resolution::Local(_)) => proj
-                    .file(site.file)
-                    .resolved_def(r)
-                    .map_or(OurVerdict::Declined, |def| {
-                        OurVerdict::Committed(site.file, def.range)
-                    }),
-                _ => OurVerdict::Declined,
-            };
-            Graded {
-                label: site.label.clone(),
-                fcs,
-                ours,
-            }
-        })
-        .collect()
-}
-
-/// A site's verdict pair is wrong when we commit anything FCS does not
-/// resolve to exactly that declaration.
-fn is_wrong(g: &Graded) -> bool {
-    match (&g.fcs, &g.ours) {
-        (_, OurVerdict::Declined) => false,
-        (FcsVerdict::Resolved(f, r), OurVerdict::Committed(of, or)) => (f, r) != (of, or),
-        (FcsVerdict::Inaccessible | FcsVerdict::Rejected, OurVerdict::Committed(..)) => true,
-    }
-}
-
-fn census(graded: &[Graded]) -> String {
-    let mut by: BTreeMap<String, usize> = BTreeMap::new();
-    for g in graded {
-        let fcs = match g.fcs {
-            FcsVerdict::Resolved(..) => "resolved",
-            FcsVerdict::Inaccessible => "inaccessible",
-            FcsVerdict::Rejected => "rejected",
-        };
-        let ours = match (&g.fcs, &g.ours) {
-            (_, OurVerdict::Declined) => "declined",
-            _ if is_wrong(g) => "WRONG",
-            _ => "agreed",
-        };
-        *by.entry(format!("fcs {fcs:<12} ours {ours}")).or_default() += 1;
-    }
-    by.into_iter()
-        .map(|(k, n)| format!("  {k}: {n}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn report(graded: &[Graded]) -> String {
-    graded
-        .iter()
-        .map(|g| format!("  {:<60} fcs {:?} | ours {:?}", g.label, g.fcs, g.ours))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Assert that the sites committing a target FCS does not bind are exactly
-/// `known` — a pin, so a site that starts committing wrongly fails, and so
-/// does one a fix corrects until it leaves the list.
-fn assert_wrong_commits_are(what: &str, graded: &[Graded], known: &[&str]) {
-    eprintln!("{what} census:\n{}", census(graded));
-    if std::env::var_os("BORZOI_GRID_REPORT").is_some() {
-        eprintln!("{what} cells:\n{}", report(graded));
-    }
-    let wrong: Vec<&Graded> = graded
-        .iter()
-        .filter(|g| is_wrong(g) && !known.contains(&g.label.as_str()))
-        .collect();
-    assert!(
-        wrong.is_empty(),
-        "{} {what} site(s) commit a target FCS does not bind there:\n{}",
-        wrong.len(),
-        wrong
-            .iter()
-            .map(|g| format!("  [{}] FCS {:?} | we gave {:?}", g.label, g.fcs, g.ours))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    let corrected: Vec<&&str> = known
-        .iter()
-        .filter(|label| !graded.iter().any(|g| g.label == **label && is_wrong(g)))
-        .collect();
-    assert!(
-        corrected.is_empty(),
-        "{what} sites pinned as wrong no longer are; remove them from the pin:\n{corrected:#?}"
-    );
-}
-
-fn assert_no_wrong_commits(what: &str, graded: &[Graded]) {
-    assert_wrong_commits_are(what, graded, &[]);
-}
-
 /// The type grid's sites that commit wrongly through a defect outside this
 /// grid's subject: a dotted head `X.M` written in a later `namespace` block of
 /// the file declaring the type `X` commits that type, as if the earlier
@@ -918,7 +609,11 @@ fn value_accessibility_through_open_agrees_with_fcs() {
             i += 1;
         }
     }
-    let graded = grade(&[("defs.fs", defs.text), ("later.fs", later.text)], &sites);
+    let graded = grade(
+        "vaog",
+        &[("defs.fs", defs.text), ("later.fs", later.text)],
+        &sites,
+    );
 
     // Non-vacuity: every arm of the oracle is exercised, and agreement is
     // reached across files.
@@ -933,7 +628,7 @@ fn value_accessibility_through_open_agrees_with_fcs() {
             > 0,
         "no later-file site agreed on a first-file declaration"
     );
-    assert_no_wrong_commits("value", &graded);
+    assert_sound_and_live("value", &graded, &[], &[]);
 }
 
 #[test]
@@ -953,12 +648,13 @@ fn type_contestant_accessibility_agrees_with_fcs() {
     }
     let [a, b, c] = files;
     let graded = grade(
+        "vaog",
         &[("a.fs", a.text), ("b.fs", b.text), ("c.fs", c.text)],
         &sites,
     );
     let count = |p: &dyn Fn(&Graded) -> bool| graded.iter().filter(|g| p(g)).count();
     assert!(count(&|g| matches!(g.fcs, FcsVerdict::Resolved(..))) > 0);
-    assert_wrong_commits_are("type contestant", &graded, SAME_FILE_LATER_BLOCK_HEADS);
+    assert_sound_and_live("type contestant", &graded, SAME_FILE_LATER_BLOCK_HEADS, &[]);
 }
 
 #[test]
@@ -977,6 +673,7 @@ fn signature_restricted_values_agree_with_fcs() {
         }
     }
     let graded = grade(
+        "vaog",
         &[
             ("defs.fsi", sig.text),
             ("defs.fs", imp.text),
@@ -987,5 +684,5 @@ fn signature_restricted_values_agree_with_fcs() {
     let count = |p: &dyn Fn(&Graded) -> bool| graded.iter().filter(|g| p(g)).count();
     assert!(count(&|g| matches!(g.fcs, FcsVerdict::Resolved(..))) > 0);
     assert!(count(&|g| !matches!(g.fcs, FcsVerdict::Resolved(..))) > 0);
-    assert_no_wrong_commits("signature", &graded);
+    assert_sound_and_live("signature", &graded, &[], &[]);
 }

@@ -880,6 +880,8 @@ impl<'a> Resolver<'a> {
                         .map(|tok| tok.text_range()),
                 );
                 if let Some(name) = ext_name.last() {
+                    // A value of the container's, for the declared-name view.
+                    self.mark_decl(name).value = true;
                     let contribution = Contribution::of_value(name.clone());
                     let pos = u32::from(ext.syntax().text_range().start());
                     self.push_contribution(&contribution, pos);
@@ -1567,44 +1569,20 @@ impl<'a> Resolver<'a> {
                         // generation too, so a later hidden grandchild could never
                         // stale them).
                         //
-                        // **Skipped for a literal self-open of the CURRENT enclosing
-                        // namespace** (codex review round 4, fcs-dump-verified):
-                        // [`Resolver::open_own_enclosing_namespace`] has already
-                        // folded this exact half at position 0, which is FCS's real
-                        // fold position for it — the start of the block, before any
-                        // declaration. An explicit `open N` written INSIDE
-                        // `namespace N` is therefore a redundant self-open, and
-                        // re-running the recursive fold at the OPEN's (later) text
-                        // position would wrongly re-introduce those values there,
-                        // overriding a local binding declared between the namespace's
-                        // start and the open. The same holds with no `open` at all —
-                        // `namespace N` / `[<AutoOpen>] module A = let x = 1` /
-                        // `module Client = let y = x` resolves `x` to `A.x` — because
-                        // the position-0 fold, not the `open`, is what puts it there.
-                        //
-                        // Gated on `path` (the `open`'s own AS-WRITTEN text, `global.`
-                        // stripped) equalling the enclosing namespace, not merely on
-                        // `gp`: `explicit_ancestor_open_lets_a_later_open_bind_the_current_namespace`
-                        // (resolve_cross_file_cases.rs) writes `open Outer; open
-                        // Inner` inside `namespace Outer.Inner` — the SECOND open's
-                        // `written` is just `Inner`, reaching `Outer.Inner` only via
-                        // the FIRST open's explicit prefix (tier 1), and FCS treats
-                        // that as a genuine, intentional reference, not a self-open
-                        // (the self/ancestor skip that rejects `Inner` as a *relative*
-                        // tier-2 candidate for its own last segment is a SEPARATE,
-                        // pre-existing mechanism, scoped to the implicit/enclosing
-                        // tier only). Requiring `path` itself to spell out the
-                        // enclosing namespace catches only the direct, as-written
-                        // self-reference; `gp` still must match too, so an unrelated
-                        // group sharing this open's `path` (an explicit prefix
-                        // reaching some OTHER namespace that happens to also be
-                        // spelled the same as this file's enclosing one from a
-                        // DIFFERENT earlier prefix) is not skipped by accident.
-                        if has_reading
+                        // An `open` of the block's own enclosing namespace, however
+                        // it is spelled (`open N`, `open global.N`, or `open Outer`
+                        // then `open Inner` inside `namespace Outer.Inner`), re-adds
+                        // what the block's implicit open of it added: the
+                        // namespace's fragments from earlier files and earlier
+                        // blocks, which FCS has registered by now, and not the
+                        // current block's, which it registers when the block ends
+                        // ([`Resolver::replay_own_namespace_fold`]).
+                        let replays_own_namespace = has_reading
                             && project_ns
-                            && !(path.as_slice() == self.enclosing_namespace()
-                                && gp.as_slice() == self.enclosing_namespace())
-                        {
+                            && gp.as_slice() == self.enclosing_namespace();
+                        if replays_own_namespace {
+                            self.replay_own_namespace_fold(pos);
+                        } else if has_reading && project_ns {
                             self.open_project_namespace_values(gp, pos);
                             self.namespace_open_contributions(gp, pos);
                         }
@@ -1629,8 +1607,12 @@ impl<'a> Resolver<'a> {
                             }
                             // An explicit `open M` brings M's own members, then
                             // its `[<AutoOpen>]` children's, as the namespace
-                            // fold does a namespace's.
-                            self.open_project_namespace_values(gp, pos);
+                            // fold does a namespace's. When the namespace replay
+                            // above ran, it brought them already, as the implicit
+                            // open of the namespace did.
+                            if !replays_own_namespace {
+                                self.open_project_namespace_values(gp, pos);
+                            }
                             self.module_open_contributions(gp, pos);
                             self.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and
@@ -1724,8 +1706,11 @@ impl<'a> Resolver<'a> {
             // resolvable (via the alias tier of `cross_file_type_case` /
             // `qualified_value_in`), so a `P.Color.Red` head must stay a `Miss`, not a
             // same-file `DeferStop`.
+            let private = header_is_private(nm.syntax());
             let decl = self.mark_decl(first);
+            decl.module_redeclared |= decl.module;
             decl.module = true;
+            decl.module_private = private;
             // The head environment is source-ordered latest-wins across module
             // declarations and opens (see [`DeclKinds::module_pos`]); a later
             // redeclaration keeps the later position (latest wins).
@@ -1741,6 +1726,9 @@ impl<'a> Resolver<'a> {
         // abbreviations, and `extern`s share), this answers "is there a genuine
         // module at this path?" for a later file's open-target classification.
         // The same real-root guard as the shadow's cross-file half.
+        if nm_auto_open {
+            self.lexical_auto_open_paths.push(qualified.clone());
+        }
         if !self.anonymous_root {
             if nm_auto_open {
                 self.record_auto_open_module(qualified.clone(), nm_private);
@@ -2062,9 +2050,14 @@ impl Resolver<'_> {
             return;
         }
         self.opaque_binders.insert(case.text_range());
+        // A case of the container's, for the declared-name view.
+        let rqa = self.require_qualified_access(defn.attributes());
+        let decl = self.mark_decl(&id_text(&case));
+        decl.union_case |= rqa != RequireQualifiedAccess::Certain;
+        decl.qualified_case |= rqa != RequireQualifiedAccess::CertainlyNot;
         // A type that certainly requires qualified access puts no bare case
         // in scope.
-        if self.require_qualified_access(defn.attributes()) == RequireQualifiedAccess::Certain {
+        if rqa == RequireQualifiedAccess::Certain {
             return;
         }
         let contribution = Contribution {

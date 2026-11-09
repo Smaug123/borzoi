@@ -339,11 +339,17 @@ fn copy_tree_no_build_dirs(src: &Path, dst: &Path) {
 /// `&'static Path` into the build output that must stay readable for the
 /// whole run, so eager cleanup isn't an option here.
 fn build_fixture(fixture: &str, dll: &str) -> (TempDir, PathBuf) {
+    build_fixture_with(fixture, dll, &[])
+}
+
+/// [`build_fixture`], passing `extra` to `dotnet build`.
+fn build_fixture_with(fixture: &str, dll: &str, extra: &[&str]) -> (TempDir, PathBuf) {
     let workspace = TempDir::new().expect("create fixture build temp dir");
     copy_tree_no_build_dirs(&fixtures_root(), workspace.path());
     let project = workspace.path().join(fixture);
     let mut cmd = Command::new("dotnet");
     cmd.args(["build", "-c", "Release", "--nologo"])
+        .args(extra)
         .arg(&project);
     BoundedCommand::new(cmd)
         .timeout(BUILD_TIMEOUT)
@@ -383,6 +389,27 @@ pub fn ensure_minilib_fs_built() -> &'static Path {
     static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
     BUILT
         .get_or_init(|| build_fixture("MiniLibFs", "MiniLibFs.dll"))
+        .1
+        .as_path()
+}
+
+/// Build the MiniLibFs F# test fixture **without F# signature data**
+/// (`--nointerfacedata`) once and return the path to the produced `.dll`.
+///
+/// fsc then writes neither the signature resources nor the assembly-level
+/// `FSharpInterfaceDataVersionAttribute`, so FCS imports the assembly through
+/// IL, as it would a C# one: its modules, unions, records and exceptions are
+/// plain classes, though their `CompilationMappingAttribute`s survive.
+pub fn ensure_minilib_fs_il_only_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            build_fixture_with(
+                "MiniLibFs",
+                "MiniLibFs.dll",
+                &["-p:OtherFlags=--nointerfacedata"],
+            )
+        })
         .1
         .as_path()
 }
@@ -501,8 +528,8 @@ pub fn ensure_renamed_members_built() -> &'static Path {
 /// Build the KeyCollision F# fixture once and return the path to the produced
 /// `.dll`. Same build-once pattern as [`ensure_minilib_built`].
 ///
-/// KeyCollision holds the two shapes that collide on the pickle overlay's
-/// projected key `(strip_arity(clr_name), generic_parameters.len())`: a class
+/// KeyCollision holds the two shapes that collide on the projected key
+/// `(strip_arity(clr_name), generic_parameters.len())`: a class
 /// sharing a pickled union's key, and two unions sharing one key. Both are legal
 /// F# — `[<CompiledName>]` can fabricate a backtick-arity name, which is the only
 /// way to reach a collision, since F# forbids two types of one name and arity in
@@ -511,6 +538,32 @@ pub fn ensure_key_collision_built() -> &'static Path {
     static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
     BUILT
         .get_or_init(|| build_fixture("KeyCollision", "KeyCollision.dll"))
+        .1
+        .as_path()
+}
+
+/// Build the RowIdentity F# fixture once and return the path to the produced
+/// `.dll`. Same build-once pattern as [`ensure_minilib_built`].
+///
+/// RowIdentity puts pairs of rows at one stripped name every way a single fsc
+/// compilation can — a fabricated arity suffix, a squatter beside a dropped
+/// row, a type row beside a module row — for the pickle-to-row join
+/// (`projector_row_identity`).
+pub fn ensure_row_identity_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("RowIdentity", "RowIdentity.dll"))
+        .1
+        .as_path()
+}
+
+/// Build the RowIdentityDotted F# fixture once and return the path to the
+/// produced `.dll`: a dotted compiled name, whose row the IL writer puts in
+/// another namespace than the type's F# path (`projector_row_identity`).
+pub fn ensure_row_identity_dotted_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("RowIdentityDotted", "RowIdentityDotted.dll"))
         .1
         .as_path()
 }
@@ -742,7 +795,7 @@ pub struct Agreement {
 /// a skipped type or F# overlay changes the tree without failing, so it is a
 /// failure here. On disagreement, the message shows the divergent region.
 pub fn diff_dll(dll: &Path, obligation: ArgGroupObligation) -> Result<Agreement, String> {
-    diff_dll_inner(dll, obligation, None)
+    diff_dll_inner(dll, obligation, None, false)
 }
 
 /// [`diff_dll`] for an assembly whose host signature pickle is known not to
@@ -754,13 +807,23 @@ pub fn diff_dll_expecting_overlay_skip(
     obligation: ArgGroupObligation,
     expected_reason: &str,
 ) -> Result<Agreement, String> {
-    diff_dll_inner(dll, obligation, Some(expected_reason))
+    diff_dll_inner(dll, obligation, Some(expected_reason), false)
+}
+
+/// [`diff_dll`] for an F# assembly without signature data, which FCS imports
+/// through IL. FCS then also lists fsc's `<StartupCode$…>` classes, which the
+/// projection skips for every image: their namespace cannot be written in F#
+/// source, and they are not public, so no use can reach them. They are elided
+/// from FCS's side.
+pub fn diff_il_imported_dll(dll: &Path) -> Result<Agreement, String> {
+    diff_dll_inner(dll, ArgGroupObligation::AllCommit, None, true)
 }
 
 fn diff_dll_inner(
     dll: &Path,
     obligation: ArgGroupObligation,
     expected_skip: Option<&str>,
+    elide_startup_code: bool,
 ) -> Result<Agreement, String> {
     let bytes = std::fs::read(dll).map_err(|e| format!("read {}: {e}", dll.display()))?;
     let view = Ecma335Assembly::parse(&bytes)
@@ -786,6 +849,9 @@ fn diff_dll_inner(
         ));
     }
     let mut fcs = parse_fcs_dump(&invoke_fcs_dump("entities", dll));
+    if elide_startup_code {
+        fcs.entities.retain(|e| !e.fqn.starts_with("<StartupCode$"));
+    }
     let declines = elide_declined_arg_groups(&ours, &mut fcs);
     if ours != fcs {
         return Err(format!(

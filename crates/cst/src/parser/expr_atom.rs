@@ -434,6 +434,11 @@ impl<'src> Parser<'src> {
     /// The two-token shape is *required*: a bare `_` is not an expression, so
     /// the expression-start gates and the atomic-head dispatch all condition on
     /// this rather than treating `Underscore` as an unconditional atom starter.
+    ///
+    /// The `.` must also be the next *filtered* token: a layout virtual between
+    /// the two (the `OBLOCKSEP` LexFilter can insert in `_⏎.`) separates them
+    /// for the parser, and [`Self::parse_dot_lambda_expr`] would otherwise
+    /// stamp that virtual as the `DOT_TOK`.
     pub(super) fn at_dot_lambda(&self, idx: usize) -> bool {
         let Some((Ok(FilteredToken::Raw(Token::Underscore)), us_span)) =
             self.filtered_tokens.get(idx)
@@ -443,6 +448,9 @@ impl<'src> Parser<'src> {
         matches!(
             self.next_non_trivia_raw_after(us_span.end),
             Some(Token::Dot),
+        ) && matches!(
+            self.next_non_trivia_filtered_after_index(idx),
+            Some(FilteredToken::Raw(Token::Dot)),
         )
     }
 
@@ -3028,7 +3036,7 @@ impl<'src> Parser<'src> {
     /// `.member`) follows the head. Shared by [`Self::parse_ident_expr`] (ident
     /// head) and [`Self::parse_base_expr`] (the `base` keyword head, emitted as
     /// an `IDENT_TOK` matching FCS's `SynExpr.Ident("base")`).
-    fn build_long_ident_expr(&mut self, cp: rowan::Checkpoint) {
+    fn build_long_ident_expr(&mut self, cp: Checkpoint) {
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
         self.builder
@@ -3283,7 +3291,7 @@ impl<'src> Parser<'src> {
     /// LexFilter-swallowed and recovered. The union-case name is always the cons
     /// operator (`op_ColonColon`), so only the field number is carried. The set
     /// form `… <- rhs` is the enclosing [`SyntaxKind::ASSIGN_EXPR`] over this get.
-    fn parse_cons_field_get_tail(&mut self, cp: rowan::Checkpoint, head_start: Option<usize>) {
+    fn parse_cons_field_get_tail(&mut self, cp: Checkpoint, head_start: Option<usize>) {
         self.builder.start_node_at(
             cp,
             FSharpLang::kind_to_raw(SyntaxKind::LIBRARY_ONLY_FIELD_GET_EXPR),
@@ -3348,12 +3356,17 @@ impl<'src> Parser<'src> {
     /// annotation clears it.
     fn parse_postfix_tail(
         &mut self,
-        cp: rowan::Checkpoint,
+        cp: Checkpoint,
         head_start: Option<usize>,
         head: EndsInAdjacentApp,
     ) -> EndsInAdjacentApp {
         let mut ends = head;
         loop {
+            // Each postfix wraps the chain so far in one more node, without
+            // recursing; this is where such a chain is held to the tree bound.
+            if self.depth_limit_latched() {
+                return ends;
+            }
             // Only a raw-adjacent `.` continues a postfix access — a dot reached
             // only by crossing a LexFilter-swallowed `)` belongs to an
             // enclosing construct (see [`Self::at_raw_adjacent_dot`]).
@@ -3568,7 +3581,7 @@ impl<'src> Parser<'src> {
     /// markerless. The `else` is therefore defensive; a stray unconsumed `>`
     /// flows to the enclosing context's own recovery, keeping the round-trip
     /// lossless and the parser panic-free.
-    fn parse_type_app_tail(&mut self, cp: rowan::Checkpoint) {
+    fn parse_type_app_tail(&mut self, cp: Checkpoint) {
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPE_APP_EXPR));
         // HPA virtual: consume as zero-width ERROR.
@@ -3608,7 +3621,7 @@ impl<'src> Parser<'src> {
     /// offside-separated statements (`Array.[⏎ yield 1⏎ yield 2⏎ ]`) is one
     /// `Sequential` index, as in a list literal. The closer `]` is a real
     /// `RBRACK_TOK` — unlike `)`, the lex-filter does not swallow it.
-    fn parse_dot_indexed_get_tail(&mut self, cp: rowan::Checkpoint) {
+    fn parse_dot_indexed_get_tail(&mut self, cp: Checkpoint) {
         self.builder.start_node_at(
             cp,
             FSharpLang::kind_to_raw(SyntaxKind::DOT_INDEXED_GET_EXPR),
@@ -3646,7 +3659,7 @@ impl<'src> Parser<'src> {
     /// loop) or a parenthesised expression (`a?(e)` → the same
     /// [`SyntaxKind::PAREN_EXPR`] [`Self::parse_paren_expr`] builds). The caller
     /// has verified the cursor is at the `?`.
-    fn parse_dynamic_tail(&mut self, cp: rowan::Checkpoint) {
+    fn parse_dynamic_tail(&mut self, cp: Checkpoint) {
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::DYNAMIC_EXPR));
         self.bump_into(SyntaxKind::QMARK_TOK);
@@ -3746,7 +3759,7 @@ impl<'src> Parser<'src> {
     /// inner chain would swallow `.Baz` and drain the `)` as an `ERROR`. Same
     /// raw-adjacency check as [`Self::parse_postfix_tail`] /
     /// [`Self::parse_ident_expr`].
-    fn parse_dot_get_tail(&mut self, cp: rowan::Checkpoint) {
+    fn parse_dot_get_tail(&mut self, cp: Checkpoint) {
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::DOT_GET_EXPR));
         self.builder
@@ -4393,8 +4406,27 @@ impl<'src> Parser<'src> {
         } else {
             self.parse_var_type(SyntaxKind::HAT_TOK);
         }
-        self.bump_into(SyntaxKind::COLON_TOK);
-        self.bump_into(SyntaxKind::LPAREN_TOK);
+        // `at_trait_call_body` saw `: (` on the raw stream; a layout virtual in
+        // front of either (a line broken inside the head) means the filtered
+        // cursor is not on it, so stop rather than stamp the virtual.
+        for (token, kind) in [
+            (Token::Colon, SyntaxKind::COLON_TOK),
+            (Token::LParen, SyntaxKind::LPAREN_TOK),
+        ] {
+            if !matches!(self.peek(), Some((Ok(FilteredToken::Raw(t)), _)) if *t == token) {
+                let span = self
+                    .peek()
+                    .map(|(_, span)| span.clone())
+                    .unwrap_or_else(|| self.source.len()..self.source.len());
+                self.errors.push(ParseError {
+                    message: "expected `: (member …)` in a trait call".to_string(),
+                    span,
+                });
+                self.builder.finish_node();
+                return;
+            }
+            self.bump_into(kind);
+        }
         self.parse_member_sig();
         self.bump_swallowed_closer(
             SyntaxKind::RPAREN_TOK,

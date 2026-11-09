@@ -14,10 +14,10 @@
 //! continuations, the type / measure recursions, and the pattern atom / `::`
 //! climb — so each path is exercised here.
 //!
-//! Parses run on a thread sized like the LSP's 8 MiB main thread (see
-//! [`probe_lsp_stack`]): below the threshold the parser caps recursion and
-//! returns the one collapsed depth error, and reaching that cap is shown to be
-//! safe on the deployment-sized stack. A broken or missing guard fails these
+//! Parses run on an 8 MiB thread (see [`probe_lsp_stack`]): below the
+//! threshold the parser caps recursion and returns the one collapsed depth
+//! error, and reaching that cap is shown to be safe on a quarter of the stack
+//! the LSP parses on. A broken or missing guard fails these
 //! tests either by aborting (overflow, for the deep non-delimited recursions) or
 //! by parsing `BREACH`-deep with no error (the error-count assertion).
 //!
@@ -50,12 +50,13 @@ const BREACH: usize = 1024;
 /// legitimately (if unusually) nested code.
 const LEGAL: usize = 64;
 
-/// Run `parse` on a thread whose stack matches the LSP's main thread (8 MiB —
-/// `server.rs::run` processes messages there, no `thread::spawn`/tokio). The
-/// Rust test harness otherwise gives each test only ~2 MiB. This both keeps the
-/// parser off the small default test stack *and* validates directly that
-/// reaching the depth cap is safe on the real deployment stack: if `MAX_PARSE_DEPTH`
-/// were miscalibrated (too high for 8 MiB), these tests would abort here rather
+/// Run `parse` on an 8 MiB thread: a platform main thread's stack, and a
+/// quarter of the thread the LSP answers requests on
+/// (`borzoi::server::SERVER_STACK_BYTES`). The Rust test harness otherwise
+/// gives each test only ~2 MiB. This both keeps the parser off the small
+/// default test stack *and* validates directly that reaching the depth cap is
+/// safe with room to spare on the deployment stack: if `MAX_PARSE_DEPTH` were
+/// miscalibrated (too high for 8 MiB), these tests would abort here rather
 /// than return.
 fn probe_lsp_stack(src: String) -> Probe {
     std::thread::Builder::new()
@@ -148,7 +149,7 @@ fn cons_chain_expr(n: usize) -> String {
 }
 
 /// Left-associative `+` — the Pratt loop handles this iteratively, so the stack
-/// stays shallow and the guard must NOT fire however long the chain is.
+/// stays shallow and the recursion counter must not climb with the chain.
 fn flat_add_chain(n: usize) -> String {
     let mut s = String::from("let x = 0");
     s.push_str(&" + 0".repeat(n));
@@ -185,11 +186,19 @@ fn legal_depth_parens_expr_is_clean() {
     assert_clean(nested_parens(LEGAL));
 }
 
+/// Short enough that the chain's tree (two nodes per link) stays under
+/// `MAX_TREE_HEIGHT`, which stops a chain that keeps going
+/// (`parser_tree_height`); long enough that a recursive descent through the
+/// operand chokepoints, which cost the counter at least two levels per nesting
+/// (`parse_pratt_expr`, `parse_minus_expr`, `parse_atomic_expr`), would pass
+/// `MAX_PARSE_DEPTH` (512).
+const FLAT_CHAIN: usize = 450;
+
 #[test]
 fn long_flat_add_chain_does_not_false_fire() {
     // A long left-assoc chain: iterative, so the stack stays shallow and the
-    // guard must not fire however long it is.
-    let probe = probe_lsp_stack(flat_add_chain(BREACH));
+    // recursion guard must not fire.
+    let probe = probe_lsp_stack(flat_add_chain(FLAT_CHAIN));
     assert!(
         probe.error_messages.iter().all(|m| !m.contains("too deep")),
         "left-assoc chain must not trip the depth guard: {:?}",
@@ -385,4 +394,30 @@ fn deep_paren_type_breaches() {
 #[test]
 fn deep_paren_measure_breaches() {
     assert_breaches(paren_measure(BREACH));
+}
+
+// ---- declaration families -----------------------------------------------
+
+/// `module M =` nested by indentation — the nested-module body recursion
+/// (`parse_nested_module_body` → the decl loop → `parse_nested_module_body`),
+/// which no expression chokepoint sees.
+fn nested_modules(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        s.push_str(&"  ".repeat(i));
+        s.push_str("module M =\n");
+    }
+    s.push_str(&"  ".repeat(n));
+    s.push_str("let x = 0\n");
+    s
+}
+
+#[test]
+fn deep_nested_module_breaches() {
+    assert_breaches(nested_modules(BREACH));
+}
+
+#[test]
+fn legal_depth_nested_module_is_clean() {
+    assert_clean(nested_modules(LEGAL));
 }

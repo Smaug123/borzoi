@@ -1,11 +1,10 @@
 # Follow-up: resolve the type-qualifier *prefix* through the qualified-value machinery
 
-> **Status:** all three gaps closed and the head-widening (Stage 4) is
-> substantially landed. Remaining work is two deliberate *sound defers* —
-> multi-segment (4+) same-file module heads and same-file namespace-rooted
-> qualifiers — detailed under "Still to do". Everything above that section is a
-> one-line landed record plus the FCS-verified precedence reference / landmine
-> log the remaining work must respect.
+> **Status:** landed. All three gaps, the head-widening (Stage 4), and the
+> two sound defers it left — multi-segment same-file module heads (#69) and
+> same-file namespace-rooted qualifiers (#70) — are closed. Everything below is
+> a one-line landed record plus the FCS-verified precedence reference /
+> landmine log any further change must respect.
 
 This was the follow-up to PR #653 (`sema/type-qualified-cases`), which shipped
 `Type.Case` resolution — `Color.Red` / `Lib.Color.Red` / `open Lib; Color.Red`
@@ -53,20 +52,35 @@ that with a complete per-container name environment.
   fails to resolve, and searches the root (`k == 0`) last. Bare-head in-project
   module aliases are done (alias is definitive for the head).
 
-## Still to do
+- **Multi-segment qualifiers and namespace roots** (#69, #70) — the residual
+  after the head is walked segment by segment through `container_decls`
+  (`Resolver::classify_module_qualified_residual`). A same-file namespace of
+  the head's name is the last head candidate
+  (`Resolver::namespace_head_candidate`): FCS adds it only when an *earlier*
+  block declaring it closes, below everything the current block brings into
+  scope. Graded by `crates/sema/tests/all/type_qualified_prefix_grid.rs`. Review
+  kept finding channels the walk did not enumerate, so the walk commits only
+  inside a positive domain and declines outside it:
+  - every segment before the type is *solely* a module
+    (`DeclKinds::is_sole_module`) or a same-file sub-namespace in a view that
+    records every module-level declaration, `extern`s and require-qualified
+    cases included, and a type segment declared once;
+  - every `open` in scope is proven not to bring the head in by a route the
+    walk does not classify (an assembly target's fold surface, its namespace's
+    `[<AutoOpen>]` modules, a project container's auto-open submodules, a
+    dropped type);
+  - a root head (a `namespace global` module or a same-file namespace) needs
+    an enclosing namespace no earlier file or referenced assembly contributes
+    to (`Resolver::root_head_rival`);
+  - in a pattern, where FCS tries the head's types first, no type of the
+    head's name may be in scope (`Resolver::pattern_type_head_possible`);
+  - not inside `module rec` / `namespace rec` (`RecursiveModuleActive`);
+  - no same-file `[<AutoOpen>]` module supplies a module of the head's name,
+    and no earlier `namespace global` block held an `open`.
 
-Both are **sound defers today** (the resolver declines rather than emits a wrong
-target); closing them widens head resolution to multi-segment same-file paths.
+## Invariant
 
-- **Multi-segment same-file module heads** (`A.B.Color.Red`). The landed head
-  walk resolves single-segment lexical/open/alias/cross-file heads; a same-file
-  module head of two or more segments still defers. Extend the head resolution
-  to walk a multi-segment lexical path through `container_decls`, keeping the
-  candidate-loop and defer-on-contention discipline.
-- **Same-file namespace-rooted qualifiers.** A qualifier rooted at a same-file
-  `namespace` (rather than a lexical `module`) still defers.
-
-**Invariant the widening must preserve (sound by construction):** build the
+**The invariant (sound by construction):** build the
 *complete* declared-name view per container (`container_decls`), resolve the head
 through the **lexical** container chain and the source-position-ordered open
 list only, and emit the case **only** when the qualifier segment is

@@ -1127,7 +1127,8 @@ impl<'src> Parser<'src> {
                 if matches!(
                     self.next_non_trivia_raw_at_pos(),
                     Some(Token::Let | Token::Use)
-                ) {
+                ) && self.let_keyword_follows_block_seps()
+                {
                     // Skip an inter-line `BlockSep` so the filtered cursor lands
                     // on the `let` (for the classifier below and `parse_let_decl_at`).
                     while matches!(
@@ -1809,7 +1810,7 @@ impl<'src> Parser<'src> {
             }
             _ => false,
         };
-        if bare_global {
+        if bare_global && self.next_tokens_unbroken(1) {
             self.bump_into(SyntaxKind::GLOBAL_TOK);
         } else if !sig && self.next_non_trivia_raw_at_pos().is_none() {
             // A *nameless* `namespace` / `namespace rec` with no *significant*
@@ -2092,6 +2093,24 @@ impl<'src> Parser<'src> {
     /// [`Self::raw_module_head_eq`]`.is_some()` (either `Some(true)` nested-with-`=`
     /// or `Some(false)` whole-file head): both swallow `module`, so both must be
     /// preserved.
+    /// Whether the filtered cursor reaches a `let`/`use` keyword (LexFilter's
+    /// `Virtual::Let` relabel, or a raw one) once any `OBLOCKSEP`s are skipped.
+    /// The attributed-`let` dispatch decides on the raw stream, which does not
+    /// see a dedent's `OBLOCKEND` between the attributes and the `let`; there
+    /// the `let` belongs to an enclosing scope, not to these attributes.
+    fn let_keyword_follows_block_seps(&self) -> bool {
+        self.filtered_tokens[self.pos..]
+            .iter()
+            .find(|(res, _)| !matches!(res, Ok(FilteredToken::Virtual(Virtual::BlockSep))))
+            .is_some_and(|(res, _)| {
+                matches!(
+                    res,
+                    Ok(FilteredToken::Virtual(Virtual::Let)
+                        | FilteredToken::Raw(Token::Let | Token::Use))
+                )
+            })
+    }
+
     fn bump_layout_virtual(&mut self) {
         if self.raw_module_head_eq().is_some() || self.raw_leading_type_defn() {
             self.builder
@@ -2129,11 +2148,7 @@ impl<'src> Parser<'src> {
     /// drops the whole decl in a `.fsi` (unlike `.fs`, where `module rec X` is
     /// valid). The node kinds (`NESTED_MODULE_DECL` / `MODULE_ABBREV_DECL`) are
     /// shared with the impl side — the sig variants reuse the same nodes.
-    pub(super) fn parse_nested_module_decl_at(
-        &mut self,
-        outer_cp: Option<rowan::Checkpoint>,
-        sig: bool,
-    ) {
+    pub(super) fn parse_nested_module_decl_at(&mut self, outer_cp: Option<Checkpoint>, sig: bool) {
         // `outer_cp` is the attributed entry (the dispatch parses ≥1 attribute
         // list before it), so it doubles as the "has header attributes" flag —
         // captured here before it is consumed into `cp` below.
@@ -2353,14 +2368,19 @@ impl<'src> Parser<'src> {
         } else if sig {
             // Signature nested-module body — the sig decl loop, terminating at
             // the body-closing `OBLOCKEND` (phase 10.13b), or — when
-            // `begin_delimited` — at the verbose `end`.
-            self.parse_sig_module_decls(BodyScope::Nested, false, begin_delimited);
+            // `begin_delimited` — at the verbose `end`. A recursion chokepoint,
+            // like the expression ones: modules nest without bound.
+            self.with_depth(|p| {
+                p.parse_sig_module_decls(BodyScope::Nested, false, begin_delimited);
+            });
         } else {
             // Nested-module body — the shared loop, terminating at the
             // body-closing `OBLOCKEND` (or the verbose `end`). A nested body has
             // no file-level `module`/`namespace` header, so `header_present` is
-            // `false`.
-            self.parse_module_decls(BodyScope::Nested, false, begin_delimited);
+            // `false`. A recursion chokepoint, as above.
+            self.with_depth(|p| {
+                p.parse_module_decls(BodyScope::Nested, false, begin_delimited);
+            });
         }
 
         // An abbreviation body that did not close at the long-ident

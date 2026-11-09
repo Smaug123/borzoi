@@ -467,7 +467,7 @@ impl<'src> Parser<'src> {
     /// more leading `ATTRIBUTE_LIST`s (phase 10.5) after the checkpoint, and this
     /// wraps them together with the binding so the attributes are leading
     /// children before `LET_TOK`.
-    pub(super) fn parse_let_decl_at(&mut self, cp: Option<rowan::Checkpoint>, node: SyntaxKind) {
+    pub(super) fn parse_let_decl_at(&mut self, cp: Option<Checkpoint>, node: SyntaxKind) {
         // Use the let token's span (which carries the rewritten real token's
         // range) to place the leading trivia, same convention as
         // `parse_module_decl`.
@@ -519,7 +519,7 @@ impl<'src> Parser<'src> {
     /// `ATTRIBUTE_LIST`s (the `[<DllImport(…)>]` carrier) after the checkpoint,
     /// wrapped here into the `EXTERN_DECL` (FCS's `SynBinding.attributes`). The
     /// caller has verified the cursor is at the raw `extern` keyword.
-    pub(super) fn parse_extern_decl_at(&mut self, cp: Option<rowan::Checkpoint>) {
+    pub(super) fn parse_extern_decl_at(&mut self, cp: Option<Checkpoint>) {
         let extern_span = self
             .peek()
             .map(|(_, s)| s.clone())

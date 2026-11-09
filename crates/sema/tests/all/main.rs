@@ -5,9 +5,16 @@
 //! crate, so one binary pays that once. Filter with
 //! `cargo test -p borzoi-sema --test all <module>::`.
 
+// `infer_type_budget` bounds each child's memory through the counting
+// allocator, which must be this binary's.
+#[global_allocator]
+static ALLOC: borzoi_oracle_harness::alloc_limit::LimitedAlloc =
+    borzoi_oracle_harness::alloc_limit::LimitedAlloc;
+
 mod common;
 
 mod abbreviation_case_diff;
+mod assembly_container_precedence_grid;
 mod assembly_env;
 mod assembly_union_case_table;
 mod attr_resolution_diff;
@@ -17,6 +24,8 @@ mod auto_open_fold_back;
 mod auto_open_member_sweep;
 mod binder_site_grid;
 mod case_access_grid;
+mod case_open_grid;
+mod case_type_order_grid;
 mod classify_assembly_diff;
 mod classify_diff;
 mod commit_surface;
@@ -57,6 +66,7 @@ mod infer_project_type_annotation_diff;
 mod infer_project_union_diff;
 mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
+mod infer_type_budget;
 mod infer_union_case_diff;
 mod manifest_autoopen_surface_diff;
 mod member_hiding_diff;
@@ -69,6 +79,7 @@ mod operator_name_diff;
 mod overload_corpus_diff;
 mod overloads_oracle;
 mod project_half_matrix;
+mod reopened_namespace_grid;
 mod resolve_active_patterns;
 mod resolve_assembly;
 mod resolve_assembly_active_patterns;
@@ -119,6 +130,7 @@ mod silent_region_sweep;
 mod tier_order_diff;
 mod type_arity_route_grid;
 mod type_name_env_grid;
+mod type_qualified_prefix_grid;
 mod types_census;
 mod union_rqa_attribute_grid;
 mod unmodelled_contributor_grid;
@@ -128,6 +140,7 @@ mod uses_census_project;
 mod uses_project_smoke;
 mod uses_smoke;
 mod value_access_open_grid;
+mod walk_stack_bound;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is
 /// silently never compiled or run. See the module for why that is worth a test.

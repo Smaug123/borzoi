@@ -1449,8 +1449,8 @@ fn nested_class(env: &AssemblyEnv) -> Option<SemanticClass> {
 /// case's carrier (FCS: `UnionCase`) or the generated `Tags` class (`Type`).
 /// Committing `Type` there is a wrong answer on every payload case of every union
 /// whose cases we could not recover — a foreign CCU, an undecodable signature
-/// resource, an assembly with no signature data, or a pickle entry that collided
-/// on the projected key.
+/// resource, an assembly with no signature data, or a pickle entry the join could
+/// not attribute to a row of its own.
 #[test]
 fn a_nested_type_of_an_unenumerable_union_is_not_classified() {
     assert_eq!(

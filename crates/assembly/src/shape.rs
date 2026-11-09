@@ -77,7 +77,7 @@ pub fn compiler_shape(entity: &Entity, enclosing: Option<&Entity>) -> Result<(),
     if !entity.namespace.iter().all(|s| plain_name(s))
         || !plain_name(&entity.name)
         || own_arity.is_none()
-        || entity.metadata_arity_suffix != own_arity
+        || entity.metadata_arity_suffix() != own_arity
     {
         return Err(Unshaped::TypeName);
     }

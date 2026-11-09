@@ -1010,6 +1010,29 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
     handles.sort_by_key(|&h| env.entity_full_name(h));
     for handle in handles {
         let path = env.entity_full_name(handle);
+        // The types beside the module under its name — `Result<'T,'E>` beside
+        // `Result`, the `ResumableCode<'Data,'T>` delegate beside
+        // `ResumableCode`. The probe writes the namespace, and through a written
+        // namespace FCS searches the *type* first
+        // (`ResolveExprLongIdentInModuleOrNamespace`): the type's static of the
+        // name, inherited ones included, takes the path (`ResumableCode.Combine`
+        // is `Delegate.Combine`). Where the env cannot say the type has none —
+        // a base chain it cannot enumerate — the value may defer, and is owed no
+        // commit.
+        let module = env.entity(handle);
+        let companions: Vec<_> = env
+            .public_entities_named(
+                &module.namespace,
+                module.source_name.as_deref().unwrap_or(&module.name),
+            )
+            .into_iter()
+            .filter(|&h| !env.is_module(h))
+            .collect();
+        let a_type_may_take = |name: &str| {
+            companions
+                .iter()
+                .any(|&h| env.static_lookup(h, name) != borzoi_sema::StaticLookup::Absent)
+        };
         let schemes: HashMap<String, borzoi_sema::Ty> =
             borzoi_sema::test_support::module_function_schemes(env, handle)
                 .into_iter()
@@ -1020,7 +1043,8 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
             // A value whose type parameter carries `equality` or `comparison`
             // is read but not generalised over: no scheme says `when`.
             let unloosened = schemes.get(&name).is_some_and(takes_only_surely_sealed)
-                && !constrained.contains(&name);
+                && !constrained.contains(&name)
+                && !a_type_may_take(&name);
             let spelled = format!("{path}.``{name}``");
             src.push_str(&format!("let v{n} = {spelled}\n"));
             let w = format!("w{n}");

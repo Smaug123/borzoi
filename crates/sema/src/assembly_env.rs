@@ -319,6 +319,35 @@ pub enum StaticLookup {
     Uncertain,
 }
 
+/// What FCS's **in-container** expression search can read for a name ahead of
+/// the container's own type or module of that name —
+/// [`AssemblyEnv::module_reads_ahead_of_type`] and
+/// [`AssemblyEnv::namespace_reads_ahead_of_type`].
+///
+/// `ResolveExprLongIdentInModuleOrNamespace` (NameResolution.fs) asks a module
+/// or namespace for an accessible value, then an accessible exception, then
+/// the case of the first union declaring the name, and only then for a type —
+/// then, with a tail, a module — of the name. A
+/// `[<RequireQualifiedAccess>]` union's case is the exception to that order:
+/// FCS keeps it and reads it last, only when the type and module searches read
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AheadOfType {
+    /// Provably nothing: FCS's search reaches the type.
+    Nothing,
+    /// Only `[<RequireQualifiedAccess>]` unions declare a case of the name:
+    /// FCS reaches the type, but reads such a case if the type (and, with a
+    /// tail, the module) supplies nothing.
+    RqaCaseFallback,
+    /// An exception of the name, in the same assembly, is read first. In a
+    /// namespace it is a top-level entity of the name itself, so the walk
+    /// reaches it as a sibling candidate at the same rooting.
+    SiblingException,
+    /// A value, an exception or an ordinary union case of the name may be read
+    /// first, or the container's members of that name cannot be enumerated.
+    Possible,
+}
+
 /// The complete-or-opaque bare-name surface an `open <assembly module>` folds
 /// into scope — [`AssemblyEnv::open_fold_surface`], the fold's per-container
 /// unit (`docs/assembly-module-open-plan.md`, "the fold").
@@ -2426,7 +2455,7 @@ impl AssemblyEnv {
         e.namespace.len() == 1
             && e.namespace[0] == "System"
             && e.name == "Object"
-            && e.metadata_arity_suffix == Some(0)
+            && e.metadata_arity_suffix() == Some(0)
             && e.generic_parameters.is_empty()
             && e.kind == EntityKind::Class
             && !e.is_struct
@@ -2442,7 +2471,7 @@ impl AssemblyEnv {
             let e = self.entity(h);
             e.namespace.len() == 1
                 && e.namespace[0] == "System"
-                && e.metadata_arity_suffix == Some(0)
+                && e.metadata_arity_suffix() == Some(0)
                 && e.generic_parameters.is_empty()
                 && e.access == borzoi_assembly::Access::Public
         };
@@ -3575,14 +3604,23 @@ impl AssemblyEnv {
     /// (under-colour, never mis-colour) is the honest answer until the resolution
     /// distinguishes the two.
     /// Whether `handle`'s source assembly has a **non-authoritative** F#
-    /// signature — its pickle is absent/undecodable, or it embeds foreign CCU
-    /// pickles (an `fsc --standalone` build). In that state fsc's IL-level F#
-    /// markers (`CompilationMappingAttribute` for module kind, the static-property
-    /// shape for a module value) survive but the pickle overlay never ran, so they
-    /// are *heuristic, not authoritative* — and FCS imports such an assembly
-    /// through IL, where a module reads as a plain type and its `let`s as ordinary
-    /// members (verified against real `--standalone` output). A classifier must
-    /// therefore not trust `EntityKind::Module` (or the module-member split) here.
+    /// signature: no pickle the projection could read in full. That covers two
+    /// different assemblies, which the projection already tells apart:
+    ///
+    /// - one without the `FSharpInterfaceDataVersionAttribute` (C#, the BCL, or
+    ///   F# built with `--nointerfacedata` or `--standalone`), which FCS
+    ///   imports through IL. The projection reads it the same way, so it
+    ///   carries no F# kind at all: a module there is the plain class FCS sees.
+    /// - one with the marker whose pickle the projection could not read (it is
+    ///   undecodable, its join is partial, or foreign CCUs ride beside it).
+    ///   FCS reads that pickle, so its kinds and members are F#'s, and the
+    ///   projection's — from fsc's IL markers (`CompilationMappingAttribute`
+    ///   for a kind, the static-property shape for a module value) — are a
+    ///   heuristic for them.
+    ///
+    /// So an F# kind (`Module`, `Union`, `Record`, `Exception`) on such an
+    /// entity is always the heuristic one, and anything that *acts* on it must
+    /// decline.
     ///
     /// The entity's [`EntityNode::signature_non_authoritative`] bit — carried on
     /// every build path (including [`Self::from_views`], which tags no
@@ -3605,10 +3643,11 @@ impl AssemblyEnv {
     /// Whether `handle` is an F# **module** we may rely on being one.
     ///
     /// A module's kind is trustworthy only from an authoritative F# pickle. A
-    /// non-authoritative assembly's `Module` is an IL heuristic FCS does not
-    /// share — it imports the type through IL, where a module reads as a plain
-    /// type — so anything that *acts* on module-ness must ask this rather than
-    /// match `EntityKind::Module` directly. [`Self::entity_class`] declines
+    /// non-authoritative assembly's `Module` is an IL heuristic for a pickle
+    /// FCS reads and the projection could not
+    /// (see [`Self::has_authoritative_fsharp_signature`]), so anything that *acts* on
+    /// module-ness must ask this rather than match `EntityKind::Module`
+    /// directly. [`Self::entity_class`] declines
     /// such a kind for the same reason; the resolver's type-position
     /// eligibility filter (a module cannot be a terminal type) must decline to
     /// *exclude* it for the same reason, or it would drop a genuine
@@ -3975,6 +4014,27 @@ impl AssemblyEnv {
             EntityKind::Exception | EntityKind::Enum | EntityKind::Delegate => true,
             _ => false,
         }
+    }
+
+    /// Whether an expression-position path ending at the class `handle` is
+    /// FCS's reading but names nothing we can commit to: the class has
+    /// instance constructors, none of them public. FCS takes the type, finds
+    /// no accessible constructor ("This type has no accessible object
+    /// constructors") and goes no further — it does not move on as it does
+    /// past a class with no instance constructor at all
+    /// ([`Self::terminal_expression_value`]). An F# union read through IL is
+    /// such a class (its constructor is `internal`).
+    pub fn terminal_constructor_inaccessible(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        let instance_ctors = || {
+            e.members.iter().filter_map(|m| match m {
+                Member::Method(mm) if mm.is_constructor && !mm.is_static => Some(mm.access),
+                _ => None,
+            })
+        };
+        e.kind == EntityKind::Class
+            && instance_ctors().next().is_some()
+            && instance_ctors().all(|access| access != Access::Public)
     }
 
     /// Whether `handle` is a union we may rely on declaring a case named `name`.
@@ -4473,12 +4533,11 @@ impl AssemblyEnv {
             .collect();
         // A banana-named val is an active-pattern recognizer **only in an
         // authoritative F# module**. On an assembly whose F# signature is
-        // unreliable (`fsc --standalone`, an undecoded pickle) `EntityKind::Module`
-        // is an IL heuristic FCS does not share — it imports the entity through IL,
-        // where a banana-named `let` is an ordinary method group, never a
-        // recognizer (Stage 3b; the same reason [`Self::entity_class`] declines the
-        // kind). So demangle only when the container's signature is authoritative;
-        // otherwise the `|Foo|` is just a value entry.
+        // unreliable `EntityKind::Module` is a heuristic for a pickle FCS reads
+        // and we could not ([`Self::fsharp_signature_unreliable`]), so nothing
+        // vouches for the recognizer's shape; such a module's extension index
+        // is unknowable too, so its surface is already residue above, and the
+        // `|Foo|` stays a plain value entry.
         let authoritative_module = !self.fsharp_signature_unreliable(handle);
         for (name, idx) in vals {
             if authoritative_module && name.starts_with('|') {
@@ -6185,6 +6244,171 @@ impl AssemblyEnv {
         })
     }
 
+    /// Whether `handle` is an F# **exception** we may rely on being one: on an
+    /// assembly whose F# signature is not authoritative the kind is an IL
+    /// heuristic ([`Self::fsharp_signature_unreliable`]).
+    pub(crate) fn is_authoritative_exception(&self, handle: EntityHandle) -> bool {
+        self.entity(handle).kind == EntityKind::Exception
+            && !self.fsharp_signature_unreliable(handle)
+    }
+
+    /// Whether `handle`'s F# kind — a module, union, record or exception — is
+    /// the projection's heuristic for a pickle FCS reads and the projection
+    /// could not ([`Self::fsharp_signature_unreliable`]). FCS reads such an
+    /// entity by F#'s rules for that kind (a module's value ahead of its
+    /// nested type, an exception's constructor and nothing after it, a
+    /// union's cases), over contents the projection cannot vouch for, so a
+    /// reading through it must decline.
+    pub(crate) fn has_heuristic_fsharp_kind(&self, handle: EntityHandle) -> bool {
+        matches!(
+            self.entity(handle).kind,
+            EntityKind::Module | EntityKind::Union | EntityKind::Record | EntityKind::Exception
+        ) && self.fsharp_signature_unreliable(handle)
+    }
+
+    /// What FCS's in-module expression search can read for `name` in module
+    /// `module` ahead of its child `child` of that name — see [`AheadOfType`].
+    ///
+    /// `module` must be an authoritative module
+    /// ([`Self::is_authoritative_module`]): a non-authoritative one is a plain
+    /// type to FCS, searched by the type rules instead.
+    ///
+    /// The answer is an exhaustive negation: [`AheadOfType::Nothing`] only when
+    /// the module provably declares no public value, no public exception other
+    /// than `child`, and no public union with a case of the name. A module whose
+    /// members cannot be enumerated (an undecodable member of the name, an
+    /// unknowable pickle, a dropped type in its namespace that could be a child
+    /// union) is [`AheadOfType::Possible`].
+    ///
+    /// A non-public value, exception or union never answers: FCS checks the
+    /// first two for accessibility, and while `TryFindTypeWithUnionCase` stops at
+    /// the first union declaring the case whatever its accessibility, it then
+    /// reads the case only if the representation is accessible — so when every
+    /// union declaring the case is non-public, whichever comes first, the search
+    /// goes on to the type. A union whose representation is `private` lists no
+    /// cases, which is the same answer for the same reason; beside a public
+    /// union declaring the case it may come first, but the public one already
+    /// makes the answer [`AheadOfType::Possible`].
+    pub(crate) fn module_reads_ahead_of_type(
+        &self,
+        module: EntityHandle,
+        name: &str,
+        child: EntityHandle,
+    ) -> AheadOfType {
+        debug_assert!(self.is_authoritative_module(module));
+        if self.has_skipped_member(module, name)
+            || matches!(
+                self.module_extension_members(module),
+                ExtensionMembers::Unknowable
+            )
+            || self.namespace_has_dropped_type(&self.nodes[module.index()].owning_namespace)
+        {
+            return AheadOfType::Possible;
+        }
+        if self
+            .entity(module)
+            .members
+            .iter()
+            .any(|m| member_name(m) == name && member_is_public(m))
+        {
+            return AheadOfType::Possible;
+        }
+        self.entities_read_ahead_of_type(self.children(module), name, child)
+    }
+
+    /// What FCS's in-namespace expression search can read for `name` in
+    /// `namespace` ahead of `entity`, a top-level entity of that name there —
+    /// see [`AheadOfType`] and [`Self::module_reads_ahead_of_type`], whose rule
+    /// this is with no values (a namespace declares none).
+    ///
+    /// Every referenced assembly's types in the namespace are asked, not just
+    /// `entity`'s: FCS resolves a namespace path in each assembly that declares
+    /// the namespace and takes whichever reading its reference order decides,
+    /// which sema does not model, so a case of the name in any of them may be
+    /// the one read. A namespace with a dropped type is
+    /// [`AheadOfType::Possible`]: the dropped type could be such a union.
+    pub(crate) fn namespace_reads_ahead_of_type(
+        &self,
+        namespace: &[String],
+        name: &str,
+        entity: EntityHandle,
+    ) -> AheadOfType {
+        if self.namespace_has_dropped_type(namespace) {
+            return AheadOfType::Possible;
+        }
+        self.entities_read_ahead_of_type(self.types_in_namespace(namespace), name, entity)
+    }
+
+    /// The exception and union half of [`Self::module_reads_ahead_of_type`] and
+    /// [`Self::namespace_reads_ahead_of_type`], over one container's entities.
+    ///
+    /// An exception of the name in `entity`'s own assembly is read at the
+    /// exception step, ahead of every union case there:
+    /// [`AheadOfType::SiblingException`] when it is not `entity` itself, and
+    /// when it is, only another assembly's members of a namespace can come
+    /// first. Only an authoritative exception
+    /// ([`Self::is_authoritative_exception`]) is one: anything else of the
+    /// kind is a possible reader of unknown rank.
+    /// A union in an assembly whose F# signature is not authoritative is read
+    /// by its IL case list, the best evidence there is of the names a pickle
+    /// FCS can read would declare, but never exempted as
+    /// `[<RequireQualifiedAccess>]`: that is a pickle fact.
+    fn entities_read_ahead_of_type(
+        &self,
+        entities: &[EntityHandle],
+        name: &str,
+        entity: EntityHandle,
+    ) -> AheadOfType {
+        let is_exception = self.is_authoritative_exception(entity);
+        let same_dll = |e: EntityHandle| self.distinct_dlls(&[e, entity]) == 1;
+        let mut sibling_exception = false;
+        let mut local_case = false;
+        let mut rqa_case = false;
+        for &e in entities {
+            if !self.is_public(e) || is_exception && same_dll(e) {
+                continue;
+            }
+            let ent = self.entity(e);
+            match ent.kind {
+                EntityKind::Exception
+                    if ent.source_name.as_deref().unwrap_or(&ent.name) == name =>
+                {
+                    if !same_dll(e) || self.fsharp_signature_unreliable(e) {
+                        return AheadOfType::Possible;
+                    }
+                    sibling_exception = true;
+                }
+                EntityKind::Union => {
+                    let declares = match &ent.union_cases {
+                        UnionCases::Unknowable => true,
+                        UnionCases::Known(cases) => cases.iter().any(|c| c.name == name),
+                    };
+                    if !declares {
+                        continue;
+                    }
+                    if self.fsharp_signature_unreliable(e) || !ent.is_require_qualified_access {
+                        if !same_dll(e) {
+                            return AheadOfType::Possible;
+                        }
+                        local_case = true;
+                    } else {
+                        rqa_case = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if sibling_exception {
+            AheadOfType::SiblingException
+        } else if local_case {
+            AheadOfType::Possible
+        } else if rqa_case {
+            AheadOfType::RqaCaseFallback
+        } else {
+            AheadOfType::Nothing
+        }
+    }
+
     /// Whether FCS's **module-qualified lookup** could find `name` in module
     /// `handle` — the module half of [`Self::qualified_path_occupied`], consulted
     /// only when no own-level static of the name is selectable.
@@ -7704,7 +7928,7 @@ pub(crate) mod from_views_tests {
             is_struct: false,
             is_auto_open: false,
             is_require_qualified_access: false,
-            metadata_arity_suffix: Some(0),
+            metadata_name: Some(name.to_string()),
             is_no_equality: false,
             is_no_comparison: false,
             is_structural_equality: false,
@@ -9031,12 +9255,12 @@ pub(crate) mod from_views_tests {
         let compiled = Entity {
             kind: EntityKind::Class,
             generic_parameters: vec![type_parameter(0)],
-            metadata_arity_suffix: Some(2),
+            metadata_name: Some("C`2".to_string()),
             ..module_entity("Lib", &["N"], "C")
         };
         let marker = Entity {
             kind: EntityKind::Exception,
-            metadata_arity_suffix: None,
+            metadata_name: None,
             ..module_entity("Lib", &["N"], "Alias")
         };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![manifest_input(
@@ -9077,7 +9301,7 @@ pub(crate) mod from_views_tests {
     fn il_type_definition_declines_a_name_a_suffixless_type_shares() {
         let suffixless = |name: &str| Entity {
             kind: EntityKind::Class,
-            metadata_arity_suffix: None,
+            metadata_name: Some(format!("{name}`0")),
             ..module_entity("Lib", &["N"], name)
         };
         let plain = |name: &str| Entity {
@@ -9122,7 +9346,7 @@ pub(crate) mod from_views_tests {
     #[test]
     fn primitive_binds_only_to_a_suffixless_metadata_name() {
         let suffixed = |e: Entity| Entity {
-            metadata_arity_suffix: None,
+            metadata_name: Some(format!("{}`0", e.name)),
             ..e
         };
         let int32 = || Entity {

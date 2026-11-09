@@ -290,6 +290,31 @@ impl ScopeEntry {
     }
 }
 
+/// What one fold wrote into the module frame, kept so the same contents can
+/// be written again at a later position: each entry with the number of
+/// generation barriers the fold had raised before writing it, and the number
+/// it raised in all ([`Resolver::own_namespace_fold`]).
+#[derive(Debug, Clone, Default)]
+pub(super) struct RecordedFold {
+    pub(super) entries: Vec<(usize, ScopeEntry)>,
+    pub(super) barriers: usize,
+}
+
+impl RecordedFold {
+    /// This fold followed by `next`, as one: `next`'s entries come after every
+    /// barrier this one raised.
+    pub(super) fn then(mut self, next: RecordedFold) -> RecordedFold {
+        let before = self.barriers;
+        self.entries.extend(
+            next.entries
+                .into_iter()
+                .map(|(barriers, entry)| (before + barriers, entry)),
+        );
+        self.barriers += next.barriers;
+        self
+    }
+}
+
 /// One in-file type definition's position and [`SlotClass`]
 /// ([`Resolver::type_slot_history`]).
 pub(super) type TypeSlotDef = (u32, SlotClass);
@@ -632,11 +657,11 @@ pub(super) enum OpenInterpretation {
 /// view that closes Gap A of `docs/type-qualified-case-prefix-plan.md`.
 ///
 /// Only names reachable *bare* or as `Container.Name` are recorded (the
-/// value/type/module namespaces): `let` values, exception constructors,
-/// **non**-`[<RequireQualifiedAccess>]` union cases, types, nested modules /
-/// abbreviations, and active-pattern cases. Require-qualified union cases and enum
-/// cases are *not* — they are reachable only as `Type.Case`, so they never collide
-/// with a module-qualifier segment.
+/// value/type/module namespaces): `let` values and `extern` functions, exception
+/// constructors, union cases (require-qualified ones apart, since only a pattern
+/// reaches them as `Container.Name`), types, nested modules / abbreviations, and
+/// active-pattern cases. Enum cases are *not* — they are reachable only as
+/// `Type.Case`, so they never collide with a module-qualifier segment.
 ///
 /// The point of the *complete* view: deciding "is the segment `Color` unambiguously
 /// a type here, or is something else also named `Color`?" needs certainty, and a
@@ -665,6 +690,11 @@ pub(super) struct DeclKinds {
     pub(super) ty: bool,
     /// A bare-reachable (non-RQA) union case constructor.
     pub(super) union_case: bool,
+    /// A `[<RequireQualifiedAccess>]` union case. Neither bare-reachable nor
+    /// found by an expression's search through a module, but a pattern's
+    /// search through one finds it (`TryFindTypeWithUnionCase`, no RQA
+    /// filter) before the module's submodules and types.
+    pub(super) qualified_case: bool,
     /// A **real** nested module (`module M = …`). *Not* an abbreviation — those set
     /// [`Self::alias`] instead, since an alias's target may be cross-file.
     pub(super) module: bool,
@@ -675,6 +705,13 @@ pub(super) struct DeclKinds {
     /// of `Pal.Color.Red`, one declared *before* it loses), so a candidate is
     /// compared positionally against [`Resolver::explicit_open_prefixes`].
     pub(super) module_pos: Option<u32>,
+    /// A second `module M = …` of the name in this container: FS0037, and FCS
+    /// reads the *first* one where sema keeps the latest, so the container's
+    /// view of the name is no longer one module.
+    pub(super) module_redeclared: bool,
+    /// The (latest) real nested module of the name is `module private`:
+    /// reachable as a qualifier segment only from within this container.
+    pub(super) module_private: bool,
     /// A module **abbreviation** (`module P = Target`). The target may be cross-file,
     /// so a `P.Color.Red` head must be left to the alias-aware cross-file path rather
     /// than treated as a same-file module — but a nearer alias still **shadows** an
@@ -750,7 +787,31 @@ impl DeclKinds {
     /// its (possibly cross-file) target — never clean. A co-declared exception
     /// constructor is FS0037 (illegal), so on such input we conservatively decline.
     pub(super) fn is_clean_module_head(self, in_pattern: bool) -> bool {
-        self.module && !self.alias && !self.exception_ctor && (in_pattern || !self.value)
+        self.module
+            && !self.module_redeclared
+            && !self.alias
+            && !self.exception_ctor
+            && (in_pattern || !self.value)
+    }
+
+    /// Whether the name is **only** a real nested module here — the shape a
+    /// qualifier segment *after* the head must have for the walk to descend
+    /// through it. FCS reads such a segment inside the module the previous
+    /// segment named (`ResolveExprLongIdentInModuleOrNamespace` /
+    /// `ResolvePatternLongIdentInModuleOrNamespace`), where values, union
+    /// cases and exception constructors of the name are tried before the
+    /// module and a type of the name beside it; none of that ordering is
+    /// modelled, so any co-declaration leaves the segment undecided.
+    pub(super) fn is_sole_module(self) -> bool {
+        self.module
+            && !self.module_redeclared
+            && !self.alias
+            && !self.value
+            && !self.exception_ctor
+            && !self.ty
+            && !self.union_case
+            && !self.qualified_case
+            && !self.active_pattern
     }
 
     /// Whether the name is a **dottable value** — a `let` value, an exception
@@ -1041,6 +1102,27 @@ pub(super) struct Resolver<'a> {
     /// Every declared project namespace path in the file (see
     /// [`ResolvedFile::namespace_paths`](super::model::ResolvedFile::namespace_paths)).
     pub(super) namespace_paths: Vec<Vec<String>>,
+    /// How many entries of [`Self::namespace_paths`] earlier top-level blocks
+    /// recorded: the namespaces FCS has in its environment at a use in the
+    /// current block, which adds a namespace only once the block declaring it
+    /// closes.
+    pub(super) block_namespace_start: usize,
+    /// The length of the current top-level block's header path (`namespace
+    /// A.B` or `module A.M`; zero for an anonymous module or `namespace
+    /// global`): the prefix of [`Self::container_path`] under which this
+    /// block's own declarations land in [`Self::container_decls`].
+    pub(super) block_container_len: usize,
+    /// An earlier `namespace global` block of this file held an `open`. FCS
+    /// carries what such an open brings into the blocks after it (probed: a
+    /// later block's `Alpha.Color.Red` binds the opened module's `Alpha`
+    /// over a same-file `namespace Alpha`), which the per-block open state
+    /// does not model.
+    pub(super) global_block_opened: bool,
+    /// Every nested `[<AutoOpen>]` module this file has declared so far, by
+    /// its path under the container chain — the anonymous root's included,
+    /// which [`Self::auto_open_module_paths`] leaves out because nothing
+    /// outside the file can reach it.
+    pub(super) lexical_auto_open_paths: Vec<Vec<String>>,
     /// Local names (`SynComponentInfo.longId`) of nested `module X = …` decls
     /// (parser 8.4), for shadowing **same-file** references written *relative* to
     /// the enclosing module (`Calc.Answer`). Sema does not yet model
@@ -1229,6 +1311,16 @@ pub(super) struct Resolver<'a> {
     /// earlier opens stay resolvable. Block-scoped (reset per top-level block,
     /// saved/restored across nested modules) like `imports`.
     pub(super) open_generation: usize,
+    /// The project half of this block's implicit open of its own enclosing
+    /// namespace ([`Resolver::open_own_enclosing_namespace`]): the namespace's
+    /// fragments from earlier files and earlier blocks of this file, as the
+    /// fold wrote them at the block's start. An explicit `open` of the same
+    /// namespace in the block writes them again at its own position
+    /// ([`Resolver::replay_own_namespace_fold`]): FCS's `open` re-adds the
+    /// fragments the environment has registered, and the current block's own
+    /// fragment is registered only once the block ends. Block-scoped: set at
+    /// each block's start.
+    pub(super) own_namespace_fold: RecordedFold,
     /// Project-global [`ItemId`]s of opened cross-file cases that must **not** be
     /// trusted in pattern position — exported cases of a *hidden* module (one whose
     /// `open` also brings unenumerable constructors, e.g. an active pattern, that

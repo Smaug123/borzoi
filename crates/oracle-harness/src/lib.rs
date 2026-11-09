@@ -22,12 +22,18 @@
 //!
 //! [`xml_pump`] is not about oracles either: it builds the deeply nested
 //! documents that hold every reader of untrusted XML to bounded recursion, for
-//! `borzoi-msbuild` and `borzoi-nuget` alike.
+//! `borzoi-msbuild` and `borzoi-nuget` alike. [`repetition_shapes`] is its
+//! counterpart for F# source: the tallest trees the parser returns, which the
+//! parser's own height check, `borzoi-sema`'s walks and the LSP's request loop
+//! are all held to. [`stack_probe`] runs a case that may overflow the stack in
+//! a child process, so an overflow names its case rather than aborting the
+//! test binary.
 //!
 //! Test-only: a `dev-dependency` of the harnesses — and a regular dependency of
 //! `borzoi-corpus-diff`, which is itself an unpublished test shell whose gate
 //! runs in its binary — never of shipping code.
 
+pub mod alloc_limit;
 pub mod corpus_key;
 pub mod fcs_position;
 pub mod manifest;
@@ -35,8 +41,16 @@ pub mod module_tree;
 pub mod nuget_oracle;
 pub mod panic_silence;
 pub mod par_map;
+pub mod repetition_shapes;
 pub mod restore_globals;
+pub mod stack_probe;
 pub mod xml_pump;
+
+// The library's own tests include `stack_probe`'s, whose memory-limit
+// self-test needs the counting allocator to be this binary's.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: alloc_limit::LimitedAlloc = alloc_limit::LimitedAlloc;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};

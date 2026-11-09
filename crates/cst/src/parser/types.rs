@@ -105,6 +105,7 @@ impl<'src> Parser<'src> {
             // the dotted-loop and `parse_atomic_type`'s LPAREN arm.
             if p.next_non_trivia_raw_at_pos()
                 .is_some_and(|t| matches!(t, Token::RArrow))
+                && p.next_tokens_unbroken(1)
             {
                 p.builder
                     .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::FUN_TYPE));
@@ -161,6 +162,7 @@ impl<'src> Parser<'src> {
             if !self
                 .next_non_trivia_raw_at_pos()
                 .is_some_and(|t| matches!(t, Token::Op("*" | "/")))
+                || !self.next_tokens_unbroken(1)
             {
                 return;
             }
@@ -184,7 +186,8 @@ impl<'src> Parser<'src> {
             Token::Op("*") => Some(SyntaxKind::STAR_TOK),
             Token::Op("/") => Some(SyntaxKind::SLASH_TOK),
             _ => None,
-        }) {
+        }) && self.next_tokens_unbroken(1)
+        {
             self.bump_into(sep_kind);
             separators += 1;
             // After the `*` / `/`, gate the next atomic on the raw stream
@@ -374,10 +377,12 @@ impl<'src> Parser<'src> {
                     self.nth_significant_raw_at_pos(1),
                     Some(Token::Ident(_) | Token::QuotedIdent(_))
                 ) && matches!(self.nth_significant_raw_at_pos(2), Some(Token::Colon))
+                    && self.next_tokens_unbroken(3)
             }
             // `ident :` — a named parameter.
             Some(Token::Ident(_) | Token::QuotedIdent(_)) => {
                 matches!(self.nth_significant_raw_at_pos(1), Some(Token::Colon))
+                    && self.next_tokens_unbroken(2)
             }
             _ => false,
         }
@@ -568,7 +573,7 @@ impl<'src> Parser<'src> {
     ///
     /// `cp` is the builder checkpoint taken *before* the type, so the shorthand's
     /// node can wrap what it parses.
-    fn parse_app_type_without_null_at(&mut self, cp: rowan::Checkpoint) -> bool {
+    fn parse_app_type_without_null_at(&mut self, cp: Checkpoint) -> bool {
         let Some(head) = self.peek_is_bare_subtype_shorthand() else {
             self.parse_app_type();
             return false;
@@ -756,8 +761,14 @@ impl<'src> Parser<'src> {
         }
 
         loop {
-            // Bail at a layout virtual: `Virtual::BlockSep` /
-            // `Virtual::BlockEnd` at the filtered cursor marks a
+            // Each postfix application or array suffix wraps the type so far in
+            // one more node without recursing, so the run is held to the tree
+            // bound here.
+            if self.depth_limit_latched() {
+                break;
+            }
+            // Bail at a layout virtual (`Virtual::BlockSep`,
+            // `Virtual::BlockEnd`, …): at the filtered cursor it marks a
             // structural boundary that the postfix-app / array-suffix
             // continuations must not cross. Without this gate, raw-stream
             // lookahead would skip over the virtual, see the next ident
@@ -768,15 +779,7 @@ impl<'src> Parser<'src> {
             // cross-line continuation `int\n   list` does *not* emit a
             // BlockSep here (the continuation is past the offside), so
             // legitimate multi-line postfix-apps still work.
-            if matches!(
-                self.peek(),
-                Some((
-                    Ok(FilteredToken::Virtual(
-                        Virtual::BlockSep | Virtual::BlockEnd
-                    )),
-                    _
-                )),
-            ) {
+            if self.parked_on_layout_virtual() {
                 break;
             }
             let next = self.next_non_trivia_raw_at_pos();
@@ -928,7 +931,7 @@ impl<'src> Parser<'src> {
     /// The facade [`IntersectionType::typar`](crate::syntax::IntersectionType)
     /// recovers it, so the parser stores the head as a plain first child either
     /// way.
-    fn parse_intersection_tail(&mut self, cp: rowan::Checkpoint) {
+    fn parse_intersection_tail(&mut self, cp: Checkpoint) {
         self.builder
             .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::INTERSECTION_TYPE));
         self.parse_intersection_constraint_run();
@@ -1675,6 +1678,7 @@ impl<'src> Parser<'src> {
                 self.next_non_trivia_raw_after(span.end),
                 Some(Token::LParen)
             )
+            && self.next_tokens_unbroken(2)
     }
 
     /// Anon-record type — FCS's
@@ -1995,7 +1999,7 @@ impl<'src> Parser<'src> {
     /// `appTypeConPower` — only the former admits a `typeArgsNoHpaDeprecated`
     /// wrap (`pars.fsy:6596`) — use this to suppress the type-arg block after
     /// a power.
-    pub(super) fn try_parse_measure_power_tail(&mut self, cp: rowan::Checkpoint) -> bool {
+    pub(super) fn try_parse_measure_power_tail(&mut self, cp: Checkpoint) -> bool {
         if !self
             .next_non_trivia_raw_at_pos()
             .is_some_and(|t| matches!(t, Token::Op("^" | "^-")))
@@ -2287,10 +2291,20 @@ impl<'src> Parser<'src> {
         // identifier as the typar name would drag the real `)` in as
         // `ERROR` and corrupt the surrounding parse. Mirrors the
         // raw-stream boundary checks in `parse_type` /
-        // `parse_atomic_type`'s LPAREN arm.
+        // `parse_atomic_type`'s LPAREN arm. The filtered peek must be the
+        // identifier too: a layout virtual between the sigil and it (`'⏎a`)
+        // separates them for the parser, and would otherwise be stamped as
+        // the name.
         if self
             .next_non_trivia_raw_at_pos()
             .is_some_and(|t| matches!(t, Token::Ident(_) | Token::QuotedIdent(_)))
+            && matches!(
+                self.peek(),
+                Some((
+                    Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
+                    _
+                ))
+            )
         {
             self.bump_into(SyntaxKind::IDENT_TOK);
         } else {

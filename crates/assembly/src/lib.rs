@@ -34,6 +34,7 @@ mod model;
 pub mod modifier_metamorphic;
 pub mod op_name;
 pub mod pdb;
+mod pickle_join;
 mod reader;
 pub mod shape;
 #[cfg(feature = "test-support")]
@@ -63,4 +64,5 @@ pub use model::{
     SplitParams, TypeForwarder, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCase,
     UnionCaseMaker, UnionCases, ValFacts, ValMeasures, Variance, Version,
 };
+pub use pickle_join::{JoinCensus, JoinVerdict};
 pub use view::{EcmaView, FSharpResource, ResourceKind};

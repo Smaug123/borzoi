@@ -1875,9 +1875,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj A
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs	compared records=41 definitions=5
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs handlers perturbed	selected=11
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs handlers plain	selected=3
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:10:17-23 "TimeNs"	assembly-deferral unbound-name qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:10:17-39 "isPositive"	assembly-deferral qualified-access alias_companion_module@explicit_open
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:10:24-28 "Span"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:10:17-23 "TimeNs"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:10:17-39 "isPositive"	assembly-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:10:24-28 "Span"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:10:40-50 "Interval"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:13:15-26 "Kind"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj AtIntervals.fs:13:17-21 "Main"	project-deferral qualified-access member_access_on_value
@@ -5443,7 +5443,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj N
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:94:37-51 "RecomputedAt"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:96:11-15 "Kind"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:97:11-15 "Kind"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:9:77-80 "Teq"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:9:77-80 "Teq"	assembly-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:9:77-95 "believeMe"	assembly-deferral unrecorded unexplained
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Node.fs:9:81-85 "Cong"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj NodeHelpers.fs	compared records=61 definitions=8
@@ -5918,7 +5918,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj R
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs	compared records=83 definitions=12
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs handlers perturbed	selected=11
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs handlers plain	selected=11
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs:15:23-45 "create" hover-type plain	assembly-value withheld-assembly-arg-groups at last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs:15:46-49 "len" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs:15:50-56 "reduce" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj ReduceBalanced.fs:17:12-17 "Debug"	project-deferral qualified-access qualifier
@@ -6125,7 +6124,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:23:49-56 "map"	assembly-deferral qualified-access project_path_shadow@explicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:23:57-63 "NodeId"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:27:30-37 "Id"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:28:32-43 "ForAnalyzer"	project-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:28:32-43 "ForAnalyzer"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:28:32-57 "toString"	project-deferral unrecorded unexplained
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:28:44-48 "Kind"	project-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:28:58-67 "Kind"	project-deferral qualified-access member_access_on_value
@@ -6135,7 +6134,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:34:19-30 "Cutoff"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:35:15-26 "ForAnalyzer"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:35:27-33 "Cutoff"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:36:47-58 "ForAnalyzer"	project-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:36:47-58 "ForAnalyzer"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:36:47-74 "toString"	project-deferral unrecorded unexplained
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:36:59-65 "Cutoff"	project-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Node.fs:37:38-54 "StabilizationNum"	project-deferral qualified-access qualifier
@@ -6180,7 +6179,7 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:105:29-33 "node" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:105:29-36 "Id"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:108:13-24 "DotUserInfo"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:109:27-38 "ForAnalyzer"	project-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:109:27-38 "ForAnalyzer"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:109:27-52 "toString"	project-deferral unrecorded unexplained
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:109:39-43 "Kind"	project-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Skeleton/Skeleton.fs:109:53-62 "Kind"	project-deferral qualified-access member_access_on_value
@@ -6547,7 +6546,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1002:17-31 "ChangedAt"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1002:35-53 "StabilizationNum"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1003:45-49 "Kind"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1004:17-29 "castFrom" hover-type plain	assembly-value withheld-assembly-arg-groups at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1007:7-13 "StructAttribute"	assembly-match attribute x2	shadowed-constructor x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1007:8-13 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1010:22-26 "Eval"	project-deferral unrecorded member_definition_name
@@ -6588,7 +6586,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1043:34-39 "Clock"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1043:34-43 "now" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1043:44-52 "Clock"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1045:36-48 "castFrom" hover-type plain	assembly-value withheld-assembly-arg-groups at middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1045:53-66 "BeforeOrAfter"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1046:11-15 "Kind"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1047:11-15 "Kind"	project-deferral qualified-access qualifier
@@ -7377,9 +7374,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1866:21-23 "At"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1867:21-25 "Main"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1868:21-26 "Alarm"	project-deferral unrecorded field_label
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1868:29-40 "TimingWheel"	assembly-deferral unbound-name qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1868:29-52 "null'"	assembly-deferral qualified-access alias_target_unchaseable@explicit_open
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1868:41-46 "Alarm"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1868:29-40 "TimingWheel"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1868:29-52 "null'"	assembly-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1868:41-46 "Alarm"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1869:21-26 "Clock"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1872:13-17 "Node"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1872:32-36 "Kind"	project-deferral qualified-access qualifier
@@ -7404,9 +7401,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1900:17-21 "Base"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1901:17-25 "Interval"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1902:17-22 "Alarm"	project-deferral unrecorded field_label
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1902:25-36 "TimingWheel"	assembly-deferral unbound-name qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1902:25-48 "null'"	assembly-deferral qualified-access alias_target_unchaseable@explicit_open
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1902:37-42 "Alarm"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1902:25-36 "TimingWheel"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1902:25-48 "null'"	assembly-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1902:37-42 "Alarm"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1903:17-22 "Clock"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1906:28-32 "Kind"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1906:9-13 "Node"	project-deferral qualified-access qualifier
@@ -7442,7 +7439,8 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1943:32-42 "AlarmValue"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1943:51-67 "AlarmValueAction"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1943:78-91 "SnapshotCrate"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1944:23-40 "Alarm"	assembly-deferral qualified-access assembly_type_member
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1944:23-34 "TimingWheel"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1944:23-40 "Alarm"	assembly-deferral unrecorded alias_target_unchaseable@explicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1946:13-15 "Ok"	assembly-deferral unbound-name signature_screened@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1948:63-75 "StepFunction"	project-deferral shadowable-type earlier_type_name_reused@pre_walk
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1948:76-78 "a"	project-deferral unrecorded type_parameter
@@ -7460,9 +7458,9 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1958:33-41 "Sequence"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1958:33-47 "empty" hover-type plain	earlier-file-value withheld-earlier-file-untyped-at-definition at last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1959:17-22 "Alarm"	project-deferral unrecorded field_label
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1959:25-36 "TimingWheel"	assembly-deferral unbound-name qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1959:25-48 "null'"	assembly-deferral qualified-access alias_target_unchaseable@explicit_open
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1959:37-42 "Alarm"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1959:25-36 "TimingWheel"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1959:25-48 "null'"	assembly-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1959:37-42 "Alarm"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:195:27-48 "InternalObserverCrate"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1960:17-27 "AlarmValue"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:1960:30-39 "Unchecked"	assembly-deferral unbound-name qualifier
@@ -7542,10 +7540,11 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2036:16-21 "Debug"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2042:30-39 "Unchecked"	assembly-deferral unbound-name qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2042:30-49 "defaultof"	assembly-deferral qualified-access unexplained
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2044:34-51 "Alarm"	assembly-deferral qualified-access assembly_type_member
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2045:30-41 "TimingWheel"	assembly-deferral unbound-name qualifier
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2045:30-53 "value"	assembly-deferral qualified-access alias_target_unchaseable@explicit_open
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2045:42-47 "Alarm"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2044:34-45 "TimingWheel"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2044:34-51 "Alarm"	assembly-deferral unrecorded alias_target_unchaseable@explicit_open
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2045:30-41 "TimingWheel"	assembly-deferral qualified-access qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2045:30-53 "value"	assembly-deferral unrecorded unexplained
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2045:42-47 "Alarm"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2045:66-71 "alarm" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2046:13-23 "alarmValue" hover-type plain	local withheld-in-file-value at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:2046:13-33 "NextFired"	project-deferral qualified-access member_access_on_value
@@ -7847,7 +7846,8 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:328:71-79 "FakeUnit"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:32:9-52 "NumNodesRecomputedDirectlyBecauseOneChild"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:334:47-53 "parent" hover-type plain	local withheld-in-file-parameter at first,middle,last
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:342:46-63 "Alarm"	assembly-deferral qualified-access assembly_type_member
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:342:46-57 "TimingWheel"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:342:46-63 "Alarm"	assembly-deferral unrecorded alias_target_unchaseable@explicit_open
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:343:28-45 "TimingWheel"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:344:32-49 "TimingWheel"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:35:9-53 "NumNodesRecomputedDirectlyBecauseMinHeight"	project-deferral qualified-access member_access_on_value
@@ -8241,9 +8241,6 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj S
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:877:57-66 "arrayFold" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:880:7-13 "StructAttribute"	assembly-match attribute x2	shadowed-constructor x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:880:8-13 "``.ctor``"	shadowed-constructor
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:883:19-22 "Teq" handlers plain definition first	declined expected served-assembly x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:883:19-22 "Teq" handlers plain definition last	declined expected served-assembly x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:883:19-22 "Teq" handlers plain definition middle	declined expected served-assembly x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:888:17-21 "Node"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:889:17-20 "Teq"	project-deferral unrecorded field_label
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj State.fs:889:23-26 "teq" hover-type plain	local withheld-in-file-parameter at first,middle,last
@@ -8565,9 +8562,11 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj T
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:508:28-40 "StepFunction"	project-deferral shadowable-type earlier_type_name_reused@pre_walk x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:509:52-68 "StabilizationNum"	project-deferral shadowable-type earlier_type_name_reused@pre_walk x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:511:34-40 "TimeNs"	assembly-deferral shadowable-type alias_target_unchaseable@explicit_open x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:512:25-42 "Alarm"	assembly-deferral qualified-access assembly_type_member x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:512:25-36 "TimingWheel"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:512:25-42 "Alarm"	assembly-deferral unrecorded alias_target_unchaseable@explicit_open x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:51:14-20 "TimeNs"	assembly-deferral shadowable-type alias_target_unchaseable@explicit_open x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:52:25-42 "Alarm"	assembly-deferral qualified-access assembly_type_member x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:52:25-36 "TimingWheel"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:52:25-42 "Alarm"	assembly-deferral unrecorded alias_target_unchaseable@explicit_open x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:541:29-45 "StabilizationNum"	project-deferral shadowable-type earlier_type_name_reused@pre_walk x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:551:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:551:4-25 "``.ctor``"	shadowed-constructor
@@ -8658,7 +8657,8 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj T
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:618:33-39 "TEval"	project-deferral unrecorded type_parameter
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:618:43-44 "e" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:618:43-49 "Eval"	project-deferral qualified-access member_access_on_value
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:61:25-42 "Alarm"	assembly-deferral qualified-access assembly_type_member x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:61:25-36 "TimingWheel"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:61:25-42 "Alarm"	assembly-deferral unrecorded alias_target_unchaseable@explicit_open x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:621:3-25 "RequireQualifiedAccessAttribute"	assembly-match attribute	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:621:4-25 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:623:38-40 "a"	project-deferral unrecorded type_parameter
@@ -8686,13 +8686,11 @@ Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj T
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:646:32-38 "Eval"	project-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:6:15-28 "WeakHashTable"	assembly-deferral unrecorded declaration_path
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:6:6-14 "WoofWare"	project-deferral unrecorded declaration_path
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:88:27-38 "TimingWheel" handlers plain definition first	declined expected served-assembly x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:88:27-38 "TimingWheel" handlers plain definition last	declined expected served-assembly x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:88:27-38 "TimingWheel" handlers plain definition middle	declined expected served-assembly x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:8:3-9 "StructAttribute"	assembly-match attribute x2	shadowed-constructor x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:8:4-9 "``.ctor``"	shadowed-constructor
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:90:23-29 "TimeNs"	assembly-deferral shadowable-type alias_target_unchaseable@explicit_open x2
-Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:96:27-44 "Alarm"	assembly-deferral qualified-access assembly_type_member x2
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:96:27-38 "TimingWheel"	assembly-deferral unrecorded qualifier
+Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj Types.fs:96:27-44 "Alarm"	assembly-deferral unrecorded alias_target_unchaseable@explicit_open x2
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs	compared records=321 definitions=49
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs handlers perturbed	selected=11
 Smaug123/WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj UnorderedArrayFold.fs handlers plain	selected=37
@@ -11933,9 +11931,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:50:39-41 "mr" hover-type plain	local withheld-in-file-parameter at first,middle,last
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:50:39-63 "DecodeMethodSignature"	assembly-deferral qualified-access member_access_on_value
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:50:65-73 "TypeDefn"	project-deferral qualified-access qualifier
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:106-116 "Choice2Of2" handlers plain definition first	declined expected served-assembly
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:106-116 "Choice2Of2" handlers plain definition last	declined expected served-assembly
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:106-116 "Choice2Of2" handlers plain definition middle	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:15-28 "SignatureKind"	assembly-deferral unrecorded qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:15-34 "Field"	assembly-deferral unrecorded case_pattern_head_occupied@explicit_open
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:51:38-61 "DecodeFieldSignature"	assembly-deferral qualified-access member_access_on_value
@@ -11954,9 +11949,6 @@ Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsp
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:62:40-56 "MethodReturnType"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:63:34-50 "MethodReturnType"	project-deferral qualified-access qualifier
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:63:59-66 "retType" hover-type plain	local withheld-in-file-pattern-local at first,middle,last
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:66:15-25 "Choice2Of2" handlers plain definition first	declined expected served-assembly
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:66:15-25 "Choice2Of2" handlers plain definition last	declined expected served-assembly
-Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:66:15-25 "Choice2Of2" handlers plain definition middle	declined expected served-assembly
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:69:13-17 "Name"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:70:13-23 "PrettyName"	project-deferral unrecorded field_label
 Smaug123/WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj MemberReference.fs:70:36-43 "Name"	assembly-deferral qualified-access member_access_on_value

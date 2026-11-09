@@ -127,10 +127,11 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
     in scope and a name both supply defers;
   - **the project's own half folds last** (Q14), pushed after the assembly
     halves at position 0, so a project union case out-ranks a colliding assembly
-    auto-open value. This is why the *explicit* path skips a literal self-open
-    of the current namespace: position 0 is FCS's real fold position for the
-    project half, and re-running it at a later `open`'s text position would
-    wrongly override a binding declared in between.
+    auto-open value. An explicit `open` of the current namespace replays what
+    this fold wrote, at the `open`'s position (`replay_own_namespace_fold`):
+    FCS re-adds the namespace's registered fragments there, which are every
+    earlier file's and earlier block's, and not the current block's, which is
+    registered when the block ends (#489, `reopened_namespace_grid`).
 
   Folding at position 0 means the fold runs *before* the block's walk, so it
   cannot see what the block declares. Two shadowings then become reachable: a
