@@ -50,10 +50,17 @@ pub const MAX_TYPE_NODES: usize = 1 << 12;
 /// so this is what bounds the stack they use on an inferred type
 /// (`tests/all/infer_type_budget.rs` walks one at this depth under the
 /// tallest expression, on half of [`WALK_STACK_BYTES`](crate::WALK_STACK_BYTES)).
-/// The deepest type inference walks in the pinned corpora is 20 levels deep
-/// (a long curried function in the F# compiler corpus; 10 in the
-/// whole-project corpus), under a thirteenth of this.
-pub const MAX_TYPE_DEPTH: usize = 256;
+///
+/// It is the tree's own height bound,
+/// [`MAX_TREE_HEIGHT`](borzoi_cst::parser::MAX_TREE_HEIGHT): a type built a
+/// level per level of the tree — an annotation, the chain of results a long
+/// curried application unifies its callee with — never passes it, so the
+/// budget bites only on types that outgrow the tree. The one construct that
+/// builds depth from the tree's width, a function's curried parameters, is
+/// checked where its type is built. The deepest type inference walks in the
+/// pinned corpora is 20 levels deep (a long curried function in the F#
+/// compiler corpus; 10 in the whole-project corpus).
+pub const MAX_TYPE_DEPTH: usize = borzoi_cst::parser::MAX_TREE_HEIGHT;
 
 /// Which of the type budget's bounds a file's inference reached:
 /// [`MAX_TYPE_NODES`] or [`MAX_TYPE_DEPTH`].
