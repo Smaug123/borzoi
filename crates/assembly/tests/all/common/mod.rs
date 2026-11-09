@@ -501,8 +501,8 @@ pub fn ensure_renamed_members_built() -> &'static Path {
 /// Build the KeyCollision F# fixture once and return the path to the produced
 /// `.dll`. Same build-once pattern as [`ensure_minilib_built`].
 ///
-/// KeyCollision holds the two shapes that collide on the pickle overlay's
-/// projected key `(strip_arity(clr_name), generic_parameters.len())`: a class
+/// KeyCollision holds the two shapes that collide on the projected key
+/// `(strip_arity(clr_name), generic_parameters.len())`: a class
 /// sharing a pickled union's key, and two unions sharing one key. Both are legal
 /// F# — `[<CompiledName>]` can fabricate a backtick-arity name, which is the only
 /// way to reach a collision, since F# forbids two types of one name and arity in
@@ -511,6 +511,32 @@ pub fn ensure_key_collision_built() -> &'static Path {
     static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
     BUILT
         .get_or_init(|| build_fixture("KeyCollision", "KeyCollision.dll"))
+        .1
+        .as_path()
+}
+
+/// Build the RowIdentity F# fixture once and return the path to the produced
+/// `.dll`. Same build-once pattern as [`ensure_minilib_built`].
+///
+/// RowIdentity puts pairs of rows at one stripped name every way a single fsc
+/// compilation can — a fabricated arity suffix, a squatter beside a dropped
+/// row, a type row beside a module row — for the pickle-to-row join
+/// (`projector_row_identity`).
+pub fn ensure_row_identity_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("RowIdentity", "RowIdentity.dll"))
+        .1
+        .as_path()
+}
+
+/// Build the RowIdentityDotted F# fixture once and return the path to the
+/// produced `.dll`: a dotted compiled name, whose row the IL writer puts in
+/// another namespace than the type's F# path (`projector_row_identity`).
+pub fn ensure_row_identity_dotted_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("RowIdentityDotted", "RowIdentityDotted.dll"))
         .1
         .as_path()
 }

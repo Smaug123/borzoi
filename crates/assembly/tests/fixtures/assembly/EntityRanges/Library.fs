@@ -52,9 +52,8 @@ exception MyErrorAliasR = MyErrorR
 // arity-suffix-free name `ArityTwin`. F# forbids two same-named types in one
 // scope, so the collision is manufactured with `[<CompiledName>]`: the
 // non-generic keeps its name, the generic is compiled as `ArityTwin`1`. Both
-// the collected pickle targets and the ECMA metadata rows then collapse onto
-// the single name `ArityTwin`, which the range overlay must decline (D5) —
-// neither twin carries a range.
+// rows' names strip to `ArityTwin`; their metadata names do not, and each twin
+// carries its own range.
 type ArityTwin = { AtField: int }
 
 [<CompiledName("ArityTwin`1")>]

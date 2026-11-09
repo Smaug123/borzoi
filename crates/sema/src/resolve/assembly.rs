@@ -156,7 +156,7 @@ impl<'a> Resolver<'a> {
         if !any_rooting {
             return AssemblyPath::NoMatch;
         }
-        if let Some(owner) = self.unopposed_owner(&owners) {
+        if let Some(owner) = self.unopposed_owner(&owners, base) {
             return AssemblyPath::Resolved {
                 payload: owner,
                 owns_path: true,
@@ -195,12 +195,27 @@ impl<'a> Resolver<'a> {
     /// binding the module's `let` over the type's `static member` (fsi).
     /// Anything else — two arities of one type family, two DLLs, two positions —
     /// is a choice we cannot make the way FCS makes it, so it defers.
-    fn unopposed_owner(&self, owners: &[PositionOwner]) -> Option<Vec<(TextRange, Resolution)>> {
+    ///
+    /// The tie-break holds only where the module roots at the path's **written
+    /// head** (`base`, the first source segment): FCS resolves that head in the
+    /// environment (`ResolveExprLongIdentPrim`, `moduleSearch` first). A head
+    /// the source reaches through a namespace qualifier it writes
+    /// (`N.Holder.Tail`) FCS resolves in the namespace
+    /// (`ResolveExprLongIdentInModuleOrNamespace`), which searches **types
+    /// first** — FSharp.Core's
+    /// `Microsoft.FSharp.Core.CompilerServices.ResumableCode.Combine` binds the
+    /// delegate type's inherited `Delegate.Combine`, not the module's `Combine`.
+    fn unopposed_owner(
+        &self,
+        owners: &[PositionOwner],
+        base: usize,
+    ) -> Option<Vec<(TextRange, Resolution)>> {
         let (first, rest) = owners.split_first()?;
         if rest.is_empty() {
             return Some(first.payload.clone());
         }
-        let companions = self.assemblies.is_authoritative_module(first.handle)
+        let companions = first.position == base
+            && self.assemblies.is_authoritative_module(first.handle)
             && rest.iter().all(|o| {
                 o.position == first.position
                     && self.assemblies.distinct_dlls(&[first.handle, o.handle]) == 1
@@ -267,10 +282,14 @@ impl<'a> Resolver<'a> {
                 // authoritative module ahead of same-DLL siblings, which is
                 // `WidgetC.Make`: a `ModuleSuffix` module beside an abbreviation
                 // of the same name, where FCS binds the module's `Make`
-                // (fcs-dump) and the alias must not veto it (codex review).
+                // (fcs-dump) and the alias must not veto it (codex review). Only
+                // at the written head, for the reason [`Self::unopposed_owner`]
+                // gives: through a written namespace qualifier FCS searches the
+                // types first.
                 verdict => {
                     let companion_tie = reading.owners.first().is_some_and(|owner| {
-                        self.assemblies.is_authoritative_module(owner.handle)
+                        k == base
+                            && self.assemblies.is_authoritative_module(owner.handle)
                             && self.assemblies.distinct_dlls(&[owner.handle, candidate]) == 1
                     });
                     if !companion_tie {

@@ -886,7 +886,7 @@ fn a_type_names_arity_suffix_is_kept_as_written() {
         .find(|e| e.name == "C")
         .expect("the type projects");
     assert_eq!(c.generic_parameters.len(), 1);
-    assert_eq!(c.metadata_arity_suffix, Some(2));
+    assert_eq!(c.metadata_arity_suffix(), Some(2));
     // A non-canonical suffix projects as the bare name, which another
     // `TypeDef` may spell (`Foo`0` is not `Foo`): no suffix is recorded, so
     // nothing binds to it by metadata name.
@@ -895,7 +895,7 @@ fn a_type_names_arity_suffix_is_kept_as_written() {
             .iter()
             .find(|e| e.name == name)
             .unwrap_or_else(|| panic!("{name} projects"));
-        assert_eq!(e.metadata_arity_suffix, None, "{name}");
+        assert_eq!(e.metadata_arity_suffix(), None, "{name}");
     }
 }
 

@@ -259,7 +259,7 @@ fn bind_segment(
 ) -> Result<Option<EntityHandle>, IlTypeDefinition> {
     let mut found = None;
     for h in named {
-        match env.entity(h).metadata_arity_suffix {
+        match env.entity(h).metadata_arity_suffix() {
             None => return Err(IlTypeDefinition::Ambiguous),
             Some(n) if n == arity => {
                 if found.replace(h).is_some() {

@@ -530,6 +530,200 @@ fn report(results: &[(PathBuf, Outcome)], projected: usize) {
     }
 }
 
+/// How the host pickle of every F# assembly under `BORZOI_DLL_SWEEP_ROOT` joins
+/// to its `TypeDef` rows (`borzoi_assembly::JoinVerdict`), next to how many of
+/// its projected rows share the projected key `(namespace, stripped type chain,
+/// generic arity)` the overlays used to match by.
+///
+/// A row-bearing entity that is not joined makes its image's pickle
+/// non-authoritative, so every such image costs the projection its F#-specific
+/// readings; the census names each one, and **fails** on any, since fsc writes
+/// one row per such entity and refuses two rows of one full name — an unjoined
+/// entity in real output means the join's model of fsc is wrong. It fails too
+/// on an F# assembly whose census or projection errored or panicked, keeping
+/// whatever verdicts it did read. Prints usage and returns green when the
+/// variable is unset.
+#[test]
+#[ignore = "needs a populated local package cache; run explicitly"]
+fn every_fsharp_assemblys_pickle_joins_to_its_rows() {
+    use borzoi_assembly::{Entity, JoinVerdict};
+
+    let Some(roots) = std::env::var_os("BORZOI_DLL_SWEEP_ROOT") else {
+        eprintln!("set BORZOI_DLL_SWEEP_ROOT to a package-cache root to run this census");
+        return;
+    };
+    let mut found = Found::default();
+    let mut visited = BTreeSet::new();
+    for root in std::env::split_paths(&roots).filter(|p| p.as_os_str() != "") {
+        collect_assemblies(&root, &mut found, &mut visited);
+    }
+    assert!(
+        found.unexamined.is_empty(),
+        "{} path(s) under {roots:?} could not be examined, so the census cannot claim anything \
+         about the assemblies there:\n{}",
+        found.unexamined.len(),
+        found
+            .unexamined
+            .iter()
+            .map(|(p, e)| format!("  {}: {e}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let files: Vec<PathBuf> = found.assemblies.into_values().collect();
+
+    /// Rows sharing the projected key with another row of the same image.
+    fn key_collisions(entities: &[Entity]) -> usize {
+        fn walk(
+            entities: &[Entity],
+            namespace: &[String],
+            chain: &mut Vec<String>,
+            keys: &mut BTreeMap<(Vec<String>, Vec<String>, usize), usize>,
+        ) {
+            for e in entities {
+                let ns = if chain.is_empty() {
+                    e.namespace.clone()
+                } else {
+                    namespace.to_vec()
+                };
+                chain.push(e.name.clone());
+                *keys
+                    .entry((ns.clone(), chain.clone(), e.generic_parameters.len()))
+                    .or_default() += 1;
+                walk(&e.nested_types, &ns, chain, keys);
+                chain.pop();
+            }
+        }
+        let mut keys = BTreeMap::new();
+        walk(entities, &[], &mut Vec::new(), &mut keys);
+        keys.values().filter(|&&n| n > 1).sum()
+    }
+
+    /// What one assembly told the census. An assembly the reader cannot parse
+    /// at all is the projection-skip gate's business, and one with no host
+    /// pickle has nothing to join; everything else is either a full reading or
+    /// a failure the census reports, so no image's verdicts are lost to a later
+    /// step failing.
+    enum Probe {
+        NotFSharp,
+        Read {
+            verdicts: BTreeMap<JoinVerdict, usize>,
+            /// `Err` when the projection itself failed, with the reason.
+            projected: Result<(usize, usize), String>,
+        },
+        Failed(String),
+    }
+    fn probe(bytes: &[u8]) -> Probe {
+        let Ok(asm) = Ecma335Assembly::parse(bytes) else {
+            return Probe::NotFSharp;
+        };
+        match asm.pickle_join_census() {
+            Ok(None) => Probe::NotFSharp,
+            Err(e) => Probe::Failed(format!("join census: {e}")),
+            Ok(Some(census)) => Probe::Read {
+                verdicts: census.verdicts,
+                projected: asm
+                    .enumerate_type_defs_with_skips()
+                    .map(|(entities, skips)| (key_collisions(&entities), skips.dropped_types.len()))
+                    .map_err(|e| e.to_string()),
+            },
+        }
+    }
+
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let chunks: Vec<&[PathBuf]> = files.chunks(files.len().div_ceil(threads).max(1)).collect();
+    let probes: Vec<(PathBuf, Probe)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|path| {
+                            let probed = match std::fs::read(path) {
+                                Err(e) => Probe::Failed(format!("read: {e}")),
+                                Ok(bytes) => catch_unwind_silent(|| probe(&bytes))
+                                    .unwrap_or_else(|_| Probe::Failed("panicked".to_string())),
+                            };
+                            (path.clone(), probed)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+            .collect()
+    });
+
+    let mut failures: Vec<(&Path, String)> = Vec::new();
+    let mut rows: Vec<(PathBuf, BTreeMap<JoinVerdict, usize>, usize, usize)> = Vec::new();
+    for (path, probed) in &probes {
+        match probed {
+            Probe::NotFSharp => {}
+            Probe::Failed(why) => failures.push((path.as_path(), why.clone())),
+            Probe::Read {
+                verdicts,
+                projected,
+            } => {
+                let (collisions, drops) = match projected {
+                    Ok(counts) => *counts,
+                    Err(why) => {
+                        failures.push((path.as_path(), format!("projection: {why}")));
+                        (0, 0)
+                    }
+                };
+                rows.push((path.clone(), verdicts.clone(), collisions, drops));
+            }
+        }
+    }
+
+    let mut totals: BTreeMap<JoinVerdict, usize> = BTreeMap::new();
+    let mut unjoined: Vec<(&Path, Vec<(JoinVerdict, usize)>)> = Vec::new();
+    let (mut colliding_rows, mut colliding_images, mut dropped) = (0, 0, 0);
+    for (path, verdicts, collisions, drops) in &rows {
+        for (v, n) in verdicts {
+            *totals.entry(*v).or_default() += n;
+        }
+        let bad: Vec<_> = verdicts
+            .iter()
+            .filter(|(v, _)| !matches!(v, JoinVerdict::Joined | JoinVerdict::NoOwnTypeDef))
+            .map(|(v, n)| (*v, *n))
+            .collect();
+        if !bad.is_empty() {
+            unjoined.push((path.as_path(), bad));
+        }
+        colliding_rows += collisions;
+        colliding_images += usize::from(*collisions > 0);
+        dropped += drops;
+    }
+    eprintln!(
+        "[join-census] {} F# assemblies with a host pickle | verdicts {totals:?}",
+        rows.len()
+    );
+    eprintln!(
+        "[join-census] rows sharing a projected key: {colliding_rows} in {colliding_images} \
+         assemblies | dropped rows: {dropped}"
+    );
+    for (path, bad) in &unjoined {
+        eprintln!("[join-census] unjoined {bad:?} in {}", path.display());
+    }
+    for (path, why) in &failures {
+        eprintln!("[join-census] failed: {why} in {}", path.display());
+    }
+    assert!(
+        !rows.is_empty(),
+        "no F# assembly with a host pickle under {roots:?}: a census of nothing claims nothing"
+    );
+    assert!(
+        unjoined.is_empty() && failures.is_empty(),
+        "{} F# assemblies have pickled entities the join cannot attribute to a row, and {} \
+         could not be read through",
+        unjoined.len(),
+        failures.len()
+    );
+}
+
 /// The gate's own moving parts, pinned hermetically: a sweep that can only run
 /// against a package cache is a sweep whose *failure* path never executes.
 #[test]

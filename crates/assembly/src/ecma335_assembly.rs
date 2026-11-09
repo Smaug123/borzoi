@@ -22,6 +22,7 @@ use crate::model::{
     SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCaseMaker,
     UnionCases, ValFacts, Variance, Version,
 };
+use crate::pickle_join::{PickleJoin, RowPath};
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
     AssemblyRefId, CallConv, Constant, CustomMod, DeclSemantics, DecodedAttribute,
@@ -303,18 +304,33 @@ impl Ecma335Assembly {
                 )
             });
 
+        // Which row each pickled entity compiled to, certified against every
+        // `TypeDef` row of the image. Every overlay below reaches a row through
+        // this and nothing else.
+        type Joined = Result<(PickledCcu, PickleJoin), ImportError>;
+        let decoded: Option<(String, Joined)> = match decoded {
+            Some((name, Ok(ccu))) => {
+                let join = PickleJoin::certify(&ccu, &self.type_def_row_paths())?;
+                Some((name, Ok((ccu, join))))
+            }
+            Some((name, Err(error))) => Some((name, Err(error))),
+            None => None,
+        };
+
         // The host pickle is authoritative for source-name and F#-native
-        // extension overlays only when it decoded *and* it describes the whole
-        // image — a single-CCU assembly. When it did not decode, or the image
-        // is an `fsc --standalone` build that also embeds *foreign* dependency
-        // CCU pickles (copied TypeDefs the host pickle does not describe),
-        // projection keeps the IL-name heuristic for the whole image — its
-        // behaviour there unchanged from before this fix. The decode failure
-        // is recorded below as a skipped F# overlay instead of silently
-        // disappearing. When authoritative, the per-module source-name /
-        // extension overlay sets the source name and extension flag instead,
-        // so projection suppresses the heuristic.
-        let authoritative = matches!(&decoded, Some((_, Ok(_))))
+        // extension overlays only when it decoded, it describes the whole
+        // image — a single-CCU assembly — and every row it describes is one the
+        // join attributes to it ([`PickleJoin::is_total`]). When it did not
+        // decode, the image is an `fsc --standalone` build that also embeds
+        // *foreign* dependency CCU pickles (copied TypeDefs the host pickle
+        // does not describe), or some described row is one the overlays cannot
+        // reach, projection keeps the IL-name heuristic for the whole image and
+        // the completeness flags below report what the pickle cannot vouch for.
+        // The decode failure is recorded below as a skipped F# overlay instead
+        // of silently disappearing. When authoritative, the per-module
+        // source-name / extension overlay sets the source name and extension
+        // flag instead, so projection suppresses the heuristic.
+        let authoritative = matches!(&decoded, Some((_, Ok((_, join)))) if join.is_total())
             && !foreign_signature_data_present(&resources, &self.identity.name);
 
         let mut out = Vec::new();
@@ -443,7 +459,7 @@ impl Ecma335Assembly {
         let mut records_settled = false;
         if let Some((resource_name, decoded)) = decoded {
             match decoded {
-                Ok(ccu) => {
+                Ok((ccu, join)) => {
                     // F# source-name overlay and the pickle-driven module
                     // member list: set each entity's `source_name` from the
                     // host pickle, then rebuild every module's member list
@@ -453,10 +469,11 @@ impl Ecma335Assembly {
                     // projection skipped on the authoritative path. These
                     // borrow the CCU, so they run before the measure overlay.
                     if authoritative {
-                        crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu, &join)?;
                         crate::fsharp_pickle_merge::apply_module_member_projection(
                             &mut out,
                             &ccu,
+                            &join,
                             &self.physical_methods(),
                         )?;
                     }
@@ -464,7 +481,7 @@ impl Ecma335Assembly {
                     // `TyparKind::Measure` markers to upgrade matching
                     // entities from `Class` to `Measure`. A decoded pickle
                     // that disagrees with the ECMA tree remains fatal.
-                    crate::fsharp_pickle_merge::apply_measure_overlay(&mut out, &ccu)?;
+                    crate::fsharp_pickle_merge::apply_measure_overlay(&mut out, &ccu, &join)?;
                     // Declaration-order overlay: metadata row order is not
                     // source order (nested modules come out reversed), but
                     // FCS's later-wins rules — most visibly the recursive
@@ -474,7 +491,7 @@ impl Ecma335Assembly {
                     // absent from the host pickle and must keep their
                     // metadata order.
                     if authoritative {
-                        crate::fsharp_pickle_merge::apply_declaration_order(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_declaration_order(&mut out, &ccu, &join)?;
                     }
                     // Abbreviation shadow markers: synthesise a name-only
                     // entity for each public metadata-invisible type
@@ -485,6 +502,7 @@ impl Ecma335Assembly {
                     crate::fsharp_pickle_merge::apply_abbreviation_markers(
                         &mut out,
                         &ccu,
+                        &join,
                         &self.identity,
                     )?;
                     // F#-native instance extension-member name index (OV-0.5):
@@ -494,7 +512,9 @@ impl Ecma335Assembly {
                     // abbreviation markers, so it runs even on the
                     // non-authoritative path; its cross-assembly completeness is
                     // bounded by `fsharp_abbreviations_unknowable` (set above).
-                    crate::fsharp_pickle_merge::apply_extension_member_index(&mut out, &ccu)?;
+                    crate::fsharp_pickle_merge::apply_extension_member_index(
+                        &mut out, &ccu, &join,
+                    )?;
                     // Union case names (module-open plan, Slice B): each
                     // union's case names from the pickle — the ECMA
                     // projection cannot see them, and the module-open fold
@@ -503,33 +523,28 @@ impl Ecma335Assembly {
                     // images still get their host unions' cases; foreign-CCU
                     // unions stay empty (= unknowable, bounded by
                     // `fsharp_abbreviations_unknowable`).
-                    crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
+                    crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu, &join)?;
                     if authoritative {
                         // Record and exception member properties, vouched for
-                        // by the pickle's published member list. Authoritative-
-                        // only: the row is located by a reconstructed name key.
-                        crate::fsharp_pickle_merge::settle_record_properties(&mut out, Some(&ccu))?;
+                        // by the pickle's published member list.
+                        crate::fsharp_pickle_merge::settle_record_properties(
+                            &mut out,
+                            Some((&ccu, &join)),
+                        )?;
                         records_settled = true;
                         // The doc-comment keys fsc pickled for each type's
                         // members (module members get theirs from the member
-                        // list above). Authoritative-only, like the other
-                        // overlays that locate a row by a reconstructed name key.
-                        // After the record settle, so only the properties that
-                        // survive it are stamped.
+                        // list above). After the record settle, so only the
+                        // properties that survive it are stamped.
                         crate::fsharp_pickle_merge::apply_type_member_overlays(
                             &mut out,
                             &ccu,
+                            &join,
                             &self.physical_methods(),
                         )?;
                         // Whether a unit of measure was erased from any F#
-                        // type's member signatures. Authoritative-only for the
-                        // reason the doc keys are: it locates a row by a
-                        // reconstructed name key.
-                        crate::fsharp_pickle_merge::apply_member_measures(
-                            &mut out,
-                            &ccu,
-                            &self.physical_methods(),
-                        )?;
+                        // type's member signatures.
+                        crate::fsharp_pickle_merge::apply_member_measures(&mut out, &ccu, &join)?;
                         // F#-only typar constraints (`when 'T : comparison` and
                         // friends), which have no IL encoding at all.
                         //
@@ -538,16 +553,11 @@ impl Ecma335Assembly {
                         // creates it.
                         //
                         // Authoritative-only, like the source-name and
-                        // declaration-order overlays and for the same reason:
-                        // this one locates a row by a reconstructed name key,
-                        // and a non-authoritative image holds copied foreign
-                        // TypeDefs the host pickle never describes — a container
-                        // or a row of theirs can sit at a host entity's key and
-                        // take its reading. Every row was blanked to
+                        // declaration-order overlays. Every row was blanked to
                         // `Unknowable` before this, so declining a
                         // `--standalone` image costs coverage, never
                         // correctness.
-                        crate::fsharp_pickle_merge::apply_typar_constraints(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_typar_constraints(&mut out, &ccu, &join)?;
                     }
                 }
                 Err(error) => {
@@ -577,6 +587,60 @@ impl Ecma335Assembly {
         ))
     }
 
+    /// The [`RowPath`] of every `TypeDef` row of the image, dropped and skipped
+    /// rows included, for [`PickleJoin::certify`].
+    ///
+    /// A row whose enclosing chain does not reach a top-level row within
+    /// [`MAX_NESTING_DEPTH`] links — a nesting cycle, which no projected row is
+    /// part of, since projection descends from the top level — has no identity
+    /// and is left out: it is neither a row a pickled path can name nor one the
+    /// projected tree holds.
+    fn type_def_row_paths(&self) -> Vec<RowPath> {
+        let defs = &self.image.type_defs;
+        let mut out = Vec::with_capacity(defs.len());
+        'rows: for td in defs {
+            // The chain from this row out to its top-level row, innermost first.
+            let mut chain = vec![td];
+            let mut current = td;
+            while let Some(TypeDefId(enclosing)) = current.enclosing {
+                let Some(outer) = defs.get(enclosing as usize) else {
+                    continue 'rows;
+                };
+                if chain.len() > MAX_NESTING_DEPTH {
+                    continue 'rows;
+                }
+                chain.push(outer);
+                current = outer;
+            }
+            let mut rows = chain.iter().rev();
+            let top = rows.next().expect("the chain holds the row itself");
+            let mut path = RowPath::top_level(&top.name.namespace, &top.name.name);
+            for nested in rows {
+                path = path.nested(&nested.name.namespace, &nested.name.name);
+            }
+            out.push(path);
+        }
+        out
+    }
+
+    /// How the host pickle's entities join to this image's `TypeDef` rows (the
+    /// `pickle_join` module): `None` when the image has no decodable host
+    /// pickle. Test-support only — the census the projection-skip sweep reports.
+    #[cfg(feature = "test-support")]
+    pub fn pickle_join_census(&self) -> Result<Option<crate::JoinCensus>, ImportError> {
+        let resources = self.fsharp_resources()?;
+        let Some(sig) = primary_signature_resource_for_host(&resources, &self.identity.name) else {
+            return Ok(None);
+        };
+        let stream_b = b_stream_signature_resource_for_host(&resources, &self.identity.name);
+        let Ok(ccu) = crate::fsharp_pickle::unpickle_signature(&sig.payload, stream_b) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            PickleJoin::certify(&ccu, &self.type_def_row_paths())?.census(),
+        ))
+    }
+
     /// Every `MethodDef`'s IL slot, by token — the physical census the doc-key
     /// overlays count, which sees the methods the member projection refuses or
     /// elides.
@@ -596,7 +660,6 @@ impl Ecma335Assembly {
                 out.insert(
                     m.token,
                     crate::fsharp_pickle_merge::PhysicalMethod {
-                        declaring_type: td.name.name.clone(),
                         name: m.name.clone(),
                         params: m.signature.as_ref().ok().map(|s| s.parameters.len()),
                         is_static: m.is_static,
@@ -880,7 +943,7 @@ impl Ecma335Assembly {
                 "Microsoft.FSharp.Core",
                 "AutoOpenAttribute",
             )?,
-            metadata_arity_suffix: metadata_arity_suffix(&td.name.name),
+            metadata_name: Some(td.name.name.clone()),
             is_require_qualified_access: self.has_attribute(
                 &td.attributes,
                 "Microsoft.FSharp.Core",
@@ -4738,8 +4801,8 @@ fn canonical_suffix(name: &str) -> Option<(usize, usize)> {
 /// [`Entity::metadata_arity_suffix`] of a `TypeDef` named `name`: its
 /// canonical suffix, or 0 for a name with no suffix. A name [`strip_arity`]
 /// strips of a non-canonical suffix (`Foo`0`, `Foo`01`) projects as the bare
-/// name, which another `TypeDef` may genuinely spell, so it records none.
-fn metadata_arity_suffix(name: &str) -> Option<usize> {
+/// name, which another `TypeDef` may genuinely spell, so it has none.
+pub(crate) fn metadata_arity_suffix(name: &str) -> Option<usize> {
     match canonical_suffix(name) {
         Some((_, n)) => Some(n),
         None if strip_arity(name).len() == name.len() => Some(0),
