@@ -1918,6 +1918,31 @@ pub fn ensure_module_value_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **qualified case** fixture (`tests/fixtures/qualified_case_env`,
+/// generated from the qualified case precedence grid's setups) once per test
+/// binary and return its `.dll` path.
+pub fn ensure_qualified_case_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/qualified_case_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(
+                project.join("Generated.fs"),
+                crate::qualified_case_precedence_grid::fixture_source(),
+            )
+            .expect("write qualified-case Generated.fs");
+            dotnet_build(&project, "dotnet build qualified-case fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaQualifiedCaseFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the module-value fixture's **twin** (`tests/fixtures/module_value_twin_env`,
 /// `SemaModuleValueTwin.dll`), which declares a type of the same name as one
 /// the fixture declares, once per test binary and return its `.dll` path.

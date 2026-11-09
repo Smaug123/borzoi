@@ -30,7 +30,7 @@ use super::state::ActivePatternShape;
 /// Keeping the whole history (rather than a latest-wins id) is what lets a
 /// query pick the latest export a reference site can *access*: a public export
 /// shadowed at the same path by a later inaccessible `private` redeclaration is
-/// still present as an earlier record, so [`ProjectItems::latest_accessible_value`]
+/// still present as an earlier record, so [`ProjectItems::qualified_read`]
 /// finds it. `access_root_len` / `is_case` carry the two facts the accessibility
 /// and namespace predicates need without a second lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub(super) struct ExportRecord {
     /// so it inherits the constructor namespace's Compile-order provenance and
     /// accessibility recovery (a plain union case does the same), but a bare use in
     /// *expression* position is FS0039, so every value-namespace query excludes it
-    /// ([`ProjectItems::latest_accessible_value`] et al.). `false` for a value or a
+    /// ([`ProjectItems::qualified_read`] et al.). `false` for a value or a
     /// value-live union/exception case.
     pattern_only: bool,
     /// The export's [`fold_rank`].
@@ -86,6 +86,88 @@ pub(super) fn fold_rank(case: Option<CaseKind>) -> u8 {
 /// The [`fold_rank`] of an active-pattern case: a value, whose result the
 /// pattern table holds.
 const ACTIVE_PATTERN_RANK: u8 = 2;
+
+/// A union case a container-qualified `P.C` may read
+/// ([`ProjectItems::union_case_order`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct UnionCaseEntry {
+    /// The case's handle when the walk gives it a value path, and so commits
+    /// it as `P.C`; `None` for a case exported qualified-only, or one the walk
+    /// does not intern (`type T = X`, [`ExportDeclKind::OpaqueCase`]).
+    pub(super) plain: Option<ItemId>,
+    /// The case's accessibility ([`ExportedItem::access_root_len`]).
+    pub(super) access_root_len: Option<usize>,
+}
+
+/// A [`UnionCaseEntry`] with the Compile-order file that declares it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct UnionCaseRecord {
+    pub(super) file: usize,
+    pub(super) entry: UnionCaseEntry,
+}
+
+/// What a container-qualified `P.C` in an expression reads among the members
+/// of `P` named `C` ([`ProjectItems::qualified_read`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QualifiedRead {
+    /// This member, certainly.
+    Commit(ItemId),
+    /// A member is there, but which one FCS reads (or whether it reads one
+    /// cleanly) is not decided: nothing else may be committed for the path.
+    Decline,
+    /// No member of that name is there.
+    Miss,
+}
+
+/// FCS's reading of a container-qualified `P.C` in an expression within one
+/// fragment of `P` (`ResolveExprLongIdentInModuleOrNamespace`): an accessible
+/// value of the name, else an accessible exception, else the case of the
+/// **first** union declaring it.
+///
+/// `exports` are the fragment's value-namespace exports at the path —
+/// `(handle, access_root_len, fold_rank)`, pattern-only ones excluded —,
+/// `first_union` the first union case declared there in source order, and
+/// `unread` whether the fragment also declares a member there the walk does
+/// not model (an `extern`, a value FCS reads first): then nothing is certain.
+///
+/// The first union is found without regard to accessibility
+/// (`TryFindTypeWithUnionCase`), so an inaccessible one hides every later
+/// union; FCS then reports it, erroring. A qualified-only first union is read
+/// only after a type or module of the name, and a possible one may not be a
+/// union at all. Each of those declines.
+pub(super) fn read_fragment(
+    exports: &[(ItemId, Option<usize>, u8)],
+    first_union: Option<UnionCaseEntry>,
+    unread: bool,
+    path: &[String],
+    site: &[String],
+) -> QualifiedRead {
+    if unread {
+        return QualifiedRead::Decline;
+    }
+    let accessible = |access: Option<usize>| accessible_from(access, path, site);
+    let latest_of_rank = |rank: u8| {
+        exports
+            .iter()
+            .rev()
+            .find(|(_, access, r)| *r == rank && accessible(*access))
+            .map(|(id, _, _)| *id)
+    };
+    if let Some(id) = latest_of_rank(fold_rank(None)) {
+        return QualifiedRead::Commit(id);
+    }
+    if let Some(id) = latest_of_rank(fold_rank(Some(CaseKind::Exception))) {
+        return QualifiedRead::Commit(id);
+    }
+    match first_union {
+        Some(UnionCaseEntry {
+            plain: Some(id),
+            access_root_len,
+        }) if accessible(access_root_len) => QualifiedRead::Commit(id),
+        Some(_) => QualifiedRead::Decline,
+        None => QualifiedRead::Miss,
+    }
+}
 
 /// One module root a signature file constrains: the module's qualified path
 /// and whether the *signature* marks it `[<AutoOpen>]` (conclusion 6 of the
@@ -323,7 +405,7 @@ pub struct ProjectItems {
     /// the old latest-wins `by_qualified_path` (value namespace) and `constructors`
     /// (case namespace) maps *and* the `private_value_ids` / `public_value_paths`
     /// collapse-defer stopgaps. A single per-path history, queried by
-    /// [`Self::latest_accessible_value`] and, for an `open`, by
+    /// [`Self::qualified_read`] and, for an `open`, by
     /// [`Self::opened_member`], subsumes all four: because no export is lost to a
     /// same-path shadow, a public export sitting under a later *inaccessible*
     /// `private` redeclaration is still
@@ -336,9 +418,20 @@ pub struct ProjectItems {
     /// union cases with or without `[<RequireQualifiedAccess>]`, exception
     /// constructors, active-pattern cases, possible cases and `extern`s,
     /// accessible or not. Unlike [`Self::value_exports`] it is complete, so
-    /// one entry proves the container declares the name once
-    /// ([`Resolver::member_declarations`](super::state::Resolver::member_declarations)).
+    /// its absence proves no earlier file declares a member at the path
+    /// ([`Self::declares_member_at`]).
     pub(super) member_decl_files: HashMap<Vec<String>, Vec<usize>>,
+    /// Member path → the Compile-order file of each earlier-file member
+    /// declaration there that a qualified read does not model: an `extern`,
+    /// a value FCS reads first that the walk interns no identity for
+    /// ([`Self::qualified_read`] declines its fragment).
+    pub(super) unread_member_files: HashMap<Vec<String>, Vec<usize>>,
+    /// Container-qualified path (container + case name) → every union case an
+    /// earlier file declares there, qualified-only and possible ones included,
+    /// in Compile order and, within a file, declaration order: the order in
+    /// which a container-qualified `P.C` finds the union to read
+    /// ([`Self::qualified_read`]).
+    pub(super) union_case_order: HashMap<Vec<String>, Vec<UnionCaseRecord>>,
     /// Declared project *module header* paths (`["Demo"]`, `["Demo", "Calc"]`).
     ///
     /// A project module header and a same-named referenced-assembly *namespace*
@@ -653,19 +746,49 @@ impl ProjectItems {
         self.item_file_bases.len()
     }
 
-    /// Resolve a fully-qualified export path to the handle a reference at `site`
-    /// binds, if an earlier file exported one accessible from there. `path` is the
-    /// `idText`-normalised segment list of a dotted reference (`["Shared", "foo"]`).
+    /// What a fully-qualified expression path reads among earlier files'
+    /// exports, from a reference at `site`. `path` is the `idText`-normalised
+    /// segment list of a dotted reference (`["Shared", "foo"]`).
     ///
-    /// The **latest accessible** binding in the path's export history wins: FCS
-    /// resolves `M.x` to the newest `x`, but skips a `private` redeclaration
-    /// inaccessible from `site` back to an earlier accessible one (fcs-dump: a public
-    /// `let x` shadowed by a later `let private x` still binds the public value from
-    /// outside — FS1094 only when *no* accessible binding remains). So this is
-    /// [`Self::latest_accessible_value`] — the collapse model's recovery, which the
-    /// complete per-path history makes possible.
-    pub(super) fn lookup_qualified_path(&self, path: &[String], site: &[String]) -> Option<ItemId> {
-        self.latest_accessible_value(path, site)
+    /// Each Compile-order file holding a member at `path` is one fragment of
+    /// its container, and FCS asks the fragments newest file first (a
+    /// namespace's per-file roots; a module has one), taking the first that
+    /// reads anything ([`read_fragment`]): its latest accessible value (a
+    /// public `let x` under a later `let private x` still binds from outside —
+    /// FS1094 only when *no* accessible binding remains), else its exception,
+    /// else the case of its first union declaring the name.
+    pub(super) fn qualified_read(&self, path: &[String], site: &[String]) -> QualifiedRead {
+        let history = self.value_exports.get(path).map_or(&[][..], Vec::as_slice);
+        let unions = self
+            .union_case_order
+            .get(path)
+            .map_or(&[][..], Vec::as_slice);
+        let unread = self
+            .unread_member_files
+            .get(path)
+            .map_or(&[][..], Vec::as_slice);
+        let mut files: Vec<usize> = history
+            .iter()
+            .filter(|r| !r.pattern_only)
+            .map(|r| self.file_of(r.id))
+            .chain(unions.iter().map(|u| u.file))
+            .chain(unread.iter().copied())
+            .collect();
+        files.sort_unstable();
+        files.dedup();
+        for &file in files.iter().rev() {
+            let exports: Vec<(ItemId, Option<usize>, u8)> = history
+                .iter()
+                .filter(|r| !r.pattern_only && self.file_of(r.id) == file)
+                .map(|r| (r.id, r.access_root_len, r.rank))
+                .collect();
+            let first_union = unions.iter().find(|u| u.file == file).map(|u| u.entry);
+            match read_fragment(&exports, first_union, unread.contains(&file), path, site) {
+                QualifiedRead::Miss => {}
+                read => return read,
+            }
+        }
+        QualifiedRead::Miss
     }
 
     /// The handle of the union/enum **case** at type-qualified `path` (`["Lib",
@@ -806,21 +929,6 @@ impl ProjectItems {
         self.member_decl_files.contains_key(path) || self.value_exports.contains_key(path)
     }
 
-    /// Every earlier-file **ordinary value** (not a case, not an
-    /// active-pattern case) exported at exactly `path`, in Compile order, with
-    /// its accessibility root (see [`ExportRecord::access_root_len`]).
-    pub(super) fn ordinary_values_at(
-        &self,
-        path: &[String],
-    ) -> impl Iterator<Item = (ItemId, Option<usize>)> + '_ {
-        self.value_exports
-            .get(path)
-            .into_iter()
-            .flatten()
-            .filter(|r| !r.is_case && !r.pattern_only)
-            .map(|r| (r.id, r.access_root_len))
-    }
-
     /// Whether `names` *is* exactly a declared project module path. Such a bare
     /// reference names the module itself (which we do not model as a def, and
     /// which shadows a same-named assembly type), so it defers. A path *under* a
@@ -899,33 +1007,6 @@ impl ProjectItems {
     /// `extern` name does not answer).
     pub(super) fn is_real_nested_module(&self, names: &[String]) -> bool {
         self.real_nested_modules.contains(names)
-    }
-
-    /// The latest export at `path` the reference site `site` can **access**,
-    /// selected from the path's export history by `keep` (which restricts to the
-    /// value namespace — everything — or the constructor namespace — cases only).
-    ///
-    /// Walks the history newest-first and returns the first record that both
-    /// satisfies `keep` and is *accessible* from `site`: a public export
-    /// (`access_root_len` `None`) always is; a restricted one only when `site`
-    /// lies within its access-root — the `k`-segment prefix of `path`, its
-    /// declaring container or a `private` ancestor's container (F#'s inherited
-    /// `private` rule, oracle-pinned; see [`ExportedItem::access_root_len`]).
-    /// This is the one query the collapse model exposes; because the history is
-    /// complete, a public export under a later inaccessible `private`
-    /// redeclaration is still found.
-    fn latest_accessible(
-        &self,
-        path: &[String],
-        site: &[String],
-        keep: impl Fn(&ExportRecord) -> bool,
-    ) -> Option<ItemId> {
-        let history = self.value_exports.get(path)?;
-        history
-            .iter()
-            .rev()
-            .find(|r| keep(r) && accessible_from(r.access_root_len, path, site))
-            .map(|r| r.id)
     }
 
     /// The export at `path` an `open` of its container binds, among those
@@ -1049,20 +1130,6 @@ impl ProjectItems {
                     .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
             })
             .collect()
-    }
-
-    /// The latest export at `path` accessible from `site`, counting **values and
-    /// cases** (a case is a value in expression position). The value-namespace
-    /// query — feeds [`Self::direct_value_children`] and, once built, the
-    /// straddle's value slot.
-    pub(super) fn latest_accessible_value(
-        &self,
-        path: &[String],
-        site: &[String],
-    ) -> Option<ItemId> {
-        // A value or a value-live union/exception case — never a pattern-only
-        // active-pattern case (FS0039 in expression position; Stage 3a).
-        self.latest_accessible(path, site, |r| !r.pattern_only)
     }
 
     /// The `(name, id)` of every earlier-file **value** exported *directly* under
@@ -1508,12 +1575,27 @@ impl ProjectItems {
                 .or_default()
                 .push(file_idx);
         }
+        for path in idx.unread_members {
+            self.unread_member_files
+                .entry(path)
+                .or_default()
+                .push(file_idx);
+        }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
             // constructor namespaces read this same history through different
             // predicates; no export is lost to a shadow).
             self.value_exports.entry(path).or_default().push(record);
+        }
+        for (path, entry) in idx.union_cases {
+            self.union_case_order
+                .entry(path)
+                .or_default()
+                .push(UnionCaseRecord {
+                    file: file_idx,
+                    entry,
+                });
         }
         for id in idx.case_item_ids {
             self.case_item_ids.insert(id);
@@ -1668,6 +1750,8 @@ type QualifiedCaseExport = (ItemId, Option<usize>);
 struct FileExportIndices {
     value_exports: Vec<(Vec<String>, ExportRecord)>,
     member_decls: Vec<Vec<String>>,
+    unread_members: Vec<Vec<String>>,
+    union_cases: Vec<(Vec<String>, UnionCaseEntry)>,
     case_item_ids: Vec<ItemId>,
     attributed_value_ids: Vec<ItemId>,
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
@@ -1811,6 +1895,9 @@ impl FileExportIndices {
         let mut fi = Self::default();
         for decl in &file.export_decls {
             if let Some(path) = decl.member_path(&file.exports.items, screen.is_some()) {
+                if matches!(decl.kind, ExportDeclKind::Extern { .. }) {
+                    fi.unread_members.push(path.clone());
+                }
                 fi.member_decls.push(path);
             }
             let anon = decl.anonymous_root;
@@ -1844,6 +1931,15 @@ impl FileExportIndices {
                     }
                     Some(item_idx) => {
                         let it = &file.exports.items[*item_idx];
+                        if !anon && matches!(it.case, Some(CaseKind::Union { .. })) {
+                            fi.union_cases.push((
+                                decl.path.clone(),
+                                UnionCaseEntry {
+                                    plain: it.qualified_path().map(|_| it.id),
+                                    access_root_len: it.access_root_len,
+                                },
+                            ));
+                        }
                         if let Some(path) = it.qualified_path() {
                             fi.value_exports.push((
                                 path.to_vec(),
@@ -1982,6 +2078,15 @@ impl FileExportIndices {
                     }
                 }
                 ExportDeclKind::OpaqueCase => {
+                    if !anon {
+                        fi.union_cases.push((
+                            decl.path.clone(),
+                            UnionCaseEntry {
+                                plain: None,
+                                access_root_len: None,
+                            },
+                        ));
+                    }
                     let superseded =
                         superseded_by_a_value(&file.export_decls, &file.exports.items, decl);
                     fi.opaque_cases.push((decl.path.clone(), superseded));
@@ -2275,30 +2380,6 @@ pub(super) struct ExportDecl {
     pub(super) kind: ExportDeclKind,
 }
 
-/// How many declarations of one member name a container makes, as far as the
-/// walk can see ([`Resolver::member_declarations`](super::state::Resolver::member_declarations)).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct MemberDeclarations {
-    /// Every declaration, of every kind [`ExportDecl::member_path`] counts.
-    pub(super) count: usize,
-    /// Whether they all sit in one Compile-order file (vacuously true for
-    /// none).
-    pub(super) one_file: bool,
-}
-
-/// What a module-qualified member reference reads as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum QualifiedMember {
-    /// It binds this item.
-    Bound(ItemId),
-    /// The container declares the name, but which declaration FCS binds is
-    /// not modelled: the reference must defer, and no other reading of the
-    /// path may commit in its place.
-    Declined,
-    /// The container exports nothing of the name accessible here.
-    Absent,
-}
-
 impl ExportDecl {
     /// The path (container + name) of the **value- or constructor-space
     /// member** this declaration adds to its container, if it adds one: a
@@ -2306,8 +2387,7 @@ impl ExportDecl {
     /// `exception` constructor, an active-pattern case, a possible case
     /// (`type T = X`) or an `extern`. These are every declaration a
     /// module-qualified reference `Container.Name` can bind in expression or
-    /// pattern position, so their count per path is what
-    /// [`Resolver::member_declarations`](super::state::Resolver::member_declarations) reports. A type, module or
+    /// pattern position ([`ProjectItems::member_decl_files`]). A type, module or
     /// exception *tycon* names something a dotted path reaches through, not
     /// such a member, and an anonymous-root declaration has no cross-file
     /// path.
@@ -2844,12 +2924,12 @@ pub enum DeclineCause {
     /// `[<AutoOpen>]` module may bring it into scope ahead of every implicit
     /// open and the root, and which one FCS binds is not modelled.
     EarlierTypeOutsideNamespace,
-    /// A module- or namespace-qualified member the container declares more
-    /// than once — two unions sharing a case name, a value beside a case, an
-    /// exception beside a case — where FCS's order for the route (expression,
-    /// pattern, namespace fragments) picks a declaration the walk does not
-    /// model.
-    QualifiedNameDeclaredTwice,
+    /// A container-qualified `P.C` whose container's first union declaring
+    /// `C` the walk cannot commit as FCS reads it: the union requires
+    /// qualified access (FCS reads a type or module of the name first), may
+    /// not be a union at all (`type T = X`), or is out of reach from here
+    /// (FCS still finds it, erroring, ahead of every later union).
+    QualifiedCaseContested,
 }
 
 impl DeclineCause {
@@ -2919,7 +2999,7 @@ impl DeclineCause {
         DeclineCause::EarlierTypeOpenedOver,
         DeclineCause::EarlierTypeNamespaceShared,
         DeclineCause::EarlierTypeOutsideNamespace,
-        DeclineCause::QualifiedNameDeclaredTwice,
+        DeclineCause::QualifiedCaseContested,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2987,7 +3067,7 @@ impl DeclineCause {
             DeclineCause::EarlierTypeOpenedOver => "earlier_type_opened_over",
             DeclineCause::EarlierTypeNamespaceShared => "earlier_type_namespace_shared",
             DeclineCause::EarlierTypeOutsideNamespace => "earlier_type_outside_namespace",
-            DeclineCause::QualifiedNameDeclaredTwice => "qualified_name_declared_twice",
+            DeclineCause::QualifiedCaseContested => "qualified_case_contested",
         }
     }
 }

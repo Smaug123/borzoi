@@ -399,7 +399,7 @@ fn global_rooted_qualified_value_resolves_cross_file() {
 fn a_qualified_private_value_is_inaccessible_cross_file_from_unrelated_code() {
     // `let private secret` in `module Lib.M`; from an UNRELATED module,
     // `Lib.M.secret` is FS1094 in FCS — inaccessible, so unbound. The cross-file
-    // qualified-value lookup (`lookup_qualified_path`) was accessibility-blind and
+    // qualified-value lookup (`qualified_read`) was accessibility-blind and
     // resolved the private value — a wrong target on `main`.
     let src0 = "module Lib.M\n\nlet private secret = 1\n";
     let src1 = "module Other\n\nlet x = Lib.M.secret\n";
@@ -459,7 +459,7 @@ fn a_same_file_qualified_private_value_is_inaccessible_from_a_sibling() {
     // accessible only within its module's subtree, not a sibling. The same-file
     // qualified-value lookup (`self.items`) was accessibility-blind and resolved
     // the private value — a wrong target on `main` (the same-file parallel to the
-    // cross-file `lookup_qualified_path` gate).
+    // cross-file `qualified_read` gate).
     let src = "module Lib\n\nmodule A =\n    let private secret = 1\n\nmodule B =\n    let y = A.secret\n";
     let rf = resolve(src);
     match rf.resolution_at(nth(src, "A.secret", 0)) {

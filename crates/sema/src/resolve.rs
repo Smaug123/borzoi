@@ -853,7 +853,7 @@ enum SigValAccess {
     /// binds *cleanly*, and a direct outside reading is FS1094 (never
     /// clean). The shared accessibility machinery
     /// ([`accessible_from`](model::accessible_from) through
-    /// `latest_accessible_value`) delivers all three verdicts per site.
+    /// `qualified_read`) delivers all three verdicts per site.
     Private,
     /// An access-token shape we cannot place (more than one token, or one
     /// that does not precede the ident). Skip the decl; its names stay
@@ -2352,7 +2352,6 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
-            member_decl_counts: HashMap::new(),
         }
     }
 
@@ -2368,18 +2367,12 @@ impl<'a> Resolver<'a> {
         pos: rowan::TextSize,
         kind: model::ExportDeclKind,
     ) {
-        let decl = model::ExportDecl {
+        self.export_decls.push(model::ExportDecl {
             path,
             pos,
             anonymous_root: self.anonymous_root,
             kind,
-        };
-        // The walk is never screened: a signature replaces this file's own
-        // identities only when the fold publishes them.
-        if let Some(member) = decl.member_path(&self.items, false) {
-            *self.member_decl_counts.entry(member).or_default() += 1;
-        }
-        self.export_decls.push(decl);
+        });
     }
 
     /// Attach a case's type-qualified path to the most recently appended

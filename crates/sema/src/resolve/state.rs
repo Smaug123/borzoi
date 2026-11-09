@@ -1717,11 +1717,6 @@ pub(super) struct Resolver<'a> {
     /// from this list; a decl is appended at the same program point each legacy
     /// export writer fires, so the derivations reproduce today's ordering.
     pub(super) export_decls: Vec<ExportDecl>,
-    /// Member path → how many of [`Self::export_decls`] declare a member
-    /// there ([`ExportDecl::member_path`]): the same-file half of
-    /// [`Self::member_declarations`], kept beside the list by its one writer
-    /// ([`Self::push_export_decl`]).
-    pub(super) member_decl_counts: HashMap<Vec<String>, usize>,
     /// What the parser had to recover from in the file being walked, moved into
     /// [`ResolvedFile::recovery`](super::model::ResolvedFile). Set by
     /// [`resolve_file`](super::resolve_file) from its caller's parse;
