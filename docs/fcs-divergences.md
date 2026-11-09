@@ -290,11 +290,9 @@ recovering ~36 members per framework. It was never a feature gap. (`#711`)
 
 ## Assembly: F# pickle reader
 
-- **`TType_anon` (tag 9) unsupported** — raises `UnsupportedPickleTag` (no
-  fixture exercises it). (`5190d33`)
 - **SRTP trait solutions (`u_trait_sln`) partially modelled** — common solutions
-  are decoded for alignment, but payload-heavy arms 4/5 remain refused.
-  (`5190d33`)
+  are decoded for alignment, but arm 4 (`FSRecdFieldSln`, which needs `u_rfref`)
+  remains refused. (`5190d33`)
 - **IL `Local` scope-ref not rescoped** — FCS rescopes `Local` against the
   importing reader's scope (`:1233`); we leave it as `Local`, deferring rescope
   to the projection boundary. (`20dd226`)
@@ -459,6 +457,12 @@ our reimplementation.
 - **`System.Object` abbreviation stripped** — FCS renders it via the `obj`
   abbreviation (`TryFullName`=None); the oracle strips `AbbreviatedType` layers.
   (`4f003eb`)
+- **Anonymous record types rendered as their compiled class** — FCS keeps an
+  anonymous record structural (no `TypeDefinition`); the oracle renders the
+  class fsc emits for it (`AnonRecordTypeDetails.CompiledName`, generic over the
+  sorted field types), as it renders a tuple as `System.Tuple`. Entity names are
+  `DisplayNameCore`, since `DisplayName` backticks a non-identifier such as
+  `<>f__AnonymousType…`. (#87)
 - **Accessibility approximations** — FCS collapses ECMA-335 `Family` on ctors to
   `Public` and `FamORAssem` to `Protected`, and reports `IsExtensionMember=false`
   for C#-style IL extensions (must also check `[ExtensionAttribute]`); the oracle
@@ -504,6 +508,14 @@ our reimplementation.
 ## Resolved since introduction
 
 Documented early, since closed — listed so readers don't chase ghosts.
+
+- **F# pickle `TType_anon` (tag 9):** an anonymous record anywhere in a
+  signature raised `UnsupportedPickleTag`, costing the assembly every F#
+  overlay (FsCheck 3.3.2 was the one undecodable F#-built assembly in a full
+  package cache). `u_anonInfo` and its anon-info OSGN table are now decoded,
+  and the projection hides fsc's `<>f__AnonymousType…` classes from a
+  marker-bearing assembly, as FCS does (`tests/all/fsharp_anon_records.rs`).
+  (#87)
 
 - **CST diff-normaliser `_argN` binding-head gap (never a divergence):** a
   function-form binding head (`let f 0 = …`) does not consume FCS's parse-time

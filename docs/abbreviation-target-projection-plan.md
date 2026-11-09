@@ -513,11 +513,10 @@ item is ticked for the abbreviation slice.
 
 ## 5. Out of scope / deferred
 
-- The other #87 bullets: `TType_anon` (tag 9) — note an *anonymous-record*
-  abbreviation target makes the whole pickle decode fail loudly today
-  (`UnsupportedPickleTag`), so it is already bounded by
-  `fsharp_abbreviations_unknowable` and never reaches this decoder; SRTP arms
-  4/5; the extension-member projection holes; the arity-collision under-set.
+- The other #87 bullets: an *anonymous-record* abbreviation target
+  (`TType_anon`, tag 9, which the pickle reader decodes) declines in this
+  decoder like a measure or union-case target; SRTP arm 4; the
+  extension-member projection holes; the arity-collision under-set.
 - ~~**FSharp.Core marker emission** stays excluded~~ — **reversed** with
   Stage 4: FSharp.Core now emits markers like any other assembly, and the
   hard-coded `fsharp_primitive_alias` table is **deleted**. The primitive
