@@ -80,7 +80,7 @@ use borzoi_sema::{
 };
 use rowan::{TextRange, TextSize};
 
-use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
+use crate::common::{FileUses, invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
 
 /// The name every member in the grid contributes, and every probe spells.
 const NAME: &str = "Nn";
@@ -1082,6 +1082,13 @@ fn push_probe(src: &mut String) -> TextRange {
     TextRange::new(start.into(), end.into())
 }
 
+/// What grading one cell found: [`SweepOutcome`]'s fields, for one cell.
+struct CellGrade {
+    mismatches: Vec<String>,
+    adjudicated: usize,
+    channel_entries: Vec<String>,
+}
+
 /// What one run of the grid over some channels found.
 struct SweepOutcome {
     cells: usize,
@@ -1169,10 +1176,15 @@ fn what_follows_the_fold_agrees_with_fcs() {
     );
 }
 
-/// How many projects a sweep splits its cells into, so the resident oracle
-/// pool checks them in parallel. Cells are independent (every path is
-/// distinct), so the split changes no answer.
-const FCS_CHUNKS: usize = 3;
+/// How many cells one FCS project holds. Cells are independent (every path is
+/// distinct), so the split changes no answer; it decides only the cost.
+///
+/// FCS's check of one project is superlinear in its file count, so a few
+/// thousand-cell projects cost several times what the same cells cost in small
+/// ones, while a project's fixed cost is a fraction of a second. Measured on
+/// the follower grid's cells: ~13 ms a cell in projects of 25–50, ~33 ms in
+/// projects of 1,600.
+const CELLS_PER_PROJECT: usize = 64;
 
 /// Run `cells` against FCS and grade every probe.
 fn sweep(cells: Vec<Cell>) -> SweepOutcome {
@@ -1209,40 +1221,71 @@ fn sweep(cells: Vec<Cell>) -> SweepOutcome {
         parse_failures.join("\n")
     );
 
-    // One project per chunk of whole cells, checked concurrently.
-    let per_chunk = cell_paths.len().div_ceil(FCS_CHUNKS).max(1);
+    // One project per chunk of whole cells, pulled from a shared index by a
+    // bounded set of workers: the resident pool has a few children, and a
+    // thread per chunk would only queue on them.
+    let fcs_start = std::time::Instant::now();
     let file_chunks: Vec<&[(PathBuf, String)]> = {
         let mut out = Vec::new();
         let mut at = 0;
-        for chunk in cell_paths.chunks(per_chunk) {
+        for chunk in cell_paths.chunks(CELLS_PER_PROJECT) {
             let len: usize = chunk.iter().map(Vec::len).sum();
             out.push(&files[at..at + len]);
             at += len;
         }
         out
     };
-    let replies: Vec<String> = std::thread::scope(|scope| {
-        let handles: Vec<_> = file_chunks
-            .iter()
-            .map(|chunk| {
-                scope.spawn(move || {
-                    let paths: Vec<&std::path::Path> =
-                        chunk.iter().map(|(p, _)| p.as_path()).collect();
-                    invoke_fcs_dump_project(&paths)
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(file_chunks.len());
+    let next_chunk = std::sync::atomic::AtomicUsize::new(0);
+    let replies: Vec<(usize, String)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(chunk) = file_chunks.get(i) else {
+                            return out;
+                        };
+                        let paths: Vec<&std::path::Path> =
+                            chunk.iter().map(|(p, _)| p.as_path()).collect();
+                        out.push((i, invoke_fcs_dump_project(&paths)));
+                    }
                 })
             })
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("an FCS chunk"))
+            .flat_map(|h| h.join().expect("an FCS worker"))
             .collect()
     });
-    let mut fcs_files = Vec::new();
+    assert_eq!(replies.len(), file_chunks.len(), "every chunk has a reply");
+    let mut fcs_files: std::collections::HashMap<std::ffi::OsString, FileUses> =
+        std::collections::HashMap::new();
     let mut fcs_errors = std::collections::HashMap::new();
-    for (json, chunk) in replies.iter().zip(&file_chunks) {
-        fcs_files.extend(parse_fcs_uses_project(json, chunk));
+    for (i, json) in &replies {
+        for fu in parse_fcs_uses_project(json, file_chunks[*i]) {
+            let name = fu
+                .path
+                .file_name()
+                .expect("a temp file has a name")
+                .to_owned();
+            assert!(
+                fcs_files.insert(name, fu).is_none(),
+                "two sweep files share a name"
+            );
+        }
         fcs_errors.extend(fcs_errors_by_file(json));
     }
+    eprintln!(
+        "sweep: FCS checked {} cells ({} files) as {} projects on {workers} workers in {:.1}s",
+        cells.len(),
+        files.len(),
+        file_chunks.len(),
+        fcs_start.elapsed().as_secs_f64()
+    );
     for (p, _) in &files {
         let _ = std::fs::remove_file(p);
     }
@@ -1290,16 +1333,19 @@ fn sweep(cells: Vec<Cell>) -> SweepOutcome {
         ill_formed.join("\n")
     );
 
-    let mut mismatches: Vec<String> = Vec::new();
-    let mut adjudicated = 0usize;
-    // The other channels' gaps, as exact manifest entries.
-    let mut channel_entries: Vec<String> = Vec::new();
-
-    for (ci, (cell, paths)) in cells.iter().zip(cell_paths.iter()).enumerate() {
+    let grade_start = std::time::Instant::now();
+    // Cells grade independently: workers claim runs of them from a shared
+    // index, and the runs are reassembled in cell order, so the outcome is the
+    // serial one.
+    let grade_cell = |ci: usize| -> CellGrade {
+        let (cell, paths) = (&cells[ci], &cell_paths[ci]);
+        let mut mismatches: Vec<String> = Vec::new();
+        let mut adjudicated = 0usize;
+        // The other channels' gaps, as exact manifest entries.
+        let mut channel_entries: Vec<String> = Vec::new();
         let probe_path = paths.last().expect("a cell has a file");
         let fu = fcs_files
-            .iter()
-            .find(|f| f.path.file_name() == probe_path.file_name())
+            .get(probe_path.file_name().expect("a temp file has a name"))
             .unwrap_or_else(|| panic!("no FCS uses for cell {:?} ({probe_path:?})", cell.label));
         assert!(
             !fu.uses.is_empty(),
@@ -1426,7 +1472,50 @@ fn sweep(cells: Vec<Cell>) -> SweepOutcome {
                 )),
             }
         }
+        CellGrade {
+            mismatches,
+            adjudicated,
+            channel_entries,
+        }
+    };
+    let next_run = std::sync::atomic::AtomicUsize::new(0);
+    let mut graded: Vec<(usize, Vec<CellGrade>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let start = CELLS_PER_PROJECT
+                            * next_run.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if start >= cells.len() {
+                            return out;
+                        }
+                        let end = (start + CELLS_PER_PROJECT).min(cells.len());
+                        out.push((start, (start..end).map(grade_cell).collect()));
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("a grading worker"))
+            .collect()
+    });
+    graded.sort_by_key(|(start, _)| *start);
+    let mut mismatches: Vec<String> = Vec::new();
+    let mut adjudicated = 0usize;
+    let mut channel_entries: Vec<String> = Vec::new();
+    for grade in graded.into_iter().flat_map(|(_, run)| run) {
+        mismatches.extend(grade.mismatches);
+        adjudicated += grade.adjudicated;
+        channel_entries.extend(grade.channel_entries);
     }
+
+    eprintln!(
+        "sweep: resolved and graded {} cells in {:.1}s",
+        cells.len(),
+        grade_start.elapsed().as_secs_f64()
+    );
 
     SweepOutcome {
         cells: cells.len(),
