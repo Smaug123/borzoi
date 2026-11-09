@@ -747,12 +747,12 @@ fn a_same_file_qualifier_of_any_depth_agrees_with_fcs() {
     );
 }
 
-/// Projects in which an earlier file bears on a same-file namespace head:
-/// `(label, earlier file, qualifier)`. The later file always declares
-/// `namespace Alpha` (holding `module Beta` when the qualifier has two
-/// segments) and uses the qualifier from `namespace Client`, which FCS
-/// enters after the namespace was added — so what entering `Client` opens
-/// is tried first.
+/// Projects in which an earlier file bears on a same-file root head:
+/// `(label, earlier file, qualifier)`. The later file declares the head as
+/// `namespace Alpha`, or as a root `module Alpha` in a `namespace global`
+/// block (holding `module Beta` when the qualifier has two segments), and
+/// uses the qualifier from `namespace Client`, which FCS enters after the
+/// root head was added — so what entering `Client` opens is tried first.
 const CROSS_FILE: &[(&str, &str, &str)] = &[
     // The control: an earlier file that bears on nothing, where the use
     // must commit.
@@ -791,9 +791,9 @@ const CROSS_FILE: &[(&str, &str, &str)] = &[
 ];
 
 /// Every commitment at the use agrees with FCS's project check, where an
-/// earlier file declares something the same-file namespace head may lose to.
+/// earlier file declares something a same-file root head may lose to.
 #[test]
-fn a_namespace_head_beside_an_earlier_file_agrees_with_fcs() {
+fn a_root_head_beside_an_earlier_file_agrees_with_fcs() {
     use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project};
     use borzoi_sema::resolve_project;
     use std::path::Path;
@@ -801,7 +801,10 @@ fn a_namespace_head_beside_an_earlier_file_agrees_with_fcs() {
     let mut wrong = Vec::new();
     let mut control_commits = 0;
     for &(label, earlier, qualifier) in CROSS_FILE {
-        for use_kind in [UseKind::Expr, UseKind::Pattern] {
+        for (root, use_kind) in [false, true]
+            .into_iter()
+            .flat_map(|g| [(g, UseKind::Expr), (g, UseKind::Pattern)])
+        {
             let decls = if qualifier == "Alpha" {
                 "type Color = Red | Blue\n".to_string()
             } else {
@@ -813,8 +816,15 @@ fn a_namespace_head_beside_an_earlier_file_agrees_with_fcs() {
                     "    let f v =\n        match v with\n        | {qualifier}.Color.Red -> 1\n        | _ -> 0\n"
                 ),
             };
-            let later =
-                format!("namespace Alpha\n\n{decls}\nnamespace Client\n\nmodule Use =\n{use_src}");
+            let head = if root {
+                format!(
+                    "namespace global\n\nmodule Alpha =\n{}",
+                    indented(&decls, "    ")
+                )
+            } else {
+                format!("namespace Alpha\n\n{decls}")
+            };
+            let later = format!("{head}\nnamespace Client\n\nmodule Use =\n{use_src}");
             let written: Vec<(PathBuf, String)> = [earlier, later.as_str()]
                 .iter()
                 .enumerate()
@@ -850,6 +860,7 @@ fn a_namespace_head_beside_an_earlier_file_agrees_with_fcs() {
                 continue;
             };
             control_commits += usize::from(label == "unrelated");
+            let root = if root { "root module" } else { "namespace" };
             let later_fcs = fcs
                 .iter()
                 .find(|f| f.path.file_name() == written[1].0.file_name())
@@ -864,7 +875,7 @@ fn a_namespace_head_beside_an_earlier_file_agrees_with_fcs() {
             });
             if !agrees {
                 wrong.push(format!(
-                    "{label} {use_kind:?}: we gave file {our_file} {our_range:?}; FCS errors {:?}\n{earlier}\n{later}",
+                    "{label} {root} {use_kind:?}: we gave file {our_file} {our_range:?}; FCS errors {:?}\n{earlier}\n{later}",
                     later_fcs.errors
                 ));
             }
@@ -876,5 +887,5 @@ fn a_namespace_head_beside_an_earlier_file_agrees_with_fcs() {
         wrong.len(),
         wrong.join("\n")
     );
-    assert_eq!(control_commits, 2, "the control's uses must commit");
+    assert_eq!(control_commits, 4, "the control's uses must commit");
 }

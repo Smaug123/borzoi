@@ -4338,6 +4338,16 @@ impl<'a> Resolver<'a> {
             }
 
             match self.classify_module_qualified_residual(module_path, res, in_pattern, use_pos) {
+                // A root module is added when the block declaring it closes, so
+                // what entering the current block opens outranks it
+                // ([`Self::root_head_rival`]).
+                Some(
+                    outcome @ (SameFileQualified::Emit { .. }
+                    | SameFileQualified::Decline(_)
+                    | SameFileQualified::DeferStop),
+                ) if k == 0 => {
+                    return self.root_head_rival(head, res).unwrap_or(outcome);
+                }
                 Some(outcome) => return outcome,
                 // This candidate does not own the residual — F# searches outward
                 // to the next same-named module (same-file first, then cross-file).
@@ -4688,8 +4698,7 @@ impl<'a> Resolver<'a> {
     /// and everything the current block brings into scope — its lexical
     /// modules, its `open`s, and what entering the enclosing namespace opens —
     /// comes later and is tried first. The lexical modules and `open`s have
-    /// been judged by the time this runs; the rest must provably not name the
-    /// head ([`Self::namespace_head_has_rival`]).
+    /// been judged by the time this runs; the rest is [`Self::root_head_rival`].
     ///
     /// The residual is walked through [`Self::container_decls`]
     /// ([`classify_module_qualified_residual`](Self::classify_module_qualified_residual)),
@@ -4724,10 +4733,14 @@ impl<'a> Resolver<'a> {
             || self.preceding.is_namespace(&ns)
             || self.preceding.is_exact_project_module(&ns)
             || !self.assemblies_provably_lack_module_path(&ns)
-            || (!block_header.is_empty() && qualifier.starts_with(block_header))
-            || self.namespace_head_has_rival(head);
+            || (!block_header.is_empty() && qualifier.starts_with(block_header));
         let walk = self.classify_module_qualified_residual(ns, res, in_pattern, use_pos);
         match walk {
+            Some(SameFileQualified::Emit { .. } | SameFileQualified::Decline(_))
+                if let Some(rival) = self.root_head_rival(head, res) =>
+            {
+                Some(rival)
+            }
             Some(SameFileQualified::Emit { .. } | SameFileQualified::Decline(_)) if incomplete => {
                 Some(SameFileQualified::DeferStop)
             }
@@ -4735,24 +4748,44 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether something FCS brings into scope *after* a root namespace `head`
-    /// — so ahead of it in the search — may name `head` without the lexical
-    /// walk having judged it: a module or namespace that an earlier file, an
-    /// earlier block of this file or a referenced assembly declares at
-    /// `container ++ [head]` for the enclosing namespace or a module around the
-    /// use, or an `[<AutoOpen>]` module — this file's, in a container around the
-    /// use, or an earlier file's, in the enclosing namespace — whose nested
-    /// modules are not enumerated here.
-    fn namespace_head_has_rival(&self, head: &str) -> bool {
-        let tiers = self.namespace_depth.max(1)..=self.container_path.len();
-        let declared = tiers.into_iter().any(|k| {
+    /// What FCS tries before a **root** head candidate — a root module (from a
+    /// `namespace global` block or the anonymous root) or a same-file root
+    /// namespace — that the lexical walk has not judged. Such a candidate
+    /// enters FCS's environment when the block declaring it closes, so
+    /// everything entering the current block brings into scope ranks above
+    /// it: what earlier files, earlier blocks of this file and referenced
+    /// assemblies declare at `container ++ [head]` for the enclosing namespace
+    /// and the modules around the use, the `[<AutoOpen>]` modules opened
+    /// there, and an `open` an earlier `namespace global` block held.
+    ///
+    /// `None` when none of that may name `head`. `Some(Miss)` when, innermost
+    /// first, an earlier file positively declares the whole written path
+    /// there — the cross-file type-qualified-case branch reads exactly that,
+    /// tier for tier. `Some(DeferStop)` for any other rival, whose contents
+    /// are not walked here.
+    fn root_head_rival(&self, head: &str, res: QualifiedResidual<'_>) -> Option<SameFileQualified> {
+        for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
             let mut p = self.container_path[..k].to_vec();
             p.push(head.to_string());
-            self.preceding.is_exact_project_module(&p)
+            let mut case_path = p.clone();
+            case_path.extend(res.mids.iter().cloned());
+            case_path.push(res.ty.to_string());
+            case_path.push(res.case.to_string());
+            if self
+                .preceding
+                .type_qualified_case(&case_path, &self.container_path)
+                .is_some()
+            {
+                return Some(SameFileQualified::Miss);
+            }
+            if self.preceding.is_exact_project_module(&p)
                 || self.preceding.is_exact_nested_module(&p)
                 || self.is_project_namespace_path(&p)
                 || !self.assemblies_provably_lack_module_path(&p)
-        });
+            {
+                return Some(SameFileQualified::DeferStop);
+            }
+        }
         let same_file_auto_open = self.auto_open_module_paths.iter().any(|(p, _)| {
             p.split_last()
                 .is_some_and(|(_, parent)| self.container_path.starts_with(parent))
@@ -4763,7 +4796,8 @@ impl<'a> Resolver<'a> {
                 .preceding
                 .auto_open_modules_directly_in(enclosing)
                 .is_empty();
-        declared || same_file_auto_open || earlier_auto_open || self.global_block_opened
+        (same_file_auto_open || earlier_auto_open || self.global_block_opened)
+            .then_some(SameFileQualified::DeferStop)
     }
 
     /// Whether `container` declares a type named `ty` more than once at one

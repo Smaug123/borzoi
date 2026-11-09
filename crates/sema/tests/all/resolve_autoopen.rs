@@ -695,15 +695,19 @@ fn rec_forward_value_path_does_not_bind_the_assembly_member() {
     // `module rec M`, `Sub.RelAuto.sharedMarker` names the forward-declared
     // project modules in FCS, while the assembly also has
     // `Demo.Sub.RelAuto.sharedMarker` in scope via `open Demo`. The value
-    // path already defers here (records nothing at any segment and no
-    // whole-span member) — this pins that soundness so a future value-path
-    // change cannot start binding the assembly member on rec-forward heads.
+    // path defers here (no segment binds, and no whole-span member) — this
+    // pins that soundness so a future value-path change cannot start binding
+    // the assembly member on rec-forward heads.
     let env = fixture_env();
     let src = "module rec M\nopen Demo\nlet y = Sub.RelAuto.sharedMarker\nmodule Sub =\n    module RelAuto =\n        let sharedMarker = 5\n";
     let rf = resolve(src, &env);
     let whole = TextRange::new(at(src, "Sub").start(), at(src, "sharedMarker").end());
-    assert_eq!(rf.resolution_at(at(src, "Sub")), None);
-    assert_eq!(rf.resolution_at(at(src, "RelAuto")), None);
+    for seg in ["Sub", "RelAuto"] {
+        match rf.resolution_at(at(src, seg)) {
+            None | Some(Resolution::Deferred(_)) => {}
+            other => panic!("`{seg}` must not bind on a rec-forward path, got {other:?}"),
+        }
+    }
     assert_eq!(
         rf.resolution_at(whole),
         None,

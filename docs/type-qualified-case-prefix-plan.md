@@ -57,19 +57,22 @@ that with a complete per-container name environment.
   (`Resolver::classify_module_qualified_residual`): each segment before the
   type must be *solely* a module (`DeclKinds::is_sole_module`) or a same-file
   sub-namespace, a `module private` one only from inside its container; any
-  co-declaration defers. A same-file namespace of the head's name is the last
-  head candidate (`Resolver::namespace_head_candidate`): in scope only once an
-  *earlier* block declared it, and below everything the current block brings
-  into scope, so it emits only when nothing else may name the head
-  (`namespace_head_has_rival`) and the namespace has no other contributor (an
-  earlier file, an assembly, a root module of its name, the current block).
-  Graded by `crates/sema/tests/all/type_qualified_prefix_grid.rs`, which found
-  four further wrong-target classes on the way, all now declining: a
-  `module rec` / `namespace rec` block (FCS puts its *later* modules and opens
-  in scope at the use — `DeclineCause::RecursiveModuleActive`), a module
-  declared twice in one container (FCS reads the first), a same-file
-  `[<AutoOpen>]` module supplying a module of the head's name, and an `open`
-  in an earlier `namespace global` block (FCS carries it into later blocks).
+  co-declaration defers, as does a type declared twice. A same-file namespace
+  of the head's name is the last head candidate
+  (`Resolver::namespace_head_candidate`): in scope only once an *earlier*
+  block declared it, and below everything the current block brings into
+  scope, so it emits only when nothing else may name the head
+  (`Resolver::root_head_rival`, which a root module candidate must clear too)
+  and the namespace has no other contributor (an earlier file, an assembly, a
+  root module of its name, the current block). Graded by
+  `crates/sema/tests/all/type_qualified_prefix_grid.rs`, which found further
+  wrong-target classes on the way, all now declining: a `module rec` /
+  `namespace rec` block (FCS puts its *later* modules and opens in scope at
+  the use — `DeclineCause::RecursiveModuleActive`), a module or type declared
+  twice in one container (FCS reads the first), a same-file `[<AutoOpen>]`
+  module supplying a module of the head's name, an `open` in an earlier
+  `namespace global` block (FCS carries it into later blocks), and an
+  earlier file's module in the enclosing namespace outranking a root module.
 
 ## Invariant
 
