@@ -513,8 +513,8 @@ use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{CaseKind, ItemId, Resolution, ResolvedFile};
-use crate::ty::{Ty, TyVid};
-use crate::unify::InferTable;
+use crate::ty::{MAX_TYPE_DEPTH, Ty, TyVid, TypeBudgetExceeded};
+use crate::unify::{InferTable, TypeWalks};
 
 /// Per-file inference result. Two views, both populated only when a type can be
 /// assigned *soundly* (absence means "Deferred", D5 — the consumer shows
@@ -569,6 +569,10 @@ pub struct InferredFile {
     project_records: ProjectRecords,
     /// See [`Self::deepest_expression_walk`].
     deepest_expr_depth: usize,
+    /// See [`Self::type_budget_exceeded`].
+    type_budget_exceeded: Option<TypeBudgetExceeded>,
+    /// See [`Self::type_walks`].
+    type_walks: TypeWalks,
 }
 
 impl InferredFile {
@@ -580,6 +584,32 @@ impl InferredFile {
     /// tall expression survives any stack.
     pub fn deepest_expression_walk(&self) -> usize {
         self.deepest_expr_depth
+    }
+
+    /// Which bound of the type budget ([`MAX_TYPE_NODES`],
+    /// [`MAX_TYPE_DEPTH`]) the file's inference reached, if it reached one.
+    ///
+    /// A file that reaches the budget publishes no inferred type at all: no
+    /// expression type, binder type, member resolution or receiver type, and
+    /// every module-level value declines with
+    /// [`PrecedingGap::TypeBudget`] for the files after it. Inference stops
+    /// walking at the first type past the budget, having built at most the
+    /// budget's worth of it, and what it worked out before that point is
+    /// discarded with the rest: a type it never finished may feed any of it.
+    /// What the file declares — its types, union cases and records, which
+    /// inference reads off declarations rather than infers — is published as
+    /// usual.
+    ///
+    /// [`MAX_TYPE_NODES`]: crate::MAX_TYPE_NODES
+    /// [`MAX_TYPE_DEPTH`]: crate::MAX_TYPE_DEPTH
+    pub fn type_budget_exceeded(&self) -> Option<TypeBudgetExceeded> {
+        self.type_budget_exceeded
+    }
+
+    /// The largest type walks the file's inference made: a measurement, for
+    /// how far real code sits below the type budget.
+    pub fn type_walks(&self) -> TypeWalks {
+        self.type_walks
     }
 
     /// The inferred type of the expression at `range`, if one was assigned.
@@ -1215,6 +1245,11 @@ impl SuspendedMember {
 /// resolver resolves to one of them instantiates its published type. A single
 /// file inferred on its own passes [`PrecedingTypes::default`], and every such
 /// use declines.
+///
+/// Its cost is bounded whatever the file: every walk of a type counts against
+/// the type budget ([`crate::MAX_TYPE_NODES`], [`crate::MAX_TYPE_DEPTH`]) and
+/// stops at it, and a file whose inference reaches it publishes no inferred
+/// type ([`InferredFile::type_budget_exceeded`]), never a truncated one.
 pub fn infer_file(
     file: &ImplFile,
     resolved: &ResolvedFile,
@@ -2572,7 +2607,11 @@ impl<'a> Gen<'a> {
         // apparently intact top-level declarations, which FCS never checks —
         // so no declaration after a recovery can be shown to be one FCS
         // typed. A broken declaration's own binders are skipped the same way.
-        if self.resolved.recovery().clean_through(let_decl.syntax()) {
+        // Past the type budget nothing more is typed: the file publishes
+        // nothing ([`Self::finish`]), so walking on would only spend more.
+        if self.table.over_budget().is_none()
+            && self.resolved.recovery().clean_through(let_decl.syntax())
+        {
             self.type_let_decl(let_decl);
         }
         for binding in let_decl.bindings() {
@@ -5533,6 +5572,13 @@ impl<'a> Gen<'a> {
         }
         let name = head.head().and_then(|li| li.idents().last())?;
         let f_def = self.def_at(name.text_range())?;
+        // A function of n parameters is a chain n + 1 deep, which the tree
+        // does not bound: its parameters are siblings. Past the type budget's
+        // depth the chain is not built.
+        if arg_vars.len() >= MAX_TYPE_DEPTH {
+            self.table.exceed(TypeBudgetExceeded::Depth);
+            return None;
+        }
         // Curry right: `Fun(a0, Fun(a1, … Fun(an, ret)))`, matching FCS.
         let mut fun_ty = Ty::Var(ret);
         for &arg in arg_vars.iter().rev() {
@@ -7273,6 +7319,9 @@ impl<'a> Gen<'a> {
     /// assembly-derived *type* is sealed at its door instead, so by here it has
     /// simply never been unified in — see the seal's comment below.
     fn finish(mut self) -> InferredFile {
+        if let Some(why) = self.table.over_budget() {
+            return self.finish_over_budget(why);
+        }
         let exprs = std::mem::take(&mut self.exprs);
         let def_vars = std::mem::take(&mut self.def_vars);
         let published_locals: HashSet<DefId> = std::mem::take(&mut self.local_emits)
@@ -7417,6 +7466,45 @@ impl<'a> Gen<'a> {
             constructor_names: std::mem::take(&mut self.constructor_names),
             project_records: std::mem::take(&mut self.project_records),
             deepest_expr_depth: self.deepest_expr_depth,
+            type_budget_exceeded: None,
+            type_walks: self.table.walks(),
+        }
+    }
+
+    /// [`Self::finish`] for a file whose inference reached the type budget
+    /// ([`InferredFile::type_budget_exceeded`]): nothing the table answered
+    /// is read, since past the budget its answers are not answers
+    /// ([`InferTable`]), and before it they may lean on a type it never
+    /// finished. What the file declares is kept.
+    fn finish_over_budget(mut self, why: TypeBudgetExceeded) -> InferredFile {
+        let module_values = self
+            .module_binders
+            .iter()
+            .map(|(&def, binder)| {
+                let verdict = if self.use_may_be_rejected(def) || binder.header_rejects {
+                    PrecedingGap::RejectedUse
+                } else if binder.inline {
+                    PrecedingGap::Inline
+                } else {
+                    PrecedingGap::TypeBudget
+                };
+                (def, ModuleValue::Declined(verdict))
+            })
+            .collect();
+        InferredFile {
+            types: HashMap::new(),
+            def_types: HashMap::new(),
+            member_resolutions: HashMap::new(),
+            incompleteness: std::mem::take(&mut self.incompleteness),
+            receiver_types: HashMap::new(),
+            module_values,
+            project_types: std::mem::take(&mut self.project_types),
+            project_cases: std::mem::take(&mut self.project_cases),
+            constructor_names: std::mem::take(&mut self.constructor_names),
+            project_records: std::mem::take(&mut self.project_records),
+            deepest_expr_depth: self.deepest_expr_depth,
+            type_budget_exceeded: Some(why),
+            type_walks: self.table.walks(),
         }
     }
 }

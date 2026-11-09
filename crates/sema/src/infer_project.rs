@@ -51,6 +51,10 @@ pub enum PrecedingGap {
     /// The binding was walked, and its type is not certain: an incomplete or
     /// open binding, which publishes neither a ground type nor a scheme.
     Untyped,
+    /// The declaring file's inference reached the type budget, so the file
+    /// publishes no inferred type
+    /// ([`InferredFile::type_budget_exceeded`]).
+    TypeBudget,
     /// The declaring file has a signature, which is what a later file sees:
     /// an abstract type there can stand for the implementation's
     /// abbreviation (`type T` over `type T = int`), so the implementation's

@@ -9,9 +9,10 @@
 //! `Vec<Constraint>`; the solver replays each equality through
 //! [`InferTable::unify_atomic`] (so a rejected constraint leaves no trace).
 //!
-//! The table's value type is `Option<Ty>` — `None` for an unbound variable,
-//! `Some(t)` for one bound to a term `t` (which may itself contain variables).
-//! `ena` merges two values via [`ena::unify::UnifyValue`]; we make `Ty` an
+//! The table's value type is `Option<Binding>` — `None` for an unbound
+//! variable, `Some(t)` for one bound to a term `t` (which may itself contain
+//! variables, and is shared, so reading it is a pointer copy). `ena` merges
+//! two values via [`ena::unify::UnifyValue`]; we make [`Binding`] an
 //! [`EqUnifyValue`] so a `Some`/`Some` merge succeeds only on syntactic
 //! equality. That branch is in fact never reached: every call here resolves
 //! both operands to a *root* before unioning, so the table only ever merges an
@@ -21,12 +22,14 @@
 //!
 //! [`type-checker-plan`]: ../../../docs/type-checker-plan.md
 
+use std::rc::Rc;
+
 use ena::unify::{EqUnifyValue, InPlaceUnificationTable, UnifyKey};
 
-use crate::ty::{Ty, TyVid};
+use crate::ty::{MAX_TYPE_DEPTH, MAX_TYPE_NODES, Ty, TySize, TyVid, TypeBudgetExceeded};
 
 impl UnifyKey for TyVid {
-    type Value = Option<Ty>;
+    type Value = Option<Binding>;
 
     fn index(&self) -> u32 {
         self.0
@@ -41,15 +44,24 @@ impl UnifyKey for TyVid {
     }
 }
 
+/// The term a variable is bound to: never itself a [`Ty::Var`] (a variable
+/// meeting a variable is a union, not a binding), and shared, so that reading
+/// a binding is a pointer copy rather than a copy of the term.
+///
+/// `pub` only because it is [`TyVid`]'s `UnifyKey::Value`; the module is
+/// private.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding(Rc<Ty>);
+
 // A `Some`/`Some` merge succeeds only when the two bound terms are syntactically
 // equal. Our algorithm resolves to roots before unioning, so this is never hit
-// with two `Some`s in practice — but the bound is what lets `Option<Ty>` be a
-// `UnifyValue`.
-impl EqUnifyValue for Ty {}
+// with two `Some`s in practice — but the bound is what lets `Option<Binding>`
+// be a `UnifyValue`.
+impl EqUnifyValue for Binding {}
 
-/// Why a [`InferTable::unify`] failed. Best-effort inference treats either as
-/// "leave the variables unsolved" (D5: say nothing), so neither surfaces a
-/// diagnostic in this phase.
+/// Why a [`InferTable::unify`] failed. Best-effort inference treats a
+/// mismatch or an occurs failure as "leave the variables unsolved" (D5: say
+/// nothing), so neither surfaces a diagnostic in this phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnifyError {
     /// Two incompatible concrete types: different named paths, different array
@@ -58,6 +70,95 @@ pub(crate) enum UnifyError {
     /// The occurs check failed — binding the variable would build an infinite
     /// type (`'a = 'a[]`).
     Occurs,
+    /// The unification walked past the type budget, which the table now
+    /// records ([`InferTable::over_budget`]): whether the terms unify is not
+    /// known.
+    OverBudget(TypeBudgetExceeded),
+}
+
+impl From<TypeBudgetExceeded> for UnifyError {
+    fn from(e: TypeBudgetExceeded) -> UnifyError {
+        UnifyError::OverBudget(e)
+    }
+}
+
+/// The bounds every walk of an [`InferTable`] is held to: by default the
+/// crate's [`MAX_TYPE_NODES`] and [`MAX_TYPE_DEPTH`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TypeBudget {
+    /// The most nodes a resolution may build. A unification may visit twice
+    /// as many, which is what one whose unified type is within this bound
+    /// needs (see [`InferTable::unify`]).
+    pub(crate) nodes: usize,
+    /// The deepest any walk may reach, the root at depth 1.
+    pub(crate) depth: usize,
+}
+
+impl Default for TypeBudget {
+    fn default() -> Self {
+        TypeBudget {
+            nodes: MAX_TYPE_NODES,
+            depth: MAX_TYPE_DEPTH,
+        }
+    }
+}
+
+/// The largest walks an inference table made, by kind: what the corpus sweep
+/// measures the type budget ([`MAX_TYPE_NODES`], [`MAX_TYPE_DEPTH`]) against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TypeWalks {
+    /// The largest type a resolution built, and the deepest.
+    pub resolve: TySize,
+    /// The most nodes one unification visited (its occurs checks included),
+    /// and the deepest it reached.
+    pub unify: TySize,
+}
+
+/// One walk's count against its budget.
+struct Walk {
+    nodes: usize,
+    depth: usize,
+    max_nodes: usize,
+    max_depth: usize,
+}
+
+impl Walk {
+    fn new(max_nodes: usize, max_depth: usize) -> Walk {
+        Walk {
+            nodes: 0,
+            depth: 0,
+            max_nodes,
+            max_depth,
+        }
+    }
+
+    /// Count a visit to a node at `depth`, or report the bound it passes.
+    fn visit(&mut self, depth: usize) -> Result<(), TypeBudgetExceeded> {
+        if depth > self.max_depth {
+            return Err(TypeBudgetExceeded::Depth);
+        }
+        self.nodes += 1;
+        if self.nodes > self.max_nodes {
+            return Err(TypeBudgetExceeded::Nodes);
+        }
+        self.depth = self.depth.max(depth);
+        Ok(())
+    }
+
+    fn size(&self) -> TySize {
+        TySize {
+            nodes: self.nodes,
+            depth: self.depth,
+        }
+    }
+}
+
+/// What a term is at its top, once a variable is looked through: the term
+/// itself, the term a variable is bound to, or a variable's unbound root.
+enum Head<'t> {
+    Term(&'t Ty),
+    Bound(Rc<Ty>),
+    Root(TyVid),
 }
 
 /// An open snapshot of an [`InferTable`] ([`InferTable::snapshot`]). Not
@@ -65,14 +166,62 @@ pub(crate) enum UnifyError {
 pub(crate) struct TableSnapshot(ena::unify::Snapshot<ena::unify::InPlace<TyVid>>);
 
 /// The union-find table over inference variables, plus the structural unifier.
+///
+/// # The type budget
+///
+/// The table shares structure: a variable bound to `'a * 'a` with `'a` bound
+/// to `'b * 'b` holds a type twice the size of what it stores, so resolving a
+/// type, checking an occurrence or unifying two can walk exponentially more
+/// than the table holds. Every walk therefore counts the nodes it visits and
+/// the depth it reaches against a [`TypeBudget`], and stops at the first node
+/// past it, having built at most the budget's worth.
+///
+/// The guarantee: a walk that passes the budget records it
+/// ([`Self::over_budget`]), and from then on the table answers nothing it
+/// would have to walk for — [`Self::resolve`] returns its argument
+/// unresolved, and [`Self::unify`] fails with [`UnifyError::OverBudget`] — so
+/// what it says after that point is not an answer. The record survives a
+/// [`Self::rollback_to`]: it is a fact about the program, not about the
+/// speculation in progress. A caller that reads the table's answers into a
+/// result must therefore discard the result once the record is set;
+/// inference discards the whole file's ([`crate::infer_file`]).
 #[derive(Debug, Default)]
 pub(crate) struct InferTable {
     table: InPlaceUnificationTable<TyVid>,
+    budget: TypeBudget,
+    exceeded: Option<TypeBudgetExceeded>,
+    walks: TypeWalks,
 }
 
 impl InferTable {
     pub(crate) fn new() -> Self {
         InferTable::default()
+    }
+
+    /// A table whose walks are held to `budget` rather than the crate's.
+    #[cfg(test)]
+    pub(crate) fn with_budget(budget: TypeBudget) -> Self {
+        InferTable {
+            budget,
+            ..InferTable::default()
+        }
+    }
+
+    /// Which bound a walk passed, once one has: from then on the table's
+    /// answers are not answers (see the type budget, above).
+    pub(crate) fn over_budget(&self) -> Option<TypeBudgetExceeded> {
+        self.exceeded
+    }
+
+    /// Record that a type the caller would build passes the budget, without
+    /// building it.
+    pub(crate) fn exceed(&mut self, why: TypeBudgetExceeded) {
+        self.exceeded.get_or_insert(why);
+    }
+
+    /// The largest walks the table has made.
+    pub(crate) fn walks(&self) -> TypeWalks {
+        self.walks
     }
 
     /// A fresh, unbound inference variable.
@@ -113,66 +262,132 @@ impl InferTable {
         self.table.unioned(a, b)
     }
 
-    /// Resolve `ty` one level: follow a variable through its binding (and any
-    /// chain of variable-to-variable unions) to either a concrete term head
-    /// (`Named` / `Array`) or a canonical *unbound* representative variable.
-    fn shallow_resolve(&mut self, ty: &Ty) -> Ty {
+    /// Look through `ty` one level: a variable to the term it is bound to, or
+    /// to its canonical unbound root; any other term to itself.
+    fn head<'t>(&mut self, ty: &'t Ty) -> Head<'t> {
         match ty {
             Ty::Var(v) => match self.table.probe_value(*v) {
-                Some(bound) => self.shallow_resolve(&bound),
-                None => Ty::Var(self.table.find(*v)),
+                Some(Binding(bound)) => {
+                    debug_assert!(
+                        !matches!(*bound, Ty::Var(_)),
+                        "a variable is bound to a term, never to a variable"
+                    );
+                    Head::Bound(bound)
+                }
+                None => Head::Root(self.table.find(*v)),
             },
-            other => other.clone(),
+            other => Head::Term(other),
         }
     }
 
     /// Fully resolve `ty` against the current substitution, recursing into
     /// compound types. An unbound variable stays a [`Ty::Var`] (the "unknown"
     /// that the read-off in [`crate::infer`] turns into silence).
+    ///
+    /// A type past the budget is not built: the walk stops at the first node
+    /// over it, the table records it ([`Self::over_budget`]), and `ty` comes
+    /// back unresolved — as it does from every call once that is recorded.
     pub(crate) fn resolve(&mut self, ty: &Ty) -> Ty {
-        match self.shallow_resolve(ty) {
+        if self.exceeded.is_none() {
+            let mut walk = Walk::new(self.budget.nodes, self.budget.depth);
+            let resolved = self.resolve_in(ty, 1, &mut walk);
+            self.walks.resolve = self.walks.resolve.max_each(walk.size());
+            match resolved {
+                Ok(resolved) => return resolved,
+                Err(e) => self.exceed(e),
+            }
+        }
+        ty.clone()
+    }
+
+    /// [`Self::resolve`]'s walk, of `ty` at `depth`.
+    fn resolve_in(
+        &mut self,
+        ty: &Ty,
+        depth: usize,
+        walk: &mut Walk,
+    ) -> Result<Ty, TypeBudgetExceeded> {
+        walk.visit(depth)?;
+        let head = self.head(ty);
+        let term = match &head {
+            Head::Root(v) => return Ok(Ty::Var(*v)),
+            Head::Term(t) => *t,
+            Head::Bound(t) => &**t,
+        };
+        let below = depth + 1;
+        Ok(match term {
             Ty::Array { elem, rank } => Ty::Array {
-                elem: Box::new(self.resolve(&elem)),
-                rank,
+                elem: Box::new(self.resolve_in(elem, below, walk)?),
+                rank: *rank,
             },
-            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| self.resolve(e)).collect()),
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.resolve_in(e, below, walk))
+                    .collect::<Result<_, _>>()?,
+            ),
             Ty::Fun { arg, ret } => Ty::Fun {
-                arg: Box::new(self.resolve(&arg)),
-                ret: Box::new(self.resolve(&ret)),
+                arg: Box::new(self.resolve_in(arg, below, walk)?),
+                ret: Box::new(self.resolve_in(ret, below, walk)?),
             },
             // An application's ARGUMENTS are types and can hold solved
             // variables; only its head is a leaf.
             Ty::Named { path, args } => Ty::Named {
-                path,
-                args: args.iter().map(|a| self.resolve(a)).collect(),
+                path: path.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.resolve_in(a, below, walk))
+                    .collect::<Result<_, _>>()?,
             },
             Ty::Project { path, args } => Ty::Project {
-                path,
-                args: args.iter().map(|a| self.resolve(a)).collect(),
+                path: path.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.resolve_in(a, below, walk))
+                    .collect::<Result<_, _>>()?,
             },
-            // `Param` or an unbound `Var` — nothing more to do.
-            resolved => resolved,
-        }
+            Ty::Param(i) => Ty::Param(*i),
+            Ty::Var(_) => unreachable!("a variable's head is its binding or its root"),
+        })
     }
 
     /// Whether `v`'s equivalence class occurs anywhere within `ty` (after
-    /// resolution). The occurs check that keeps [`InferTable::unify`] from binding a
-    /// variable to a term containing itself.
-    fn occurs(&mut self, v: TyVid, ty: &Ty) -> bool {
-        match self.shallow_resolve(ty) {
-            Ty::Var(v2) => self.table.unioned(v, v2),
-            // A `Param` is a rigid constant, so — like a `Named` — it cannot
-            // contain a variable's equivalence class.
+    /// resolution), `ty` sitting at `depth`. The occurs check that keeps
+    /// [`InferTable::unify`] from binding a variable to a term containing
+    /// itself; it counts against the unification's walk.
+    fn occurs_in(
+        &mut self,
+        v: TyVid,
+        ty: &Ty,
+        depth: usize,
+        walk: &mut Walk,
+    ) -> Result<bool, TypeBudgetExceeded> {
+        walk.visit(depth)?;
+        let head = self.head(ty);
+        let term = match &head {
+            Head::Root(v2) => return Ok(self.table.unioned(v, *v2)),
+            Head::Term(t) => *t,
+            Head::Bound(t) => &**t,
+        };
+        let below = depth + 1;
+        match term {
             // A `Param` is a rigid constant, so it cannot contain a variable's
             // equivalence class. A `Named`'s own path cannot either, but its
             // generic ARGUMENTS are types and can.
-            Ty::Param(_) => false,
-            Ty::Named { args, .. } | Ty::Project { args, .. } => {
-                args.iter().any(|a| self.occurs(v, a))
+            Ty::Param(_) => Ok(false),
+            Ty::Named { args, .. } | Ty::Project { args, .. } | Ty::Tuple(args) => {
+                for a in args {
+                    if self.occurs_in(v, a, below, walk)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
             }
-            Ty::Array { elem, .. } => self.occurs(v, &elem),
-            Ty::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
-            Ty::Fun { arg, ret } => self.occurs(v, &arg) || self.occurs(v, &ret),
+            Ty::Array { elem, .. } => self.occurs_in(v, elem, below, walk),
+            Ty::Fun { arg, ret } => {
+                Ok(self.occurs_in(v, arg, below, walk)? || self.occurs_in(v, ret, below, walk)?)
+            }
+            Ty::Var(_) => unreachable!("a variable's head is its binding or its root"),
         }
     }
 
@@ -199,7 +414,8 @@ impl InferTable {
     ///
     /// The two laws (property-tested): a `probe` returning `Err` is
     /// **observationally the identity** on the table, and a `probe` returning `Ok`
-    /// is **observationally equal to applying `f`'s mutations directly**.
+    /// is **observationally equal to applying `f`'s mutations directly**. The
+    /// one exception is the type budget's record, which a rollback keeps.
     pub(crate) fn probe<T, E>(
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<T, E>,
@@ -231,7 +447,8 @@ impl InferTable {
     }
 
     /// Restore the table to exactly its state when `snapshot` was opened,
-    /// discarding every variable and binding made since.
+    /// discarding every variable and binding made since. The type budget's
+    /// record is kept.
     pub(crate) fn rollback_to(&mut self, snapshot: TableSnapshot) {
         self.table.rollback_to(snapshot.0);
     }
@@ -245,32 +462,58 @@ impl InferTable {
     ///   `Array` ranks must match and elements unify);
     /// - otherwise a [`UnifyError::Mismatch`].
     ///
+    /// The walk visits each position of the unified type at most once in
+    /// step and once more in an occurs check — the positions where a variable
+    /// is bound do not nest — so a unification whose unified type is within
+    /// the budget's nodes visits at most twice that many, which is its bound.
+    /// One that would visit more fails with [`UnifyError::OverBudget`], as
+    /// every call does once the table has recorded that.
+    ///
     /// **May leave partial bindings on failure** (a compound that mismatches
     /// after an earlier sub-term bound); a caller that discards the result needs
     /// [`Self::unify_atomic`] instead.
     pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), UnifyError> {
-        let a = self.shallow_resolve(a);
-        let b = self.shallow_resolve(b);
-        match (a, b) {
-            (Ty::Var(va), Ty::Var(vb)) => {
+        if let Some(e) = self.exceeded {
+            return Err(UnifyError::OverBudget(e));
+        }
+        let mut walk = Walk::new(self.budget.nodes.saturating_mul(2), self.budget.depth);
+        let unified = self.unify_in(a, b, 1, &mut walk);
+        self.walks.unify = self.walks.unify.max_each(walk.size());
+        if let Err(UnifyError::OverBudget(e)) = unified {
+            self.exceed(e);
+        }
+        unified
+    }
+
+    /// [`Self::unify`]'s walk, of `a` and `b` at `depth`.
+    fn unify_in(
+        &mut self,
+        a: &Ty,
+        b: &Ty,
+        depth: usize,
+        walk: &mut Walk,
+    ) -> Result<(), UnifyError> {
+        walk.visit(depth)?;
+        let a = self.head(a);
+        let b = self.head(b);
+        let (ta, tb) = match (&a, &b) {
+            (Head::Root(va), Head::Root(vb)) => {
                 // Both unbound roots (values `None`), so the merge is
                 // infallible — see the module docs.
                 self.table
-                    .unify_var_var(va, vb)
+                    .unify_var_var(*va, *vb)
                     .expect("merging two unbound variables is infallible");
-                Ok(())
+                return Ok(());
             }
-            (Ty::Var(v), term) | (term, Ty::Var(v)) => {
-                if self.occurs(v, &term) {
-                    return Err(UnifyError::Occurs);
-                }
-                // `v` is an unbound root (value `None`), so binding it cannot
-                // conflict — see the module docs.
-                self.table
-                    .unify_var_value(v, Some(term))
-                    .expect("binding an unbound variable is infallible");
-                Ok(())
-            }
+            (Head::Root(v), _) => return self.bind(*v, &b, depth, walk),
+            (_, Head::Root(v)) => return self.bind(*v, &a, depth, walk),
+            (Head::Term(ta), Head::Term(tb)) => (*ta, *tb),
+            (Head::Term(ta), Head::Bound(tb)) => (*ta, &**tb),
+            (Head::Bound(ta), Head::Term(tb)) => (&**ta, *tb),
+            (Head::Bound(ta), Head::Bound(tb)) => (&**ta, &**tb),
+        };
+        let below = depth + 1;
+        match (ta, tb) {
             // Two applications are equal when their heads are and their
             // arguments unify pairwise. A differing arity is a mismatch, not a
             // partial match: `Dictionary<int>` is not a `Dictionary<int, string>`.
@@ -280,7 +523,7 @@ impl InferTable {
                     return Err(UnifyError::Mismatch);
                 }
                 for (x, y) in aa.iter().zip(ab.iter()) {
-                    self.unify(x, y)?;
+                    self.unify_in(x, y, below, walk)?;
                 }
                 Ok(())
             }
@@ -288,7 +531,7 @@ impl InferTable {
                 if ra != rb {
                     return Err(UnifyError::Mismatch);
                 }
-                self.unify(&ea, &eb)
+                self.unify_in(ea, eb, below, walk)
             }
             (Ty::Tuple(ea), Ty::Tuple(eb)) => {
                 // Tuples unify element-wise; differing arity is a mismatch (an
@@ -297,15 +540,15 @@ impl InferTable {
                     return Err(UnifyError::Mismatch);
                 }
                 for (a, b) in ea.iter().zip(eb.iter()) {
-                    self.unify(a, b)?;
+                    self.unify_in(a, b, below, walk)?;
                 }
                 Ok(())
             }
             (Ty::Fun { arg: aa, ret: ra }, Ty::Fun { arg: ab, ret: rb }) => {
                 // Function types unify component-wise (domain with domain, range
                 // with range) — the standard congruence rule.
-                self.unify(&aa, &ab)?;
-                self.unify(&ra, &rb)
+                self.unify_in(aa, ab, below, walk)?;
+                self.unify_in(ra, rb, below, walk)
             }
             // Two quantified parameters unify iff they are the same parameter — a
             // `Param` is a rigid constant, equal only to itself. `Param` against
@@ -324,6 +567,38 @@ impl InferTable {
             _ => Err(UnifyError::Mismatch),
         }
     }
+
+    /// Bind the unbound root `v` to the term `head` names, which sits at
+    /// `depth` of the unification: occurs-check it, then bind.
+    fn bind(
+        &mut self,
+        v: TyVid,
+        head: &Head<'_>,
+        depth: usize,
+        walk: &mut Walk,
+    ) -> Result<(), UnifyError> {
+        let binding = match head {
+            Head::Root(_) => unreachable!("a variable is bound to a term"),
+            Head::Term(term) => {
+                if self.occurs_in(v, term, depth, walk)? {
+                    return Err(UnifyError::Occurs);
+                }
+                Binding(Rc::new((*term).clone()))
+            }
+            Head::Bound(term) => {
+                if self.occurs_in(v, term, depth, walk)? {
+                    return Err(UnifyError::Occurs);
+                }
+                Binding(Rc::clone(term))
+            }
+        };
+        // `v` is an unbound root (value `None`), so binding it cannot
+        // conflict — see the module docs.
+        self.table
+            .unify_var_value(v, Some(binding))
+            .expect("binding an unbound variable is infallible");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -337,7 +612,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::{InferTable, UnifyError};
+    use super::{InferTable, TypeBudget, UnifyError};
     use crate::ty::{Ty, TyVid};
 
     /// Number of inference variables both solvers share (generated terms draw
@@ -637,6 +912,15 @@ mod tests {
         table
     }
 
+    /// [`pooled_table`], held to `budget`.
+    fn budgeted_pool(budget: TypeBudget) -> InferTable {
+        let mut table = InferTable::with_budget(budget);
+        for _ in 0..POOL {
+            table.fresh();
+        }
+        table
+    }
+
     proptest! {
         /// **Resolution is complete**: no variable surviving a resolved type is
         /// one the table has already solved. Stated absolutely rather than
@@ -743,6 +1027,102 @@ mod tests {
             let spec_r: Vec<Ty> = pool.iter().map(|t| spec.resolve(t)).collect();
             let direct_r: Vec<Ty> = pool.iter().map(|t| direct.resolve(t)).collect();
             prop_assert_eq!(canonicalize(&spec_r), canonicalize(&direct_r));
+        }
+
+        /// **The budget is exact for resolution.** Under a small budget, a
+        /// resolved type the reference MGU says is within it comes back equal
+        /// to the reference's, and one past it in either dimension is refused:
+        /// the table records the bound and hands back its argument unresolved.
+        /// Constraints are replayed until one passes the budget.
+        #[test]
+        fn resolution_is_exact_within_the_budget_and_refused_past_it(
+            constraints in constraint_list(),
+            nodes in 1usize..14,
+            depth in 1usize..6,
+        ) {
+            let budget = TypeBudget { nodes, depth };
+            let mut table = budgeted_pool(budget);
+            let mut reference = RefSubst::default();
+            for (a, b) in &constraints {
+                let ours = table.unify(a, b);
+                if matches!(ours, Err(UnifyError::OverBudget(_))) {
+                    break;
+                }
+                let theirs = reference.unify(a, b);
+                prop_assert_eq!(ours.is_err(), theirs.is_err());
+                if ours.is_err() {
+                    break;
+                }
+            }
+            for k in 0..POOL {
+                if table.over_budget().is_some() {
+                    break;
+                }
+                let v = Ty::Var(TyVid(k));
+                let want = reference.resolve(&v);
+                let size = want.size();
+                let got = table.resolve(&v);
+                if size.nodes <= nodes && size.depth <= depth {
+                    prop_assert_eq!(table.over_budget(), None);
+                    prop_assert_eq!(canonicalize(&[got]), canonicalize(&[want]));
+                } else {
+                    prop_assert!(table.over_budget().is_some(), "{:?} is past {:?}", size, budget);
+                    prop_assert_eq!(got, v);
+                }
+            }
+        }
+
+        /// **A unification within the budget is never refused.** Whenever the
+        /// reference unifies two terms and the unified type is within the
+        /// budget, the table unifies them too: a unification visits each
+        /// position of the unified type at most twice, and its node bound is
+        /// twice the budget's.
+        #[test]
+        fn unification_within_the_budget_is_never_refused(
+            constraints in constraint_list(),
+            nodes in 1usize..14,
+            depth in 1usize..6,
+        ) {
+            let budget = TypeBudget { nodes, depth };
+            let mut table = budgeted_pool(budget);
+            let mut reference = RefSubst::default();
+            for (a, b) in &constraints {
+                if table.over_budget().is_some() {
+                    break;
+                }
+                let theirs = reference.unify(a, b);
+                let ours = table.unify(a, b);
+                let size = reference.resolve(a).size();
+                if theirs.is_ok() && size.nodes <= nodes && size.depth <= depth {
+                    prop_assert!(
+                        ours.is_ok(),
+                        "{:?} = {:?} unifies within {:?} (unified size {:?}) but was {:?}",
+                        a, b, budget, size, ours
+                    );
+                }
+                if ours.is_err() || theirs.is_err() {
+                    break;
+                }
+            }
+        }
+
+        /// Once a walk passes the budget, the table answers nothing it would
+        /// walk for, and undoing a speculation does not forget it.
+        #[test]
+        fn the_budget_record_is_sticky(constraints in constraint_list()) {
+            let mut table = budgeted_pool(TypeBudget { nodes: 1, depth: 1 });
+            let _ = table.probe(|t| {
+                for (a, b) in &constraints {
+                    let _ = t.unify(a, b);
+                }
+                Err::<(), ()>(())
+            });
+            if table.over_budget().is_some() {
+                for (a, b) in &constraints {
+                    prop_assert!(matches!(table.unify(a, b), Err(UnifyError::OverBudget(_))));
+                    prop_assert_eq!(&table.resolve(a), a);
+                }
+            }
         }
 
         /// Unifying any term with itself succeeds (reflexivity).

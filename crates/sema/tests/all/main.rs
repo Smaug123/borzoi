@@ -5,6 +5,12 @@
 //! crate, so one binary pays that once. Filter with
 //! `cargo test -p borzoi-sema --test all <module>::`.
 
+// `infer_type_budget` bounds each child's memory through the counting
+// allocator, which must be this binary's.
+#[global_allocator]
+static ALLOC: borzoi_oracle_harness::alloc_limit::LimitedAlloc =
+    borzoi_oracle_harness::alloc_limit::LimitedAlloc;
+
 mod common;
 
 mod abbreviation_case_diff;
@@ -60,6 +66,7 @@ mod infer_project_type_annotation_diff;
 mod infer_project_union_diff;
 mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
+mod infer_type_budget;
 mod infer_union_case_diff;
 mod manifest_autoopen_surface_diff;
 mod member_hiding_diff;

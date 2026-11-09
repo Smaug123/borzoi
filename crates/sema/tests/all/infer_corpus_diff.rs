@@ -60,6 +60,15 @@
 //! [`fcs_script_check_defines_exactly_these_symbols`]), and we parse with the
 //! same set.
 //!
+//! # The type budget
+//!
+//! Inference declines a file whose types pass
+//! [`MAX_TYPE_NODES`](borzoi_sema::MAX_TYPE_NODES) or
+//! [`MAX_TYPE_DEPTH`](borzoi_sema::MAX_TYPE_DEPTH), a bound against
+//! pathological input. The sweep prints the largest type walks it saw, and
+//! fails if any sampled file reached the budget or came within a factor of
+//! `TYPE_BUDGET_MARGIN` of it: real code must sit far inside it.
+//!
 //! # Coverage, by FCS node kind
 //!
 //! Alongside the gate, the sweep prints how many of FCS's nodes on clean lines
@@ -119,7 +128,10 @@ use borzoi_cst::parser::parse_with_symbols;
 use borzoi_cst::syntax::{AstNode, ImplFile, LetDecl};
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
-use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, infer_file, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, MAX_TYPE_DEPTH, MAX_TYPE_NODES, ProjectItems, SyntaxRecovery, TypeWalks,
+    infer_file, resolve_file,
+};
 
 use crate::common::corpus_manifest::{
     Positions, check_manifest, corpus_relative, regenerate_ignored,
@@ -132,6 +144,10 @@ use serde::Deserialize;
 
 /// The sample the checked-in manifest describes: every `DEFAULT_STRIDE`th file.
 const DEFAULT_STRIDE: usize = 13;
+
+/// How far inside the type budget ([`MAX_TYPE_NODES`], [`MAX_TYPE_DEPTH`])
+/// the sample's largest type walks must stay, in each dimension.
+const TYPE_BUDGET_MARGIN: usize = 8;
 
 /// The conditional-compilation symbols FCS's single-file script check defines,
 /// which our parse must match or the two sides check different programs.
@@ -182,6 +198,12 @@ struct Tally {
     sole_blocker: BTreeMap<String, usize>,
     /// Per incompleteness reason: bindings where it is among the reasons.
     any_blocker: BTreeMap<String, usize>,
+    /// The largest type walks inference made, in each dimension, and the
+    /// file that made the largest resolution.
+    largest_walks: TypeWalks,
+    largest_walks_file: String,
+    /// Files whose inference reached the type budget.
+    over_budget: Vec<String>,
 }
 
 /// The `types` payload's node kinds, which [`parse_fcs_types_dump`] drops: the
@@ -380,10 +402,16 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
                 )
             })
             .collect();
-        Some((exprs, binders, inferred.incompleteness().to_vec()))
+        Some((
+            exprs,
+            binders,
+            inferred.incompleteness().to_vec(),
+            inferred.type_walks(),
+            inferred.type_budget_exceeded().is_some(),
+        ))
     }));
     drop(silence);
-    let (exprs, binders, incompleteness) = match ours {
+    let (exprs, binders, incompleteness, walks, over_budget) = match ours {
         Ok(Some(x)) => x,
         Ok(None) => {
             tally
@@ -402,6 +430,16 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
     };
     {
         let mut t = tally.lock().unwrap();
+        if over_budget {
+            t.over_budget.push(rel.to_string());
+        }
+        if walks.resolve.nodes > t.largest_walks.resolve.nodes {
+            t.largest_walks_file = rel.to_string();
+        }
+        t.largest_walks = TypeWalks {
+            resolve: walks.resolve.max_each(t.largest_walks.resolve),
+            unify: walks.unify.max_each(t.largest_walks.unify),
+        };
         for reasons in &incompleteness {
             t.bindings += 1;
             let kinds: std::collections::BTreeSet<String> =
@@ -683,10 +721,39 @@ fn inferred_types_match_fcs_over_corpus() {
     }
     print_sites("divergences (gated)", &t.divergences);
     print_sites("error-recovered disagreements (reported)", &t.error_lines);
+    let walks = t.largest_walks;
+    eprintln!(
+        "\nlargest type walks: resolution {} nodes (in {}), {} deep; unification {} \
+         nodes, {} deep; budget {MAX_TYPE_NODES} nodes ({} for a unification), \
+         {MAX_TYPE_DEPTH} deep",
+        walks.resolve.nodes,
+        t.largest_walks_file,
+        walks.resolve.depth,
+        walks.unify.nodes,
+        walks.unify.depth,
+        2 * MAX_TYPE_NODES,
+    );
 
     // The soundness gates, which no manifest regeneration may bless: a
     // divergence is a wrong hover on real code.
     assert_eq!(t.our_panics, 0, "resolve/infer panicked on a corpus file");
+    // Real code sits far inside the type budget, which exists for
+    // pathological input: a corpus file that declines for it, or a type
+    // within a factor of `TYPE_BUDGET_MARGIN` of it, means the budget was
+    // drawn too tight for code people write.
+    assert!(
+        t.over_budget.is_empty(),
+        "inference reached the type budget on corpus files: {:?}",
+        t.over_budget
+    );
+    assert!(
+        walks.resolve.nodes * TYPE_BUDGET_MARGIN <= MAX_TYPE_NODES
+            && walks.unify.nodes * TYPE_BUDGET_MARGIN <= 2 * MAX_TYPE_NODES
+            && walks.resolve.depth.max(walks.unify.depth) * TYPE_BUDGET_MARGIN <= MAX_TYPE_DEPTH,
+        "a corpus type came within a factor of {TYPE_BUDGET_MARGIN} of the type budget: \
+         {walks:?} (largest resolution in {})",
+        t.largest_walks_file
+    );
     assert!(
         t.divergences.is_empty(),
         "{} committed types disagree with FCS in declarations it checked cleanly",
