@@ -682,6 +682,13 @@ pub(super) struct DeclKinds {
     /// of `Pal.Color.Red`, one declared *before* it loses), so a candidate is
     /// compared positionally against [`Resolver::explicit_open_prefixes`].
     pub(super) module_pos: Option<u32>,
+    /// A second `module M = …` of the name in this container: FS0037, and FCS
+    /// reads the *first* one where sema keeps the latest, so the container's
+    /// view of the name is no longer one module.
+    pub(super) module_redeclared: bool,
+    /// The (latest) real nested module of the name is `module private`:
+    /// reachable as a qualifier segment only from within this container.
+    pub(super) module_private: bool,
     /// A module **abbreviation** (`module P = Target`). The target may be cross-file,
     /// so a `P.Color.Red` head must be left to the alias-aware cross-file path rather
     /// than treated as a same-file module — but a nearer alias still **shadows** an
@@ -757,7 +764,30 @@ impl DeclKinds {
     /// its (possibly cross-file) target — never clean. A co-declared exception
     /// constructor is FS0037 (illegal), so on such input we conservatively decline.
     pub(super) fn is_clean_module_head(self, in_pattern: bool) -> bool {
-        self.module && !self.alias && !self.exception_ctor && (in_pattern || !self.value)
+        self.module
+            && !self.module_redeclared
+            && !self.alias
+            && !self.exception_ctor
+            && (in_pattern || !self.value)
+    }
+
+    /// Whether the name is **only** a real nested module here — the shape a
+    /// qualifier segment *after* the head must have for the walk to descend
+    /// through it. FCS reads such a segment inside the module the previous
+    /// segment named (`ResolveExprLongIdentInModuleOrNamespace` /
+    /// `ResolvePatternLongIdentInModuleOrNamespace`), where values, union
+    /// cases and exception constructors of the name are tried before the
+    /// module and a type of the name beside it; none of that ordering is
+    /// modelled, so any co-declaration leaves the segment undecided.
+    pub(super) fn is_sole_module(self) -> bool {
+        self.module
+            && !self.module_redeclared
+            && !self.alias
+            && !self.value
+            && !self.exception_ctor
+            && !self.ty
+            && !self.union_case
+            && !self.active_pattern
     }
 
     /// Whether the name is a **dottable value** — a `let` value, an exception
@@ -1042,6 +1072,27 @@ pub(super) struct Resolver<'a> {
     /// Every declared project namespace path in the file (see
     /// [`ResolvedFile::namespace_paths`](super::model::ResolvedFile::namespace_paths)).
     pub(super) namespace_paths: Vec<Vec<String>>,
+    /// How many entries of [`Self::namespace_paths`] earlier top-level blocks
+    /// recorded: the namespaces FCS has in its environment at a use in the
+    /// current block, which adds a namespace only once the block declaring it
+    /// closes.
+    pub(super) block_namespace_start: usize,
+    /// The length of the current top-level block's header path (`namespace
+    /// A.B` or `module A.M`; zero for an anonymous module or `namespace
+    /// global`): the prefix of [`Self::container_path`] under which this
+    /// block's own declarations land in [`Self::container_decls`].
+    pub(super) block_container_len: usize,
+    /// An earlier `namespace global` block of this file held an `open`. FCS
+    /// carries what such an open brings into the blocks after it (probed: a
+    /// later block's `Alpha.Color.Red` binds the opened module's `Alpha`
+    /// over a same-file `namespace Alpha`), which the per-block open state
+    /// does not model.
+    pub(super) global_block_opened: bool,
+    /// Every nested `[<AutoOpen>]` module this file has declared so far, by
+    /// its path under the container chain — the anonymous root's included,
+    /// which [`Self::auto_open_module_paths`] leaves out because nothing
+    /// outside the file can reach it.
+    pub(super) lexical_auto_open_paths: Vec<Vec<String>>,
     /// Local names (`SynComponentInfo.longId`) of nested `module X = …` decls
     /// (parser 8.4), for shadowing **same-file** references written *relative* to
     /// the enclosing module (`Calc.Answer`). Sema does not yet model

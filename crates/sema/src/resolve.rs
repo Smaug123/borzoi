@@ -491,6 +491,8 @@ pub fn resolve_file(
             ModuleOrNamespaceKind::NamedModule => r.container_path.len().saturating_sub(1),
             ModuleOrNamespaceKind::Anon | ModuleOrNamespaceKind::GlobalNamespace => 0,
         };
+        r.block_namespace_start = r.namespace_paths.len();
+        r.block_container_len = r.container_path.len();
         for k in 1..=ns_upto {
             let ns = r.container_path[..k].to_vec();
             r.namespace_paths.push(ns.clone());
@@ -572,6 +574,10 @@ pub fn resolve_file(
         r.resolve_attribute_lists(module.attributes());
         for decl in module.decls() {
             r.module_decl(&decl);
+        }
+        if matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace) && r.latest_open_pos != 0
+        {
+            r.global_block_opened = true;
         }
         let mut frame = r
             .scopes
@@ -2271,6 +2277,10 @@ impl<'a> Resolver<'a> {
             namespace_depth: 0,
             module_paths: Vec::new(),
             namespace_paths: Vec::new(),
+            block_namespace_start: 0,
+            block_container_len: 0,
+            global_block_opened: false,
+            lexical_auto_open_paths: Vec::new(),
             nested_module_locals: Vec::new(),
             top_level_nested_locals: HashMap::new(),
             nested_module_exports: Vec::new(),

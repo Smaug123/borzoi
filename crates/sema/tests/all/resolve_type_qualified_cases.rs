@@ -931,6 +931,20 @@ fn module_qualified_contention_does_not_navigate_to_an_earlier_file() {
 }
 
 #[test]
+fn a_redeclared_head_module_does_not_navigate_to_an_earlier_file() {
+    // `module Pal` twice in one container is FS0037; FCS reads the first
+    // (`type_qualified_prefix_grid`), and either way the head is this file's
+    // module, so the reference must not fall through to file0's `Pal.Color.Red`.
+    let src0 = "module Pal.Color\nlet Red = 1\n";
+    let src1 = "module Client\nmodule Pal =\n    type Color = Red | Blue\nmodule Pal =\n    type Color = Red | Blue\nlet x = Pal.Color.Red\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    match proj.file(1).resolution_at(nth(src1, "Pal.Color.Red", 0)) {
+        None | Some(Resolution::Deferred(_)) => {}
+        other => panic!("a redeclared same-file head must not navigate cross-file, got {other:?}"),
+    }
+}
+
+#[test]
 fn anonymous_root_module_qualified_case_wins_over_an_earlier_files_value() {
     // The same, anonymous-root: file1's nested-module case (a `Resolution::Local`, no
     // cross-file handle) must shadow file0's same-path value — never file0's `Item`.
