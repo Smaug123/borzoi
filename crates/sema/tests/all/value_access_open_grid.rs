@@ -495,7 +495,9 @@ fn type_cell(
             constructible_type(first, acc, true);
             false
         }
-        TypePlacement::LaterFile | TypePlacement::EarlierFile | TypePlacement::LaterFileFragment => {
+        TypePlacement::LaterFile
+        | TypePlacement::EarlierFile
+        | TypePlacement::LaterFileFragment => {
             second.line(&format!("namespace {ns}"));
             second.line("");
             match placement {
@@ -632,7 +634,10 @@ fn is_accessibility_error(number: i64) -> bool {
 }
 
 /// Every error diagnostic FCS reported, as `(file name, byte range, number)`.
-fn error_diagnostics(json: &str, sources: &[(PathBuf, String)]) -> Vec<(PathBuf, usize, usize, i64)> {
+fn error_diagnostics(
+    json: &str,
+    sources: &[(PathBuf, String)],
+) -> Vec<(PathBuf, usize, usize, i64)> {
     let dump: serde_json::Value = serde_json::from_str(json).expect("uses-project JSON");
     let mut out = Vec::new();
     for file in dump["Files"].as_array().expect("Files array") {
@@ -707,12 +712,18 @@ fn grade(files: &[(&str, String)], sites: &[Site]) -> Vec<Graded> {
                 let p = parse_sig(src);
                 assert!(p.errors.is_empty(), "{name}: {:?}\n{src}", p.errors);
                 let recovery = SyntaxRecovery::of(&p);
-                (SourceFile::Sig(SigFile::cast(p.root).expect("sig file")), recovery)
+                (
+                    SourceFile::Sig(SigFile::cast(p.root).expect("sig file")),
+                    recovery,
+                )
             } else {
                 let p = parse(src);
                 assert!(p.errors.is_empty(), "{name}: {:?}\n{src}", p.errors);
                 let recovery = SyntaxRecovery::of(&p);
-                (SourceFile::Impl(ImplFile::cast(p.root).expect("impl file")), recovery)
+                (
+                    SourceFile::Impl(ImplFile::cast(p.root).expect("impl file")),
+                    recovery,
+                )
             }
         })
         .collect();
@@ -773,11 +784,11 @@ fn grade(files: &[(&str, String)], sites: &[Site]) -> Vec<Graded> {
             };
             let res = proj.file(site.file).resolution_at(site.range);
             let ours = match res {
-                Some(r @ Resolution::Item(_)) => proj
-                    .item_def(r)
-                    .map_or(OurVerdict::Declined, |(f, def)| {
+                Some(r @ Resolution::Item(_)) => {
+                    proj.item_def(r).map_or(OurVerdict::Declined, |(f, def)| {
                         OurVerdict::Committed(f, def.range)
-                    }),
+                    })
+                }
                 Some(r @ Resolution::Local(_)) => proj
                     .file(site.file)
                     .resolved_def(r)
@@ -927,7 +938,11 @@ fn value_accessibility_through_open_agrees_with_fcs() {
 
 #[test]
 fn type_contestant_accessibility_agrees_with_fcs() {
-    let mut files = [FileBuilder::new(0), FileBuilder::new(1), FileBuilder::new(2)];
+    let mut files = [
+        FileBuilder::new(0),
+        FileBuilder::new(1),
+        FileBuilder::new(2),
+    ];
     let mut sites = Vec::new();
     let mut i = 0;
     for placement in TypePlacement::ALL {

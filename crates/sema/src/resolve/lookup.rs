@@ -1523,12 +1523,7 @@ impl<'a> Resolver<'a> {
                         && p.starts_with(container)
                         && slot.class_at(p, site) != SlotClass::Keeps
                 })
-                .map(|(p, _, _)| {
-                    (
-                        p.last().expect("non-empty qualified path").clone(),
-                        current,
-                    )
-                }),
+                .map(|(p, _, _)| (p.last().expect("non-empty qualified path").clone(), current)),
         );
         out
     }
@@ -5425,8 +5420,7 @@ impl<'a> Resolver<'a> {
             let ns = self.enclosing_namespace();
             let mut path = ns.to_vec();
             path.push(head.to_string());
-            (!ns.is_empty() && self.preceding.exported_type_slot(&path).is_some())
-                .then_some(0)
+            (!ns.is_empty() && self.preceding.exported_type_slot(&path).is_some()).then_some(0)
         };
         lexical
             .chain(opened)
