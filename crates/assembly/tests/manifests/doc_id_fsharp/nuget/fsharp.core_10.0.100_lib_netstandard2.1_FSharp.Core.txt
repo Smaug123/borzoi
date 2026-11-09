@@ -1,32 +1,14 @@
 # Generated; do not edit by hand. One line per graded item, sorted.
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-assembly --test all doc_id_fsharp_diff:: -- --include-ignored
-hits 2309
+hits 2327
 keys 2429
-miss M:Microsoft.FSharp.Collections.FSharpList`1.Cons(`0,Microsoft.FSharp.Collections.FSharpList{`0})
 miss M:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.add_Error(Microsoft.FSharp.Control.FSharpHandler{System.Exception})
 miss M:Microsoft.FSharp.Control.FSharpMailboxProcessor`1.remove_Error(Microsoft.FSharp.Control.FSharpHandler{System.Exception})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.LowPlusPriority.BackgroundTaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``1},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.BackgroundTaskBuilder,``0,Microsoft.FSharp.Control.FSharpAsync{``2})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.LowPlusPriority.BackgroundTaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``2},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.BackgroundTaskBuilder,Microsoft.FSharp.Control.FSharpAsync{``1},``0)
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.LowPlusPriority.TaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``1},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.TaskBuilder,``0,Microsoft.FSharp.Control.FSharpAsync{``2})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.LowPlusPriority.TaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``2},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.TaskBuilder,Microsoft.FSharp.Control.FSharpAsync{``1},``0)
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.BackgroundTaskBuilder.MergeSources``2(Microsoft.FSharp.Control.BackgroundTaskBuilder,Microsoft.FSharp.Control.FSharpAsync{``0},Microsoft.FSharp.Control.FSharpAsync{``1})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.BackgroundTaskBuilder.MergeSources``2(Microsoft.FSharp.Control.BackgroundTaskBuilder,Microsoft.FSharp.Control.FSharpAsync{``0},System.Threading.Tasks.Task{``1})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.BackgroundTaskBuilder.MergeSources``2(Microsoft.FSharp.Control.BackgroundTaskBuilder,System.Threading.Tasks.Task{``0},Microsoft.FSharp.Control.FSharpAsync{``1})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.BackgroundTaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``1},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.BackgroundTaskBuilder,``0,System.Threading.Tasks.Task{``2})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.BackgroundTaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``2},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.BackgroundTaskBuilder,System.Threading.Tasks.Task{``1},``0)
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.TaskBuilder.MergeSources``2(Microsoft.FSharp.Control.TaskBuilder,Microsoft.FSharp.Control.FSharpAsync{``0},Microsoft.FSharp.Control.FSharpAsync{``1})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.TaskBuilder.MergeSources``2(Microsoft.FSharp.Control.TaskBuilder,Microsoft.FSharp.Control.FSharpAsync{``0},System.Threading.Tasks.Task{``1})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.TaskBuilder.MergeSources``2(Microsoft.FSharp.Control.TaskBuilder,System.Threading.Tasks.Task{``0},Microsoft.FSharp.Control.FSharpAsync{``1})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.TaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``1},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.TaskBuilder,``0,System.Threading.Tasks.Task{``2})
-miss M:Microsoft.FSharp.Control.TaskBuilderExtensions.MediumPriority.TaskBuilder.MergeSources``4(Microsoft.FSharp.Core.FSharpFunc{``0,``3},Microsoft.FSharp.Core.FSharpFunc{``3,``2},Microsoft.FSharp.Core.FSharpFunc{``3,System.Boolean},Microsoft.FSharp.Control.TaskBuilder,System.Threading.Tasks.Task{``1},``0)
 miss M:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.add_Invalidate(System.EventHandler)
 miss M:Microsoft.FSharp.Core.CompilerServices.ITypeProvider.remove_Invalidate(System.EventHandler)
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(Microsoft.FSharp.Core.FSharpFunc{`0,`1})
 miss M:Microsoft.FSharp.Core.FSharpFunc`2.op_Implicit(System.Converter{`0,`1})
-miss M:Microsoft.FSharp.Core.FSharpOption`1.Some(`0)
-miss P:Microsoft.FSharp.Core.FSharpOption`1.IsNone
-miss P:Microsoft.FSharp.Core.FSharpOption`1.IsSome
 miss T:Microsoft.FSharp.Core.[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]`1
 miss T:Microsoft.FSharp.Core.[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]`1
 miss T:Microsoft.FSharp.Core.[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]`1
