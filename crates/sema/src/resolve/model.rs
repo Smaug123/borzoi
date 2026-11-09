@@ -1728,6 +1728,18 @@ impl ProjectItems {
             .collect()
     }
 
+    /// The earlier files declaring a module at or beneath `path`, once per
+    /// declaration.
+    pub(super) fn module_declarations_under<'a>(
+        &'a self,
+        path: &'a [String],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.module_decls
+            .iter()
+            .filter(move |d| d.path.starts_with(path))
+            .map(|d| d.file)
+    }
+
     /// The earlier files declaring a module at exactly `path`, once per
     /// declaration.
     pub(super) fn module_declarations<'a>(

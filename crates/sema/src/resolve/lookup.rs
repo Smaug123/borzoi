@@ -1695,10 +1695,11 @@ impl<'a> Resolver<'a> {
     /// A child the walk cannot open as FCS does is left out, so an `open` of
     /// its short name goes opaque instead ([`Self::may_name_unlent_module`]):
     ///
-    /// - one whose path another declaration shares (a plain `module A` in
-    ///   another file holding its own `Child`, a `module N.A.Child` header):
-    ///   the module open folds every declaration at the path, FCS only the
-    ///   fragment's own;
+    /// - one whose path, or a path beneath it, another declaration shares (a
+    ///   plain `module A` in another file holding its own `Child`, a `module
+    ///   N.A.Child.Grand` header): the module open of `Child`, `Child.Grand`
+    ///   or a chained `Grand` folds every declaration at its path, FCS only
+    ///   the fragment's own;
     /// - one whose name a direct module of `container` takes in a later
     ///   fragment: FCS enters each fragment's direct modules and then its
     ///   auto-open children's, fragment by fragment — earlier files merged
@@ -1718,12 +1719,24 @@ impl<'a> Resolver<'a> {
             .current_module_decls()
             .find(|&(p, _, _)| file == current && p == path)
             .map(|(_, pos, _)| pos);
-        let declarations = |full: &[String]| {
-            self.preceding.module_declarations(full).count()
+        // The fragment's own file declares the child once and whatever lies
+        // beneath it once each (FS0248); any other declaration is another
+        // fragment's.
+        let owned = |full: &[String]| {
+            let at = self.preceding.module_declarations(full).count()
                 + self
                     .current_module_decls()
                     .filter(|&(p, _, _)| p == full)
-                    .count()
+                    .count();
+            let elsewhere = self
+                .preceding
+                .module_declarations_under(full)
+                .any(|g| g != file)
+                || (file != current
+                    && self
+                        .current_module_decls()
+                        .any(|(p, _, _)| p.starts_with(full)));
+            at == 1 && !elsewhere
         };
         let later_direct = |container: &[String], child: &str| {
             let mut direct = container.to_vec();
@@ -1742,8 +1755,7 @@ impl<'a> Resolver<'a> {
             .filter(|child| {
                 let mut full = path.to_vec();
                 full.push(child.clone());
-                declarations(&full) == 1
-                    && container.is_none_or(|container| !later_direct(container, child))
+                owned(&full) && container.is_none_or(|container| !later_direct(container, child))
             })
             .collect();
         if children.is_empty() {

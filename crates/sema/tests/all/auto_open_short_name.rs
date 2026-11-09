@@ -328,6 +328,42 @@ fn another_fragments_module_is_not_entered() {
     }]);
 }
 
+/// Nor is the child entered when another declaration shares a path beneath
+/// it: the module `open` of `Child.Grand`, or of `Grand` after `open Child`,
+/// folds every declaration at its path, FCS only the fragment's own.
+#[test]
+fn another_fragments_descendant_is_not_entered() {
+    const FRAGMENT: &str = "namespace N\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        module Grand =\n            \
+         let Nn = 1\n";
+    const HEADER: &str = "module N.A.Child.Grand\n\nlet Nn = 2\n";
+    run(&[
+        Case {
+            label: "short_descendant_dotted_open",
+            files: &[
+                FRAGMENT,
+                HEADER,
+                "module Demo\n\nopen N\nopen Child.Grand\n\nlet probe = Nn\n",
+            ],
+            probe: "Nn",
+            want_file: 0,
+            want: "Nn = 1",
+            must_commit: false,
+        },
+        Case {
+            label: "short_descendant_chained_open",
+            files: &[
+                FRAGMENT,
+                HEADER,
+                "module Demo\n\nopen N\nopen Child\nopen Grand\n\nlet probe = Nn\n",
+            ],
+            probe: "Nn",
+            want_file: 0,
+            want: "Nn = 1",
+            must_commit: false,
+        },
+    ]);
+}
+
 /// A dotted head reaches a short name too. The walk does not follow it there
 /// yet; it must not name anything FCS does not.
 #[test]
@@ -392,10 +428,13 @@ fn a_dotted_head_through_a_short_name_is_never_wrong() {
 }
 
 /// The `[<AutoOpen>] module A` whose `Child` a short name may reach, in
-/// namespace `N` or in the global namespace.
+/// namespace `N` or in the global namespace. `Child` nests a `Grand`, which
+/// the dotted and chained openers reach through it.
 const FRAGMENTS: &[&str] = &[
-    "namespace N\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        let Nn = 1\n",
-    "namespace global\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        let Nn = 1\n",
+    "namespace N\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        let Nn = 1\n        \
+     module Grand =\n            let Nn = 4\n",
+    "namespace global\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        let Nn = 1\n        \
+     module Grand =\n            let Nn = 4\n",
 ];
 
 /// Another module `Child` that contests the short name, and how it may be
@@ -415,6 +454,9 @@ enum Competitor {
     RootFile,
     /// A `module N.A.Child` header file.
     HeaderFile,
+    /// A `module N.A.Child.Grand` header file: another declaration beneath
+    /// the fragment's child.
+    DescendantHeaderFile,
 }
 
 impl Competitor {
@@ -425,6 +467,7 @@ impl Competitor {
         Competitor::Global,
         Competitor::RootFile,
         Competitor::HeaderFile,
+        Competitor::DescendantHeaderFile,
     ];
 
     fn block(self) -> &'static str {
@@ -439,12 +482,16 @@ impl Competitor {
             Competitor::Global => "namespace global\n\nmodule Child =\n    let Nn = 2\n",
             Competitor::RootFile => "module Child\n\nlet Nn = 2\n",
             Competitor::HeaderFile => "module N.A.Child\n\nlet Nn = 2\n",
+            Competitor::DescendantHeaderFile => "module N.A.Child.Grand\n\nlet Nn = 2\n",
         }
     }
 
     /// A top-level module must be a file's only block.
     fn owns_its_file(self) -> bool {
-        matches!(self, Competitor::RootFile | Competitor::HeaderFile)
+        matches!(
+            self,
+            Competitor::RootFile | Competitor::HeaderFile | Competitor::DescendantHeaderFile
+        )
     }
 }
 
@@ -464,6 +511,10 @@ enum Opener {
     ImplicitFile,
     /// A further `namespace N` block in the file of the last declaration.
     ImplicitBlock,
+    /// A later `module Demo` file: `open N` then `open Child.Grand`.
+    Dotted,
+    /// A later `module Demo` file: `open N`, `open Child`, then `open Grand`.
+    Chained,
 }
 
 impl Opener {
@@ -474,6 +525,8 @@ impl Opener {
         Opener::ExplicitLocalBefore,
         Opener::ImplicitFile,
         Opener::ImplicitBlock,
+        Opener::Dotted,
+        Opener::Chained,
     ];
 
     fn block(self) -> &'static str {
@@ -489,6 +542,12 @@ impl Opener {
             Opener::ExplicitLocalBefore => {
                 "module Demo\n\nlet Nn = 99\n\nmodule Child =\n    let Nn = 3\n\nopen N\n\
                  open Child\n\nlet probe = Nn\n"
+            }
+            Opener::Dotted => {
+                "module Demo\n\nlet Nn = 99\n\nopen N\nopen Child.Grand\n\nlet probe = Nn\n"
+            }
+            Opener::Chained => {
+                "module Demo\n\nlet Nn = 99\n\nopen N\nopen Child\nopen Grand\n\nlet probe = Nn\n"
             }
             Opener::ImplicitFile | Opener::ImplicitBlock => {
                 "namespace N\n\nmodule Demo =\n    let Nn = 99\n    open Child\n    let probe = Nn\n"
