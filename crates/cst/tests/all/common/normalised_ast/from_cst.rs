@@ -402,12 +402,18 @@ fn normalise_module(m: &ModuleOrNamespace) -> NormalisedModule {
     }
 }
 
-/// Each module-level definition is one FCS `moduleDefn`, at whose head
-/// the `SynArgNameGenerator` is `.Reset()` (`pars.fsy:1310`/`:1318`). So
-/// the `_argN` counter for `fun`-lambda body-lowering ([`normalise_fun`])
-/// starts fresh per decl and is *shared* across everything inside it —
-/// including an `and`-chain (one `ModuleDecl::Let` with several bindings)
-/// and any nested/sibling lambdas in a binding RHS.
+/// Each module-level definition is one FCS `moduleDefn`. The `_argN` counter
+/// for `fun`-lambda body-lowering ([`normalise_fun`]) starts fresh per decl
+/// and is *shared* across everything inside it — including an `and`-chain
+/// (one `ModuleDecl::Let` with several bindings) and any nested/sibling
+/// lambdas in a binding RHS.
+///
+/// FCS's `SynArgNameGenerator.Reset()` (`pars.fsy:1313`/`:1321`) runs only in
+/// the module-level `let` production's action, which fires once the bindings
+/// have reduced, so a count is carried into a `let` out of a preceding `type`
+/// and across a type's members. The fresh counters this projector seeds (here,
+/// and per member) differ from FCS there, which is immaterial because the
+/// index is canonicalised away (see [`normalise_fun`]).
 fn normalise_decl(d: &ModuleDecl) -> NormalisedDecl {
     normalise_decl_with(d, true)
 }
@@ -2529,11 +2535,18 @@ fn normalise_expr(e: &Expr, counter: &mut u32) -> NormalisedExpr {
 /// `fun 0 -> fun 1 -> 2` lowers to outer `_arg2` / inner `_arg1` because
 /// the inner lambda reduces first.
 ///
-/// Known gap (unprojected, no test): function-form binding heads
-/// (`let f 0 = …`) also consume this generator before their RHS, but
-/// [`normalise_binding`] does no binding-head lowering yet. Value bindings
-/// (`let f = fun …`) are unaffected — the `Named` head is simple and
-/// claims no slot, so the RHS lambda still starts at `_arg1`.
+/// A function-form binding head (`let f 0 = …`) consumes none of this
+/// generator: FCS lowers a head only while type checking
+/// (`PushCurriedPatternsToExpr cenv.synArgNameGenerator`, the checker's own
+/// generator), so the parse tree keeps the head pattern and the parser's count
+/// is untouched; [`normalise_binding`] correspondingly lowers nothing.
+///
+/// The index this counter produces never reaches the comparison: every
+/// generated scrutinee goes through [`super::canonicalise_scrutinee`]. That is
+/// what keeps the per-decl reset in [`normalise_decl`] sound where it differs
+/// from FCS (a count carried out of a `type` into the next `let`, or across a
+/// type's members). `parser_diff_arg_name_generator` holds both halves over a
+/// grid of binding heads, right-hand sides and binding contexts.
 fn normalise_fun(f: &FunExpr, counter: &mut u32) -> NormalisedExpr {
     let args: Vec<NormalisedPat> = f.args().map(|p| normalise_pat(&p, counter)).collect();
     // A missing body is the `fun … ->` recovery hole — FCS fills it with

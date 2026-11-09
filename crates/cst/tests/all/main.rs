@@ -30,6 +30,7 @@ mod parser_diff_active_pattern_expr;
 mod parser_diff_active_patterns;
 mod parser_diff_anon_recd;
 mod parser_diff_app_nesting;
+mod parser_diff_arg_name_generator;
 mod parser_diff_assignment;
 mod parser_diff_ast_ranges;
 mod parser_diff_atomic_app;

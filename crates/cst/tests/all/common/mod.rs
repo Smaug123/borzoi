@@ -1270,6 +1270,13 @@ pub fn fmt_token(t: &NormalisedToken) -> String {
 /// Assert our parser and FCS agree on the normalised AST for `source`, and
 /// that our parser reports no errors.
 pub fn assert_asts_match(source: &str) {
+    assert_asts_match_projecting(source);
+}
+
+/// [`assert_asts_match`], returning the normalised AST both sides agreed on,
+/// for a caller that asserts a further property of the comparison currency
+/// itself.
+pub fn assert_asts_match_projecting(source: &str) -> normalised_ast::NormalisedRoot {
     let mut tmp = NamedTempFile::with_suffix(".fs").expect("create tempfile");
     tmp.write_all(source.as_bytes()).expect("write source");
     let path = tmp.path();
@@ -1290,6 +1297,7 @@ pub fn assert_asts_match(source: &str) {
         rust, fcs,
         "AST divergence for source {source:?}\n  rust: {rust:#?}\n  fcs:  {fcs:#?}",
     );
+    rust
 }
 
 /// Assert our parser and FCS reach the same **verdict** on `source` (both clean
