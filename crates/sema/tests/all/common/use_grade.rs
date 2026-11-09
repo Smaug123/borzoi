@@ -136,8 +136,18 @@ pub struct Graded {
 
 /// Fold `files` (Compile order, `(relative name, source)`; a `.fsi` is a
 /// signature) as one project, both through FCS and through sema, and grade
-/// every site. `tag` names the temporary directory.
+/// every site. `tag` names the temporary directory. Sema reads no assembly.
 pub fn grade(tag: &str, files: &[(&str, String)], sites: &[Site]) -> Vec<Graded> {
+    grade_in(tag, files, sites, &AssemblyEnv::default())
+}
+
+/// [`grade`], with sema reading `env`.
+pub fn grade_in(
+    tag: &str,
+    files: &[(&str, String)],
+    sites: &[Site],
+    env: &AssemblyEnv,
+) -> Vec<Graded> {
     let tree: Vec<(&str, &str)> = files.iter().map(|(n, s)| (*n, s.as_str())).collect();
     let (root, written) = temp_fs_tree(tag, &tree);
     let paths: Vec<&Path> = written.iter().map(|(p, _)| p.as_path()).collect();
@@ -174,7 +184,7 @@ pub fn grade(tag: &str, files: &[(&str, String)], sites: &[Site]) -> Vec<Graded>
         .zip(qnofs)
         .map(|((file, recovery), qnof)| ProjectFile::new(file, qnof, recovery))
         .collect();
-    let proj = resolve_project_files(&project, &AssemblyEnv::default());
+    let proj = resolve_project_files(&project, env);
     let _ = std::fs::remove_dir_all(&root);
     let index_of = |path: &Path| {
         written
