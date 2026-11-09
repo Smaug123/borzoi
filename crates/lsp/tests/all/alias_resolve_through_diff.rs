@@ -774,11 +774,7 @@ fn segments(src: &str, span: TextRange) -> Vec<TextRange> {
 /// exactly `ours` if FCS has one there, else the longest one inside `path`.
 /// FCS records a qualified name over the path that reaches it
 /// (`AlLib.WidgetX.Make`), where we record it at its own segment.
-fn fcs_records<'a>(
-    fu: &'a FileUses,
-    path: TextRange,
-    ours: TextRange,
-) -> Vec<&'a NormalisedProjectUse> {
+fn fcs_records(fu: &FileUses, path: TextRange, ours: TextRange) -> Vec<&NormalisedProjectUse> {
     let inside: Vec<&NormalisedProjectUse> = fu
         .uses
         .iter()
