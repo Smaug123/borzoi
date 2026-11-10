@@ -118,11 +118,16 @@ fn assert_scratch_matches_obj(project: &Path) {
     // Scratch side first, so it runs against an un-restored project (no obj/).
     let restored = restore_to_scratch(project, &root, &served, Some(workspace.env()));
     // B₁ runs in shadow on every restore. Under the host's own environment it
-    // may decline (its user config, say), but it must not contradict the
-    // restore; `restore_graph.rs` requires it to commit under a controlled one.
+    // may decline (its user config, say) or not be asked (a CLI language
+    // other than English hides which NuGet ran), but it must not contradict
+    // the restore; `restore_graph.rs` requires it to commit under a
+    // controlled environment.
     match restored.shadow.map(|shadow| shadow.verdict) {
-        Some(ShadowVerdict::Agreed(_) | ShadowVerdict::Declined(_)) => {}
-        other => panic!("B₁'s shadow must agree or decline, not {other:?}"),
+        Some(ShadowVerdict::Disagreed(disagreement)) => {
+            panic!("B₁'s shadow contradicts the restore: {disagreement}")
+        }
+        None => panic!("the restore wrote no spec for B₁ to shadow"),
+        Some(_) => {}
     }
     let scratch = match restored.outcome {
         RestoreOutcome::Resolved(resolved) => resolved,

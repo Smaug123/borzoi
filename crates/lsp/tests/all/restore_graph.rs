@@ -192,6 +192,11 @@ fn controlled_env() -> SdkDiscoveryEnv {
         .retain(|name, _| environment_variable(OsStr::new(name)) == EnvironmentVariable::Unread);
     env.dotnet_cli_home = None;
     env.home_dir = Some(SUITE_HOME.path().to_owned());
+    // MSBuild's log is in the CLI's language, and the server reads which NuGet
+    // ran from it (`restoring_nuget`), so the suite holds the language at
+    // English. B₁ holds the variable inert, and its differential grades that.
+    env.build_environment
+        .insert("DOTNET_CLI_UI_LANGUAGE".to_owned(), "en".to_owned());
     env
 }
 
