@@ -1301,15 +1301,19 @@ NuGet restore runs only by default: MSBuild imports `$(NuGetRestoreTargets)`,
 whose tasks load from `$(RestoreTaskAssemblyFile)`, and a project, its
 imports or its environment can point either at another SDK (review found the
 environment route). So the project is evaluated as the restore evaluates it,
-and anything but the default route into the host SDK, with both values
-trusted, declines. Stage 9 needs the same rule, and A₁'s model of the cone is
+under the restore's own global properties and environment (one list,
+`restore_global_properties`, builds both the command line and this
+evaluation; review found a redirect conditioned on `NuGetInteractive`), and
+anything but the default route into the host SDK, with both values trusted,
+declines. Stage 9 needs the same rule, and A₁'s model of the cone is
 where a redirect would be followed rather than declined. The oracles:
 
 - `restore_graph.rs` pins a `global.json` to each installed SDK in turn and
   requires the identity to be the one the oracle reports for the
   `NuGet.Commands` it loads from the SDK `dotnet` selects. Ignoring the pin
   fails it. A redirect of either property, by the project or by the
-  environment, must decline, and removing any part of the check fails that.
+  environment, or conditioned on any global the restore passes, must
+  decline, and removing any part of the check fails that.
 - `restore_graph.rs` grades B₁ through the shadow's own comparison, with the
   server's identity, which must equal the oracle's, on every fixture and
   corpus project.

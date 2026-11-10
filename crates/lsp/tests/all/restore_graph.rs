@@ -43,10 +43,10 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borzoi::restore::nuget_identity::{IdentityDecline, restoring_nuget};
-use borzoi::restore::shadow::{RestoreRecord, ShadowVerdict, shadow_parsed};
+use borzoi::restore::shadow::{NotRun, RestoreRecord, ShadowVerdict, shadow_parsed};
 use borzoi::restore::{
     RestoreGraph, RestoreGraphSource, RestoreOutcome, ScratchDir, restore_environment,
-    restore_graph, restore_to_scratch,
+    restore_global_properties, restore_graph, restore_to_scratch,
 };
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::workspace::Workspace;
@@ -425,7 +425,10 @@ fn spawn_free(
     decomposition: &Decomposition,
     env: &SdkDiscoveryEnv,
 ) -> Result<SpawnFree, String> {
-    let identity = restoring_nuget(project, &dotnet_root(), env)
+    // The identity under the restore's globals; the fixtures and corpus
+    // projects condition nothing on their values, so placeholder paths do.
+    let globals = restore_global_properties(Path::new("/scratch"), Path::new("/packages"));
+    let identity = restoring_nuget(project, &dotnet_root(), env, &globals)
         .map_err(|decline| format!("{}: no NuGet identity: {decline}", project.display()))?;
     if identity.as_str() != decomposition.nuget_commands {
         return Err(format!(
@@ -602,8 +605,14 @@ fn the_server_names_the_nuget_of_the_sdk_dotnet_selects() {
         let expected = identity["informationalVersion"]
             .as_str()
             .expect("the identity names a version");
-        let ours = restoring_nuget(&root.join("App.fsproj"), &dotnet_root(), &controlled_env())
-            .unwrap_or_else(|decline| panic!("SDK {version}: no identity: {decline}"));
+        let globals = restore_global_properties(Path::new("/scratch"), Path::new("/packages"));
+        let ours = restoring_nuget(
+            &root.join("App.fsproj"),
+            &dotnet_root(),
+            &controlled_env(),
+            &globals,
+        )
+        .unwrap_or_else(|decline| panic!("SDK {version}: no identity: {decline}"));
         assert_eq!(ours.as_str(), expected, "SDK {version}");
         identities.insert(expected.to_owned());
     }
@@ -776,66 +785,104 @@ fn the_on_demand_restore_runs_b1_in_shadow() {
 /// or `NuGetRestoreTargets` at another SDK's targets, and restore then runs
 /// that SDK's NuGet. The server does not follow a redirect; it declines to
 /// name the NuGet, so B₁ is not graded under an identity that did not run.
+///
+/// The routing is read from the project evaluated as the restore evaluates
+/// it, so a redirect conditioned on any global property the restore passes
+/// (`restore_global_properties`, the list its command line is built from) is
+/// seen: one row per global, through the on-demand restore itself.
 #[test]
 fn a_redirected_restore_task_names_no_nuget() {
     let sdk = sdk_dir_for(&dotnet_root().join("dotnet"), &std::env::temp_dir());
     let tasks = sdk.join("NuGet.Build.Tasks.dll");
-    let targets = sdk.join("NuGet.targets");
-    let property = |name: &str, value: &Path| {
+    let targets_text =
+        std::fs::read_to_string(sdk.join("NuGet.targets")).expect("the SDK has NuGet.targets");
+    let property = |condition: &str, name: &str, value: &str| {
         APP.replace(
             "</PropertyGroup>",
-            &format!("  <{name}>{}</{name}>\n  </PropertyGroup>", value.display()),
+            &format!("  <{name} Condition=\"{condition}\">{value}</{name}>\n  </PropertyGroup>"),
         )
     };
-    let cases = [
+    let tasks_text = tasks.to_str().unwrap();
+    let mut cases = vec![
         (
-            "redirect-task-property",
-            property("RestoreTaskAssemblyFile", &tasks),
+            "redirect-task-property".to_owned(),
+            property("", "RestoreTaskAssemblyFile", tasks_text),
             None,
         ),
         (
-            "redirect-task-environment",
+            "redirect-task-environment".to_owned(),
             APP.to_owned(),
-            Some(("RestoreTaskAssemblyFile", tasks.as_path())),
-        ),
-        // A copy of the SDK's restore targets, elsewhere: its tasks load
-        // beside it, not from the SDK.
-        (
-            "redirect-targets-property",
-            APP.replace(
-                "</PropertyGroup>",
-                "  <NuGetRestoreTargets>$(MSBuildProjectDirectory)/NuGet.targets</NuGetRestoreTargets>\n  </PropertyGroup>",
-            ),
-            None,
+            Some(("RestoreTaskAssemblyFile", tasks_text)),
         ),
     ];
-    let targets_text = std::fs::read_to_string(&targets).expect("the SDK has NuGet.targets");
+    let globals = restore_global_properties(Path::new("/scratch"), Path::new("/packages"));
+    assert!(globals.iter().any(|(name, _)| *name == "NuGetInteractive"));
+    for (name, value) in &globals {
+        if value.is_empty() {
+            continue;
+        }
+        cases.push((
+            format!("redirect-under-{name}"),
+            property(
+                &format!("'$({name})' != ''"),
+                "RestoreTaskAssemblyFile",
+                tasks_text,
+            ),
+            None,
+        ));
+    }
     for (tag, text, variable) in cases {
         let root = write_tree(
-            tag,
+            &tag,
             &[
                 ("App.fsproj", &text),
                 ("App.fs", "module App\n"),
                 ("NuGet.targets", &targets_text),
             ],
         );
+        let project = root.join("App.fsproj");
         let mut env = controlled_env();
         if let Some((name, value)) = variable {
             env.build_environment
-                .insert(name.to_owned(), value.to_str().unwrap().to_owned());
+                .insert(name.to_owned(), value.to_owned());
         }
-        match restoring_nuget(&root.join("App.fsproj"), &dotnet_root(), &env) {
-            Err(IdentityDecline::Redirected { .. }) => {}
+        let mut workspace = Workspace::with_env(env.clone());
+        let served = workspace.served_tfm_for_project(&project);
+        let restored = restore_to_scratch(&project, &dotnet_root(), &served, Some(&env));
+        match restored.shadow.map(|shadow| shadow.verdict) {
+            Some(ShadowVerdict::NotRun(NotRun::NoIdentity(IdentityDecline::Redirected {
+                ..
+            }))) => {}
             other => panic!("{tag}: {other:?}"),
         }
     }
-    // The control: the default route names the NuGet.
+    // A copy of the SDK's restore targets, elsewhere: its tasks load beside
+    // it, not from the SDK. No restore gets as far as a spec with no tasks
+    // there, so this one asks for the identity directly.
     let root = write_tree(
-        "redirect-none",
-        &[("App.fsproj", APP), ("App.fs", "module App\n")],
+        "redirect-targets-property",
+        &[
+            (
+                "App.fsproj",
+                &property(
+                    "",
+                    "NuGetRestoreTargets",
+                    "$(MSBuildProjectDirectory)/NuGet.targets",
+                ),
+            ),
+            ("App.fs", "module App\n"),
+            ("NuGet.targets", &targets_text),
+        ],
     );
-    restoring_nuget(&root.join("App.fsproj"), &dotnet_root(), &controlled_env())
-        .unwrap_or_else(|decline| panic!("the default route: {decline}"));
+    match restoring_nuget(
+        &root.join("App.fsproj"),
+        &dotnet_root(),
+        &controlled_env(),
+        &globals,
+    ) {
+        Err(IdentityDecline::Redirected { .. }) => {}
+        other => panic!("redirect-targets-property: {other:?}"),
+    }
 }
 
 /// The shadow judges NuGet's restore, not the command's exit status. A target

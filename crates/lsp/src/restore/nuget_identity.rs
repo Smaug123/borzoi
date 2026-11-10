@@ -17,7 +17,9 @@
 //! beside it unless set), and NuGet loads beside its tasks. A project, its
 //! imports or its environment can set either, and restore then runs another
 //! NuGet. So the project is evaluated as the restore evaluates it
-//! ([`crate::workspace::restore_task_routing`]), and anything but the default
+//! ([`crate::workspace::restore_task_routing`]: the restore's own global
+//! properties and environment, which a redirect can be conditioned on), and
+//! anything but the default
 //! route, with both values trusted, declines: following a redirect would mean
 //! modelling where it lands.
 //!
@@ -27,6 +29,8 @@
 //! `sdk.paths` lists `$host$` among other roots could still have the muxer
 //! choose another root first.
 
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +38,7 @@ use borzoi_assembly::Ecma335Assembly;
 use borzoi_nuget::dgspec::NuGetIdentity;
 
 use crate::paths::paths_equal;
+use crate::restore::restore_environment;
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
 
 /// Why the restoring NuGet's identity cannot be said.
@@ -79,6 +84,10 @@ pub struct RestoreTaskRouting {
 /// The value `NuGet.targets` gives `RestoreTaskAssemblyFile` when nothing has
 /// set it: the task assembly beside the targets file.
 const DEFAULT_TASK_ASSEMBLY_FILE: &str = "NuGet.Build.Tasks.dll";
+
+/// The MSBuild-computed property the static evaluator is seeded with (see
+/// [`crate::restore::restore_environment`]).
+const USER_EXTENSIONS_PATH: &str = "MSBuildUserExtensionsPath";
 
 /// Whether `routing` is the default route into the SDK at `sdk`: its own
 /// `NuGet.targets`, loading the task assembly beside it.
@@ -126,11 +135,13 @@ impl fmt::Display for IdentityDecline {
 }
 
 /// The identity of the NuGet that `dotnet_root`'s muxer restores `project`
-/// with, under the environment `env` describes.
+/// with, under the environment `env` describes and the global properties
+/// `globals` ([`crate::restore::restore_global_properties`]).
 pub fn restoring_nuget(
     project: &Path,
     dotnet_root: &Path,
     env: &SdkDiscoveryEnv,
+    globals: &[(&str, OsString)],
 ) -> Result<NuGetIdentity, IdentityDecline> {
     let discovery = SdkDiscovery::for_project(project, env)
         .map_err(|e| IdentityDecline::Discovery(e.to_string()))?;
@@ -144,7 +155,30 @@ pub fn restoring_nuget(
             dotnet_root: dotnet_root.to_path_buf(),
         });
     }
-    let routing = crate::workspace::restore_task_routing(project, env)
+    // MSBuild reads names and values as text; one that is not cannot be
+    // handed to the evaluator as the restore hands it to MSBuild.
+    let text = |(name, value): (&OsString, &OsString)| {
+        Some((name.to_str()?.to_owned(), value.to_str()?.to_owned()))
+    };
+    let globals: Option<HashMap<String, String>> = globals
+        .iter()
+        .map(|(name, value)| Some(((*name).to_owned(), value.to_str()?.to_owned())))
+        .collect();
+    let environment: Option<HashMap<String, String>> =
+        restore_environment(env).iter().map(text).collect();
+    let (Some(globals), Some(mut environment)) = (globals, environment) else {
+        return Err(IdentityDecline::NotEvaluated);
+    };
+    // The restore's MSBuild computes `MSBuildUserExtensionsPath` itself, so
+    // `restore_environment` leaves it out; the static evaluator is handed
+    // the value it computes instead, as every evaluation here is.
+    environment.extend(
+        env.build_environment
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case(USER_EXTENSIONS_PATH))
+            .map(|(name, value)| (name.clone(), value.clone())),
+    );
+    let routing = crate::workspace::restore_task_routing(project, env, &globals, &environment)
         .ok_or(IdentityDecline::NotEvaluated)?;
     if !routes_to_host(&routing, &sdk) {
         return Err(IdentityDecline::Redirected {

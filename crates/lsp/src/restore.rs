@@ -340,6 +340,7 @@ pub fn restore_to_scratch(
         env,
         &spec,
         &scratch.path,
+        &inputs.packages.folder,
         assets_text.as_deref(),
     ));
     ScratchRestore {
@@ -369,6 +370,7 @@ fn run_shadow(
     env: &SdkDiscoveryEnv,
     spec: &str,
     scratch: &Path,
+    packages_folder: &Path,
     assets: Option<&str>,
 ) -> ShadowRun {
     let started = std::time::Instant::now();
@@ -378,7 +380,12 @@ fn run_shadow(
             let assets: Option<serde_json::Value> =
                 assets.and_then(|text| serde_json::from_str(text).ok());
             shadow::shadow(
-                nuget_identity::restoring_nuget(project, dotnet_root, env),
+                nuget_identity::restoring_nuget(
+                    project,
+                    dotnet_root,
+                    env,
+                    &restore_global_properties(scratch, packages_folder),
+                ),
                 spec,
                 RestoreRecord {
                     succeeded,
@@ -845,16 +852,7 @@ fn offline_restore_command(
     packages_folder: &Path,
     env: &SdkDiscoveryEnv,
 ) -> Option<Command> {
-    // An empty local folder used as the *only* restore source. As an MSBuild
-    // property this overrides the project's `<RestoreSources>` and the ambient
-    // config's feeds alike (the property takes precedence over config sources),
-    // so restore reads only the global-packages cache — offline.
-    let empty_source = scratch.join("empty-source");
-    std::fs::create_dir_all(&empty_source).ok()?;
-
-    // `MSBuildProjectExtensionsPath` (trailing slash required — it's an MSBuild
-    // directory property) redirects the whole restore output tree into scratch.
-    let ext_path = with_trailing_slash(scratch);
+    std::fs::create_dir_all(empty_source(scratch)).ok()?;
 
     // Invoke the muxer from the discovered SDK root when we can: setting
     // `DOTNET_ROOT` on the child does not make a `PATH`-resolved muxer use that
@@ -889,39 +887,9 @@ fn offline_restore_command(
     // differently. The real server supplies none (empty extras) and its default
     // `Configuration`/`Platform` match restore's own defaults, so this bites only
     // a caller that sets graph-affecting globals — the test harnesses.
-    cmd.arg(property_arg(
-        "MSBuildProjectExtensionsPath",
-        ext_path.as_os_str(),
-    ))
-    // `RestoreOutputPath` defaults from `MSBuildProjectExtensionsPath`, but a
-    // project/import can override it (e.g. `custom/`), which would write the
-    // assets into the source tree and leave scratch empty. Pin it to scratch
-    // too so the whole output stays there regardless.
-    .arg(property_arg("RestoreOutputPath", ext_path.as_os_str()))
-    // Pin the *package* folder (extraction and read) to the one NuGet would
-    // use (see the module docs).
-    .arg(property_arg(
-        "RestorePackagesPath",
-        packages_folder.as_os_str(),
-    ))
-    .arg("-p:RestoreRecursive=false")
-    .arg(property_arg("RestoreSources", empty_source.as_os_str()))
-    .arg("-p:RestoreAdditionalProjectSources=")
-    .arg("-p:RestorePackagesWithLockFile=false")
-    .arg(property_arg(
-        "NuGetLockFilePath",
-        redirected_lock_file(scratch).as_os_str(),
-    ))
-    // NuGet's package audit contacts its `auditSources` even when
-    // `RestoreSources` points at the empty folder, so an unreachable audit
-    // endpoint would block until the deadline. Disable it to stay offline.
-    .arg("-p:NuGetAudit=false")
-    // The one global `dotnet restore` adds beyond its target (see
-    // `tests/all/restore_graph.rs`, which diffs what each verb forwards to
-    // MSBuild). Passing it for every verb makes `msbuild` evaluate the project
-    // under the same globals, so a project conditioned on it restores and
-    // generates alike.
-    .arg("-p:NuGetInteractive=false");
+    for (name, value) in restore_global_properties(scratch, packages_folder) {
+        cmd.arg(property_arg(name, &value));
+    }
     // Resolve the SDK from the project's own `global.json` tree, not the LSP
     // process's working directory.
     if let Some(dir) = project.parent() {
@@ -929,6 +897,62 @@ fn offline_restore_command(
     }
     apply_env(&mut cmd, env);
     Some(cmd)
+}
+
+/// The empty local folder an offline restore into `scratch` uses as its only
+/// source.
+fn empty_source(scratch: &Path) -> PathBuf {
+    scratch.join("empty-source")
+}
+
+/// The global properties every restore-shaped invocation whose output lands in
+/// `scratch` passes (`-p:`), in order. Anything that evaluates a project as
+/// the restore does evaluates it under exactly these
+/// ([`nuget_identity::restoring_nuget`]).
+pub fn restore_global_properties(
+    scratch: &Path,
+    packages_folder: &Path,
+) -> Vec<(&'static str, OsString)> {
+    // `MSBuildProjectExtensionsPath` (trailing slash required — it's an MSBuild
+    // directory property) redirects the whole restore output tree into scratch.
+    let ext_path = with_trailing_slash(scratch);
+    vec![
+        ("MSBuildProjectExtensionsPath", ext_path.clone()),
+        // `RestoreOutputPath` defaults from `MSBuildProjectExtensionsPath`,
+        // but a project/import can override it (e.g. `custom/`), which would
+        // write the assets into the source tree and leave scratch empty. Pin
+        // it to scratch too so the whole output stays there regardless.
+        ("RestoreOutputPath", ext_path),
+        // Pin the *package* folder (extraction and read) to the one NuGet
+        // would use (see the module docs).
+        (
+            "RestorePackagesPath",
+            packages_folder.as_os_str().to_owned(),
+        ),
+        ("RestoreRecursive", OsString::from("false")),
+        // An empty local folder used as the *only* restore source. As an
+        // MSBuild property this overrides the project's `<RestoreSources>` and
+        // the ambient config's feeds alike (the property takes precedence over
+        // config sources), so restore reads only the global-packages cache —
+        // offline.
+        ("RestoreSources", empty_source(scratch).into_os_string()),
+        ("RestoreAdditionalProjectSources", OsString::new()),
+        ("RestorePackagesWithLockFile", OsString::from("false")),
+        (
+            "NuGetLockFilePath",
+            redirected_lock_file(scratch).into_os_string(),
+        ),
+        // NuGet's package audit contacts its `auditSources` even when
+        // `RestoreSources` points at the empty folder, so an unreachable audit
+        // endpoint would block until the deadline. Disable it to stay offline.
+        ("NuGetAudit", OsString::from("false")),
+        // The one global `dotnet restore` adds beyond its target (see
+        // `tests/all/restore_graph.rs`, which diffs what each verb forwards to
+        // MSBuild). Passing it for every verb makes `msbuild` evaluate the
+        // project under the same globals, so a project conditioned on it
+        // restores and generates alike.
+        ("NuGetInteractive", OsString::from("false")),
+    ]
 }
 
 /// Where a restore whose output is redirected to `scratch` is told its lock
