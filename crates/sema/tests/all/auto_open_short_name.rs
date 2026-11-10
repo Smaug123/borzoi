@@ -782,7 +782,8 @@ fn every_contest_for_a_short_name_agrees_with_fcs() {
 /// `open` of a project module leaves every dotted head it could supply to
 /// the conservative `dotted_opacity` gate, so the `open` cells may decline.
 /// The `type` cells rank an opened namespace's type `Child` highest, which
-/// no module search sees.)
+/// no module search sees. The `aliasOverRoot` cells give the alias's name to
+/// an earlier file's root module too, which the alias shadows.)
 #[test]
 fn a_dotted_value_searches_every_module_of_its_short_name() {
     // What puts the higher-ranked `Child` above the lower ones.
@@ -811,10 +812,18 @@ fn a_dotted_value_searches_every_module_of_its_short_name() {
         ("both", true, true),
     ];
     // How the path is written.
+    // `aliasOverRoot`: the alias shares its name with an earlier file's root
+    // module, which it shadows.
     let accesses = [
         ("direct", "let probe = Child.Nn\n", "Child.Nn"),
         ("alias", "module M = Child\n\nlet probe = M.Nn\n", "M.Nn"),
+        (
+            "aliasOverRoot",
+            "module M = Child\n\nlet probe = M.Nn\n",
+            "M.Nn",
+        ),
     ];
+    let alias_root_file = "module M\n\nlet Nn = 98\n";
     let mut failures = Vec::new();
     let mut census: std::collections::BTreeMap<&str, usize> = Default::default();
     for shadow in ["fold", "open", "type"] {
@@ -838,6 +847,9 @@ fn a_dotted_value_searches_every_module_of_its_short_name() {
                     }
                     if shadow == "type" {
                         files.push(type_file);
+                    }
+                    if access == "aliasOverRoot" {
+                        files.push(alias_root_file);
                     }
                     files.push(&last);
                     let graded = grade(&label, &files, probe);

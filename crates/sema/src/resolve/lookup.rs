@@ -2124,8 +2124,15 @@ impl<'a> Resolver<'a> {
     /// recursion or cycle risk. Aliases declared in an *earlier* Compile-order file
     /// are not followed (a rare case; their reference stays conservative).
     pub(super) fn lexical_alias_target(&self, name: &str) -> Option<&[String]> {
-        // The innermost enclosing container that declares `name` as module-like
-        // (longest prefix of `container_path`) shadows any outer one.
+        // Follow it only if that nearest declaration is a resolvable alias.
+        let alias_path = self.nearest_module_like(name)?;
+        self.module_aliases.get(&alias_path).map(Vec::as_slice)
+    }
+
+    /// The path of the innermost enclosing container's module-like
+    /// declaration of `name` ([`Self::module_like_names`]): the longest
+    /// prefix of `container_path` declaring it shadows any outer one.
+    fn nearest_module_like(&self, name: &str) -> Option<Vec<String>> {
         let scope = (0..=self.container_path.len())
             .rev()
             .map(|k| &self.container_path[..k])
@@ -2134,10 +2141,21 @@ impl<'a> Resolver<'a> {
                     .get(*scope)
                     .is_some_and(|names| names.contains(name))
             })?;
-        // Follow it only if that nearest declaration is a resolvable alias.
-        let mut alias_path = scope.to_vec();
-        alias_path.push(name.to_string());
-        self.module_aliases.get(&alias_path).map(Vec::as_slice)
+        let mut path = scope.to_vec();
+        path.push(name.to_string());
+        Some(path)
+    }
+
+    /// Whether `name`'s nearest module-like declaration is an alias whose
+    /// target the walk does not follow: one to an assembly module, or one
+    /// whose target names more than one project module
+    /// ([`Self::resolved_project_module`]). FCS enters it under its name, so
+    /// it shadows what the name would otherwise reach, with contents the
+    /// walk cannot list.
+    fn lexical_alias_is_opaque(&self, name: &str) -> bool {
+        self.nearest_module_like(name).is_some_and(|path| {
+            !self.module_aliases.contains_key(&path) && !self.is_real_project_module(&path)
+        })
     }
 
     /// Record the **current container** as a module that brings value-space names
@@ -2177,35 +2195,37 @@ impl<'a> Resolver<'a> {
     /// N.Alias`) does not see the alias (FCS FS0039), so it falls to the ordinary
     /// tiers and stays conservative.
     ///
-    /// FCS holds every module of a short name, latest first, and an alias to
-    /// one names them all, so a target the tiers reach more than one real
-    /// project module through ([`Self::is_real_project_module`]) is not one
-    /// module: `None`.
+    /// Only a real module answers ([`Self::is_real_project_module`]): a
+    /// type, exception or cross-file alias at a reading is not a module FCS
+    /// opens or abbreviates. FCS holds every module of a short name, latest
+    /// first, and an alias to one names them all, so a target the tiers reach
+    /// more than one project module through is not one module: `None`.
     pub(super) fn resolved_project_module(
         &self,
         written: &[String],
         rooted: bool,
     ) -> Option<Vec<String>> {
-        let readings = self.project_module_readings(written, rooted);
-        let first = readings
-            .iter()
-            .find(|full| self.is_project_module_path(full))?;
+        let readings = self.project_module_readings(written, rooted)?;
         let mut modules = readings
             .iter()
             .filter(|full| self.is_real_project_module(full));
-        let unique = modules
-            .next()
-            .is_none_or(|one| modules.all(|full| full == one));
-        unique.then(|| first.clone())
+        let first = modules.next()?;
+        modules.all(|full| full == first).then(|| first.clone())
     }
 
     /// Every full path `written` may name, highest priority first, by the
     /// tiers [`Self::resolved_project_module`] lists: a module alias as the
     /// bare head alone, where there is one; else every shortening base, then
-    /// the path as written. Not filtered to what is declared there.
-    fn project_module_readings(&self, written: &[String], rooted: bool) -> Vec<Vec<String>> {
+    /// the path as written. Not filtered to what is declared there. `None`
+    /// where the bare head is an alias the walk does not follow
+    /// ([`Self::lexical_alias_is_opaque`]), which shadows every other reading.
+    fn project_module_readings(
+        &self,
+        written: &[String],
+        rooted: bool,
+    ) -> Option<Vec<Vec<String>>> {
         let Some((head, rest)) = written.split_first() else {
-            return Vec::new();
+            return Some(Vec::new());
         };
         let mut out = Vec::new();
         if !rooted {
@@ -2215,7 +2235,10 @@ impl<'a> Resolver<'a> {
             if let Some(target) = self.lexical_alias_target(head) {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                return vec![full];
+                return Some(vec![full]);
+            }
+            if self.lexical_alias_is_opaque(head) {
+                return None;
             }
             // Tiers 1 and 2 — explicit opens (namespace + chained module) and
             // the enclosing namespace/module nesting, one position-ranked list
@@ -2234,7 +2257,7 @@ impl<'a> Resolver<'a> {
         }
         // Tier 3 — the path as written (root / fully-qualified).
         out.push(written.to_vec());
-        out
+        Some(out)
     }
 
     /// What `prefix.value` reads as through the project modules `prefix`
@@ -2249,7 +2272,8 @@ impl<'a> Resolver<'a> {
     /// one that may declare it without a value the walk reads there (a type,
     /// a nested module, a value this site cannot access), and at an assembly
     /// reading after a module it went past, which it cannot rank against the
-    /// project's. A type, exception or alias at a reading is not a module
+    /// project's, and at a head that is an alias it does not follow. A type,
+    /// exception or cross-file alias at a reading is not a module
     /// the search sees ([`Self::is_real_project_module`]): the readings
     /// outside it rank types below every module. A module whose own name is
     /// not in scope where it is used —
@@ -2261,8 +2285,11 @@ impl<'a> Resolver<'a> {
         rooted: bool,
         value: &str,
     ) -> ModuleSearch {
+        let Some(readings) = self.project_module_readings(prefix, rooted) else {
+            return ModuleSearch::Stopped;
+        };
         let mut passed = false;
-        for full in self.project_module_readings(prefix, rooted) {
+        for full in readings {
             if !self.is_real_project_module(&full) {
                 if passed && self.assemblies_reach(&full) {
                     return ModuleSearch::Stopped;
