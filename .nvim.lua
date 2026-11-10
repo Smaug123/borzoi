@@ -15,13 +15,23 @@ local bin = borzoi_dir .. "/result/bin/borzoi"
 -- this checkout: `workspace/diagnostic` sweeps every `.fsproj` under the root,
 -- and this checkout's worktrees hold thousands of them. Nearest solution file
 -- first, then the enclosing repository, then the file's own directory.
+--
+-- Each marker gets its own `vim.fs.root` call. Before Neovim 0.11.3,
+-- `vim.fs.root` hands a marker list to `vim.fs.find` whole, which reads it as
+-- a list of file names: a predicate in the list throws, and a list of names
+-- returns the nearest directory holding any of them, not the markers in
+-- priority order.
+local root_markers = {
+  function(name) return name:match("%.slnx?$") ~= nil end,
+  ".git",
+}
+
 local function project_root(buf)
-  local root = vim.fs.root(buf, {
-    function(name) return name:match("%.slnx?$") ~= nil end,
-    ".git",
-  })
-  if root then
-    return root
+  for _, marker in ipairs(root_markers) do
+    local root = vim.fs.root(buf, marker)
+    if root then
+      return root
+    end
   end
   local name = vim.api.nvim_buf_get_name(buf)
   if name ~= "" then
