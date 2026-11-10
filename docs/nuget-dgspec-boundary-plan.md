@@ -5,6 +5,8 @@
 > resolver's handling of dependency asset filters, B₁'s of `<contentFiles>`, and
 > B₁'s reading of the environment restore runs under.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions).
+> B₁ runs in production in shadow: every on-demand restore hands it the spec
+> it read and logs whether B₁ agreed (see *B₁ in shadow*).
 > The resolver is NuGet's default dependency resolver reimplemented, and
 > declines on no corpus project; B₁ commits on five of the six, exactly as the
 > restore does, and the sixth waits on its nuspec vocabulary. Supersedes
@@ -90,8 +92,8 @@ names a package in the synthetic universe". Real dgspecs break that premise
 (see `System.Text.Json` above). Stage 4 put the resolver behind a real spec,
 where it declines every field it does not model, and graded it against B₀ on
 real-shaped specs; doing so found a closure it committed that restore fails
-(see stage 4). The resolver is not wired into the LSP, so no wrong answer is
-live today.
+(see stage 4). The LSP runs the resolver only in shadow (see *B₁ in
+shadow*), so no wrong answer it computes is served.
 
 ## Design
 
@@ -135,8 +137,9 @@ A spawn-free path (A₁ or A₂, then B₁) runs first. When it commits, the LSP
 serves its answer. When it declines, `restore.rs` runs exactly as it does today
 and stays the exact fallback. Composing A₀ with B₁ at runtime buys nothing:
 it still spawns, and certain-implies-exact means it never commits where
-`restore.rs` would fail. So nothing changes at runtime until a spawn-free
-half A exists (stage 9).
+`restore.rs` would fail. So nothing the LSP serves changes until a spawn-free
+half A exists (stage 9). Until then B₁ runs beside the restore, in shadow,
+so that it meets real projects before it is trusted to serve them.
 
 ### What A₂ would change
 
@@ -1269,6 +1272,68 @@ What would revisit this in favour of A₂:
   hook, or a target framework this corpus lacks are the likely sources.
 - **A₁ costs more than A₂.** The target-execution engine plus the library
   slices above turn out to cost more than the runtime.
+
+### B₁ in shadow — landed
+
+B₁ ran only in tests. Now every on-demand restore also runs it: after
+`restore_to_scratch` restores, it hands B₁ the spec that restore read, with
+the restoring NuGet's identity and the restore's environment, and checks a
+commit against what the restore did (`crates/lsp/src/restore/shadow.rs`). The
+restore's answer is served whatever B₁ says. A commit must name, per
+framework, exactly the packages the assets file's target lists (ids and
+versions compared ignoring case, as NuGet's identity does), predict exactly
+the codes it logs where it predicts any, and not be made where NuGet's
+restore failed. That is read from the `success` NuGet records in
+`project.nuget.cache`, not from the command's exit status, which a target the
+project hooks after `Restore` can fail once NuGet has restored. Anything else
+is logged as an error, since under certain-implies-exact it is a B₁ bug. A
+decline is logged with its reason. The check costs a few milliseconds in a
+release build.
+
+The identity is read from what the restore did
+(`restore::nuget_identity::restoring_nuget`). The restore writes a detailed
+log, in which MSBuild names the assembly each task ran from; NuGet's
+`RestoreTask` loads `NuGet.Commands` from beside its own assembly, whose
+`AssemblyInformationalVersionAttribute`
+(`Ecma335Assembly::informational_version`) is the identity. The log costs
+nothing measurable. The first cut predicted the identity instead: the SDK
+that SDK discovery selects, and then, as review found a way round each
+check, the evaluated `RestoreTaskAssemblyFile` and `NuGetRestoreTargets`
+under the restore's environment and then under its global properties. The
+fourth round found a `UsingTask Override` re-registering the task, which
+neither property shows. Each round was another route by which MSBuild
+decides which code runs, and predicting that is A₁'s model of the restore
+cone, not a check in front of it. So the shadow reads it off the run, which
+follows every route. A spawn-free restore (stage 9) has no run to read, and
+its identity is A₁'s to predict.
+
+The oracles:
+
+- `restore_graph.rs` pins a `global.json` to each installed SDK in turn and
+  requires the identity to be the one the oracle reports for the
+  `NuGet.Commands` it loads from the SDK `dotnet` selects; and redirects the
+  restore task to the other installed SDK by `RestoreTaskAssemblyFile` (in
+  the project, in the environment, conditioned on a global the restore
+  passes) and by `UsingTask Override`, under each of which the identity must
+  be the other SDK's, as the oracle reports it, and B₁ declines when that
+  NuGet is not verified.
+- `restore_graph.rs` grades B₁ through the shadow's own comparison, with the
+  identity read from the restore's log, which must equal the oracle's, on
+  every fixture and corpus project.
+- `borzoi-assembly`'s `informational_version` sweep holds the attribute
+  reader to the version resource's `ProductVersion` over every managed
+  assembly of every installed SDK.
+- The comparison's properties: the restore B₁ describes agrees, under either
+  target spelling and any casing of its versions; every change to a closure,
+  a predicted log, or the restore's success disagrees; an assets file outside
+  the restore's shape is not compared.
+
+What it does not cover: only projects the LSP restores on demand (the host
+has opted in, and the project has no assets file) are shadowed. A project
+the user restored themselves is read from its own assets file, whose spec
+names the user's feeds, which B₁ declines. MSBuild's log line is in the
+CLI's language, so on a host whose language is not English the identity
+declines.
 
 ### Stage 9: spawn-free runtime path
 

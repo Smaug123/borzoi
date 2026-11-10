@@ -100,6 +100,12 @@
 //! it); the flags exist to keep *ordinary* projects side-effect-free, not to
 //! contain a hostile one.
 //!
+//! - **B₁ in shadow.** Every restore that writes a spec also hands it to the
+//!   spawn-free resolver (`borzoi_nuget::dgspec::resolve_dgspec`) and logs
+//!   whether that agreed with the restore ([`shadow`]). The restore's answer
+//!   is served whatever B₁ says. The restore writes a detailed log into
+//!   scratch, from which the NuGet that ran is read ([`nuget_identity`]).
+//!
 //! On success the scratch assets file is read exactly as a normal
 //! `obj/project.assets.json` would be, then the scratch directory is removed.
 //! [`RestoreOutcome`] distinguishes a *stable* decline (cold cache, a locked
@@ -129,8 +135,12 @@ use crate::project_assets::{
 };
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::workspace::ServedTfm;
+use borzoi_nuget::dgspec::NuGetIdentity;
+use shadow::{RestoreRecord, ShadowVerdict};
 
 mod exact;
+pub mod nuget_identity;
+pub mod shadow;
 
 /// Backstop deadline for the restore subprocess. Offline resolution makes a warm
 /// restore ~0.5s and a cold one fail fast, so this is only ever reached by a
@@ -222,60 +232,229 @@ pub fn restore_to_scratch_assemblies(
     target_framework: &ServedTfm,
     restore_env: Option<&SdkDiscoveryEnv>,
 ) -> RestoreOutcome {
+    let restored = restore_to_scratch(project, dotnet_root, target_framework, restore_env);
+    if let Some(shadow) = &restored.shadow {
+        log_shadow(project, shadow);
+    }
+    restored.outcome
+}
+
+/// What [`restore_to_scratch`] did: the outcome the LSP serves, and B₁'s
+/// shadow verdict on the spec the restore read.
+pub struct ScratchRestore {
+    pub outcome: RestoreOutcome,
+    /// `None` when the restore did not run to completion, or wrote no spec.
+    pub shadow: Option<ShadowRun>,
+}
+
+/// B₁'s shadow verdict, and how long it took to reach.
+pub struct ShadowRun {
+    /// The NuGet the restore ran, when its log names one.
+    pub identity: Option<NuGetIdentity>,
+    pub verdict: ShadowVerdict,
+    pub elapsed: Duration,
+}
+
+/// Log B₁'s shadow verdict. A disagreement is a B₁ bug, so it is an error.
+fn log_shadow(project: &Path, shadow: &ShadowRun) {
+    let elapsed_ms = shadow.elapsed.as_millis();
+    let verdict = shadow.verdict.kind();
+    let nuget = shadow
+        .identity
+        .as_ref()
+        .map_or("unknown", |identity| identity.as_str());
+    match &shadow.verdict {
+        ShadowVerdict::Agreed(frameworks) => tracing::info!(
+            project = %project.display(),
+            verdict,
+            nuget,
+            elapsed_ms,
+            frameworks = frameworks.len(),
+            "B₁ shadow: agrees with the restore"
+        ),
+        ShadowVerdict::Declined(decline) => tracing::info!(
+            project = %project.display(),
+            verdict,
+            nuget,
+            elapsed_ms,
+            %decline,
+            "B₁ shadow: declined"
+        ),
+        ShadowVerdict::NotRun(why) => tracing::info!(
+            project = %project.display(),
+            verdict,
+            nuget,
+            elapsed_ms,
+            why = ?why,
+            "B₁ shadow: not run"
+        ),
+        ShadowVerdict::Disagreed(disagreement) => tracing::error!(
+            project = %project.display(),
+            verdict,
+            nuget,
+            elapsed_ms,
+            %disagreement,
+            "B₁ shadow: disagrees with the restore (a B₁ bug; the restore's answer is served)"
+        ),
+    }
+}
+
+/// [`restore_to_scratch_assemblies`], returning B₁'s shadow verdict beside
+/// the outcome rather than logging it (see [`shadow`]). The verdict never
+/// changes the outcome.
+pub fn restore_to_scratch(
+    project: &Path,
+    dotnet_root: &Path,
+    target_framework: &ServedTfm,
+    restore_env: Option<&SdkDiscoveryEnv>,
+) -> ScratchRestore {
+    let outcome = |outcome| ScratchRestore {
+        outcome,
+        shadow: None,
+    };
     let Some(env) = restore_env else {
-        return RestoreOutcome::Declined;
+        return outcome(RestoreOutcome::Declined);
     };
 
     let Some(inputs) = restore_inputs(project, env) else {
-        return RestoreOutcome::Declined;
+        return outcome(RestoreOutcome::Declined);
     };
     let project = inputs.project.as_path();
 
     let Some(scratch) = ScratchDir::new() else {
-        return RestoreOutcome::TransientFailure;
+        return outcome(RestoreOutcome::TransientFailure);
     };
 
-    match run_offline_restore(
+    let succeeded = match run_offline_restore(
         &inputs.project,
         &scratch.path,
         dotnet_root,
         &inputs.packages.folder,
         env,
     ) {
-        RunResult::Succeeded => {}
-        RunResult::Declined => {
-            tracing::info!(
-                project = %project.display(),
-                "on-demand restore declined (cold cache or failure); assembly env defaults to empty"
-            );
-            return RestoreOutcome::Declined;
-        }
-        RunResult::Transient => return RestoreOutcome::TransientFailure,
-    }
+        RunResult::Succeeded => true,
+        RunResult::Declined => false,
+        RunResult::Transient => return outcome(RestoreOutcome::TransientFailure),
+    };
 
+    // NuGet writes the spec it read, and the assets file, even when
+    // resolution fails.
     let Some(spec) = restored_spec_path(&scratch.path, project)
         .and_then(|path| std::fs::read_to_string(path).ok())
     else {
-        return RestoreOutcome::Declined;
+        return outcome(RestoreOutcome::Declined);
     };
-    if !loads_the_modelled_config_files(&spec, &inputs) {
+    let assets_path = scratch.path.join("project.assets.json");
+    let assets_text = std::fs::read_to_string(&assets_path).ok();
+    let shadow = Some(run_shadow(
+        env,
+        &spec,
+        &scratch.path,
+        assets_text.as_deref(),
+    ));
+    ScratchRestore {
+        outcome: served_outcome(
+            &inputs,
+            &scratch,
+            succeeded,
+            &spec,
+            assets_text,
+            dotnet_root,
+            target_framework,
+        ),
+        shadow,
+    }
+}
+
+/// B₁ over the spec a restore read, checked against what NuGet did in that
+/// restore, which wrote into `scratch`.
+///
+/// Whether NuGet's restore succeeded is read from the `success` NuGet records
+/// in `project.nuget.cache`, not from the command's exit status: a target the
+/// project hooks after `Restore` can fail the command once NuGet has
+/// restored, and B₁ models NuGet's restore, not the project's targets. Which
+/// NuGet restored is read from the restore's log ([`nuget_identity`]).
+fn run_shadow(
+    env: &SdkDiscoveryEnv,
+    spec: &str,
+    scratch: &Path,
+    assets: Option<&str>,
+) -> ShadowRun {
+    let started = std::time::Instant::now();
+    let identity = match std::fs::read_to_string(restore_log(scratch)) {
+        Ok(log) => nuget_identity::restoring_nuget(&log),
+        Err(e) => Err(nuget_identity::IdentityDecline::NoLog(e.to_string())),
+    };
+    let named = identity.as_ref().ok().cloned();
+    let verdict = match nuget_restore_succeeded(scratch) {
+        Err(why) => ShadowVerdict::NotRun(shadow::NotRun::NoNuGetResult(why)),
+        Ok(succeeded) => {
+            let assets: Option<serde_json::Value> =
+                assets.and_then(|text| serde_json::from_str(text).ok());
+            shadow::shadow(
+                identity,
+                spec,
+                RestoreRecord {
+                    succeeded,
+                    assets: assets.as_ref(),
+                },
+                &restore_environment(env),
+            )
+        }
+    };
+    ShadowRun {
+        identity: named,
+        verdict,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// Whether NuGet's restore into `scratch` succeeded, as NuGet recorded it in
+/// the `project.nuget.cache` beside the assets file (`CacheFile.Success`),
+/// which it writes whether or not the restore succeeds.
+fn nuget_restore_succeeded(scratch: &Path) -> Result<bool, String> {
+    let path = scratch.join("project.nuget.cache");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let cache: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    cache["success"]
+        .as_bool()
+        .ok_or_else(|| format!("{}: no boolean `success`", path.display()))
+}
+
+/// The outcome the LSP serves from a restore that wrote `spec`.
+fn served_outcome(
+    inputs: &RestoreInputs,
+    scratch: &ScratchDir,
+    succeeded: bool,
+    spec: &str,
+    assets: Option<String>,
+    dotnet_root: &Path,
+    target_framework: &ServedTfm,
+) -> RestoreOutcome {
+    let project = inputs.project.as_path();
+    if !succeeded {
+        tracing::info!(
+            project = %project.display(),
+            "on-demand restore declined (cold cache or failure); assembly env defaults to empty"
+        );
+        return RestoreOutcome::Declined;
+    }
+    if !loads_the_modelled_config_files(spec, inputs) {
         return RestoreOutcome::Declined;
     }
 
     let assets_path = scratch.path.join("project.assets.json");
-    let Ok(assets) = std::fs::read_to_string(&assets_path) else {
+    let Some(assets) = assets else {
         tracing::info!(
             project = %project.display(),
             "on-demand restore produced no assets file; assembly env defaults to empty"
         );
         return RestoreOutcome::Declined;
     };
-    if let Err(uncertified) = exact::certify_exact_minimums(
-        &spec,
-        &assets,
-        project,
-        &redirected_lock_file(&scratch.path),
-    ) {
+    if let Err(uncertified) =
+        exact::certify_exact_minimums(spec, &assets, project, &redirected_lock_file(&scratch.path))
+    {
         tracing::info!(
             project = %project.display(),
             %uncertified,
@@ -710,6 +889,12 @@ fn offline_restore_command(
     match verb {
         Verb::Restore => {
             cmd.arg("restore").arg(project).arg("-nologo");
+            // A detailed log, which names the assembly each task ran from:
+            // the evidence of which NuGet restored ([`nuget_identity`]).
+            let mut logger = std::ffi::OsString::from("-flp:LogFile=");
+            logger.push(restore_log(scratch));
+            logger.push(";Verbosity=detailed");
+            cmd.arg(logger);
         }
         Verb::GenerateRestoreGraph { output } => {
             cmd.arg("msbuild")
@@ -765,6 +950,11 @@ fn offline_restore_command(
     }
     apply_env(&mut cmd, env);
     Some(cmd)
+}
+
+/// The detailed log a restore into `scratch` writes.
+fn restore_log(scratch: &Path) -> PathBuf {
+    scratch.join("restore.log")
 }
 
 /// Where a restore whose output is redirected to `scratch` is told its lock

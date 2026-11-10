@@ -42,14 +42,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use borzoi::restore::nuget_identity::restoring_nuget;
+use borzoi::restore::shadow::{RestoreRecord, ShadowVerdict, shadow_parsed};
 use borzoi::restore::{
-    RestoreGraph, RestoreGraphSource, ScratchDir, restore_environment, restore_graph,
+    RestoreGraph, RestoreGraphSource, RestoreOutcome, ScratchDir, restore_environment,
+    restore_graph, restore_to_scratch,
 };
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
-use borzoi_nuget::NuGetFramework;
+use borzoi::workspace::Workspace;
 use borzoi_nuget::dgspec::{
     DependencyGraphSpec, DgSpecDecline, DgSpecResolveDecline, EnvironmentVariable, NuGetIdentity,
-    PathSegment, ResolvedFramework, environment_variable, parse_dgspec, resolve_dgspec,
+    PathSegment, ResolvedFramework, environment_variable, parse_dgspec,
 };
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use borzoi_oracle_harness::nuget_oracle::{EnvironmentChange, Oracle, sdk_dir_for};
@@ -189,6 +192,11 @@ fn controlled_env() -> SdkDiscoveryEnv {
         .retain(|name, _| environment_variable(OsStr::new(name)) == EnvironmentVariable::Unread);
     env.dotnet_cli_home = None;
     env.home_dir = Some(SUITE_HOME.path().to_owned());
+    // MSBuild's log is in the CLI's language, and the server reads which NuGet
+    // ran from it (`restoring_nuget`), so the suite holds the language at
+    // English. B₁ holds the variable inert, and its differential grades that.
+    env.build_environment
+        .insert("DOTNET_CLI_UI_LANGUAGE".to_owned(), "en".to_owned());
     env
 }
 
@@ -411,108 +419,43 @@ fn package_label(package: &borzoi_nuget::PackageIdentity) -> String {
 /// declines, or commits only where the restore succeeded and to exactly the
 /// package closure each framework's target lists.
 ///
-/// Targets are matched by framework, not by name: an assets file of version 4
-/// names a target by its alias, one of version 3 by `NuGetFramework.ToString()`
-/// (`.NETStandard,Version=v2.0`), and which version restore writes moves with
-/// the spec's `SdkAnalysisLevel`.
+/// This is the LSP's own shadow check (`borzoi::restore::shadow`), which every
+/// on-demand restore runs, so what is graded here is what runs in the server.
+/// The identity it is handed is the one the server reads from the restore's
+/// log (`restoring_nuget`), which must be the identity of the `NuGet.Commands`
+/// the oracle ran.
 fn spawn_free(
     project: &Path,
     spec: &DependencyGraphSpec,
     decomposition: &Decomposition,
+    restored: &ScratchDir,
     env: &SdkDiscoveryEnv,
 ) -> Result<SpawnFree, String> {
-    let [entry] = spec.restore.as_slice() else {
+    let log = std::fs::read_to_string(restored.path().join("restore.log"))
+        .map_err(|e| format!("{}: no restore log: {e}", project.display()))?;
+    let identity = restoring_nuget(&log)
+        .map_err(|decline| format!("{}: no NuGet identity: {decline}", project.display()))?;
+    if identity.as_str() != decomposition.nuget_commands {
         return Err(format!(
-            "{}: an entry-only spec restores one project, not {}",
+            "{}: the server names the restoring NuGet {identity}, but {} ran",
             project.display(),
-            spec.restore.len()
-        ));
-    };
-    let identity = NuGetIdentity::new(&decomposition.nuget_commands);
-    let frameworks = match resolve_dgspec(&identity, spec, entry, &restore_environment(env)) {
-        Ok(frameworks) => frameworks,
-        Err(decline) => return Ok(SpawnFree::Declined(decline)),
-    };
-    if !decomposition.success {
-        return Err(format!(
-            "{}: B₁ committed, but the restore failed",
-            project.display()
+            decomposition.nuget_commands
         ));
     }
-    let key = |framework: &NuGetFramework| {
-        framework
-            .short_folder_name()
-            .expect("a project framework has a short folder name")
+    let restore = RestoreRecord {
+        succeeded: decomposition.success,
+        assets: Some(&decomposition.assets),
     };
-    let theirs: BTreeMap<String, BTreeSet<(String, String)>> = decomposition.assets["targets"]
-        .as_object()
-        .expect("an assets file has targets")
-        .iter()
-        .map(|(name, libraries)| {
-            let framework = NuGetFramework::parse(name)
-                .unwrap_or_else(|e| panic!("target {name:?} names a framework: {e}"));
-            let packages = libraries
-                .as_object()
-                .expect("a target maps libraries")
-                .iter()
-                .filter(|(_, library)| library["type"] == "package")
-                .map(|(library, _)| {
-                    let (id, version) = library.split_once('/').expect("`id/version`");
-                    (id.to_ascii_lowercase(), version.to_owned())
-                })
-                .collect();
-            (key(&framework), packages)
-        })
-        .collect();
-    let ours: BTreeMap<String, BTreeSet<(String, String)>> = frameworks
-        .iter()
-        .map(|resolved| {
-            let packages = resolved
-                .closure
-                .packages
-                .iter()
-                .map(|package| {
-                    (
-                        package.identity.id.as_str().to_ascii_lowercase(),
-                        package.identity.version.to_normalized_string(),
-                    )
-                })
-                .collect();
-            (key(&resolved.framework), packages)
-        })
-        .collect();
-    if ours != theirs {
-        return Err(format!(
-            "{}: B₁'s closures are not the restore's:\nB₁: {ours:?}\nrestore: {theirs:?}",
-            project.display()
-        ));
-    }
-    // B₁'s predicted warnings, where it makes a prediction, are the codes the
-    // restore logged.
-    if let Some(predicted) = frameworks
-        .iter()
-        .map(|framework| framework.warnings.clone())
-        .collect::<Option<Vec<_>>>()
-    {
-        let predicted: BTreeSet<String> = predicted
-            .into_iter()
-            .flatten()
-            .map(|code| code.as_str().to_owned())
-            .collect();
-        let logged: BTreeSet<String> = decomposition.assets["logs"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|log| log["code"].as_str().map(str::to_owned))
-            .collect();
-        if predicted != logged {
-            return Err(format!(
-                "{}: B₁ predicts warnings {predicted:?}, the restore logged {logged:?}",
-                project.display()
-            ));
+    match shadow_parsed(&identity, spec, restore, &restore_environment(env)) {
+        ShadowVerdict::Agreed(frameworks) => Ok(SpawnFree::Committed(frameworks)),
+        ShadowVerdict::Declined(decline) => Ok(SpawnFree::Declined(decline)),
+        ShadowVerdict::Disagreed(disagreement) => {
+            Err(format!("{}: {disagreement}", project.display()))
+        }
+        ShadowVerdict::NotRun(why) => {
+            Err(format!("{}: B₁ was not asked: {why:?}", project.display()))
         }
     }
-    Ok(SpawnFree::Committed(frameworks))
 }
 
 /// One manifest label per target of an assets file: its library count, how
@@ -617,9 +560,89 @@ fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
     );
     let spec =
         parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declined: {decline}"));
-    let b1 = spawn_free(project, &spec, &decomposition, &env)
+    let b1 = spawn_free(project, &spec, &decomposition, &restored, &env)
         .unwrap_or_else(|failure| panic!("{failure}"));
     (spec, b1)
+}
+
+/// The identity of the `NuGet.Commands` the oracle loads from `sdk`.
+fn oracle_identity(sdk: &Path) -> String {
+    let response = Oracle::spawn_on(sdk, &[]).request(&json!({"op": "nuGetLogCodes"}));
+    let identity = &response["nugetCommands"];
+    assert_eq!(
+        identity["path"].as_str(),
+        sdk.join("NuGet.Commands.dll").to_str(),
+        "the oracle ran {sdk:?}'s NuGet: {response}"
+    );
+    identity["informationalVersion"]
+        .as_str()
+        .expect("the identity names a version")
+        .to_owned()
+}
+
+/// Every installed SDK's version directory, by version.
+fn installed_sdks() -> Vec<(String, PathBuf)> {
+    let mut sdks: Vec<(String, PathBuf)> = std::fs::read_dir(dotnet_root().join("sdk"))
+        .expect("DOTNET_ROOT has an sdk/ directory")
+        .map(|entry| entry.expect("list sdk/").path())
+        .filter(|path| path.join("NuGet.Commands.dll").is_file())
+        .map(|path| (path.file_name().unwrap().to_str().unwrap().to_owned(), path))
+        .collect();
+    sdks.sort();
+    sdks
+}
+
+/// What the on-demand restore of `project`, under `env`, says ran it.
+fn shadow_of(project: &Path, env: &SdkDiscoveryEnv) -> borzoi::restore::ShadowRun {
+    let mut workspace = Workspace::with_env(env.clone());
+    let served = workspace.served_tfm_for_project(project);
+    restore_to_scratch(project, &dotnet_root(), &served, Some(env))
+        .shadow
+        .unwrap_or_else(|| panic!("{}: the restore wrote no spec", project.display()))
+}
+
+/// The server reads which NuGet restored from the restore's own log
+/// (`restoring_nuget`). Under a `global.json` pinning each installed SDK in
+/// turn, that is the `NuGet.Commands` the oracle loads from the SDK `dotnet`
+/// itself selects from the project's directory, and each SDK names its own.
+#[test]
+fn the_server_names_the_nuget_of_the_sdk_dotnet_selects() {
+    let dotnet = dotnet_root().join("dotnet");
+    let sdks = installed_sdks();
+    assert!(!sdks.is_empty(), "no SDK under DOTNET_ROOT");
+    let mut identities = BTreeSet::new();
+    for (version, _) in &sdks {
+        let global_json =
+            format!(r#"{{ "sdk": {{ "version": "{version}", "rollForward": "disable" }} }}"#);
+        let root = write_tree(
+            &format!("identity-{version}"),
+            &[
+                ("global.json", &global_json),
+                ("App.fsproj", APP),
+                ("App.fs", "module App\n"),
+            ],
+        );
+        let sdk = sdk_dir_for(&dotnet, &root);
+        assert_eq!(
+            sdk.file_name().and_then(OsStr::to_str),
+            Some(version.as_str()),
+            "dotnet honours the pin"
+        );
+        let expected = oracle_identity(&sdk);
+        let shadow = shadow_of(&root.join("App.fsproj"), &controlled_env());
+        assert_eq!(
+            shadow.identity.as_ref().map(|identity| identity.as_str()),
+            Some(expected.as_str()),
+            "SDK {version}: {:?}",
+            shadow.verdict
+        );
+        identities.insert(expected);
+    }
+    assert_eq!(
+        identities.len(),
+        sdks.len(),
+        "each installed SDK names its own NuGet: {identities:?}"
+    );
 }
 
 #[test]
@@ -734,6 +757,173 @@ fn a_project_reference_brings_its_project_into_the_spec() {
     assert_eq!(references.len(), 1);
     assert!(references[0].project_unique_name.ends_with("Lib.fsproj"));
     assert!(!root.join("lib/obj").exists(), "nor its reference's obj/");
+}
+
+/// Every on-demand restore runs B₁ in shadow (`restore_to_scratch`), and on a
+/// project B₁ resolves, the verdict the server reaches is agreement with the
+/// restore whose answer it serves.
+#[test]
+fn the_on_demand_restore_runs_b1_in_shadow() {
+    let library = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"#;
+    for (tag, name, text, source) in [
+        ("shadow-net10", "App", APP, "module App\n"),
+        ("shadow-netstandard", "Lib", library, "module Lib\n"),
+    ] {
+        let project_file = format!("{name}.fsproj");
+        let source_file = format!("{name}.fs");
+        let root = write_tree(
+            tag,
+            &[
+                (project_file.as_str(), text),
+                (source_file.as_str(), source),
+            ],
+        );
+        let project = root.join(&project_file);
+        let env = controlled_env();
+        let mut workspace = Workspace::with_env(env.clone());
+        let served = workspace.served_tfm_for_project(&project);
+        let restored = restore_to_scratch(&project, &dotnet_root(), &served, Some(&env));
+        assert!(
+            matches!(restored.outcome, RestoreOutcome::Resolved(_)),
+            "{tag}: the restore resolves"
+        );
+        match restored.shadow.map(|shadow| shadow.verdict) {
+            Some(ShadowVerdict::Agreed(frameworks)) => assert_eq!(frameworks.len(), 1, "{tag}"),
+            other => panic!("{tag}: B₁'s shadow must agree, not {other:?}"),
+        }
+    }
+}
+
+/// Which NuGet a restore runs is MSBuild's to decide, and a project or its
+/// environment can move it to another SDK's: by `RestoreTaskAssemblyFile`,
+/// set in the project, in the environment, or under a condition on a global
+/// the restore passes, or by re-registering the task (`UsingTask Override`).
+/// The server reads the NuGet that ran from the restore's log, so under each
+/// it names the other SDK's NuGet, as the oracle reports it, and B₁ is graded
+/// only if that NuGet is verified.
+#[test]
+fn a_redirected_restore_names_the_nuget_that_ran() {
+    let host = sdk_dir_for(&dotnet_root().join("dotnet"), &std::env::temp_dir());
+    let sdks = installed_sdks();
+    let Some((_, other)) = sdks
+        .iter()
+        .find(|(_, path)| std::fs::canonicalize(path).ok() != std::fs::canonicalize(&host).ok())
+    else {
+        panic!("redirecting the restore needs a second installed SDK: {sdks:?}");
+    };
+    let expected = oracle_identity(other);
+    assert_ne!(
+        expected,
+        oracle_identity(&host),
+        "the two SDKs' NuGets differ"
+    );
+    let tasks = other.join("NuGet.Build.Tasks.dll");
+    let tasks = tasks.to_str().unwrap();
+    let in_group = |element: &str| {
+        APP.replace(
+            "</PropertyGroup>",
+            &format!("  {element}\n  </PropertyGroup>"),
+        )
+    };
+    let cases = [
+        (
+            "redirect-property",
+            in_group(&format!("<RestoreTaskAssemblyFile>{tasks}</RestoreTaskAssemblyFile>")),
+            None,
+        ),
+        (
+            "redirect-environment",
+            APP.to_owned(),
+            Some(("RestoreTaskAssemblyFile", tasks)),
+        ),
+        (
+            "redirect-under-a-restore-global",
+            in_group(&format!(
+                "<RestoreTaskAssemblyFile Condition=\"'$(NuGetInteractive)' == 'false'\">{tasks}</RestoreTaskAssemblyFile>"
+            )),
+            None,
+        ),
+        (
+            "redirect-using-task-override",
+            APP.replace(
+                "</Project>",
+                &format!(
+                    "  <UsingTask TaskName=\"NuGet.Build.Tasks.RestoreTask\" AssemblyFile=\"{tasks}\" Override=\"true\" />\n</Project>"
+                ),
+            ),
+            None,
+        ),
+    ];
+    for (tag, text, variable) in cases {
+        let root = write_tree(tag, &[("App.fsproj", &text), ("App.fs", "module App\n")]);
+        let mut env = controlled_env();
+        if let Some((name, value)) = variable {
+            env.build_environment
+                .insert(name.to_owned(), value.to_owned());
+        }
+        let shadow = shadow_of(&root.join("App.fsproj"), &env);
+        assert_eq!(
+            shadow.identity.as_ref().map(|identity| identity.as_str()),
+            Some(expected.as_str()),
+            "{tag}: {:?}",
+            shadow.verdict
+        );
+        let verified = NuGetIdentity::new(expected.clone()).is_verified();
+        match &shadow.verdict {
+            ShadowVerdict::Declined(DgSpecResolveDecline::UnverifiedNuGet { .. }) if !verified => {}
+            ShadowVerdict::Agreed(_) | ShadowVerdict::Declined(_) if verified => {}
+            other => panic!("{tag}: {other:?}"),
+        }
+    }
+}
+
+/// The shadow judges NuGet's restore, not the command's exit status. A target
+/// the project hooks after `Restore` can fail the command once NuGet has
+/// restored, and the server declines to serve that restore, but B₁ is held to
+/// the restore NuGet did, which agrees. A restore NuGet itself fails (a missing
+/// package) B₁ declines.
+#[test]
+fn the_shadow_judges_nugets_restore_not_the_commands() {
+    let hooked = APP.replace(
+        "</Project>",
+        r#"  <Target Name="FailAfterRestore" AfterTargets="Restore">
+    <Error Text="a target hooked after restore fails" />
+  </Target>
+</Project>"#,
+    );
+    let missing = APP.replace(
+        "<Compile Include=\"App.fs\" />",
+        "<Compile Include=\"App.fs\" />\n    \
+         <PackageReference Include=\"Borzoi.No.Such.Package\" Version=\"1.0.0\" />",
+    );
+    assert_ne!(missing, APP);
+    for (tag, text, nuget_succeeds) in [
+        ("shadow-hooked", hooked.as_str(), true),
+        ("shadow-missing", missing.as_str(), false),
+    ] {
+        let root = write_tree(tag, &[("App.fsproj", text), ("App.fs", "module App\n")]);
+        let project = root.join("App.fsproj");
+        let env = controlled_env();
+        let mut workspace = Workspace::with_env(env.clone());
+        let served = workspace.served_tfm_for_project(&project);
+        let restored = restore_to_scratch(&project, &dotnet_root(), &served, Some(&env));
+        assert!(
+            matches!(restored.outcome, RestoreOutcome::Declined),
+            "{tag}: the command fails, so the server declines"
+        );
+        match (nuget_succeeds, restored.shadow.map(|shadow| shadow.verdict)) {
+            (true, Some(ShadowVerdict::Agreed(_))) | (false, Some(ShadowVerdict::Declined(_))) => {}
+            (_, other) => panic!("{tag}: B₁'s shadow verdict: {other:?}"),
+        }
+    }
 }
 
 /// The stage-3 check can fail: a spec that has lost a dependency on its way to
@@ -1045,7 +1235,7 @@ fn pinned_projects() {
                 match decomposes_losslessly(project, &text, &generated, &restored) {
                     Ok(decomposition) => {
                         if let Ok(spec) = &spec {
-                            match spawn_free(project, spec, &decomposition, &env) {
+                            match spawn_free(project, spec, &decomposition, &restored, &env) {
                                 Ok(b1) => lines.push(format!("{key} {}", b1.label())),
                                 Err(failure) => failures.push(failure),
                             }
