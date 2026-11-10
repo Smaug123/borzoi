@@ -72,6 +72,7 @@ mod manifest_autoopen_surface_diff;
 mod member_hiding_diff;
 mod module_function_measures_diff;
 mod module_open_matrix;
+mod namespace_block_type_grid;
 mod namespace_fold_matrix;
 mod namespace_value_grid;
 mod open_member_order;
