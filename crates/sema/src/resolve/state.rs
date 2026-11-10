@@ -22,6 +22,53 @@ use super::model::{
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
 /// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
+/// The opens in scope that could supply a **dotted-path head** the walk does
+/// not otherwise see ([`Resolver::dotted_opacity`]).
+#[derive(Debug, Clone, Default)]
+pub(super) struct DottedOpacity {
+    /// An open whose dotted heads are unknowable: every
+    /// [`Resolver::opaque_value_open`] open (implied), an opened assembly
+    /// module with public nested entities, a group hiding names, or an `open`
+    /// of a project module that is not [`Self::project_modules`]-shaped.
+    other: bool,
+    /// Earlier-file project modules opened in scope whose every name is
+    /// enumerable: no hidden-value marker anywhere in the subtree, no
+    /// fragment in the file being walked, no referenced-assembly half under
+    /// the same path. What such a module puts in scope is exactly what the
+    /// earlier files' indices list for it and its `[<AutoOpen>]`
+    /// descendants, so a channel that checks a head against those lists
+    /// ([`Resolver::opened_project_modules_leave_head`]) may resolve through
+    /// them; every other channel treats them as opaque.
+    project_modules: Vec<Vec<String>>,
+}
+
+impl DottedOpacity {
+    /// Whether any open in scope could supply a dotted head the walk does not
+    /// model — the conservative reading every channel but the type-qualified
+    /// case takes.
+    pub(super) fn any(&self) -> bool {
+        self.other || !self.project_modules.is_empty()
+    }
+
+    /// Whether an open in scope is opaque beyond enumerable project modules.
+    pub(super) fn beyond_project_modules(&self) -> bool {
+        self.other
+    }
+
+    /// The enumerable project modules opened in scope.
+    pub(super) fn project_modules(&self) -> &[Vec<String>] {
+        &self.project_modules
+    }
+
+    pub(super) fn set_opaque(&mut self) {
+        self.other = true;
+    }
+
+    pub(super) fn add_project_module(&mut self, module: Vec<String>) {
+        self.project_modules.push(module);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ScopeEntry {
     pub(super) name: String,
@@ -1730,26 +1777,22 @@ pub(super) struct Resolver<'a> {
     /// so while one is in scope [`lookup`](Self::lookup) skips every *opened*
     /// ([`ScopeEntry::from_open`]) entry — resolving a modelled opened name could
     /// otherwise pick a target the opaque open shadows (correctness over
-    /// availability). It also implies [`Self::opaque_dotted_open`] (an unknown
+    /// availability). It also implies [`Self::dotted_opacity`] (an unknown
     /// bare value head could likewise be a dotted-path head we cannot resolve), so
     /// the dotted-path gate in [`resolve_long_ident`](Self::resolve_long_ident)
     /// checks both. A plain `open <namespace>` brings only *types*, no unqualified
     /// values, so it does **not** set this. Save/restored across nested modules.
     pub(super) opaque_value_open: bool,
-    /// `true` once an open whose **submodules / nested types we do not model**
-    /// could supply a *dotted-path head* is in scope. Set by every
-    /// [`Self::opaque_value_open`] open (implied) **and** by an *enumerable*
-    /// `open M` of a project module: `M`'s direct values are modelled (pushed as
-    /// [`ScopeEntry::opened`] entries, so a *bare* name resolves), but `M` may
-    /// also contain submodules/types we do not enumerate, so a dotted head
-    /// `Sub.bar` through it could be project-rooted. While one is in scope the
-    /// dotted-path gate in [`resolve_long_ident`](Self::resolve_long_ident) leaves
-    /// such a head unresolved rather than risk routing it to a colliding
-    /// cross-file / referenced-assembly path (correctness over availability).
-    /// Unlike `opaque_value_open` it does **not** make [`lookup`](Self::lookup)
-    /// skip opened entries — the module's bare values are modelled and must
-    /// resolve. Save/restored across nested modules.
-    pub(super) opaque_dotted_open: bool,
+    /// Which opens in scope could supply a *dotted-path head* we do not model
+    /// (see [`DottedOpacity`]). While [`DottedOpacity::any`] holds, the
+    /// dotted-path gate in [`resolve_long_ident`](Self::resolve_long_ident)
+    /// leaves such a head unresolved rather than risk routing it to a
+    /// colliding cross-file / referenced-assembly path (correctness over
+    /// availability). Unlike `opaque_value_open` it does **not** make
+    /// [`lookup`](Self::lookup) skip opened entries — an opened module's bare
+    /// values are modelled and must resolve. Save/restored across nested
+    /// modules.
+    pub(super) dotted_opacity: DottedOpacity,
     /// `true` while the file's top-level module is *anonymous* (the implicit
     /// filename module — `ModuleOrNamespaceKind::Anon`, no `namespace`/`module`
     /// header). A nested module under it is reachable cross-file only via the
@@ -1861,6 +1904,11 @@ pub(super) struct Resolver<'a> {
     /// from this list; a decl is appended at the same program point each legacy
     /// export writer fires, so the derivations reproduce today's ordering.
     pub(super) export_decls: Vec<ExportDecl>,
+    /// Member path → how many of [`Self::export_decls`] declare a member
+    /// there ([`ExportDecl::member_path`]): the same-file half of
+    /// [`Self::member_declarations`], kept beside the list by its one writer
+    /// ([`Self::push_export_decl`]).
+    pub(super) member_decl_counts: HashMap<Vec<String>, usize>,
     /// What the parser had to recover from in the file being walked, moved into
     /// [`ResolvedFile::recovery`](super::model::ResolvedFile). Set by
     /// [`resolve_file`](super::resolve_file) from its caller's parse;

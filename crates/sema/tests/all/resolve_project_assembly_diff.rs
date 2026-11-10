@@ -477,7 +477,7 @@ fn project_namespace_open_does_not_leak_a_root_assembly_type() {
 /// *namespace* reading through the prior `open P` (`P.Calc`), and FCS binds
 /// `Sub.Thing` to the PROJECT `P.Calc.Sub.Thing` under it — so we must never
 /// bind the colliding root assembly `Sub.Thing`. Today the module interpretation
-/// sets `opaque_dotted_open`, which defers every dotted head in scope, so the
+/// sets `dotted_opacity`, which defers every dotted head in scope, so the
 /// walker is never consulted; this pins that a root assembly binding stays
 /// impossible if that blanket is ever made more precise (the reading group a
 /// `raw_project_module` open feeds to `imports` is what would keep it sound).

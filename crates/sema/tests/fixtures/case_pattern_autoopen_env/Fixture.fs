@@ -14,6 +14,12 @@ module Auto =
         | Carrier of int
         | Nullary
 
+    // A module the manifest auto-open brings into bare scope: as a dotted
+    // expression head it is searched before any type of the name
+    // (`resolve_duplicate_case_names_diff`).
+    module Shade =
+        let A = 1
+
 // A ROOT-namespace union of the same name. The root is the *lowest* reading
 // tier, so this is the one the manifest auto-open can plausibly out-rank — the
 // precedence the review's report turns on, decided by the oracle rather than

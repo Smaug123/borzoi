@@ -969,7 +969,7 @@ impl<'a> Resolver<'a> {
                 // `let` values into unqualified scope: one *opened* entry per value
                 // is pushed into the current frame ([`Self::open_module_values`]) so
                 // a bare name resolves through the latest-wins `lookup`, and
-                // `opaque_dotted_open` is set so a *dotted* head through M's
+                // `dotted_opacity` is set so a *dotted* head through M's
                 // (unmodelled) submodules/types stays conservative.
                 //
                 // A *plain* `open <assembly module/class>` does **not** import a
@@ -1188,7 +1188,7 @@ impl<'a> Resolver<'a> {
                     // (`Occupied` → defer) at its true priority — so the
                     // (filtered) group always enters `imports`. (For a project
                     // module that veto is currently redundant — the module
-                    // interpretation sets `opaque_dotted_open` over the same
+                    // interpretation sets `dotted_opacity` over the same
                     // scope, deferring every dotted head — but the walker's view
                     // must stay complete for the day that blanket is refined;
                     // `project_module_open_does_not_leak_a_root_assembly_type`
@@ -1471,7 +1471,7 @@ impl<'a> Resolver<'a> {
                         // its namespace half's types included — keep their dotted
                         // resolution.
                         if group.hides_names() {
-                            self.opaque_dotted_open = true;
+                            self.dotted_opacity.set_opaque();
                         }
 
                         // -- The namespace reading's prefixes (the reading is a chain
@@ -1562,7 +1562,7 @@ impl<'a> Resolver<'a> {
                                     .iter()
                                     .any(|&c| self.assemblies.is_public(c))
                             }) {
-                                self.opaque_dotted_open = true;
+                                self.dotted_opacity.set_opaque();
                             }
                         }
 
@@ -1607,7 +1607,7 @@ impl<'a> Resolver<'a> {
                         // same-named value is shadowed (FCS: the latest open
                         // wins). It may also hold submodules/types we do not
                         // model, so dotted heads through it stay conservative
-                        // (`opaque_dotted_open`).
+                        // (`dotted_opacity`).
                         if has_project_module {
                             // The opaque-marker arm of the provenance split
                             // above: hidden names no screen bounds must stale
@@ -1634,7 +1634,15 @@ impl<'a> Resolver<'a> {
                                 namespace_reading: false,
                                 module_reading: false,
                             });
-                            self.opaque_dotted_open = true;
+                            if !resolved_alias
+                                && !has_assembly_module
+                                && !assembly_ns_applies
+                                && self.project_module_names_enumerable(gp)
+                            {
+                                self.dotted_opacity.add_project_module(gp.clone());
+                            } else {
+                                self.dotted_opacity.set_opaque();
+                            }
                         }
                     }
                 }
@@ -1763,7 +1771,7 @@ impl<'a> Resolver<'a> {
         // so an `open`, a nested type/module, or an `open type` inside the body
         // does not leak into the enclosing scope (F# scopes all of these to the
         // module). `imports`, `open_shortening_prefixes`, `open_generation`,
-        // `unmodelled_open_active`, `opaque_value_open`, and `opaque_dotted_open`
+        // `unmodelled_open_active`, `opaque_value_open`, and `dotted_opacity`
         // steer name resolution directly — a leaked `open Demo` would
         // *mis-resolve* a later enclosing sibling through an import not in scope —
         // so restoring them is a soundness requirement, not just hygiene;
@@ -1785,7 +1793,7 @@ impl<'a> Resolver<'a> {
         let saved_pattern_suppressed_case_ids = self.pattern_suppressed_case_ids.clone();
         let saved_unmodelled_open = self.unmodelled_open_active;
         let saved_opaque_value_open = self.opaque_value_open;
-        let saved_opaque_dotted_open = self.opaque_dotted_open;
+        let saved_dotted_opacity = self.dotted_opacity.clone();
         let saved_latest_open_pos = self.latest_open_pos;
         let saved_recursive_module = self.recursive_module_active;
         let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
@@ -1862,7 +1870,7 @@ impl<'a> Resolver<'a> {
         self.pattern_suppressed_case_ids = saved_pattern_suppressed_case_ids;
         self.unmodelled_open_active = saved_unmodelled_open;
         self.opaque_value_open = saved_opaque_value_open;
-        self.opaque_dotted_open = saved_opaque_dotted_open;
+        self.dotted_opacity = saved_dotted_opacity;
         self.latest_open_pos = saved_latest_open_pos;
         self.recursive_module_active = saved_recursive_module;
         if let Some(saved) = saved_rec_module_names {

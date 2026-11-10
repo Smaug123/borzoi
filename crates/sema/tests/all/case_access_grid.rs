@@ -770,17 +770,13 @@ fn a_private_representation_among_duplicate_case_names_agrees_with_fcs() {
         &[("defs.fs", defs.text), ("later.fs", later.text)],
         &sites,
     );
-    // `A.X` takes the module's last union declaring `X`, where FCS reads the
-    // first (#469, which #465 fixes by declining a name declared twice).
-    let first_union_rule = [
-        "dup/privateFirst/sameFile/qualifiedExpr",
-        "dup/privateFirst/laterFile/qualifiedExpr",
-    ];
     let must_commit = [
         "dup/privateFirst/inside/bare",
         "dup/privateFirst/laterFile/openExpr",
         "dup/privateFirst/laterFile/typeQualifiedU2",
         "dup/privateSecond/laterFile/typeQualifiedU1",
     ];
-    assert_sound_and_live("duplicate", &graded, &first_union_rule, &must_commit);
+    // `A.X` declines: the module declares `X` twice, which FCS reads as the
+    // first union's case and the walk does not commit (#465).
+    assert_sound_and_live("duplicate", &graded, &[], &must_commit);
 }
