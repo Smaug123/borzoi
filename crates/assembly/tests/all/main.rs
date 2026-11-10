@@ -28,6 +28,7 @@ mod fsharp_pickle_fail_loud;
 mod fsharp_pickle_fsharp_core;
 mod fsharp_pickle_module_member_index;
 mod generative_source_diff;
+mod informational_version;
 mod methodimpl_classification;
 mod modifier_metamorphic;
 mod pdb_fsharp_core;

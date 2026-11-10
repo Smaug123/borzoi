@@ -657,6 +657,50 @@ impl Ecma335Assembly {
         out
     }
 
+    /// The assembly-level `System.Reflection.AssemblyInformationalVersionAttribute`
+    /// string: what .NET's `Assembly.GetCustomAttribute` reads, and so the
+    /// identity a build names itself by (the SDK's assemblies carry the commit
+    /// they were built from). `None` when the attribute is absent.
+    ///
+    /// The attribute is single-use, so a second occurrence is an error, as is
+    /// one whose blob is not one string: either way the image does not say
+    /// one thing, and the reflection reading of it is not what this models.
+    pub fn informational_version(&self) -> Result<Option<String>, ImportError> {
+        let widths = EnumWidths::new();
+        let mut found: Option<String> = None;
+        for raw in &self.image.assembly_attributes {
+            // As in `fsharp_interface_data_version`: an attribute whose owner
+            // the reader cannot name is not this non-generic one.
+            let Ok(owning) = self.image.attribute_owning_type(raw) else {
+                continue;
+            };
+            if owning.namespace != "System.Reflection"
+                || owning.name != "AssemblyInformationalVersionAttribute"
+            {
+                continue;
+            }
+            let decoded = self.image.decode_attribute(raw, &widths).map_err(|e| {
+                ImportError::UnsupportedEcmaLayout {
+                    detail: format!("AssemblyInformationalVersionAttribute decode: {e:?}"),
+                }
+            })?;
+            let [FixedArg::String(Some(value))] = decoded.fixed_args.as_slice() else {
+                return Err(ImportError::UnsupportedEcmaLayout {
+                    detail: format!(
+                        "AssemblyInformationalVersionAttribute expected one string, got: {:?}",
+                        decoded.fixed_args
+                    ),
+                });
+            };
+            if found.replace(value.clone()).is_some() {
+                return Err(ImportError::UnsupportedEcmaLayout {
+                    detail: "AssemblyInformationalVersionAttribute occurs twice".into(),
+                });
+            }
+        }
+        Ok(found)
+    }
+
     /// How the host pickle's entities join to this image's `TypeDef` rows (the
     /// `pickle_join` module): `None` when the image has no decodable host
     /// pickle. Test-support only — the census the projection-skip sweep reports.

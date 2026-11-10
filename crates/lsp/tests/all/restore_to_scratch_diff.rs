@@ -20,7 +20,8 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use borzoi::project_assets::resolve_assemblies_for_tfm;
-use borzoi::restore::{RestoreOutcome, restore_to_scratch_assemblies};
+use borzoi::restore::shadow::ShadowVerdict;
+use borzoi::restore::{RestoreOutcome, restore_to_scratch};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::workspace::Workspace;
 use borzoi_spawn::BoundedCommand;
@@ -115,12 +116,19 @@ fn assert_scratch_matches_obj(project: &Path) {
         .to_string();
 
     // Scratch side first, so it runs against an un-restored project (no obj/).
-    let scratch =
-        match restore_to_scratch_assemblies(project, &root, &served, Some(workspace.env())) {
-            RestoreOutcome::Resolved(resolved) => resolved,
-            RestoreOutcome::Declined => panic!("the scratch restore declined a warm-cache project"),
-            RestoreOutcome::TransientFailure => panic!("the scratch restore failed transiently"),
-        };
+    let restored = restore_to_scratch(project, &root, &served, Some(workspace.env()));
+    // B₁ runs in shadow on every restore. Under the host's own environment it
+    // may decline (its user config, say), but it must not contradict the
+    // restore; `restore_graph.rs` requires it to commit under a controlled one.
+    match restored.shadow.map(|shadow| shadow.verdict) {
+        Some(ShadowVerdict::Agreed(_) | ShadowVerdict::Declined(_)) => {}
+        other => panic!("B₁'s shadow must agree or decline, not {other:?}"),
+    }
+    let scratch = match restored.outcome {
+        RestoreOutcome::Resolved(resolved) => resolved,
+        RestoreOutcome::Declined => panic!("the scratch restore declined a warm-cache project"),
+        RestoreOutcome::TransientFailure => panic!("the scratch restore failed transiently"),
+    };
     let mut scratch_dlls = scratch.package_dlls;
     scratch_dlls.extend(scratch.framework_dlls);
     let scratch_set = canonical_set(&scratch_dlls);

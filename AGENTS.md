@@ -140,6 +140,10 @@ This is a Cargo workspace with nine members:
   an oracle child shares the test's environment, so only grading under each
   variable (`restore_is_graded_under_every_environment_b1_admits`) and scanning
   the verified NuGet for the names it reads makes that dependence visible.
+  The LSP runs `resolve_dgspec` in shadow on every on-demand restore
+  (`crates/lsp/src/restore/shadow.rs`): it serves the restore's answer and
+  logs a B₁ commit that differs from it as an error, so a B₁ bug on a real
+  project shows up in the server's log.
   Self-contained: depends only
   on `roxmltree` and `serde`/`serde_json`.
   Differentially tested against the real NuGet client libraries via

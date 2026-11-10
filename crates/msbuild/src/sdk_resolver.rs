@@ -820,7 +820,7 @@ pub fn nuget_package_version(
 /// installed versions all rejected by the spec is `VersionNotSatisfied`
 /// with the sorted available list, matching ordinary SDK resolution's
 /// diagnostic split.
-fn select_host_sdk_version_dir(
+pub fn select_host_sdk_version_dir(
     dotnet_root: &Path,
     spec: Option<&VersionSpec>,
 ) -> Result<PathBuf, SdkResolveError> {

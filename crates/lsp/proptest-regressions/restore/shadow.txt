@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1f38b4e033eb19037a70d07d6c16f9c670e6ac3d070dbfb61d3963cbb6dedf6f # shrinks to frameworks = [ResolvedFramework { target_alias: "net8.0", framework: NuGetFramework { framework: ".NETCoreApp", version: [8, 0, 0, 0], platform: None, profile: None }, closure: ResolvedPackageClosure { packages: [ResolvedPackage { identity: PackageIdentity { id: PackageId("FSharp.Core"), version: NuGetVersion { major: 1, minor: 0, patch: 0, revision: 0, release_labels: [], metadata: None } }, paths: PackagePaths { package_dir: "/packages/fsharp.core/1.0.0", metadata_path: "/packages/fsharp.core/1.0.0/.nupkg.metadata", hash_path: "/packages/fsharp.core/1.0.0/fsharp.core.1.0.0.nupkg.sha512", nuspec_path: "/packages/fsharp.core/1.0.0/fsharp.core.nuspec" } }], resolved_dependencies: [], examined: [] }, warnings: None }], which = Index(0), change = 0, id = 0, version = 0

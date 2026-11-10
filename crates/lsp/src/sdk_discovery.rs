@@ -69,7 +69,8 @@ use std::path::{Component, Path, PathBuf};
 
 use borzoi_msbuild::{
     GlobalJsonError, SdkPathEntry, SdkResolution, SdkResolveError, SdkVersion, VersionSpec,
-    find_global_json, nuget_package_version, parse_global_json, resolve_sdk, workloads,
+    find_global_json, nuget_package_version, parse_global_json, resolve_sdk,
+    select_host_sdk_version_dir, workloads,
 };
 use borzoi_nuget::settings::{GlobalPackagesFolderDecline, global_packages_folder};
 
@@ -596,6 +597,18 @@ impl SdkDiscovery {
         }
     }
 
+    /// The `{root}/sdk/{version}` directory of the SDK the muxer runs for
+    /// this project: the highest version the spec admits, taken from the
+    /// first root that holds one, as [`Self::resolve`] takes roots. MSBuild
+    /// runs from that directory, and so does every task assembly it loads
+    /// from there, NuGet's among them, whatever the project's `Sdk="…"`
+    /// references resolve to.
+    pub fn host_sdk_dir(&self) -> Result<PathBuf, SdkResolveError> {
+        resolve_across_roots(&self.roots, "", &|root, _| {
+            select_host_sdk_version_dir(root, Some(&self.spec))
+        })
+    }
+
     /// The ordered list of SDK install roots [`Self::resolve`] consults.
     /// Empty when an explicit `paths: []` (or all-`$host$` with host
     /// resolution failed) leaves no usable root; queries on an
@@ -775,11 +788,11 @@ fn normalise_lexically(path: &Path) -> PathBuf {
 /// iteration logic can be property-tested without touching disk —
 /// tests substitute a deterministic `locate` that returns prepared
 /// outcomes per root.
-fn resolve_across_roots(
+fn resolve_across_roots<T>(
     roots: &[PathBuf],
     sdk_name: &str,
-    locate: &dyn Fn(&Path, &str) -> Result<SdkResolution, SdkResolveError>,
-) -> Result<SdkResolution, SdkResolveError> {
+    locate: &dyn Fn(&Path, &str) -> Result<T, SdkResolveError>,
+) -> Result<T, SdkResolveError> {
     let mut effective_spec: Option<VersionSpec> = None;
     let mut union: Vec<SdkVersion> = Vec::new();
     for root in roots {
