@@ -872,11 +872,9 @@ restore before admitting it, both as positive domains:
   The `assemblyName` is held to nothing. The
   shape is held to `pack`'s: one element without attributes, holding
   `<frameworkAssembly>` elements that each carry an `assemblyName`, at most
-  a `targetFramework` besides, and no child or text. The parser's own
-  divergence — `.NETPortable-net45-client` parses as a profile where NuGet
-  throws, because only the `portable` and `netportable` spellings route
-  through portable-member validation — is a `framework.rs` item of its own,
-  to be pinned in `framework_diff` and fixed there.
+  a `targetFramework` besides, and no child or text. The parser still
+  reads the zero-padded version as unsupported where NuGet throws, which
+  keeps the rule textual rather than a reading of the parser's verdict.
 - **What restore does with it for a package in the closure.**
   `LockFileUtils.AddFrameworkReferences` consults the groups only for a
   framework that is not package based (`.NETFramework`; never `.NETCoreApp`

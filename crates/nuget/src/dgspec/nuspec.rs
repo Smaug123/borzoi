@@ -743,9 +743,8 @@ fn admitted_content_files(
 /// and one the measured cache never spells in this element, and the rule
 /// that holds it out is textual: no reading of the piece by the parser
 /// here stands between the spelling and the decline, since that parser
-/// reads `.NETPortable-net45-client` as a profile and
-/// `portable4.00000000000-net45-client` as unsupported where NuGet reads
-/// both as portable profiles and throws. The generated sweep
+/// reads `portable4.00000000000-net45-client` as unsupported where NuGet
+/// reads it as a portable profile and throws. The generated sweep
 /// (`framework_assemblies_shapes_are_graded_at_the_lookup_and_in_the_closure`)
 /// grades spellings restore parses, ones it reads as unsupported, portable
 /// profiles sound and throwing under each identifier and version spelling,
