@@ -85,6 +85,18 @@ properties, and SDK-tainted reads are not. `Choose` gates are stricter — any
 diagnostic undecides. The catalogue lives in the
 `ParsedProject::project_references_uncertain` docs.
 
+A condition is judged by what its **outcome depends on**, not by what it
+mentions: `State::condition_trust` / `condition_is_decided_exactly` run
+`condition::decide_without` (three-valued, leaf-wise), so
+`'$(Off)' == 'true' And '$(Untrusted)' == 'x'` is exactly false when `Off` is
+trusted. An *undefined* operand counts as trusted only while its read is exact,
+which an earlier undecided import or `<ImportGroup>` ends (`walk_opaque`): on a
+real SDK an untrusted `TargetFramework` therefore still taints `LangVersion`. Ask a
+condition's trust through those, never through `trust_for_raw` /
+`unpinned_root_for_raw` on its text — that reintroduces the over-taint
+WoofWare/borzoi#499 hit. To tell a user *why* a value is untrusted, read
+`ParsedProject::property_untrusted_cause`.
+
 ## 2. Never gate a fold on the generic provenance seam
 
 `ParsedProject::property_provenance_untrusted` fires for **dozens of

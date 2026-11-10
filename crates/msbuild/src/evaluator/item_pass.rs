@@ -2375,12 +2375,18 @@ fn evaluate_item_condition_silent(node: Node<'_, '_>, state: &State<'_>) -> (Con
     } else {
         condition::evaluate(cond, &state.lookup)
     };
-    let tainted = eval
+    let inexact_undefined: Vec<String> = eval
         .undefined_properties
         .iter()
-        .any(|name| !state.undefined_read_is_exact(name))
-        || eval.outcome == condition::Outcome::Unsupported
-        || state.unpinned_root_for_raw(cond).is_some();
+        .filter(|name| !state.undefined_read_is_exact(name))
+        .cloned()
+        .collect();
+    let tainted = eval.outcome == condition::Outcome::Unsupported
+        || !state.condition_is_decided_exactly(
+            cond,
+            Some(&state.entry_project_dir),
+            &inexact_undefined,
+        );
     let gate = match eval.outcome {
         condition::Outcome::True => CondGate::Run,
         condition::Outcome::False => CondGate::Skip,
@@ -2394,9 +2400,12 @@ fn evaluate_item_condition_silent_with_sdk_taint(
     state: &State<'_>,
 ) -> (CondGate, bool) {
     let (gate, condition_tainted) = evaluate_item_condition_silent(node, state);
-    let sdk_tainted = node
-        .attribute("Condition")
-        .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+    let sdk_tainted = node.attribute("Condition").is_some_and(|condition| {
+        state
+            .condition_trust(condition, None)
+            .sdk_package()
+            .is_some()
+    });
     (gate, condition_tainted || sdk_tainted)
 }
 

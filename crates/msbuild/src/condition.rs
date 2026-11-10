@@ -130,63 +130,17 @@ fn evaluate_inner(
     props: &PropertyMap,
     exists: Option<&dyn Fn(&str) -> bool>,
 ) -> Eval {
-    if source.trim().is_empty() {
-        return Eval {
-            outcome: Outcome::True,
-            undefined_properties: Vec::new(),
-            undefined_outside_empty_comparison: Vec::new(),
-        };
-    }
-    // MSBuild's condition scanner lexes item-list (`@(`) and metadata (`%(`)
-    // references directly from the *raw* condition text, before any property
-    // expansion; we model neither, and MSBuild treats a bare marker in a
-    // condition as a hard lex error. A single scan of the raw source closes
-    // that whole class up front: some of our reductions (string instance
-    // methods, `System.Version` parts, version functions) collapse a `$(…)`
-    // subexpression to a value *before* the operand-level `@(`/`%(` check in
-    // `expand_for_condition` can see it, which would otherwise let a raw
-    // marker in the source slip through and commit us to a boolean MSBuild
-    // never reaches. Rejecting here is uniform and structural — no individual
-    // reducer needs its own marker guard.
-    //
-    // Markers arriving *only* via `$()` substitution are not in the raw
-    // source and are unaffected, matching MSBuild (it never re-lexes
-    // substituted text). This is deliberately conservative: it also rejects
-    // the rare balanced `@(x)` forms MSBuild happens to accept, but only ever
-    // toward `Unsupported`, never a wrong committed gate.
-    if source.contains("@(") || source.contains("%(") {
-        return unsupported();
-    }
-    // NB: escape-bearing conditions are **modelled**, not degraded (stage E2 of
-    // `docs/msbuild-escaped-value-plan.md`). MSBuild unescapes `%XX` at the
-    // operand leaf, so `'%74rue' == 'true'` is *true* — and `expand_for_condition`
-    // decodes each operand there, exactly once, having scanned it escaped.
-    //
-    // A `%` **outside** quotes needs no guard here: it is not an escape at all,
-    // because MSBuild's scanner rejects it (`MSB4090: Found an unexpected
-    // character '7' … in condition "%74rue"`). Our tokeniser reaches the same
-    // verdict structurally — `%` matches no token start, so it lexes to
-    // `Token::Unknown`, which the parser surfaces as `Unsupported`. That is the
-    // right mapping for an MSBuild error, and it is why deleting the wholesale
-    // degrade does not open a hole.
-    let tokens = match tokenise(source) {
-        Ok(t) => t,
+    let expr = match parse_condition(source) {
+        Ok(Some(expr)) => expr,
+        Ok(None) => {
+            return Eval {
+                outcome: Outcome::True,
+                undefined_properties: Vec::new(),
+                undefined_outside_empty_comparison: Vec::new(),
+            };
+        }
         Err(()) => return unsupported(),
     };
-    let mut parser = Parser {
-        tokens: &tokens,
-        pos: 0,
-        depth: 0,
-    };
-    let Ok(expr) = parser.parse_or() else {
-        return unsupported();
-    };
-    if parser.pos != parser.tokens.len() {
-        // Trailing tokens — something we don't model came after a
-        // well-formed prefix (`'a' == 'b' garbage`). Don't pretend
-        // the prefix's truth value is the whole condition's.
-        return unsupported();
-    }
     let mut undefined = Vec::new();
     let outcome = match eval_bool(&expr, props, exists, &mut undefined) {
         Ok(true) => Outcome::True,
@@ -215,6 +169,193 @@ fn evaluate_inner(
         outcome,
         undefined_properties: undefined,
         undefined_outside_empty_comparison,
+    }
+}
+
+/// Parse a condition into its tree: `Ok(None)` for a blank condition (which
+/// MSBuild treats as true), `Err` for anything outside the grammar.
+fn parse_condition(source: &str) -> Result<Option<BoolExpr>, ()> {
+    if source.trim().is_empty() {
+        return Ok(None);
+    }
+    // MSBuild's condition scanner lexes item-list (`@(`) and metadata (`%(`)
+    // references directly from the *raw* condition text, before any property
+    // expansion; we model neither, and MSBuild treats a bare marker in a
+    // condition as a hard lex error. A single scan of the raw source closes
+    // that whole class up front: some of our reductions (string instance
+    // methods, `System.Version` parts, version functions) collapse a `$(…)`
+    // subexpression to a value *before* the operand-level `@(`/`%(` check in
+    // `expand_for_condition` can see it, which would otherwise let a raw
+    // marker in the source slip through and commit us to a boolean MSBuild
+    // never reaches. Rejecting here is uniform and structural — no individual
+    // reducer needs its own marker guard.
+    //
+    // Markers arriving *only* via `$()` substitution are not in the raw
+    // source and are unaffected, matching MSBuild (it never re-lexes
+    // substituted text). This is deliberately conservative: it also rejects
+    // the rare balanced `@(x)` forms MSBuild happens to accept, but only ever
+    // toward `Unsupported`, never a wrong committed gate.
+    if source.contains("@(") || source.contains("%(") {
+        return Err(());
+    }
+    // NB: escape-bearing conditions are **modelled**, not degraded (stage E2 of
+    // `docs/msbuild-escaped-value-plan.md`). MSBuild unescapes `%XX` at the
+    // operand leaf, so `'%74rue' == 'true'` is *true* — and `expand_for_condition`
+    // decodes each operand there, exactly once, having scanned it escaped.
+    //
+    // A `%` **outside** quotes needs no guard here: it is not an escape at all,
+    // because MSBuild's scanner rejects it (`MSB4090: Found an unexpected
+    // character '7' … in condition "%74rue"`). Our tokeniser reaches the same
+    // verdict structurally — `%` matches no token start, so it lexes to
+    // `Token::Unknown`, which the parser surfaces as `Unsupported`. That is the
+    // right mapping for an MSBuild error, and it is why deleting the wholesale
+    // degrade does not open a hole.
+    let tokens = tokenise(source)?;
+    let mut parser = Parser {
+        tokens: &tokens,
+        pos: 0,
+        depth: 0,
+    };
+    let expr = parser.parse_or()?;
+    if parser.pos != parser.tokens.len() {
+        // Trailing tokens — something we don't model came after a
+        // well-formed prefix (`'a' == 'b' garbage`). Don't pretend
+        // the prefix's truth value is the whole condition's.
+        return Err(());
+    }
+    Ok(Some(expr))
+}
+
+/// Whether a condition's outcome depends on properties whose values cannot be
+/// trusted. See [`decide_without`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// Every value the untrusted properties could hold gives this outcome, or
+    /// makes MSBuild reject the condition (a project error, after which the
+    /// real evaluation has no value to disagree with).
+    Decided(bool),
+    /// Some value of an untrusted property may change the outcome.
+    Depends,
+    /// The condition is outside the grammar, or a part of it the untrusted
+    /// properties do not reach is (see [`Outcome::Unsupported`]).
+    Unsupported,
+}
+
+/// Decide a condition without trusting the properties `untrusted` names.
+///
+/// Three-valued (Kleene) evaluation over the condition's tree: a leaf — a
+/// comparison, a coerced scalar, a function call — that mentions an untrusted
+/// property anywhere in its operands is *unknown*; every other leaf evaluates
+/// exactly as [`evaluate`] does against `props`. `And` is false when some
+/// operand is false and true when all are true, `Or` dually, `!` swaps, and
+/// anything else is unknown. Order does not matter, though MSBuild evaluates
+/// left to right and stops at the deciding operand: an unknown operand before
+/// a false one is either false (MSBuild stops there), true (MSBuild goes on to
+/// the false one) or a project error, and none of those disagrees with
+/// `false`.
+///
+/// Leaves are judged one at a time, so a contradiction spread across leaves
+/// (`'$(U)' == 'a' And '$(U)' != 'a'`) is [`Decision::Depends`]. That only
+/// ever declines.
+pub fn decide_without(
+    source: &str,
+    props: &PropertyMap,
+    exists: Option<&dyn Fn(&str) -> bool>,
+    untrusted: &dyn Fn(&str) -> bool,
+) -> Decision {
+    let expr = match parse_condition(source) {
+        Ok(Some(expr)) => expr,
+        Ok(None) => return Decision::Decided(true),
+        Err(()) => return Decision::Unsupported,
+    };
+    match eval_kleene(&expr, props, exists, untrusted) {
+        Ok(Some(value)) => Decision::Decided(value),
+        Ok(None) => Decision::Depends,
+        Err(()) => Decision::Unsupported,
+    }
+}
+
+/// [`decide_without`]'s evaluation: `Ok(None)` is unknown.
+fn eval_kleene(
+    expr: &BoolExpr,
+    props: &PropertyMap,
+    exists: Option<&dyn Fn(&str) -> bool>,
+    untrusted: &dyn Fn(&str) -> bool,
+) -> Result<Option<bool>, ()> {
+    match expr {
+        BoolExpr::Not(inner) => Ok(eval_kleene(inner, props, exists, untrusted)?.map(|v| !v)),
+        BoolExpr::And(operands) => kleene_chain(operands, false, props, exists, untrusted),
+        BoolExpr::Or(operands) => kleene_chain(operands, true, props, exists, untrusted),
+        BoolExpr::True
+        | BoolExpr::False
+        | BoolExpr::Exists(_)
+        | BoolExpr::HasTrailingSlash(_)
+        | BoolExpr::MsbuildVersionFunction(_)
+        | BoolExpr::CoerceBool(_)
+        | BoolExpr::Compare { .. } => {
+            let mut references = Vec::new();
+            leaf_references(expr, &mut references);
+            if references.iter().any(|name| untrusted(name)) {
+                return Ok(None);
+            }
+            // The undefined names are the caller's to report from its own
+            // `evaluate`; this evaluation only decides.
+            let mut undefined = Vec::new();
+            eval_bool(expr, props, exists, &mut undefined).map(Some)
+        }
+    }
+}
+
+/// An `And` chain (`absorbing` false) or an `Or` chain (`absorbing` true): an
+/// operand holding the absorbing value decides the chain. A trusted operand
+/// MSBuild rejects stops the decision, as it would stop MSBuild had every
+/// operand before it let evaluation through.
+fn kleene_chain(
+    operands: &[BoolExpr],
+    absorbing: bool,
+    props: &PropertyMap,
+    exists: Option<&dyn Fn(&str) -> bool>,
+    untrusted: &dyn Fn(&str) -> bool,
+) -> Result<Option<bool>, ()> {
+    let mut unknown = false;
+    for operand in operands {
+        match eval_kleene(operand, props, exists, untrusted)? {
+            Some(value) if value == absorbing => return Ok(Some(absorbing)),
+            Some(_) => {}
+            None => unknown = true,
+        }
+    }
+    Ok(if unknown { None } else { Some(!absorbing) })
+}
+
+/// Every property a leaf of the condition tree mentions, in any operand.
+fn leaf_references(expr: &BoolExpr, out: &mut Vec<String>) {
+    let scalar = |scalar: &ScalarExpr, out: &mut Vec<String>| match scalar {
+        ScalarExpr::Bare(_) => {}
+        ScalarExpr::String(raw)
+        | ScalarExpr::Property(raw)
+        | ScalarExpr::SystemVersionPart { arg: raw, .. } => {
+            out.extend(super::properties::property_references(raw).map(str::to_string))
+        }
+    };
+    match expr {
+        BoolExpr::True | BoolExpr::False => {}
+        BoolExpr::Not(inner) => leaf_references(inner, out),
+        BoolExpr::And(operands) | BoolExpr::Or(operands) => {
+            for operand in operands {
+                leaf_references(operand, out);
+            }
+        }
+        BoolExpr::Exists(raw)
+        | BoolExpr::HasTrailingSlash(raw)
+        | BoolExpr::MsbuildVersionFunction(raw) => {
+            out.extend(super::properties::property_references(raw).map(str::to_string))
+        }
+        BoolExpr::CoerceBool(value) => scalar(value, out),
+        BoolExpr::Compare { lhs, rhs, .. } => {
+            scalar(lhs, out);
+            scalar(rhs, out);
+        }
     }
 }
 
@@ -3425,6 +3566,159 @@ mod prop_tests {
         assert!(
             t >= 16 && f >= 16,
             "coverage too skewed: {t} true / {f} false — generator is not exploring both branches"
+        );
+    }
+}
+
+#[cfg(test)]
+mod decide_without_props {
+    //! [`decide_without`] held to [`evaluate`], which the unit tests above
+    //! hold to `dotnet msbuild`. Conditions are generated over two trusted
+    //! properties (`A`, `B`) and two untrusted ones (`U`, `V`); a verdict of
+    //! [`Decision::Decided`] is checked against `evaluate` under *every*
+    //! assignment of the untrusted pair from a value alphabet that spans
+    //! MSBuild's comparison dispatch (empty, numbers, versions, booleans,
+    //! strings) plus "undefined".
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    const VALUES: &[&str] = &[
+        "", "true", "false", "1", "1.0", "2.0.1", "net10.0", "x", "On",
+    ];
+    const TRUSTED: &[&str] = &["A", "B"];
+    const UNTRUSTED: &[&str] = &["U", "V"];
+
+    fn is_untrusted(name: &str) -> bool {
+        UNTRUSTED.iter().any(|u| u.eq_ignore_ascii_case(name))
+    }
+
+    fn operand() -> impl Strategy<Value = String> {
+        let names: Vec<&str> = TRUSTED.iter().chain(UNTRUSTED).copied().collect();
+        prop_oneof![
+            prop::sample::select(VALUES).prop_map(|v| format!("'{v}'")),
+            prop::sample::select(names.clone()).prop_map(|n| format!("'$({n})'")),
+            prop::sample::select(names.clone()).prop_map(|n| format!("'x$({n})'")),
+            prop::sample::select(names).prop_map(|n| format!("$({n})")),
+        ]
+    }
+
+    fn leaf() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("true".to_string()),
+            Just("false".to_string()),
+            (
+                operand(),
+                prop::sample::select(&["==", "!=", "<", ">=", "=="][..]),
+                operand()
+            )
+                .prop_map(|(l, op, r)| format!("{l} {op} {r}")),
+            operand(),
+        ]
+    }
+
+    fn condition() -> impl Strategy<Value = String> {
+        leaf().prop_recursive(4, 24, 3, |inner| {
+            prop_oneof![
+                inner.clone().prop_map(|c| format!("!({c})")),
+                prop::collection::vec(inner.clone(), 2..4)
+                    .prop_map(|cs| format!("({})", cs.join(" And "))),
+                prop::collection::vec(inner, 2..4).prop_map(|cs| format!("({})", cs.join(" Or "))),
+            ]
+        })
+    }
+
+    /// `None` is "undefined".
+    fn value_choice() -> impl Strategy<Value = Option<&'static str>> {
+        prop_oneof![Just(None), prop::sample::select(VALUES).prop_map(Some)]
+    }
+
+    fn map(assignment: &[(&str, Option<&str>)]) -> PropertyMap {
+        let mut props = PropertyMap::new();
+        for (name, value) in assignment {
+            if let Some(value) = value {
+                props.insert(*name, *value);
+            }
+        }
+        props
+    }
+
+    static CASES: AtomicUsize = AtomicUsize::new(0);
+    static DECIDED_DESPITE_UNTRUSTED: AtomicUsize = AtomicUsize::new(0);
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2048))]
+
+        #[test]
+        fn decided_means_every_untrusted_value_agrees(
+            source in condition(),
+            a in value_choice(),
+            b in value_choice(),
+            u in value_choice(),
+            v in value_choice(),
+        ) {
+            let base = map(&[("A", a), ("B", b), ("U", u), ("V", v)]);
+            let decision = decide_without(&source, &base, None, &is_untrusted);
+            CASES.fetch_add(1, Ordering::Relaxed);
+            let Decision::Decided(decided) = decision else {
+                return Ok(());
+            };
+            let mentions_untrusted = UNTRUSTED.iter().any(|u| source.contains(&format!("$({u})")));
+            if mentions_untrusted {
+                DECIDED_DESPITE_UNTRUSTED.fetch_add(1, Ordering::Relaxed);
+            }
+            for u in std::iter::once(None).chain(VALUES.iter().copied().map(Some)) {
+                for v in std::iter::once(None).chain(VALUES.iter().copied().map(Some)) {
+                    let props = map(&[("A", a), ("B", b), ("U", u), ("V", v)]);
+                    let outcome = evaluate(&source, &props).outcome;
+                    let agrees = match outcome {
+                        Outcome::True => decided,
+                        Outcome::False => !decided,
+                        // A rejected condition is a project error in MSBuild.
+                        Outcome::Unsupported => true,
+                    };
+                    prop_assert!(
+                        agrees,
+                        "{source}: decided {decided}, but U={u:?} V={v:?} gives {outcome:?}"
+                    );
+                }
+            }
+        }
+
+        /// With nothing untrusted, deciding is evaluating.
+        #[test]
+        fn nothing_untrusted_is_plain_evaluation(
+            source in condition(),
+            a in value_choice(),
+            b in value_choice(),
+            u in value_choice(),
+            v in value_choice(),
+        ) {
+            let props = map(&[("A", a), ("B", b), ("U", u), ("V", v)]);
+            let decision = decide_without(&source, &props, None, &|_| false);
+            let expected = match evaluate(&source, &props).outcome {
+                Outcome::True => Decision::Decided(true),
+                Outcome::False => Decision::Decided(false),
+                Outcome::Unsupported => Decision::Unsupported,
+            };
+            prop_assert_eq!(decision, expected, "{}", source);
+        }
+    }
+
+    /// The soundness property above holds vacuously if nothing that mentions
+    /// an untrusted property is ever decided; this is what keeps it honest.
+    #[test]
+    fn deciding_despite_untrusted_operands_is_exercised() {
+        decided_means_every_untrusted_value_agrees();
+        let cases = CASES.load(Ordering::Relaxed);
+        let decided = DECIDED_DESPITE_UNTRUSTED.load(Ordering::Relaxed);
+        assert!(
+            decided * 20 >= cases,
+            "only {decided} of {cases} cases decided a condition that mentions an \
+             untrusted property"
         );
     }
 }

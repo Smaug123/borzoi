@@ -38,8 +38,9 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use borzoi::project_deferral::{deferral_message, deferrals};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
-use borzoi::semantic::SemanticState;
+use borzoi::semantic::{ProjectId, SemanticState};
 use borzoi::workspace::Workspace;
 
 /// A unique fixture dir per run, in the system temp so `nix develop` sandboxes
@@ -193,6 +194,31 @@ fn ordinary_sdk_projects_have_trusted_langversion_provenance() {
             Some("Preview"),
             false,
         ),
+        // A pinned `LangVersion` does not survive an untrusted
+        // `TargetFramework` (WoofWare/borzoi#499): the SDK imports files under
+        // TFM-dependent `<ImportGroup>` gates, so whether those files'
+        // writes happen is unknown, and after them an unset
+        // `EnablePreviewFeatures` no longer proves the SDK's later
+        // `LangVersion=Preview` write is skipped. The cause names the
+        // `TargetFramework` gate, not `LangVersion`, which is what the
+        // refusal message tells the user.
+        (
+            "untrusted-tfm-pinned-lang",
+            "<TargetFramework Condition=\"'@(NoSuchItem)' == ''\">net10.0</TargetFramework>\
+             <LangVersion>10.0</LangVersion>",
+            Some("10.0"),
+            true,
+        ),
+        // ...but an untrusted `EnablePreviewFeatures` decides that gate, and a
+        // pinned `LangVersion` cannot beat the SDK's later write.
+        (
+            "untrusted-preview-features-pinned-lang",
+            "<TargetFramework>net10.0</TargetFramework>\
+             <EnablePreviewFeatures Condition=\"'@(NoSuchItem)' == ''\">true</EnablePreviewFeatures>\
+             <LangVersion>10.0</LangVersion>",
+            Some("10.0"),
+            true,
+        ),
         (
             "control-unpinnable-gate",
             "<TargetFramework>net10.0</TargetFramework>\
@@ -229,8 +255,9 @@ fn ordinary_sdk_projects_have_trusted_langversion_provenance() {
         let untrusted = parsed.property_provenance_untrusted("LangVersion");
         if value != expected_value || untrusted != expected_untrusted {
             failures.push(format!(
-                "{tag}: LangVersion {value:?} (untrusted: {untrusted}), \
-                 expected {expected_value:?} (untrusted: {expected_untrusted})"
+                "{tag}: LangVersion {value:?} (untrusted: {untrusted}, because {:?}), \
+                 expected {expected_value:?} (untrusted: {expected_untrusted})",
+                parsed.property_untrusted_cause("LangVersion")
             ));
         }
         std::fs::remove_dir_all(&root).ok();
@@ -273,6 +300,63 @@ fn sdk_project_with_version_straddling_file_refuses_the_fold() {
         !folds(&fsproj),
         "an unknowable LangVersion (written under an unpinnable gate) with a \
          version-shape-dependent file must refuse the fold"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// What the user reads (WoofWare/borzoi#499): a refusal over an untrusted
+/// `LangVersion` names what the version rests on. Here that is the
+/// `TargetFramework` gate, not `LangVersion`, which is pinned — so pinning it
+/// again is not the fix, and the message must not suggest that it is.
+#[test]
+fn a_language_version_refusal_names_the_condition_it_rests_on() {
+    let root = scratch_dir("sdk-fold-langversion-cause");
+    let fsproj = root.join("App.fsproj");
+    std::fs::write(
+        &fsproj,
+        r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework Condition="'@(NoSuchItem)' == ''">net10.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+  </ItemGroup>
+</Project>
+"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("A.fs"), "match x with\n").unwrap();
+
+    let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
+    let mut sema = SemanticState::new();
+    let docs = HashMap::new();
+    assert!(
+        sema.parses_for_project(&fsproj, &mut workspace, &docs)
+            .is_none(),
+        "the straddling file under an untrusted LangVersion must refuse the fold"
+    );
+    let outcome = sema.fold_outcome(&ProjectId::new(&fsproj));
+    let message = deferral_message(
+        &fsproj,
+        &deferrals(workspace.project_evaluation(&fsproj), outcome),
+    )
+    .expect("a refused fold is reported");
+    for needle in [
+        "A.fs",
+        "LangVersion",
+        "`'@(NoSuchItem)' == ''`",
+        "can't evaluate",
+    ] {
+        assert!(
+            message.contains(needle),
+            "the refusal must say {needle:?}: {message}"
+        );
+    }
+    assert!(
+        !message.contains("isn't pinned"),
+        "LangVersion is pinned; the message must not say otherwise: {message}"
     );
 
     std::fs::remove_dir_all(&root).ok();

@@ -9693,3 +9693,160 @@ fn a_case_collision_whose_spellings_agree_still_has_a_knowable_value() {
         "the fallback fires on both sides, so the item it gates is real",
     );
 }
+
+/// A gate whose value the *trusted* operands alone decide does not depend on
+/// the untrusted ones, so it must not taint what it guards. The SDK shape this
+/// models is `Microsoft.NET.Sdk.Common.targets`'s
+/// `<PropertyGroup Condition="'$(EnablePreviewFeatures)' == 'true' And
+/// '$(IsNetCoreAppTargetingLatestTFM)' == 'true'"><LangVersion>Preview</…>`:
+/// with `EnablePreviewFeatures` unset the write cannot run, however untrusted
+/// `TargetFramework` (and so `IsNetCoreAppTargetingLatestTFM`) is. Each row
+/// pins whether the guarded `L` is untrusted, so the rows where the untrusted
+/// operand *does* decide the gate hold the other direction.
+#[test]
+fn a_gate_decided_by_trusted_operands_does_not_taint_its_writes() {
+    // `Tf` is untrusted (written under an item-reference gate, permanently
+    // unsupported); `Off` is trusted and false; `On` is trusted and true.
+    let prelude = r#"<PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <Off>false</Off>
+    <On>true</On>
+  </PropertyGroup>"#;
+    let rows: &[(&str, &str, bool)] = &[
+        (
+            "and-trusted-false-first",
+            "'$(Off)' == 'true' And '$(Tf)' == 'net10.0'",
+            false,
+        ),
+        (
+            "and-trusted-false-last",
+            "'$(Tf)' == 'net10.0' And '$(Off)' == 'true'",
+            false,
+        ),
+        (
+            "or-trusted-true-last",
+            "'$(Tf)' == 'net10.0' Or '$(On)' == 'true'",
+            false,
+        ),
+        (
+            "not-of-decided-and",
+            "!('$(Off)' == 'true' And '$(Tf)' == 'x')",
+            false,
+        ),
+        (
+            "nested-decided",
+            "('$(Off)' == 'true' And '$(Tf)' == 'x') Or '$(Off)' == 'yes'",
+            false,
+        ),
+        (
+            "and-trusted-true",
+            "'$(On)' == 'true' And '$(Tf)' == 'net10.0'",
+            true,
+        ),
+        (
+            "or-trusted-false",
+            "'$(Off)' == 'true' Or '$(Tf)' == 'net10.0'",
+            true,
+        ),
+        ("bare-untrusted", "'$(Tf)' == 'net10.0'", true),
+        (
+            "leafwise-contradiction-stays-untrusted",
+            "'$(Tf)' == 'a' And '$(Tf)' != 'a'",
+            true,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for &(tag, gate, expected_untrusted) in rows {
+        for (shape, body) in [
+            (
+                "group-gate",
+                format!(r#"<PropertyGroup Condition="{gate}"><L>Preview</L></PropertyGroup>"#),
+            ),
+            (
+                "element-gate",
+                format!(r#"<PropertyGroup><L Condition="{gate}">Preview</L></PropertyGroup>"#),
+            ),
+        ] {
+            let src = format!("<Project>\n  {prelude}\n  {body}\n</Project>");
+            let p = parse(&src);
+            assert!(
+                p.property_provenance_untrusted("Tf"),
+                "{tag}/{shape}: Tf must be untrusted for the row to test anything"
+            );
+            let untrusted = p.property_provenance_untrusted("L");
+            if untrusted != expected_untrusted {
+                failures.push(format!(
+                    "{tag}/{shape}: L untrusted = {untrusted}, expected {expected_untrusted} \
+                     (gate {gate})"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The same precision one level down: an unsupported group gate marks the
+/// children that could write, and a child whose own condition the trusted
+/// operands decide false cannot write, whatever the untrusted ones hold.
+#[test]
+fn a_child_gate_decided_false_by_trusted_operands_is_not_marked_by_its_group() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <Off>false</Off>
+  </PropertyGroup>
+  <PropertyGroup Condition="'@(AnotherItem)' == ''">
+    <L Condition="'$(Off)' == 'true' And '$(Tf)' == 'net10.0'">Preview</L>
+    <M Condition="'$(Off)' != 'true' And '$(Tf)' == 'net10.0'">Preview</M>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(
+        !p.property_provenance_untrusted("L"),
+        "L's own gate is false whatever Tf holds, so it cannot write"
+    );
+    assert!(
+        p.property_provenance_untrusted("M"),
+        "M's own gate depends on Tf, so the unsupported group gate must mark it"
+    );
+}
+
+/// The cause an untrusted property reports is the root the walk recorded on
+/// its chain, carried through the gates and values that read it — what lets a
+/// consumer tell the user which condition to look at, rather than only that
+/// some value is untrusted.
+#[test]
+fn an_untrusted_property_reports_the_root_of_its_chain() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <On>true</On>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(On)' == 'true' And '$(Tf)' == 'net10.0'">
+    <Gated>Preview</Gated>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Derived>$(Tf)-x</Derived>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == ''">
+    <FromUndefined>x</FromUndefined>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    let item_gate = crate::UntrustedCause::Unmodelled("'@(NoSuchItem)' == ''".to_string());
+    for name in ["Tf", "Gated", "Derived", "GATED"] {
+        assert_eq!(
+            p.property_untrusted_cause(name),
+            Some(&item_gate),
+            "{name} rests on Tf's unmodelled gate"
+        );
+    }
+    assert_eq!(
+        p.property_untrusted_cause("FromUndefined"),
+        Some(&crate::UntrustedCause::UndefinedProperty(
+            "TargetFramework".to_string()
+        ))
+    );
+    assert_eq!(p.property_untrusted_cause("On"), None);
+    assert_eq!(p.property_untrusted_cause("NeverWritten"), None);
+}

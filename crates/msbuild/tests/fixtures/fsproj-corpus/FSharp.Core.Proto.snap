@@ -89,7 +89,7 @@ items (69):
 project_references (0):
 package_references (0, uncertain=true):
 framework_references (0):
-diagnostics (11):
+diagnostics (10):
   SdkResolverAbsent { name: "Microsoft.NET.Sdk" }
   UndefinedProperty { name: "NoWarn" }
   UndefinedProperty { name: "DefineConstants" }
@@ -98,6 +98,5 @@ diagnostics (11):
   UndefinedProperty { name: "FSProductVersionPrefix" }
   UndefinedProperty { name: "FSLanguageVersion" }
   UndefinedProperty { name: "FSharpLibrariesChangelogVersion" }
-  UndefinedProperty { name: "BUILDING_USING_DOTNET" }
   UndefinedProperty { name: "BUILDING_USING_DOTNET" }
   UnsupportedConstruct { element: "Target" }

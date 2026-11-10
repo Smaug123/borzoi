@@ -55,6 +55,22 @@ impl UnpinnedRoot {
     }
 }
 
+/// Why a property's evaluated value may not be the real build's: the first
+/// cause the walk recorded on the value's chain. See
+/// [`crate::ParsedProject::property_untrusted_cause`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UntrustedCause {
+    /// The chain read `$(name)` while it was undefined, and a real build may
+    /// define it.
+    UndefinedProperty(String),
+    /// The chain rests on text outside the modelled grammar, carried verbatim:
+    /// a `Condition` on a write, or a property body (`<Name> body`).
+    Unmodelled(String),
+    /// The chain rests on a value the SDK computed from package inputs that the
+    /// walk does not model.
+    SdkPackageInput,
+}
+
 /// Where a write we cannot trust for a later package read happened. Carried so
 /// the package-side decline can point at the write rather than at the read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +152,28 @@ impl Trust {
             unpinned: unpinned.is_some(),
             sdk_package: sdk_package.is_some(),
             refused: *refused,
+        }
+    }
+
+    /// The first cause behind a reference being untrusted
+    /// ([`Self::reference_is_untrusted`]), `None` exactly when it is not. The
+    /// unpinned root comes first: it names the property or condition to look
+    /// at, where the package taint names only the SDK.
+    pub(crate) fn untrusted_cause(&self) -> Option<UntrustedCause> {
+        let Trust {
+            unpinned,
+            sdk_package,
+            refused: _,
+        } = self;
+        match (unpinned, sdk_package) {
+            (Some(UnpinnedRoot::Undefined(name)), _) => {
+                Some(UntrustedCause::UndefinedProperty(name.clone()))
+            }
+            (Some(UnpinnedRoot::UnsupportedCondition(text)), _) => {
+                Some(UntrustedCause::Unmodelled(text.clone()))
+            }
+            (None, Some(_)) => Some(UntrustedCause::SdkPackageInput),
+            (None, None) => None,
         }
     }
 

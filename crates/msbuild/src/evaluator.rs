@@ -2303,11 +2303,10 @@ impl<'r> State<'r> {
         // A refused write alone does not put a name here: this set describes
         // values a consumer holds and may have wrong, and a refusal means we
         // hold no value at all — see [`Trust::reference_is_untrusted`].
-        let untrusted_properties: std::collections::HashSet<String> = self
+        let untrusted_properties: HashMap<String, crate::UntrustedCause> = self
             .property_trust
             .iter()
-            .filter(|(_, trust)| trust.reference_is_untrusted())
-            .map(|(name, _)| name.clone())
+            .filter_map(|(name, trust)| Some((name.clone(), self.root_untrusted_cause(trust)?)))
             .collect();
         let State {
             lookup,
@@ -2869,6 +2868,26 @@ impl<'r> State<'r> {
         self.sdk_package_taint_for_raw(raw).is_some()
     }
 
+    /// `trust`'s [`Trust::untrusted_cause`], followed to the deepest recorded
+    /// root: a cause that is "read `$(X)` while undefined" where `X` has a
+    /// cause of its own (its write was skipped under an unmodelled gate, say)
+    /// is reported as `X`'s cause, which is the one a reader can act on.
+    /// Reporting only — the walk's own roots are untouched.
+    fn root_untrusted_cause(&self, trust: &Trust) -> Option<crate::UntrustedCause> {
+        let mut cause = trust.untrusted_cause()?;
+        let mut visited = HashSet::new();
+        while let crate::UntrustedCause::UndefinedProperty(name) = &cause {
+            if !visited.insert(name.to_ascii_lowercase()) {
+                break;
+            }
+            match self.trust_of(name).untrusted_cause() {
+                Some(next) => cause = next,
+                None => break,
+            }
+        }
+        Some(cause)
+    }
+
     /// The root cause behind the first unpinned property `raw` references,
     /// if any (see [`Trust::unpinned`]).
     fn unpinned_root_for_raw(&self, raw: &str) -> Option<UnpinnedRoot> {
@@ -2922,10 +2941,63 @@ impl<'r> State<'r> {
     /// environment) they are genuinely unset, so treating them as empty is
     /// exact — the same commitment the default-fill exemption and the
     /// pinned `'$(NoSuchProp)' == 'on'` reference-mutation cases make.
+    ///
+    /// "Leans on" is about the *outcome*: see [`Self::condition_trust`].
     fn condition_reads_untrusted_value(&self, node: Node<'_, '_>) -> bool {
-        node.attribute("Condition").is_some_and(|cond| {
-            self.unpinned_root_for_raw(cond).is_some() || self.raw_uses_sdk_package_taint(cond)
-        })
+        node.attribute("Condition")
+            .is_some_and(|cond| self.condition_trust(cond, None).reference_is_untrusted())
+    }
+
+    /// The trust a condition's *decision* carries: certain when the values the
+    /// walk holds exactly decide it ([`Self::condition_is_decided_exactly`]),
+    /// else the join of the trusts of every property it mentions.
+    ///
+    /// A condition is a function of the properties it reads, and only the ones
+    /// its outcome depends on can move it. The SDK's
+    /// `'$(EnablePreviewFeatures)' == 'true' And '$(IsNetCoreAppTargetingLatestTFM)' == 'true'`
+    /// is false while `EnablePreviewFeatures` is unset, whatever an untrusted
+    /// `TargetFramework` makes of the other operand — so the `LangVersion`
+    /// write it guards cannot run, and must not be marked as if it might.
+    ///
+    /// `exists_dir` is the directory `Exists('…')` resolves against, `None`
+    /// where the caller evaluated without a filesystem: an `Exists` leaf is
+    /// then outside the grammar, which leaves the decision undecided.
+    fn condition_trust(&self, cond: &str, exists_dir: Option<&Path>) -> Trust {
+        if self.condition_is_decided_exactly(cond, exists_dir, &[]) {
+            Trust::CERTAIN
+        } else {
+            self.trust_for_raw(cond)
+        }
+    }
+
+    /// Whether `cond`'s outcome is fixed by values the walk holds exactly:
+    /// nothing it mentions is untrusted or in `inexact_undefined` (names the
+    /// caller read as undefined but which a real build may define), or the
+    /// rest decide it alone ([`condition::decide_without`]).
+    fn condition_is_decided_exactly(
+        &self,
+        cond: &str,
+        exists_dir: Option<&Path>,
+        inexact_undefined: &[String],
+    ) -> bool {
+        let unknown = |name: &str| {
+            inexact_undefined
+                .iter()
+                .any(|undefined| undefined.eq_ignore_ascii_case(name))
+                || self.trust_of(name).reference_is_untrusted()
+        };
+        if !properties::property_references(cond).any(&unknown) {
+            return true;
+        }
+        let exists = exists_dir.map(|dir| move |path: &str| condition_exists(path, dir));
+        let exists: Option<&dyn Fn(&str) -> bool> = match (&exists, self.follow_imports) {
+            (Some(exists), true) => Some(exists),
+            _ => None,
+        };
+        matches!(
+            condition::decide_without(cond, &self.lookup, exists, &unknown),
+            condition::Decision::Decided(_)
+        )
     }
 
     /// The [`UnpinnedRoot`] to record for a write gated on a condition the
@@ -3297,9 +3369,13 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                 // MSBuild's property pass would make it true before items run.
                 state.note_package_uncertain_if_condition_uses_sdk_taint(node);
             }
-            let group_condition_uses_sdk_taint = node
-                .attribute("Condition")
-                .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+            let group_condition_uses_sdk_taint =
+                node.attribute("Condition").is_some_and(|condition| {
+                    state
+                        .condition_trust(condition, Some(current_file_dir))
+                        .sdk_package()
+                        .is_some()
+                });
             let diagnostics_before_condition = state.diagnostics.len();
             let gate = evaluate_property_group_condition(node, current_file_dir, state);
             let group_condition_maybe_wrong = state.diagnostics.len()
@@ -3559,9 +3635,12 @@ fn handle_choose(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
         if cpm_still_possible[index] {
             state.note_package_uncertain_if_condition_uses_sdk_taint(*when);
         }
-        let uses_sdk_taint = when
-            .attribute("Condition")
-            .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+        let uses_sdk_taint = when.attribute("Condition").is_some_and(|condition| {
+            state
+                .condition_trust(condition, Some(current_file_dir))
+                .sdk_package()
+                .is_some()
+        });
         let diagnostics_before = state.diagnostics.len();
         let gate = evaluate_condition(*when, current_file_dir, state);
         let maybe_wrong =
@@ -3845,9 +3924,15 @@ fn walk_property_child_inner(
     state: &mut State<'_>,
 ) {
     let had_prior_sdk_package_taint = state.sdk_package_property_is_tainted(&name);
-    let condition_uses_sdk_taint = node
-        .attribute("Condition")
-        .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+    // Property-element conditions resolve `Exists` against the entry project
+    // (see `evaluate_property_condition`).
+    let entry_dir = state.entry_project_dir.clone();
+    let condition_uses_sdk_taint = node.attribute("Condition").is_some_and(|condition| {
+        state
+            .condition_trust(condition, Some(&entry_dir))
+            .sdk_package()
+            .is_some()
+    });
     let diagnostics_before_condition = state.diagnostics.len();
     let gate = evaluate_property_condition(node, state);
     let own_condition_maybe_wrong = state.diagnostics.len() != diagnostics_before_condition
@@ -4247,6 +4332,20 @@ fn evaluate_condition_with_exemptions(
         if !unpinned_roots.contains(&root) {
             unpinned_roots.push(root);
         }
+    }
+    // Neither kind of unknown matters to a condition the values held exactly
+    // decide on their own: no value of the unknowns can move it, so there is
+    // no divergence to report (see `State::condition_trust`).
+    if matches!(
+        eval.outcome,
+        condition::Outcome::True | condition::Outcome::False
+    ) && state.condition_is_decided_exactly(
+        cond,
+        Some(current_file_dir),
+        &eval.undefined_properties,
+    ) {
+        unpinned_roots.clear();
+        eval.undefined_properties.clear();
     }
     // Inside a Compile context this condition decides whether source files
     // compile, and it only resolved by treating unknown properties as "" (or
@@ -4707,9 +4806,9 @@ fn property_child_could_write(child: Node<'_, '_>, state: &State<'_>) -> bool {
     // refuses on.
     eval.undefined_properties
         .retain(|name| !state.undefined_read_is_exact(name));
+    let exists_dir = state.entry_project_dir.clone();
     !(eval.outcome == condition::Outcome::False
-        && eval.undefined_properties.is_empty()
-        && state.unpinned_root_for_raw(cond).is_none())
+        && state.condition_is_decided_exactly(cond, Some(&exists_dir), &eval.undefined_properties))
 }
 
 /// Mark every unprotected, possibly-writing child of a maybe-run/maybe-skipped

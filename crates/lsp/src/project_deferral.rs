@@ -39,7 +39,7 @@ use borzoi_msbuild::{
     CompileConditionReason, CompileConditionUncertainty, CompileItemUncertaintyCause,
     CompileItemUncertaintyCauseKind, DefineConstantsUncertaintyCause, DiagnosticKind,
     DiagnosticOrigin, ImplicitImportKind, ImportFailReason, ParsedProject,
-    StructuralCompileItemUncertainty,
+    StructuralCompileItemUncertainty, UntrustedCause,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -334,8 +334,12 @@ pub enum FoldRefusal {
     ParserPanic { file: PathBuf },
     /// A Compile item parses to a differently *shaped* tree either side of the
     /// F# 8 strict-indentation boundary, and the project's `LangVersion`
-    /// provenance can't say which side the real build uses.
-    LanguageVersionShape { file: PathBuf },
+    /// provenance can't say which side the real build uses, because of
+    /// `cause`.
+    LanguageVersionShape {
+        file: PathBuf,
+        cause: UntrustedCause,
+    },
     /// A Compile item parsed to a root node that is neither an implementation
     /// nor a signature file — an internal invariant break, like a panic.
     UnexpectedParseRoot { file: PathBuf },
@@ -354,15 +358,33 @@ impl FoldRefusal {
                 "parsing the Compile item {} hit a bug in borzoi's parser",
                 file.display()
             )),
-            FoldRefusal::LanguageVersionShape { file } => Some(format!(
-                "{} parses differently either side of the F# 8 indentation rule, and this \
-                 project's LangVersion isn't pinned anywhere I can trust",
-                file.display()
+            FoldRefusal::LanguageVersionShape { file, cause } => Some(format!(
+                "{} parses differently either side of the F# 8 indentation rule, and I can't \
+                 trust this project's LangVersion: it depends on {}",
+                file.display(),
+                untrusted_cause_phrase(cause)
             )),
             FoldRefusal::UnexpectedParseRoot { file } => Some(format!(
                 "the Compile item {} parsed to something borzoi didn't expect (a bug)",
                 file.display()
             )),
+        }
+    }
+}
+
+/// What an untrusted property's value rests on, as the end of a sentence. The
+/// SDK writes `LangVersion` itself after the project body, so a cause can sit
+/// on a gate the user never wrote; naming it is what tells them whether
+/// pinning `LangVersion` can help.
+fn untrusted_cause_phrase(cause: &UntrustedCause) -> String {
+    match cause {
+        UntrustedCause::UndefinedProperty(name) => format!(
+            "`$({name})`, which is undefined when I evaluate the project but may be set in a \
+             real build"
+        ),
+        UntrustedCause::Unmodelled(text) => format!("`{text}`, which I can't evaluate"),
+        UntrustedCause::SdkPackageInput => {
+            "a value the SDK computes from package inputs I don't model".to_string()
         }
     }
 }

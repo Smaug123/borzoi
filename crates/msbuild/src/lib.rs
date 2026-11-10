@@ -57,6 +57,7 @@ pub use sdk_resolver::{
     SdkResolveError, SdkVersion, locate_dotnet_sdk, nuget_package_version, resolve_sdk, workloads,
 };
 pub use target_frameworks::target_frameworks;
+pub use trust::UntrustedCause;
 
 /// MSBuild's boolean vocabulary (`ConversionUtilities.TryConvertStringToBool`):
 /// `true`/`on`/`yes` and `false`/`off`/`no`, each optionally negated with a
@@ -550,17 +551,20 @@ pub struct ParsedProject {
     /// Sourced from the merged `lookup` (same as [`Self::lang_version`]), so a
     /// caller-supplied global participates.
     pub target_name: ItemMetadataValue,
-    /// Lowercased names of properties whose end-of-evaluation value
-    /// provenance is **untrusted**: the stored value (or a gate it sat
-    /// behind) leaned on an *unpinned* property or an SDK-package-tainted
-    /// read, so the real build may hold a different value even though the
-    /// captured one expanded cleanly. Consumers reading an evaluated
+    /// Properties whose end-of-evaluation value provenance is
+    /// **untrusted**, keyed by lowercased name: the stored value (or a gate
+    /// whose outcome it depended on) leaned on an *unpinned* property or an
+    /// SDK-package-tainted read, so the real build may hold a different value
+    /// even though the captured one expanded cleanly. Consumers reading an evaluated
     /// property with reference semantics (e.g. `TargetFramework` deciding
     /// which output directory to fold) must check
     /// [`Self::property_provenance_untrusted`] and decline rather than
     /// trust the captured spelling. Undefined-but-never-written properties
     /// are absent (the environment model resolves them exactly).
-    pub untrusted_properties: std::collections::HashSet<String>,
+    ///
+    /// The value is the deepest cause the walk recorded on the property's
+    /// chain ([`Self::property_untrusted_cause`]).
+    pub untrusted_properties: HashMap<String, UntrustedCause>,
     pub diagnostics: Vec<Diagnostic>,
     /// `true` if any diagnostic was emitted — i.e. the result may diverge
     /// from what MSBuild itself would produce, including in ways that don't
@@ -760,8 +764,13 @@ impl ParsedProject {
     /// that was never written: under the environment model those are
     /// genuinely unset, so reading them as absent/empty is exact.
     pub fn property_provenance_untrusted(&self, name: &str) -> bool {
-        self.untrusted_properties
-            .contains(&name.to_ascii_lowercase())
+        self.property_untrusted_cause(name).is_some()
+    }
+
+    /// Why `name`'s value provenance is untrusted, `None` exactly when
+    /// [`Self::property_provenance_untrusted`] is false. Case-insensitive.
+    pub fn property_untrusted_cause(&self, name: &str) -> Option<&UntrustedCause> {
+        self.untrusted_properties.get(&name.to_ascii_lowercase())
     }
 }
 

@@ -1442,7 +1442,8 @@ fn build_parses(
     // (`Parse::shape_depends_on_language_version`, whose `false` *proves*
     // version-invariance), and the fold refuses only the intersection:
     // untrusted provenance × a file that genuinely straddles the boundary.
-    let lang_version_untrusted = parsed.property_provenance_untrusted("LangVersion");
+    let lang_version_untrust = parsed.property_untrusted_cause("LangVersion").cloned();
+    let lang_version_untrusted = lang_version_untrust.is_some();
     // Snapshot the include paths before we hand `workspace` back out for
     // disk reads / overlay lookups — `ParsedProject` is borrowed from the
     // workspace and we can't keep that borrow live across the inner loop's
@@ -1552,7 +1553,9 @@ fn build_parses(
         // tree the compiler never sees; handlers fall back to single-file
         // resolution (best-guess version, accepted best-effort). The extra
         // parses run only for flagged files in untrusted-provenance projects.
-        if lang_version_untrusted && parse.shape_depends_on_language_version {
+        if let Some(untrust) = &lang_version_untrust
+            && parse.shape_depends_on_language_version
+        {
             let own_band = lang.shape_representative();
             for other_side in LanguageVersion::SHAPE_REPRESENTATIVES {
                 if other_side == own_band {
@@ -1583,7 +1586,10 @@ fn build_parses(
                         "refusing project parses: LangVersion provenance is untrusted and \
                          this file parses to a different tree at another language version"
                     );
-                    return Err(FoldRefusal::LanguageVersionShape { file: include });
+                    return Err(FoldRefusal::LanguageVersionShape {
+                        file: include,
+                        cause: untrust.clone(),
+                    });
                 }
             }
         }
