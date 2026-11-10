@@ -37,22 +37,34 @@ pub(crate) enum UnpinnedRoot {
     /// a real build may supply it (environment variables are MSBuild
     /// initial properties) and produce a different value.
     ///
-    /// `hidden_by` is set when the read would have been exact but for an
-    /// earlier construct the walk could not see into: it says what that was.
-    /// It explains; it never changes the diagnostic the root surfaces.
+    /// `because` says why `Name`'s absence was uncertain at the read, when
+    /// the walk knew: `Name`'s own root, or an earlier construct it could not
+    /// see into. It explains only. The root is still *about* `Name` — its
+    /// diagnostic, and every exemption keyed on that name (the
+    /// `DefineConstants` self-append among them), read `name` alone.
     Undefined {
         name: String,
-        hidden_by: Option<Box<OpacityCause>>,
+        because: Option<Box<UndefinedBecause>>,
     },
     /// A write in the value chain was gated on a condition outside the
     /// supported grammar, so we cannot know whether it ran.
     UnsupportedCondition(String),
 }
 
+/// Why a name read while undefined might not be undefined to the real build.
+/// Built flat ([`UnpinnedRoot::undefined_because`]): an `OwnRoot` never has a
+/// `because` of its own, so a chain of reads does not nest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UndefinedBecause {
+    /// The name's own root at the read (its write was skipped under a gate we
+    /// could not decide, say).
+    OwnRoot(UnpinnedRoot),
+    /// The walk had passed content it could not see, which may define it.
+    Opacity(OpacityCause),
+}
+
 /// Why the walk stopped seeing every property write: the first construct
 /// whose content it could not enter, or could not decide whether to enter.
-/// Recorded when opacity latches, so it is never itself an
-/// [`UnpinnedRoot::Undefined`] with a `hidden_by` of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OpacityCause {
     /// A gate on an import (or a group of them) that could not be decided,
@@ -64,10 +76,24 @@ pub(crate) enum OpacityCause {
 
 impl UnpinnedRoot {
     /// A root for a read of `name` while undefined.
-    pub(crate) fn undefined(name: &str, hidden_by: Option<&OpacityCause>) -> Self {
+    pub(crate) fn undefined(name: &str, because: Option<UndefinedBecause>) -> Self {
         UnpinnedRoot::Undefined {
             name: name.to_string(),
-            hidden_by: hidden_by.cloned().map(Box::new),
+            because: because.map(Box::new),
+        }
+    }
+
+    /// This root as the explanation of a read of the name it belongs to,
+    /// flattened: a root that already carries a `because` hands that on, so
+    /// explanations stay a bounded depth however long the chain of reads.
+    pub(crate) fn undefined_because(&self) -> UndefinedBecause {
+        match self {
+            UnpinnedRoot::Undefined {
+                because: Some(because),
+                ..
+            } => (**because).clone(),
+            UnpinnedRoot::Undefined { because: None, .. }
+            | UnpinnedRoot::UnsupportedCondition(_) => UndefinedBecause::OwnRoot(self.clone()),
         }
     }
 
@@ -117,11 +143,17 @@ pub enum UntrustedCause {
 impl UntrustedCause {
     fn of_root(root: &UnpinnedRoot) -> Self {
         match root {
-            UnpinnedRoot::Undefined { name, hidden_by } => UntrustedCause::UndefinedProperty {
-                name: name.clone(),
-                hidden_by: hidden_by
-                    .as_deref()
-                    .map(|cause| Box::new(Self::of_opacity(cause))),
+            // The name's own root is the deeper cause: report it.
+            UnpinnedRoot::Undefined { because, name } => match because.as_deref() {
+                Some(UndefinedBecause::OwnRoot(root)) => Self::of_root(root),
+                Some(UndefinedBecause::Opacity(cause)) => UntrustedCause::UndefinedProperty {
+                    name: name.clone(),
+                    hidden_by: Some(Box::new(Self::of_opacity(cause))),
+                },
+                None => UntrustedCause::UndefinedProperty {
+                    name: name.clone(),
+                    hidden_by: None,
+                },
             },
             UnpinnedRoot::UnsupportedCondition(text) => UntrustedCause::Unmodelled(text.clone()),
         }

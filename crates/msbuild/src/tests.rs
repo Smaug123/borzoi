@@ -10271,3 +10271,25 @@ fn after_an_undecided_import_no_value_settles_an_untrusted_operand() {
         );
     }
 }
+
+/// A value resting on an unknown `DefineConstants`-derived read is not the
+/// `$(DefineConstants)` self-append: the exemption for that idiom is keyed on
+/// the name a value *reads*, and an explanation carried with a root must not
+/// turn an indirect read (`DefineConstants=$(B)`, `B=$(A)`, `A` gated on an
+/// unknown) into one.
+#[test]
+fn an_indirect_define_read_is_not_the_self_append() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <A Condition="'$(DefineConstants)' == '1'">SELECTED</A>
+    <B>$(A)</B>
+    <DefineConstants>$(B)</DefineConstants>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(
+        p.define_constants_uncertain,
+        "a real build may supply DefineConstants=1 and so SELECTED; an empty \
+         define set must not be certain"
+    );
+}

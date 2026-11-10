@@ -73,7 +73,7 @@ use super::properties::escaping::Escaped;
 use super::properties::{self, Issue, PropertyMap};
 use super::trust::{
     OpacityCause, PropertyProvenance, RefusedOutcome, SdkPackagePropertyTaint, TaintOutcome, Trust,
-    UnpinnedOutcome, UnpinnedRoot,
+    UndefinedBecause, UnpinnedOutcome, UnpinnedRoot,
 };
 use super::{
     FrameworkReference, GlobRequest, GlobResolver, GlobalPackageReference, ItemKind,
@@ -2888,22 +2888,24 @@ impl<'r> State<'r> {
     }
 
     /// The root to record for a value that read `name` while it was
-    /// undefined: `name`'s own root when the walk has one (its write was
-    /// skipped under a gate we could not decide, say), else "read while
-    /// undefined". Taken at the read, so a later write to `name` cannot
-    /// rewrite what this value rests on, and a recorded root is never itself
-    /// a pointer to another name's root — so reporting one needs no chase.
+    /// undefined: "read `name` while undefined", explained by why, taken at
+    /// the read — `name`'s own root when the walk has one (its write was
+    /// skipped under a gate we could not decide, say), else the opacity that
+    /// hides a possible write. Taken now, so a later write to `name` cannot
+    /// rewrite what this value rests on; flattened, so reporting needs no
+    /// chase.
     fn root_for_undefined_read(&self, name: &str) -> UnpinnedRoot {
-        if let Some(root) = self.trust_of(name).unpinned() {
-            return root.clone();
-        }
-        // Opacity explains the read only when nothing else would have made it
-        // inexact: a refused or environment name has its own story.
-        let hidden_by = self
-            .walk_opaque
-            .as_ref()
-            .filter(|_| self.undefined_read_is_exact_but_for_opacity(name));
-        UnpinnedRoot::undefined(name, hidden_by)
+        let because = match self.trust_of(name).unpinned() {
+            Some(own) => Some(own.undefined_because()),
+            // Opacity explains the read only when nothing else would have
+            // made it inexact: a refused or environment name has its own story.
+            None => self
+                .walk_opaque
+                .as_ref()
+                .filter(|_| self.undefined_read_is_exact_but_for_opacity(name))
+                .map(|cause| UndefinedBecause::Opacity(cause.clone())),
+        };
+        UnpinnedRoot::undefined(name, because)
     }
 
     /// Latch [`Self::walk_opaque`], keeping the first cause.
@@ -3224,7 +3226,10 @@ impl<'r> State<'r> {
                 // The same root already surfaced as a direct issue above.
                 continue;
             }
-            if surfaced.contains(&root) {
+            if surfaced
+                .iter()
+                .any(|seen| seen.to_diagnostic() == root.to_diagnostic())
+            {
                 continue;
             }
             self.push_root(root.clone(), span.clone());
@@ -4409,7 +4414,10 @@ fn evaluate_condition_with_exemptions(
         {
             continue;
         }
-        if !unpinned_roots.contains(&root) {
+        if !unpinned_roots
+            .iter()
+            .any(|seen| seen.to_diagnostic() == root.to_diagnostic())
+        {
             unpinned_roots.push(root);
         }
     }
