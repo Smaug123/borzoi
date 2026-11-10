@@ -44,6 +44,7 @@ pub mod par_map;
 pub mod repetition_shapes;
 pub mod restore_globals;
 pub mod stack_probe;
+pub mod thread_cpu;
 pub mod xml_pump;
 
 // The library's own tests include `stack_probe`'s, whose memory-limit

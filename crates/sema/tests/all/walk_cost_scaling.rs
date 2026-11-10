@@ -20,17 +20,23 @@
 //! only in a form that binds or uses nothing.
 //!
 //! Timing is the measure because a cost per repeat is what is held, and only
-//! the clock sees every walk at once. What keeps it from flaking is the
-//! spread: a quadratic walk grows 64x, so the bound sits a factor of four
-//! below it and twice above linear, and a shape over it is measured again,
-//! keeping each length's fastest run, before it fails.
+//! the clock sees every walk at once. The clock is the walking thread's CPU
+//! time ([`thread_cpu_time`](borzoi_oracle_harness::thread_cpu)), not the
+//! wall: the suite runs on loaded machines, where a wall clock reads a walk of
+//! a few milliseconds as however long the scheduler kept its thread off a
+//! core. What keeps the CPU time from flaking is the spread: load still slows
+//! each instruction somewhat (shared caches, a sibling hyperthread), but a
+//! quadratic walk grows 64x, so the bound sits a factor of four below it and
+//! twice above linear, and a shape over it is measured again, keeping each
+//! length's fastest run, before it fails.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_oracle_harness::repetition_shapes::{Case, Form, Kind, SHAPES, Shape};
+use borzoi_oracle_harness::thread_cpu::cpu_timed;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, SourceFile, SyntaxRecovery, WALK_STACK_BYTES, infer_project,
     qualified_names, resolve_project_files,
@@ -49,7 +55,7 @@ const MAX_RATIO: f64 = 16.0;
 
 /// Added to the allowance, so a walk too fast to time at either length (a
 /// shape the walk declines at once, a nested shape stopped at the bound) does
-/// not fail on scheduler noise.
+/// not fail on the noise CPU time keeps.
 const SLACK: Duration = Duration::from_millis(20);
 
 /// How often a shape over the allowance is measured again before it fails:
@@ -136,8 +142,8 @@ fn exempt(shape: &Shape, walk: Walk) -> bool {
         .any(|&(name, w, _)| name == shape.name && (w == walk || w == Walk::Resolution))
 }
 
-/// How long resolving, then (if `infer`) inferring, `src` as a one-file
-/// project takes.
+/// The calling thread's CPU time resolving, then (if `infer`) inferring, `src`
+/// as a one-file project.
 fn walk_times(kind: Kind, src: &str, infer: bool) -> (Duration, Duration) {
     let parsed = match kind {
         Kind::Impl => parse(src),
@@ -159,14 +165,12 @@ fn walk_times(kind: Kind, src: &str, infer: bool) -> (Duration, Duration) {
         .expect("one name per file");
     let files = vec![ProjectFile::new(file, qnof, SyntaxRecovery::of(&parsed))];
     let env = AssemblyEnv::default();
-    let start = Instant::now();
-    let resolved = resolve_project_files(&files, &env);
-    let resolving = start.elapsed();
-    let start = Instant::now();
-    if infer {
-        drop(infer_project(&files, &resolved, &env));
-    }
-    let inferring = start.elapsed();
+    let (resolved, resolving) = cpu_timed(|| resolve_project_files(&files, &env));
+    let ((), inferring) = cpu_timed(|| {
+        if infer {
+            drop(infer_project(&files, &resolved, &env));
+        }
+    });
     drop(resolved);
     (resolving, inferring)
 }
