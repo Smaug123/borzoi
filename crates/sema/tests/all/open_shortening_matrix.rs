@@ -28,10 +28,10 @@
 //! one namespace. Negative controls pin that the recursion runs through
 //! `[<AutoOpen>]` and public accessibility only.
 //!
-//! **Project** auto-open modules lend no shortening prefix, so there are no
-//! project cells: FCS auto-opens one *fragment*, not the merged module, and
-//! deciding which nested modules belong to the attributed fragment needs the
-//! declaring file of each — see `Resolver::auto_open_shortening_prefixes`.
+//! The cells are assembly-side. A **project** auto-open module enters its own
+//! fragment's children where the project fold folds it
+//! (`Resolver::enter_fragment_child_modules`), graded by
+//! `auto_open_fold_back` and `auto_open_short_name`.
 //!
 //! Two implicit channels lend prefixes, and only one of them is a cell here:
 //!

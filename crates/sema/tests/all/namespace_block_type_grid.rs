@@ -475,10 +475,10 @@ const MUST_COMMIT: &[&str] = &[
 /// A dotted head `X.M` where an `[<AutoOpen>]` module's child module `X`
 /// contests the type `X`: FCS enters the child as `X` wherever the
 /// `[<AutoOpen>]` module is folded, and modules come first for a dotted
-/// head, so it binds the module; the walk enters the child nowhere and
-/// commits the type (#462 enters it; `reopened_namespace_grid`'s
-/// `AUTO_OPEN_CHILD_MODULE`). Not about namespace blocks: the `sameBlock`
-/// rows, where the type is lexical, have it too.
+/// head, so it binds the module. The walk enters the child's short name
+/// (`enter_fragment_child_modules`), but the channel that reads `X.M` as the
+/// type's member still commits the type ahead of it. Not about namespace
+/// blocks: the `sameBlock` rows, where the type is lexical, have it too.
 const AUTO_OPEN_CHILD_MODULE: &[&str] = &[
     "class/aoModule/blockBefore/sameBlock/noOpen/head",
     "class/aoModule/blockBefore/sameFile/sameNs/noOpen/head",

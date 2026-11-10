@@ -14,6 +14,7 @@ use super::model::{
 };
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
+    TierCandidate,
 };
 use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path};
 
@@ -1118,10 +1119,8 @@ impl<'a> Resolver<'a> {
                     // like the incomplete-prefix veto. Candidates that did
                     // yield an interpretation are handled per-group below.
                     let names_uncovered_dropped_path = !path.is_empty()
-                        && self
-                            .open_tier_candidates(&path, rooted)
-                            .iter()
-                            .any(|(full, _)| {
+                        && self.open_tier_candidates(&path, rooted).iter().any(
+                            |TierCandidate { full, .. }| {
                                 self.assemblies
                                     .any_split_of_a_module_path_has_a_dropped_type(full)
                                     && !interps.iter().any(|i| match i {
@@ -1129,15 +1128,17 @@ impl<'a> Resolver<'a> {
                                         | OpenInterpretation::AssemblyModule(p)
                                         | OpenInterpretation::Reading(p) => p == full,
                                     })
-                            });
+                            },
+                        );
                     if names_uncovered_dropped_path {
                         self.opaque_value_open = true;
                         self.open_generation += 1;
                         self.unmodelled_open_active = true;
                     }
                     // A module nested in a project `[<AutoOpen>]` module answers
-                    // to its short name, which the walk cannot follow: what
-                    // this open brings could replace anything in scope.
+                    // to its short name, which the walk cannot always follow:
+                    // where it does not open the module, what this open brings
+                    // could replace anything in scope.
                     let names_unlent_module =
                         !rooted && self.may_name_unlent_module(&path, &interps);
                     if names_unlent_module {
@@ -1484,11 +1485,13 @@ impl<'a> Resolver<'a> {
                         if has_reading {
                             self.assembly_open_prefixes.push((pos, gp.clone()));
                             if !(project_readings_only && !project_ns) {
-                                self.open_shortening_prefixes.push(ShorteningPrefix {
-                                    path: gp.clone(),
-                                    namespace_reading: true,
-                                    module_reading: false,
-                                });
+                                self.open_shortening_prefixes
+                                    .push(ShorteningPrefix::container(
+                                        gp.clone(),
+                                        true,
+                                        false,
+                                        pos,
+                                    ));
                                 self.explicit_open_prefixes.push((pos, gp.clone()));
                             }
                         }
@@ -1509,11 +1512,8 @@ impl<'a> Resolver<'a> {
                         // -- The assembly *module* half's dotted-head bookkeeping —
                         // keyed on the module handles, not the namespace surface.
                         if !handles.is_empty() {
-                            self.open_shortening_prefixes.push(ShorteningPrefix {
-                                path: gp.clone(),
-                                namespace_reading: false,
-                                module_reading: true,
-                            });
+                            self.open_shortening_prefixes
+                                .push(ShorteningPrefix::container(gp.clone(), false, true, pos));
                             // Only a prefix that could hide a whole nested *module*
                             // (a dropped type, an unknowable pickle) can make a
                             // later `open Sub` name something we cannot see
@@ -1615,6 +1615,17 @@ impl<'a> Resolver<'a> {
                             if project_module_bump && !bump_covered_by_screen {
                                 self.open_generation += 1;
                             }
+                            // M's nested modules answer to their short names,
+                            // then those of each `[<AutoOpen>]` child the fold
+                            // below reaches, which out-rank them
+                            // (`AddModuleOrNamespaceRefsToNameEnv` recurses after
+                            // entering the container's own). The prefix is not
+                            // restricted to M's own children: the `open` names
+                            // every container at the path. Neither assembly half
+                            // applies; where an assembly module shares the FQN,
+                            // the module-half push above covers it.
+                            self.open_shortening_prefixes
+                                .push(ShorteningPrefix::container(gp.clone(), false, false, pos));
                             // An explicit `open M` brings M's own members, then
                             // its `[<AutoOpen>]` children's, as the namespace
                             // fold does a namespace's. When the namespace replay
@@ -1625,15 +1636,6 @@ impl<'a> Resolver<'a> {
                             }
                             self.module_open_contributions(gp, pos);
                             self.module_open_prefixes.push((pos, gp.clone()));
-                            // A PROJECT module: neither assembly half applies, and
-                            // the project half lends no prefix (task #30). Where an
-                            // assembly module shares the FQN, the module-half push
-                            // above covers it.
-                            self.open_shortening_prefixes.push(ShorteningPrefix {
-                                path: gp.clone(),
-                                namespace_reading: false,
-                                module_reading: false,
-                            });
                             if !resolved_alias
                                 && !has_assembly_module
                                 && !assembly_ns_applies

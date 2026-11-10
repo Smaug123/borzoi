@@ -339,12 +339,17 @@ impl ScopeEntry {
 
 /// What one fold wrote into the module frame, kept so the same contents can
 /// be written again at a later position: each entry with the number of
-/// generation barriers the fold had raised before writing it, and the number
-/// it raised in all ([`Resolver::own_namespace_fold`]).
+/// generation barriers the fold had raised before writing it, the number it
+/// raised in all, and the short names it entered
+/// ([`Resolver::own_namespace_fold`]).
 #[derive(Debug, Clone, Default)]
 pub(super) struct RecordedFold {
     pub(super) entries: Vec<(usize, ScopeEntry)>,
     pub(super) barriers: usize,
+    /// The [`ShorteningPrefix`]es the fold pushed, in push order: the modules
+    /// it entered under their short names
+    /// ([`Resolver::enter_fragment_child_modules`]).
+    pub(super) prefixes: Vec<ShorteningPrefix>,
 }
 
 impl RecordedFold {
@@ -358,6 +363,7 @@ impl RecordedFold {
                 .map(|(barriers, entry)| (before + barriers, entry)),
         );
         self.barriers += next.barriers;
+        self.prefixes.extend(next.prefixes);
         self
     }
 }
@@ -746,11 +752,82 @@ pub(super) struct OpenGroup {
 /// the auto-open descendants of a same-FQN **module** in some other reference —
 /// FCS opened the namespace, not that module. An open that really did read a
 /// module pushes its own entry with this set.
+///
+/// `children` restricts the prefix to the modules a **project module
+/// fragment** declares itself. FCS enters the nested modules of a module it
+/// folds under their short names, but only that fragment's
+/// (`AddModuleOrNamespaceRefsToNameEnv` over the fragment's own module type):
+/// a `module N.A.Pick` header in another file makes `N.A.Pick` a project module
+/// path, yet folding `[<AutoOpen>] module N.A` does not make `Pick` openable
+/// (fcs-dump: FS0039). `None` shortens any path, as an `open` of a container
+/// does, since it opens every same-named container.
+///
+/// `pos` is where the prefix entered scope (0 for the implicit opens and the
+/// enclosing namespace's fold). FCS keeps one short-name table, latest entry
+/// first, so a module the enclosing container declares after `pos` outranks
+/// the prefix ([`Resolver::relative_bases`]).
 #[derive(Debug, Clone)]
 pub(super) struct ShorteningPrefix {
     pub(super) path: Vec<String>,
     pub(super) namespace_reading: bool,
     pub(super) module_reading: bool,
+    pub(super) children: Option<Vec<String>>,
+    pub(super) pos: u32,
+}
+
+impl ShorteningPrefix {
+    /// A prefix with no child restriction.
+    pub(super) fn container(
+        path: Vec<String>,
+        namespace_reading: bool,
+        module_reading: bool,
+        pos: u32,
+    ) -> Self {
+        ShorteningPrefix {
+            path,
+            namespace_reading,
+            module_reading,
+            children: None,
+            pos,
+        }
+    }
+
+    /// The full path `written` names through this prefix, if the prefix can
+    /// shorten it at all.
+    pub(super) fn shorten(&self, written: &[String]) -> Option<Vec<String>> {
+        let head = written.first()?;
+        if let Some(children) = &self.children
+            && !children.contains(head)
+        {
+            return None;
+        }
+        let mut full = self.path.clone();
+        full.extend_from_slice(written);
+        Some(full)
+    }
+}
+
+/// One candidate full path an `open` could name
+/// ([`Resolver::open_tier_candidates`]), with what may be found there.
+#[derive(Debug)]
+pub(super) struct TierCandidate {
+    pub(super) full: Vec<String>,
+    /// Whether a namespace is reachable at this tier.
+    pub(super) namespaces_reachable: bool,
+    /// Whether a referenced assembly's module at `full` is opened too, as it
+    /// is wherever the path was reached through a container rather than
+    /// through one fragment's own children.
+    pub(super) assemblies_reachable: bool,
+}
+
+/// One base a relative path is shortened through
+/// ([`Resolver::relative_bases`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum RelativeBase<'p> {
+    /// An `open`'s, or a fold's, prefix.
+    Prefix(&'p ShorteningPrefix),
+    /// The enclosing container `container_path[..k]`.
+    Container(usize),
 }
 
 /// One interpretation of an `open <path>` clause at one base of the open's
@@ -1101,6 +1178,10 @@ pub(super) struct Resolver<'a> {
     /// can decide a head/segment with *certainty* — emit only when unambiguous, defer
     /// on any contention (Gap A of `docs/type-qualified-case-prefix-plan.md`).
     pub(super) container_decls: HashMap<Vec<String>, HashMap<String, DeclKinds>>,
+    /// Where the active top-level block starts. A module an earlier block
+    /// declared entered the short-name table before anything this block
+    /// opens, however late in the file it sits ([`Self::relative_bases`]).
+    pub(super) block_start: u32,
     /// In-file **type-qualified cases**, keyed by enclosing container path then by
     /// *type* name then by case name → the case's defining binder. Holds every
     /// `enum` case **and** every union case (`[<RequireQualifiedAccess>]` or not),
@@ -1990,11 +2071,7 @@ pub(super) fn implicit_open_namespaces(assemblies: &AssemblyEnv) -> Vec<Vec<Stri
 pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<ShorteningPrefix> {
     implicit_open_namespaces(assemblies)
         .into_iter()
-        .map(|path| ShorteningPrefix {
-            path,
-            namespace_reading: true,
-            module_reading: false,
-        })
+        .map(|path| ShorteningPrefix::container(path, true, false, 0))
         .collect()
 }
 

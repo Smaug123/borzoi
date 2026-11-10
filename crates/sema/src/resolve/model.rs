@@ -534,6 +534,12 @@ pub struct ProjectItems {
     /// winner nondeterministic. [`Self::extend_with`] appends in the same
     /// Compile-order loop as every other per-file accumulator.
     pub(super) auto_open_module_paths: Vec<(Vec<String>, usize)>,
+    /// Every earlier-file module declaration (a header or a nested
+    /// `module X = …`, `private` or not), with its file and whether it is
+    /// [`ModuleDeclRecord::enterable`]: what a module fragment declares itself
+    /// ([`Self::fragment_child_modules`]), and how many declarations a path
+    /// has ([`Self::module_declarations`]).
+    pub(super) module_decls: Vec<ModuleDeclRecord>,
     /// What earlier files add to every later file's root scope through routes
     /// the walk does not model ([`FileContributions::root`]).
     pub(super) root_contribution: Contribution,
@@ -1563,6 +1569,13 @@ impl ProjectItems {
                 .or_default()
                 .push(file_idx);
         }
+        for (path, enterable) in idx.module_decls {
+            self.module_decls.push(ModuleDeclRecord {
+                path,
+                file: file_idx,
+                enterable,
+            });
+        }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
@@ -1701,6 +1714,54 @@ impl ProjectItems {
             .cloned()
             .collect()
     }
+
+    /// The short names of the non-`private` modules that earlier file `file`
+    /// declares directly in module `container`: the children of the fragment
+    /// `(container, file)`, as [`Self::auto_open_fragments_directly_in`]'s
+    /// same-file rule reads nesting. A file declares at most one module at a
+    /// path (FS0248), so these are exactly that module's own.
+    pub(super) fn fragment_child_modules(&self, container: &[String], file: usize) -> Vec<String> {
+        self.module_decls
+            .iter()
+            .filter(|d| d.enterable && d.file == file && is_directly_in(&d.path, container))
+            .filter_map(|d| d.path.last().cloned())
+            .collect()
+    }
+
+    /// The earlier files declaring a module at or beneath `path`, once per
+    /// declaration.
+    pub(super) fn module_declarations_under<'a>(
+        &'a self,
+        path: &'a [String],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.module_decls
+            .iter()
+            .filter(move |d| d.path.starts_with(path))
+            .map(|d| d.file)
+    }
+
+    /// The earlier files declaring a module at exactly `path`, once per
+    /// declaration.
+    pub(super) fn module_declarations<'a>(
+        &'a self,
+        path: &'a [String],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.module_decls
+            .iter()
+            .filter(move |d| d.path == path)
+            .map(|d| d.file)
+    }
+}
+
+/// One earlier-file module declaration ([`ProjectItems::module_decls`]).
+#[derive(Debug, Clone)]
+pub(super) struct ModuleDeclRecord {
+    pub(super) path: Vec<String>,
+    pub(super) file: usize,
+    /// A non-`private` nested module of a file no signature screens: one a
+    /// fold of its parent fragment enters under its short name. A header
+    /// module has no parent fragment; a signature may hide a nested one.
+    pub(super) enterable: bool,
 }
 
 /// A `type_qualified_cases` entry's payload: the case's handle and its
@@ -1748,6 +1809,7 @@ struct FileExportIndices {
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, ExportedTypeFacts)>,
     auto_open_module_paths: Vec<Vec<String>>,
+    module_decls: Vec<(Vec<String>, bool)>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
 
@@ -2021,6 +2083,8 @@ impl FileExportIndices {
                             fi.real_nested_modules.push(decl.path.clone());
                             fi.nested_module_paths.push(decl.path.clone());
                         }
+                        fi.module_decls
+                            .push((decl.path.clone(), !*header && !*private && screen.is_none()));
                         // The signature's `[<AutoOpen>]` verdict is
                         // authoritative in **both** directions (conclusion 6
                         // + probe 2026-07-18: an implementation-only

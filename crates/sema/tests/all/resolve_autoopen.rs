@@ -2534,13 +2534,12 @@ fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
 }
 
 #[test]
-fn implicit_enclosing_namespace_declines_a_shortenable_project_auto_open_value() {
+fn implicit_enclosing_namespace_never_binds_the_unshortened_project_auto_open_value() {
     // A project `[<AutoOpen>]` module in the namespace holds a nested module,
     // which FCS enters under its short name — so `open Inner` reaches it and its
     // `shortTarget` out-ranks `ProjectAuto`'s own, which the implicit fold
-    // pushed at position 0. We lend no project shortening prefix (task #30), so
-    // the `open` does nothing on our side and the outer value would stand: a
-    // wrong target. The fold declines instead.
+    // pushed at position 0. Were the short name not entered, the `open` would
+    // do nothing on our side and the outer value would stand: a wrong target.
     let env = fixture_env();
     let src0 = "namespace Demo.Auto\n\n[<AutoOpen>]\nmodule ProjectAuto =\n    \
                 let shortTarget () = 1\n    module Inner =\n        let shortTarget () = 2\n";

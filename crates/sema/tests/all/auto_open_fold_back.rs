@@ -53,12 +53,10 @@ fn a_union_case_folds_back_into_pattern_position() {
     );
 }
 
-/// The nested module folds back with its parent, but it is also a module a
-/// later `open B` could name by its short name, which the walk cannot follow
-/// (task #30), so the fold may only decline.
+/// The nested module folds back with its parent.
 #[test]
 fn a_nested_auto_open_module_folds_back_with_its_parent() {
-    assert_fcs_graded_bind(
+    assert_commits(
         "fold_back_nested",
         &[
             "module Demo\n\nlet Nn = 99\n\n[<AutoOpen>]\nmodule A =\n    [<AutoOpen>]\n    \
@@ -67,7 +65,6 @@ fn a_nested_auto_open_module_folds_back_with_its_parent() {
         "Nn",
         0,
         "Nn = 1",
-        false,
     );
 }
 
@@ -137,18 +134,19 @@ fn a_later_record_leaves_the_value_the_qualifier() {
 /// FCS enters every module nested in a folded one under its short name, so a
 /// later `open Child` reaches it and its values outrank everything in scope:
 /// the fold's, and a value from before the fold, which a `private` member or a
-/// module folding nothing leaves standing. A project `[<AutoOpen>]` module
-/// lends no shortening prefix (task #30), so the walk must not commit what that
-/// `open` could replace. Every case runs, so a regression names each one.
+/// module folding nothing leaves standing. The walk follows the short name and
+/// commits, except where an aliased attribute leaves it unable to say whether
+/// the parent folds at all. Every case runs, so a regression names each one.
 #[test]
 fn a_nested_module_of_a_folded_module_can_be_opened_by_its_short_name() {
-    let cases: &[(&str, &[&str])] = &[
+    let cases: &[(&str, &[&str], bool)] = &[
         (
             "fold_back_short_open",
             &[
                 "module Demo\n\n[<AutoOpen>]\nmodule A =\n    let Nn = 1\n    module Child =\n        \
                let Nn = 2\n\nopen Child\n\nlet probe = Nn\n",
             ],
+            true,
         ),
         (
             "open_child_short_open",
@@ -156,6 +154,7 @@ fn a_nested_module_of_a_folded_module_can_be_opened_by_its_short_name() {
                 "module Demo\n\nmodule H =\n    [<AutoOpen>]\n    module A =\n        let Nn = 1\n        \
                module Child =\n            let Nn = 2\n\nopen H\nopen Child\n\nlet probe = Nn\n",
             ],
+            true,
         ),
         (
             "namespace_child_short_open",
@@ -164,6 +163,7 @@ fn a_nested_module_of_a_folded_module_can_be_opened_by_its_short_name() {
                  let Nn = 2\n",
                 "module Demo\n\nopen N\nopen Child\n\nlet probe = Nn\n",
             ],
+            true,
         ),
         (
             "short_open_private_fold",
@@ -171,6 +171,7 @@ fn a_nested_module_of_a_folded_module_can_be_opened_by_its_short_name() {
                 "module Demo\n\nlet Nn = 99\n\n[<AutoOpen>]\nmodule A =\n    let private Nn = 1\n    \
                module Child =\n        let Nn = 2\n\nopen Child\n\nlet probe = Nn\n",
             ],
+            true,
         ),
         (
             "short_open_nothing_folds",
@@ -178,6 +179,7 @@ fn a_nested_module_of_a_folded_module_can_be_opened_by_its_short_name() {
                 "module Demo\n\nlet Nn = 99\n\n[<AutoOpen>]\nmodule A =\n    module Child =\n        \
                let Nn = 2\n\nopen Child\n\nlet probe = Nn\n",
             ],
+            true,
         ),
         (
             "short_open_aliased_attribute",
@@ -185,17 +187,18 @@ fn a_nested_module_of_a_folded_module_can_be_opened_by_its_short_name() {
                 "module Demo\n\ntype AO = AutoOpenAttribute\n\nlet Nn = 99\n\n[<AO>]\nmodule A =\n    \
                module Child =\n        let Nn = 2\n\nopen Child\n\nlet probe = Nn\n",
             ],
+            false,
         ),
     ];
     let failed: Vec<&str> = cases
         .iter()
-        .filter(|(label, files)| {
+        .filter(|(label, files, must_commit)| {
             std::panic::catch_unwind(|| {
-                assert_fcs_graded_bind(label, files, "Nn", 0, "Nn = 2", false)
+                assert_fcs_graded_bind(label, files, "Nn", 0, "Nn = 2", *must_commit)
             })
             .is_err()
         })
-        .map(|(label, _)| *label)
+        .map(|(label, _, _)| *label)
         .collect();
     assert!(
         failed.is_empty(),
@@ -237,7 +240,7 @@ fn an_impersonated_auto_open_attribute_folds_nothing() {
 /// name, with or without `[<AutoOpen>]`.
 #[test]
 fn a_short_open_through_a_plain_module_open() {
-    assert_fcs_graded_bind(
+    assert_commits(
         "short_open_plain_module",
         &[
             "module Demo\n\nmodule H =\n    module Child =\n        let Nn = 2\n\nlet Nn = 99\n\n\
@@ -246,9 +249,8 @@ fn a_short_open_through_a_plain_module_open() {
         "Nn",
         0,
         "Nn = 2",
-        false,
     );
-    assert_fcs_graded_bind(
+    assert_commits(
         "short_open_plain_module_cross_file",
         &[
             "module H\n\nmodule Child =\n    let Nn = 2\n",
@@ -257,7 +259,6 @@ fn a_short_open_through_a_plain_module_open() {
         "Nn",
         0,
         "Nn = 2",
-        false,
     );
 }
 
