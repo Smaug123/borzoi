@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5a8fba5c42165ab787080c40b6333121fa331d40f17e6dfca987b2703e69f2a0 # shrinks to ops = [Insert(["A"])], queries = [["A"]]
+cc 254f4198efdc0192c0e0c60e21ea700f5aef75012d6a957abe95ffa4dd57c6cd # shrinks to ops = [Mark, Insert([]), Rollback], queries = [[]]

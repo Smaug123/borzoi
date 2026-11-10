@@ -72,10 +72,12 @@ mod bindings;
 mod contributors;
 mod custom_operations;
 use contributors::FileContributions;
+use path_set::PathSet;
 mod decls;
 mod exprs;
 mod lookup;
 mod model;
+mod path_set;
 mod state;
 mod types;
 
@@ -456,7 +458,7 @@ pub fn resolve_file(
         if let Some(path) = &prefix {
             // A declared module shadows a same-named assembly type even with no
             // exports, so record it here, not from the exported values.
-            r.module_paths.push(path.clone());
+            r.module_paths.insert(path.clone());
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
             if header_auto_open && !r.anonymous_root {
@@ -2286,19 +2288,19 @@ impl<'a> Resolver<'a> {
             module_path: None,
             container_path: Vec::new(),
             namespace_depth: 0,
-            module_paths: Vec::new(),
+            module_paths: PathSet::default(),
             namespace_paths: Vec::new(),
             block_namespace_start: 0,
             block_container_len: 0,
             global_block_opened: false,
             lexical_auto_open_paths: Vec::new(),
-            nested_module_locals: Vec::new(),
+            nested_module_locals: PathSet::default(),
             top_level_nested_locals: HashMap::new(),
-            nested_module_exports: Vec::new(),
-            augmentation_head_locals: Vec::new(),
+            nested_module_exports: PathSet::default(),
+            augmentation_head_locals: PathSet::default(),
             top_level_augmentation_locals: HashMap::new(),
-            augmentation_head_exports: Vec::new(),
-            real_nested_module_exports: Vec::new(),
+            augmentation_head_exports: PathSet::default(),
+            real_nested_module_exports: PathSet::default(),
             type_path_exports: Vec::new(),
             imports: implicit_open_groups(assemblies),
             implicit_import_count: implicit_open_groups(assemblies).len(),

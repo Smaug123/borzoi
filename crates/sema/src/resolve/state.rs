@@ -19,6 +19,7 @@ use super::model::{
     DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
     ItemId, OpenTrace, ProjectItems, Resolution, SlotClass, TypeSlot,
 };
+use super::path_set::PathSet;
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
 /// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
@@ -1229,7 +1230,7 @@ pub(super) struct Resolver<'a> {
     /// Every declared named-module path in the file, accumulated as the walk
     /// enters each module (read back by
     /// [`is_project_module_path`](Resolver::is_project_module_path)).
-    pub(super) module_paths: Vec<Vec<String>>,
+    pub(super) module_paths: PathSet,
     /// Every declared project namespace path in the file (see
     /// [`ResolvedFile::namespace_paths`](super::model::ResolvedFile::namespace_paths)).
     pub(super) namespace_paths: Vec<Vec<String>>,
@@ -1275,17 +1276,17 @@ pub(super) struct Resolver<'a> {
     /// [`Self::top_level_nested_locals`], exactly as [`Self::top_level`] does
     /// for value frames. (Qualified cross-block references are covered by
     /// [`Self::nested_module_exports`], which stays file-wide.)
-    pub(super) nested_module_locals: Vec<Vec<String>>,
+    pub(super) nested_module_locals: PathSet,
     /// The per-container store behind [`Self::nested_module_locals`], keyed and
     /// managed like [`Self::top_level`]: each top-level block re-takes its
     /// container's accumulated set (fresh for a first/distinct container) and
     /// stores it back after.
-    pub(super) top_level_nested_locals: HashMap<Vec<String>, Vec<Vec<String>>>,
+    pub(super) top_level_nested_locals: HashMap<Vec<String>, PathSet>,
     /// The same nested modules' **qualified** paths (`module_path` prefix + the
     /// local name, `["Demo", "Calc"]`), exported via [`ResolvedFile`](super::model::ResolvedFile) into the
     /// cross-file shadow index so a *later* file's reference (`Demo.Calc.Answer`)
     /// defers too — see [`ProjectItems::nested_module_paths`].
-    pub(super) nested_module_exports: Vec<Vec<String>>,
+    pub(super) nested_module_exports: PathSet,
     /// The paths a same-file **augmentation head** (`type Demo.Calc with …`)
     /// names — as written ([`Self::augmentation_head_locals`]) and
     /// `container_path`-qualified ([`Self::augmentation_head_exports`]),
@@ -1308,12 +1309,12 @@ pub(super) struct Resolver<'a> {
     /// Nothing else does. Every other consumer of the nested-module sets asks
     /// "is there a project *module* here?", which an augmentation head never
     /// answers.
-    pub(super) augmentation_head_locals: Vec<Vec<String>>,
+    pub(super) augmentation_head_locals: PathSet,
     /// The per-container store behind [`Self::augmentation_head_locals`],
     /// managed like [`Self::top_level_nested_locals`].
-    pub(super) top_level_augmentation_locals: HashMap<Vec<String>, Vec<Vec<String>>>,
+    pub(super) top_level_augmentation_locals: HashMap<Vec<String>, PathSet>,
     /// See [`Self::augmentation_head_locals`].
-    pub(super) augmentation_head_exports: Vec<Vec<String>>,
+    pub(super) augmentation_head_exports: PathSet,
     /// Qualified paths of the file's **real** nested `module X = …` definitions —
     /// the module-only subset of [`Self::nested_module_exports`], which (via
     /// [`record_project_name_shadow`](Self::record_project_name_shadow)) conflates
@@ -1325,7 +1326,7 @@ pub(super) struct Resolver<'a> {
     /// *type* at an open-supplied head is transparent, probes CF12/CF13; a
     /// *module* owning the residual is not, probe CF11). Guarded by
     /// [`Self::anonymous_root`] like the other cross-file exports.
-    pub(super) real_nested_module_exports: Vec<Vec<String>>,
+    pub(super) real_nested_module_exports: PathSet,
     /// Every **type definition**'s qualified export path (`["A", "Pal", "Color"]`
     /// = container + type name) paired with whether its **case set is fully
     /// indexed** in the type-qualified case exports (the `type_qualified` paths on

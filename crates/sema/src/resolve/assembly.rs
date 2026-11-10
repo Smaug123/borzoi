@@ -1775,14 +1775,9 @@ impl<'a> Resolver<'a> {
     ///
     /// [`Preceding`]: super::model::ProjectItems
     pub(super) fn open_imports_project_values(&self, path: &[String]) -> bool {
-        let under_any = |paths: &[Vec<String>]| {
-            paths
-                .iter()
-                .any(|p| !p.is_empty() && path.starts_with(p.as_slice()))
-        };
-        self.module_paths.iter().any(|p| p == path)
-            || under_any(&self.nested_module_locals)
-            || under_any(&self.nested_module_exports)
+        self.module_paths.contains(path)
+            || self.nested_module_locals.has_nonempty_prefix_of(path)
+            || self.nested_module_exports.has_nonempty_prefix_of(path)
             || self.preceding.is_exact_project_module(path)
             || self.preceding.is_rooted_at_nested_module(path)
     }

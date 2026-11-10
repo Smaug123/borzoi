@@ -920,8 +920,8 @@ impl<'a> Resolver<'a> {
     /// no qualified export path, so they cannot be enumerated — the conservative
     /// `open_imports_project_values` fallback covers them).
     pub(super) fn is_project_module_path(&self, mp: &[String]) -> bool {
-        self.module_paths.iter().any(|p| p == mp)
-            || self.nested_module_exports.iter().any(|p| p == mp)
+        self.module_paths.contains(mp)
+            || self.nested_module_exports.contains(mp)
             || self.preceding.is_exact_project_module(mp)
             || self.preceding.is_exact_nested_module(mp)
     }
@@ -4284,9 +4284,8 @@ impl<'a> Resolver<'a> {
     /// [`Self::project_type_shadow_cause`]: the head names an existing type
     /// rather than declaring one, so it cannot occupy a type path.
     pub(super) fn path_is_augmentation_head_shadowed(&self, names: &[String]) -> bool {
-        let rooted_at = |p: &Vec<String>| names.starts_with(p.as_slice());
-        self.augmentation_head_locals.iter().any(rooted_at)
-            || self.augmentation_head_exports.iter().any(rooted_at)
+        self.augmentation_head_locals.has_prefix_of(names)
+            || self.augmentation_head_exports.has_prefix_of(names)
             || self.preceding.is_rooted_at_augmentation_head(names)
     }
 
@@ -4306,19 +4305,13 @@ impl<'a> Resolver<'a> {
             return Some(DeclineCause::SignatureScreened);
         }
         let shadowed = self.rooted_at_current_module(names)
-            || self
-                .nested_module_locals
-                .iter()
-                .any(|p| names.starts_with(p.as_slice()))
+            || self.nested_module_locals.has_prefix_of(names)
             // …and same-file *qualified* paths of nested modules / types /
             // exceptions (`Demo.Calc` for a `type Calc` under `namespace Demo`,
             // referenced from a sibling `module M`): `nested_module_locals` holds
             // only the *relative* form, so a namespace-qualified reference needs
             // the exported (qualified) form too.
-            || self
-                .nested_module_exports
-                .iter()
-                .any(|p| names.starts_with(p.as_slice()))
+            || self.nested_module_exports.has_prefix_of(names)
             // NB: a *top-level* project module exactly equal to `names`
             // ([`ProjectItems::is_exact_project_module`]) is **not** a type
             // shadow — a module is not a type, so it never shadows a same-named
@@ -4719,9 +4712,7 @@ impl<'a> Resolver<'a> {
         // `A.Pal.Color.Red` binds, in both positions). `None` (the target does
         // not own the residual) keeps the open transparent, so the search
         // backtracks past it exactly as before (probe BK1).
-        if self.module_paths.iter().any(|p| p == &full)
-            || self.nested_module_exports.iter().any(|p| p == &full)
-        {
+        if self.module_paths.contains(&full) || self.nested_module_exports.contains(&full) {
             // Contention at the opened scope (a dottable value / alias /
             // FS0037-illegal exception sharing the head name where the open's
             // target is declared): the target is not a clean module head there,
@@ -4848,7 +4839,7 @@ impl<'a> Resolver<'a> {
             // namespace-shared shapes the `container_decls` arm above already
             // deferred, except a same-file `module <full…, ty>` *header*, which
             // never enters `container_decls` — hence the `module_paths` check.
-            if self.module_paths.iter().any(|p| p == &ty_path)
+            if self.module_paths.contains(&ty_path)
                 || self.preceding.is_exact_project_module(&ty_path)
                 || self.preceding.is_real_nested_module(&ty_path)
                 || self.is_project_namespace_path(&ty_path)
@@ -6790,8 +6781,8 @@ impl<'a> Resolver<'a> {
             //   they must not contest), and `extern`s (a value cannot own the
             //   residual: member access on it commits and errors, probe M9's
             //   principle — no legal contest exists).
-            if self.module_paths.iter().any(|p| p == &path)
-                || self.real_nested_module_exports.iter().any(|p| p == &path)
+            if self.module_paths.contains(&path)
+                || self.real_nested_module_exports.contains(&path)
                 || self.preceding.is_exact_project_module(&path)
                 || self.preceding.is_real_nested_module(&path)
             {
