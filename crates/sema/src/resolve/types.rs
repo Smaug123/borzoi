@@ -488,7 +488,6 @@ impl<'a> Resolver<'a> {
             if !require_qualified {
                 let generation = self.open_generation;
                 self.module_frame()
-                    .entries
                     .push(ScopeEntry::binding(name, res, generation));
             }
         }
@@ -546,7 +545,6 @@ impl<'a> Resolver<'a> {
         if !require_qualified {
             let generation = self.open_generation;
             self.module_frame()
-                .entries
                 .push(ScopeEntry::undecided_case(case, generation));
         }
     }
@@ -650,7 +648,6 @@ impl<'a> Resolver<'a> {
         self.mark_decl(&entry_name).exception_ctor = true;
         let generation = self.open_generation;
         self.module_frame()
-            .entries
             .push(ScopeEntry::binding(entry_name, res, generation));
     }
 
@@ -1012,7 +1009,7 @@ impl<'a> Resolver<'a> {
         }
         let pushed_cases = !cases.is_empty();
         if pushed_cases {
-            self.scopes.push(Frame { entries: cases });
+            self.scopes.push(Frame::new(cases));
         }
         if super::is_type_augmentation(defn) {
             {
@@ -1248,9 +1245,7 @@ impl<'a> Resolver<'a> {
         } else {
             instance_entries
         };
-        self.scopes.push(Frame {
-            entries: entries.to_vec(),
-        });
+        self.scopes.push(Frame::new(entries.to_vec()));
         1
     }
 
@@ -1461,7 +1456,7 @@ impl<'a> Resolver<'a> {
         if let Some(ret) = b.return_type() {
             self.resolve_type(&ret);
         }
-        self.scopes.push(Frame { entries });
+        self.scopes.push(Frame::new(entries));
         if let Some(body) = b.expr() {
             self.resolve_expr(&body);
         }
@@ -1489,7 +1484,7 @@ impl<'a> Resolver<'a> {
             if let Some(ret) = acc.return_type() {
                 self.resolve_type(&ret);
             }
-            self.scopes.push(Frame { entries });
+            self.scopes.push(Frame::new(entries));
             if let Some(body) = acc.body() {
                 self.resolve_expr(&body);
             }
@@ -1582,9 +1577,7 @@ impl<'a> Resolver<'a> {
         if lb.is_rec() {
             // A `rec` field is in scope for every RHS in the group (mutually
             // recursive fields), so make the value binders visible for the RHSs.
-            self.scopes.push(Frame {
-                entries: value_entries.clone(),
-            });
+            self.scopes.push(Frame::new(value_entries.clone()));
             self.resolve_local_let_rhss(&per_binding);
             self.scopes.pop();
         } else {

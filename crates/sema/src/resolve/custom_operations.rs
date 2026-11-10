@@ -637,7 +637,7 @@ impl Resolver<'_> {
                 mark
             })
             .collect();
-        self.scopes.push(Frame { entries });
+        self.scopes.push(Frame::new(entries));
         true
     }
 

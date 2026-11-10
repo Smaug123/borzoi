@@ -323,9 +323,87 @@ pub(super) type TypeSlotDef = (u32, SlotClass);
 /// parent-linked scope *tree* of D4 is realised implicitly as the live stack of
 /// frames during the walk — at any use, the frame stack is exactly that use's
 /// root-to-node path through the tree.
+///
+/// A lookup reads the entries of one name, latest first ([`Frame::named_rev`]),
+/// so each frame indexes its entries by name: a scan of the whole frame would
+/// make a file of `n` bindings that each use a name cost `n²`. The entries
+/// are private so that every write goes through a method that keeps the
+/// index.
 #[derive(Debug, Default)]
 pub(super) struct Frame {
-    pub(super) entries: Vec<ScopeEntry>,
+    entries: Vec<ScopeEntry>,
+    /// Each name's positions in `entries`, ascending.
+    by_name: HashMap<String, Vec<usize>>,
+}
+
+impl Frame {
+    pub(super) fn new(entries: Vec<ScopeEntry>) -> Frame {
+        let mut frame = Frame {
+            entries,
+            by_name: HashMap::new(),
+        };
+        frame.reindex();
+        frame
+    }
+
+    /// The entries, in source order.
+    pub(super) fn entries(&self) -> &[ScopeEntry] {
+        &self.entries
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// The entries named `name`, latest first: the order in which the
+    /// latest-wins scan over [`Self::entries`] would meet them.
+    pub(super) fn named_rev<'a>(&'a self, name: &str) -> impl Iterator<Item = &'a ScopeEntry> {
+        self.by_name
+            .get(name)
+            .into_iter()
+            .flat_map(|positions| positions.iter().rev())
+            .map(|&i| &self.entries[i])
+    }
+
+    pub(super) fn push(&mut self, entry: ScopeEntry) {
+        self.by_name
+            .entry(entry.name.clone())
+            .or_default()
+            .push(self.entries.len());
+        self.entries.push(entry);
+    }
+
+    pub(super) fn extend(&mut self, entries: impl IntoIterator<Item = ScopeEntry>) {
+        for entry in entries {
+            self.push(entry);
+        }
+    }
+
+    /// Move the last `k` entries from `start` on to sit at `start`, ahead of
+    /// the rest (`entries[start..].rotate_right(k)`).
+    pub(super) fn rotate_tail_right(&mut self, start: usize, k: usize) {
+        self.entries[start..].rotate_right(k);
+        self.reindex();
+    }
+
+    pub(super) fn retain(&mut self, keep: impl FnMut(&ScopeEntry) -> bool) {
+        self.entries.retain(keep);
+        self.reindex();
+    }
+
+    /// Stamp every entry with `generation`.
+    pub(super) fn set_generation(&mut self, generation: usize) {
+        for entry in &mut self.entries {
+            entry.generation = generation;
+        }
+    }
+
+    fn reindex(&mut self) {
+        self.by_name.clear();
+        for (i, entry) in self.entries.iter().enumerate() {
+            self.by_name.entry(entry.name.clone()).or_default().push(i);
+        }
+    }
 }
 
 /// The outcome of probing a dotted path against the referenced assemblies
@@ -1877,4 +1955,108 @@ pub(super) fn implicit_open_groups(assemblies: &AssemblyEnv) -> Vec<OpenGroup> {
         .into_iter()
         .map(|ns| OpenGroup { readings: vec![ns] })
         .collect()
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use proptest::prelude::*;
+
+    use super::{DeferredReason, Frame, Resolution, ScopeEntry};
+
+    const NAMES: [&str; 4] = ["a", "b", "ab", "``a``"];
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Push { name: usize, from_open: bool },
+        Extend(Vec<(usize, bool)>),
+        RotateTailRight { start: usize, k: usize },
+        Retain,
+        SetGeneration(usize),
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        let entry = (0..NAMES.len(), any::<bool>());
+        prop_oneof![
+            4 => entry.clone().prop_map(|(name, from_open)| Op::Push { name, from_open }),
+            2 => prop::collection::vec(entry, 0..6).prop_map(Op::Extend),
+            1 => (0..40usize, 0..40usize).prop_map(|(start, k)| Op::RotateTailRight { start, k }),
+            1 => Just(Op::Retain),
+            1 => (0..3usize).prop_map(Op::SetGeneration),
+        ]
+    }
+
+    /// Each entry is told apart by its `open_pos`, which the frame never reads.
+    fn entry(name: usize, from_open: bool, id: u32) -> ScopeEntry {
+        let mut e = ScopeEntry::binding(
+            NAMES[name].to_string(),
+            Resolution::Deferred(DeferredReason::UnboundName),
+            0,
+        );
+        e.from_open = from_open;
+        e.open_pos = id;
+        e
+    }
+
+    fn ids<'a>(entries: impl Iterator<Item = &'a ScopeEntry>) -> Vec<(u32, usize)> {
+        entries.map(|e| (e.open_pos, e.generation)).collect()
+    }
+
+    proptest! {
+        /// The frame's name index answers exactly what a scan of its entries
+        /// from the latest back would, after any sequence of writes.
+        #[test]
+        fn named_rev_is_the_latest_first_scan(
+            initial in prop::collection::vec((0..NAMES.len(), any::<bool>()), 0..8),
+            ops in prop::collection::vec(op(), 0..40),
+        ) {
+            let mut next_id = 0u32;
+            let mut fresh = |name: usize, from_open: bool| {
+                next_id += 1;
+                entry(name, from_open, next_id)
+            };
+            let mut model: Vec<ScopeEntry> =
+                initial.iter().map(|&(n, o)| fresh(n, o)).collect();
+            let mut frame = Frame::new(model.clone());
+            for op in ops {
+                match op {
+                    Op::Push { name, from_open } => {
+                        let e = fresh(name, from_open);
+                        model.push(e.clone());
+                        frame.push(e);
+                    }
+                    Op::Extend(entries) => {
+                        let es: Vec<ScopeEntry> =
+                            entries.iter().map(|&(n, o)| fresh(n, o)).collect();
+                        model.extend(es.iter().cloned());
+                        frame.extend(es);
+                    }
+                    Op::RotateTailRight { start, k } => {
+                        let start = start.min(model.len());
+                        let k = k.min(model.len() - start);
+                        model[start..].rotate_right(k);
+                        frame.rotate_tail_right(start, k);
+                    }
+                    Op::Retain => {
+                        model.retain(|e| !e.from_open);
+                        frame.retain(|e| !e.from_open);
+                    }
+                    Op::SetGeneration(g) => {
+                        for e in &mut model {
+                            e.generation = g;
+                        }
+                        frame.set_generation(g);
+                    }
+                }
+                prop_assert_eq!(frame.len(), model.len());
+                prop_assert_eq!(ids(frame.entries().iter()), ids(model.iter()));
+                for name in NAMES {
+                    prop_assert_eq!(
+                        ids(frame.named_rev(name)),
+                        ids(model.iter().rev().filter(|e| e.name == name)),
+                        "entries named {}", name
+                    );
+                }
+            }
+        }
+    }
 }

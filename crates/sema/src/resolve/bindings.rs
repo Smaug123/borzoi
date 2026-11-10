@@ -324,15 +324,11 @@ impl<'a> Resolver<'a> {
         // body, popped below. The `if`/`else` (not two sequential `if`s) moves
         // `value_entries` down exactly one path.
         if e.is_rec() {
-            self.scopes.push(Frame {
-                entries: value_entries,
-            });
+            self.scopes.push(Frame::new(value_entries));
             self.resolve_local_let_rhss(&per_binding);
         } else {
             self.resolve_local_let_rhss(&per_binding);
-            self.scopes.push(Frame {
-                entries: value_entries,
-            });
+            self.scopes.push(Frame::new(value_entries));
         }
         if let Some(body) = e.body() {
             self.resolve_expr(&body);
@@ -468,9 +464,7 @@ impl<'a> Resolver<'a> {
             if pushed_typars {
                 self.typar_scopes.push(typar_frame.clone());
             }
-            self.scopes.push(Frame {
-                entries: params.clone(),
-            });
+            self.scopes.push(Frame::new(params.clone()));
             // Mark the binding's own case names for its RHS (mirrors the
             // module-level [`resolve_rhss`]): a bare body use of the recognizer's
             // own case name declines rather than commit an outer value or the case.
@@ -496,7 +490,7 @@ impl<'a> Resolver<'a> {
                 // stop on the same-file binder); for a `rec` group it is before, as the
                 // binder is in scope in its own RHS. Mirrors the scope-frame timing.
                 self.mark_decl(&e.name).value = true;
-                self.module_frame().entries.push(e.clone());
+                self.module_frame().push(e.clone());
             }
         }
     }
@@ -510,7 +504,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn add_eager_entries(&mut self, prepared: &[PreparedBinding]) {
         for p in prepared {
             for e in &p.eager_entries {
-                self.module_frame().entries.push(e.clone());
+                self.module_frame().push(e.clone());
             }
         }
     }
@@ -523,9 +517,7 @@ impl<'a> Resolver<'a> {
             if pushed_typars {
                 self.typar_scopes.push(p.typar_frame.clone());
             }
-            self.scopes.push(Frame {
-                entries: p.param_entries.clone(),
-            });
+            self.scopes.push(Frame::new(p.param_entries.clone()));
             // A recognizer's own case name used *bare* in its own body is ambiguous
             // — a result-case construction (`let (|A|B|) x = … then A …`, FCS
             // `ActivePatternCase`) or a fresh uppercase pattern rebinding (`match n

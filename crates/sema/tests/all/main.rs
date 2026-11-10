@@ -142,6 +142,7 @@ mod uses_census_project;
 mod uses_project_smoke;
 mod uses_smoke;
 mod value_access_open_grid;
+mod walk_cost_scaling;
 mod walk_stack_bound;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is

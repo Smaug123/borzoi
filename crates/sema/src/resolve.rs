@@ -560,15 +560,15 @@ pub fn resolve_file(
         // same-named `namespace N` block re-takes the bindings of the earlier
         // ones, which FCS adds after its implicit opens, so they must keep
         // winning over the seed.
-        let retained = r.module_frame().entries.len();
+        let retained = r.module_frame().len();
         r.fold_implicit_union_cases(true);
         for ns in implicit_open_namespaces(r.assemblies) {
             // Implicit auto-opens precede every declaration: slot position 0.
             r.open_auto_open_modules_in(&ns, 0, true);
         }
         r.fold_implicit_union_cases(false);
-        let seeded = r.module_frame().entries.len() - retained;
-        r.module_frame().entries.rotate_right(seeded);
+        let seeded = r.module_frame().len() - retained;
+        r.module_frame().rotate_tail_right(0, seeded);
         r.earlier_block_contributions(seeded);
         // …then what earlier files put in the root scope, and the block's
         // **own** enclosing namespace, which FCS opens implicitly as well
@@ -601,15 +601,13 @@ pub fn resolve_file(
         // leak across same-named blocks, but namespace values merge). A *nested*
         // module's frame is popped and discarded, so its opened entries vanish
         // with no filter needed.
-        frame.entries.retain(|e| !e.from_open && e.mark.is_none());
+        frame.retain(|e| !e.from_open && e.mark.is_none());
         // The surviving bindings re-enter a later same-named block at that
         // block's generation zero: their stamps are THIS block's history, and
         // carrying them over would let a fresh block's counter (reset to 0)
         // misread them as stale. Semantically they precede everything the next
         // block declares, which is exactly generation 0.
-        for e in &mut frame.entries {
-            e.generation = 0;
-        }
+        frame.set_generation(0);
         r.top_level.insert(r.container_path.clone(), frame);
         let locals = std::mem::take(&mut r.nested_module_locals);
         r.top_level_nested_locals
