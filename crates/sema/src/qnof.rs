@@ -63,6 +63,20 @@ impl QualifiedNameOfFile {
     pub(crate) fn undeduplicated_text(&self) -> &str {
         &self.raw
     }
+
+    /// The segments of the implicit module a headerless file's contents
+    /// live under (FCS's `ComputeAnonModuleName`: the raw name split at its
+    /// dots), when every segment is a non-empty run of ASCII letters, digits
+    /// and `_`. That is the ASCII part of the names FCS accepts without its
+    /// FS0221 warning (`IsValidAnonModuleName`); any other name, and the
+    /// placeholder's empty one, is `None`.
+    pub(crate) fn anonymous_module_segments(&self) -> Option<Vec<String>> {
+        let segments: Vec<String> = self.raw.split('.').map(str::to_string).collect();
+        segments
+            .iter()
+            .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then_some(segments)
+    }
 }
 
 /// Derive each file's [`QualifiedNameOfFile`], in Compile order. `files` and

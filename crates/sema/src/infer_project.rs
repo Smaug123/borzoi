@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
-use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_file};
+use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_named_file};
 use crate::resolve::{ItemId, ProjectFile, ResolvedFile, ResolvedProject, signature_partners};
 use crate::ty::Ty;
 
@@ -40,7 +40,8 @@ use crate::ty::Ty;
 /// and declines for a reason it can name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PrecedingGap {
-    /// The declaring file was not inferred: a signature slot, or a file this
+    /// The declaring file was not inferred: a signature slot, an
+    /// implementation FCS rejects whole as a repeated identity, or a file this
     /// fold did not reach. Nothing is known about the binding.
     NotInferred,
     /// The declaring file was inferred, but the binding was not walked: a
@@ -147,6 +148,15 @@ impl PrecedingTypes {
         self.cases.get(&id)
     }
 
+    /// The union of each case and the record of each record the earlier
+    /// files published: project types F# seals.
+    pub(crate) fn sealed_types(&self) -> impl Iterator<Item = &Ty> + '_ {
+        self.cases
+            .values()
+            .map(ProjectCase::union)
+            .chain(self.records.values().map(ProjectRecord::record))
+    }
+
     /// How many constructor-like declarations of `name` the earlier files
     /// make.
     pub(crate) fn constructor_name_count(&self, name: &str) -> usize {
@@ -242,7 +252,8 @@ impl PrecedingTypes {
 }
 
 /// The result of inferring a whole project, or a Compile-order prefix of it:
-/// each file's [`InferredFile`] (`None` for a signature slot), and what every
+/// each file's [`InferredFile`] (`None` for a signature slot, and for an
+/// implementation FCS rejects whole as a repeated identity), and what every
 /// file published for its top-level values.
 #[derive(Debug, Default)]
 pub struct InferredProject {
@@ -255,7 +266,7 @@ pub struct InferredProject {
 
 impl InferredProject {
     /// The inferred file at Compile index `idx`, or `None` for a signature
-    /// slot.
+    /// slot or an implementation that repeats an earlier one's identity.
     pub fn file(&self, idx: usize) -> Option<&InferredFile> {
         self.files.get(idx).and_then(Option::as_deref)
     }
@@ -340,11 +351,18 @@ pub fn infer_project_reusing(
     for (idx, rf) in resolved.files().iter().enumerate() {
         let inferred = if idx < reuse {
             prev.files[idx].clone()
+        } else if repeats_an_implementation(files, idx) {
+            None
         } else {
-            files[idx]
-                .file
-                .as_impl()
-                .map(|impl_file| Arc::new(infer_file(impl_file, rf, env, &published)))
+            files[idx].file.as_impl().map(|impl_file| {
+                Arc::new(infer_named_file(
+                    impl_file,
+                    rf,
+                    env,
+                    &published,
+                    &files[idx].qnof,
+                ))
+            })
         };
         // An implementation's partner is the signature screening it; a
         // signature slot exports nothing of its own.
@@ -357,4 +375,17 @@ pub fn infer_project_reusing(
         resolved: resolved.files().to_vec(),
         published,
     }
+}
+
+/// Whether the implementation at `idx` has the [`QualifiedNameOfFile`] of an
+/// earlier implementation: FCS rejects it (FS0239, an implementation of the
+/// file or module already given) and checks nothing in it, so it is not
+/// inferred, and what it exports declines as [`PrecedingGap::NotInferred`].
+///
+/// [`QualifiedNameOfFile`]: crate::QualifiedNameOfFile
+fn repeats_an_implementation(files: &[ProjectFile], idx: usize) -> bool {
+    files[idx].file.as_impl().is_some()
+        && files[..idx]
+            .iter()
+            .any(|f| f.file.as_impl().is_some() && f.qnof.text() == files[idx].qnof.text())
 }
