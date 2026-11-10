@@ -318,8 +318,9 @@ fn cell(
     }
 }
 
-/// The sites that must commit FCS's answer, when FCS binds them cleanly:
-/// every use of `X` outside the dropped declaration whose twin in the `do`
+/// The sites that must commit FCS's answer, when FCS binds them cleanly (to
+/// a declaration, or as a fresh pattern binder, which a dropped literal's or
+/// active pattern's name becomes): every use of `X` outside the dropped declaration whose twin in the `do`
 /// control's cell — the same rival, header, position and probe, after a
 /// declaration binding nothing — commits. FCS reads a dropped declaration as
 /// absent, so it may cost no coverage: what the walk answers past a `do`, it
@@ -327,7 +328,12 @@ fn cell(
 fn must_commit(graded: &[Graded]) -> Vec<&str> {
     graded
         .iter()
-        .filter(|g| matches!(g.fcs, FcsVerdict::Resolved(..)) && !g.label.contains("/inside/"))
+        .filter(|g| {
+            matches!(
+                g.fcs,
+                FcsVerdict::Resolved(..) | FcsVerdict::FreshBinder(..)
+            ) && !g.label.contains("/inside/")
+        })
         .filter(|g| {
             let (_, rest) = g.label.split_once('/').expect("a labelled cell");
             let control = format!("{}/{rest}", Subject::Do.tag());
@@ -387,7 +393,7 @@ fn values_directly_in_a_namespace_agree_with_fcs() {
     let premise: Vec<String> = graded
         .iter()
         .filter(|g| match &g.fcs {
-            FcsVerdict::Resolved(file, range) => {
+            FcsVerdict::Resolved(file, range) | FcsVerdict::FreshBinder(file, range) => {
                 g.label.contains("/inside/")
                     || binders.iter().any(|b| b.file == *file && b.range == *range)
             }
