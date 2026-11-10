@@ -20,6 +20,7 @@ use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::contributors::{Contribution, FileContributions};
+use super::path_set::PathSet;
 use super::state::ActivePatternShape;
 
 /// One export recorded at a qualified path, in the Compile order
@@ -395,7 +396,7 @@ pub struct ProjectItems {
     /// member either (the `assembly_path_records` soundness tripwire). Deferring
     /// is sound (over-defers an unrelated assembly path that happens to share
     /// the prefix — availability, never a wrong resolution).
-    pub(super) nested_module_paths: HashSet<Vec<String>>,
+    pub(super) nested_module_paths: PathSet,
     /// Paths named by an earlier file's `type … with` **augmentation head**
     /// ([`ExportDeclKind::TypeAugmentation`]) — the value-namespace-only
     /// sibling of [`Self::nested_module_paths`]. See
@@ -403,7 +404,7 @@ pub struct ProjectItems {
     /// the head declares no type, so a *type* path rooted at one must resolve
     /// normally, while a *value* path must still defer (the extension's members
     /// join the augmented type's method groups).
-    pub(super) augmentation_head_paths: HashSet<Vec<String>>,
+    pub(super) augmentation_head_paths: PathSet,
     /// Every earlier-file project **type**'s simple name, from each file's
     /// syntactic whole-file pre-scan
     /// ([`ResolvedFile::own_type_simple_names`]). The attribute resolution's
@@ -891,18 +892,14 @@ impl ProjectItems {
     /// rather than falling through to a colliding assembly member — see
     /// [`Self::nested_module_paths`].
     pub(super) fn is_rooted_at_nested_module(&self, names: &[String]) -> bool {
-        self.nested_module_paths
-            .iter()
-            .any(|p| names.starts_with(p.as_slice()))
+        self.nested_module_paths.has_prefix_of(names)
     }
 
     /// Whether `names` is rooted at (equal to, or a path under) a path an
     /// earlier file's augmentation head names — see
     /// [`Self::augmentation_head_paths`]. **Value namespace only.**
     pub(super) fn is_rooted_at_augmentation_head(&self, names: &[String]) -> bool {
-        self.augmentation_head_paths
-            .iter()
-            .any(|p| names.starts_with(p.as_slice()))
+        self.augmentation_head_paths.has_prefix_of(names)
     }
 
     /// Whether `names` is *exactly* a declared *nested* project module from an

@@ -2954,11 +2954,11 @@ impl<'a> Resolver<'a> {
     /// `Demo.Calc`). Hence the *strict* prefix (`names.len() > p.len()`); the
     /// conservative defer is for proper descents like `Calc.Inner`.
     fn type_path_descends_into_nested_module(&self, names: &[String]) -> bool {
-        let strictly_under = |p: &Vec<String>| {
-            !p.is_empty() && names.len() > p.len() && names.starts_with(p.as_slice())
-        };
-        self.nested_module_locals.iter().any(strictly_under)
-            || self.nested_module_exports.iter().any(strictly_under)
+        self.nested_module_locals
+            .has_strict_nonempty_prefix_of(names)
+            || self
+                .nested_module_exports
+                .has_strict_nonempty_prefix_of(names)
             || (self.preceding.is_rooted_at_nested_module(names)
                 && !self.preceding.is_exact_nested_module(names))
     }

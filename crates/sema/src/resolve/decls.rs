@@ -1751,7 +1751,7 @@ impl<'a> Resolver<'a> {
             if nm_auto_open {
                 self.record_auto_open_module(qualified.clone(), nm_private);
             }
-            self.real_nested_module_exports.push(qualified.clone());
+            self.real_nested_module_exports.insert(qualified.clone());
         }
         // The export-decl-list twin: one nested-module decl (`header: false`)
         // carrying its `[<AutoOpen>]`/`private` bits. Every derivation off it
@@ -1797,8 +1797,8 @@ impl<'a> Resolver<'a> {
         let saved_latest_open_pos = self.latest_open_pos;
         let saved_recursive_module = self.recursive_module_active;
         let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
-        let saved_nested_locals = self.nested_module_locals.clone();
-        let saved_augmentation_locals = self.augmentation_head_locals.clone();
+        let saved_nested_locals = self.nested_module_locals.mark();
+        let saved_augmentation_locals = self.augmentation_head_locals.mark();
         let saved_access_floor = self.access_floor;
 
         // The nested module's full path = enclosing container + its own name(s)
@@ -1944,8 +1944,9 @@ impl<'a> Resolver<'a> {
         } else {
             self.auto_open_type_shadow_names = saved_auto_open_type_shadow_names;
         }
-        self.nested_module_locals = saved_nested_locals;
-        self.augmentation_head_locals = saved_augmentation_locals;
+        self.nested_module_locals.rollback(saved_nested_locals);
+        self.augmentation_head_locals
+            .rollback(saved_augmentation_locals);
         // An `[<AutoOpen>]` module folds back into the rest of its container
         // (`AddLocalSubModule`), which the walk does not model.
         self.auto_open_module_contribution(nm);
@@ -1985,9 +1986,9 @@ impl<'a> Resolver<'a> {
         if !self.anonymous_root {
             let mut qualified = self.container_path.clone();
             qualified.extend(segs.iter().cloned());
-            self.nested_module_exports.push(qualified);
+            self.nested_module_exports.insert(qualified);
         }
-        self.nested_module_locals.push(segs);
+        self.nested_module_locals.insert(segs);
     }
 
     /// The **augmentation-head** counterpart of [`Self::record_project_name_shadow`]:
@@ -2008,9 +2009,9 @@ impl<'a> Resolver<'a> {
         if !self.anonymous_root {
             let mut qualified = self.container_path.clone();
             qualified.extend(segs.iter().cloned());
-            self.augmentation_head_exports.push(qualified);
+            self.augmentation_head_exports.insert(qualified);
         }
-        self.augmentation_head_locals.push(segs);
+        self.augmentation_head_locals.insert(segs);
     }
 
     /// Note `name` as a *module-like* declaration (nested module / abbreviation)
