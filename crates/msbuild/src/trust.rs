@@ -36,21 +36,133 @@ pub(crate) enum UnpinnedRoot {
     /// The value chain substituted `$(Name)` while `Name` was undefined —
     /// a real build may supply it (environment variables are MSBuild
     /// initial properties) and produce a different value.
-    Undefined(String),
+    ///
+    /// `because` says why `Name`'s absence was uncertain at the read, when
+    /// the walk knew: `Name`'s own root, or an earlier construct it could not
+    /// see into. It explains only. The root is still *about* `Name` — its
+    /// diagnostic, and every exemption keyed on that name (the
+    /// `DefineConstants` self-append among them), read `name` alone.
+    Undefined {
+        name: String,
+        because: Option<Box<UndefinedBecause>>,
+    },
     /// A write in the value chain was gated on a condition outside the
     /// supported grammar, so we cannot know whether it ran.
     UnsupportedCondition(String),
 }
 
+/// Why a name read while undefined might not be undefined to the real build.
+/// Built flat ([`UnpinnedRoot::undefined_because`]): an `OwnRoot` never has a
+/// `because` of its own, so a chain of reads does not nest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UndefinedBecause {
+    /// The name's own root at the read (its write was skipped under a gate we
+    /// could not decide, say).
+    OwnRoot(UnpinnedRoot),
+    /// The walk had passed content it could not see, which may define it.
+    Opacity(OpacityCause),
+}
+
+/// Why the walk stopped seeing every property write: the first construct
+/// whose content it could not enter, or could not decide whether to enter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OpacityCause {
+    /// A gate on an import (or a group of them) that could not be decided,
+    /// by the root that made it so.
+    Gate(UnpinnedRoot),
+    /// Content the walk could not enter, described.
+    Unentered(String),
+}
+
 impl UnpinnedRoot {
+    /// A root for a read of `name` while undefined.
+    pub(crate) fn undefined(name: &str, because: Option<UndefinedBecause>) -> Self {
+        UnpinnedRoot::Undefined {
+            name: name.to_string(),
+            because: because.map(Box::new),
+        }
+    }
+
+    /// This root as the explanation of a read of the name it belongs to,
+    /// flattened: a root that already carries a `because` hands that on, so
+    /// explanations stay a bounded depth however long the chain of reads.
+    pub(crate) fn undefined_because(&self) -> UndefinedBecause {
+        match self {
+            UnpinnedRoot::Undefined {
+                because: Some(because),
+                ..
+            } => (**because).clone(),
+            UnpinnedRoot::Undefined { because: None, .. }
+            | UnpinnedRoot::UnsupportedCondition(_) => UndefinedBecause::OwnRoot(self.clone()),
+        }
+    }
+
+    /// The undefined name this root is about, if it is one.
+    pub(crate) fn undefined_name(&self) -> Option<&str> {
+        match self {
+            UnpinnedRoot::Undefined { name, .. } => Some(name),
+            UnpinnedRoot::UnsupportedCondition(_) => None,
+        }
+    }
+
     pub(crate) fn to_diagnostic(&self) -> DiagnosticKind {
         match self {
-            UnpinnedRoot::Undefined(name) => {
+            UnpinnedRoot::Undefined { name, .. } => {
                 DiagnosticKind::UndefinedProperty { name: name.clone() }
             }
             UnpinnedRoot::UnsupportedCondition(condition) => DiagnosticKind::UnsupportedCondition {
                 condition: condition.clone(),
             },
+        }
+    }
+}
+
+/// Why a property's evaluated value may not be the real build's: the cause in
+/// force when the value was computed. See
+/// [`crate::ParsedProject::property_untrusted_cause`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UntrustedCause {
+    /// The chain read `$(name)` while it was undefined, and a real build may
+    /// define it. `hidden_by` is set when the read was uncertain only because
+    /// an earlier part of the build could not be seen into: it says why.
+    UndefinedProperty {
+        name: String,
+        hidden_by: Option<Box<UntrustedCause>>,
+    },
+    /// The chain rests on text outside the modelled grammar, carried verbatim:
+    /// a `Condition` on a write, or a property body (`<Name> body`).
+    Unmodelled(String),
+    /// The chain rests on a value the SDK computed from package inputs that the
+    /// walk does not model.
+    SdkPackageInput,
+    /// Content the walk could not enter (an import, an SDK, a construct),
+    /// described.
+    Unentered(String),
+}
+
+impl UntrustedCause {
+    fn of_root(root: &UnpinnedRoot) -> Self {
+        match root {
+            // The name's own root is the deeper cause: report it.
+            UnpinnedRoot::Undefined { because, name } => match because.as_deref() {
+                Some(UndefinedBecause::OwnRoot(root)) => Self::of_root(root),
+                Some(UndefinedBecause::Opacity(cause)) => UntrustedCause::UndefinedProperty {
+                    name: name.clone(),
+                    hidden_by: Some(Box::new(Self::of_opacity(cause))),
+                },
+                None => UntrustedCause::UndefinedProperty {
+                    name: name.clone(),
+                    hidden_by: None,
+                },
+            },
+            UnpinnedRoot::UnsupportedCondition(text) => UntrustedCause::Unmodelled(text.clone()),
+        }
+    }
+
+    fn of_opacity(cause: &OpacityCause) -> Self {
+        match cause {
+            OpacityCause::Gate(root) => Self::of_root(root),
+            OpacityCause::Unentered(what) => UntrustedCause::Unentered(what.clone()),
         }
     }
 }
@@ -136,6 +248,23 @@ impl Trust {
             unpinned: unpinned.is_some(),
             sdk_package: sdk_package.is_some(),
             refused: *refused,
+        }
+    }
+
+    /// The first cause behind a reference being untrusted
+    /// ([`Self::reference_is_untrusted`]), `None` exactly when it is not. The
+    /// unpinned root comes first: it names the property or condition to look
+    /// at, where the package taint names only the SDK.
+    pub(crate) fn untrusted_cause(&self) -> Option<UntrustedCause> {
+        let Trust {
+            unpinned,
+            sdk_package,
+            refused: _,
+        } = self;
+        match (unpinned, sdk_package) {
+            (Some(root), _) => Some(UntrustedCause::of_root(root)),
+            (None, Some(_)) => Some(UntrustedCause::SdkPackageInput),
+            (None, None) => None,
         }
     }
 
@@ -364,7 +493,7 @@ mod tests {
 
     fn unpinned_root_strategy() -> impl Strategy<Value = UnpinnedRoot> {
         prop_oneof![
-            "[ab]".prop_map(UnpinnedRoot::Undefined),
+            "[ab]".prop_map(|name| UnpinnedRoot::undefined(&name, None)),
             "[ab]".prop_map(UnpinnedRoot::UnsupportedCondition),
         ]
     }
@@ -521,7 +650,7 @@ mod tests {
             },
             ResolvedProvenance {
                 taint: TaintOutcome::Keep,
-                unpinned: UnpinnedOutcome::Set(UnpinnedRoot::Undefined("X".to_string())),
+                unpinned: UnpinnedOutcome::Set(UnpinnedRoot::undefined("X", None)),
                 refused: RefusedOutcome::Keep,
             },
             ResolvedProvenance {
@@ -547,7 +676,7 @@ mod tests {
                 span: 0..1,
                 origin: DiagnosticOrigin::Buffer,
             }),
-            unpinned: UnpinnedOutcome::Set(UnpinnedRoot::Undefined("X".to_string())),
+            unpinned: UnpinnedOutcome::Set(UnpinnedRoot::undefined("X", None)),
             refused: RefusedOutcome::Set,
         });
         assert_eq!(

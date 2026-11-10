@@ -9693,3 +9693,603 @@ fn a_case_collision_whose_spellings_agree_still_has_a_knowable_value() {
         "the fallback fires on both sides, so the item it gates is real",
     );
 }
+
+/// A gate whose value the *trusted* operands alone decide does not depend on
+/// the untrusted ones, so it must not taint what it guards. The SDK shape this
+/// models is `Microsoft.NET.Sdk.Common.targets`'s
+/// `<PropertyGroup Condition="'$(EnablePreviewFeatures)' == 'true' And
+/// '$(IsNetCoreAppTargetingLatestTFM)' == 'true'"><LangVersion>Preview</…>`:
+/// with `EnablePreviewFeatures` unset the write cannot run, however untrusted
+/// `TargetFramework` (and so `IsNetCoreAppTargetingLatestTFM`) is. Each row
+/// pins whether the guarded `L` is untrusted, so the rows where the untrusted
+/// operand *does* decide the gate hold the other direction.
+#[test]
+fn a_gate_decided_by_trusted_operands_does_not_taint_its_writes() {
+    // `Tf` is untrusted (written under an item-reference gate, permanently
+    // unsupported); `Off` is trusted and false; `On` is trusted and true.
+    let prelude = r#"<PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <Off>false</Off>
+    <On>true</On>
+  </PropertyGroup>"#;
+    let rows: &[(&str, &str, bool)] = &[
+        (
+            "and-trusted-false-first",
+            "'$(Off)' == 'true' And '$(Tf)' == 'net10.0'",
+            false,
+        ),
+        (
+            "and-trusted-false-last",
+            "'$(Tf)' == 'net10.0' And '$(Off)' == 'true'",
+            false,
+        ),
+        (
+            "or-trusted-true-last",
+            "'$(Tf)' == 'net10.0' Or '$(On)' == 'true'",
+            false,
+        ),
+        (
+            "not-of-decided-and",
+            "!('$(Off)' == 'true' And '$(Tf)' == 'x')",
+            false,
+        ),
+        (
+            "nested-decided",
+            "('$(Off)' == 'true' And '$(Tf)' == 'x') Or '$(Off)' == 'yes'",
+            false,
+        ),
+        (
+            "and-trusted-true",
+            "'$(On)' == 'true' And '$(Tf)' == 'net10.0'",
+            true,
+        ),
+        (
+            "or-trusted-false",
+            "'$(Off)' == 'true' Or '$(Tf)' == 'net10.0'",
+            true,
+        ),
+        ("bare-untrusted", "'$(Tf)' == 'net10.0'", true),
+        (
+            "leafwise-contradiction-stays-untrusted",
+            "'$(Tf)' == 'a' And '$(Tf)' != 'a'",
+            true,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for &(tag, gate, expected_untrusted) in rows {
+        for (shape, body) in [
+            (
+                "group-gate",
+                format!(r#"<PropertyGroup Condition="{gate}"><L>Preview</L></PropertyGroup>"#),
+            ),
+            (
+                "element-gate",
+                format!(r#"<PropertyGroup><L Condition="{gate}">Preview</L></PropertyGroup>"#),
+            ),
+        ] {
+            let src = format!("<Project>\n  {prelude}\n  {body}\n</Project>");
+            let p = parse(&src);
+            assert!(
+                p.property_provenance_untrusted("Tf"),
+                "{tag}/{shape}: Tf must be untrusted for the row to test anything"
+            );
+            let untrusted = p.property_provenance_untrusted("L");
+            if untrusted != expected_untrusted {
+                failures.push(format!(
+                    "{tag}/{shape}: L untrusted = {untrusted}, expected {expected_untrusted} \
+                     (gate {gate})"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The same precision one level down: an unsupported group gate marks the
+/// children that could write, and a child whose own condition the trusted
+/// operands decide false cannot write, whatever the untrusted ones hold.
+#[test]
+fn a_child_gate_decided_false_by_trusted_operands_is_not_marked_by_its_group() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <Off>false</Off>
+  </PropertyGroup>
+  <PropertyGroup Condition="'@(AnotherItem)' == ''">
+    <L Condition="'$(Off)' == 'true' And '$(Tf)' == 'net10.0'">Preview</L>
+    <M Condition="'$(Off)' != 'true' And '$(Tf)' == 'net10.0'">Preview</M>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(
+        !p.property_provenance_untrusted("L"),
+        "L's own gate is false whatever Tf holds, so it cannot write"
+    );
+    assert!(
+        p.property_provenance_untrusted("M"),
+        "M's own gate depends on Tf, so the unsupported group gate must mark it"
+    );
+}
+
+/// The cause an untrusted property reports is the root the walk recorded on
+/// its chain, carried through the gates and values that read it — what lets a
+/// consumer tell the user which condition to look at, rather than only that
+/// some value is untrusted.
+#[test]
+fn an_untrusted_property_reports_the_root_of_its_chain() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <On>true</On>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(On)' == 'true' And '$(Tf)' == 'net10.0'">
+    <Gated>Preview</Gated>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Derived>$(Tf)-x</Derived>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == ''">
+    <FromUndefined>x</FromUndefined>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    let item_gate = crate::UntrustedCause::Unmodelled("'@(NoSuchItem)' == ''".to_string());
+    for name in ["Tf", "Gated", "Derived", "GATED"] {
+        assert_eq!(
+            p.property_untrusted_cause(name),
+            Some(&item_gate),
+            "{name} rests on Tf's unmodelled gate"
+        );
+    }
+    assert_eq!(
+        p.property_untrusted_cause("FromUndefined"),
+        Some(&crate::UntrustedCause::UndefinedProperty {
+            name: "TargetFramework".to_string(),
+            hidden_by: None,
+        })
+    );
+    assert_eq!(p.property_untrusted_cause("On"), None);
+    assert_eq!(p.property_untrusted_cause("NeverWritten"), None);
+}
+
+/// An operand the concrete evaluation short-circuits past is still an operand
+/// the real build may reach. Here both `A` and `B` hold values we refused to
+/// compute (an unmodelled property function), so each is undefined to us and
+/// defined to MSBuild; a decision that takes the unvisited `B` as known
+/// concludes the gate is false and publishes an empty Compile set as certain.
+#[test]
+fn a_short_circuited_inexact_undefined_operand_is_unknown() {
+    let gate = "'$(A)' == '1' And '$(B)' == '1'";
+    let src = format!(
+        r#"<Project>
+  <PropertyGroup>
+    <A>$([System.Math]::Abs(-1))</A>
+    <B>$([System.Math]::Abs(-1))</B>
+  </PropertyGroup>
+  <ItemGroup Condition="{gate}">
+    <Compile Include="A.fs" />
+  </ItemGroup>
+  <PropertyGroup Condition="{gate}">
+    <L>x</L>
+  </PropertyGroup>
+</Project>"#
+    );
+    let p = parse(&src);
+    assert!(
+        p.items_uncertain,
+        "MSBuild includes A.fs; an empty Compile set must not be certain"
+    );
+    assert!(
+        p.property_provenance_untrusted("L"),
+        "MSBuild writes L; its absence must not be certain"
+    );
+}
+
+/// A cause is the one in force when the value was computed. `Tf` is skipped
+/// under gate A, read into `L`, then skipped again under gate B: B comes after
+/// `L` and cannot have affected it, so naming B would send the user to the
+/// wrong condition.
+#[test]
+fn an_untrusted_cause_is_the_one_in_force_at_the_read() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(GateA)' == ''">net10.0</Tf>
+    <L>$(Tf)</L>
+    <Tf Condition="'@(GateB)' == ''">net8.0</Tf>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Tf)' == 'net10.0'">
+    <M>x</M>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(
+        p.property_untrusted_cause("L"),
+        Some(&crate::UntrustedCause::Unmodelled(
+            "'@(GateA)' == ''".to_string()
+        ))
+    );
+    assert_eq!(
+        p.property_untrusted_cause("M"),
+        Some(&crate::UntrustedCause::Unmodelled(
+            "'@(GateB)' == ''".to_string()
+        ))
+    );
+}
+
+mod gate_trust_props {
+    //! The evaluator's gate trust held to `condition::evaluate`: whenever a
+    //! write a generated gate guards comes out trusted, the gate's outcome
+    //! must be the same under every value the real build could give the names
+    //! the walk does not hold exactly. `Tf` is untrusted (written under an
+    //! item-reference gate, so undefined and unpinned), `Ref` is refused
+    //! (undefined to us, defined to MSBuild), `On`/`Off` are trusted, and
+    //! `Nope` is never written (exactly undefined). With `hidden`, an import
+    //! we cannot decide follows `On`/`Off`, so the file we did not see may
+    //! have rewritten them, and they join the names that vary whenever the
+    //! gate also mentions `Tf`.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use proptest::prelude::*;
+
+    use super::parse;
+    use crate::properties::PropertyMap;
+
+    const VALUES: &[&str] = &["", "true", "false", "1", "x", "net10.0"];
+    const NAMES: &[&str] = &["On", "Off", "Tf", "Ref", "Nope"];
+    const UNCERTAIN: &[&str] = &["Tf", "Ref"];
+
+    fn operand() -> impl Strategy<Value = String> {
+        prop_oneof![
+            prop::sample::select(VALUES).prop_map(|v| format!("'{v}'")),
+            prop::sample::select(NAMES).prop_map(|n| format!("'$({n})'")),
+        ]
+    }
+
+    fn leaf() -> impl Strategy<Value = String> {
+        prop_oneof![
+            (
+                operand(),
+                prop::sample::select(&["==", "!="][..]),
+                operand()
+            )
+                .prop_map(|(l, op, r)| format!("{l} {op} {r}")),
+            prop::sample::select(NAMES).prop_map(|n| format!("'$({n})' == ''")),
+        ]
+    }
+
+    fn gate() -> impl Strategy<Value = String> {
+        leaf().prop_recursive(3, 12, 3, |inner| {
+            prop_oneof![
+                inner.clone().prop_map(|c| format!("!({c})")),
+                prop::collection::vec(inner.clone(), 2..4)
+                    .prop_map(|cs| format!("({})", cs.join(" And "))),
+                prop::collection::vec(inner, 2..4).prop_map(|cs| format!("({})", cs.join(" Or "))),
+            ]
+        })
+    }
+
+    static TRUSTED_WITH_UNCERTAIN: AtomicUsize = AtomicUsize::new(0);
+    static CASES: AtomicUsize = AtomicUsize::new(0);
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn a_trusted_write_has_a_gate_no_uncertain_value_moves(
+            gate in gate(),
+            element in any::<bool>(),
+            hidden in any::<bool>(),
+        ) {
+            let guarded = if element {
+                format!(r#"<PropertyGroup><L Condition="{gate}">x</L></PropertyGroup>"#)
+            } else {
+                format!(r#"<PropertyGroup Condition="{gate}"><L>x</L></PropertyGroup>"#)
+            };
+            let hidden_import = if hidden {
+                r#"<ImportGroup Condition="'@(Y)' == ''"><Import Project="Hidden.props" /></ImportGroup>"#
+            } else {
+                ""
+            };
+            let src = format!(
+                r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <Ref>$([System.Math]::Abs(-1))</Ref>
+    <On>true</On>
+    <Off>false</Off>
+  </PropertyGroup>
+  {hidden_import}
+  {guarded}
+</Project>"#
+            );
+            let p = parse(&src);
+            CASES.fetch_add(1, Ordering::Relaxed);
+            // A gate reading only values written before a hidden import is
+            // trusted by a deliberate, measured trade-off (see
+            // `State::walk_opaque`'s consumers); what this holds is that such
+            // a value never settles an operand whose *reference* is untrusted
+            // (`Tf`). A refused operand (`Ref`) short-circuited by one is
+            // outside it: the concrete evaluation never reads it, on `main`
+            // as here.
+            let mentions_untrusted = gate.contains("$(Tf)");
+            let varied: &[&str] = if hidden && mentions_untrusted {
+                &["Tf", "Ref", "On", "Off"]
+            } else {
+                UNCERTAIN
+            };
+            if p.property_provenance_untrusted("L") {
+                return Ok(());
+            }
+            if UNCERTAIN.iter().any(|u| gate.contains(&format!("$({u})"))) {
+                TRUSTED_WITH_UNCERTAIN.fetch_add(1, Ordering::Relaxed);
+            }
+            let mut outcomes = Vec::new();
+            let choices: Vec<Option<&str>> =
+                std::iter::once(None).chain(VALUES.iter().copied().map(Some)).collect();
+            // Every assignment of the varied names, by mixed-radix counting.
+            let combinations = choices.len().pow(varied.len() as u32);
+            for mut code in 0..combinations {
+                let mut props = PropertyMap::new();
+                let mut fixed = vec![("On", Some("true")), ("Off", Some("false"))];
+                for name in varied {
+                    let choice = choices[code % choices.len()];
+                    code /= choices.len();
+                    fixed.retain(|(n, _)| n != name);
+                    fixed.push((name, choice));
+                }
+                for (name, value) in fixed {
+                    if let Some(value) = value {
+                        props.insert(name, value);
+                    }
+                }
+                match crate::condition::evaluate(&gate, &props).outcome {
+                    crate::condition::Outcome::True => outcomes.push(true),
+                    crate::condition::Outcome::False => outcomes.push(false),
+                    crate::condition::Outcome::Unsupported => {}
+                }
+            }
+            outcomes.sort();
+            outcomes.dedup();
+            prop_assert!(
+                outcomes.len() <= 1,
+                "L is trusted, but gate {gate} moves with {varied:?}"
+            );
+        }
+    }
+
+    /// Keeps the property above from passing vacuously: some trusted writes
+    /// must sit behind gates that mention an uncertain name.
+    #[test]
+    fn trusted_writes_behind_uncertain_mentions_are_exercised() {
+        a_trusted_write_has_a_gate_no_uncertain_value_moves();
+        let cases = CASES.load(Ordering::Relaxed);
+        let trusted = TRUSTED_WITH_UNCERTAIN.load(Ordering::Relaxed);
+        assert!(
+            trusted * 20 >= cases,
+            "only {trusted} of {cases} cases had a trusted write behind a gate \
+             mentioning Tf or Ref"
+        );
+    }
+}
+
+/// After an import gate we cannot decide, an unset property may be set by the
+/// file we did not see; the cause of a value resting on it says which gate
+/// that was — the actionable part, since the property itself is not one the
+/// user wrote anywhere (WoofWare/borzoi#499's `EnablePreviewFeatures`).
+#[test]
+fn an_unset_read_after_an_undecided_import_names_what_hid_it() {
+    let src = r#"<Project>
+  <ImportGroup Condition="'@(NoSuchItem)' == ''">
+    <Import Project="Hidden.props" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Unset)' == 'true'">
+    <L>x</L>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(
+        p.property_untrusted_cause("L"),
+        Some(&crate::UntrustedCause::UndefinedProperty {
+            name: "Unset".to_string(),
+            hidden_by: Some(Box::new(crate::UntrustedCause::Unmodelled(
+                "'@(NoSuchItem)' == ''".to_string()
+            ))),
+        })
+    );
+}
+
+/// A gate's cause is the root its reads carried, not one rebuilt from a name:
+/// `A` was computed from an unset `TargetFramework` before `TargetFramework`
+/// met the unmodelled gate, so a gate reading `A` rests on the former.
+#[test]
+fn a_gate_cause_keeps_the_root_its_read_carried() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <A>$(TargetFramework)</A>
+    <TargetFramework Condition="'@(Later)' == ''">net10.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(A)' == ''">
+    <L>x</L>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(
+        p.property_untrusted_cause("L"),
+        Some(&crate::UntrustedCause::UndefinedProperty {
+            name: "TargetFramework".to_string(),
+            hidden_by: None,
+        })
+    );
+}
+
+mod cause_history_props {
+    //! A cause describes what a value rests on when it was computed. So a
+    //! write to `N`, inserted anywhere, cannot change `L`'s cause unless
+    //! something between the insertion and `L`'s last write reads `N`
+    //! directly: a value computed before the insertion holds whatever it read
+    //! then. Generate writes (values reading other names, gates reading other
+    //! names, some gates unmodelled), insert one write to `N` under a fresh
+    //! unmodelled gate where nothing later reads `N`, and require `L`'s cause
+    //! not to move. Review found two ways it did; this is the class.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use proptest::prelude::*;
+
+    use super::parse;
+
+    // Few names, and reads weighted over literals, so chains through an
+    // intermediate (`A = $(TargetFramework)`, then a gate on `$(A)`) are
+    // common rather than one case in thousands. `TargetFramework` is here
+    // because its unset read is never exact (a consumer carve-out), which is
+    // what makes such a chain carry a cause at all.
+    const NAMES: &[&str] = &["A", "TargetFramework", "L"];
+    const OTHERS: &[&str] = &["A", "TargetFramework"];
+
+    fn write() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(NAMES),
+            prop_oneof![
+                1 => Just("v".to_string()),
+                3 => prop::sample::select(NAMES).prop_map(|n| format!("$({n})")),
+            ],
+            prop_oneof![
+                1 => Just(String::new()),
+                1 => (0..2u8).prop_map(|k| format!(r#" Condition="'@(G{k})' == ''""#)),
+                3 => prop::sample::select(NAMES).prop_map(|n| format!(r#" Condition="'$({n})' == ''""#)),
+            ],
+        )
+            .prop_map(|(name, value, gate)| format!("<{name}{gate}>{value}</{name}>"))
+    }
+
+    fn project(writes: &[String]) -> String {
+        format!(
+            "<Project>\n  <PropertyGroup>\n    {}\n  </PropertyGroup>\n</Project>",
+            writes.join("\n    ")
+        )
+    }
+
+    static APPLICABLE_WITH_CAUSE: AtomicUsize = AtomicUsize::new(0);
+    static CASES: AtomicUsize = AtomicUsize::new(0);
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        #[test]
+        fn a_write_nothing_later_reads_does_not_move_a_cause(
+            body in prop::collection::vec(write(), 1..8),
+            at in any::<prop::sample::Index>(),
+            name in prop::sample::select(OTHERS),
+            value in prop_oneof![Just("w"), Just("$(L)")],
+        ) {
+            let at = at.index(body.len() + 1);
+            let Some(last_l) = body.iter().rposition(|w| w.starts_with("<L")) else {
+                return Ok(());
+            };
+            // The insertion lands before `body[at]`, so `body[at..=last_l]` are
+            // the writes between it and `L`'s last write (none when it lands
+            // after).
+            let read = format!("$({name})");
+            if at <= last_l && body[at..=last_l].iter().any(|w| w.contains(&read)) {
+                return Ok(());
+            }
+            CASES.fetch_add(1, Ordering::Relaxed);
+            let inserted = format!(r#"<{name} Condition="'@(Inserted)' == ''">{value}</{name}>"#);
+            let mut changed = body.clone();
+            changed.insert(at, inserted);
+            let before = parse(&project(&body));
+            let after = parse(&project(&changed));
+            if before.property_untrusted_cause("L").is_some() {
+                APPLICABLE_WITH_CAUSE.fetch_add(1, Ordering::Relaxed);
+            }
+            prop_assert_eq!(
+                before.property_untrusted_cause("L"),
+                after.property_untrusted_cause("L"),
+                "body {:?}, inserted at {}: {:?}",
+                body,
+                at,
+                changed[at]
+            );
+        }
+    }
+
+    /// Non-vacuity: among the cases the property applies to, `L` must often
+    /// have a cause to keep.
+    #[test]
+    fn causes_are_exercised() {
+        a_write_nothing_later_reads_does_not_move_a_cause();
+        let cases = CASES.load(Ordering::Relaxed);
+        let with = APPLICABLE_WITH_CAUSE.load(Ordering::Relaxed);
+        assert!(
+            with * 10 >= cases,
+            "only {with} of {cases} applicable cases gave L a cause"
+        );
+    }
+}
+
+/// After an import we could not decide, any value the walk holds may have been
+/// rewritten by the file we did not see — one written before it directly, one
+/// written after it by copying a stale one, and one "rewritten" by a write
+/// that was skipped. None of them may decide a gate *against* an untrusted
+/// operand (`Tf`): MSBuild may hold `Off=true`, and then `Tf` decides.
+#[test]
+fn after_an_undecided_import_no_value_settles_an_untrusted_operand() {
+    let hidden =
+        r#"<ImportGroup Condition="'@(Y)' == ''"><Import Project="Hidden.props" /></ImportGroup>"#;
+    let rows: &[(&str, &str, &str, &str)] = &[
+        ("written-before", "<Off>false</Off>", "", "Off"),
+        (
+            "copied-after",
+            "<Off>false</Off>",
+            "<Copy>$(Off)</Copy>",
+            "Copy",
+        ),
+        (
+            "skipped-rewrite-after",
+            "<Off>false</Off>",
+            "<Off Condition=\"false\">true</Off>",
+            "Off",
+        ),
+        ("written-after", "", "<Off>false</Off>", "Off"),
+    ];
+    for &(tag, before, after, read) in rows {
+        let src = format!(
+            r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(X)' == ''">v</Tf>
+    {before}
+  </PropertyGroup>
+  {hidden}
+  <PropertyGroup>{after}</PropertyGroup>
+  <PropertyGroup Condition="'$({read})' == 'true' And '$(Tf)' == 'v'"><L>x</L></PropertyGroup>
+</Project>"#
+        );
+        assert!(
+            parse(&src).property_provenance_untrusted("L"),
+            "{tag}: $({read}) must not settle the untrusted Tf after the hidden import"
+        );
+    }
+}
+
+/// A value resting on an unknown `DefineConstants`-derived read is not the
+/// `$(DefineConstants)` self-append: the exemption for that idiom is keyed on
+/// the name a value *reads*, and an explanation carried with a root must not
+/// turn an indirect read (`DefineConstants=$(B)`, `B=$(A)`, `A` gated on an
+/// unknown) into one.
+#[test]
+fn an_indirect_define_read_is_not_the_self_append() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <A Condition="'$(DefineConstants)' == '1'">SELECTED</A>
+    <B>$(A)</B>
+    <DefineConstants>$(B)</DefineConstants>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(
+        p.define_constants_uncertain,
+        "a real build may supply DefineConstants=1 and so SELECTED; an empty \
+         define set must not be certain"
+    );
+}

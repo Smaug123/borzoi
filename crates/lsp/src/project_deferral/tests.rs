@@ -707,6 +707,7 @@ fn a_fold_stage_refusal_is_reported_with_its_own_reason() {
         (
             FoldRefusal::LanguageVersionShape {
                 file: PathBuf::from("/w/Straddle.fs"),
+                cause: UntrustedCause::SdkPackageInput,
             },
             "Straddle.fs",
         ),
@@ -989,5 +990,60 @@ fn a_discarded_inner_build_explains_its_fold_decline_too() {
             deferral.capability()
         );
         assert!(causes[0].contains("TreatAsLocalProperty"), "{}", causes[0]);
+    }
+}
+
+/// The version-shape refusal is the one a user is most tempted to answer by
+/// pinning `LangVersion` — which cannot help when what the version rests on is
+/// a later write's gate. So the message names what it rests on, in the words of
+/// each kind of cause (WoofWare/borzoi#499).
+#[test]
+fn a_language_version_refusal_names_what_the_version_rests_on() {
+    let parsed = certain_project();
+    let cases: &[(UntrustedCause, &[&str])] = &[
+        (
+            UntrustedCause::Unmodelled("'@(NoSuchItem)' == ''".to_string()),
+            &["`'@(NoSuchItem)' == ''`", "can't evaluate"],
+        ),
+        (
+            UntrustedCause::UndefinedProperty {
+                name: "TargetFramework".to_string(),
+                hidden_by: None,
+            },
+            &["`$(TargetFramework)`", "undefined"],
+        ),
+        (
+            UntrustedCause::UndefinedProperty {
+                name: "EnablePreviewFeatures".to_string(),
+                hidden_by: Some(Box::new(UntrustedCause::Unmodelled(
+                    "'@(NoSuchItem)' == ''".to_string(),
+                ))),
+            },
+            &[
+                "`$(EnablePreviewFeatures)`",
+                "couldn't see into",
+                "`'@(NoSuchItem)' == ''`",
+            ],
+        ),
+        (
+            UntrustedCause::Unentered("ImportProjectUnresolved".to_string()),
+            &["couldn't read", "ImportProjectUnresolved"],
+        ),
+        (UntrustedCause::SdkPackageInput, &["package"]),
+    ];
+    for (cause, needles) in cases {
+        let refusal = FoldRefusal::LanguageVersionShape {
+            file: PathBuf::from("/w/Straddle.fs"),
+            cause: cause.clone(),
+        };
+        let ds = deferrals(evaluated(&parsed), FoldOutcome::Refused(&refusal));
+        let message =
+            deferral_message(Path::new("/w/Demo.fsproj"), &ds).expect("a fold refusal is reported");
+        for needle in *needles {
+            assert!(
+                message.contains(needle),
+                "{cause:?}: the message must say {needle:?}: {message}"
+            );
+        }
     }
 }

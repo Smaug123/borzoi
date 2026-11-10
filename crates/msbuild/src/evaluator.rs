@@ -72,8 +72,8 @@ use super::imports::normalise;
 use super::properties::escaping::Escaped;
 use super::properties::{self, Issue, PropertyMap};
 use super::trust::{
-    PropertyProvenance, RefusedOutcome, SdkPackagePropertyTaint, TaintOutcome, Trust,
-    UnpinnedOutcome, UnpinnedRoot,
+    OpacityCause, PropertyProvenance, RefusedOutcome, SdkPackagePropertyTaint, TaintOutcome, Trust,
+    UndefinedBecause, UnpinnedOutcome, UnpinnedRoot,
 };
 use super::{
     FrameworkReference, GlobRequest, GlobResolver, GlobalPackageReference, ItemKind,
@@ -1565,7 +1565,15 @@ struct State<'r> {
     /// pass on both sides), which the "so far" reading gives for free;
     /// the item pass runs after the whole property pass, so it correctly
     /// sees the final flag.
-    walk_opaque: bool,
+    ///
+    /// `Some` carries what made it so (the first such construct), which is
+    /// how a user learns why a name that reads as unset might not be.
+    walk_opaque: Option<OpacityCause>,
+    /// The root each root-surfacing diagnostic stood for, by its index in
+    /// `diagnostics`, captured when it was pushed. A diagnostic carries only a
+    /// name, and that name's root may change later in the walk;
+    /// [`Self::unpinned_root_from_recent_diagnostics`] reads these instead.
+    diagnostic_roots: HashMap<usize, UnpinnedRoot>,
 }
 
 #[derive(Debug, Clone)]
@@ -1916,7 +1924,8 @@ impl<'r> State<'r> {
             retained_imported_files: Vec::new(),
             property_trust: HashMap::new(),
             env_property_names,
-            walk_opaque: false,
+            walk_opaque: None,
+            diagnostic_roots: HashMap::new(),
         }
     }
 
@@ -1933,9 +1942,12 @@ impl<'r> State<'r> {
     ///     real build defines *something*);
     ///   * the name is not a toolset-computed initial property.
     fn undefined_read_is_exact(&self, name: &str) -> bool {
-        if self.walk_opaque {
-            return false;
-        }
+        self.walk_opaque.is_none() && self.undefined_read_is_exact_but_for_opacity(name)
+    }
+
+    /// [`Self::undefined_read_is_exact`] without the opacity clause: whether
+    /// `name`'s absence would be a fact had the walk seen every write.
+    fn undefined_read_is_exact_but_for_opacity(&self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         // Consumer-contract carve-outs, not exactness facts. The define
         // machinery treats an undefined `$(DefineConstants)` as "the SDK
@@ -2070,7 +2082,13 @@ impl<'r> State<'r> {
         // nor reliably absent, so no *later* undefined read can claim
         // exactness. Same conclusion an ordinary `<Import>`'s undecided gate
         // reaches, reached at the same point in the walk.
-        self.walk_opaque = true;
+        let cause = match self.trust_of(path_name).unpinned() {
+            Some(root) => OpacityCause::Gate(root.clone()),
+            None => OpacityCause::Unentered(format!(
+                "the Directory.Build import that `$({path_name})` governs"
+            )),
+        };
+        self.latch_walk_opaque(cause);
         // Every captured item facet, not just Compile. Routed through
         // `mark_structural_skip` rather than setting `items_uncertain` by hand:
         // a `Directory.Build.*` file holds `<ProjectReference>` and
@@ -2303,11 +2321,10 @@ impl<'r> State<'r> {
         // A refused write alone does not put a name here: this set describes
         // values a consumer holds and may have wrong, and a refusal means we
         // hold no value at all — see [`Trust::reference_is_untrusted`].
-        let untrusted_properties: std::collections::HashSet<String> = self
+        let untrusted_properties: HashMap<String, crate::UntrustedCause> = self
             .property_trust
             .iter()
-            .filter(|(_, trust)| trust.reference_is_untrusted())
-            .map(|(name, _)| name.clone())
+            .filter_map(|(name, trust)| Some((name.clone(), trust.untrusted_cause()?)))
             .collect();
         let State {
             lookup,
@@ -2384,6 +2401,7 @@ impl<'r> State<'r> {
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
+            diagnostic_roots: _,
         } = self;
         // Central Package Management opt-in: a versionless
         // `<PackageReference Include="X"/>` may receive its effective version
@@ -2579,7 +2597,7 @@ impl<'r> State<'r> {
         // or import, an un-descended Choose. (The Choose case is
         // over-conservative for properties — its branch writes are also
         // enumerated per-name — but a sound over-taint.)
-        self.walk_opaque = true;
+        self.latch_walk_opaque(OpacityCause::Unentered(format!("{kind:?}")));
         self.record_package_reference_uncertainty(
             PackageReferenceUncertaintyCauseKind::Structural(kind),
             span,
@@ -2659,7 +2677,7 @@ impl<'r> State<'r> {
         // the walk — after it, an undefined read could be of a name that
         // hidden content defined (see [`State::walk_opaque`]).
         if is_structural_compile_risk(&kind) {
-            self.walk_opaque = true;
+            self.latch_walk_opaque(OpacityCause::Unentered(format!("{kind:?}")));
         }
         let compile_uncertain = self.compile_context
             || self.import_gate_context
@@ -2869,6 +2887,47 @@ impl<'r> State<'r> {
         self.sdk_package_taint_for_raw(raw).is_some()
     }
 
+    /// The root to record for a value that read `name` while it was
+    /// undefined: "read `name` while undefined", explained by why, taken at
+    /// the read — `name`'s own root when the walk has one (its write was
+    /// skipped under a gate we could not decide, say), else the opacity that
+    /// hides a possible write. Taken now, so a later write to `name` cannot
+    /// rewrite what this value rests on; flattened, so reporting needs no
+    /// chase.
+    fn root_for_undefined_read(&self, name: &str) -> UnpinnedRoot {
+        let because = match self.trust_of(name).unpinned() {
+            Some(own) => Some(own.undefined_because()),
+            // Opacity explains the read only when nothing else would have
+            // made it inexact: a refused or environment name has its own story.
+            None => self
+                .walk_opaque
+                .as_ref()
+                .filter(|_| self.undefined_read_is_exact_but_for_opacity(name))
+                .map(|cause| UndefinedBecause::Opacity(cause.clone())),
+        };
+        UnpinnedRoot::undefined(name, because)
+    }
+
+    /// Latch [`Self::walk_opaque`], keeping the first cause.
+    fn latch_walk_opaque(&mut self, cause: OpacityCause) {
+        if self.walk_opaque.is_none() {
+            self.walk_opaque = Some(cause);
+        }
+    }
+
+    /// Why an undecided import gate makes the walk opaque: the root its
+    /// evaluation just surfaced, else the gate itself.
+    fn gate_opacity_cause(&self, node: Node<'_, '_>, diagnostics_before: usize) -> OpacityCause {
+        OpacityCause::Gate(
+            self.unpinned_root_from_recent_diagnostics(diagnostics_before)
+                .unwrap_or_else(|| {
+                    UnpinnedRoot::UnsupportedCondition(
+                        node.attribute("Condition").unwrap_or_default().to_string(),
+                    )
+                }),
+        )
+    }
+
     /// The root cause behind the first unpinned property `raw` references,
     /// if any (see [`Trust::unpinned`]).
     fn unpinned_root_for_raw(&self, raw: &str) -> Option<UnpinnedRoot> {
@@ -2922,10 +2981,81 @@ impl<'r> State<'r> {
     /// environment) they are genuinely unset, so treating them as empty is
     /// exact — the same commitment the default-fill exemption and the
     /// pinned `'$(NoSuchProp)' == 'on'` reference-mutation cases make.
+    ///
+    /// "Leans on" is about the *outcome*: see [`Self::condition_trust`].
     fn condition_reads_untrusted_value(&self, node: Node<'_, '_>) -> bool {
-        node.attribute("Condition").is_some_and(|cond| {
-            self.unpinned_root_for_raw(cond).is_some() || self.raw_uses_sdk_package_taint(cond)
-        })
+        node.attribute("Condition")
+            .is_some_and(|cond| self.condition_trust(cond, None).reference_is_untrusted())
+    }
+
+    /// The trust a condition's *decision* carries: certain when the values the
+    /// walk holds exactly decide it ([`Self::condition_is_decided_exactly`]),
+    /// else the join of the trusts of every property it mentions.
+    ///
+    /// A condition is a function of the properties it reads, and only the ones
+    /// its outcome depends on can move it. The SDK's
+    /// `'$(EnablePreviewFeatures)' == 'true' And '$(IsNetCoreAppTargetingLatestTFM)' == 'true'`
+    /// is false while `EnablePreviewFeatures` is unset, whatever an untrusted
+    /// `TargetFramework` makes of the other operand — so the `LangVersion`
+    /// write it guards cannot run, and must not be marked as if it might.
+    ///
+    /// `exists_dir` is the directory `Exists('…')` resolves against, `None`
+    /// where the caller evaluated without a filesystem: an `Exists` leaf is
+    /// then outside the grammar, which leaves the decision undecided.
+    fn condition_trust(&self, cond: &str, exists_dir: Option<&Path>) -> Trust {
+        if self.condition_is_decided_exactly(cond, exists_dir, &|name| {
+            self.undefined_read_is_exact(name)
+        }) {
+            Trust::CERTAIN
+        } else {
+            self.trust_for_raw(cond)
+        }
+    }
+
+    /// Whether `cond`'s outcome is fixed by values the walk holds exactly: no
+    /// property it mentions is unknown, or the known ones decide it alone
+    /// ([`condition::decide_without`]).
+    ///
+    /// A name is unknown when its reference is untrusted, or when it is
+    /// undefined to us and `exact_undefined` cannot vouch that it is undefined
+    /// to the real build too. That is judged for **every** name the condition
+    /// mentions, not only the ones a short-circuiting evaluation happened to
+    /// visit: the real build may reach an operand ours skipped.
+    fn condition_is_decided_exactly(
+        &self,
+        cond: &str,
+        exists_dir: Option<&Path>,
+        exact_undefined: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        let unknown = |name: &str| {
+            self.trust_of(name).reference_is_untrusted()
+                || (self.lookup.get(name).is_none() && !exact_undefined(name))
+        };
+        if !properties::property_references(cond).any(&unknown) {
+            return true;
+        }
+        // Once the walk has passed content it could not see, any value it holds
+        // may have been rewritten there. Such a value is trusted when a
+        // condition reads nothing worse (a deliberate trade-off — see
+        // `gate_value_is_exact`), but it cannot be the operand that settles an
+        // unknown one: that would decide a branch the base rule leaves open.
+        // Telling a rewritable value from a current one needs values to carry
+        // their own staleness (`docs/msbuild-value-carried-provenance-plan.md`,
+        // P3); until then, nothing settles an unknown operand after opacity.
+        // Measured on the corpus, this keeps every decline the decision
+        // recovers.
+        if self.walk_opaque.is_some() {
+            return false;
+        }
+        let exists = exists_dir.map(|dir| move |path: &str| condition_exists(path, dir));
+        let exists: Option<&dyn Fn(&str) -> bool> = match (&exists, self.follow_imports) {
+            (Some(exists), true) => Some(exists),
+            _ => None,
+        };
+        matches!(
+            condition::decide_without(cond, &self.lookup, exists, &unknown),
+            condition::Decision::Decided(_)
+        )
     }
 
     /// The [`UnpinnedRoot`] to record for a write gated on a condition the
@@ -2934,23 +3064,43 @@ impl<'r> State<'r> {
     /// `diagnostics[since..]`), preferring an undefined property name over
     /// an unsupported-condition report.
     fn unpinned_root_from_recent_diagnostics(&self, since: usize) -> Option<UnpinnedRoot> {
-        let recent = &self.diagnostics[since..];
-        recent
-            .iter()
-            .find_map(|diagnostic| match &diagnostic.kind {
-                DiagnosticKind::UndefinedProperty { name } => {
-                    Some(UnpinnedRoot::Undefined(name.clone()))
-                }
-                _ => None,
-            })
+        let recent = || self.diagnostics.iter().enumerate().skip(since);
+        let (index, diagnostic) = recent()
+            .find(|(_, d)| matches!(d.kind, DiagnosticKind::UndefinedProperty { .. }))
             .or_else(|| {
-                recent.iter().find_map(|diagnostic| match &diagnostic.kind {
-                    DiagnosticKind::UnsupportedCondition { condition } => {
-                        Some(UnpinnedRoot::UnsupportedCondition(condition.clone()))
-                    }
-                    _ => None,
-                })
-            })
+                recent()
+                    .find(|(_, d)| matches!(d.kind, DiagnosticKind::UnsupportedCondition { .. }))
+            })?;
+        Some(
+            match (self.diagnostic_roots.get(&index), &diagnostic.kind) {
+                (Some(root), _) => root.clone(),
+                // Not pushed as a root: a read made now, so `name`'s current root
+                // is the one in force.
+                (None, DiagnosticKind::UndefinedProperty { name }) => {
+                    self.root_for_undefined_read(name)
+                }
+                (None, DiagnosticKind::UnsupportedCondition { condition }) => {
+                    UnpinnedRoot::UnsupportedCondition(condition.clone())
+                }
+                (None, _) => unreachable!("only the two kinds are selected above"),
+            },
+        )
+    }
+
+    /// Surface `root` as its diagnostic, remembering the root itself.
+    fn push_root(&mut self, root: UnpinnedRoot, span: Range<usize>) {
+        let index = self.diagnostics.len();
+        self.push(root.to_diagnostic(), span);
+        self.diagnostic_roots.insert(index, root);
+    }
+
+    /// Surface a read of `name` while undefined, remembering the root in force
+    /// now.
+    fn push_undefined_read(&mut self, name: String, span: Range<usize>) {
+        let root = self.root_for_undefined_read(&name);
+        let index = self.diagnostics.len();
+        self.push(DiagnosticKind::UndefinedProperty { name }, span);
+        self.diagnostic_roots.insert(index, root);
     }
 
     fn note_package_uncertain_from_sdk_property_taint(&mut self, raw: &str) {
@@ -3034,7 +3184,8 @@ impl<'r> State<'r> {
                     }
                     had_undefined = true;
                     direct_undefined.push(name.clone());
-                    DiagnosticKind::UndefinedProperty { name }
+                    self.push_undefined_read(name, span.clone());
+                    continue;
                 }
                 Issue::Unsupported { expression } => {
                     had_unsupported = true;
@@ -3052,8 +3203,7 @@ impl<'r> State<'r> {
         // direct case.
         let mut unpinned_root = direct_undefined
             .first()
-            .cloned()
-            .map(UnpinnedRoot::Undefined);
+            .map(|name| self.root_for_undefined_read(name));
         let mut surfaced: Vec<UnpinnedRoot> = Vec::new();
         for reference in properties::property_references(raw) {
             let Some(root) = self.trust_of(reference).unpinned().cloned() else {
@@ -3068,7 +3218,7 @@ impl<'r> State<'r> {
                 // hop.
                 continue;
             }
-            if let UnpinnedRoot::Undefined(name) = &root
+            if let Some(name) = root.undefined_name()
                 && direct_undefined
                     .iter()
                     .any(|n| n.eq_ignore_ascii_case(name))
@@ -3076,10 +3226,13 @@ impl<'r> State<'r> {
                 // The same root already surfaced as a direct issue above.
                 continue;
             }
-            if surfaced.contains(&root) {
+            if surfaced
+                .iter()
+                .any(|seen| seen.to_diagnostic() == root.to_diagnostic())
+            {
                 continue;
             }
-            self.push(root.to_diagnostic(), span.clone());
+            self.push_root(root.clone(), span.clone());
             surfaced.push(root);
         }
         Expansion {
@@ -3297,9 +3450,13 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                 // MSBuild's property pass would make it true before items run.
                 state.note_package_uncertain_if_condition_uses_sdk_taint(node);
             }
-            let group_condition_uses_sdk_taint = node
-                .attribute("Condition")
-                .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+            let group_condition_uses_sdk_taint =
+                node.attribute("Condition").is_some_and(|condition| {
+                    state
+                        .condition_trust(condition, Some(current_file_dir))
+                        .sdk_package()
+                        .is_some()
+                });
             let diagnostics_before_condition = state.diagnostics.len();
             let gate = evaluate_property_group_condition(node, current_file_dir, state);
             let group_condition_maybe_wrong = state.diagnostics.len()
@@ -3393,7 +3550,8 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             if state.diagnostics.len() != diagnostics_before_gate
                 || matches!(gate, CondGate::Unsupported)
             {
-                state.walk_opaque = true;
+                let cause = state.gate_opacity_cause(node, diagnostics_before_gate);
+                state.latch_walk_opaque(cause);
             }
             match gate {
                 CondGate::Run => {
@@ -3559,9 +3717,12 @@ fn handle_choose(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
         if cpm_still_possible[index] {
             state.note_package_uncertain_if_condition_uses_sdk_taint(*when);
         }
-        let uses_sdk_taint = when
-            .attribute("Condition")
-            .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+        let uses_sdk_taint = when.attribute("Condition").is_some_and(|condition| {
+            state
+                .condition_trust(condition, Some(current_file_dir))
+                .sdk_package()
+                .is_some()
+        });
         let diagnostics_before = state.diagnostics.len();
         let gate = evaluate_condition(*when, current_file_dir, state);
         let maybe_wrong =
@@ -3845,9 +4006,15 @@ fn walk_property_child_inner(
     state: &mut State<'_>,
 ) {
     let had_prior_sdk_package_taint = state.sdk_package_property_is_tainted(&name);
-    let condition_uses_sdk_taint = node
-        .attribute("Condition")
-        .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+    // Property-element conditions resolve `Exists` against the entry project
+    // (see `evaluate_property_condition`).
+    let entry_dir = state.entry_project_dir.clone();
+    let condition_uses_sdk_taint = node.attribute("Condition").is_some_and(|condition| {
+        state
+            .condition_trust(condition, Some(&entry_dir))
+            .sdk_package()
+            .is_some()
+    });
     let diagnostics_before_condition = state.diagnostics.len();
     let gate = evaluate_property_condition(node, state);
     let own_condition_maybe_wrong = state.diagnostics.len() != diagnostics_before_condition
@@ -4196,6 +4363,9 @@ fn evaluate_condition_with_exemptions(
     } else {
         condition::evaluate(cond, &state.lookup)
     };
+    // The undefined names the evaluation visited, before the exemptions below
+    // vouch for some of them.
+    let visited_undefined = eval.undefined_properties.clone();
     // Two carve-outs from the exemption. `DefineConstants`: the define
     // machinery deliberately does not model the SDK's own define
     // manipulation, so an undefined `$(DefineConstants)` here does NOT
@@ -4236,7 +4406,7 @@ fn evaluate_condition_with_exemptions(
         let Some(root) = state.trust_of(reference).unpinned().cloned() else {
             continue;
         };
-        if let UnpinnedRoot::Undefined(name) = &root
+        if let Some(name) = root.undefined_name()
             && eval
                 .undefined_properties
                 .iter()
@@ -4244,9 +4414,37 @@ fn evaluate_condition_with_exemptions(
         {
             continue;
         }
-        if !unpinned_roots.contains(&root) {
+        if !unpinned_roots
+            .iter()
+            .any(|seen| seen.to_diagnostic() == root.to_diagnostic())
+        {
             unpinned_roots.push(root);
         }
+    }
+    // Neither kind of unknown matters to a condition the values held exactly
+    // decide on their own: no value of the unknowns can move it, so there is
+    // no divergence to report (see `State::condition_trust`).
+    if matches!(
+        eval.outcome,
+        condition::Outcome::True | condition::Outcome::False
+    ) && state.condition_is_decided_exactly(cond, Some(current_file_dir), &|name| {
+        // A visited name is exact exactly when an exemption above removed it;
+        // an unvisited one gets the plain test (the self-default exemption is
+        // only ever granted to a read the evaluation actually made).
+        if visited_undefined
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(name))
+        {
+            !eval
+                .undefined_properties
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(name))
+        } else {
+            state.undefined_read_is_exact(name)
+        }
+    }) {
+        unpinned_roots.clear();
+        eval.undefined_properties.clear();
     }
     // Inside a Compile context this condition decides whether source files
     // compile, and it only resolved by treating unknown properties as "" (or
@@ -4259,7 +4457,7 @@ fn evaluate_condition_with_exemptions(
         let mut unpinned_unsupported = false;
         for root in &unpinned_roots {
             match root {
-                UnpinnedRoot::Undefined(name) => undefined_names.push(name.clone()),
+                UnpinnedRoot::Undefined { name, .. } => undefined_names.push(name.clone()),
                 UnpinnedRoot::UnsupportedCondition(_) => unpinned_unsupported = true,
             }
         }
@@ -4288,10 +4486,10 @@ fn evaluate_condition_with_exemptions(
     // UnsupportedCondition which subsumes the per-property concern.
     // Unpinned roots surface alongside, for the same reason.
     for root in unpinned_roots {
-        state.push(root.to_diagnostic(), node.range());
+        state.push_root(root, node.range());
     }
     for name in eval.undefined_properties {
-        state.push(DiagnosticKind::UndefinedProperty { name }, node.range());
+        state.push_undefined_read(name, node.range());
     }
     match eval.outcome {
         condition::Outcome::True => CondGate::Run,
@@ -4707,9 +4905,11 @@ fn property_child_could_write(child: Node<'_, '_>, state: &State<'_>) -> bool {
     // refuses on.
     eval.undefined_properties
         .retain(|name| !state.undefined_read_is_exact(name));
+    let exists_dir = state.entry_project_dir.clone();
     !(eval.outcome == condition::Outcome::False
-        && eval.undefined_properties.is_empty()
-        && state.unpinned_root_for_raw(cond).is_none())
+        && state.condition_is_decided_exactly(cond, Some(&exists_dir), &|name| {
+            state.undefined_read_is_exact(name)
+        }))
 }
 
 /// Mark every unprotected, possibly-writing child of a maybe-run/maybe-skipped
@@ -4901,7 +5101,8 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     // writes the real build skips. Either way no later undefined read
     // can claim exactness.
     if state.diagnostics.len() != diagnostics_before_gate || matches!(gate, CondGate::Unsupported) {
-        state.walk_opaque = true;
+        let cause = state.gate_opacity_cause(node, diagnostics_before_gate);
+        state.latch_walk_opaque(cause);
     }
     match gate {
         CondGate::Run => {}
@@ -5155,7 +5356,10 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // `*.props*` for `Project="*.props%2a"`) and define
                 // properties. Latch opacity so a later undefined read of such
                 // a name is not wrongly classified exact (C.2b).
-                state.walk_opaque = true;
+                state.latch_walk_opaque(OpacityCause::Unentered(format!(
+                    "the wildcard import `{}`",
+                    segment.as_escaped()
+                )));
                 continue;
             }
             follow_wildcard_import(&normalised, current_file_dir, node.range(), state);

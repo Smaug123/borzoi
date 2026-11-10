@@ -2375,12 +2375,10 @@ fn evaluate_item_condition_silent(node: Node<'_, '_>, state: &State<'_>) -> (Con
     } else {
         condition::evaluate(cond, &state.lookup)
     };
-    let tainted = eval
-        .undefined_properties
-        .iter()
-        .any(|name| !state.undefined_read_is_exact(name))
-        || eval.outcome == condition::Outcome::Unsupported
-        || state.unpinned_root_for_raw(cond).is_some();
+    let tainted = eval.outcome == condition::Outcome::Unsupported
+        || !state.condition_is_decided_exactly(cond, Some(&state.entry_project_dir), &|name| {
+            state.undefined_read_is_exact(name)
+        });
     let gate = match eval.outcome {
         condition::Outcome::True => CondGate::Run,
         condition::Outcome::False => CondGate::Skip,
@@ -2394,9 +2392,12 @@ fn evaluate_item_condition_silent_with_sdk_taint(
     state: &State<'_>,
 ) -> (CondGate, bool) {
     let (gate, condition_tainted) = evaluate_item_condition_silent(node, state);
-    let sdk_tainted = node
-        .attribute("Condition")
-        .is_some_and(|condition| state.raw_uses_sdk_package_taint(condition));
+    let sdk_tainted = node.attribute("Condition").is_some_and(|condition| {
+        state
+            .condition_trust(condition, None)
+            .sdk_package()
+            .is_some()
+    });
     (gate, condition_tainted || sdk_tainted)
 }
 
@@ -2419,7 +2420,7 @@ fn expand_silent(raw: &str, state: &State<'_>) -> Expansion {
                 }
                 had_undefined = true;
                 if unpinned_root.is_none() {
-                    unpinned_root = Some(UnpinnedRoot::Undefined(name));
+                    unpinned_root = Some(state.root_for_undefined_read(&name));
                 }
             }
             Issue::Unsupported { .. } => had_unsupported = true,

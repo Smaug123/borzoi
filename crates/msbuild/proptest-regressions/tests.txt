@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 723d10771b1049c6b02882c59f52f34c95ad1444086ea1706607db9f71a854ec # shrinks to refs = [("a", None)]
+cc 7033e3c0981b21073f9635e79e4f93de9190dab00ac5ffab0b6a251b5b3ceb54 # shrinks to gate = "(('$(Tf)' == '' Or 'true' != '$(Ref)') Or '$(Tf)' == '')", element = false
+cc ad66e5d5c8d22f49c5ffaf72218385c627f941a994025e7fa0dbe7dc783bed73 # shrinks to gate = "!((('$(On)' == 'false' Or '$(Tf)' == '') Or 'true' != '$(Ref)'))", element = false
