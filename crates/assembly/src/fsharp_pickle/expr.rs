@@ -34,10 +34,10 @@
 //! corrupting the stream: `Expr.Match` (tag 9) and `Expr.Obj` (tag 10) — which
 //! pull in the decision-tree / object-expression sub-decoders
 //! (`u_dtree`/`u_target`, `u_method`/`u_intf`); the `u_op` operators that
-//! carry a record-field ref / `LValueOp` / `ILCall` / byte blob / anon-record
-//! info (tags 4/5/17/18/22/25/26/31/32); the payload-bearing `u_ILInstr`
-//! opcodes (only the no-argument arithmetic/bitwise set is ported); and the
-//! `u_trait_sln` arms needing `u_rfref`/`u_anonInfo` (arms 4/5). The
+//! carry a record-field ref / `LValueOp` / `ILCall` / byte blob (tags
+//! 4/5/17/18/22/25/26); the payload-bearing `u_ILInstr` opcodes (only the
+//! no-argument arithmetic/bitwise set is ported); and the `u_trait_sln` arm
+//! needing `u_rfref` (arm 4). The
 //! `u_lazy`-framed `u_modul_typ` length check
 //! ([`MalformedPickleLazyFrame`](crate::ImportError::MalformedPickleLazyFrame))
 //! is the backstop catching any drift a new arm introduces inside a module
@@ -50,7 +50,7 @@ use crate::fsharp_pickle::consts::read_const;
 use crate::fsharp_pickle::model::PickledExpr;
 use crate::fsharp_pickle::osgn::PhaseOneState;
 use crate::fsharp_pickle::typar::read_tyar_specs;
-use crate::fsharp_pickle::types::{read_tcref, read_ty, read_tys, read_ucref};
+use crate::fsharp_pickle::types::{read_anon_info, read_tcref, read_ty, read_tys, read_ucref};
 use crate::fsharp_pickle::val::read_val;
 use crate::fsharp_pickle::vrefs::read_vref;
 
@@ -272,9 +272,9 @@ enum OpKind {
 /// `Array`/`Coerce` discriminator.
 ///
 /// The operators that carry a record-field ref (`ValFieldGet/Set/Addr` —
-/// tags 4/5/25), an `LValueOp` (17), an `ILCall` (18), a byte/uint16 blob
-/// (22/26), or anon-record info (31/32) are not yet ported: none has been
-/// observed in attribute-argument position, so they stay loud-on-unknown.
+/// tags 4/5/25), an `LValueOp` (17), an `ILCall` (18), or a byte/uint16 blob
+/// (22/26) are not yet ported: none has been observed in attribute-argument
+/// position, so they stay loud-on-unknown.
 fn read_op(state: &mut PhaseOneState<'_>) -> Result<OpKind, ImportError> {
     let tag = state.reader.read_byte("u_op tag")?;
     Ok(match tag {
@@ -334,6 +334,17 @@ fn read_op(state: &mut PhaseOneState<'_>) -> Result<OpKind, ImportError> {
                     tag: dir,
                 });
             }
+            OpKind::Other
+        }
+        // AnonRecd — `u_anonInfo`.
+        31 => {
+            read_anon_info(state)?;
+            OpKind::Other
+        }
+        // AnonRecdGet — `u_anonInfo` + `u_int`.
+        32 => {
+            read_anon_info(state)?;
+            state.reader.read_uint32("u_op anon-record field index")?;
             OpKind::Other
         }
         other => {
@@ -835,5 +846,26 @@ mod tests {
         assert_eq!(e, PickledExpr::Other { tag: 4 });
         assert!(s.ivals.get(0).is_ok(), "lambda val stamp 0 must be linked");
         assert!(s.reader.is_eof());
+    }
+
+    /// `TOp.AnonRecd` (31) and `TOp.AnonRecdGet` (32) declare their
+    /// anon-record info, and 32 then reads its field index.
+    #[test]
+    fn anon_record_ops_consume_their_info() {
+        let strings = vec!["f.fs".to_string(), "A".to_string()];
+        // slot 0, ccu 0, not struct, one ident: name 1, range file 0 (1,0)-(1,1).
+        let info = [0u8, 0, 0, 1, 1, 0, 1, 0, 1, 1];
+        let mut bytes = vec![31];
+        bytes.extend(info);
+        bytes.push(32);
+        bytes.extend(info);
+        bytes.push(0); // AnonRecdGet field index
+        let mut s = make_state(&bytes, &strings);
+        s.ianoninfos = crate::fsharp_pickle::osgn::OsgnTable::new("anoninfos", 1);
+        s.ccu_refs_len = 1;
+        assert!(matches!(read_op(&mut s).unwrap(), OpKind::Other));
+        assert!(matches!(read_op(&mut s).unwrap(), OpKind::Other));
+        assert!(s.reader.is_eof());
+        assert_eq!(s.ianoninfos.get(0).unwrap().sorted_ids[0].name, "A");
     }
 }

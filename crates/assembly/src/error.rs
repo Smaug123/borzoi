@@ -119,7 +119,7 @@ pub enum ImportError {
 
     /// An OSGN slot was never linked (`u_osgn_decl` never fired for the
     /// index). After phase-1 walk completion, every pre-allocated slot
-    /// in `itycons` / `itypars` / `ivals` must have been populated; the
+    /// in `itycons` / `itypars` / `ivals` / `ianoninfos` must have been populated; the
     /// first unfilled slot raises this. Matches FCS's
     /// `check` (`TypedTreePickle.fs:1026-1031`).
     OsgnSlotNotLinked { kind: &'static str, index: u32 },

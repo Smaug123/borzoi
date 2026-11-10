@@ -956,8 +956,13 @@ pub enum Lang {
 /// `(project file, source file, project XML)` for a generated source. Mirrors
 /// the fixture projects' shape (same TFM, deterministic, no PDB) so a
 /// generated build behaves exactly like a pinned fixture. `docs` asks the
-/// compiler for its documentation file, `Generated.xml` beside the DLL.
-fn generated_project(lang: Lang, docs: bool) -> (&'static str, &'static str, String) {
+/// compiler for its documentation file, `Generated.xml` beside the DLL;
+/// `other_flags` is passed to the compiler.
+fn generated_project(
+    lang: Lang,
+    docs: bool,
+    other_flags: &str,
+) -> (&'static str, &'static str, String) {
     let (proj, source, items) = match lang {
         Lang::FSharp => (
             "Generated.fsproj",
@@ -966,6 +971,13 @@ fn generated_project(lang: Lang, docs: bool) -> (&'static str, &'static str, Str
         ),
         // The C# SDK globs `*.cs`; listing the file again is a duplicate-item error.
         Lang::CSharp => ("Generated.csproj", "Library.cs", ""),
+    };
+    // Appended to the SDK's own flags, and absent when there are none, so a
+    // flagless project is exactly the fixtures' shape.
+    let other_flags = if other_flags.is_empty() {
+        String::new()
+    } else {
+        format!("\n    <OtherFlags>$(OtherFlags) {other_flags}</OtherFlags>")
     };
     let xml = format!(
         r#"<Project Sdk="Microsoft.NET.Sdk">
@@ -976,7 +988,7 @@ fn generated_project(lang: Lang, docs: bool) -> (&'static str, &'static str, Str
     <Deterministic>true</Deterministic>
     <GenerateDocumentationFile>{docs}</GenerateDocumentationFile>
     <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
+    <DebugSymbols>false</DebugSymbols>{other_flags}
   </PropertyGroup>
   {items}
 </Project>
@@ -992,19 +1004,31 @@ fn generated_project(lang: Lang, docs: bool) -> (&'static str, &'static str, Str
 /// the (theoretical) collision the stored source differs and we rebuild over
 /// the top, so a collision costs time, not correctness.
 pub fn compile_generated(lang: Lang, source: &str) -> Result<PathBuf, String> {
-    compile_generated_inner(lang, source, false)
+    compile_generated_inner(lang, source, false, "")
+}
+
+/// [`compile_generated`] for F# without signature data
+/// (`--nointerfacedata`): no F# resources and no
+/// `FSharpInterfaceDataVersionAttribute`, so FCS imports it through IL.
+pub fn compile_generated_without_interface_data(source: &str) -> Result<PathBuf, String> {
+    compile_generated_inner(Lang::FSharp, source, false, "--nointerfacedata")
 }
 
 /// [`compile_generated`], with the compiler's documentation file written
 /// beside the DLL (the DLL's path with an `.xml` extension).
 pub fn compile_generated_documented(lang: Lang, source: &str) -> Result<PathBuf, String> {
-    compile_generated_inner(lang, source, true)
+    compile_generated_inner(lang, source, true, "")
 }
 
-fn compile_generated_inner(lang: Lang, source: &str, docs: bool) -> Result<PathBuf, String> {
+fn compile_generated_inner(
+    lang: Lang,
+    source: &str,
+    docs: bool,
+    other_flags: &str,
+) -> Result<PathBuf, String> {
     use std::hash::{DefaultHasher, Hash, Hasher};
 
-    let (proj, file, xml) = generated_project(lang, docs);
+    let (proj, file, xml) = generated_project(lang, docs, other_flags);
     let mut hasher = DefaultHasher::new();
     xml.hash(&mut hasher);
     source.hash(&mut hasher);

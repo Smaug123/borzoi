@@ -9,7 +9,7 @@
 /// Top-level result of `unpickle_signature`.
 ///
 /// Phase 6b4 walks the phase-1 body inline; the result includes the
-/// dense OSGN tables (`tycons`, `typars`, `vals`), the root entity
+/// dense OSGN tables (`tycons`, `typars`, `vals`, `anoninfos`), the root entity
 /// stamp, the CCU's mangled name, the `usesQuotations` flag, and the
 /// original phase-2 header (kept for caller-side string-table lookup).
 #[derive(Debug, Clone, PartialEq)]
@@ -28,7 +28,7 @@ pub struct PickledCcu {
     pub tables: PickledOsgnTables,
 }
 
-/// The three OSGN stamp tables emitted by phase-1 decode, dense and
+/// The four OSGN stamp tables emitted by phase-1 decode, dense and
 /// finalised. Produced by `PhaseOneState::finalize` after every slot
 /// has been linked.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +36,25 @@ pub struct PickledOsgnTables {
     pub tycons: Vec<PickledEntity>,
     pub typars: Vec<PickledTyparSpecData>,
     pub vals: Vec<PickledVal>,
+    /// The anonymous record types the signature mentions, indexed by
+    /// [`PickledType::Anon::info`]. Sized by [`PickledHeader::nanoninfos`].
+    pub anoninfos: Vec<PickledAnonInfo>,
+}
+
+/// One anonymous record type: FCS's `AnonRecdTypeInfo`, as
+/// `u_anonInfo_data` (`TypedTreePickle.fs:2170-2172`) reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickledAnonInfo {
+    /// The CCU whose assembly declares the generated
+    /// `<>f__AnonymousType…` class, as an index into
+    /// [`PickledHeader::ccu_refs`].
+    pub ccu: u32,
+    /// `struct {| … |}` rather than `{| … |}`.
+    pub is_struct: bool,
+    /// The field names, in the order `AnonRecdTypeInfo.Create` sorts them
+    /// (ordinal on the name). A [`PickledType::Anon`]'s `args` are the
+    /// field types in this order.
+    pub sorted_ids: Vec<PickledIdent>,
 }
 
 /// The phase-2 metadata block.
@@ -100,8 +119,7 @@ pub struct PickledNleRef {
 /// pickled signature. Mirrors `u_ty` (`TypedTreePickle.fs:2497-2579`)
 /// with cross-references kept as raw header-table indices.
 ///
-/// Phase 6b4 decodes every variant except `Anon` (tag 9, deferred —
-/// no MiniLibFs fixture exercises it yet):
+/// Every `u_ty` tag decodes:
 ///
 /// - `Tuple` / `Forall` map to tag 0, 5, 8 (tag 8 is struct-tuple);
 ///   `Forall` carries the osgn-decl indices populated by
@@ -111,6 +129,7 @@ pub struct PickledNleRef {
 ///   value when the B stream is absent.
 /// - `Measure` wraps a `Measure` expression.
 /// - `UCase` references a union case constructor.
+/// - `Anon` is an anonymous record type (tag 9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickledType {
     /// `TType_tuple` — tag 0 (reference) or tag 8 (struct).
@@ -158,6 +177,10 @@ pub enum PickledType {
         typars: Vec<u32>,
         body: Box<PickledType>,
     },
+    /// `TType_anon(anonInfo, tys)` — tag 9. `info` indexes
+    /// [`PickledOsgnTables::anoninfos`]; `args` are the field types, one per
+    /// [`PickledAnonInfo::sorted_ids`] entry and in that order.
+    Anon { info: u32, args: Vec<PickledType> },
 }
 
 /// Whether a `TType_tuple` is a reference tuple (`a * b`) or a struct

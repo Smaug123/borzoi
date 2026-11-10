@@ -838,6 +838,20 @@ let rec private ilTypeRefName (td: FSharpEntity) : string =
 let private isRealByref (t: FSharpType) : bool =
     t.HasTypeDefinition && t.TypeDefinition.IsByRef && t.GenericArguments.Count = 1
 
+/// The head of an anonymous record type's compiled form. fsc emits each
+/// anonymous record as a class (a struct for `struct {| … |}`) named by FCS's
+/// `AnonRecdTypeInfo.ILTypeRef`: top-level in the global namespace of the
+/// assembly that declares it, generic over the field types in sorted-name
+/// order, which are the `FSharpType`'s `GenericArguments`.
+let private anonRecordHead (t: FSharpType) =
+    let details = t.AnonRecordTypeDetails
+    if details.EnclosingCompiledTypeNames.Length <> 0 then
+        failwithf
+            "fcs-dump entities: anonymous record %s compiles nested in %A"
+            details.CompiledName
+            details.EnclosingCompiledTypeNames
+    stripAritySuffix details.CompiledName
+
 /// Render an [`FSharpType`] to the stable string shape used by both sides of
 /// the assembly-reader diff (see `crates/assembly/src/test_support.rs`):
 ///
@@ -918,6 +932,16 @@ let rec private renderTypeWith
             |> Seq.map (renderTypeWith headName typeTypars methodTypars)
             |> String.concat ", "
         sprintf "%s<%s>" name rendered
+    elif t.IsAnonRecordType then
+        // Structural in FCS, like a tuple; rendered as its compiled class.
+        let head = anonRecordHead t
+        if t.GenericArguments.Count = 0 then
+            head
+        else
+            t.GenericArguments
+            |> Seq.map (renderTypeWith headName typeTypars methodTypars)
+            |> String.concat ", "
+            |> sprintf "%s<%s>" head
     elif t.HasTypeDefinition then
         let td = t.TypeDefinition
         if td.IsArrayType then
@@ -1188,6 +1212,17 @@ and private walkFcsType
                 |> Seq.map (walkFcsType true typeTypars methodTypars)
                 |> String.concat ", "
             sprintf "%s<%s>" name rendered
+        elif t.IsAnonRecordType then
+            // Its compiled class, as in `renderTypeInScope`; the field types
+            // are generic arguments, so inner positions.
+            let head = anonRecordHead t
+            if t.GenericArguments.Count = 0 then
+                head
+            else
+                t.GenericArguments
+                |> Seq.map (walkFcsType true typeTypars methodTypars)
+                |> String.concat ", "
+                |> sprintf "%s<%s>" head
         elif t.HasTypeDefinition then
             let td = t.TypeDefinition
             if td.IsArrayType then
@@ -3664,14 +3699,17 @@ let private entityKindString (e: FSharpEntity) =
         else (String.concat " " parts) + " "
     prefix + baseKind
 
-/// FQN as the Rust normaliser computes it: `Namespace.DisplayName` (or
-/// just `DisplayName` if the entity has no enclosing namespace, which is
+/// FQN as the Rust normaliser computes it: `Namespace.DisplayNameCore` (or
+/// just `DisplayNameCore` if the entity has no enclosing namespace, which is
 /// the case for nested types — those are emitted inside their parent's
 /// `NestedTypes`, where the diff harness doesn't look at the inner FQN).
+/// The core name is the name itself, which the Rust side reads; `DisplayName`
+/// wraps one that is not an identifier (`<>f__AnonymousType…`) in double
+/// backticks.
 let private entityFqn (e: FSharpEntity) =
     match e.Namespace with
-    | Some ns when ns <> "" -> sprintf "%s.%s" ns e.DisplayName
-    | _ -> e.DisplayName
+    | Some ns when ns <> "" -> sprintf "%s.%s" ns e.DisplayNameCore
+    | _ -> e.DisplayNameCore
 
 /// FCS exposes property accessors, event add/remove handlers, and the
 /// property/event symbol itself through `MembersFunctionsAndValues`.
