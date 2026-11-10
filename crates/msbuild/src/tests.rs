@@ -10068,3 +10068,132 @@ fn an_unset_read_after_an_undecided_import_names_what_hid_it() {
         })
     );
 }
+
+/// A gate's cause is the root its reads carried, not one rebuilt from a name:
+/// `A` was computed from an unset `TargetFramework` before `TargetFramework`
+/// met the unmodelled gate, so a gate reading `A` rests on the former.
+#[test]
+fn a_gate_cause_keeps_the_root_its_read_carried() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <A>$(TargetFramework)</A>
+    <TargetFramework Condition="'@(Later)' == ''">net10.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(A)' == ''">
+    <L>x</L>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(
+        p.property_untrusted_cause("L"),
+        Some(&crate::UntrustedCause::UndefinedProperty {
+            name: "TargetFramework".to_string(),
+            hidden_by: None,
+        })
+    );
+}
+
+mod cause_history_props {
+    //! A cause describes what a value rests on when it was computed. So a
+    //! write to `N`, inserted anywhere, cannot change `L`'s cause unless
+    //! something between the insertion and `L`'s last write reads `N`
+    //! directly: a value computed before the insertion holds whatever it read
+    //! then. Generate writes (values reading other names, gates reading other
+    //! names, some gates unmodelled), insert one write to `N` under a fresh
+    //! unmodelled gate where nothing later reads `N`, and require `L`'s cause
+    //! not to move. Review found two ways it did; this is the class.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use proptest::prelude::*;
+
+    use super::parse;
+
+    // Few names, and reads weighted over literals, so chains through an
+    // intermediate (`A = $(TargetFramework)`, then a gate on `$(A)`) are
+    // common rather than one case in thousands. `TargetFramework` is here
+    // because its unset read is never exact (a consumer carve-out), which is
+    // what makes such a chain carry a cause at all.
+    const NAMES: &[&str] = &["A", "TargetFramework", "L"];
+    const OTHERS: &[&str] = &["A", "TargetFramework"];
+
+    fn write() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(NAMES),
+            prop_oneof![
+                1 => Just("v".to_string()),
+                3 => prop::sample::select(NAMES).prop_map(|n| format!("$({n})")),
+            ],
+            prop_oneof![
+                1 => Just(String::new()),
+                1 => (0..2u8).prop_map(|k| format!(r#" Condition="'@(G{k})' == ''""#)),
+                3 => prop::sample::select(NAMES).prop_map(|n| format!(r#" Condition="'$({n})' == ''""#)),
+            ],
+        )
+            .prop_map(|(name, value, gate)| format!("<{name}{gate}>{value}</{name}>"))
+    }
+
+    fn project(writes: &[String]) -> String {
+        format!(
+            "<Project>\n  <PropertyGroup>\n    {}\n  </PropertyGroup>\n</Project>",
+            writes.join("\n    ")
+        )
+    }
+
+    static APPLICABLE_WITH_CAUSE: AtomicUsize = AtomicUsize::new(0);
+    static CASES: AtomicUsize = AtomicUsize::new(0);
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        #[test]
+        fn a_write_nothing_later_reads_does_not_move_a_cause(
+            body in prop::collection::vec(write(), 1..8),
+            at in any::<prop::sample::Index>(),
+            name in prop::sample::select(OTHERS),
+            value in prop_oneof![Just("w"), Just("$(L)")],
+        ) {
+            let at = at.index(body.len() + 1);
+            let Some(last_l) = body.iter().rposition(|w| w.starts_with("<L")) else {
+                return Ok(());
+            };
+            // The insertion lands before `body[at]`, so `body[at..=last_l]` are
+            // the writes between it and `L`'s last write (none when it lands
+            // after).
+            let read = format!("$({name})");
+            if at <= last_l && body[at..=last_l].iter().any(|w| w.contains(&read)) {
+                return Ok(());
+            }
+            CASES.fetch_add(1, Ordering::Relaxed);
+            let inserted = format!(r#"<{name} Condition="'@(Inserted)' == ''">{value}</{name}>"#);
+            let mut changed = body.clone();
+            changed.insert(at, inserted);
+            let before = parse(&project(&body));
+            let after = parse(&project(&changed));
+            if before.property_untrusted_cause("L").is_some() {
+                APPLICABLE_WITH_CAUSE.fetch_add(1, Ordering::Relaxed);
+            }
+            prop_assert_eq!(
+                before.property_untrusted_cause("L"),
+                after.property_untrusted_cause("L"),
+                "body {:?}, inserted at {}: {:?}",
+                body,
+                at,
+                changed[at]
+            );
+        }
+    }
+
+    /// Non-vacuity: among the cases the property applies to, `L` must often
+    /// have a cause to keep.
+    #[test]
+    fn causes_are_exercised() {
+        a_write_nothing_later_reads_does_not_move_a_cause();
+        let cases = CASES.load(Ordering::Relaxed);
+        let with = APPLICABLE_WITH_CAUSE.load(Ordering::Relaxed);
+        assert!(
+            with * 10 >= cases,
+            "only {with} of {cases} applicable cases gave L a cause"
+        );
+    }
+}

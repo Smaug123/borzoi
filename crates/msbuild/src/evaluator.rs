@@ -1569,6 +1569,11 @@ struct State<'r> {
     /// `Some` carries what made it so (the first such construct), which is
     /// how a user learns why a name that reads as unset might not be.
     walk_opaque: Option<OpacityCause>,
+    /// The root each root-surfacing diagnostic stood for, by its index in
+    /// `diagnostics`, captured when it was pushed. A diagnostic carries only a
+    /// name, and that name's root may change later in the walk;
+    /// [`Self::unpinned_root_from_recent_diagnostics`] reads these instead.
+    diagnostic_roots: HashMap<usize, UnpinnedRoot>,
 }
 
 #[derive(Debug, Clone)]
@@ -1920,6 +1925,7 @@ impl<'r> State<'r> {
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: None,
+            diagnostic_roots: HashMap::new(),
         }
     }
 
@@ -2395,6 +2401,7 @@ impl<'r> State<'r> {
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
+            diagnostic_roots: _,
         } = self;
         // Central Package Management opt-in: a versionless
         // `<PackageReference Include="X"/>` may receive its effective version
@@ -3042,23 +3049,43 @@ impl<'r> State<'r> {
     /// `diagnostics[since..]`), preferring an undefined property name over
     /// an unsupported-condition report.
     fn unpinned_root_from_recent_diagnostics(&self, since: usize) -> Option<UnpinnedRoot> {
-        let recent = &self.diagnostics[since..];
-        recent
-            .iter()
-            .find_map(|diagnostic| match &diagnostic.kind {
-                DiagnosticKind::UndefinedProperty { name } => {
-                    Some(self.root_for_undefined_read(name))
-                }
-                _ => None,
-            })
+        let recent = || self.diagnostics.iter().enumerate().skip(since);
+        let (index, diagnostic) = recent()
+            .find(|(_, d)| matches!(d.kind, DiagnosticKind::UndefinedProperty { .. }))
             .or_else(|| {
-                recent.iter().find_map(|diagnostic| match &diagnostic.kind {
-                    DiagnosticKind::UnsupportedCondition { condition } => {
-                        Some(UnpinnedRoot::UnsupportedCondition(condition.clone()))
-                    }
-                    _ => None,
-                })
-            })
+                recent()
+                    .find(|(_, d)| matches!(d.kind, DiagnosticKind::UnsupportedCondition { .. }))
+            })?;
+        Some(
+            match (self.diagnostic_roots.get(&index), &diagnostic.kind) {
+                (Some(root), _) => root.clone(),
+                // Not pushed as a root: a read made now, so `name`'s current root
+                // is the one in force.
+                (None, DiagnosticKind::UndefinedProperty { name }) => {
+                    self.root_for_undefined_read(name)
+                }
+                (None, DiagnosticKind::UnsupportedCondition { condition }) => {
+                    UnpinnedRoot::UnsupportedCondition(condition.clone())
+                }
+                (None, _) => unreachable!("only the two kinds are selected above"),
+            },
+        )
+    }
+
+    /// Surface `root` as its diagnostic, remembering the root itself.
+    fn push_root(&mut self, root: UnpinnedRoot, span: Range<usize>) {
+        let index = self.diagnostics.len();
+        self.push(root.to_diagnostic(), span);
+        self.diagnostic_roots.insert(index, root);
+    }
+
+    /// Surface a read of `name` while undefined, remembering the root in force
+    /// now.
+    fn push_undefined_read(&mut self, name: String, span: Range<usize>) {
+        let root = self.root_for_undefined_read(&name);
+        let index = self.diagnostics.len();
+        self.push(DiagnosticKind::UndefinedProperty { name }, span);
+        self.diagnostic_roots.insert(index, root);
     }
 
     fn note_package_uncertain_from_sdk_property_taint(&mut self, raw: &str) {
@@ -3142,7 +3169,8 @@ impl<'r> State<'r> {
                     }
                     had_undefined = true;
                     direct_undefined.push(name.clone());
-                    DiagnosticKind::UndefinedProperty { name }
+                    self.push_undefined_read(name, span.clone());
+                    continue;
                 }
                 Issue::Unsupported { expression } => {
                     had_unsupported = true;
@@ -3186,7 +3214,7 @@ impl<'r> State<'r> {
             if surfaced.contains(&root) {
                 continue;
             }
-            self.push(root.to_diagnostic(), span.clone());
+            self.push_root(root.clone(), span.clone());
             surfaced.push(root);
         }
         Expansion {
@@ -4437,10 +4465,10 @@ fn evaluate_condition_with_exemptions(
     // UnsupportedCondition which subsumes the per-property concern.
     // Unpinned roots surface alongside, for the same reason.
     for root in unpinned_roots {
-        state.push(root.to_diagnostic(), node.range());
+        state.push_root(root, node.range());
     }
     for name in eval.undefined_properties {
-        state.push(DiagnosticKind::UndefinedProperty { name }, node.range());
+        state.push_undefined_read(name, node.range());
     }
     match eval.outcome {
         condition::Outcome::True => CondGate::Run,
