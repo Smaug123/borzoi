@@ -22,6 +22,20 @@ use super::state::{
     ShorteningPrefix, TierCandidate, TieredResolution,
 };
 
+/// How a dotted value path's search through the project modules its prefix
+/// names ended ([`Resolver::qualified_value_through_modules`]).
+enum ModuleSearch {
+    /// A module it reached has the name: what that reads as.
+    Member(QualifiedMember),
+    /// It stopped at a reading it cannot go past, so no lower-ranked module
+    /// may bind the path: not the as-written path's earlier-file export
+    /// either. The readings outside the module search (a type's member, an
+    /// assembly's) still may.
+    Stopped,
+    /// Every module it reached certainly lacks the name, or it reached none.
+    Exhausted,
+}
+
 /// The part of a qualified case path after its head — `B….Color.Red` of
 /// `Alpha.B….Color.Red` — as the same-file candidate walk reads it
 /// ([`Resolver::classify_module_qualified_residual`]).
@@ -930,6 +944,18 @@ impl<'a> Resolver<'a> {
             || self.nested_module_exports.iter().any(|p| p == mp)
             || self.preceding.is_exact_project_module(mp)
             || self.preceding.is_exact_nested_module(mp)
+    }
+
+    /// Whether `mp` is exactly a project module a module search sees: a
+    /// header or a real nested `module X = …`, this file's or an earlier
+    /// one's. Narrower than [`Self::is_project_module_path`], whose
+    /// cross-file half is the name-shadow set that types, exceptions, module
+    /// abbreviations and `extern`s share.
+    pub(super) fn is_real_project_module(&self, mp: &[String]) -> bool {
+        self.module_paths.iter().any(|p| p == mp)
+            || self.real_nested_module_exports.iter().any(|p| p == mp)
+            || self.preceding.is_exact_project_module(mp)
+            || self.preceding.is_real_nested_module(mp)
     }
 
     /// Whether `np` is a declared project **namespace** path — same file
@@ -2150,12 +2176,38 @@ impl<'a> Resolver<'a> {
     /// `Target.Sub`. A qualified path *through* an alias's container (`open
     /// N.Alias`) does not see the alias (FCS FS0039), so it falls to the ordinary
     /// tiers and stays conservative.
+    ///
+    /// FCS holds every module of a short name, latest first, and an alias to
+    /// one names them all, so a target the tiers reach more than one real
+    /// project module through ([`Self::is_real_project_module`]) is not one
+    /// module: `None`.
     pub(super) fn resolved_project_module(
         &self,
         written: &[String],
         rooted: bool,
     ) -> Option<Vec<String>> {
-        let (head, rest) = written.split_first()?;
+        let readings = self.project_module_readings(written, rooted);
+        let first = readings
+            .iter()
+            .find(|full| self.is_project_module_path(full))?;
+        let mut modules = readings
+            .iter()
+            .filter(|full| self.is_real_project_module(full));
+        let unique = modules
+            .next()
+            .is_none_or(|one| modules.all(|full| full == one));
+        unique.then(|| first.clone())
+    }
+
+    /// Every full path `written` may name, highest priority first, by the
+    /// tiers [`Self::resolved_project_module`] lists: a module alias as the
+    /// bare head alone, where there is one; else every shortening base, then
+    /// the path as written. Not filtered to what is declared there.
+    fn project_module_readings(&self, written: &[String], rooted: bool) -> Vec<Vec<String>> {
+        let Some((head, rest)) = written.split_first() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
         if !rooted {
             // Tier 0 — a lexically in-scope module abbreviation as the bare head:
             // rewrite `Alias[.rest]` to `Target[.rest]` (the alias is not a
@@ -2163,7 +2215,7 @@ impl<'a> Resolver<'a> {
             if let Some(target) = self.lexical_alias_target(head) {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                return self.is_project_module_path(&full).then_some(full);
+                return vec![full];
             }
             // Tiers 1 and 2 — explicit opens (namespace + chained module) and
             // the enclosing namespace/module nesting, one position-ranked list
@@ -2177,18 +2229,76 @@ impl<'a> Resolver<'a> {
                         Some(full)
                     }
                 };
-                if let Some(full) = full
-                    && self.is_project_module_path(&full)
-                {
-                    return Some(full);
-                }
+                out.extend(full);
             }
         }
         // Tier 3 — the path as written (root / fully-qualified).
-        if self.is_project_module_path(written) {
-            return Some(written.to_vec());
+        out.push(written.to_vec());
+        out
+    }
+
+    /// What `prefix.value` reads as through the project modules `prefix`
+    /// names ([`ModuleSearch`]).
+    ///
+    /// FCS searches every module the short name holds, highest priority
+    /// first, and binds the first that has the name
+    /// (`ResolveExprLongIdentInModuleOrNamespace` over each), so a user
+    /// `module List` beside FSharp.Core's leaves `List.map` reachable. The
+    /// walk goes past a project module only where it certainly declares
+    /// nothing named `value` ([`Self::module_certainly_lacks`]). It stops at
+    /// one that may declare it without a value the walk reads there (a type,
+    /// a nested module, a value this site cannot access), and at an assembly
+    /// reading after a module it went past, which it cannot rank against the
+    /// project's. A type, exception or alias at a reading is not a module
+    /// the search sees ([`Self::is_real_project_module`]): the readings
+    /// outside it rank types below every module. A module whose own name is
+    /// not in scope where it is used —
+    /// the current container or an ancestor (FCS FS0039 for `M.x` inside
+    /// `M`) — is not one FCS searches.
+    fn qualified_value_through_modules(
+        &self,
+        prefix: &[String],
+        rooted: bool,
+        value: &str,
+    ) -> ModuleSearch {
+        let mut passed = false;
+        for full in self.project_module_readings(prefix, rooted) {
+            if !self.is_real_project_module(&full) {
+                if passed && self.assemblies_reach(&full) {
+                    return ModuleSearch::Stopped;
+                }
+                continue;
+            }
+            let head_len = full.len() - prefix.len() + 1;
+            if self.container_path.starts_with(&full[..head_len]) {
+                continue;
+            }
+            match self.qualified_value_in(&full, value) {
+                QualifiedMember::Absent if self.module_certainly_lacks(&full, value) => {
+                    passed = true;
+                }
+                QualifiedMember::Absent => return ModuleSearch::Stopped,
+                found => return ModuleSearch::Member(found),
+            }
         }
-        None
+        ModuleSearch::Exhausted
+    }
+
+    /// Whether project module `module` certainly declares nothing named
+    /// `name`, of any kind and accessibility, in any file or referenced
+    /// assembly, and hides no value the walk cannot list.
+    fn module_certainly_lacks(&self, module: &[String], name: &str) -> bool {
+        let mut full = module.to_vec();
+        full.push(name.to_string());
+        !self.module_has_hidden_values(module)
+            && self.member_declarations(&full).count == 0
+            // A module, type, exception, alias or `extern` of the name, or a
+            // namespace a deeper header implies.
+            && !self.is_project_module_path(&full)
+            && !self.is_project_namespace_path(&full)
+            && !self.preceding.binds_along_path(&full)
+            && !self.preceding.declares_member_at(&full)
+            && !self.assemblies_reach(&full)
     }
 
     /// The handle of the **ordinary value** (not a case constructor) exported at
@@ -3882,6 +3992,9 @@ impl<'a> Resolver<'a> {
                 segments.iter().map(|t| id_text(t).to_string()).collect();
             let sig_screened = self.sig_screens_reading_of(&written_path);
 
+            // Whether the module search below stopped at a reading it cannot
+            // go past ([`ModuleSearch::Stopped`]).
+            let mut module_search_stopped = false;
             if let Some((value_seg, prefix_segs)) = segments.split_last() {
                 let mut prefix: Vec<String> =
                     prefix_segs.iter().map(|t| id_text(t).to_string()).collect();
@@ -3889,37 +4002,24 @@ impl<'a> Resolver<'a> {
                 if rooted {
                     prefix.remove(0);
                 }
-                if !sig_screened
+                // An `open type T` / `open <assembly type>` whose nested types we
+                // do not model could supply the head (`open type T; M.value` where
+                // `T` has a nested type `M`), shadowing the project-module
+                // shortening — the same reason the assembly path defers under
+                // `unmodelled_open_active`. So an *unrooted* prefix defers while
+                // one is in scope; a `global.`-rooted prefix is absolute (no open
+                // can redirect it), so it is unaffected.
+                let search = if !sig_screened
                     && !prefix.is_empty()
-                    // An `open type T` / `open <assembly type>` whose nested types we
-                    // do not model could supply the head (`open type T; M.value` where
-                    // `T` has a nested type `M`), shadowing the project-module
-                    // shortening — the same reason the assembly path defers under
-                    // `unmodelled_open_active`. So an *unrooted* prefix defers while
-                    // one is in scope; a `global.`-rooted prefix is absolute (no open
-                    // can redirect it), so it is unaffected.
                     && (rooted || !self.unmodelled_open_active)
-                    && let Some(module_path) = self.resolved_project_module(&prefix, rooted)
-                    // A module's own simple name is not in scope within itself or a
-                    // nested module (FCS FS0039 for `M.x` inside `M`, `Outer.v`
-                    // inside `Outer.Inner`, *and* `Outer.Inner.y` inside `Outer` —
-                    // using the own name as the head to reach a descendant): the
-                    // name becomes referenceable only from a *sibling* (or below).
-                    // The constraint is on the **head** segment, which
-                    // `resolved_project_module` lands at `module_path[..head_len]`
-                    // (the resolved prefix minus the tail segments written after the
-                    // head). Reject when that head landing is the current container
-                    // or an ancestor of it. A sibling/descendant head is not such a
-                    // prefix, so `Inner.y` (head `Inner`) and `Sib.x` (head a
-                    // sibling) still resolve. This also closes the non-`rec` timing
-                    // the eager `self.items` push would otherwise expose: qualifying
-                    // a current-group binding needs the current module's own name as
-                    // the head, now rejected.
-                    && let head_len = module_path.len() - prefix.len() + 1
-                    && !self.container_path.starts_with(&module_path[..head_len])
-                    && let found @ (QualifiedMember::Bound(_) | QualifiedMember::Declined) =
-                        self.qualified_value_in(&module_path, &id_text(value_seg))
                 {
+                    // Every project module the prefix names, in FCS's order.
+                    self.qualified_value_through_modules(&prefix, rooted, &id_text(value_seg))
+                } else {
+                    ModuleSearch::Exhausted
+                };
+                module_search_stopped = matches!(search, ModuleSearch::Stopped);
+                if let ModuleSearch::Member(found) = search {
                     let whole =
                         TextRange::new(first.text_range().start(), value_seg.text_range().end());
                     match found {
@@ -3956,6 +4056,7 @@ impl<'a> Resolver<'a> {
             // it can be handled when the parser supports `global` as an expr atom.)
             if let Some(last) = rest.last()
                 && !sig_screened
+                && !module_search_stopped
                 && let found @ (QualifiedMember::Bound(_) | QualifiedMember::Declined) =
                     self.earlier_file_qualified_member(&written_path)
             {
@@ -7019,11 +7120,7 @@ impl<'a> Resolver<'a> {
             //   they must not contest), and `extern`s (a value cannot own the
             //   residual: member access on it commits and errors, probe M9's
             //   principle — no legal contest exists).
-            if self.module_paths.iter().any(|p| p == &path)
-                || self.real_nested_module_exports.iter().any(|p| p == &path)
-                || self.preceding.is_exact_project_module(&path)
-                || self.preceding.is_real_nested_module(&path)
-            {
+            if self.is_real_project_module(&path) {
                 return true;
             }
         }

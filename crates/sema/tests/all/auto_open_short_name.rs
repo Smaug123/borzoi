@@ -118,24 +118,47 @@ fn grade_with(
         })
         .collect();
     let proj = resolve_project(&impls, env);
+    // A dotted use's resolution is recorded at its last segment or over the
+    // whole path, by channel; a commitment at either is an answer.
     let segment = at + probe.rfind('.').map_or(0, |i| i + 1);
-    let span = TextRange::new(
-        u32::try_from(segment).unwrap().into(),
-        u32::try_from(end).unwrap().into(),
-    );
-    let res = proj.file(last).resolution_at(span);
-    let ours = match res {
-        None | Some(Resolution::Deferred(_)) => Ok(None),
-        Some(res) => proj
-            .item_def(res)
-            .or_else(|| proj.file(last).resolved_def(res).map(|d| (last, d)))
-            .map(|(file, def)| Some((file, usize::from(def.range.start()))))
-            .ok_or_else(|| format!("{res:?}")),
+    let span = |start: usize| {
+        TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(end).unwrap().into(),
+        )
+    };
+    let mut spans = vec![span(segment)];
+    if segment != at {
+        spans.push(span(at));
+    }
+    let committed: Vec<Resolution> = spans
+        .iter()
+        .filter_map(|&s| proj.file(last).resolution_at(s))
+        .filter(|res| !matches!(res, Resolution::Deferred(_)))
+        .collect();
+    let raw: Vec<String> = spans
+        .iter()
+        .map(|&s| format!("{s:?}: {:?}", proj.file(last).resolution_at(s)))
+        .collect();
+    let target = |res: &Resolution| {
+        proj.item_def(*res)
+            .or_else(|| proj.file(last).resolved_def(*res).map(|d| (last, d)))
+            .map(|(file, def)| (file, usize::from(def.range.start())))
+            .ok_or_else(|| format!("{res:?}"))
+    };
+    let ours = match committed.as_slice() {
+        [] => Ok(None),
+        [res] => target(res).map(Some),
+        [a, b] => match (target(a), target(b)) {
+            (Ok(x), Ok(y)) if x == y => Ok(Some(x)),
+            _ => Err(format!("two answers: {a:?} and {b:?}")),
+        },
+        _ => unreachable!("at most two spans"),
     };
     Graded {
         fcs,
         ours,
-        raw: format!("{res:?}"),
+        raw: raw.join("; "),
     }
 }
 
@@ -473,6 +496,27 @@ fn a_dotted_head_through_a_short_name_is_never_wrong() {
             want: "Nn = 2",
             must_commit: false,
         },
+        // The control: the grader sees a dotted commitment.
+        Case {
+            label: "dotted_control_local",
+            files: &["module Demo\n\nmodule Child =\n    let Nn = 2\n\nlet probe = Child.Nn\n"],
+            probe: "Child.Nn",
+            want_file: 0,
+            want: "Nn = 2",
+            must_commit: true,
+        },
+        Case {
+            label: "short_dotted_fold_lacks_member",
+            files: &[
+                "module Child\n\nlet Nn = 99\n",
+                "module Demo\n\nmodule Child =\n    let Nn = 2\n\n[<AutoOpen>]\nmodule A =\n    \
+                      module Child =\n        let other = 1\n\nlet probe = Child.Nn\n",
+            ],
+            probe: "Child.Nn",
+            want_file: 1,
+            want: "Nn = 2",
+            must_commit: false,
+        },
         Case {
             label: "short_dotted_namespace",
             files: &[
@@ -724,5 +768,109 @@ fn every_contest_for_a_short_name_agrees_with_fcs() {
         &manifest,
         "BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all \
          auto_open_short_name::every_contest_for_a_short_name_agrees_with_fcs",
+    );
+}
+
+/// A dotted value path through a short name that holds more than one module:
+/// FCS searches every module the name holds, highest priority first, and
+/// binds the first that has the value, so a higher-ranked module that lacks
+/// it leaves the path to the next. Generated over what ranks the higher
+/// module, what it declares of the name, where the lower module lives, and
+/// whether the path goes through a module alias, and graded against FCS:
+/// never a target FCS does not bind, and, where the higher module declares
+/// nothing of the name and the path is written directly, FCS's target. (An
+/// `open` of a project module leaves every dotted head it could supply to
+/// the conservative `dotted_opacity` gate, so the `open` cells may decline.
+/// The `type` cells rank an opened namespace's type `Child` highest, which
+/// no module search sees.)
+#[test]
+fn a_dotted_value_searches_every_module_of_its_short_name() {
+    // What puts the higher-ranked `Child` above the lower ones.
+    // `type`: an opened namespace's type `Child`, which no module search
+    // sees, so its body is irrelevant.
+    let shadow_text = |shadow: &str, body: &str| match shadow {
+        "fold" => format!("[<AutoOpen>]\nmodule A =\n    module Child =\n        {body}\n\n"),
+        "open" => format!("module H =\n    module Child =\n        {body}\n\nopen H\n\n"),
+        _ => "open LibNs\n\n".to_string(),
+    };
+    let type_file = "namespace LibNs\n\ntype Child() =\n    static member Other = 0\n";
+    // What the higher-ranked `Child` declares; `lacks` is whether that is
+    // nothing named `Nn`.
+    let bodies = [
+        ("other", "let other = 1", true),
+        ("value", "let Nn = 1", false),
+        ("private", "let private Nn = 1", false),
+        ("type", "type Nn() = class end", false),
+        ("module", "module Nn =\n            let x = 1", false),
+    ];
+    // Where the lower-ranked `Child`s are: this file's, before the shadow,
+    // and an earlier file's root module.
+    let lowers = [
+        ("local", true, false),
+        ("root", false, true),
+        ("both", true, true),
+    ];
+    // How the path is written.
+    let accesses = [
+        ("direct", "let probe = Child.Nn\n", "Child.Nn"),
+        ("alias", "module M = Child\n\nlet probe = M.Nn\n", "M.Nn"),
+    ];
+    let mut failures = Vec::new();
+    let mut census: std::collections::BTreeMap<&str, usize> = Default::default();
+    for shadow in ["fold", "open", "type"] {
+        for (body_tag, body, lacks) in bodies {
+            if shadow == "type" && body_tag != "other" {
+                continue;
+            }
+            for (lower, local, root) in lowers {
+                for (access, use_text, probe) in accesses {
+                    let label = format!("dotted_search_{shadow}_{body_tag}_{lower}_{access}");
+                    let mut last = String::from("module Demo\n\n");
+                    if local {
+                        last.push_str("module Child =\n    let Nn = 2\n\n");
+                    }
+                    last.push_str(&shadow_text(shadow, body));
+                    last.push_str(use_text);
+                    let root_file = "module Child\n\nlet Nn = 99\n";
+                    let mut files: Vec<&str> = Vec::new();
+                    if root {
+                        files.push(root_file);
+                    }
+                    if shadow == "type" {
+                        files.push(type_file);
+                    }
+                    files.push(&last);
+                    let graded = grade(&label, &files, probe);
+                    let verdict = match (&graded.fcs, &graded.ours) {
+                        (_, Ok(None)) => "declined",
+                        (Ok(fcs), Ok(Some(ours))) if fcs == ours => "agreed",
+                        _ => "WRONG",
+                    };
+                    *census.entry(verdict).or_default() += 1;
+                    if verdict == "WRONG" {
+                        failures.push(format!(
+                            "{label}: FCS {:?} | ours {:?} ({})",
+                            graded.fcs, graded.ours, graded.raw
+                        ));
+                    } else if verdict == "declined"
+                        && lacks
+                        && shadow != "open"
+                        && access == "direct"
+                        && graded.fcs.is_ok()
+                    {
+                        failures.push(format!(
+                            "{label}: we decline where FCS binds {:?} ({})",
+                            graded.fcs, graded.raw
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("dotted short-name search census: {census:?}");
+    assert!(
+        failures.is_empty(),
+        "dotted short-name search:\n{}",
+        failures.join("\n")
     );
 }
