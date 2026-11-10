@@ -1574,17 +1574,6 @@ struct State<'r> {
     /// name, and that name's root may change later in the walk;
     /// [`Self::unpinned_root_from_recent_diagnostics`] reads these instead.
     diagnostic_roots: HashMap<usize, UnpinnedRoot>,
-    /// A clock over property writes and hidden constructs, so "written after
-    /// the last construct whose content we could not see" is decidable: each
-    /// name's last write ([`Self::last_write_at`]) against
-    /// [`Self::last_hidden_at`].
-    clock: u64,
-    /// When each property (lowercased) was last written, on [`Self::clock`].
-    last_write_at: HashMap<String, u64>,
-    /// When the walk last passed content it could not see, on
-    /// [`Self::clock`]. Unlike [`Self::walk_opaque`]'s cause, this moves on
-    /// every such construct.
-    last_hidden_at: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1937,9 +1926,6 @@ impl<'r> State<'r> {
             env_property_names,
             walk_opaque: None,
             diagnostic_roots: HashMap::new(),
-            clock: 0,
-            last_write_at: HashMap::new(),
-            last_hidden_at: None,
         }
     }
 
@@ -2416,9 +2402,6 @@ impl<'r> State<'r> {
             env_property_names: _,
             walk_opaque: _,
             diagnostic_roots: _,
-            clock: _,
-            last_write_at: _,
-            last_hidden_at: _,
         } = self;
         // Central Package Management opt-in: a versionless
         // `<PackageReference Include="X"/>` may receive its effective version
@@ -2886,8 +2869,6 @@ impl<'r> State<'r> {
             origin: self.current_origin(),
         });
         let lower = name.to_ascii_lowercase();
-        self.clock += 1;
-        self.last_write_at.insert(lower.clone(), self.clock);
         let trust = self
             .property_trust
             .remove(&lower)
@@ -2927,24 +2908,9 @@ impl<'r> State<'r> {
 
     /// Latch [`Self::walk_opaque`], keeping the first cause.
     fn latch_walk_opaque(&mut self, cause: OpacityCause) {
-        self.clock += 1;
-        self.last_hidden_at = Some(self.clock);
         if self.walk_opaque.is_none() {
             self.walk_opaque = Some(cause);
         }
-    }
-
-    /// Whether content the walk could not see came after `name`'s last write,
-    /// and so may have rewritten it. A protected name cannot be rewritten.
-    fn may_be_rewritten_unseen(&self, name: &str) -> bool {
-        let lower = name.to_ascii_lowercase();
-        self.last_hidden_at.is_some_and(|hidden| {
-            !self.protected.contains(&lower)
-                && self
-                    .last_write_at
-                    .get(&lower)
-                    .is_none_or(|written| *written < hidden)
-        })
     }
 
     /// Why an undecided import gate makes the walk opaque: the root its
@@ -3066,12 +3032,19 @@ impl<'r> State<'r> {
         if !properties::property_references(cond).any(&unknown) {
             return true;
         }
-        // A value that hidden content may have rewritten is trusted when a
+        // Once the walk has passed content it could not see, any value it holds
+        // may have been rewritten there. Such a value is trusted when a
         // condition reads nothing worse (a deliberate trade-off — see
-        // `undefined_read_is_exact`'s neighbour `gate_value_is_exact`), but it
-        // cannot be the operand that settles an unknown one: there the
-        // trade-off would decide a branch the base rule leaves open.
-        let unknown = |name: &str| unknown(name) || self.may_be_rewritten_unseen(name);
+        // `gate_value_is_exact`), but it cannot be the operand that settles an
+        // unknown one: that would decide a branch the base rule leaves open.
+        // Telling a rewritable value from a current one needs values to carry
+        // their own staleness (`docs/msbuild-value-carried-provenance-plan.md`,
+        // P3); until then, nothing settles an unknown operand after opacity.
+        // Measured on the corpus, this keeps every decline the decision
+        // recovers.
+        if self.walk_opaque.is_some() {
+            return false;
+        }
         let exists = exists_dir.map(|dir| move |path: &str| condition_exists(path, dir));
         let exists: Option<&dyn Fn(&str) -> bool> = match (&exists, self.follow_imports) {
             (Some(exists), true) => Some(exists),

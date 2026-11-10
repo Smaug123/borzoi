@@ -10228,46 +10228,46 @@ mod cause_history_props {
     }
 }
 
-/// After an import we could not decide, a value written before it may have
-/// been overwritten by the file we did not see. Such a value must not decide
-/// a gate *against* an untrusted operand: `Off` reads false, but the hidden
-/// file may set it true, and then `Tf` decides. Written after the import, it
-/// is current and may.
+/// After an import we could not decide, any value the walk holds may have been
+/// rewritten by the file we did not see — one written before it directly, one
+/// written after it by copying a stale one, and one "rewritten" by a write
+/// that was skipped. None of them may decide a gate *against* an untrusted
+/// operand (`Tf`): MSBuild may hold `Off=true`, and then `Tf` decides.
 #[test]
-fn a_value_an_undecided_import_may_have_overwritten_decides_nothing() {
-    let gate = "'$(Off)' == 'true' And '$(Tf)' == 'v'";
-    let before = format!(
-        r#"<Project>
+fn after_an_undecided_import_no_value_settles_an_untrusted_operand() {
+    let hidden =
+        r#"<ImportGroup Condition="'@(Y)' == ''"><Import Project="Hidden.props" /></ImportGroup>"#;
+    let rows: &[(&str, &str, &str, &str)] = &[
+        ("written-before", "<Off>false</Off>", "", "Off"),
+        (
+            "copied-after",
+            "<Off>false</Off>",
+            "<Copy>$(Off)</Copy>",
+            "Copy",
+        ),
+        (
+            "skipped-rewrite-after",
+            "<Off>false</Off>",
+            "<Off Condition=\"false\">true</Off>",
+            "Off",
+        ),
+        ("written-after", "", "<Off>false</Off>", "Off"),
+    ];
+    for &(tag, before, after, read) in rows {
+        let src = format!(
+            r#"<Project>
   <PropertyGroup>
-    <Off>false</Off>
     <Tf Condition="'@(X)' == ''">v</Tf>
+    {before}
   </PropertyGroup>
-  <ImportGroup Condition="'@(Y)' == ''">
-    <Import Project="Hidden.props" />
-  </ImportGroup>
-  <PropertyGroup Condition="{gate}"><L>x</L></PropertyGroup>
+  {hidden}
+  <PropertyGroup>{after}</PropertyGroup>
+  <PropertyGroup Condition="'$({read})' == 'true' And '$(Tf)' == 'v'"><L>x</L></PropertyGroup>
 </Project>"#
-    );
-    assert!(
-        parse(&before).property_provenance_untrusted("L"),
-        "Off may have been overwritten by the hidden import"
-    );
-    let after = format!(
-        r#"<Project>
-  <PropertyGroup>
-    <Tf Condition="'@(X)' == ''">v</Tf>
-  </PropertyGroup>
-  <ImportGroup Condition="'@(Y)' == ''">
-    <Import Project="Hidden.props" />
-  </ImportGroup>
-  <PropertyGroup>
-    <Off>false</Off>
-  </PropertyGroup>
-  <PropertyGroup Condition="{gate}"><L>x</L></PropertyGroup>
-</Project>"#
-    );
-    assert!(
-        !parse(&after).property_provenance_untrusted("L"),
-        "Off was written after the hidden import, so it decides the gate"
-    );
+        );
+        assert!(
+            parse(&src).property_provenance_untrusted("L"),
+            "{tag}: $({read}) must not settle the untrusted Tf after the hidden import"
+        );
+    }
 }

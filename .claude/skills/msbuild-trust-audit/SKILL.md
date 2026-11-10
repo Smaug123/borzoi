@@ -89,8 +89,12 @@ A condition is judged by what its **outcome depends on**, not by what it
 mentions: `State::condition_trust` / `condition_is_decided_exactly` run
 `condition::decide_without` (three-valued, leaf-wise), so
 `'$(Off)' == 'true' And '$(Untrusted)' == 'x'` is exactly false when `Off` is
-trusted. An *undefined* operand counts as trusted only while its read is exact,
-which an earlier undecided import or `<ImportGroup>` ends (`walk_opaque`): on a
+trusted — but only while the walk has hidden nothing (`walk_opaque` is
+`None`). After an undecided import, any held value may have been rewritten
+unseen (directly, by a copy of a stale value, ...), and telling a current one
+from a rewritable one needs per-value staleness (provenance plan P3); until
+then nothing settles an unknown operand there. Codex took four rounds to walk
+that boundary, so don't reopen it with a clock or a per-name timestamp. On a
 real SDK an untrusted `TargetFramework` therefore still taints `LangVersion`. Ask a
 condition's trust through those, never through `trust_for_raw` /
 `unpinned_root_for_raw` on its text — that reintroduces the over-taint
