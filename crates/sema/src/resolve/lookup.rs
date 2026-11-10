@@ -1479,13 +1479,17 @@ impl<'a> Resolver<'a> {
     }
 
     /// Run `fold` and return what it wrote into the module frame, with the
-    /// generation barriers it raised ([`RecordedFold`]). A fold only ever
-    /// appends to the module frame and bumps the generation, so the appended
-    /// entries and the generation's growth are all of it that a replay needs.
+    /// generation barriers it raised and the short names it entered
+    /// ([`RecordedFold`]). A fold only ever appends to the module frame and
+    /// the shortening prefixes and bumps the generation, so the appended
+    /// entries and prefixes and the generation's growth are all of it that a
+    /// replay needs.
     fn record_fold(&mut self, fold: impl FnOnce(&mut Self)) -> RecordedFold {
         let generation = self.open_generation;
         let len = self.module_frame().len();
+        let prefixes = self.open_shortening_prefixes.len();
         fold(self);
+        let prefixes = self.open_shortening_prefixes[prefixes..].to_vec();
         let entries = self.module_frame().entries()[len..]
             .iter()
             .map(|entry| {
@@ -1499,6 +1503,7 @@ impl<'a> Resolver<'a> {
         RecordedFold {
             entries,
             barriers: self.open_generation - generation,
+            prefixes,
         }
     }
 
@@ -1517,6 +1522,11 @@ impl<'a> Resolver<'a> {
     /// / `module Client = let x = 2; open N; let y = x` binds `Client.x` when
     /// `A` is in the current block, and `A.x` when it is in an earlier file.
     ///
+    /// The modules the fold entered under their short names are entered again
+    /// at `open_pos` too, so an earlier fragment's child outranks a module the
+    /// block declared since: `[<AutoOpen>] module B = module X …` / `module
+    /// Client = open N; X.v` binds the earlier file's `A.X.v`.
+    ///
     /// The fold is replayed rather than recomputed because recomputing it here
     /// would read the current block's declarations too, which the walk has
     /// recorded by now. One part of it reads the scope rather than the
@@ -1527,7 +1537,11 @@ impl<'a> Resolver<'a> {
     pub(super) fn replay_own_namespace_fold(&mut self, open_pos: u32) {
         let namespace = self.enclosing_namespace().to_vec();
         self.push_signatured_slot_marks(&namespace, open_pos);
-        let RecordedFold { entries, barriers } = self.own_namespace_fold.clone();
+        let RecordedFold {
+            entries,
+            barriers,
+            prefixes,
+        } = self.own_namespace_fold.clone();
         let generation = self.open_generation;
         let replayed: Vec<ScopeEntry> = entries
             .into_iter()
@@ -1539,6 +1553,11 @@ impl<'a> Resolver<'a> {
             .collect();
         self.module_frame().extend(replayed);
         self.open_generation = generation + barriers;
+        self.open_shortening_prefixes
+            .extend(prefixes.into_iter().map(|prefix| ShorteningPrefix {
+                pos: open_pos,
+                ..prefix
+            }));
     }
 
     /// The walk state an `open` can perturb, captured before it so

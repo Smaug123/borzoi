@@ -605,77 +605,21 @@ fn must_commit(graded: &[Graded]) -> Vec<&str> {
         .collect()
 }
 
-/// A dotted head `X.v` the walk resolves by tier rather than by position:
-/// every `open`'s prefix outranks every lexical module, where FCS keeps one
-/// latest-first table (#462 ranks prefixes by position). So a local `module
-/// X` declared after an `open` supplying `X` loses to it, and so does one
-/// declared before an `open` of the enclosing namespace whose current-block
-/// `X` that `open` does not re-add, FCS registering the block's fragment only
-/// when it ends. The `implicit` and `unrelated` rows show it is not the
-/// re-open's doing.
-const OPEN_PREFIX_RANKING: &[&str] = &[
-    "nsModule/blockOpen/implicit/currentBlock/module/dotted",
-    "nsModule/local/ancestor/currentBlock/module/dotted",
-    "nsModule/local/explicit/currentBlock/module/dotted",
-    "nsModule/local/explicitBefore/currentBlock/module/dotted",
-    "nsModule/local/explicitBefore/earlierBlock/module/dotted",
-    "nsModule/local/explicitBefore/earlierFile/module/dotted",
-    "nsModule/local/explicitBefore/earlierFile/nested/dotted",
-    "nsModule/local/global/currentBlock/module/dotted",
-    "nsModule/local/unrelatedBefore/earlierFile/module/dotted",
-    "nsModule/local/unrelatedBefore/earlierFile/nested/dotted",
-];
-
-/// A dotted head `X.v` whose module an `[<AutoOpen>]` module's child `X`
-/// supplies by its short name: FCS enters the child as `X` wherever the
-/// `[<AutoOpen>]` module is folded, and the walk enters it nowhere (#462
-/// enters it). So the sibling `[<AutoOpen>] module B = module X` does not
-/// shadow the namespace's own `X`, and an `open` folding `A`'s child `X`
-/// does not shadow a local `module X`, or another `open`'s, before it.
-/// Neither is about re-opening the enclosing namespace: the `implicit` and
-/// `unrelated` rows have it too.
-const AUTO_OPEN_CHILD_MODULE: &[&str] = &[
-    "aoModule/blockOpen/ancestor/currentBlock/module/dotted",
-    "aoModule/blockOpen/ancestor/earlierBlock/module/dotted",
-    "aoModule/blockOpen/ancestor/earlierFile/module/dotted",
-    "aoModule/blockOpen/ancestor/earlierFile/nested/dotted",
-    "aoModule/blockOpen/explicit/currentBlock/module/dotted",
-    "aoModule/blockOpen/explicit/earlierBlock/module/dotted",
-    "aoModule/blockOpen/explicit/earlierFile/module/dotted",
-    "aoModule/blockOpen/explicit/earlierFile/nested/dotted",
-    "aoModule/blockOpen/explicitBefore/currentBlock/module/dotted",
-    "aoModule/blockOpen/explicitBefore/earlierBlock/module/dotted",
-    "aoModule/blockOpen/explicitBefore/earlierFile/module/dotted",
-    "aoModule/blockOpen/explicitBefore/earlierFile/nested/dotted",
-    "aoModule/blockOpen/global/currentBlock/module/dotted",
-    "aoModule/blockOpen/global/earlierBlock/module/dotted",
-    "aoModule/blockOpen/global/earlierFile/module/dotted",
-    "aoModule/blockOpen/global/earlierFile/nested/dotted",
-    "aoModule/blockOpen/implicit/currentBlock/module/dotted",
-    "aoModule/blockOpen/unrelated/earlierFile/module/dotted",
-    "aoModule/blockOpen/unrelated/earlierFile/nested/dotted",
-    "aoModule/blockOpen/unrelatedBefore/earlierFile/module/dotted",
-    "aoModule/blockOpen/unrelatedBefore/earlierFile/nested/dotted",
-    "aoModule/local/ancestor/earlierBlock/module/dotted",
-    "aoModule/local/ancestor/earlierFile/module/dotted",
-    "aoModule/local/ancestor/earlierFile/nested/dotted",
-    "aoModule/local/explicit/earlierBlock/module/dotted",
-    "aoModule/local/explicit/earlierFile/header/dotted",
-    "aoModule/local/explicit/earlierFile/module/dotted",
-    "aoModule/local/explicit/earlierFile/nested/dotted",
-    "aoModule/local/global/earlierBlock/module/dotted",
-    "aoModule/local/global/earlierFile/module/dotted",
-    "aoModule/local/global/earlierFile/nested/dotted",
-    "aoModule/local/unrelated/earlierFile/module/dotted",
-    "aoModule/local/unrelated/earlierFile/nested/dotted",
+/// A dotted head `X.v` where an explicit `open` of the enclosing namespace
+/// lends its prefix to the current block's own `module X`: FCS's `open`
+/// re-adds only the fragments it has registered, and it registers the
+/// current block's only when the block ends, so the `open` names no `X` and
+/// the module declared since (a local `module X`, or the sibling
+/// `[<AutoOpen>] module B`'s child `X`) keeps the name. The walk's prefix
+/// reaches every module at the path, so it binds the namespace's `X`.
+const REOPEN_PREFIX_REACHES_CURRENT_BLOCK: &[&str] = &[
     "nsModule/autoOpenSibling/ancestor/currentBlock/module/dotted",
     "nsModule/autoOpenSibling/explicit/currentBlock/module/dotted",
     "nsModule/autoOpenSibling/explicitBefore/currentBlock/module/dotted",
     "nsModule/autoOpenSibling/global/currentBlock/module/dotted",
-    "nsModule/autoOpenSibling/implicit/currentBlock/module/dotted",
-    "nsModule/autoOpenSibling/implicit/earlierBlock/module/dotted",
-    "nsModule/autoOpenSibling/implicit/earlierFile/module/dotted",
-    "nsModule/autoOpenSibling/implicit/earlierFile/nested/dotted",
+    "nsModule/local/ancestor/currentBlock/module/dotted",
+    "nsModule/local/explicit/currentBlock/module/dotted",
+    "nsModule/local/global/currentBlock/module/dotted",
 ];
 
 #[test]
@@ -738,10 +682,10 @@ fn reopening_the_enclosing_namespace_agrees_with_fcs() {
         "the explicit re-open moves a later file's binding"
     );
     let must = must_commit(&graded);
-    let known_wrong: Vec<&str> = OPEN_PREFIX_RANKING
-        .iter()
-        .chain(AUTO_OPEN_CHILD_MODULE)
-        .copied()
-        .collect();
-    assert_sound_and_live("reopened namespace", &graded, &known_wrong, &must);
+    assert_sound_and_live(
+        "reopened namespace",
+        &graded,
+        REOPEN_PREFIX_REACHES_CURRENT_BLOCK,
+        &must,
+    );
 }

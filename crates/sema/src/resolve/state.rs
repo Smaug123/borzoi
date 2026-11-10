@@ -339,12 +339,17 @@ impl ScopeEntry {
 
 /// What one fold wrote into the module frame, kept so the same contents can
 /// be written again at a later position: each entry with the number of
-/// generation barriers the fold had raised before writing it, and the number
-/// it raised in all ([`Resolver::own_namespace_fold`]).
+/// generation barriers the fold had raised before writing it, the number it
+/// raised in all, and the short names it entered
+/// ([`Resolver::own_namespace_fold`]).
 #[derive(Debug, Clone, Default)]
 pub(super) struct RecordedFold {
     pub(super) entries: Vec<(usize, ScopeEntry)>,
     pub(super) barriers: usize,
+    /// The [`ShorteningPrefix`]es the fold pushed, in push order: the modules
+    /// it entered under their short names
+    /// ([`Resolver::enter_fragment_child_modules`]).
+    pub(super) prefixes: Vec<ShorteningPrefix>,
 }
 
 impl RecordedFold {
@@ -358,6 +363,7 @@ impl RecordedFold {
                 .map(|(barriers, entry)| (before + barriers, entry)),
         );
         self.barriers += next.barriers;
+        self.prefixes.extend(next.prefixes);
         self
     }
 }
