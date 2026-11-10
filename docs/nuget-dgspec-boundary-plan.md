@@ -486,8 +486,9 @@ The differential, the probes behind it, and review turned up seven things:
   hold anything) or modelled with exactly the attributes and children `pack`
   writes (an `id` and `version` each stated once and naming the package's
   folder, `dependencies`, `references`, `packageTypes` naming only
-  `Dependency` without a version), or declined by name; and a
-  `minClientVersion` below the restoring NuGet's version. The commit marker
+  `Dependency` without a version, `contentFiles`, `frameworkAssemblies`), or
+  declined by name; and a `minClientVersion` below the restoring NuGet's
+  version. The commit marker
   must be one restore reads, with no key repeated (a Nix-built cache's
   `{ "contentHash": "" }` is one). The vocabulary was measured over the 3,910
   nuspecs of a package cache before it was written: every one fits it except
@@ -497,11 +498,11 @@ The differential, the probes behind it, and review turned up seven things:
   Checking every installed version instead declined every F# project on a
   cache holding an old FSharp.Core with `contentFiles`. The generator writes descriptive elements (malformed
   ones included), declined ones and broken markers, and a hand case grades
-  each descriptive element alone. The vocabulary declines `frameworkAssemblies`
-  (on the corpus's `System.*` packages), `contentFiles`,
-  `frameworkReferences` and `developmentDependency` (Nerdbank.GitVersioning);
-  modelling them is coverage work for whichever stage the census next points
-  at.
+  each descriptive element alone. The vocabulary declines
+  `frameworkReferences` by name; modelling it is coverage work for whichever
+  stage the census next points at (`contentFiles`, `developmentDependency`
+  and `frameworkAssemblies`, each once a decline here, have their own
+  sections below).
 - **Restore loads the config files the spec names.** One it cannot load
   (malformed XML, an empty package source mapping pattern) fails the restore
   with every package in the packages folder. A valid package source mapping
@@ -828,14 +829,87 @@ walk and the envelope around it:
 
 | corpus project (6) | B₁ |
 |---|---|
-| TypeEquality, WoofWare.Incremental, WoofWare.LiangHyphenation, WoofWare.PawPrint.Domain, WoofWare.WeakHashTable | commits |
-| WoofWare.Expect | declines: System.Buffers 4.5.1, a version the engine examines (System.Memory 4.5.5's edge resolves to it), declares `<frameworkAssemblies>`, outside B₁'s nuspec vocabulary |
+| TypeEquality, WoofWare.Expect, WoofWare.Incremental, WoofWare.LiangHyphenation, WoofWare.PawPrint.Domain, WoofWare.WeakHashTable | commits |
 
-The resolver declines on no corpus project now. The one decline left is
-B₁'s nuspec vocabulary: `<frameworkAssemblies>` (839 nuspecs of a
-developer's cache, Microsoft's `System.*` packages among them), which is the
-next item, and which must be settled for the versions restore only reads as
-well as for the closure's.
+The resolver declines on no corpus project. WoofWare.Expect was the last
+decline, at the nuspec vocabulary rather than the resolver: System.Buffers
+4.5.1, a version the engine examines (System.Memory 4.5.5's edge resolves to
+it) without choosing, declares `<frameworkAssemblies>`, which the next
+section admits.
+
+### `<frameworkAssemblies>` — landed
+
+839 nuspecs of a developer's cache declare `<frameworkAssemblies>`
+(Microsoft's `System.*` packages among them), and B₁'s nuspec vocabulary
+declined the element by name. Two questions had to be settled against
+restore before admitting it, both as positive domains:
+
+- **What restore reads of the element for a version it only examines.** The
+  edge lookup (`FindLibraryCachedAsync` → `GetDependencyInfo`) reads the
+  framework assembly groups beside the dependency groups and the minimum
+  client version, so the element is read for every version the engine
+  examines, chosen or not. What that read does
+  (`NuspecReader.GetFrameworkAssemblyGroups`): an absent or empty
+  `targetFramework` is `Any`, any other is split on commas and each piece
+  trimmed (`String.Trim`, every Unicode white space) and parsed as a folder
+  name, which yields `Unsupported` for what it cannot read except in its
+  portable branch, where a member carrying a profile throws
+  (`portable-net45-client`, under any spelling of the identifier); an empty
+  `assemblyName` is dropped and duplicates merge. Three review rounds each
+  produced a spelling the crate's framework parser admits and NuGet throws
+  on (the hyphenated member itself; the same member under the dotted
+  `.NETPortable` identifier and behind non-breaking spaces; then a
+  zero-padded version, `portable4.00000000000-net45-client`, the parser
+  reads as unsupported), so the domain does not lean on the parser at all
+  for the one branch that throws: each piece must hold no `%` (NuGet
+  unescapes it first), no white space inside, have a leading identifier —
+  the run of ASCII letters and dots NuGet's `RawParse` cuts off the front —
+  that is not `portable`, `NETPortable` or `.NETPortable` in any case (the
+  three spellings NuGet's identifier table maps to the portable framework),
+  and parse with `NuGetFramework::parse`. The portable family is one the
+  measured cache never spells in this element (its values are
+  `.NETFramework4.x`, `MonoAndroid`, `Xamarin.*` and comma lists of them).
+  The `assemblyName` is held to nothing. The
+  shape is held to `pack`'s: one element without attributes, holding
+  `<frameworkAssembly>` elements that each carry an `assemblyName`, at most
+  a `targetFramework` besides, and no child or text. The parser still
+  reads the zero-padded version as unsupported where NuGet throws, which
+  keeps the rule textual rather than a reading of the parser's verdict.
+- **What restore does with it for a package in the closure.**
+  `LockFileUtils.AddFrameworkReferences` consults the groups only for a
+  framework that is not package based (`.NETFramework`; never `.NETCoreApp`
+  or `.NETStandard`), and writes the names of the group nearest the
+  framework into the target library's `frameworkAssemblies`. That output
+  reaches nothing the LSP reads (`crates/lsp/src/project_assets/` reads
+  compile assets, package folders and framework-reference names), and its
+  one effect inside restore — the names count as a compatible asset in the
+  `NU1202` check and in the asset-target-fallback decision — can only make
+  compatible, without a fallback, a package B₁ already declines:
+  `check_compatibility` admits a package only with compile assets for the
+  framework itself or with no framework-specific file at all, and restore
+  finds both compatible on the primary criteria whatever the element says.
+
+So `nuspec.rs` admits the element in `pack`'s shape and nothing moves in
+`resolve.rs`. It is graded three ways in `dgspec_resolve_diff.rs`:
+`framework_assemblies_shapes_are_graded_at_the_lookup_and_in_the_closure`
+generates elements over an alphabet of framework spellings (parseable,
+unsupported, portable profiles sound and throwing, platform-bearing,
+escaped, the long form, whitespace and separators) and element shapes
+(attribute sets, children, text, duplicates), classifies each by the stated
+domain before any code runs, and
+grades it on one spec that reads the element every way restore does — on a
+chosen package and on a version the engine only examines, under a
+package-based framework and under `net472` — asserting that in-domain shapes
+commit, out-of-domain ones decline, the package-based target never has
+`frameworkAssemblies`, and every name the `net472` target has is one the
+nuspec declares; `framework_assemblies_land_on_targets_that_are_not_package_based`
+pins B₀'s output on one nuspec (nearest group, merged, sorted);
+`framework_assemblies_naming_a_profile_nuget_refuses_decline` pins the
+throw and the decline row by row; and the nuspec perturbation sweep, the layer sweep's committing nuspec and the
+generator's package universe each carry the element, so the whitespace,
+comment and structural decisions are graded with the rest of the
+vocabulary. With it, WoofWare.Expect commits (`b1: committed frameworks=1`
+in `crates/lsp/tests/manifests/restore_graph_projects.txt`).
 
 ### Stage 5: pruning — landed
 
