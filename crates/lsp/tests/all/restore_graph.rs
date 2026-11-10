@@ -771,6 +771,47 @@ fn the_on_demand_restore_runs_b1_in_shadow() {
     }
 }
 
+/// The shadow judges NuGet's restore, not the command's exit status. A target
+/// the project hooks after `Restore` can fail the command once NuGet has
+/// restored, and the server declines to serve that restore, but B₁ is held to
+/// the restore NuGet did, which agrees. A restore NuGet itself fails (a missing
+/// package) B₁ declines.
+#[test]
+fn the_shadow_judges_nugets_restore_not_the_commands() {
+    let hooked = APP.replace(
+        "</Project>",
+        r#"  <Target Name="FailAfterRestore" AfterTargets="Restore">
+    <Error Text="a target hooked after restore fails" />
+  </Target>
+</Project>"#,
+    );
+    let missing = APP.replace(
+        "<Compile Include=\"App.fs\" />",
+        "<Compile Include=\"App.fs\" />\n    \
+         <PackageReference Include=\"Borzoi.No.Such.Package\" Version=\"1.0.0\" />",
+    );
+    assert_ne!(missing, APP);
+    for (tag, text, nuget_succeeds) in [
+        ("shadow-hooked", hooked.as_str(), true),
+        ("shadow-missing", missing.as_str(), false),
+    ] {
+        let root = write_tree(tag, &[("App.fsproj", text), ("App.fs", "module App\n")]);
+        let project = root.join("App.fsproj");
+        let env = controlled_env();
+        let mut workspace = Workspace::with_env(env.clone());
+        let served = workspace.served_tfm_for_project(&project);
+        let restored = restore_to_scratch(&project, &dotnet_root(), &served, Some(&env));
+        assert!(
+            matches!(restored.outcome, RestoreOutcome::Declined),
+            "{tag}: the command fails, so the server declines"
+        );
+        match (nuget_succeeds, restored.shadow.map(|shadow| shadow.verdict)) {
+            (true, Some(ShadowVerdict::Agreed(_))) | (false, Some(ShadowVerdict::Declined(_))) => {}
+            (_, other) => panic!("{tag}: B₁'s shadow verdict: {other:?}"),
+        }
+    }
+}
+
 /// The stage-3 check can fail: a spec that has lost a dependency on its way to
 /// NuGet does not reproduce the restore. Without this, a comparison that
 /// silently compared nothing would pass every fixture.

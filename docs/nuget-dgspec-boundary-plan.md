@@ -1281,8 +1281,12 @@ the restoring NuGet's identity and the restore's environment, and checks a
 commit against what the restore did (`crates/lsp/src/restore/shadow.rs`). The
 restore's answer is served whatever B₁ says. A commit must name, per
 framework, exactly the packages the assets file's target lists, predict
-exactly the codes it logs where it predicts any, and not be made where the
-restore failed. Anything else is logged as an error, since under
+exactly the codes it logs where it predicts any, and not be made where
+NuGet's restore failed. That is read from the `success` NuGet records in
+`project.nuget.cache`, not from the command's exit status, which a target
+the project hooks after `Restore` can fail once NuGet has restored (review
+found the false report; a fixture pins it). Anything else is logged as an
+error, since under
 certain-implies-exact it is a B₁ bug. A decline is logged with its reason.
 The check costs a few milliseconds in a release build.
 

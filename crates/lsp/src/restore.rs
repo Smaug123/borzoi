@@ -339,7 +339,7 @@ pub fn restore_to_scratch(
         dotnet_root,
         env,
         &spec,
-        succeeded,
+        &scratch.path,
         assets_text.as_deref(),
     ));
     ScratchRestore {
@@ -356,31 +356,55 @@ pub fn restore_to_scratch(
     }
 }
 
-/// B₁ over the spec a restore of `project` read, checked against what the
-/// restore did.
+/// B₁ over the spec a restore of `project` read, checked against what NuGet
+/// did in that restore, which wrote into `scratch`.
+///
+/// Whether NuGet's restore succeeded is read from the `success` NuGet records
+/// in `project.nuget.cache`, not from the command's exit status: a target the
+/// project hooks after `Restore` can fail the command once NuGet has
+/// restored, and B₁ models NuGet's restore, not the project's targets.
 fn run_shadow(
     project: &Path,
     dotnet_root: &Path,
     env: &SdkDiscoveryEnv,
     spec: &str,
-    succeeded: bool,
+    scratch: &Path,
     assets: Option<&str>,
 ) -> ShadowRun {
     let started = std::time::Instant::now();
-    let assets: Option<serde_json::Value> = assets.and_then(|text| serde_json::from_str(text).ok());
-    let verdict = shadow::shadow(
-        nuget_identity::restoring_nuget(project, dotnet_root, env),
-        spec,
-        RestoreRecord {
-            succeeded,
-            assets: assets.as_ref(),
-        },
-        &restore_environment(env),
-    );
+    let verdict = match nuget_restore_succeeded(scratch) {
+        Err(why) => ShadowVerdict::NotRun(shadow::NotRun::NoNuGetResult(why)),
+        Ok(succeeded) => {
+            let assets: Option<serde_json::Value> =
+                assets.and_then(|text| serde_json::from_str(text).ok());
+            shadow::shadow(
+                nuget_identity::restoring_nuget(project, dotnet_root, env),
+                spec,
+                RestoreRecord {
+                    succeeded,
+                    assets: assets.as_ref(),
+                },
+                &restore_environment(env),
+            )
+        }
+    };
     ShadowRun {
         verdict,
         elapsed: started.elapsed(),
     }
+}
+
+/// Whether NuGet's restore into `scratch` succeeded, as NuGet recorded it in
+/// the `project.nuget.cache` beside the assets file (`CacheFile.Success`),
+/// which it writes whether or not the restore succeeds.
+fn nuget_restore_succeeded(scratch: &Path) -> Result<bool, String> {
+    let path = scratch.join("project.nuget.cache");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let cache: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    cache["success"]
+        .as_bool()
+        .ok_or_else(|| format!("{}: no boolean `success`", path.display()))
 }
 
 /// The outcome the LSP serves from a restore that wrote `spec`.

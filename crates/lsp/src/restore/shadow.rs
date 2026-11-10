@@ -31,7 +31,9 @@ use super::nuget_identity::IdentityDecline;
 /// What the restore produced, as B₁ is checked against it.
 #[derive(Debug, Clone, Copy)]
 pub struct RestoreRecord<'a> {
-    /// Whether the restore succeeded.
+    /// Whether NuGet's restore succeeded, as NuGet recorded it: not the exit
+    /// status of the command, which a project's own targets can fail after
+    /// NuGet has restored.
     pub succeeded: bool,
     /// The assets file it wrote, which NuGet writes even when resolution
     /// fails.
@@ -57,6 +59,8 @@ pub enum ShadowVerdict {
 pub enum NotRun {
     /// The restoring NuGet's identity cannot be said.
     NoIdentity(IdentityDecline),
+    /// The restore left no record of whether NuGet's restore succeeded.
+    NoNuGetResult(String),
     /// The spec reader declined the spec.
     Spec(DgSpecDecline),
     /// The spec restores other than one project.
