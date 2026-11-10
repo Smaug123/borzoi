@@ -14,6 +14,7 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
+use super::container::ContainerId;
 use super::contributors::{FileContributions, RecBlock};
 use super::model::{
     DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
@@ -1042,8 +1043,10 @@ pub(super) struct Resolver<'a> {
     /// definition-scoped and ephemeral, not visible container-wide). Empty
     /// whenever no generic definition is open.
     pub(super) typar_scopes: Vec<Vec<(String, DefId)>>,
-    /// In-file `type` definitions, keyed by their enclosing container path
-    /// (`Self::container_path`) then by `idText` name → defining binder. F#
+    /// In-file `type` definitions, keyed by their enclosing container
+    /// ([`ContainerId`], interned by [`Self::container_path`], so a walk along
+    /// the enclosing containers probes once per level without hashing a path)
+    /// then by `idText` name → defining binder. F#
     /// keeps types in a *separate* namespace from values, so this is queried
     /// only from type-syntactic positions ([`Self::resolve_type`]) — never the
     /// value [`Self::lookup`] — and so a type `T` and a value `T` never collide.
@@ -1062,9 +1065,9 @@ pub(super) struct Resolver<'a> {
     /// the group is mutually recursive. Cross-file type resolution (`A.T` from
     /// another file) is a later slice — those references stay deferred via the
     /// existing [`Self::record_project_name_shadow`].
-    pub(super) type_defs: HashMap<Vec<String>, HashMap<String, DefId>>,
-    /// Each in-file type's [`SlotClass`] — keyed exactly like
-    /// [`Self::type_defs`] and populated by the same
+    pub(super) type_defs: HashMap<ContainerId, HashMap<String, DefId>>,
+    /// Each in-file type's [`SlotClass`] — keyed by container path, like
+    /// [`Self::type_defs`], and populated by the same
     /// [`define_type`](Self::define_type) call (last-wins on redefinition).
     /// Consumed by [`head_value_slot`](Self::head_value_slot): whether the
     /// type's name enters FCS's unqualified slot and so can EVICT a
@@ -1075,8 +1078,8 @@ pub(super) struct Resolver<'a> {
     /// [`Self::type_slot_classes`] keeps: same-named types of different
     /// arities each take the unqualified slot, and the latest of any of them
     /// is what orders a value ([`Self::head_value_slot`]).
-    pub(super) type_slot_history: HashMap<Vec<String>, HashMap<String, Vec<TypeSlotDef>>>,
-    /// Each in-file type's **access-root** — keyed like [`Self::type_defs`] and
+    pub(super) type_slot_history: HashMap<ContainerId, HashMap<String, Vec<TypeSlotDef>>>,
+    /// Each in-file type's **access-root** — keyed by container path, like [`Self::type_defs`], and
     /// populated by the same [`define_type`](Self::define_type) call. `None` =
     /// public; `Some(k)` = accessible only from a site within the `k`-segment
     /// prefix of the type's qualified path (its `private` container plus any
@@ -1164,7 +1167,7 @@ pub(super) struct Resolver<'a> {
     /// reaching the enclosing enum. (Type-position resolution
     /// [`lookup_type_def_at_arity`](Self::lookup_type_def_at_arity) does *not* consult it — a module
     /// does not shadow a type in the type namespace.)
-    pub(super) module_like_names: HashMap<Vec<String>, HashSet<String>>,
+    pub(super) module_like_names: HashMap<ContainerId, HashSet<String>>,
     /// The **value scope of each top-level container** — a `namespace`/`module`
     /// header's path (`[]` for an anonymous module) — keyed like
     /// [`Self::type_defs`]. F# merges same-named `namespace N` blocks and isolates
@@ -1200,7 +1203,7 @@ pub(super) struct Resolver<'a> {
     /// because a namespace binds no *values*; nested modules, however, *are*
     /// qualified under a namespace, so this is the prefix used to export a
     /// nested module's cross-file shadow path.
-    pub(super) container_path: Vec<String>,
+    pub(super) container_path: super::container::ContainerPath,
     /// How many leading segments of [`Self::container_path`] are the enclosing
     /// **namespace** (the rest are nested-module names). For `namespace
     /// Outer.Inner` it is 2; for a top-level `module Outer.Client` it is 1 (the
@@ -1584,7 +1587,7 @@ pub(super) struct Resolver<'a> {
     /// arity, more than one means the latest in-file hit may not be the one
     /// FCS binds (of two same-arity declarations in one scope it binds the
     /// first) ([`DeclineCause::InFileTypeNameReused`]).
-    pub(super) type_decl_counts: HashMap<Vec<String>, HashMap<String, HashMap<usize, usize>>>,
+    pub(super) type_decl_counts: HashMap<ContainerId, HashMap<String, HashMap<usize, usize>>>,
     /// Each in-file type's generic arity, by its [`Self::type_defs`] binder.
     /// FCS looks a type name up by name *and* arity first, so `E<int>` beside
     /// `type E` and `type E<'T>` binds the generic one whatever their order,
@@ -1603,7 +1606,7 @@ pub(super) struct Resolver<'a> {
     pub(super) own_type_scoped: HashMap<(String, usize), bool>,
     /// [`Self::type_defs`] keyed by name and arity, so a container declaring
     /// a name at two arities keeps both (last-wins per arity).
-    pub(super) type_defs_by_arity: HashMap<Vec<String>, HashMap<(String, usize), DefId>>,
+    pub(super) type_defs_by_arity: HashMap<ContainerId, HashMap<(String, usize), DefId>>,
     /// The subset of [`Self::own_type_simple_names`] declared by an
     /// `exception` anywhere in the file. Exceptions never enter `type_defs`,
     /// so an in-file *type* hit for such a name may be reaching past a closer

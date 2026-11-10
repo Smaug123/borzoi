@@ -25,7 +25,7 @@
 //! A nullary single-segment `LongIdent` pattern head — `None` in `match x with
 //! None -> …`, `let (x, None) = …`, `fun None -> …` — is constructor-shaped (the
 //! parser routes lower-case idents to `Named`, so these are always upper-case)
-//! and [`pattern_names`] flags it
+//! and [`pattern_names`](crate::pattern_names) flags it
 //! [`provisional`](crate::Def::provisional).
 //! Whether it is a real binder or a constructor reference depends on whether the
 //! name resolves to a nullary constructor / literal: FCS binds an upper-case
@@ -62,13 +62,14 @@ use borzoi_cst::syntax::{
 use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
-use crate::binders::{BinderRole, PatternName, pattern_names};
+use crate::binders::every_let_pattern_binder_name;
 pub(crate) use crate::def::id_text;
 use crate::def::{Def, DefId, DefKind};
 use crate::qnof::QualifiedNameOfFile;
 
 mod assembly;
 mod bindings;
+mod container;
 mod contributors;
 mod custom_operations;
 use contributors::FileContributions;
@@ -298,28 +299,20 @@ pub fn resolve_file(
         }
     }
     // Every value-binder simple name in the file — the constructor fallback's
-    // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Walk every
-    // pattern through the resolution-independent [`pattern_names`] walk, which
-    // yields a binder *before* the resolution stage's provisional/interning drops,
-    // so a would-be-shadowed local and a provisional uppercase parameter are both
-    // captured. Called on every pattern node (not just outermost) so no construct
-    // `pattern_names` might not recurse can hide a name — over-collection only
-    // defers. File-global and order-independent, like the type-name pre-scans
-    // above.
+    // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Every
+    // pattern goes through the resolution-independent [`pattern_names`] walk,
+    // which yields a binder *before* the resolution stage's provisional/interning
+    // drops, so a would-be-shadowed local and a provisional uppercase parameter
+    // are both captured. Every pattern node is entered (not just outermost) so no
+    // construct `pattern_names` might not recurse can hide a name —
+    // over-collection only defers. File-global and order-independent, like the
+    // type-name pre-scans above.
     //
-    // Only the [`PatternName::Binder`]s are read: an or-pattern alias is a
-    // re-spelling of a name an earlier alternative already introduced, so it is
-    // spelled identically to a binder in the same list and contributes nothing to
-    // a *name* set. The empty `argument_expressions` set likewise costs nothing —
-    // it makes a parameterised active pattern's argument read as a binder, which
-    // is more over-collection of the kind this oracle already accepts.
-    for pat in file.syntax().descendants().filter_map(Pat::cast) {
-        for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
-            if let PatternName::Binder(def) = name {
-                r.own_binder_simple_names.insert(def.key().to_string());
-            }
-        }
-    }
+    // The empty `argument_expressions` set costs nothing — it makes a
+    // parameterised active pattern's argument read as a binder, which is more
+    // over-collection of the kind this oracle already accepts.
+    r.own_binder_simple_names
+        .extend(every_let_pattern_binder_name(file.syntax()));
     // An `extern` prototype is the one value-namespace binder with no pattern for
     // the walk above to reach: its name is a `LongIdent`, and the decl arm
     // deliberately does not intern it as a usable value. Both halves of the
@@ -485,10 +478,12 @@ pub fn resolve_file(
         // qualified for *cross-file* reference — the header's `longId` for both
         // a `module` and a `namespace` (empty for an anonymous module /
         // `namespace global`). Unlike `module_path` it is set for namespaces.
-        r.container_path = module
-            .long_id()
-            .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
-            .unwrap_or_default();
+        r.container_path.set(
+            module
+                .long_id()
+                .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
+                .unwrap_or_default(),
+        );
         // Record the project namespaces this header declares — so a later (or
         // same-project) file's `open <namespace>` resolves relatively
         // ([`open_interpretations`](Resolver::open_interpretations)),
@@ -537,13 +532,13 @@ pub fn resolve_file(
         // `Sub.…` really is the project's — FCS).
         r.nested_module_locals = r
             .top_level_nested_locals
-            .remove(&r.container_path)
+            .remove(&*r.container_path)
             .unwrap_or_default();
         r.augmentation_head_locals = r
             .top_level_augmentation_locals
-            .remove(&r.container_path)
+            .remove(&*r.container_path)
             .unwrap_or_default();
-        let frame = r.top_level.remove(&r.container_path).unwrap_or_default();
+        let frame = r.top_level.remove(&*r.container_path).unwrap_or_default();
         r.module_frames.push(r.scopes.len());
         r.scopes.push(frame);
         // The block frame is now active: seed the implicit auto-opens'
@@ -611,13 +606,13 @@ pub fn resolve_file(
         // misread them as stale. Semantically they precede everything the next
         // block declares, which is exactly generation 0.
         frame.set_generation(0);
-        r.top_level.insert(r.container_path.clone(), frame);
+        r.top_level.insert(r.container_path.to_vec(), frame);
         let locals = std::mem::take(&mut r.nested_module_locals);
         r.top_level_nested_locals
-            .insert(r.container_path.clone(), locals);
+            .insert(r.container_path.to_vec(), locals);
         let augmentation_locals = std::mem::take(&mut r.augmentation_head_locals);
         r.top_level_augmentation_locals
-            .insert(r.container_path.clone(), augmentation_locals);
+            .insert(r.container_path.to_vec(), augmentation_locals);
         block_auto_open_type_shadows.insert(
             block_key,
             std::mem::take(&mut r.auto_open_type_shadow_names),
@@ -2286,7 +2281,7 @@ impl<'a> Resolver<'a> {
             assemblies,
             item_base: preceding.next_base(),
             module_path: None,
-            container_path: Vec::new(),
+            container_path: container::ContainerPath::default(),
             namespace_depth: 0,
             module_paths: PathSet::default(),
             namespace_paths: Vec::new(),

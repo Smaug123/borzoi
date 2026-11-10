@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::def::{Def, DefKind};
-use borzoi_cst::syntax::{LongIdentPat, Pat, SyntaxToken};
+use borzoi_cst::syntax::{AstNode, LongIdentPat, Pat, SyntaxNode, SyntaxToken};
 use rowan::TextRange;
 
 /// The role a pattern plays where it appears, which fixes the [`DefKind`] of
@@ -80,8 +80,43 @@ pub fn pattern_names(
     argument_expressions: &HashSet<TextRange>,
 ) -> Vec<PatternName> {
     let mut out = Vec::new();
-    collect(pat, Ctx::from_role(role), argument_expressions, &mut out);
+    collect(
+        pat,
+        Ctx::from_role(role),
+        argument_expressions,
+        &mut out,
+        &mut None,
+    );
     out
+}
+
+/// The name of every binder [`pattern_names`] yields for any pattern node in
+/// `root`'s tree, entered as [`BinderRole::Let`] with no argument expressions:
+/// over-collection the resolver's file-wide "is a value of this name bound
+/// anywhere" oracle accepts, since a name in it only defers.
+///
+/// Walking every pattern node's subtree on its own is quadratic in a nested
+/// pattern's height, so one walk is shared. A sub-pattern reached in a context
+/// it was already walked in contributes names the set already holds, so it is
+/// not walked again: each node is walked at most once per context. An
+/// or-pattern's alternatives are not paired either: pairing only turns a later
+/// alternative's binder into an alias of an earlier one *of the same name*, so
+/// every occurrence's name is a binder's name.
+pub fn every_let_pattern_binder_name(root: &SyntaxNode) -> HashSet<String> {
+    let mut out = Vec::new();
+    let mut walked = Some(HashSet::new());
+    let none = HashSet::new();
+    for pat in root.descendants().filter_map(Pat::cast) {
+        collect(&pat, Ctx::LetHead, &none, &mut out, &mut walked);
+    }
+    out.iter()
+        .map(|name| match name {
+            PatternName::Binder(def) => def.key().to_string(),
+            PatternName::Alias { .. } => {
+                unreachable!("a walk that does not pair alternatives yields no alias")
+            }
+        })
+        .collect()
 }
 
 /// One name occurrence a pattern contributes.
@@ -122,7 +157,7 @@ impl PatternName {
 /// [`BinderRole`] because a `let` head has two distinct sub-contexts that a
 /// caller can never *enter* directly — only reach by descent — so they are
 /// not exposed as entry points.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Ctx {
     /// The direct head pattern of a `let` binding, before any structural
     /// descent. Here a `LongIdent` is the function-binding form (or, nullary,
@@ -170,12 +205,23 @@ impl Ctx {
     }
 }
 
+/// Push the name occurrences `pat` contributes in `ctx` onto `out`.
+///
+/// With `walked`, a `(node, ctx)` pair already in it is skipped and the
+/// or-pattern pairing is not run: the occurrences are then only good for
+/// their names ([`every_let_pattern_binder_name`]).
 fn collect(
     pat: &Pat,
     ctx: Ctx,
     argument_expressions: &HashSet<TextRange>,
     out: &mut Vec<PatternName>,
+    walked: &mut Option<HashSet<(SyntaxNode, Ctx)>>,
 ) {
+    if let Some(walked) = walked
+        && !walked.insert((pat.syntax().clone(), ctx))
+    {
+        return;
+    }
     match pat {
         Pat::Named(p) => {
             if let Some(tok) = p.ident() {
@@ -198,13 +244,13 @@ fn collect(
         Pat::Wildcard(_) | Pat::Const(_) | Pat::Null(_) | Pat::IsInst(_) | Pat::Quote(_) => {}
         Pat::Paren(p) => {
             if let Some(inner) = p.inner() {
-                collect(&inner, ctx.descend(), argument_expressions, out);
+                collect(&inner, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::Typed(p) => {
             // The annotation (`p.ty()`) names types, never binders.
             if let Some(inner) = p.pat() {
-                collect(&inner, ctx.descend(), argument_expressions, out);
+                collect(&inner, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::Attrib(p) => {
@@ -212,12 +258,12 @@ fn collect(
             // binders; only the inner pattern binds. Transparent, exactly like
             // `Typed`.
             if let Some(inner) = p.pat() {
-                collect(&inner, ctx.descend(), argument_expressions, out);
+                collect(&inner, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::Tuple(p) => {
             for el in p.elements() {
-                collect(&el, ctx.descend(), argument_expressions, out);
+                collect(&el, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::ArrayOrList(p) => {
@@ -225,7 +271,7 @@ fn collect(
             // names, exactly like a `Tuple` element — value deconstruction, never
             // a function-binding head, so every element descends the context.
             for el in p.elements() {
-                collect(&el, ctx.descend(), argument_expressions, out);
+                collect(&el, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::Record(p) => {
@@ -235,7 +281,7 @@ fn collect(
             // context — exactly like a `Tuple` element.
             for field in p.fields() {
                 if let Some(value) = field.pat() {
-                    collect(&value, ctx.descend(), argument_expressions, out);
+                    collect(&value, ctx.descend(), argument_expressions, out, walked);
                 }
             }
         }
@@ -245,10 +291,10 @@ fn collect(
             // so both operands descend the context, exactly like a `Tuple`
             // element — a `let`-head `as` is a value deconstruction.
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), argument_expressions, out);
+                collect(&lhs, ctx.descend(), argument_expressions, out, walked);
             }
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), argument_expressions, out);
+                collect(&rhs, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::ListCons(p) => {
@@ -257,10 +303,10 @@ fn collect(
             // both operands descend the context — exactly like a `Tuple` element
             // or an `As`.
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), argument_expressions, out);
+                collect(&lhs, ctx.descend(), argument_expressions, out, walked);
             }
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), argument_expressions, out);
+                collect(&rhs, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::Ands(p) => {
@@ -269,7 +315,7 @@ fn collect(
             // deconstruction, never a function-binding head, so each operand
             // descends the context, exactly like a `Tuple` element.
             for operand in p.operands() {
-                collect(&operand, ctx.descend(), argument_expressions, out);
+                collect(&operand, ctx.descend(), argument_expressions, out, walked);
             }
         }
         Pat::Or(p) => {
@@ -287,13 +333,19 @@ fn collect(
             // first `v` in source order either way.
             let start = out.len();
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), argument_expressions, out);
+                collect(&lhs, ctx.descend(), argument_expressions, out, walked);
             }
             let boundary = out.len();
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), argument_expressions, out);
+                collect(&rhs, ctx.descend(), argument_expressions, out, walked);
             }
-            canonicalise_alternatives(&mut out[start..], boundary - start, argument_expressions);
+            if walked.is_none() {
+                canonicalise_alternatives(
+                    &mut out[start..],
+                    boundary - start,
+                    argument_expressions,
+                );
+            }
         }
         Pat::LongIdent(p) => {
             // `arg_pats` spans both `SynArgPats` shapes: the curried list
@@ -332,7 +384,7 @@ fn collect(
                         )));
                     }
                     for arg in &args {
-                        collect(arg, Ctx::Param, argument_expressions, out);
+                        collect(arg, Ctx::Param, argument_expressions, out, walked);
                     }
                 }
                 Ctx::LetNested | Ctx::Param | Ctx::Pattern if has_args => {
@@ -340,7 +392,7 @@ fn collect(
                     // is a reference, not a binder, so only the arguments bind —
                     // in the same context the application was reached in.
                     for arg in &args {
-                        collect(arg, ctx, argument_expressions, out);
+                        collect(arg, ctx, argument_expressions, out, walked);
                     }
                 }
                 Ctx::LetNested | Ctx::Param | Ctx::Pattern => {
@@ -1411,6 +1463,113 @@ mod tests {
                 };
                 let written = Def::from_range(text(*range), *range, def.kind);
                 prop_assert_eq!(def.key(), written.key());
+            }
+        }
+    }
+
+    /// [`every_let_pattern_binder_name`]'s specification: every pattern node's
+    /// [`pattern_names`] binders, each node walked on its own.
+    fn binder_names_node_by_node(root: &SyntaxNode) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for pat in root.descendants().filter_map(Pat::cast) {
+            for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
+                if let PatternName::Binder(def) = name {
+                    names.insert(def.key().to_string());
+                }
+            }
+        }
+        names
+    }
+
+    /// Pattern source over every [`Pat`] kind, nested; not always well-formed,
+    /// since the two walks must agree on any tree, recovered ones included.
+    fn any_pattern_source() -> impl Strategy<Value = String> {
+        let leaf = prop_oneof![
+            Just("x".to_string()),
+            Just("y".to_string()),
+            Just("Z".to_string()),
+            Just("_".to_string()),
+            Just("0".to_string()),
+            Just("null".to_string()),
+            Just("?o".to_string()),
+            Just("A.B".to_string()),
+            Just("``v w``".to_string()),
+            Just("(|P|_|)".to_string()),
+        ];
+        leaf.prop_recursive(6, 48, 3, |inner| {
+            let two = (inner.clone(), inner.clone());
+            prop_oneof![
+                inner.clone().prop_map(|p| format!("({p})")),
+                two.clone().prop_map(|(p, q)| format!("{p} as {q}")),
+                two.clone().prop_map(|(p, q)| format!("{p} :: {q}")),
+                two.clone().prop_map(|(p, q)| format!("{p} & {q}")),
+                two.clone().prop_map(|(p, q)| format!("{p} | {q}")),
+                two.clone().prop_map(|(p, q)| format!("{p}, {q}")),
+                two.clone().prop_map(|(p, q)| format!("[{p}; {q}]")),
+                two.clone().prop_map(|(p, q)| format!("[|{p}; {q}|]")),
+                two.clone()
+                    .prop_map(|(p, q)| format!("{{ F = {p}; G = {q} }}")),
+                two.clone().prop_map(|(p, q)| format!("C {p} {q}")),
+                two.clone()
+                    .prop_map(|(p, q)| format!("C (f = {p}; g = {q})")),
+                two.prop_map(|(p, q)| format!("struct ({p}, {q})")),
+                inner.clone().prop_map(|p| format!("C ({p})")),
+                inner.clone().prop_map(|p| format!("({p} : int)")),
+                inner.clone().prop_map(|p| format!("([<A>] {p})")),
+                inner.prop_map(|p| format!("(:? int as {p})")),
+            ]
+        })
+    }
+
+    /// A file that puts two patterns in one of the places a pattern stands.
+    fn any_pattern_file() -> impl Strategy<Value = String> {
+        (any_pattern_source(), any_pattern_source(), 0usize..8).prop_map(
+            |(p, q, place)| match place {
+                0 => format!("let {p} = 0\nlet {q} = 1\n"),
+                1 => format!("let f {p} {q} = 0\n"),
+                2 => format!("let g =\n  match a with\n  | {p} -> 0\n  | {q} -> 1\n"),
+                3 => format!("let h = fun {p} {q} -> 0\n"),
+                4 => format!("type T() =\n  member _.M({p}, {q}) = 0\n"),
+                5 => format!("let (|A|_|) {p} {q} = None\n"),
+                6 => format!("let k () =\n  for {p} in xs do\n    let {q} = 0\n    ()\n"),
+                _ => format!("let m () =\n  try () with\n  | {p} -> ()\n  | {q} -> ()\n"),
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn one_shared_walk_names_every_nodes_binders(src in any_pattern_file()) {
+            let root = parse(&src).root;
+            prop_assert_eq!(
+                every_let_pattern_binder_name(&root),
+                binder_names_node_by_node(&root),
+                "{:?}",
+                src
+            );
+        }
+    }
+
+    /// The grammar's repetition forms, short and nested deep, hold the same
+    /// agreement; the pattern forms name something, so it is not vacuous.
+    #[test]
+    fn one_shared_walk_names_every_repetition_forms_binders() {
+        use borzoi_oracle_harness::repetition_shapes::{Kind, SHAPES, SHORT};
+        for shape in SHAPES.iter().filter(|shape| shape.kind == Kind::Impl) {
+            for n in [SHORT, 64] {
+                let root = parse(&shape.source(n)).root;
+                let names = every_let_pattern_binder_name(&root);
+                assert_eq!(
+                    names,
+                    binder_names_node_by_node(&root),
+                    "{} at {n} repeats",
+                    shape.name
+                );
+                assert!(
+                    !shape.name.starts_with("pat_") || !names.is_empty(),
+                    "{} at {n} repeats names no binder",
+                    shape.name
+                );
             }
         }
     }

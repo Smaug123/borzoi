@@ -1726,7 +1726,7 @@ impl<'a> Resolver<'a> {
     /// files. Accessibility (own-/inherited-`private`) is filtered exactly as the
     /// open-fold does, so an inaccessible name never enters the straddle contest.
     fn direct_tier_ids_at(&self, path: &[String]) -> HashMap<String, (ItemId, usize)> {
-        let site = self.container_path.clone();
+        let site = self.container_path.to_vec();
         let mut out: HashMap<String, (ItemId, usize)> = HashMap::new();
         for (name, id) in self.preceding.direct_value_children(path, &site) {
             out.insert(name, (id, self.preceding.file_of(id)));
@@ -1770,7 +1770,7 @@ impl<'a> Resolver<'a> {
     /// **latest** such fragment (the file-`max`). With the fold exact, the caller
     /// lets a genuinely later submodule win instead of conservatively deferring.
     fn submodule_contributions_at(&self, path: &[String]) -> HashMap<String, SubmoduleFold> {
-        let site = self.container_path.clone();
+        let site = self.container_path.to_vec();
         let mut out: HashMap<String, SubmoduleFold> = HashMap::new();
         let current = self.preceding.num_files();
         for (sub, file) in self.auto_open_fragments_reachable(path) {
@@ -1874,16 +1874,13 @@ impl<'a> Resolver<'a> {
     pub(super) fn lexical_alias_target(&self, name: &str) -> Option<&[String]> {
         // The innermost enclosing container that declares `name` as module-like
         // (longest prefix of `container_path`) shadows any outer one.
-        let scope = (0..=self.container_path.len())
-            .rev()
-            .map(|k| &self.container_path[..k])
-            .find(|scope| {
-                self.module_like_names
-                    .get(*scope)
-                    .is_some_and(|names| names.contains(name))
-            })?;
+        let scope = (0..=self.container_path.len()).rev().find(|&k| {
+            self.module_like_names
+                .get(&self.container_path.prefix_id(k))
+                .is_some_and(|names| names.contains(name))
+        })?;
         // Follow it only if that nearest declaration is a resolvable alias.
-        let mut alias_path = scope.to_vec();
+        let mut alias_path = self.container_path[..scope].to_vec();
         alias_path.push(name.to_string());
         self.module_aliases.get(&alias_path).map(Vec::as_slice)
     }
@@ -2174,7 +2171,7 @@ impl<'a> Resolver<'a> {
         // `private` value of `module_path` is accessible — F# hides it from an
         // `open` outside the container's subtree (oracle-pinned; on `main` such a
         // value wrongly resolved cross-file).
-        let site = self.container_path.clone();
+        let site = self.container_path.to_vec();
         // Stage 5 per-fragment gate: folding a single `[<AutoOpen>]` fragment
         // brings in only the members `module_path` declares in that fragment's
         // file. Same-file members share the current file (one check); cross-file
@@ -4118,11 +4115,11 @@ impl<'a> Resolver<'a> {
     fn same_name_entity_shadows_head(&self, head: &str) -> bool {
         let in_current = self
             .module_like_names
-            .get(&self.container_path)
+            .get(&self.container_path.id())
             .is_some_and(|names| names.contains(head))
             || self
                 .type_defs
-                .get(&self.container_path)
+                .get(&self.container_path.id())
                 .is_some_and(|types| types.contains_key(head));
         // A same-name MODULE declared in an enclosing container — a genuine
         // *cousin*, same-file (`module_like_names`) or an earlier file
@@ -4138,7 +4135,7 @@ impl<'a> Resolver<'a> {
             .any(|k| {
                 let prefix = &self.container_path[..k];
                 self.module_like_names
-                    .get(prefix)
+                    .get(&self.container_path.prefix_id(k))
                     .is_some_and(|names| names.contains(head))
                     || {
                         let mut full = prefix.to_vec();
@@ -5105,8 +5102,8 @@ impl<'a> Resolver<'a> {
     /// arity (FS0037): FCS reads the first, [`Self::type_defs`] keeps the
     /// latest.
     fn type_name_reused_in(&self, container: &[String], ty: &str) -> bool {
-        self.type_decl_counts
-            .get(container)
+        self.container_path
+            .get_at(&self.type_decl_counts, container)
             .and_then(|m| m.get(ty))
             .is_some_and(|by_arity| by_arity.values().any(|&n| n > 1))
     }
@@ -5201,8 +5198,8 @@ impl<'a> Resolver<'a> {
         // those downstream branches and misbinds (codex); guarding subtracts exactly
         // the two type-owned emissions and nothing else.
         let type_inaccessible = self
-            .type_defs
-            .get(&module_path)
+            .container_path
+            .get_at(&self.type_defs, &module_path)
             .is_some_and(|m| m.contains_key(ty))
             && {
                 let mut type_path = module_path.clone();
@@ -5222,7 +5219,10 @@ impl<'a> Resolver<'a> {
                 .and_then(|m| m.get(ty))
                 .and_then(|c| c.get(case))
             {
-                let Some(&type_id) = self.type_defs.get(&module_path).and_then(|m| m.get(ty))
+                let Some(&type_id) = self
+                    .container_path
+                    .get_at(&self.type_defs, &module_path)
+                    .and_then(|m| m.get(ty))
                 else {
                     // Defensive: `type_cases` and `type_defs` are populated together,
                     // so a case without its type should not occur — decline same-file
@@ -5254,7 +5254,10 @@ impl<'a> Resolver<'a> {
                 // backtracking, probe M9).
                 if let Some(member_def) =
                     self.emittable_type_member(&module_path, ty, case, use_pos)
-                    && let Some(&type_id) = self.type_defs.get(&module_path).and_then(|m| m.get(ty))
+                    && let Some(&type_id) = self
+                        .container_path
+                        .get_at(&self.type_defs, &module_path)
+                        .and_then(|m| m.get(ty))
                 {
                     if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
                         return Some(SameFileQualified::Decline(
@@ -6005,13 +6008,17 @@ impl<'a> Resolver<'a> {
             // it exactly as it does past a module head whose residual misses.
             if self
                 .module_like_names
-                .get(prefix)
+                .get(&self.container_path.prefix_id(k))
                 .is_some_and(|names| names.contains(tname))
                 && !self.module_like_transparent_for(prefix, tname, cname)
             {
                 return None;
             }
-            let Some(&type_id) = self.type_defs.get(prefix).and_then(|m| m.get(tname)) else {
+            let Some(&type_id) = self
+                .type_defs
+                .get(&self.container_path.prefix_id(k))
+                .and_then(|m| m.get(tname))
+            else {
                 continue; // no `Color` of any kind here — try the enclosing container
             };
             let reach = self.in_file_type_reach_of(k, type_id);
@@ -6325,10 +6332,9 @@ impl<'a> Resolver<'a> {
         // ordered once the value's position is known (below).
         let mut at_block_start: Vec<(SlotClass, Option<FoldOrder>)> = Vec::new();
         for k in 0..=self.container_path.len() {
-            let prefix = &self.container_path[..k];
             for &(pos, class) in self
                 .type_slot_history
-                .get(prefix)
+                .get(&self.container_path.prefix_id(k))
                 .and_then(|m| m.get(head))
                 .into_iter()
                 .flatten()
@@ -6405,8 +6411,8 @@ impl<'a> Resolver<'a> {
                 // This file's type: the open adds this file's earlier blocks
                 // one fragment at a time.
                 let order = self
-                    .type_defs
-                    .get(prefix.as_slice())
+                    .container_path
+                    .get_at(&self.type_defs, prefix)
                     .and_then(|m| m.get(head))
                     .map(|&id| {
                         self.same_file_fold_order(
@@ -6430,8 +6436,8 @@ impl<'a> Resolver<'a> {
                     project_type_opens.push((*pos, order));
                 }
             } else if self
-                .type_defs
-                .get(prefix.as_slice())
+                .container_path
+                .get_at(&self.type_defs, prefix)
                 .is_some_and(|m| m.contains_key(head))
             {
                 // A same-file type filed under the opened module's container
@@ -6665,7 +6671,7 @@ impl<'a> Resolver<'a> {
     fn lexical_type_is_latest(&self, head: &str, type_pos: u32) -> bool {
         let lexical = (0..=self.container_path.len()).flat_map(|k| {
             self.type_slot_history
-                .get(&self.container_path[..k])
+                .get(&self.container_path.prefix_id(k))
                 .and_then(|m| m.get(head))
                 .into_iter()
                 .flatten()
@@ -6686,8 +6692,8 @@ impl<'a> Resolver<'a> {
                 self.type_path_exports.iter().any(|(p, _, _)| *p == path)
                     || self.preceding.exported_type_slot(&path).is_some()
                     || self
-                        .type_defs
-                        .get(prefix.as_slice())
+                        .container_path
+                        .get_at(&self.type_defs, prefix)
                         .is_some_and(|m| m.contains_key(head))
             })
             .map(|(pos, _)| *pos);
@@ -6840,12 +6846,16 @@ impl<'a> Resolver<'a> {
             let prefix = &self.container_path[..k];
             if self
                 .module_like_names
-                .get(prefix)
+                .get(&self.container_path.prefix_id(k))
                 .is_some_and(|names| names.contains(tname))
             {
                 return None;
             }
-            let Some(&type_id) = self.type_defs.get(prefix).and_then(|m| m.get(tname)) else {
+            let Some(&type_id) = self
+                .type_defs
+                .get(&self.container_path.prefix_id(k))
+                .and_then(|m| m.get(tname))
+            else {
                 continue;
             };
             let reach = self.in_file_type_reach_of(k, type_id);
