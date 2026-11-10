@@ -34,8 +34,9 @@ use lsp_types::{Location, ReferenceParams, Uri};
 use rowan::TextRange;
 
 use crate::cst_panic_safe::parse_with_symbols;
-use crate::handlers::{preferred_uri, range_to_lsp, smallest_resolution_with_range};
+use crate::handlers::{indexed_range_to_lsp, preferred_uri, smallest_resolution_with_range};
 use crate::paths::{lexically_normalize, paths_equal};
+use crate::position::LineIndex;
 use crate::position::position_to_offset;
 use crate::semantic::ProjectParses;
 use crate::server::State;
@@ -248,6 +249,12 @@ fn collect_locations(
         _ => 0..resolved.len(),
     };
 
+    // Each file's line index, built the first time a location in it is.
+    let line_indexes: Vec<std::cell::OnceCell<LineIndex>> = parses
+        .texts
+        .iter()
+        .map(|_| std::cell::OnceCell::new())
+        .collect();
     // Build a `Location` for a `(file, range)`, or `None` when no URI can be
     // formed. For the cursor's own file, preserve the request URI (the client may
     // have it open under a casing that differs from `parses.paths`); for other
@@ -261,7 +268,10 @@ fn collect_locations(
         };
         Some(Location {
             uri,
-            range: range_to_lsp(&parses.texts[file_idx], range),
+            range: indexed_range_to_lsp(
+                line_indexes[file_idx].get_or_init(|| LineIndex::new(&parses.texts[file_idx])),
+                range,
+            ),
         })
     };
 
@@ -434,6 +444,7 @@ fn single_file_references(
         result_count = tracing::field::Empty,
     );
     let _scan_guard = scan_span.enter();
+    let lines = LineIndex::new(text);
     let mut out = Vec::new();
     // Attribute-type occurrences live in their own map (EX-3 §2(d)) but are
     // ordinary references of the target type — `matching_in_file` chains them
@@ -447,7 +458,7 @@ fn single_file_references(
         }
         out.push(Location {
             uri: uri.clone(),
-            range: range_to_lsp(text, range),
+            range: indexed_range_to_lsp(&lines, range),
         });
     }
     scan_span.record("result_count", out.len() as i64);

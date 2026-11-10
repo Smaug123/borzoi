@@ -41,7 +41,7 @@ use borzoi_cst::directives::{LineDirectiveStore, lex_with_symbols};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
 
-use crate::position::offset_to_position;
+use crate::position::LineIndex;
 
 /// Which top-level F# grammar a buffer is parsed under. A `.fsi` signature file
 /// exposes *specifications* (type / `val` / member signatures, no bodies); every
@@ -106,6 +106,7 @@ pub fn grouped_diagnostics(
 }
 
 pub fn diagnostics_for(text: &str, symbols: &HashSet<String>) -> Vec<Diagnostic> {
+    let lines = LineIndex::new(text);
     lex_with_symbols(text, symbols)
         .filter_map(|(tok, span)| {
             let err = match tok {
@@ -115,8 +116,8 @@ pub fn diagnostics_for(text: &str, symbols: &HashSet<String>) -> Vec<Diagnostic>
             let range = err.reporting_span(span);
             Some(Diagnostic {
                 range: Range {
-                    start: offset_to_position(text, range.start),
-                    end: offset_to_position(text, range.end),
+                    start: lines.position(range.start),
+                    end: lines.position(range.end),
                 },
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("borzoi".to_string()),
@@ -190,6 +191,7 @@ pub fn parse_diagnostics(
 
     // Tag each parse diagnostic with its LSP severity, then share the dedup
     // (against the lexer producer's spans) and the offset→position mapping.
+    let lines = LineIndex::new(text);
     parsed
         .errors
         .into_iter()
@@ -212,8 +214,8 @@ pub fn parse_diagnostics(
         })
         .map(|(e, severity)| Diagnostic {
             range: Range {
-                start: offset_to_position(text, e.span.start),
-                end: offset_to_position(text, e.span.end),
+                start: lines.position(e.span.start),
+                end: lines.position(e.span.end),
             },
             severity: Some(severity),
             source: Some("borzoi".to_string()),
