@@ -11,6 +11,16 @@
 //! SDK `dotnet` itself selects, under a `global.json` pinning each installed
 //! SDK in turn.
 //!
+//! That is the NuGet restore runs only by default. MSBuild imports
+//! `$(NuGetRestoreTargets)` (the host SDK's `NuGet.targets` unless set), whose
+//! tasks load from `$(RestoreTaskAssemblyFile)` (`NuGet.Build.Tasks.dll`
+//! beside it unless set), and NuGet loads beside its tasks. A project, its
+//! imports or its environment can set either, and restore then runs another
+//! NuGet. So the project is evaluated as the restore evaluates it
+//! ([`crate::workspace::restore_task_routing`]), and anything but the default
+//! route, with both values trusted, declines: following a redirect would mean
+//! modelling where it lands.
+//!
 //! Residual: the restore runs the muxer of `dotnet_root`, while discovery
 //! takes its host root from the environment. Where the SDK discovery selects
 //! is not in `dotnet_root`, this declines; where it is, a `global.json` whose
@@ -37,6 +47,57 @@ pub enum IdentityDecline {
     OtherInstall { sdk: PathBuf, dotnet_root: PathBuf },
     /// `NuGet.Commands.dll` could not be read or names no version.
     Unreadable { path: PathBuf, why: String },
+    /// The project did not evaluate, so its route to NuGet is unknown.
+    NotEvaluated,
+    /// The evaluation routes restore to task code other than the host SDK's
+    /// own, or cannot say where.
+    Redirected {
+        task_assembly_file: EvaluatedProperty,
+        restore_targets: EvaluatedProperty,
+    },
+}
+
+/// One evaluated property, as far as the evaluation can vouch for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvaluatedProperty {
+    /// No evaluated file assigns it.
+    Unset,
+    /// Its value's provenance is untrusted.
+    Untrusted,
+    Trusted(String),
+}
+
+/// How a project's evaluation routes restore to NuGet's task code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreTaskRouting {
+    /// `$(RestoreTaskAssemblyFile)`: the task assembly `NuGet.targets` loads.
+    pub task_assembly_file: EvaluatedProperty,
+    /// `$(NuGetRestoreTargets)`: the restore targets file MSBuild imports.
+    pub restore_targets: EvaluatedProperty,
+}
+
+/// The value `NuGet.targets` gives `RestoreTaskAssemblyFile` when nothing has
+/// set it: the task assembly beside the targets file.
+const DEFAULT_TASK_ASSEMBLY_FILE: &str = "NuGet.Build.Tasks.dll";
+
+/// Whether `routing` is the default route into the SDK at `sdk`: its own
+/// `NuGet.targets`, loading the task assembly beside it.
+fn routes_to_host(routing: &RestoreTaskRouting, sdk: &Path) -> bool {
+    let EvaluatedProperty::Trusted(targets) = &routing.restore_targets else {
+        return false;
+    };
+    // MSBuild spells the default `$(MSBuildToolsPath)\NuGet.targets`.
+    let targets = PathBuf::from(targets.replace('\\', "/"));
+    let same_file = match (
+        std::fs::canonicalize(&targets),
+        std::fs::canonicalize(sdk.join("NuGet.targets")),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    same_file
+        && routing.task_assembly_file
+            == EvaluatedProperty::Trusted(DEFAULT_TASK_ASSEMBLY_FILE.to_owned())
 }
 
 impl fmt::Display for IdentityDecline {
@@ -51,6 +112,15 @@ impl fmt::Display for IdentityDecline {
                 dotnet_root.display()
             ),
             Self::Unreadable { path, why } => write!(f, "{}: {why}", path.display()),
+            Self::NotEvaluated => f.write_str("the project does not evaluate"),
+            Self::Redirected {
+                task_assembly_file,
+                restore_targets,
+            } => write!(
+                f,
+                "restore is routed past the host SDK's NuGet: RestoreTaskAssemblyFile \
+                 {task_assembly_file:?}, NuGetRestoreTargets {restore_targets:?}"
+            ),
         }
     }
 }
@@ -72,6 +142,14 @@ pub fn restoring_nuget(
         return Err(IdentityDecline::OtherInstall {
             sdk,
             dotnet_root: dotnet_root.to_path_buf(),
+        });
+    }
+    let routing = crate::workspace::restore_task_routing(project, env)
+        .ok_or(IdentityDecline::NotEvaluated)?;
+    if !routes_to_host(&routing, &sdk) {
+        return Err(IdentityDecline::Redirected {
+            task_assembly_file: routing.task_assembly_file,
+            restore_targets: routing.restore_targets,
         });
     }
     nuget_commands_identity(&sdk.join("NuGet.Commands.dll"))

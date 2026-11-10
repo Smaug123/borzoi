@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borzoi::restore::nuget_identity::restoring_nuget;
+use borzoi::restore::nuget_identity::{IdentityDecline, restoring_nuget};
 use borzoi::restore::shadow::{RestoreRecord, ShadowVerdict, shadow_parsed};
 use borzoi::restore::{
     RestoreGraph, RestoreGraphSource, RestoreOutcome, ScratchDir, restore_environment,
@@ -769,6 +769,73 @@ fn the_on_demand_restore_runs_b1_in_shadow() {
             other => panic!("{tag}: B₁'s shadow must agree, not {other:?}"),
         }
     }
+}
+
+/// The NuGet a restore runs is the one its evaluation routes to: a project or
+/// its environment can point `RestoreTaskAssemblyFile` at another SDK's tasks,
+/// or `NuGetRestoreTargets` at another SDK's targets, and restore then runs
+/// that SDK's NuGet. The server does not follow a redirect; it declines to
+/// name the NuGet, so B₁ is not graded under an identity that did not run.
+#[test]
+fn a_redirected_restore_task_names_no_nuget() {
+    let sdk = sdk_dir_for(&dotnet_root().join("dotnet"), &std::env::temp_dir());
+    let tasks = sdk.join("NuGet.Build.Tasks.dll");
+    let targets = sdk.join("NuGet.targets");
+    let property = |name: &str, value: &Path| {
+        APP.replace(
+            "</PropertyGroup>",
+            &format!("  <{name}>{}</{name}>\n  </PropertyGroup>", value.display()),
+        )
+    };
+    let cases = [
+        (
+            "redirect-task-property",
+            property("RestoreTaskAssemblyFile", &tasks),
+            None,
+        ),
+        (
+            "redirect-task-environment",
+            APP.to_owned(),
+            Some(("RestoreTaskAssemblyFile", tasks.as_path())),
+        ),
+        // A copy of the SDK's restore targets, elsewhere: its tasks load
+        // beside it, not from the SDK.
+        (
+            "redirect-targets-property",
+            APP.replace(
+                "</PropertyGroup>",
+                "  <NuGetRestoreTargets>$(MSBuildProjectDirectory)/NuGet.targets</NuGetRestoreTargets>\n  </PropertyGroup>",
+            ),
+            None,
+        ),
+    ];
+    let targets_text = std::fs::read_to_string(&targets).expect("the SDK has NuGet.targets");
+    for (tag, text, variable) in cases {
+        let root = write_tree(
+            tag,
+            &[
+                ("App.fsproj", &text),
+                ("App.fs", "module App\n"),
+                ("NuGet.targets", &targets_text),
+            ],
+        );
+        let mut env = controlled_env();
+        if let Some((name, value)) = variable {
+            env.build_environment
+                .insert(name.to_owned(), value.to_str().unwrap().to_owned());
+        }
+        match restoring_nuget(&root.join("App.fsproj"), &dotnet_root(), &env) {
+            Err(IdentityDecline::Redirected { .. }) => {}
+            other => panic!("{tag}: {other:?}"),
+        }
+    }
+    // The control: the default route names the NuGet.
+    let root = write_tree(
+        "redirect-none",
+        &[("App.fsproj", APP), ("App.fs", "module App\n")],
+    );
+    restoring_nuget(&root.join("App.fsproj"), &dotnet_root(), &controlled_env())
+        .unwrap_or_else(|decline| panic!("the default route: {decline}"));
 }
 
 /// The shadow judges NuGet's restore, not the command's exit status. A target

@@ -1288,20 +1288,28 @@ the project hooks after `Restore` can fail once NuGet has restored (review
 found the false report; a fixture pins it). Anything else is logged as an
 error, since under
 certain-implies-exact it is a B₁ bug. A decline is logged with its reason.
-The check costs a few milliseconds in a release build.
+The check costs about 60 ms in a release build, most of it the evaluation
+below, beside a restore of half a second or more that runs once per project.
 
 That needed the identity at runtime, which stage 9 needs too.
 `restore::nuget_identity::restoring_nuget` reads it without running
 anything: the SDK discovery selects for the project
 (`SdkDiscovery::host_sdk_dir`, the selection workload resolution already
 made), and the `AssemblyInformationalVersionAttribute` of its
-`NuGet.Commands.dll` (`Ecma335Assembly::informational_version`). The
-oracles:
+`NuGet.Commands.dll` (`Ecma335Assembly::informational_version`). That is the
+NuGet restore runs only by default: MSBuild imports `$(NuGetRestoreTargets)`,
+whose tasks load from `$(RestoreTaskAssemblyFile)`, and a project, its
+imports or its environment can point either at another SDK (review found the
+environment route). So the project is evaluated as the restore evaluates it,
+and anything but the default route into the host SDK, with both values
+trusted, declines. Stage 9 needs the same rule, and A₁'s model of the cone is
+where a redirect would be followed rather than declined. The oracles:
 
 - `restore_graph.rs` pins a `global.json` to each installed SDK in turn and
   requires the identity to be the one the oracle reports for the
   `NuGet.Commands` it loads from the SDK `dotnet` selects. Ignoring the pin
-  fails it.
+  fails it. A redirect of either property, by the project or by the
+  environment, must decline, and removing any part of the check fails that.
 - `restore_graph.rs` grades B₁ through the shadow's own comparison, with the
   server's identity, which must equal the oracle's, on every fixture and
   corpus project.
