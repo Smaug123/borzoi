@@ -265,6 +265,7 @@ name = "borzoi-oracle-harness"
 version = "0.1.0"
 dependencies = [
  "borzoi-spawn",
+ "libc",
  "proc-macro2",
  "proptest",
  "roxmltree",
