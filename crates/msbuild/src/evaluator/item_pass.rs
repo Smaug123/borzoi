@@ -2375,18 +2375,10 @@ fn evaluate_item_condition_silent(node: Node<'_, '_>, state: &State<'_>) -> (Con
     } else {
         condition::evaluate(cond, &state.lookup)
     };
-    let inexact_undefined: Vec<String> = eval
-        .undefined_properties
-        .iter()
-        .filter(|name| !state.undefined_read_is_exact(name))
-        .cloned()
-        .collect();
     let tainted = eval.outcome == condition::Outcome::Unsupported
-        || !state.condition_is_decided_exactly(
-            cond,
-            Some(&state.entry_project_dir),
-            &inexact_undefined,
-        );
+        || !state.condition_is_decided_exactly(cond, Some(&state.entry_project_dir), &|name| {
+            state.undefined_read_is_exact(name)
+        });
     let gate = match eval.outcome {
         condition::Outcome::True => CondGate::Run,
         condition::Outcome::False => CondGate::Skip,
@@ -2428,7 +2420,7 @@ fn expand_silent(raw: &str, state: &State<'_>) -> Expansion {
                 }
                 had_undefined = true;
                 if unpinned_root.is_none() {
-                    unpinned_root = Some(UnpinnedRoot::Undefined(name));
+                    unpinned_root = Some(state.root_for_undefined_read(&name));
                 }
             }
             Issue::Unsupported { .. } => had_unsupported = true,

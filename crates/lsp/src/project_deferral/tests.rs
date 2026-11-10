@@ -1006,8 +1006,28 @@ fn a_language_version_refusal_names_what_the_version_rests_on() {
             &["`'@(NoSuchItem)' == ''`", "can't evaluate"],
         ),
         (
-            UntrustedCause::UndefinedProperty("TargetFramework".to_string()),
+            UntrustedCause::UndefinedProperty {
+                name: "TargetFramework".to_string(),
+                hidden_by: None,
+            },
             &["`$(TargetFramework)`", "undefined"],
+        ),
+        (
+            UntrustedCause::UndefinedProperty {
+                name: "EnablePreviewFeatures".to_string(),
+                hidden_by: Some(Box::new(UntrustedCause::Unmodelled(
+                    "'@(NoSuchItem)' == ''".to_string(),
+                ))),
+            },
+            &[
+                "`$(EnablePreviewFeatures)`",
+                "couldn't see into",
+                "`'@(NoSuchItem)' == ''`",
+            ],
+        ),
+        (
+            UntrustedCause::Unentered("ImportProjectUnresolved".to_string()),
+            &["couldn't read", "ImportProjectUnresolved"],
         ),
         (UntrustedCause::SdkPackageInput, &["package"]),
     ];

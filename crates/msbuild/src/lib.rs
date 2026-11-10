@@ -562,8 +562,8 @@ pub struct ParsedProject {
     /// trust the captured spelling. Undefined-but-never-written properties
     /// are absent (the environment model resolves them exactly).
     ///
-    /// The value is the deepest cause the walk recorded on the property's
-    /// chain ([`Self::property_untrusted_cause`]).
+    /// The value is the cause in force when the property's value was computed
+    /// ([`Self::property_untrusted_cause`]).
     pub untrusted_properties: HashMap<String, UntrustedCause>,
     pub diagnostics: Vec<Diagnostic>,
     /// `true` if any diagnostic was emitted — i.e. the result may diverge

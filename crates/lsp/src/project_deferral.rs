@@ -378,14 +378,26 @@ impl FoldRefusal {
 /// pinning `LangVersion` can help.
 fn untrusted_cause_phrase(cause: &UntrustedCause) -> String {
     match cause {
-        UntrustedCause::UndefinedProperty(name) => format!(
+        UntrustedCause::UndefinedProperty {
+            name,
+            hidden_by: None,
+        } => format!(
             "`$({name})`, which is undefined when I evaluate the project but may be set in a \
              real build"
+        ),
+        UntrustedCause::UndefinedProperty {
+            name,
+            hidden_by: Some(hidden_by),
+        } => format!(
+            "`$({name})`, which is unset as far as I can see, but an earlier part of the build \
+             I couldn't see into may set it; that part depends on {}",
+            untrusted_cause_phrase(hidden_by)
         ),
         UntrustedCause::Unmodelled(text) => format!("`{text}`, which I can't evaluate"),
         UntrustedCause::SdkPackageInput => {
             "a value the SDK computes from package inputs I don't model".to_string()
         }
+        UntrustedCause::Unentered(what) => format!("content I couldn't read: {what}"),
     }
 }
 

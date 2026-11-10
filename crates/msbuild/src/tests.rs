@@ -9843,10 +9843,228 @@ fn an_untrusted_property_reports_the_root_of_its_chain() {
     }
     assert_eq!(
         p.property_untrusted_cause("FromUndefined"),
-        Some(&crate::UntrustedCause::UndefinedProperty(
-            "TargetFramework".to_string()
-        ))
+        Some(&crate::UntrustedCause::UndefinedProperty {
+            name: "TargetFramework".to_string(),
+            hidden_by: None,
+        })
     );
     assert_eq!(p.property_untrusted_cause("On"), None);
     assert_eq!(p.property_untrusted_cause("NeverWritten"), None);
+}
+
+/// An operand the concrete evaluation short-circuits past is still an operand
+/// the real build may reach. Here both `A` and `B` hold values we refused to
+/// compute (an unmodelled property function), so each is undefined to us and
+/// defined to MSBuild; a decision that takes the unvisited `B` as known
+/// concludes the gate is false and publishes an empty Compile set as certain.
+#[test]
+fn a_short_circuited_inexact_undefined_operand_is_unknown() {
+    let gate = "'$(A)' == '1' And '$(B)' == '1'";
+    let src = format!(
+        r#"<Project>
+  <PropertyGroup>
+    <A>$([System.Math]::Abs(-1))</A>
+    <B>$([System.Math]::Abs(-1))</B>
+  </PropertyGroup>
+  <ItemGroup Condition="{gate}">
+    <Compile Include="A.fs" />
+  </ItemGroup>
+  <PropertyGroup Condition="{gate}">
+    <L>x</L>
+  </PropertyGroup>
+</Project>"#
+    );
+    let p = parse(&src);
+    assert!(
+        p.items_uncertain,
+        "MSBuild includes A.fs; an empty Compile set must not be certain"
+    );
+    assert!(
+        p.property_provenance_untrusted("L"),
+        "MSBuild writes L; its absence must not be certain"
+    );
+}
+
+/// A cause is the one in force when the value was computed. `Tf` is skipped
+/// under gate A, read into `L`, then skipped again under gate B: B comes after
+/// `L` and cannot have affected it, so naming B would send the user to the
+/// wrong condition.
+#[test]
+fn an_untrusted_cause_is_the_one_in_force_at_the_read() {
+    let src = r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(GateA)' == ''">net10.0</Tf>
+    <L>$(Tf)</L>
+    <Tf Condition="'@(GateB)' == ''">net8.0</Tf>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Tf)' == 'net10.0'">
+    <M>x</M>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(
+        p.property_untrusted_cause("L"),
+        Some(&crate::UntrustedCause::Unmodelled(
+            "'@(GateA)' == ''".to_string()
+        ))
+    );
+    assert_eq!(
+        p.property_untrusted_cause("M"),
+        Some(&crate::UntrustedCause::Unmodelled(
+            "'@(GateB)' == ''".to_string()
+        ))
+    );
+}
+
+mod gate_trust_props {
+    //! The evaluator's gate trust held to `condition::evaluate`: whenever a
+    //! write a generated gate guards comes out trusted, the gate's outcome
+    //! must be the same under every value the real build could give the names
+    //! the walk does not hold exactly. `Tf` is untrusted (written under an
+    //! item-reference gate, so undefined and unpinned), `Ref` is refused
+    //! (undefined to us, defined to MSBuild), `On`/`Off` are trusted, and
+    //! `Nope` is never written (exactly undefined).
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use proptest::prelude::*;
+
+    use super::parse;
+    use crate::properties::PropertyMap;
+
+    const VALUES: &[&str] = &["", "true", "false", "1", "x", "net10.0"];
+    const NAMES: &[&str] = &["On", "Off", "Tf", "Ref", "Nope"];
+    const UNCERTAIN: &[&str] = &["Tf", "Ref"];
+
+    fn operand() -> impl Strategy<Value = String> {
+        prop_oneof![
+            prop::sample::select(VALUES).prop_map(|v| format!("'{v}'")),
+            prop::sample::select(NAMES).prop_map(|n| format!("'$({n})'")),
+        ]
+    }
+
+    fn leaf() -> impl Strategy<Value = String> {
+        prop_oneof![
+            (
+                operand(),
+                prop::sample::select(&["==", "!="][..]),
+                operand()
+            )
+                .prop_map(|(l, op, r)| format!("{l} {op} {r}")),
+            prop::sample::select(NAMES).prop_map(|n| format!("'$({n})' == ''")),
+        ]
+    }
+
+    fn gate() -> impl Strategy<Value = String> {
+        leaf().prop_recursive(3, 12, 3, |inner| {
+            prop_oneof![
+                inner.clone().prop_map(|c| format!("!({c})")),
+                prop::collection::vec(inner.clone(), 2..4)
+                    .prop_map(|cs| format!("({})", cs.join(" And "))),
+                prop::collection::vec(inner, 2..4).prop_map(|cs| format!("({})", cs.join(" Or "))),
+            ]
+        })
+    }
+
+    static TRUSTED_WITH_UNCERTAIN: AtomicUsize = AtomicUsize::new(0);
+    static CASES: AtomicUsize = AtomicUsize::new(0);
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn a_trusted_write_has_a_gate_no_uncertain_value_moves(
+            gate in gate(),
+            element in any::<bool>(),
+        ) {
+            let guarded = if element {
+                format!(r#"<PropertyGroup><L Condition="{gate}">x</L></PropertyGroup>"#)
+            } else {
+                format!(r#"<PropertyGroup Condition="{gate}"><L>x</L></PropertyGroup>"#)
+            };
+            let src = format!(
+                r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(NoSuchItem)' == ''">net10.0</Tf>
+    <Ref>$([System.Math]::Abs(-1))</Ref>
+    <On>true</On>
+    <Off>false</Off>
+  </PropertyGroup>
+  {guarded}
+</Project>"#
+            );
+            let p = parse(&src);
+            CASES.fetch_add(1, Ordering::Relaxed);
+            if p.property_provenance_untrusted("L") {
+                return Ok(());
+            }
+            if UNCERTAIN.iter().any(|u| gate.contains(&format!("$({u})"))) {
+                TRUSTED_WITH_UNCERTAIN.fetch_add(1, Ordering::Relaxed);
+            }
+            let mut outcomes = Vec::new();
+            for tf in std::iter::once(None).chain(VALUES.iter().copied().map(Some)) {
+                for r in std::iter::once(None).chain(VALUES.iter().copied().map(Some)) {
+                    let mut props = PropertyMap::new();
+                    props.insert("On", "true");
+                    props.insert("Off", "false");
+                    if let Some(tf) = tf {
+                        props.insert("Tf", tf);
+                    }
+                    if let Some(r) = r {
+                        props.insert("Ref", r);
+                    }
+                    match crate::condition::evaluate(&gate, &props).outcome {
+                        crate::condition::Outcome::True => outcomes.push(true),
+                        crate::condition::Outcome::False => outcomes.push(false),
+                        crate::condition::Outcome::Unsupported => {}
+                    }
+                }
+            }
+            outcomes.dedup();
+            prop_assert!(
+                outcomes.len() <= 1,
+                "L is trusted, but gate {gate} moves with Tf/Ref"
+            );
+        }
+    }
+
+    /// Keeps the property above from passing vacuously: some trusted writes
+    /// must sit behind gates that mention an uncertain name.
+    #[test]
+    fn trusted_writes_behind_uncertain_mentions_are_exercised() {
+        a_trusted_write_has_a_gate_no_uncertain_value_moves();
+        let cases = CASES.load(Ordering::Relaxed);
+        let trusted = TRUSTED_WITH_UNCERTAIN.load(Ordering::Relaxed);
+        assert!(
+            trusted * 20 >= cases,
+            "only {trusted} of {cases} cases had a trusted write behind a gate \
+             mentioning Tf or Ref"
+        );
+    }
+}
+
+/// After an import gate we cannot decide, an unset property may be set by the
+/// file we did not see; the cause of a value resting on it says which gate
+/// that was — the actionable part, since the property itself is not one the
+/// user wrote anywhere (WoofWare/borzoi#499's `EnablePreviewFeatures`).
+#[test]
+fn an_unset_read_after_an_undecided_import_names_what_hid_it() {
+    let src = r#"<Project>
+  <ImportGroup Condition="'@(NoSuchItem)' == ''">
+    <Import Project="Hidden.props" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Unset)' == 'true'">
+    <L>x</L>
+  </PropertyGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(
+        p.property_untrusted_cause("L"),
+        Some(&crate::UntrustedCause::UndefinedProperty {
+            name: "Unset".to_string(),
+            hidden_by: Some(Box::new(crate::UntrustedCause::Unmodelled(
+                "'@(NoSuchItem)' == ''".to_string()
+            ))),
+        })
+    );
 }
