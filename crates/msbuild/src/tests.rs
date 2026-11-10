@@ -9923,7 +9923,10 @@ mod gate_trust_props {
     //! the walk does not hold exactly. `Tf` is untrusted (written under an
     //! item-reference gate, so undefined and unpinned), `Ref` is refused
     //! (undefined to us, defined to MSBuild), `On`/`Off` are trusted, and
-    //! `Nope` is never written (exactly undefined).
+    //! `Nope` is never written (exactly undefined). With `hidden`, an import
+    //! we cannot decide follows `On`/`Off`, so the file we did not see may
+    //! have rewritten them, and they join the names that vary whenever the
+    //! gate also mentions `Tf`.
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -9976,11 +9979,17 @@ mod gate_trust_props {
         fn a_trusted_write_has_a_gate_no_uncertain_value_moves(
             gate in gate(),
             element in any::<bool>(),
+            hidden in any::<bool>(),
         ) {
             let guarded = if element {
                 format!(r#"<PropertyGroup><L Condition="{gate}">x</L></PropertyGroup>"#)
             } else {
                 format!(r#"<PropertyGroup Condition="{gate}"><L>x</L></PropertyGroup>"#)
+            };
+            let hidden_import = if hidden {
+                r#"<ImportGroup Condition="'@(Y)' == ''"><Import Project="Hidden.props" /></ImportGroup>"#
+            } else {
+                ""
             };
             let src = format!(
                 r#"<Project>
@@ -9990,11 +9999,25 @@ mod gate_trust_props {
     <On>true</On>
     <Off>false</Off>
   </PropertyGroup>
+  {hidden_import}
   {guarded}
 </Project>"#
             );
             let p = parse(&src);
             CASES.fetch_add(1, Ordering::Relaxed);
+            // A gate reading only values written before a hidden import is
+            // trusted by a deliberate, measured trade-off (see
+            // `State::walk_opaque`'s consumers); what this holds is that such
+            // a value never settles an operand whose *reference* is untrusted
+            // (`Tf`). A refused operand (`Ref`) short-circuited by one is
+            // outside it: the concrete evaluation never reads it, on `main`
+            // as here.
+            let mentions_untrusted = gate.contains("$(Tf)");
+            let varied: &[&str] = if hidden && mentions_untrusted {
+                &["Tf", "Ref", "On", "Off"]
+            } else {
+                UNCERTAIN
+            };
             if p.property_provenance_untrusted("L") {
                 return Ok(());
             }
@@ -10002,28 +10025,35 @@ mod gate_trust_props {
                 TRUSTED_WITH_UNCERTAIN.fetch_add(1, Ordering::Relaxed);
             }
             let mut outcomes = Vec::new();
-            for tf in std::iter::once(None).chain(VALUES.iter().copied().map(Some)) {
-                for r in std::iter::once(None).chain(VALUES.iter().copied().map(Some)) {
-                    let mut props = PropertyMap::new();
-                    props.insert("On", "true");
-                    props.insert("Off", "false");
-                    if let Some(tf) = tf {
-                        props.insert("Tf", tf);
-                    }
-                    if let Some(r) = r {
-                        props.insert("Ref", r);
-                    }
-                    match crate::condition::evaluate(&gate, &props).outcome {
-                        crate::condition::Outcome::True => outcomes.push(true),
-                        crate::condition::Outcome::False => outcomes.push(false),
-                        crate::condition::Outcome::Unsupported => {}
+            let choices: Vec<Option<&str>> =
+                std::iter::once(None).chain(VALUES.iter().copied().map(Some)).collect();
+            // Every assignment of the varied names, by mixed-radix counting.
+            let combinations = choices.len().pow(varied.len() as u32);
+            for mut code in 0..combinations {
+                let mut props = PropertyMap::new();
+                let mut fixed = vec![("On", Some("true")), ("Off", Some("false"))];
+                for name in varied {
+                    let choice = choices[code % choices.len()];
+                    code /= choices.len();
+                    fixed.retain(|(n, _)| n != name);
+                    fixed.push((name, choice));
+                }
+                for (name, value) in fixed {
+                    if let Some(value) = value {
+                        props.insert(name, value);
                     }
                 }
+                match crate::condition::evaluate(&gate, &props).outcome {
+                    crate::condition::Outcome::True => outcomes.push(true),
+                    crate::condition::Outcome::False => outcomes.push(false),
+                    crate::condition::Outcome::Unsupported => {}
+                }
             }
+            outcomes.sort();
             outcomes.dedup();
             prop_assert!(
                 outcomes.len() <= 1,
-                "L is trusted, but gate {gate} moves with Tf/Ref"
+                "L is trusted, but gate {gate} moves with {varied:?}"
             );
         }
     }
@@ -10196,4 +10226,48 @@ mod cause_history_props {
             "only {with} of {cases} applicable cases gave L a cause"
         );
     }
+}
+
+/// After an import we could not decide, a value written before it may have
+/// been overwritten by the file we did not see. Such a value must not decide
+/// a gate *against* an untrusted operand: `Off` reads false, but the hidden
+/// file may set it true, and then `Tf` decides. Written after the import, it
+/// is current and may.
+#[test]
+fn a_value_an_undecided_import_may_have_overwritten_decides_nothing() {
+    let gate = "'$(Off)' == 'true' And '$(Tf)' == 'v'";
+    let before = format!(
+        r#"<Project>
+  <PropertyGroup>
+    <Off>false</Off>
+    <Tf Condition="'@(X)' == ''">v</Tf>
+  </PropertyGroup>
+  <ImportGroup Condition="'@(Y)' == ''">
+    <Import Project="Hidden.props" />
+  </ImportGroup>
+  <PropertyGroup Condition="{gate}"><L>x</L></PropertyGroup>
+</Project>"#
+    );
+    assert!(
+        parse(&before).property_provenance_untrusted("L"),
+        "Off may have been overwritten by the hidden import"
+    );
+    let after = format!(
+        r#"<Project>
+  <PropertyGroup>
+    <Tf Condition="'@(X)' == ''">v</Tf>
+  </PropertyGroup>
+  <ImportGroup Condition="'@(Y)' == ''">
+    <Import Project="Hidden.props" />
+  </ImportGroup>
+  <PropertyGroup>
+    <Off>false</Off>
+  </PropertyGroup>
+  <PropertyGroup Condition="{gate}"><L>x</L></PropertyGroup>
+</Project>"#
+    );
+    assert!(
+        !parse(&after).property_provenance_untrusted("L"),
+        "Off was written after the hidden import, so it decides the gate"
+    );
 }
