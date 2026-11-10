@@ -1,11 +1,13 @@
 //! Grading generated probe sites against FCS checking the same files as one
 //! project — the diagnostic-aware use oracle the accessibility grids share
-//! (`value_access_open_grid`, `case_access_grid`, `reopened_namespace_grid`).
+//! (`value_access_open_grid`, `case_access_grid`, `reopened_namespace_grid`,
+//! `namespace_value_grid`).
 //!
 //! FCS error-recovers an inaccessible use to its declaration, so a use-site
 //! accessibility error means the only correct answer is to decline. Otherwise
 //! certain-implies-exact: a committed target must be FCS's `(file, range)`,
-//! and a site FCS leaves unbound or rejects must not commit.
+//! a site FCS reads as a fresh pattern binder may commit only to itself, and
+//! a site FCS leaves unbound or rejects must not commit.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -52,17 +54,23 @@ impl FileBuilder {
     /// Append `line` and record a probe at the last occurrence of `probe` in
     /// it.
     pub fn probe(&mut self, line: &str, probe: &str, label: String, sites: &mut Vec<Site>) {
+        sites.push(self.site_in_next(line, probe, label));
+        self.line(line);
+    }
+
+    /// The site of the last occurrence of `probe` in `line`, once `line` is
+    /// the next line appended.
+    pub fn site_in_next(&self, line: &str, probe: &str, label: String) -> Site {
         let at = line.rfind(probe).expect("probe text occurs in its line");
         let start = self.text.len() + at;
-        self.line(line);
-        sites.push(Site {
+        Site {
             file: self.index,
             range: TextRange::new(
                 u32::try_from(start).unwrap().into(),
                 u32::try_from(start + probe.len()).unwrap().into(),
             ),
             label,
-        });
+        }
     }
 }
 
@@ -115,6 +123,12 @@ fn error_diagnostics(
 pub enum FcsVerdict {
     /// Resolved, cleanly, to a declaration in `(file index, range)`.
     Resolved(usize, TextRange),
+    /// No use at the site, but a definition there: FCS reads the name as a
+    /// fresh binder (an unbound uppercase pattern name), declared at `(file
+    /// index, range)`, the site itself. Not a resolution, so a grid's
+    /// must-commit selection over [`Self::Resolved`] does not take it up;
+    /// committing the site to itself is correct, anything else wrong.
+    FreshBinder(usize, TextRange),
     /// A use-site accessibility error: inaccessible here.
     Inaccessible,
     /// No use recorded at the site (unbound), or an error at the site.
@@ -206,28 +220,41 @@ pub fn grade_in(
                 })
                 .map(|(_, _, _, n)| *n)
                 .collect();
-            let decl = fcs
+            // A use at the site, or else a definition there: a name FCS reads
+            // as a fresh binder (an unbound uppercase pattern) is declared at
+            // the site itself.
+            let record = fcs
                 .iter()
                 .find(|f| f.path.file_name() == path.file_name())
                 .and_then(|f| {
+                    let at = |u: &&super::NormalisedProjectUse| u.start == start && u.end == end;
                     f.uses
                         .iter()
-                        .find(|u| u.start == start && u.end == end && !u.is_from_definition)
+                        .filter(at)
+                        .find(|u| !u.is_from_definition)
+                        .or_else(|| f.uses.iter().filter(at).find(|u| u.is_from_definition))
                 })
-                .and_then(|u| u.decl.as_ref());
+                .and_then(|u| u.decl.as_ref().map(|d| (d, u.is_from_definition)));
             let fcs = if here.iter().any(|n| is_accessibility_error(*n)) {
                 FcsVerdict::Inaccessible
             } else if !here.is_empty() {
                 FcsVerdict::Rejected
             } else {
-                match decl {
-                    Some(d) => FcsVerdict::Resolved(
-                        index_of(&d.file),
-                        TextRange::new(
-                            u32::try_from(d.start).unwrap().into(),
-                            u32::try_from(d.end).unwrap().into(),
-                        ),
-                    ),
+                match record {
+                    Some((d, definition)) => {
+                        let target = (
+                            index_of(&d.file),
+                            TextRange::new(
+                                u32::try_from(d.start).unwrap().into(),
+                                u32::try_from(d.end).unwrap().into(),
+                            ),
+                        );
+                        if definition {
+                            FcsVerdict::FreshBinder(target.0, target.1)
+                        } else {
+                            FcsVerdict::Resolved(target.0, target.1)
+                        }
+                    }
                     None => FcsVerdict::Rejected,
                 }
             };
@@ -260,7 +287,10 @@ pub fn grade_in(
 pub fn is_wrong(g: &Graded) -> bool {
     match (&g.fcs, &g.ours) {
         (_, OurVerdict::Declined) => false,
-        (FcsVerdict::Resolved(f, r), OurVerdict::Committed(of, or)) => (f, r) != (of, or),
+        (
+            FcsVerdict::Resolved(f, r) | FcsVerdict::FreshBinder(f, r),
+            OurVerdict::Committed(of, or),
+        ) => (f, r) != (of, or),
         (FcsVerdict::Inaccessible | FcsVerdict::Rejected, OurVerdict::Committed(..)) => true,
     }
 }
@@ -275,6 +305,7 @@ pub fn census(graded: &[Graded]) -> String {
     for g in graded {
         let fcs = match g.fcs {
             FcsVerdict::Resolved(..) => "resolved",
+            FcsVerdict::FreshBinder(..) => "fresh binder",
             FcsVerdict::Inaccessible => "inaccessible",
             FcsVerdict::Rejected => "rejected",
         };

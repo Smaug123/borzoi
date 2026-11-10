@@ -73,6 +73,7 @@ mod member_hiding_diff;
 mod module_function_measures_diff;
 mod module_open_matrix;
 mod namespace_fold_matrix;
+mod namespace_value_grid;
 mod open_member_order;
 mod open_shortening_matrix;
 mod operator_name_diff;
