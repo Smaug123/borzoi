@@ -684,9 +684,9 @@ impl Resolver<'_> {
         } else {
             &mut self.contributions.module_opens
         };
-        match into.iter_mut().find(|(p, _)| *p == self.container_path) {
+        match into.iter_mut().find(|(p, _)| *p == *self.container_path) {
             Some((_, c)) => c.merge(contribution),
-            None => into.push((self.container_path.clone(), contribution.clone())),
+            None => into.push((self.container_path.to_vec(), contribution.clone())),
         }
     }
 
@@ -755,7 +755,7 @@ impl Resolver<'_> {
         if segs.is_empty() {
             return None;
         }
-        let mut path = self.container_path.clone();
+        let mut path = self.container_path.to_vec();
         path.extend(segs);
         Some(path)
     }
@@ -788,7 +788,7 @@ impl Resolver<'_> {
                 self.push_contribution(&contribution, pos);
                 self.record_open_contribution(&contribution, false);
                 if let Some(name) = name {
-                    let mut path = self.container_path.clone();
+                    let mut path = self.container_path.to_vec();
                     path.push(name);
                     self.auto_open_type_paths.insert(path);
                 }
@@ -797,7 +797,7 @@ impl Resolver<'_> {
             {
                 // An intrinsic augmentation of an `[<AutoOpen>]` type extends
                 // the statics that type folds into its container.
-                let mut path = self.container_path.clone();
+                let mut path = self.container_path.to_vec();
                 path.push(name);
                 if self.auto_open_type_paths.contains(&path) {
                     let contribution = Contribution {
@@ -819,7 +819,7 @@ impl Resolver<'_> {
         }
         // Its later augmentations extend what it folds, as a type's do.
         if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
-            let mut path = self.container_path.clone();
+            let mut path = self.container_path.to_vec();
             path.push(id_text(&name).to_string());
             self.auto_open_type_paths.insert(path);
         }

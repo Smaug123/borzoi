@@ -281,13 +281,18 @@ pub const NESTED_LONG: usize = 3_000;
 
 /// `src` as the body of [`MODULE_NEST`] nested `module M =` declarations.
 pub fn nested_in_modules(src: &str) -> String {
+    nested_in_modules_at(src, MODULE_NEST)
+}
+
+/// `src` as the body of `depth` nested `module M =` declarations.
+pub fn nested_in_modules_at(src: &str, depth: usize) -> String {
     let mut s = String::new();
-    for i in 0..MODULE_NEST {
+    for i in 0..depth {
         s.extend(std::iter::repeat_n(' ', 2 * i));
         s.push_str("module M =\n");
     }
     for line in src.lines() {
-        s.extend(std::iter::repeat_n(' ', 2 * MODULE_NEST));
+        s.extend(std::iter::repeat_n(' ', 2 * depth));
         s.push_str(line);
         s.push('\n');
     }

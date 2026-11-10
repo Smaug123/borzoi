@@ -11,8 +11,18 @@
 //! Each shape is resolved and inferred at `n` and [`FACTOR`]` * n` repeats, and
 //! each walk's time must grow by at most [`MAX_RATIO`] (linear is 8, quadratic
 //! 64). A shape that nests once per repeat stops growing at the parser's
-//! height bound, so its ratio falls to about 1; it is kept so a cost per level
-//! that grows with the height still shows.
+//! height bound, so its ratio falls to about 1.
+//!
+//! So the tree's *height* is a second dimension, held by its own test: a walk
+//! that re-reads the path from the root at each level — a container path
+//! hashed once per prefix for every type name, each pattern's subtree walked
+//! again for every pattern above it — is quadratic in the height, and a
+//! repeat count that crosses the bound cannot see it. Every shape the parser
+//! stops at the bound is measured at an eighth of its tallest clean count and
+//! at that count; every shape that can sit in nested modules is measured,
+//! at a fixed length, under [`MODULE_NEST`]` / `[`FACTOR`] modules and under
+//! [`MODULE_NEST`]. [`HEIGHT_EXEMPT`] names the walks still quadratic in the
+//! height, and why.
 //!
 //! The shapes are [`SHAPES`], every repetition form of the grammar, and
 //! [`FLAT_FORMS`]: repeats that real files make long — bindings that use
@@ -35,7 +45,10 @@ use std::time::Duration;
 
 use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
-use borzoi_oracle_harness::repetition_shapes::{Case, Form, Kind, SHAPES, Shape};
+use borzoi_oracle_harness::repetition_shapes::{
+    Case, Form, Kind, MODULE_NEST, SHAPES, SHORT, Shape, nestable_shapes, nested_in_modules_at,
+    tallest_clean_count,
+};
 use borzoi_oracle_harness::thread_cpu::cpu_timed;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, SourceFile, SyntaxRecovery, WALK_STACK_BYTES, infer_project,
@@ -142,13 +155,17 @@ fn exempt(shape: &Shape, walk: Walk) -> bool {
         .any(|&(name, w, _)| name == shape.name && (w == walk || w == Walk::Resolution))
 }
 
+fn parse_kind(kind: Kind, src: &str) -> borzoi_cst::parser::Parse {
+    match kind {
+        Kind::Impl => parse(src),
+        Kind::Sig => parse_sig(src),
+    }
+}
+
 /// The calling thread's CPU time resolving, then (if `infer`) inferring, `src`
 /// as a one-file project.
 fn walk_times(kind: Kind, src: &str, infer: bool) -> (Duration, Duration) {
-    let parsed = match kind {
-        Kind::Impl => parse(src),
-        Kind::Sig => parse_sig(src),
-    };
+    let parsed = parse_kind(kind, src);
     let root = parsed.root.clone();
     let (file, path) = match kind {
         Kind::Impl => (
@@ -194,13 +211,27 @@ struct Timing {
 
 impl Timing {
     fn measure(shape: &'static Shape, n: usize, runs: usize) -> Timing {
-        let infer = !exempt(shape, Walk::Inference);
-        let short_src = source(shape, n);
-        let long_src = source(shape, FACTOR * n);
+        Timing::measure_sources(
+            shape.kind,
+            &source(shape, n),
+            &source(shape, FACTOR * n),
+            !exempt(shape, Walk::Inference),
+            runs,
+        )
+    }
+
+    /// The fastest times of `short_src` and `long_src` over `runs` runs each.
+    fn measure_sources(
+        kind: Kind,
+        short_src: &str,
+        long_src: &str,
+        infer: bool,
+        runs: usize,
+    ) -> Timing {
         let mut timing: Option<Timing> = None;
         for _ in 0..runs {
-            let short = walk_times(shape.kind, &short_src, infer);
-            let long = walk_times(shape.kind, &long_src, infer);
+            let short = walk_times(kind, short_src, infer);
+            let long = walk_times(kind, long_src, infer);
             timing = Some(match timing {
                 None => Timing { short, long },
                 Some(t) => Timing {
@@ -212,16 +243,16 @@ impl Timing {
         timing.expect("at least one run")
     }
 
-    /// The walks of `shape` held to the bound whose time grew past it:
+    /// The walks not `exempt` whose time grew past the bound:
     /// `(walk, short, long)`.
-    fn over(&self, shape: &Shape) -> Vec<(Walk, Duration, Duration)> {
+    fn over(&self, exempt: impl Fn(Walk) -> bool) -> Vec<(Walk, Duration, Duration)> {
         let allowed = |short: Duration| short.mul_f64(MAX_RATIO) + SLACK;
         [
             (Walk::Resolution, self.short.0, self.long.0),
             (Walk::Inference, self.short.1, self.long.1),
         ]
         .into_iter()
-        .filter(|&(walk, short, long)| !exempt(shape, walk) && long > allowed(short))
+        .filter(|&(walk, short, long)| !exempt(walk) && long > allowed(short))
         .collect()
     }
 }
@@ -268,10 +299,11 @@ fn every_flat_repetition_walks_in_linear_time() {
             "{:28} resolution {:?} -> {:?}, inference {:?} -> {:?}",
             shape.name, timing.short.0, timing.long.0, timing.short.1, timing.long.1
         );
-        if !timing.over(shape).is_empty() {
+        let exempt = |walk| exempt(shape, walk);
+        if !timing.over(exempt).is_empty() {
             timing = on_case_stack(|| Timing::measure(shape, n, RETRIES));
         }
-        for (walk, short, long) in timing.over(shape) {
+        for (walk, short, long) in timing.over(exempt) {
             failures.push(format!(
                 "{}: {walk:?} took {short:?} at {n} repeats and {long:?} at {} ({:.1}x)",
                 shape.name,
@@ -283,6 +315,186 @@ fn every_flat_repetition_walks_in_linear_time() {
     assert!(
         failures.is_empty(),
         "walks grew faster than {MAX_RATIO}x from n to {FACTOR}n repeats:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The most repeats of a shape's body under nested modules: long enough that
+/// its names, not the modules, are most of what the walks look up.
+const NESTED_BODY: usize = 64;
+
+/// The walks known to grow faster than linear in the tree's height, by the
+/// [`HeightPair::name`]s they do so on, which are not held to the bound. Each
+/// says why.
+const HEIGHT_EXEMPT: &[(Walk, &str, &[&str])] = &[
+    (
+        Walk::Resolution,
+        "`callee_kind` walks an application's spine to its head at every \
+         application on it",
+        &[
+            "app",
+            "app_offside_args",
+            "high_precedence_paren_app",
+            "high_precedence_brack_index",
+        ],
+    ),
+    (
+        Walk::Inference,
+        "`node_span` walks every token under a node to find its last, at \
+         every node it spans",
+        &[
+            "method_call",
+            "op_add",
+            "op_sub",
+            "op_mul",
+            "op_div",
+            "op_mod",
+            "op_pow",
+            "op_pipe",
+            "op_pipe_offside",
+            "op_add_offside",
+            "op_compose",
+            "op_and",
+            "op_or",
+            "op_eq",
+            "op_lt",
+            "op_bitand",
+            "op_bitor",
+            "op_shl",
+            "op_dollar",
+            "op_append",
+            "op_concat",
+            "op_assign",
+            "op_custom",
+            "elif",
+        ],
+    ),
+];
+
+fn height_exempt(name: &str, walk: Walk) -> bool {
+    HEIGHT_EXEMPT
+        .iter()
+        .any(|&(w, _, names)| w == walk && names.contains(&name))
+}
+
+/// A tall input at two heights: the short one and one [`FACTOR`] times taller.
+struct HeightPair {
+    name: String,
+    shape: &'static Shape,
+    short: String,
+    long: String,
+}
+
+/// Every shape the parser stops at the height bound, at an eighth of its
+/// tallest clean count and at that count; then every nestable shape at up to
+/// [`NESTED_BODY`] repeats under [`MODULE_NEST`]` / `[`FACTOR`] and under
+/// [`MODULE_NEST`] modules. Each source parses cleanly, so no walk declines
+/// a recovered declaration and passes vacuously.
+fn height_pairs() -> Vec<HeightPair> {
+    let clean = |kind: Kind, src: &str| parse_kind(kind, src).errors.is_empty();
+    let mut pairs = Vec::new();
+    for shape in SHAPES.iter().filter(|shape| shape.indent == 0) {
+        let case = Case {
+            shape,
+            nested: false,
+            form: Form::TallestClean,
+        };
+        let tallest = tallest_clean_count(&case, |src| clean(shape.kind, src));
+        if tallest == case.long() {
+            // Flat: as long as a case builds it, it is not near the bound.
+            continue;
+        }
+        pairs.push(HeightPair {
+            name: shape.name.to_string(),
+            shape,
+            short: case.source(tallest / FACTOR),
+            long: case.source(tallest),
+        });
+    }
+    for shape in nestable_shapes() {
+        let case = Case {
+            shape,
+            nested: true,
+            form: Form::Long,
+        };
+        let at = |repeats: usize, depth: usize| {
+            format!(
+                "{}{}",
+                case.prelude(),
+                nested_in_modules_at(&shape.source(repeats), depth)
+            )
+        };
+        // A body that nests once per repeat can reach the bound under the
+        // modules at [`NESTED_BODY`]: halve it until it parses cleanly there.
+        let mut repeats = NESTED_BODY;
+        while repeats > SHORT && !clean(shape.kind, &at(repeats, MODULE_NEST)) {
+            repeats /= 2;
+        }
+        pairs.push(HeightPair {
+            name: format!("{} (nested)", shape.name),
+            shape,
+            short: at(repeats, MODULE_NEST / FACTOR),
+            long: at(repeats, MODULE_NEST),
+        });
+    }
+    for pair in &pairs {
+        for src in [&pair.short, &pair.long] {
+            assert!(
+                clean(pair.shape.kind, src),
+                "{}: a measured source must parse cleanly",
+                pair.name
+            );
+        }
+    }
+    pairs
+}
+
+#[test]
+fn every_nesting_walks_in_linear_time_in_its_height() {
+    let only = std::env::var("BORZOI_SCALING_ONLY").ok();
+    let pairs = on_case_stack(height_pairs);
+    for (_, _, names) in HEIGHT_EXEMPT {
+        for name in *names {
+            assert!(
+                pairs.iter().any(|pair| pair.name == *name),
+                "height-exempt {name} is not a measured pair"
+            );
+        }
+    }
+    let mut failures = Vec::new();
+    for pair in pairs {
+        if only
+            .as_deref()
+            .is_some_and(|only| !only.split(',').any(|o| o == pair.shape.name))
+        {
+            continue;
+        }
+        let infer = !exempt(pair.shape, Walk::Inference);
+        let measure = |runs| {
+            on_case_stack(|| {
+                Timing::measure_sources(pair.shape.kind, &pair.short, &pair.long, infer, runs)
+            })
+        };
+        let mut timing = measure(1);
+        println!(
+            "{:28} resolution {:?} -> {:?}, inference {:?} -> {:?}",
+            pair.name, timing.short.0, timing.long.0, timing.short.1, timing.long.1
+        );
+        let exempt = |walk| exempt(pair.shape, walk) || height_exempt(&pair.name, walk);
+        if !timing.over(exempt).is_empty() {
+            timing = measure(RETRIES);
+        }
+        for (walk, short, long) in timing.over(exempt) {
+            failures.push(format!(
+                "{}: {walk:?} took {short:?} and {long:?} at {FACTOR}x the height ({:.1}x)",
+                pair.name,
+                long.as_secs_f64() / short.as_secs_f64().max(1e-9),
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "walks grew faster than {MAX_RATIO}x over {FACTOR}x the tree height:\n{}",
         failures.join("\n")
     );
 }

@@ -1145,7 +1145,7 @@ impl<'a> Resolver<'a> {
     /// the containers that set it are rare (an auto-open type abbreviation, a
     /// module alias, an `extern`).
     fn container_and_ancestors_hide_values(&self) -> bool {
-        let mut path = self.container_path.clone();
+        let mut path = self.container_path.to_vec();
         loop {
             if self.modules_with_hidden_values.contains(&path) {
                 return true;

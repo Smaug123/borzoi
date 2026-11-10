@@ -194,13 +194,13 @@ impl<'a> Resolver<'a> {
         let id = self.intern(def);
         self.type_def_arities.insert(id, arity);
         self.type_defs_by_arity
-            .entry(self.container_path.clone())
+            .entry(self.container_path.id())
             .or_default()
             .insert((key.clone(), arity), id);
         self.record(range, Resolution::Local(id));
         *self
             .type_decl_counts
-            .entry(self.container_path.clone())
+            .entry(self.container_path.id())
             .or_default()
             .entry(key.clone())
             .or_default()
@@ -210,18 +210,18 @@ impl<'a> Resolver<'a> {
         // definition of a name wins — a redefinition shadows the earlier one for
         // later uses, mirroring the value frames' last-wins.
         self.type_defs
-            .entry(self.container_path.clone())
+            .entry(self.container_path.id())
             .or_default()
             .insert(key.clone(), id);
         // The parallel slot-class entry (same key, same last-wins) — whether
         // this type's name enters FCS's unqualified slot and can evict a
         // same-named value ([`head_value_slot`](Self::head_value_slot)).
         self.type_slot_classes
-            .entry(self.container_path.clone())
+            .entry(self.container_path.to_vec())
             .or_default()
             .insert(key.clone(), slot);
         self.type_slot_history
-            .entry(self.container_path.clone())
+            .entry(self.container_path.id())
             .or_default()
             .entry(key.clone())
             .or_default()
@@ -231,7 +231,7 @@ impl<'a> Resolver<'a> {
         // module-qualified `A.Foo.Red` from an inaccessible site (a sibling) does
         // not resolve its case/member ([`Self::type_access_roots`]).
         self.type_access_roots
-            .entry(self.container_path.clone())
+            .entry(self.container_path.to_vec())
             .or_default()
             .insert(key.clone(), access_root_len);
         self.mark_decl(&key).ty = true;
@@ -365,12 +365,12 @@ impl<'a> Resolver<'a> {
         // A `private` representation leaves the type visible but its cases
         // usable only within the type's container.
         let repr_access_root =
-            super::decls::union_repr_is_private(defn).then(|| self.container_path.clone());
+            super::decls::union_repr_is_private(defn).then(|| self.container_path.to_vec());
         let type_key = id_text(type_name).to_string();
         // The type was just defined, so the name's latest binder is it.
         let own_key = self
             .type_defs
-            .get(&self.container_path)
+            .get(&self.container_path.id())
             .and_then(|m| m.get(&type_key))
             .copied();
         for case in u.cases() {
@@ -449,7 +449,7 @@ impl<'a> Resolver<'a> {
                         Resolution::Item(item_id)
                     }
                     None => {
-                        self.note_hidden_value_module(self.container_path.clone());
+                        self.note_hidden_value_module(self.container_path.to_vec());
                         Resolution::Local(id)
                     }
                 }
@@ -461,7 +461,7 @@ impl<'a> Resolver<'a> {
             // identity: a non-RQA union case's `Color.Red` resolves to the same
             // `Item` as its declaration and bare / `Mod.Case` uses.
             self.type_cases
-                .entry(self.container_path.clone())
+                .entry(self.container_path.to_vec())
                 .or_default()
                 .entry(type_key.clone())
                 .or_default()
@@ -533,7 +533,7 @@ impl<'a> Resolver<'a> {
         );
         if let Some(own) = self
             .type_defs_by_arity
-            .get(&self.container_path)
+            .get(&self.container_path.id())
             .and_then(|m| m.get(&key))
             .copied()
         {
@@ -601,7 +601,7 @@ impl<'a> Resolver<'a> {
             // The defining occurrence self-resolves (go-to-definition on the case).
             self.record(range, res);
             self.type_cases
-                .entry(self.container_path.clone())
+                .entry(self.container_path.to_vec())
                 .or_default()
                 .entry(type_key.clone())
                 .or_default()
@@ -637,7 +637,7 @@ impl<'a> Resolver<'a> {
         let res = match self.export_case(&entry_name, id, is_private, None, CaseKind::Exception) {
             Some(item_id) => Resolution::Item(item_id),
             None => {
-                self.note_hidden_value_module(self.container_path.clone());
+                self.note_hidden_value_module(self.container_path.to_vec());
                 Resolution::Local(id)
             }
         };
@@ -819,7 +819,7 @@ impl<'a> Resolver<'a> {
                     });
                     Some((item_idx, item_id))
                 };
-                let mut path = self.container_path.clone();
+                let mut path = self.container_path.to_vec();
                 path.push(case_name.clone());
                 self.push_export_decl(
                     path,
@@ -1045,7 +1045,7 @@ impl<'a> Resolver<'a> {
     fn type_in_scope_may_take_slot(&self, name: &str) -> bool {
         (0..=self.container_path.len()).any(|k| {
             self.type_slot_history
-                .get(&self.container_path[..k])
+                .get(&self.container_path.prefix_id(k))
                 .and_then(|m| m.get(name))
                 .is_some_and(|entries| entries.iter().any(|(_, class)| *class != SlotClass::Keeps))
         })
@@ -1057,7 +1057,7 @@ impl<'a> Resolver<'a> {
         let header = defn.typar_decls().map_or(0, |t| t.typars().count());
         let here = |name: &str, arity: usize| {
             self.type_defs_by_arity
-                .get(&self.container_path)
+                .get(&self.container_path.id())
                 .and_then(|m| m.get(&(name.to_string(), arity)))
                 .copied()
         };
@@ -1106,7 +1106,7 @@ impl<'a> Resolver<'a> {
         let only_declaration = self.own_type_decl_counts.get(&name) == Some(&1);
         let own = self
             .type_defs_by_arity
-            .get(&self.container_path)
+            .get(&self.container_path.id())
             .and_then(|m| m.get(&(name.clone(), 0)))
             .copied()?;
         let pinned = only_declaration
@@ -3116,8 +3116,8 @@ impl<'a> Resolver<'a> {
         }
         if let Some(module) = module {
             return self
-                .type_decl_counts
-                .get(module)
+                .container_path
+                .get_at(&self.type_decl_counts, module)
                 .and_then(|m| m.get(name))
                 .is_none_or(|by_arity| by_arity.keys().any(|&a| a < arity));
         }
@@ -3169,8 +3169,8 @@ impl<'a> Resolver<'a> {
                 }
             }
             if let Some(by_arity) = self
-                .type_decl_counts
-                .get(container)
+                .container_path
+                .get_at(&self.type_decl_counts, container)
                 .and_then(|m| m.get(name))
             {
                 arities.extend(by_arity.keys().copied());
@@ -3302,7 +3302,7 @@ impl<'a> Resolver<'a> {
         let (at_arity, any_arity) = (0..=self.container_path.len())
             .filter_map(|k| {
                 self.type_decl_counts
-                    .get(&self.container_path[..k])
+                    .get(&self.container_path.prefix_id(k))
                     .and_then(|m| m.get(name))
             })
             .fold((0, 0), |(at, any), by_arity| {
@@ -3336,14 +3336,13 @@ impl<'a> Resolver<'a> {
         arity: usize,
     ) -> Option<(usize, Option<DefId>)> {
         (0..=self.container_path.len()).rev().find_map(|k| {
-            let prefix = &self.container_path[..k];
             self.type_defs
-                .get(prefix)
+                .get(&self.container_path.prefix_id(k))
                 .is_some_and(|m| m.contains_key(name))
                 .then(|| {
                     let found = self
                         .type_defs_by_arity
-                        .get(prefix)
+                        .get(&self.container_path.prefix_id(k))
                         .and_then(|m| m.get(&(name.to_string(), arity)))
                         .copied();
                     (k, found)
@@ -3916,7 +3915,7 @@ impl<'a> Resolver<'a> {
     /// earlier member set before repopulating.
     pub(super) fn define_type_members(&mut self, defn: &TypeDefn, type_name: &SyntaxToken) {
         let type_key = id_text(type_name).to_string();
-        if let Some(by_type) = self.type_members.get_mut(&self.container_path) {
+        if let Some(by_type) = self.type_members.get_mut(&*self.container_path) {
             by_type.remove(&type_key);
         }
         let visible_from = defn.syntax().text_range().start();
@@ -3924,7 +3923,7 @@ impl<'a> Resolver<'a> {
         if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
             members.extend(om.members());
         }
-        let container = self.container_path.clone();
+        let container = self.container_path.to_vec();
         self.add_type_members(&container, &type_key, &members, visible_from);
     }
 
@@ -3947,14 +3946,14 @@ impl<'a> Resolver<'a> {
             let type_key = id_text(seg).to_string();
             if self
                 .type_defs
-                .get(&self.container_path)
+                .get(&self.container_path.id())
                 .is_some_and(|m| m.contains_key(&type_key))
             {
                 let mut members: Vec<MemberDefn> = defn.members().collect();
                 if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
                     members.extend(om.members());
                 }
-                let container = self.container_path.clone();
+                let container = self.container_path.to_vec();
                 self.add_type_members(&container, &type_key, &members, visible_from);
                 return;
             }

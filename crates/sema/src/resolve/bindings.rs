@@ -66,7 +66,7 @@ impl<'a> Resolver<'a> {
         // scope but `open_module_values` does not enumerate, so opening this module
         // may shadow earlier opens (see [`Self::modules_with_hidden_values`]).
         if prepared.iter().any(|p| !p.eager_entries.is_empty()) {
-            self.note_hidden_value_module(self.container_path.clone());
+            self.note_hidden_value_module(self.container_path.to_vec());
         }
 
         // Active-pattern cases follow the same `rec` discipline as ordinary value
@@ -234,7 +234,7 @@ impl<'a> Resolver<'a> {
                     // The export-decl-list twin of the `ExportedItem` push: an
                     // ordinary `let` value (no case, no type-qualified path). Its
                     // `value_exports` row derives from the referenced item.
-                    let mut decl_path = self.container_path.clone();
+                    let mut decl_path = self.container_path.to_vec();
                     decl_path.push(name.clone());
                     self.push_export_decl(
                         decl_path,

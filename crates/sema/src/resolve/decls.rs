@@ -240,7 +240,7 @@ impl<'a> Resolver<'a> {
         repr_access_root: Option<Vec<String>>,
         kind: CaseKind,
     ) -> Option<ItemId> {
-        let mut qualified = self.container_path.clone();
+        let mut qualified = self.container_path.to_vec();
         qualified.push(name.to_string());
         let pos = self.defs[def.index()].range.start();
         if self.anonymous_root {
@@ -300,7 +300,7 @@ impl<'a> Resolver<'a> {
         if self.anonymous_root {
             return;
         }
-        let mut path = self.container_path.clone();
+        let mut path = self.container_path.to_vec();
         path.push(type_name.to_string());
         path.push(case_name.to_string());
         self.set_last_decl_type_qualified(path);
@@ -319,7 +319,7 @@ impl<'a> Resolver<'a> {
         if self.anonymous_root {
             return;
         }
-        let mut path = self.container_path.clone();
+        let mut path = self.container_path.to_vec();
         path.push(name.to_string());
         self.type_path_exports.push((path, cases_enumerable, slot));
     }
@@ -371,7 +371,7 @@ impl<'a> Resolver<'a> {
         let pos = self.defs[def.index()].range.start();
         self.push_export_decl(
             {
-                let mut p = self.container_path.clone();
+                let mut p = self.container_path.to_vec();
                 p.push(name.to_string());
                 p
             },
@@ -454,7 +454,7 @@ impl<'a> Resolver<'a> {
                     // anonymous-root alias is not in `nested_module_exports`, so an
                     // `open X` of it falls to the conservative path regardless).
                     if !self.anonymous_root && !segs.is_empty() {
-                        let mut alias_path = self.container_path.clone();
+                        let mut alias_path = self.container_path.to_vec();
                         alias_path.extend(segs.iter().cloned());
                         // Always mark `X` hidden. This is the only marker exported
                         // cross-file (`module_aliases` is same-file), so a *later*
@@ -477,7 +477,7 @@ impl<'a> Resolver<'a> {
                     // `path` (container + `X`) is both its nested-module shadow and
                     // its hidden-value path (both derived only when non-anonymous).
                     if !segs.is_empty() {
-                        let mut path = self.container_path.clone();
+                        let mut path = self.container_path.to_vec();
                         path.extend(segs.iter().cloned());
                         let pos = ident
                             .idents()
@@ -543,7 +543,7 @@ impl<'a> Resolver<'a> {
                         // `nested_module_paths` and spuriously defer later-file
                         // assembly references rooted there (codex fuzz find).
                         if !genuine && !segs.is_empty() {
-                            let mut path = self.container_path.clone();
+                            let mut path = self.container_path.to_vec();
                             path.extend(segs);
                             let pos = li
                                 .idents()
@@ -585,7 +585,7 @@ impl<'a> Resolver<'a> {
                         // wiring reads it via `project_ns_hidden` below).
                         let type_auto_open = attrs_auto_open(defn.attributes());
                         if type_auto_open {
-                            self.note_hidden_value_module(self.container_path.clone());
+                            self.note_hidden_value_module(self.container_path.to_vec());
                         }
                         let slot = self.type_slot_class(defn);
                         // The type's access-root (own `private` plus any enclosing
@@ -598,14 +598,14 @@ impl<'a> Resolver<'a> {
                         self.define_type(&name, arity, slot, type_access_root);
                         if let Some(own) = self
                             .type_defs_by_arity
-                            .get(&self.container_path)
+                            .get(&self.container_path.id())
                             .and_then(|m| m.get(&(id_text(&name).to_string(), arity)))
                             .copied()
                         {
                             // Placed for later files wherever it has a real
                             // path, with the scope its `private`s leave it.
                             if !self.anonymous_root {
-                                let mut path = self.container_path.clone();
+                                let mut path = self.container_path.to_vec();
                                 path.push(id_text(&name).to_string());
                                 self.placed_types.push(DeclaredType {
                                     def: own,
@@ -661,7 +661,7 @@ impl<'a> Resolver<'a> {
                         // shadow set, and — when `[<AutoOpen>]` — its container's
                         // hidden-value marker.
                         {
-                            let mut path = self.container_path.clone();
+                            let mut path = self.container_path.to_vec();
                             path.push(id_text(&name).to_string());
                             self.push_export_decl(
                                 path,
@@ -681,7 +681,7 @@ impl<'a> Resolver<'a> {
                         // `define_union_cases` and `define_enum_cases` run for the
                         // same defn (only one matches the repr) and must not clobber
                         // the other's just-added cases.
-                        if let Some(by_type) = self.type_cases.get_mut(&self.container_path) {
+                        if let Some(by_type) = self.type_cases.get_mut(&*self.container_path) {
                             by_type.remove(&*id_text(&name));
                         }
                         // A union's cases enter the container-scoped case index
@@ -822,7 +822,7 @@ impl<'a> Resolver<'a> {
                     // value-namespace ctor is a separate `Item` decl from
                     // `define_exception_case` → `export_case` below).
                     {
-                        let mut path = self.container_path.clone();
+                        let mut path = self.container_path.to_vec();
                         path.push(id_text(&name).to_string());
                         self.push_export_decl(
                             path,
@@ -908,14 +908,14 @@ impl<'a> Resolver<'a> {
                 // rare (P/Invoke), and every other unenumerable value producer
                 // (union cases / exception ctors / active patterns / aliases)
                 // already marks its module hidden.
-                self.note_hidden_value_module(self.container_path.clone());
+                self.note_hidden_value_module(self.container_path.to_vec());
                 // The export-decl-list twin: `path` = the container (its
                 // hidden-value path, recorded unconditionally as above); `name`
                 // carries the function segments (empty for a nameless recovery
                 // node), and `path + name` is the nested-module shadow, derived
                 // only when `name` is non-empty.
                 self.push_export_decl(
-                    self.container_path.clone(),
+                    self.container_path.to_vec(),
                     ext.syntax().text_range().start(),
                     ExportDeclKind::Extern { name: ext_name },
                 );
@@ -1735,7 +1735,7 @@ impl<'a> Resolver<'a> {
             decl.module_pos = Some(nm.syntax().text_range().start().into());
         }
         self.record_project_name_shadow(segs.clone());
-        let mut qualified = self.container_path.clone();
+        let mut qualified = self.container_path.to_vec();
         qualified.extend(segs.iter().cloned());
         let nm_auto_open = attrs_auto_open(nm.attributes());
         let nm_private = header_is_private(nm.syntax());
@@ -1782,7 +1782,7 @@ impl<'a> Resolver<'a> {
         // (File-level accumulators — `items`, `defs`, `resolutions`,
         // `nested_module_exports` — are the file's contribution and persist.)
         let saved_module_path = self.module_path.clone();
-        let saved_container_path = self.container_path.clone();
+        let saved_container = self.container_path.mark();
         let saved_imports = self.imports.clone();
         let saved_open_shortening_prefixes = self.open_shortening_prefixes.clone();
         let saved_incomplete_open_prefixes = self.incomplete_open_prefixes.clone();
@@ -1812,10 +1812,10 @@ impl<'a> Resolver<'a> {
         // `module_path = None` to match the anonymous top-level module's own
         // no-cross-file-export invariant. Intra-file resolution is unaffected
         // either way (it goes through the scope frame, not `module_path`).
-        let mut path = self.container_path.clone();
-        path.extend(segs);
-        self.module_path = (!self.anonymous_root).then(|| path.clone());
-        self.container_path = path;
+        for segment in segs {
+            self.container_path.push(segment);
+        }
+        self.module_path = (!self.anonymous_root).then(|| self.container_path.to_vec());
         // A `module private Sub` scopes its contents to its parent (this module's
         // container); stacked private modules take the deepest floor (see
         // [`Resolver::access_floor`]). A non-private module inherits the enclosing
@@ -1858,7 +1858,7 @@ impl<'a> Resolver<'a> {
         self.rec_contribution = saved_rec_contribution;
 
         self.module_path = saved_module_path;
-        self.container_path = saved_container_path;
+        self.container_path.leave_to(saved_container);
         self.access_floor = saved_access_floor;
         self.imports = saved_imports;
         self.explicit_open_prefixes = saved_explicit_open_prefixes;
@@ -1984,7 +1984,7 @@ impl<'a> Resolver<'a> {
             return;
         }
         if !self.anonymous_root {
-            let mut qualified = self.container_path.clone();
+            let mut qualified = self.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
             self.nested_module_exports.insert(qualified);
         }
@@ -2007,7 +2007,7 @@ impl<'a> Resolver<'a> {
             return;
         }
         if !self.anonymous_root {
-            let mut qualified = self.container_path.clone();
+            let mut qualified = self.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
             self.augmentation_head_exports.insert(qualified);
         }
@@ -2020,7 +2020,7 @@ impl<'a> Resolver<'a> {
     /// name ([`id_text`]), not a token's text.
     pub(super) fn note_module_like_name(&mut self, name: &str) {
         self.module_like_names
-            .entry(self.container_path.clone())
+            .entry(self.container_path.id())
             .or_default()
             .insert(name.to_string());
     }
@@ -2032,7 +2032,7 @@ impl<'a> Resolver<'a> {
     /// `name` is already a name ([`id_text`]), not a token's text.
     pub(super) fn mark_decl(&mut self, name: &str) -> &mut super::state::DeclKinds {
         self.container_decls
-            .entry(self.container_path.clone())
+            .entry(self.container_path.to_vec())
             .or_default()
             .entry(name.to_string())
             .or_default()
@@ -2089,7 +2089,7 @@ impl Resolver<'_> {
         self.record_project_name_shadow(vec![name.clone()]);
         // An `open` of the container, here or in a later file, declines the
         // name ([`Self::open_module_values`]); nothing else it holds is hidden.
-        let mut path = self.container_path.clone();
+        let mut path = self.container_path.to_vec();
         path.push(name);
         self.push_export_decl(path, pos, ExportDeclKind::OpaqueCase);
     }
