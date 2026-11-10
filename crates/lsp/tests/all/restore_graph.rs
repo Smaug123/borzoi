@@ -42,17 +42,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borzoi::restore::nuget_identity::{IdentityDecline, restoring_nuget};
-use borzoi::restore::shadow::{NotRun, RestoreRecord, ShadowVerdict, shadow_parsed};
+use borzoi::restore::nuget_identity::restoring_nuget;
+use borzoi::restore::shadow::{RestoreRecord, ShadowVerdict, shadow_parsed};
 use borzoi::restore::{
     RestoreGraph, RestoreGraphSource, RestoreOutcome, ScratchDir, restore_environment,
-    restore_global_properties, restore_graph, restore_to_scratch,
+    restore_graph, restore_to_scratch,
 };
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::workspace::Workspace;
 use borzoi_nuget::dgspec::{
-    DependencyGraphSpec, DgSpecDecline, DgSpecResolveDecline, EnvironmentVariable, PathSegment,
-    ResolvedFramework, environment_variable, parse_dgspec,
+    DependencyGraphSpec, DgSpecDecline, DgSpecResolveDecline, EnvironmentVariable, NuGetIdentity,
+    PathSegment, ResolvedFramework, environment_variable, parse_dgspec,
 };
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use borzoi_oracle_harness::nuget_oracle::{EnvironmentChange, Oracle, sdk_dir_for};
@@ -416,19 +416,19 @@ fn package_label(package: &borzoi_nuget::PackageIdentity) -> String {
 ///
 /// This is the LSP's own shadow check (`borzoi::restore::shadow`), which every
 /// on-demand restore runs, so what is graded here is what runs in the server.
-/// The identity it is handed is the one the server computes
-/// (`restoring_nuget`), which must be the identity of the `NuGet.Commands` the
-/// oracle ran.
+/// The identity it is handed is the one the server reads from the restore's
+/// log (`restoring_nuget`), which must be the identity of the `NuGet.Commands`
+/// the oracle ran.
 fn spawn_free(
     project: &Path,
     spec: &DependencyGraphSpec,
     decomposition: &Decomposition,
+    restored: &ScratchDir,
     env: &SdkDiscoveryEnv,
 ) -> Result<SpawnFree, String> {
-    // The identity under the restore's globals; the fixtures and corpus
-    // projects condition nothing on their values, so placeholder paths do.
-    let globals = restore_global_properties(Path::new("/scratch"), Path::new("/packages"));
-    let identity = restoring_nuget(project, &dotnet_root(), env, &globals)
+    let log = std::fs::read_to_string(restored.path().join("restore.log"))
+        .map_err(|e| format!("{}: no restore log: {e}", project.display()))?;
+    let identity = restoring_nuget(&log)
         .map_err(|decline| format!("{}: no NuGet identity: {decline}", project.display()))?;
     if identity.as_str() != decomposition.nuget_commands {
         return Err(format!(
@@ -555,30 +555,58 @@ fn committed_spec_and_b1(project: &Path) -> (DependencyGraphSpec, SpawnFree) {
     );
     let spec =
         parse_dgspec(&text).unwrap_or_else(|decline| panic!("the reader declined: {decline}"));
-    let b1 = spawn_free(project, &spec, &decomposition, &env)
+    let b1 = spawn_free(project, &spec, &decomposition, &restored, &env)
         .unwrap_or_else(|failure| panic!("{failure}"));
     (spec, b1)
 }
 
-/// The server names the restoring NuGet without running anything
-/// (`restoring_nuget`: the SDK discovery selects, and the informational
-/// version in its `NuGet.Commands.dll`). Under a `global.json` pinning each
-/// installed SDK in turn, that is the `NuGet.Commands` the oracle loads from
-/// the SDK `dotnet` itself selects from the project's directory, and with more
-/// than one SDK installed the pin is seen to move it.
-#[test]
-fn the_server_names_the_nuget_of_the_sdk_dotnet_selects() {
-    let dotnet = dotnet_root().join("dotnet");
-    let mut versions: Vec<String> = std::fs::read_dir(dotnet_root().join("sdk"))
+/// The identity of the `NuGet.Commands` the oracle loads from `sdk`.
+fn oracle_identity(sdk: &Path) -> String {
+    let response = Oracle::spawn_on(sdk, &[]).request(&json!({"op": "nuGetLogCodes"}));
+    let identity = &response["nugetCommands"];
+    assert_eq!(
+        identity["path"].as_str(),
+        sdk.join("NuGet.Commands.dll").to_str(),
+        "the oracle ran {sdk:?}'s NuGet: {response}"
+    );
+    identity["informationalVersion"]
+        .as_str()
+        .expect("the identity names a version")
+        .to_owned()
+}
+
+/// Every installed SDK's version directory, by version.
+fn installed_sdks() -> Vec<(String, PathBuf)> {
+    let mut sdks: Vec<(String, PathBuf)> = std::fs::read_dir(dotnet_root().join("sdk"))
         .expect("DOTNET_ROOT has an sdk/ directory")
         .map(|entry| entry.expect("list sdk/").path())
         .filter(|path| path.join("NuGet.Commands.dll").is_file())
-        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .map(|path| (path.file_name().unwrap().to_str().unwrap().to_owned(), path))
         .collect();
-    versions.sort();
-    assert!(!versions.is_empty(), "no SDK under DOTNET_ROOT");
+    sdks.sort();
+    sdks
+}
+
+/// What the on-demand restore of `project`, under `env`, says ran it.
+fn shadow_of(project: &Path, env: &SdkDiscoveryEnv) -> borzoi::restore::ShadowRun {
+    let mut workspace = Workspace::with_env(env.clone());
+    let served = workspace.served_tfm_for_project(project);
+    restore_to_scratch(project, &dotnet_root(), &served, Some(env))
+        .shadow
+        .unwrap_or_else(|| panic!("{}: the restore wrote no spec", project.display()))
+}
+
+/// The server reads which NuGet restored from the restore's own log
+/// (`restoring_nuget`). Under a `global.json` pinning each installed SDK in
+/// turn, that is the `NuGet.Commands` the oracle loads from the SDK `dotnet`
+/// itself selects from the project's directory, and each SDK names its own.
+#[test]
+fn the_server_names_the_nuget_of_the_sdk_dotnet_selects() {
+    let dotnet = dotnet_root().join("dotnet");
+    let sdks = installed_sdks();
+    assert!(!sdks.is_empty(), "no SDK under DOTNET_ROOT");
     let mut identities = BTreeSet::new();
-    for version in &versions {
+    for (version, _) in &sdks {
         let global_json =
             format!(r#"{{ "sdk": {{ "version": "{version}", "rollForward": "disable" }} }}"#);
         let root = write_tree(
@@ -595,30 +623,19 @@ fn the_server_names_the_nuget_of_the_sdk_dotnet_selects() {
             Some(version.as_str()),
             "dotnet honours the pin"
         );
-        let response = Oracle::spawn_on(&sdk, &[]).request(&json!({"op": "nuGetLogCodes"}));
-        let identity = &response["nugetCommands"];
+        let expected = oracle_identity(&sdk);
+        let shadow = shadow_of(&root.join("App.fsproj"), &controlled_env());
         assert_eq!(
-            identity["path"].as_str(),
-            sdk.join("NuGet.Commands.dll").to_str(),
-            "the oracle ran the pinned SDK's NuGet: {response}"
+            shadow.identity.as_ref().map(|identity| identity.as_str()),
+            Some(expected.as_str()),
+            "SDK {version}: {:?}",
+            shadow.verdict
         );
-        let expected = identity["informationalVersion"]
-            .as_str()
-            .expect("the identity names a version");
-        let globals = restore_global_properties(Path::new("/scratch"), Path::new("/packages"));
-        let ours = restoring_nuget(
-            &root.join("App.fsproj"),
-            &dotnet_root(),
-            &controlled_env(),
-            &globals,
-        )
-        .unwrap_or_else(|decline| panic!("SDK {version}: no identity: {decline}"));
-        assert_eq!(ours.as_str(), expected, "SDK {version}");
-        identities.insert(expected.to_owned());
+        identities.insert(expected);
     }
     assert_eq!(
         identities.len(),
-        versions.len(),
+        sdks.len(),
         "each installed SDK names its own NuGet: {identities:?}"
     );
 }
@@ -780,108 +797,86 @@ fn the_on_demand_restore_runs_b1_in_shadow() {
     }
 }
 
-/// The NuGet a restore runs is the one its evaluation routes to: a project or
-/// its environment can point `RestoreTaskAssemblyFile` at another SDK's tasks,
-/// or `NuGetRestoreTargets` at another SDK's targets, and restore then runs
-/// that SDK's NuGet. The server does not follow a redirect; it declines to
-/// name the NuGet, so B₁ is not graded under an identity that did not run.
-///
-/// The routing is read from the project evaluated as the restore evaluates
-/// it, so a redirect conditioned on any global property the restore passes
-/// (`restore_global_properties`, the list its command line is built from) is
-/// seen: one row per global, through the on-demand restore itself.
+/// Which NuGet a restore runs is MSBuild's to decide, and a project or its
+/// environment can move it to another SDK's: by `RestoreTaskAssemblyFile`,
+/// set in the project, in the environment, or under a condition on a global
+/// the restore passes, or by re-registering the task (`UsingTask Override`).
+/// The server reads the NuGet that ran from the restore's log, so under each
+/// it names the other SDK's NuGet, as the oracle reports it, and B₁ is graded
+/// only if that NuGet is verified.
 #[test]
-fn a_redirected_restore_task_names_no_nuget() {
-    let sdk = sdk_dir_for(&dotnet_root().join("dotnet"), &std::env::temp_dir());
-    let tasks = sdk.join("NuGet.Build.Tasks.dll");
-    let targets_text =
-        std::fs::read_to_string(sdk.join("NuGet.targets")).expect("the SDK has NuGet.targets");
-    let property = |condition: &str, name: &str, value: &str| {
+fn a_redirected_restore_names_the_nuget_that_ran() {
+    let host = sdk_dir_for(&dotnet_root().join("dotnet"), &std::env::temp_dir());
+    let sdks = installed_sdks();
+    let Some((_, other)) = sdks
+        .iter()
+        .find(|(_, path)| std::fs::canonicalize(path).ok() != std::fs::canonicalize(&host).ok())
+    else {
+        panic!("redirecting the restore needs a second installed SDK: {sdks:?}");
+    };
+    let expected = oracle_identity(other);
+    assert_ne!(
+        expected,
+        oracle_identity(&host),
+        "the two SDKs' NuGets differ"
+    );
+    let tasks = other.join("NuGet.Build.Tasks.dll");
+    let tasks = tasks.to_str().unwrap();
+    let in_group = |element: &str| {
         APP.replace(
             "</PropertyGroup>",
-            &format!("  <{name} Condition=\"{condition}\">{value}</{name}>\n  </PropertyGroup>"),
+            &format!("  {element}\n  </PropertyGroup>"),
         )
     };
-    let tasks_text = tasks.to_str().unwrap();
-    let mut cases = vec![
+    let cases = [
         (
-            "redirect-task-property".to_owned(),
-            property("", "RestoreTaskAssemblyFile", tasks_text),
+            "redirect-property",
+            in_group(&format!("<RestoreTaskAssemblyFile>{tasks}</RestoreTaskAssemblyFile>")),
             None,
         ),
         (
-            "redirect-task-environment".to_owned(),
+            "redirect-environment",
             APP.to_owned(),
-            Some(("RestoreTaskAssemblyFile", tasks_text)),
+            Some(("RestoreTaskAssemblyFile", tasks)),
         ),
-    ];
-    let globals = restore_global_properties(Path::new("/scratch"), Path::new("/packages"));
-    assert!(globals.iter().any(|(name, _)| *name == "NuGetInteractive"));
-    for (name, value) in &globals {
-        if value.is_empty() {
-            continue;
-        }
-        cases.push((
-            format!("redirect-under-{name}"),
-            property(
-                &format!("'$({name})' != ''"),
-                "RestoreTaskAssemblyFile",
-                tasks_text,
+        (
+            "redirect-under-a-restore-global",
+            in_group(&format!(
+                "<RestoreTaskAssemblyFile Condition=\"'$(NuGetInteractive)' == 'false'\">{tasks}</RestoreTaskAssemblyFile>"
+            )),
+            None,
+        ),
+        (
+            "redirect-using-task-override",
+            APP.replace(
+                "</Project>",
+                &format!(
+                    "  <UsingTask TaskName=\"NuGet.Build.Tasks.RestoreTask\" AssemblyFile=\"{tasks}\" Override=\"true\" />\n</Project>"
+                ),
             ),
             None,
-        ));
-    }
+        ),
+    ];
     for (tag, text, variable) in cases {
-        let root = write_tree(
-            &tag,
-            &[
-                ("App.fsproj", &text),
-                ("App.fs", "module App\n"),
-                ("NuGet.targets", &targets_text),
-            ],
-        );
-        let project = root.join("App.fsproj");
+        let root = write_tree(tag, &[("App.fsproj", &text), ("App.fs", "module App\n")]);
         let mut env = controlled_env();
         if let Some((name, value)) = variable {
             env.build_environment
                 .insert(name.to_owned(), value.to_owned());
         }
-        let mut workspace = Workspace::with_env(env.clone());
-        let served = workspace.served_tfm_for_project(&project);
-        let restored = restore_to_scratch(&project, &dotnet_root(), &served, Some(&env));
-        match restored.shadow.map(|shadow| shadow.verdict) {
-            Some(ShadowVerdict::NotRun(NotRun::NoIdentity(IdentityDecline::Redirected {
-                ..
-            }))) => {}
+        let shadow = shadow_of(&root.join("App.fsproj"), &env);
+        assert_eq!(
+            shadow.identity.as_ref().map(|identity| identity.as_str()),
+            Some(expected.as_str()),
+            "{tag}: {:?}",
+            shadow.verdict
+        );
+        let verified = NuGetIdentity::new(expected.clone()).is_verified();
+        match &shadow.verdict {
+            ShadowVerdict::Declined(DgSpecResolveDecline::UnverifiedNuGet { .. }) if !verified => {}
+            ShadowVerdict::Agreed(_) | ShadowVerdict::Declined(_) if verified => {}
             other => panic!("{tag}: {other:?}"),
         }
-    }
-    // A copy of the SDK's restore targets, elsewhere: its tasks load beside
-    // it, not from the SDK. No restore gets as far as a spec with no tasks
-    // there, so this one asks for the identity directly.
-    let root = write_tree(
-        "redirect-targets-property",
-        &[
-            (
-                "App.fsproj",
-                &property(
-                    "",
-                    "NuGetRestoreTargets",
-                    "$(MSBuildProjectDirectory)/NuGet.targets",
-                ),
-            ),
-            ("App.fs", "module App\n"),
-            ("NuGet.targets", &targets_text),
-        ],
-    );
-    match restoring_nuget(
-        &root.join("App.fsproj"),
-        &dotnet_root(),
-        &controlled_env(),
-        &globals,
-    ) {
-        Err(IdentityDecline::Redirected { .. }) => {}
-        other => panic!("redirect-targets-property: {other:?}"),
     }
 }
 
@@ -1235,7 +1230,7 @@ fn pinned_projects() {
                 match decomposes_losslessly(project, &text, &generated, &restored) {
                     Ok(decomposition) => {
                         if let Ok(spec) = &spec {
-                            match spawn_free(project, spec, &decomposition, &env) {
+                            match spawn_free(project, spec, &decomposition, &restored, &env) {
                                 Ok(b1) => lines.push(format!("{key} {}", b1.label())),
                                 Err(failure) => failures.push(failure),
                             }

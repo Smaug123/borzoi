@@ -1497,41 +1497,6 @@ pub(crate) fn asset_list_covers_compile(v: &str) -> bool {
 /// malformed `global.json`) we log and evaluate without a resolver. The
 /// user sees the error on the `.fsproj` buffer, whose diagnostics run their
 /// own discovery ([`crate::fsproj_diagnostics::diagnostics_for`]).
-/// How `project` routes restore to NuGet's task code when evaluated as the
-/// on-demand restore evaluates it: under the restore's global properties
-/// `globals` and its environment `environment`, with SDK discovery from
-/// `env`, and no target framework (the restore's outer evaluation). The
-/// evaluated `RestoreTaskAssemblyFile` and `NuGetRestoreTargets`; `None` when
-/// the project does not evaluate.
-pub fn restore_task_routing(
-    project: &Path,
-    env: &SdkDiscoveryEnv,
-    globals: &HashMap<String, String>,
-    environment: &HashMap<String, String>,
-) -> Option<crate::restore::nuget_identity::RestoreTaskRouting> {
-    use crate::restore::nuget_identity::{EvaluatedProperty, RestoreTaskRouting};
-    let source = crate::disk_text::read(project).ok()?;
-    let discovery = SdkDiscovery::for_project(project, env).ok()?;
-    let parsed = parse_with_optional_sdk(&source, project, globals, environment, Some(&discovery))?;
-    let read = |name: &str| {
-        if parsed.property_provenance_untrusted(name) {
-            return EvaluatedProperty::Untrusted;
-        }
-        match parsed
-            .properties
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        {
-            Some((_, value)) => EvaluatedProperty::Trusted(value.clone()),
-            None => EvaluatedProperty::Unset,
-        }
-    };
-    Some(RestoreTaskRouting {
-        task_assembly_file: read("RestoreTaskAssemblyFile"),
-        restore_targets: read("NuGetRestoreTargets"),
-    })
-}
-
 fn evaluate_project(
     project_path: &Path,
     env: &SdkDiscoveryEnv,

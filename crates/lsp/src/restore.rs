@@ -103,7 +103,8 @@
 //! - **B₁ in shadow.** Every restore that writes a spec also hands it to the
 //!   spawn-free resolver (`borzoi_nuget::dgspec::resolve_dgspec`) and logs
 //!   whether that agreed with the restore ([`shadow`]). The restore's answer
-//!   is served whatever B₁ says.
+//!   is served whatever B₁ says. The restore writes a detailed log into
+//!   scratch, from which the NuGet that ran is read ([`nuget_identity`]).
 //!
 //! On success the scratch assets file is read exactly as a normal
 //! `obj/project.assets.json` would be, then the scratch directory is removed.
@@ -134,6 +135,7 @@ use crate::project_assets::{
 };
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::workspace::ServedTfm;
+use borzoi_nuget::dgspec::NuGetIdentity;
 use shadow::{RestoreRecord, ShadowVerdict};
 
 mod exact;
@@ -247,6 +249,8 @@ pub struct ScratchRestore {
 
 /// B₁'s shadow verdict, and how long it took to reach.
 pub struct ShadowRun {
+    /// The NuGet the restore ran, when its log names one.
+    pub identity: Option<NuGetIdentity>,
     pub verdict: ShadowVerdict,
     pub elapsed: Duration,
 }
@@ -255,10 +259,15 @@ pub struct ShadowRun {
 fn log_shadow(project: &Path, shadow: &ShadowRun) {
     let elapsed_ms = shadow.elapsed.as_millis();
     let verdict = shadow.verdict.kind();
+    let nuget = shadow
+        .identity
+        .as_ref()
+        .map_or("unknown", |identity| identity.as_str());
     match &shadow.verdict {
         ShadowVerdict::Agreed(frameworks) => tracing::info!(
             project = %project.display(),
             verdict,
+            nuget,
             elapsed_ms,
             frameworks = frameworks.len(),
             "B₁ shadow: agrees with the restore"
@@ -266,6 +275,7 @@ fn log_shadow(project: &Path, shadow: &ShadowRun) {
         ShadowVerdict::Declined(decline) => tracing::info!(
             project = %project.display(),
             verdict,
+            nuget,
             elapsed_ms,
             %decline,
             "B₁ shadow: declined"
@@ -273,6 +283,7 @@ fn log_shadow(project: &Path, shadow: &ShadowRun) {
         ShadowVerdict::NotRun(why) => tracing::info!(
             project = %project.display(),
             verdict,
+            nuget,
             elapsed_ms,
             why = ?why,
             "B₁ shadow: not run"
@@ -280,6 +291,7 @@ fn log_shadow(project: &Path, shadow: &ShadowRun) {
         ShadowVerdict::Disagreed(disagreement) => tracing::error!(
             project = %project.display(),
             verdict,
+            nuget,
             elapsed_ms,
             %disagreement,
             "B₁ shadow: disagrees with the restore (a B₁ bug; the restore's answer is served)"
@@ -335,12 +347,9 @@ pub fn restore_to_scratch(
     let assets_path = scratch.path.join("project.assets.json");
     let assets_text = std::fs::read_to_string(&assets_path).ok();
     let shadow = Some(run_shadow(
-        project,
-        dotnet_root,
         env,
         &spec,
         &scratch.path,
-        &inputs.packages.folder,
         assets_text.as_deref(),
     ));
     ScratchRestore {
@@ -357,35 +366,33 @@ pub fn restore_to_scratch(
     }
 }
 
-/// B₁ over the spec a restore of `project` read, checked against what NuGet
-/// did in that restore, which wrote into `scratch`.
+/// B₁ over the spec a restore read, checked against what NuGet did in that
+/// restore, which wrote into `scratch`.
 ///
 /// Whether NuGet's restore succeeded is read from the `success` NuGet records
 /// in `project.nuget.cache`, not from the command's exit status: a target the
 /// project hooks after `Restore` can fail the command once NuGet has
-/// restored, and B₁ models NuGet's restore, not the project's targets.
+/// restored, and B₁ models NuGet's restore, not the project's targets. Which
+/// NuGet restored is read from the restore's log ([`nuget_identity`]).
 fn run_shadow(
-    project: &Path,
-    dotnet_root: &Path,
     env: &SdkDiscoveryEnv,
     spec: &str,
     scratch: &Path,
-    packages_folder: &Path,
     assets: Option<&str>,
 ) -> ShadowRun {
     let started = std::time::Instant::now();
+    let identity = match std::fs::read_to_string(restore_log(scratch)) {
+        Ok(log) => nuget_identity::restoring_nuget(&log),
+        Err(e) => Err(nuget_identity::IdentityDecline::NoLog(e.to_string())),
+    };
+    let named = identity.as_ref().ok().cloned();
     let verdict = match nuget_restore_succeeded(scratch) {
         Err(why) => ShadowVerdict::NotRun(shadow::NotRun::NoNuGetResult(why)),
         Ok(succeeded) => {
             let assets: Option<serde_json::Value> =
                 assets.and_then(|text| serde_json::from_str(text).ok());
             shadow::shadow(
-                nuget_identity::restoring_nuget(
-                    project,
-                    dotnet_root,
-                    env,
-                    &restore_global_properties(scratch, packages_folder),
-                ),
+                identity,
                 spec,
                 RestoreRecord {
                     succeeded,
@@ -396,6 +403,7 @@ fn run_shadow(
         }
     };
     ShadowRun {
+        identity: named,
         verdict,
         elapsed: started.elapsed(),
     }
@@ -852,7 +860,16 @@ fn offline_restore_command(
     packages_folder: &Path,
     env: &SdkDiscoveryEnv,
 ) -> Option<Command> {
-    std::fs::create_dir_all(empty_source(scratch)).ok()?;
+    // An empty local folder used as the *only* restore source. As an MSBuild
+    // property this overrides the project's `<RestoreSources>` and the ambient
+    // config's feeds alike (the property takes precedence over config sources),
+    // so restore reads only the global-packages cache — offline.
+    let empty_source = scratch.join("empty-source");
+    std::fs::create_dir_all(&empty_source).ok()?;
+
+    // `MSBuildProjectExtensionsPath` (trailing slash required — it's an MSBuild
+    // directory property) redirects the whole restore output tree into scratch.
+    let ext_path = with_trailing_slash(scratch);
 
     // Invoke the muxer from the discovered SDK root when we can: setting
     // `DOTNET_ROOT` on the child does not make a `PATH`-resolved muxer use that
@@ -872,6 +889,12 @@ fn offline_restore_command(
     match verb {
         Verb::Restore => {
             cmd.arg("restore").arg(project).arg("-nologo");
+            // A detailed log, which names the assembly each task ran from:
+            // the evidence of which NuGet restored ([`nuget_identity`]).
+            let mut logger = std::ffi::OsString::from("-flp:LogFile=");
+            logger.push(restore_log(scratch));
+            logger.push(";Verbosity=detailed");
+            cmd.arg(logger);
         }
         Verb::GenerateRestoreGraph { output } => {
             cmd.arg("msbuild")
@@ -887,9 +910,39 @@ fn offline_restore_command(
     // differently. The real server supplies none (empty extras) and its default
     // `Configuration`/`Platform` match restore's own defaults, so this bites only
     // a caller that sets graph-affecting globals — the test harnesses.
-    for (name, value) in restore_global_properties(scratch, packages_folder) {
-        cmd.arg(property_arg(name, &value));
-    }
+    cmd.arg(property_arg(
+        "MSBuildProjectExtensionsPath",
+        ext_path.as_os_str(),
+    ))
+    // `RestoreOutputPath` defaults from `MSBuildProjectExtensionsPath`, but a
+    // project/import can override it (e.g. `custom/`), which would write the
+    // assets into the source tree and leave scratch empty. Pin it to scratch
+    // too so the whole output stays there regardless.
+    .arg(property_arg("RestoreOutputPath", ext_path.as_os_str()))
+    // Pin the *package* folder (extraction and read) to the one NuGet would
+    // use (see the module docs).
+    .arg(property_arg(
+        "RestorePackagesPath",
+        packages_folder.as_os_str(),
+    ))
+    .arg("-p:RestoreRecursive=false")
+    .arg(property_arg("RestoreSources", empty_source.as_os_str()))
+    .arg("-p:RestoreAdditionalProjectSources=")
+    .arg("-p:RestorePackagesWithLockFile=false")
+    .arg(property_arg(
+        "NuGetLockFilePath",
+        redirected_lock_file(scratch).as_os_str(),
+    ))
+    // NuGet's package audit contacts its `auditSources` even when
+    // `RestoreSources` points at the empty folder, so an unreachable audit
+    // endpoint would block until the deadline. Disable it to stay offline.
+    .arg("-p:NuGetAudit=false")
+    // The one global `dotnet restore` adds beyond its target (see
+    // `tests/all/restore_graph.rs`, which diffs what each verb forwards to
+    // MSBuild). Passing it for every verb makes `msbuild` evaluate the project
+    // under the same globals, so a project conditioned on it restores and
+    // generates alike.
+    .arg("-p:NuGetInteractive=false");
     // Resolve the SDK from the project's own `global.json` tree, not the LSP
     // process's working directory.
     if let Some(dir) = project.parent() {
@@ -899,60 +952,9 @@ fn offline_restore_command(
     Some(cmd)
 }
 
-/// The empty local folder an offline restore into `scratch` uses as its only
-/// source.
-fn empty_source(scratch: &Path) -> PathBuf {
-    scratch.join("empty-source")
-}
-
-/// The global properties every restore-shaped invocation whose output lands in
-/// `scratch` passes (`-p:`), in order. Anything that evaluates a project as
-/// the restore does evaluates it under exactly these
-/// ([`nuget_identity::restoring_nuget`]).
-pub fn restore_global_properties(
-    scratch: &Path,
-    packages_folder: &Path,
-) -> Vec<(&'static str, OsString)> {
-    // `MSBuildProjectExtensionsPath` (trailing slash required — it's an MSBuild
-    // directory property) redirects the whole restore output tree into scratch.
-    let ext_path = with_trailing_slash(scratch);
-    vec![
-        ("MSBuildProjectExtensionsPath", ext_path.clone()),
-        // `RestoreOutputPath` defaults from `MSBuildProjectExtensionsPath`,
-        // but a project/import can override it (e.g. `custom/`), which would
-        // write the assets into the source tree and leave scratch empty. Pin
-        // it to scratch too so the whole output stays there regardless.
-        ("RestoreOutputPath", ext_path),
-        // Pin the *package* folder (extraction and read) to the one NuGet
-        // would use (see the module docs).
-        (
-            "RestorePackagesPath",
-            packages_folder.as_os_str().to_owned(),
-        ),
-        ("RestoreRecursive", OsString::from("false")),
-        // An empty local folder used as the *only* restore source. As an
-        // MSBuild property this overrides the project's `<RestoreSources>` and
-        // the ambient config's feeds alike (the property takes precedence over
-        // config sources), so restore reads only the global-packages cache —
-        // offline.
-        ("RestoreSources", empty_source(scratch).into_os_string()),
-        ("RestoreAdditionalProjectSources", OsString::new()),
-        ("RestorePackagesWithLockFile", OsString::from("false")),
-        (
-            "NuGetLockFilePath",
-            redirected_lock_file(scratch).into_os_string(),
-        ),
-        // NuGet's package audit contacts its `auditSources` even when
-        // `RestoreSources` points at the empty folder, so an unreachable audit
-        // endpoint would block until the deadline. Disable it to stay offline.
-        ("NuGetAudit", OsString::from("false")),
-        // The one global `dotnet restore` adds beyond its target (see
-        // `tests/all/restore_graph.rs`, which diffs what each verb forwards to
-        // MSBuild). Passing it for every verb makes `msbuild` evaluate the
-        // project under the same globals, so a project conditioned on it
-        // restores and generates alike.
-        ("NuGetInteractive", OsString::from("false")),
-    ]
+/// The detailed log a restore into `scratch` writes.
+fn restore_log(scratch: &Path) -> PathBuf {
+    scratch.join("restore.log")
 }
 
 /// Where a restore whose output is redirected to `scratch` is told its lock

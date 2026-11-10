@@ -814,13 +814,13 @@ pub fn nuget_package_version(
 /// The `{dotnet_root}/sdk/{version}` directory of the host SDK the spec
 /// admits (highest installed version when unconstrained) — the SDK
 /// whose `KnownWorkloadManifests.txt` drives workload locator
-/// resolution. Mirrors `collect_from_dotnet_root`'s enumeration
+/// resolution. Mirrors [`collect_from_dotnet_root`]'s enumeration
 /// without the per-SDK `Sdks/{name}` probe: the *host* SDK is selected
 /// by version alone. No installed version at all is `NotFound`;
 /// installed versions all rejected by the spec is `VersionNotSatisfied`
 /// with the sorted available list, matching ordinary SDK resolution's
 /// diagnostic split.
-pub fn select_host_sdk_version_dir(
+fn select_host_sdk_version_dir(
     dotnet_root: &Path,
     spec: Option<&VersionSpec>,
 ) -> Result<PathBuf, SdkResolveError> {

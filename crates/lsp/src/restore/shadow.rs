@@ -75,8 +75,10 @@ pub enum NotRun {
 pub enum Disagreement {
     /// B₁ committed where the restore failed.
     CommittedOnFailedRestore,
-    /// The package closures differ, by framework (`id` lower-cased,
-    /// normalised version).
+    /// The package closures differ, by framework (`id` and normalised
+    /// version, lower-cased: NuGet's identity ignores case in both, and the
+    /// assets file spells a version as the package's nuspec does, where B₁
+    /// may keep the request's spelling).
     Closures {
         b1: BTreeMap<String, BTreeSet<(String, String)>>,
         restore: BTreeMap<String, BTreeSet<(String, String)>>,
@@ -226,7 +228,7 @@ fn compare(frameworks: &[ResolvedFramework], restore: RestoreRecord<'_>) -> Resu
             let (id, version) = library
                 .split_once('/')
                 .ok_or_else(|| unreadable("a library is not `id/version`"))?;
-            packages.insert((id.to_ascii_lowercase(), version.to_owned()));
+            packages.insert((id.to_ascii_lowercase(), version.to_ascii_lowercase()));
         }
         insert_once(&mut theirs, key(&framework)?, packages)?;
     }
@@ -239,7 +241,11 @@ fn compare(frameworks: &[ResolvedFramework], restore: RestoreRecord<'_>) -> Resu
             .map(|package| {
                 (
                     package.identity.id.as_str().to_ascii_lowercase(),
-                    package.identity.version.to_normalized_string(),
+                    package
+                        .identity
+                        .version
+                        .to_normalized_string()
+                        .to_ascii_lowercase(),
                 )
             })
             .collect();
@@ -348,6 +354,11 @@ mod tests {
     /// the name its version gives it, a project library beside the packages
     /// (which the comparison must ignore), and every predicted code logged.
     fn assets_for(frameworks: &[ResolvedFramework], long_names: bool) -> Value {
+        assets_spelled(frameworks, long_names, false)
+    }
+
+    /// [`assets_for`], with every version upper-cased when `upper`.
+    fn assets_spelled(frameworks: &[ResolvedFramework], long_names: bool, upper: bool) -> Value {
         let mut targets = Map::new();
         for resolved in frameworks {
             let (alias, long) = FRAMEWORKS
@@ -356,12 +367,14 @@ mod tests {
                 .unwrap();
             let mut libraries = Map::new();
             for package in &resolved.closure.packages {
+                let version = package.identity.version.to_normalized_string();
+                let version = if upper {
+                    version.to_ascii_uppercase()
+                } else {
+                    version
+                };
                 libraries.insert(
-                    format!(
-                        "{}/{}",
-                        package.identity.id.as_str(),
-                        package.identity.version.to_normalized_string()
-                    ),
+                    format!("{}/{version}", package.identity.id.as_str()),
                     json!({ "type": "package" }),
                 );
             }
@@ -419,10 +432,17 @@ mod tests {
 
     proptest! {
         /// The restore that did what B₁ says agrees, whichever spelling the
-        /// assets file gives its targets.
+        /// assets file gives its targets and its versions.
         #[test]
-        fn the_restore_b1_describes_agrees(frameworks in frameworks(), long in any::<bool>()) {
-            prop_assert_eq!(agree(&frameworks, &assets_for(&frameworks, long)), Ok(()));
+        fn the_restore_b1_describes_agrees(
+            frameworks in frameworks(),
+            long in any::<bool>(),
+            upper in any::<bool>(),
+        ) {
+            prop_assert_eq!(
+                agree(&frameworks, &assets_spelled(&frameworks, long, upper)),
+                Ok(())
+            );
         }
 
         /// Any one change to the restore's closures disagrees: a package

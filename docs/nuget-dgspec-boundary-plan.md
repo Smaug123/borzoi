@@ -1280,55 +1280,60 @@ B₁ ran only in tests. Now every on-demand restore also runs it: after
 the restoring NuGet's identity and the restore's environment, and checks a
 commit against what the restore did (`crates/lsp/src/restore/shadow.rs`). The
 restore's answer is served whatever B₁ says. A commit must name, per
-framework, exactly the packages the assets file's target lists, predict
-exactly the codes it logs where it predicts any, and not be made where
-NuGet's restore failed. That is read from the `success` NuGet records in
-`project.nuget.cache`, not from the command's exit status, which a target
-the project hooks after `Restore` can fail once NuGet has restored (review
-found the false report; a fixture pins it). Anything else is logged as an
-error, since under
-certain-implies-exact it is a B₁ bug. A decline is logged with its reason.
-The check costs about 60 ms in a release build, most of it the evaluation
-below, beside a restore of half a second or more that runs once per project.
+framework, exactly the packages the assets file's target lists (ids and
+versions compared ignoring case, as NuGet's identity does), predict exactly
+the codes it logs where it predicts any, and not be made where NuGet's
+restore failed. That is read from the `success` NuGet records in
+`project.nuget.cache`, not from the command's exit status, which a target the
+project hooks after `Restore` can fail once NuGet has restored. Anything else
+is logged as an error, since under certain-implies-exact it is a B₁ bug. A
+decline is logged with its reason. The check costs a few milliseconds in a
+release build.
 
-That needed the identity at runtime, which stage 9 needs too.
-`restore::nuget_identity::restoring_nuget` reads it without running
-anything: the SDK discovery selects for the project
-(`SdkDiscovery::host_sdk_dir`, the selection workload resolution already
-made), and the `AssemblyInformationalVersionAttribute` of its
-`NuGet.Commands.dll` (`Ecma335Assembly::informational_version`). That is the
-NuGet restore runs only by default: MSBuild imports `$(NuGetRestoreTargets)`,
-whose tasks load from `$(RestoreTaskAssemblyFile)`, and a project, its
-imports or its environment can point either at another SDK (review found the
-environment route). So the project is evaluated as the restore evaluates it,
-under the restore's own global properties and environment (one list,
-`restore_global_properties`, builds both the command line and this
-evaluation; review found a redirect conditioned on `NuGetInteractive`), and
-anything but the default route into the host SDK, with both values trusted,
-declines. Stage 9 needs the same rule, and A₁'s model of the cone is
-where a redirect would be followed rather than declined. The oracles:
+The identity is read from what the restore did
+(`restore::nuget_identity::restoring_nuget`). The restore writes a detailed
+log, in which MSBuild names the assembly each task ran from; NuGet's
+`RestoreTask` loads `NuGet.Commands` from beside its own assembly, whose
+`AssemblyInformationalVersionAttribute`
+(`Ecma335Assembly::informational_version`) is the identity. The log costs
+nothing measurable. The first cut predicted the identity instead: the SDK
+that SDK discovery selects, and then, as review found a way round each
+check, the evaluated `RestoreTaskAssemblyFile` and `NuGetRestoreTargets`
+under the restore's environment and then under its global properties. The
+fourth round found a `UsingTask Override` re-registering the task, which
+neither property shows. Each round was another route by which MSBuild
+decides which code runs, and predicting that is A₁'s model of the restore
+cone, not a check in front of it. So the shadow reads it off the run, which
+follows every route. A spawn-free restore (stage 9) has no run to read, and
+its identity is A₁'s to predict.
+
+The oracles:
 
 - `restore_graph.rs` pins a `global.json` to each installed SDK in turn and
   requires the identity to be the one the oracle reports for the
-  `NuGet.Commands` it loads from the SDK `dotnet` selects. Ignoring the pin
-  fails it. A redirect of either property, by the project or by the
-  environment, or conditioned on any global the restore passes, must
-  decline, and removing any part of the check fails that.
+  `NuGet.Commands` it loads from the SDK `dotnet` selects; and redirects the
+  restore task to the other installed SDK by `RestoreTaskAssemblyFile` (in
+  the project, in the environment, conditioned on a global the restore
+  passes) and by `UsingTask Override`, under each of which the identity must
+  be the other SDK's, as the oracle reports it, and B₁ declines when that
+  NuGet is not verified.
 - `restore_graph.rs` grades B₁ through the shadow's own comparison, with the
-  server's identity, which must equal the oracle's, on every fixture and
-  corpus project.
+  identity read from the restore's log, which must equal the oracle's, on
+  every fixture and corpus project.
 - `borzoi-assembly`'s `informational_version` sweep holds the attribute
   reader to the version resource's `ProductVersion` over every managed
   assembly of every installed SDK.
 - The comparison's properties: the restore B₁ describes agrees, under either
-  target spelling; every change to a closure, a predicted log, or the
-  restore's success disagrees; an assets file outside the restore's shape is
-  not compared.
+  target spelling and any casing of its versions; every change to a closure,
+  a predicted log, or the restore's success disagrees; an assets file outside
+  the restore's shape is not compared.
 
 What it does not cover: only projects the LSP restores on demand (the host
 has opted in, and the project has no assets file) are shadowed. A project
 the user restored themselves is read from its own assets file, whose spec
-names the user's feeds, which B₁ declines.
+names the user's feeds, which B₁ declines. MSBuild's log line is in the
+CLI's language, so on a host whose language is not English the identity
+declines.
 
 ### Stage 9: spawn-free runtime path
 
