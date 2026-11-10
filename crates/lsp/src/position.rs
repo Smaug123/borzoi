@@ -28,6 +28,13 @@ use lsp_types::Position;
 /// would otherwise panic on an out-of-range span get the end-of-file
 /// position instead.
 pub fn offset_to_position(text: &str, offset: usize) -> Position {
+    LineIndex::new(text).position(offset)
+}
+
+/// `offset` clamped to `text.len()`, then moved up to the next char boundary
+/// and out of the middle of a `\r\n` pair: the snapping
+/// [`offset_to_position`] documents.
+fn snap(text: &str, offset: usize) -> usize {
     let mut offset = offset.min(text.len());
     while offset < text.len() && !text.is_char_boundary(offset) {
         offset += 1;
@@ -43,27 +50,64 @@ pub fn offset_to_position(text: &str, offset: usize) -> Position {
     {
         offset += 1;
     }
-    let mut line: u32 = 0;
-    let mut character: u32 = 0;
-    let mut chars = text[..offset].chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\r' => {
-                line += 1;
-                character = 0;
-                // `\r\n` is one break, not two.
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
+    offset
+}
+
+/// [`offset_to_position`] for many offsets into one text.
+///
+/// Finding an offset's line means counting the line breaks before it, which
+/// [`offset_to_position`] does by scanning the text from its start, so a
+/// caller converting every occurrence in a file pays for the file once per
+/// occurrence. The index records where each line starts once, finds an
+/// offset's line by binary search, and scans only that line up to the offset
+/// for its UTF-16 column. It answers exactly what [`offset_to_position`] does,
+/// snapping included.
+pub struct LineIndex<'a> {
+    text: &'a str,
+    /// The byte offset each line starts at, ascending: `0`, then the offset
+    /// just past every line break (`\n`, a lone `\r`, or a `\r\n` pair).
+    line_starts: Vec<usize>,
+}
+
+impl<'a> LineIndex<'a> {
+    pub fn new(text: &'a str) -> LineIndex<'a> {
+        let bytes = text.as_bytes();
+        let mut line_starts = vec![0];
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\r' if bytes.get(i + 1) == Some(&b'\n') => {
+                    i += 2;
+                    line_starts.push(i);
                 }
+                b'\r' | b'\n' => {
+                    i += 1;
+                    line_starts.push(i);
+                }
+                _ => i += 1,
             }
-            '\n' => {
-                line += 1;
-                character = 0;
-            }
-            _ => character += c.len_utf16() as u32,
+        }
+        LineIndex { text, line_starts }
+    }
+
+    /// Byte `offset` of the indexed text as an LSP `Position`, as
+    /// [`offset_to_position`] computes it.
+    pub fn position(&self, offset: usize) -> Position {
+        let offset = snap(self.text, offset);
+        // `line_starts[0] == 0 <= offset`, so the count is at least 1.
+        let line = self.line_starts.partition_point(|&start| start <= offset) - 1;
+        let start = self.line_starts[line];
+        // `offset` is short of the next line's start and not inside a `\r\n`
+        // pair, so no line break lies between the two.
+        let character = self.text[start..offset]
+            .chars()
+            .map(|c| c.len_utf16() as u32)
+            .sum();
+        Position {
+            line: u32::try_from(line).expect("more than u32::MAX lines"),
+            character,
         }
     }
-    Position { line, character }
 }
 
 /// LSP [`Position`] (line, UTF-16 column) → byte offset.
@@ -378,7 +422,76 @@ mod tests {
         );
     }
 
+    /// The reference [`LineIndex::position`] is held to: walk the text from its
+    /// start, counting line breaks and the UTF-16 width of every character
+    /// since the last one, after the same snapping of `offset`.
+    fn scanned_position(text: &str, offset: usize) -> Position {
+        let offset = snap(text, offset);
+        let mut line: u32 = 0;
+        let mut character: u32 = 0;
+        let mut chars = text[..offset].chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => {
+                    line += 1;
+                    character = 0;
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                }
+                '\n' => {
+                    line += 1;
+                    character = 0;
+                }
+                _ => character += c.len_utf16() as u32,
+            }
+        }
+        Position { line, character }
+    }
+
+    /// Strings over the characters that move a position differently: ASCII,
+    /// both line-break bytes (so `\r\n` pairs, lone `\r`s and runs of breaks
+    /// all occur), and characters of two, three and four UTF-8 bytes, the last
+    /// two UTF-16 units wide.
+    fn position_text() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::prelude::*;
+        proptest::collection::vec(
+            prop_oneof![
+                Just('a'),
+                Just('\n'),
+                Just('\r'),
+                Just('À'),
+                Just('€'),
+                Just('🦀')
+            ],
+            0..48,
+        )
+        .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    #[test]
+    fn line_index_of_empty_text() {
+        let index = LineIndex::new("");
+        assert_eq!(index.position(0), Position::new(0, 0));
+        assert_eq!(index.position(7), Position::new(0, 0));
+    }
+
     proptest::proptest! {
+        /// Every byte offset, including those inside a multi-byte character or
+        /// a `\r\n` pair and those past the end, lands where a scan of the text
+        /// from its start puts it.
+        #[test]
+        fn line_index_agrees_with_a_scan_from_the_start(text in position_text()) {
+            let index = LineIndex::new(&text);
+            for offset in 0..=text.len() + 2 {
+                proptest::prop_assert_eq!(
+                    index.position(offset),
+                    scanned_position(&text, offset),
+                    "offset {} of {:?}", offset, text
+                );
+            }
+        }
+
         /// Round-trip: for any in-range byte offset, going to a Position and
         /// back lands on the same offset. The interesting case (covered by
         /// the generator's mix of newline styles and multibyte chars) is that

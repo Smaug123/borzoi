@@ -15,7 +15,7 @@ use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Uri};
 use rowan::{TextRange, TextSize};
 
 use crate::paths::{lexically_normalize, paths_equal};
-use crate::position::offset_to_position;
+use crate::position::LineIndex;
 
 pub mod completion;
 pub mod definition;
@@ -30,9 +30,15 @@ pub mod workspace_symbol;
 
 /// A rowan byte range as an LSP [`Range`] over `text`.
 pub fn range_to_lsp(text: &str, range: TextRange) -> Range {
+    indexed_range_to_lsp(&LineIndex::new(text), range)
+}
+
+/// [`range_to_lsp`] over the text `index` indexes: what a caller converting
+/// many ranges of one text uses, paying for the text once.
+pub fn indexed_range_to_lsp(index: &LineIndex, range: TextRange) -> Range {
     Range {
-        start: offset_to_position(text, usize::from(range.start())),
-        end: offset_to_position(text, usize::from(range.end())),
+        start: index.position(usize::from(range.start())),
+        end: index.position(usize::from(range.end())),
     }
 }
 
@@ -57,6 +63,7 @@ pub fn file_export_symbols(
         &AssemblyEnv::default(),
         recovery,
     );
+    let lines = LineIndex::new(text);
     resolved
         .exports()
         .iter()
@@ -74,7 +81,11 @@ pub fn file_export_symbols(
                 return None;
             }
             let kind = symbol_kind_for(def.kind)?;
-            Some((def.name.clone(), kind, range_to_lsp(text, def.range)))
+            Some((
+                def.name.clone(),
+                kind,
+                indexed_range_to_lsp(&lines, def.range),
+            ))
         })
         .collect()
 }
