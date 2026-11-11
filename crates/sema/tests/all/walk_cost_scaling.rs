@@ -109,6 +109,11 @@ const FLAT_FORMS: &[Shape] = &[
     ),
     flat("opens", "", "open System\n", ""),
     flat("records", "", "type R = { X: int }\n", ""),
+    // Distinct names: a walk sets duplicate declarations aside, so identical
+    // repeats never reach its per-declaration work.
+    flat("distinct_unions", "", "type T{i} = C{i} of int\n", ""),
+    flat("distinct_records", "", "type R{i} = { X{i}: int }\n", ""),
+    flat("distinct_lets", "", "let a{i} = b\n", ""),
     flat(
         "statements",
         "let g () = ()\nlet h () =\n",
@@ -139,6 +144,12 @@ const EXEMPT: &[(&str, Walk, &str)] = &[
         Walk::Resolution,
         "a header of n segments declares its n - 1 enclosing namespaces, \
          each held as its own path: n² segments in all",
+    ),
+    (
+        "distinct_records",
+        Walk::Inference,
+        "quadratic before the flat syntax table too (59x from 512 to 4096 \
+         records on 7b4a7975); the cause is not yet diagnosed",
     ),
     (
         "member_statements",

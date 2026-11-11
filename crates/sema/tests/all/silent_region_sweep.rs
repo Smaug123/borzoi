@@ -27,7 +27,8 @@ use std::path::{Path, PathBuf};
 use borzoi_cst::parser::{Parse, parse};
 use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode, TypeDefn, TypeDefnRepr};
 use borzoi_oracle_harness::manifest::Manifest;
-use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
+use borzoi_oracle_harness::stack_probe;
+use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, WALK_STACK_BYTES, resolve_file};
 use rowan::TextRange;
 
 use crate::common::corpus_manifest::{
@@ -207,14 +208,20 @@ fn silent_regions_over_corpus() {
     let swept = borzoi_oracle_harness::par_map::par_map(files.len(), |i| {
         let path = &files[i];
         let src = std::fs::read_to_string(path).ok()?;
-        // A file our parser rejects is the parser gate's; its tree is
-        // recovery, and silence there says nothing about the walk.
-        let parsed = parse(&src);
-        if !parsed.errors.is_empty() {
-            return None;
-        }
-        ImplFile::cast(parsed.root.clone())?;
-        Some((corpus_relative(&root, path), silent_heads(&src, &parsed)))
+        let rel = corpus_relative(&root, path);
+        // Resolution recurses once per level of the tree and needs
+        // `WALK_STACK_BYTES` (the LSP's request thread has it); `par_map`'s
+        // workers have the default stack.
+        stack_probe::on_stack(WALK_STACK_BYTES, move || {
+            // A file our parser rejects is the parser gate's; its tree is
+            // recovery, and silence there says nothing about the walk.
+            let parsed = parse(&src);
+            if !parsed.errors.is_empty() {
+                return None;
+            }
+            ImplFile::cast(parsed.root.clone())?;
+            Some((rel, silent_heads(&src, &parsed)))
+        })
     });
     let mut items = Vec::new();
     let mut by_bucket: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();

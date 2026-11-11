@@ -63,6 +63,13 @@ struct Entry {
 struct Tree {
     /// Every element, in preorder.
     entries: Vec<Entry>,
+    /// Every element's children, grouped by parent in id order: the children
+    /// of `id` are `children[child_offsets[id]..child_offsets[id + 1]]`. So a
+    /// last child is O(1), and finding the child at a range is a binary
+    /// search, as rowan's is.
+    children: Vec<u32>,
+    /// `entries.len() + 1` offsets into `children`.
+    child_offsets: Vec<u32>,
     /// The concatenated token text: the source, by losslessness.
     text: String,
     /// The green tree flattened into `entries`, kept for
@@ -155,11 +162,21 @@ impl Tree {
                 }
             }
         }
+        let (children, child_offsets) = child_index(&entries);
         Tree {
             entries,
+            children,
+            child_offsets,
             text,
             green,
         }
+    }
+
+    /// The children of `id`, tokens included, in order.
+    #[inline]
+    fn children_of(&self, id: u32) -> &[u32] {
+        let id = id as usize;
+        &self.children[self.child_offsets[id] as usize..self.child_offsets[id + 1] as usize]
     }
 
     #[inline]
@@ -183,14 +200,7 @@ impl Tree {
     }
 
     fn last_child_or_token(&self, id: u32) -> u32 {
-        let mut c = self.first_child_or_token(id);
-        if c == NONE {
-            return NONE;
-        }
-        while self.e(c).next_sib != NONE {
-            c = self.e(c).next_sib;
-        }
-        c
+        self.children_of(id).last().copied().unwrap_or(NONE)
     }
 
     fn next_node_from(&self, mut c: u32) -> u32 {
@@ -232,6 +242,22 @@ impl Tree {
             }
         }
     }
+}
+
+/// The CSR child index of a preorder table: see [`Tree::children`].
+fn child_index(entries: &[Entry]) -> (Vec<u32>, Vec<u32>) {
+    let mut offsets = vec![0u32; entries.len() + 1];
+    for e in &entries[1..] {
+        offsets[e.parent as usize + 1] += 1;
+    }
+    for i in 0..entries.len() {
+        offsets[i + 1] += offsets[i];
+    }
+    let mut children = vec![NONE; entries.len() - 1];
+    for (id, e) in entries.iter().enumerate().skip(1) {
+        children[(offsets[e.parent as usize] + e.index) as usize] = id as u32;
+    }
+    (children, offsets)
 }
 
 fn kind_of(raw: rowan::SyntaxKind) -> SyntaxKind {
@@ -642,12 +668,7 @@ impl SyntaxNode {
     /// pick the same way.
     pub fn child_or_token_at_range(&self, range: TextRange) -> Option<SyntaxElement> {
         let t = &self.tree;
-        let mut ids = Vec::new();
-        let mut c = t.first_child_or_token(self.id);
-        while c != NONE {
-            ids.push(c);
-            c = t.e(c).next_sib;
-        }
+        let ids = t.children_of(self.id);
         let idx = ids
             .binary_search_by(|&c| TextRange::ordering(t.range(c), range))
             .unwrap_or_else(|it| it.saturating_sub(1));

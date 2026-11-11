@@ -34,6 +34,10 @@ pub enum Kind {
 /// One repetition form of the grammar: `head`, then `unit` `n` times, then
 /// `tail`. A construct nested by layout rather than by delimiters indents each
 /// repeat `indent` columns past the one before, and the tail past the last.
+/// Each [`REPEAT_INDEX`] in `unit` is replaced by the repeat's index, so a
+/// shape can declare `n` distinct names: identical repeats of a declaration
+/// are one name declared `n` times, which a walk may set aside as a duplicate
+/// before it does the per-declaration work a scaling test means to time.
 pub struct Shape {
     pub name: &'static str,
     pub kind: Kind,
@@ -43,6 +47,9 @@ pub struct Shape {
     pub indent: usize,
 }
 
+/// Replaced in a [`Shape`]'s `unit` by the repeat's index (`0`, `1`, …).
+pub const REPEAT_INDEX: &str = "{i}";
+
 impl Shape {
     /// The shape with `unit` repeated `n` times.
     pub fn source(&self, n: usize) -> String {
@@ -50,7 +57,11 @@ impl Shape {
         s.push_str(self.head);
         for i in 0..n {
             s.extend(std::iter::repeat_n(' ', i * self.indent));
-            s.push_str(self.unit);
+            if self.unit.contains(REPEAT_INDEX) {
+                s.push_str(&self.unit.replace(REPEAT_INDEX, &i.to_string()));
+            } else {
+                s.push_str(self.unit);
+            }
         }
         s.extend(std::iter::repeat_n(' ', n * self.indent));
         s.push_str(self.tail);
