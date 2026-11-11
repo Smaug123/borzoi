@@ -430,11 +430,15 @@ pub struct ParsedProject {
     /// set. The causes, each verified against `dotnet build`/`dotnet
     /// msbuild` probes:
     ///
-    /// - A `<ProjectReference Update="…">` or `Remove="…">` that may run
-    ///   (this evaluator does not model item mutation, so earlier
-    ///   `Include`s stand un-mutated in the list). "May run" includes a
-    ///   mutation behind a condition we could not evaluate — on the element
-    ///   itself, on its enclosing `<ItemGroup>`, or an undecided
+    /// - A `<ProjectReference Update="…">` that may run, or a `Remove="…"`
+    ///   that may run and that we could not apply exactly (an `Update` is not
+    ///   modelled, so earlier `Include`s stand un-mutated in the list). A
+    ///   `Remove` is applied when its spec resolves to identities we know —
+    ///   literal paths, and the items of `@(Type)` / `@(Type->Exists())` over a
+    ///   list known exactly — and each comparison lies in the domain where we
+    ///   reproduce MSBuild's path matching (`evaluator::item_spec`). "May run"
+    ///   includes a mutation behind a condition we could not evaluate — on the
+    ///   element itself, on its enclosing `<ItemGroup>`, or an undecided
     ///   `<Choose>`/`<When>` chain — since the real build may execute it (a
     ///   probed `Update` writing `ReferenceOutputAssembly=false`, or a
     ///   `Remove`, really does strip the reference from `ReferencePath`).

@@ -367,7 +367,7 @@ fn a_standalone_script_is_not_told_a_neighbouring_projects_problems() {
         r#"<Project>
   <ItemGroup>
     <Compile Include="A.fs" />
-    <ProjectReference Remove="Other.fsproj" />
+    <ProjectReference Remove="Other*.fsproj" />
   </ItemGroup>
 </Project>"#,
     )
@@ -819,14 +819,14 @@ fn a_fold_refusal_does_not_outlive_the_project_that_caused_it() {
 #[test]
 fn a_reference_edge_loss_is_reported_without_waiting_for_a_fold() {
     let tmp = TempDir::new().unwrap();
-    // A `<ProjectReference Remove>` is an item operation the evaluator does not
-    // apply, so the captured reference list can't be trusted.
+    // A wildcard `<ProjectReference Remove>` is an item operation the evaluator
+    // does not apply, so the captured reference list can't be trusted.
     std::fs::write(
         real_path(&tmp).join("Demo.fsproj"),
         r#"<Project>
   <ItemGroup>
     <Compile Include="A.fs" />
-    <ProjectReference Remove="Other.fsproj" />
+    <ProjectReference Remove="Other*.fsproj" />
   </ItemGroup>
 </Project>"#,
     )
@@ -920,7 +920,7 @@ fn a_carried_fold_verdict_is_never_restated() {
         r#"<Project>
   <ItemGroup>
     <Compile Include="A.fs" />
-    <ProjectReference Remove="Other.fsproj" />
+    <ProjectReference Remove="Other*.fsproj" />
   </ItemGroup>
 </Project>"#,
     )
@@ -959,7 +959,7 @@ fn a_record_only_change_does_not_re_toast() {
   <ItemGroup>
     <Compile Include="A.fs" />
     <Compile Include="Gone.fs" />
-    <ProjectReference Remove="Other.fsproj" />
+    <ProjectReference Remove="Other*.fsproj" />
   </ItemGroup>
 </Project>"#;
     std::fs::write(&proj_path, broken).unwrap();
@@ -981,7 +981,7 @@ fn a_record_only_change_does_not_re_toast() {
         r#"<Project>
   <ItemGroup>
     <Compile Include="A.fs" />
-    <ProjectReference Remove="Other.fsproj" />
+    <ProjectReference Remove="Other*.fsproj" />
   </ItemGroup>
 </Project>"#,
     )
@@ -1099,7 +1099,7 @@ fn a_recovered_capability_is_forgotten_while_another_stays_unknown() {
     const EDGE_LOSS: &str = r#"<Project>
   <ItemGroup>
     <Compile Include="A.fs" />
-    <ProjectReference Remove="Other.fsproj" />
+    <ProjectReference Remove="Other*.fsproj" />
   </ItemGroup>
 </Project>"#;
     const CLEAN: &str = r#"<Project><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#;

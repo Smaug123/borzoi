@@ -571,9 +571,13 @@ fn evaluate_item_group(node: Node<'_, '_>, state: &mut State<'_>) {
         CondGate::Skip => {
             // Skipped only on an untrusted false: a hidden mutation may run
             // in the real build against the list we captured. Skipped
-            // Includes are at worst missed references.
+            // Includes are at worst missed references — but they leave the
+            // list incomplete for anything derived from it.
             if group_reads_untrusted && reference_risk.mutation {
                 state.project_references_uncertain = true;
+            }
+            if group_reads_untrusted && reference_risk.list_op {
+                state.project_reference_includes_hidden = true;
             }
             restore(state);
         }
@@ -587,6 +591,9 @@ fn evaluate_item_group(node: Node<'_, '_>, state: &mut State<'_>) {
             // `ReferencePath` while we still carry the un-mutated Include.
             if reference_risk.mutation {
                 state.project_references_uncertain = true;
+            }
+            if reference_risk.list_op {
+                state.project_reference_includes_hidden = true;
             }
             restore(state);
         }
@@ -739,7 +746,19 @@ fn walk_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
         compile_child_can_change_source_set(node) && sdk_compile_operation_may_run(node, state);
     let prev = state.compile_context;
     state.compile_context = compile_affecting;
+    let diagnostics_before = state.diagnostics.len();
     walk_item_child_inner(node, kind, state);
+    // Every way the walk can drop part of a `<ProjectReference Include>` it
+    // reached — an unsupported gate, an unevaluable value, a wildcard or item
+    // reference we cannot expand — raises a diagnostic, so one raised here
+    // means the captured list may lack an item MSBuild has. (A diagnostic about
+    // a captured item's metadata lands here too; that only costs precision.)
+    if kind == ItemKind::ProjectReference
+        && node.attribute("Include").is_some()
+        && state.diagnostics.len() != diagnostics_before
+    {
+        state.project_reference_includes_hidden = true;
+    }
     state.compile_context = prev;
 }
 
@@ -771,9 +790,14 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
         CondGate::Skip => {
             // Excluded only by an untrusted false: the real build may run
             // the mutation against the list we captured. A dropped Include
-            // is at worst a missed reference, which never fabricates.
-            if untrusted_reference_op && is_mutation {
-                state.project_references_uncertain = true;
+            // is at worst a missed reference, which never fabricates — but
+            // it leaves the list incomplete for anything derived from it.
+            if untrusted_reference_op {
+                if is_mutation {
+                    state.project_references_uncertain = true;
+                } else {
+                    state.project_reference_includes_hidden = true;
+                }
             }
             return;
         }
@@ -799,6 +823,9 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
         || node.attribute("Remove").is_some()
     {
         state.mark_untracked_item_list(item_type);
+    }
+    if kind == ItemKind::ProjectReference && apply_project_reference_remove(node, state) {
+        return;
     }
     if diagnose_item_op(node, "Update", state) || diagnose_item_op(node, "Remove", state) {
         // The mutation is skipped, so earlier `Include`s stand un-mutated in
@@ -990,10 +1017,7 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
     if identity_uses_sdk_taint {
         state.taint_item_list(item_type);
     }
-    if expansion.had_issue()
-        || contains_item_reference(expansion.value.as_escaped())
-        || contains_metadata_reference(expansion.value.as_escaped())
-    {
+    if expansion.had_issue() {
         state.taint_item_list(item_type);
         return;
     }
@@ -1001,85 +1025,367 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
         return;
     };
     let metadata = read_generic_item_metadata(node, state);
-    for identity in spec_fragments(&expansion.value) {
-        if contains_glob(identity) {
+    let mut captured: Vec<EvaluatedItem> = Vec::new();
+    for fragment in spec_fragments(&expansion.value) {
+        // `@(Type)` / `@(Type->Exists())` copies the referenced items, metadata
+        // and all, with this element's own metadata applied on top.
+        if let Some(expression) = parse_item_expression(fragment) {
+            let Some(items) = evaluate_item_expression(expression, state) else {
+                state.taint_item_list(item_type);
+                continue;
+            };
+            for item in items {
+                match excluded.excludes(&item.identity, &state.entry_project_dir) {
+                    Some(true) => {}
+                    Some(false) => captured.push(item.with_metadata_applied(&metadata)),
+                    None => state.taint_item_list(item_type),
+                }
+            }
+            continue;
+        }
+        // Transforms, other item functions, a reference spliced into a longer
+        // spelling, and `%(…)` batching are not modelled.
+        if contains_item_reference(fragment) || contains_metadata_reference(fragment) {
+            state.taint_item_list(item_type);
+            continue;
+        }
+        if contains_glob(fragment) {
             state.taint_item_list(item_type);
             continue;
         }
         // Classified on escaped text, recorded decoded — the identity is a point
         // of use, and the exclude set was decoded for the same reason.
-        let identity = fragment_identity(identity);
-        if excluded.contains(&identity.to_ascii_lowercase()) {
-            continue;
-        }
-        state
-            .evaluated_items
-            .entry(item_key(item_type))
-            .or_default()
-            .push(EvaluatedItem {
+        let identity = fragment_identity(fragment);
+        match excluded.excludes(&identity, &state.entry_project_dir) {
+            Some(true) => {}
+            Some(false) => captured.push(EvaluatedItem {
                 identity,
                 metadata: metadata.values.clone(),
                 metadata_uncertainties: metadata.uncertainties.clone(),
-            });
+            }),
+            None => state.taint_item_list(item_type),
+        }
     }
+    state
+        .evaluated_items
+        .entry(item_key(item_type))
+        .or_default()
+        .extend(captured);
 }
 
 fn apply_generic_item_remove(item_type: &str, remove: &str, state: &mut State<'_>) {
-    let Some(targets) = resolve_literal_generic_item_identities(item_type, remove, state) else {
+    if remove_clears_its_own_list(item_type, remove, state) {
+        state.evaluated_items.remove(&item_key(item_type));
+        return;
+    }
+    let Some(spec) = resolve_item_spec(remove, state) else {
         state.invalidate_item_list(item_type);
         return;
     };
-    if targets.is_empty() {
-        return;
+    if spec.sdk_tainted {
+        state.taint_item_list(item_type);
     }
+    let items = state
+        .evaluated_items
+        .get(&item_key(item_type))
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let identities: Vec<&str> = items.iter().map(|item| item.identity.as_str()).collect();
+    let Some(removed) = spec.matches(&identities, &state.entry_project_dir) else {
+        state.invalidate_item_list(item_type);
+        return;
+    };
     if let Some(items) = state.evaluated_items.get_mut(&item_key(item_type)) {
-        items.retain(|item| !targets.contains(&item.identity.to_ascii_lowercase()));
+        let mut removed = removed.into_iter();
+        items.retain(|_| !removed.next().expect("one verdict per item"));
     }
 }
 
-fn resolve_generic_exclude_set(
-    node: Node<'_, '_>,
-    state: &mut State<'_>,
-) -> Option<HashSet<String>> {
+/// An `Exclude` resolved to the comparison keys of the identities it names.
+/// Empty when the element has none, or when it names nothing — in which case no
+/// identity needs a key, so none is held to [`item_spec::comparison_key`]'s
+/// domain.
+struct ExcludeSet(HashSet<String>);
+
+impl ExcludeSet {
+    /// Whether `identity` is excluded; `None` when that cannot be decided.
+    fn excludes(&self, identity: &str, project_dir: &Path) -> Option<bool> {
+        if self.0.is_empty() {
+            return Some(false);
+        }
+        item_spec::comparison_key(identity, project_dir).map(|key| self.0.contains(&key))
+    }
+}
+
+fn resolve_generic_exclude_set(node: Node<'_, '_>, state: &mut State<'_>) -> Option<ExcludeSet> {
     let Some(exclude) = node.attribute("Exclude") else {
-        return Some(HashSet::new());
+        return Some(ExcludeSet(HashSet::new()));
     };
     let item_type = node.tag_name().name();
-    let Some(excluded) = resolve_literal_generic_item_identities(item_type, exclude, state) else {
+    let keys = resolve_item_spec(exclude, state).and_then(|spec| {
+        if spec.sdk_tainted {
+            state.taint_item_list(item_type);
+        }
+        spec.comparison_keys(&state.entry_project_dir)
+    });
+    let Some(keys) = keys else {
         state.taint_item_list(item_type);
         return None;
     };
-    Some(excluded)
+    Some(ExcludeSet(keys))
 }
 
-fn resolve_literal_generic_item_identities(
-    item_type: &str,
-    raw: &str,
-    state: &mut State<'_>,
-) -> Option<HashSet<String>> {
-    let raw_uses_sdk_taint = state.raw_uses_sdk_package_taint(raw);
-    let expansion = expand_silent(raw, state);
-    if raw_uses_sdk_taint {
-        state.taint_item_list(item_type);
+/// The identities an item spec (`Remove` / `Exclude`) names, when we know them
+/// exactly: literal fragments, and the items of each `@(Type)` /
+/// `@(Type->Exists())` expression in it.
+struct ItemSpec {
+    identities: Vec<String>,
+    /// The spec read an SDK-tainted property. The expansion is clean, so the
+    /// identities are what *this* evaluation names; whether the real build's
+    /// SDK sets the same value is a separate question each caller answers.
+    sdk_tainted: bool,
+}
+
+impl ItemSpec {
+    /// The comparison key of every identity the spec names, or `None` if one
+    /// is outside the domain we reproduce.
+    fn comparison_keys(&self, project_dir: &Path) -> Option<HashSet<String>> {
+        self.identities
+            .iter()
+            .map(|identity| item_spec::comparison_key(identity, project_dir))
+            .collect()
     }
-    if expansion.had_issue()
-        || contains_item_reference(expansion.value.as_escaped())
-        || contains_metadata_reference(expansion.value.as_escaped())
-    {
+
+    /// For each item identity in `items`, whether the spec names it — MSBuild's
+    /// `ItemSpec.MatchesItem` for a spec of values. `None` if any identity
+    /// involved cannot be compared exactly.
+    fn matches(&self, items: &[&str], project_dir: &Path) -> Option<Vec<bool>> {
+        if self.identities.is_empty() || items.is_empty() {
+            return Some(vec![false; items.len()]);
+        }
+        let keys = self.comparison_keys(project_dir)?;
+        items
+            .iter()
+            .map(|identity| {
+                item_spec::comparison_key(identity, project_dir).map(|k| keys.contains(&k))
+            })
+            .collect()
+    }
+}
+
+/// Resolve a `Remove`/`Exclude` value. `None` when its expansion leaned on a
+/// value we could not pin, or when it holds a fragment we do not evaluate — a
+/// wildcard (which glob-matches, not path-matches), a transform, an item
+/// function other than `Exists`, or an item list we do not know exactly.
+fn resolve_item_spec(raw: &str, state: &State<'_>) -> Option<ItemSpec> {
+    let sdk_tainted = state.raw_uses_sdk_package_taint(raw);
+    let expansion = expand_silent(raw, state);
+    if expansion.had_issue() {
         return None;
     }
-    let mut identities = HashSet::new();
-    for identity in spec_fragments(&expansion.value) {
-        if contains_glob(identity) {
-            state.taint_item_list(item_type);
+    let mut identities = Vec::new();
+    for fragment in spec_fragments(&expansion.value) {
+        if let Some(expression) = parse_item_expression(fragment) {
+            let items = evaluate_item_expression(expression, state)?;
+            identities.extend(items.into_iter().map(|item| item.identity));
+            continue;
+        }
+        if contains_item_reference(fragment)
+            || contains_metadata_reference(fragment)
+            || contains_glob(fragment)
+        {
             return None;
         }
         // Decoded, because the identities these are compared against were
         // decoded when their `Include` captured them: `Remove="Foo%2eBar"` must
         // match the item `Foo.Bar`.
-        identities.insert(fragment_identity(identity).to_ascii_lowercase());
+        identities.push(fragment_identity(fragment));
     }
-    Some(identities)
+    Some(ItemSpec {
+        identities,
+        sdk_tainted,
+    })
+}
+
+/// Whether `remove` is exactly `@(item_type)`: MSBuild's
+/// `ItemspecContainsASingleBareItemReference`, which empties the list without
+/// matching anything — so it is exact whatever the list holds.
+fn remove_clears_its_own_list(item_type: &str, remove: &str, state: &State<'_>) -> bool {
+    let expansion = expand_silent(remove, state);
+    if expansion.had_issue() {
+        return false;
+    }
+    let mut fragments = spec_fragments(&expansion.value);
+    match (fragments.next(), fragments.next()) {
+        (Some(only), None) => exact_item_list_reference(only)
+            .is_some_and(|referenced| referenced.eq_ignore_ascii_case(item_type)),
+        _ => false,
+    }
+}
+
+/// An item expression we evaluate: `@(Type)`, or `@(Type->Exists())`.
+#[derive(Clone, Copy)]
+struct ItemExpression<'a> {
+    item_type: &'a str,
+    /// `->Exists()`: keep the items whose path exists on disk.
+    exists: bool,
+}
+
+fn parse_item_expression(fragment: &str) -> Option<ItemExpression<'_>> {
+    let inner = fragment.strip_prefix("@(")?.strip_suffix(')')?.trim();
+    let (item_type, exists) = match inner.split_once("->") {
+        Some((item_type, "Exists()")) => (item_type, true),
+        Some(_) => return None,
+        None => (inner, false),
+    };
+    is_item_type_name(item_type).then_some(ItemExpression { item_type, exists })
+}
+
+/// The items an item expression yields, in order, when we know them exactly.
+fn evaluate_item_expression(
+    expression: ItemExpression<'_>,
+    state: &State<'_>,
+) -> Option<Vec<EvaluatedItem>> {
+    let items = item_list_view(expression.item_type, state)?;
+    if !expression.exists {
+        return Some(items);
+    }
+    // The pure surface documents "no filesystem access".
+    if !state.follow_imports {
+        return None;
+    }
+    let mut kept = Vec::with_capacity(items.len());
+    for item in items {
+        let probe = item_spec::exists_probe(&item.identity, &state.entry_project_dir)?;
+        if item_spec::probe_exists(&probe)? {
+            kept.push(item);
+        }
+    }
+    Some(kept)
+}
+
+/// The items of `item_type` as MSBuild holds them at this point of the item
+/// pass, when we know them exactly — every item, each under MSBuild's
+/// identity. `None` otherwise.
+///
+/// Nothing is exact once the walk is opaque: a file we never entered, or a
+/// `<Choose>` branch we could not decide, could hold items of any type. Beyond
+/// that, a helper list is exact unless something tainted it or left it
+/// untracked, and `<ProjectReference>` is exact when its list is trusted, no
+/// `Include` went uncaptured, and every item carries an identity MSBuild spells
+/// the same way. The other modelled types are not offered.
+fn item_list_view(item_type: &str, state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
+    if state.walk_opaque.is_some() {
+        return None;
+    }
+    if modelled_item_kind_for_name(item_type) == Some(ItemKind::ProjectReference) {
+        return project_reference_view(state);
+    }
+    if modelled_item_kind_for_name(item_type).is_some()
+        || package_item_kind_for_name(item_type).is_some()
+    {
+        return None;
+    }
+    let key = item_key(item_type);
+    if state.tainted_item_lists.contains(&key) || state.untracked_item_lists.contains(&key) {
+        return None;
+    }
+    let items = state
+        .evaluated_items
+        .get(&key)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    Some(
+        items
+            .iter()
+            .map(|item| {
+                // The source type's item-definition defaults are metadata the
+                // copied item carries.
+                let mut item = item.clone();
+                let defaults = helper_item_definition_default_uncertainties(&key, &item, state);
+                item.metadata_uncertainties.extend(defaults);
+                item
+            })
+            .collect(),
+    )
+}
+
+fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
+    if state.project_references_uncertain || state.project_reference_includes_hidden {
+        return None;
+    }
+    state
+        .project_references
+        .iter()
+        .map(|ordered| {
+            // MSBuild may respell a backslash (see `item_spec`), so such an
+            // identity is not one we can hand on.
+            let identity = ordered.identity.as_ref().filter(|id| !id.contains('\\'))?;
+            Some(EvaluatedItem {
+                identity: identity.clone(),
+                // We capture a reference's metadata in its own model, not as
+                // the package metadata a helper item records: a consumer
+                // reading one through the copy must treat it as unknown.
+                metadata: HashMap::new(),
+                metadata_uncertainties: PACKAGE_METADATA_NAMES
+                    .iter()
+                    .map(|name| HelperMetadataUncertainty::new(name, "@(ProjectReference)"))
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+/// Apply a `<ProjectReference Remove="…">` exactly, if it is one we model:
+/// `true` when the list now holds what MSBuild's does, `false` (with nothing
+/// changed) when the caller must treat the mutation as unmodelled.
+///
+/// The `Remove` stands alone: an `Include`/`Update`/`Exclude` beside it, or a
+/// metadata child, is a project error, and `MatchOnMetadata` matches by
+/// metadata rather than by path. The spec itself must resolve exactly
+/// ([`resolve_item_spec`]) and every identity it is compared with must lie in
+/// the domain [`item_spec::comparison_key`] reproduces.
+fn apply_project_reference_remove(node: Node<'_, '_>, state: &mut State<'_>) -> bool {
+    let Some(remove) = node.attribute("Remove") else {
+        return false;
+    };
+    let stands_alone = node
+        .attributes()
+        .all(|attr| matches!(attr.name(), "Remove" | "Condition"))
+        && !node.children().any(|child| child.is_element());
+    if !stands_alone {
+        return false;
+    }
+    if remove_clears_its_own_list(
+        modelled_item_type(ItemKind::ProjectReference),
+        remove,
+        state,
+    ) {
+        state.project_references.clear();
+        return true;
+    }
+    let Some(spec) = resolve_item_spec(remove, state) else {
+        return false;
+    };
+    // An SDK-tainted value may name other references in the real build.
+    if spec.sdk_tainted {
+        return false;
+    }
+    let mut identities = Vec::with_capacity(state.project_references.len());
+    for ordered in &state.project_references {
+        let Some(identity) = ordered.identity.as_deref() else {
+            return false;
+        };
+        identities.push(identity);
+    }
+    let Some(removed) = spec.matches(&identities, &state.entry_project_dir) else {
+        return false;
+    };
+    let mut removed = removed.into_iter();
+    state
+        .project_references
+        .retain(|_| !removed.next().expect("one verdict per item"));
+    true
 }
 
 fn compile_order_effect(
@@ -2249,6 +2555,31 @@ struct GenericItemMetadata {
     uncertainties: Vec<HelperMetadataUncertainty>,
 }
 
+impl EvaluatedItem {
+    /// This item copied by an `Include="@(…)"` whose element declares
+    /// `metadata`: the element's values win, and a metadatum the element sets
+    /// or leaves uncertain replaces whatever the source carried for it.
+    fn with_metadata_applied(mut self, metadata: &GenericItemMetadata) -> EvaluatedItem {
+        let element_names: HashSet<String> = metadata
+            .values
+            .keys()
+            .cloned()
+            .chain(metadata.uncertainties.iter().map(|u| item_key(&u.name)))
+            .collect();
+        self.metadata_uncertainties
+            .retain(|uncertainty| !element_names.contains(&item_key(&uncertainty.name)));
+        self.metadata_uncertainties
+            .extend(metadata.uncertainties.iter().cloned());
+        for (name, value) in &metadata.values {
+            self.metadata.insert(name.clone(), value.clone());
+        }
+        for uncertainty in &metadata.uncertainties {
+            self.metadata.remove(&item_key(&uncertainty.name));
+        }
+        self
+    }
+}
+
 #[derive(Default)]
 struct GenericItemMetadataBuilder {
     values: HashMap<String, String>,
@@ -2653,6 +2984,9 @@ fn route_item_through_resolver(
                 unmodelled_reference_metadata: metadata.unmodelled_reference_metadata,
                 span: span.clone(),
             },
+            // The resolver hands back paths, not the relative spelling MSBuild
+            // derives from a glob match.
+            None,
         );
     }
 }
@@ -2721,7 +3055,8 @@ fn push_include_entry(
     // appearing in an imported `.props`/`.targets` file is resolved
     // by MSBuild relative to `$(MSBuildProjectDirectory)`.
     // The scans above ran on escaped text; the identity is a point of use.
-    let normalised = fragment_identity(entry).replace('\\', "/");
+    let identity = fragment_identity(entry);
+    let normalised = identity.replace('\\', "/");
     let path = state.entry_project_dir.join(normalised);
     let span = state.effective_span(node.range());
     push_resolved_item(
@@ -2737,6 +3072,7 @@ fn push_include_entry(
             unmodelled_reference_metadata: metadata.unmodelled_reference_metadata,
             span,
         },
+        Some(identity),
     );
 }
 
@@ -2770,10 +3106,19 @@ fn bucket_for_compile_effect<'s, 'r>(
     }
 }
 
-fn push_resolved_item(state: &mut State<'_>, placement: ItemPlacement, item: ResolvedItem) {
+fn push_resolved_item(
+    state: &mut State<'_>,
+    placement: ItemPlacement,
+    item: ResolvedItem,
+    identity: Option<String>,
+) {
     let order = state.next_item_order;
     state.next_item_order += 1;
-    bucket_for_placement(state, placement).push(OrderedResolvedItem { order, item });
+    bucket_for_placement(state, placement).push(OrderedResolvedItem {
+        order,
+        item,
+        identity,
+    });
 }
 
 fn evaluate_item_condition(node: Node<'_, '_>, state: &mut State<'_>) -> CondGate {
@@ -2862,7 +3207,10 @@ fn modelled_item_type(kind: ItemKind) -> &'static str {
 }
 
 fn modelled_item_kind_for_element(node: Node<'_, '_>) -> Option<ItemKind> {
-    let name = node.tag_name().name();
+    modelled_item_kind_for_name(node.tag_name().name())
+}
+
+fn modelled_item_kind_for_name(name: &str) -> Option<ItemKind> {
     if name.eq_ignore_ascii_case("Compile") {
         Some(ItemKind::Compile)
     } else if name.eq_ignore_ascii_case("CompileBefore") {
@@ -2877,7 +3225,10 @@ fn modelled_item_kind_for_element(node: Node<'_, '_>) -> Option<ItemKind> {
 }
 
 fn package_item_kind_for_element(node: Node<'_, '_>) -> Option<PackageItemKind> {
-    let name = node.tag_name().name();
+    package_item_kind_for_name(node.tag_name().name())
+}
+
+fn package_item_kind_for_name(name: &str) -> Option<PackageItemKind> {
     if name.eq_ignore_ascii_case("PackageReference") {
         Some(PackageItemKind::PackageReference)
     } else if name.eq_ignore_ascii_case("FrameworkReference") {

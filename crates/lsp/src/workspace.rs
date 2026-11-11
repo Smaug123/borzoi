@@ -4269,7 +4269,7 @@ mod tests {
             r#"<Project>
               <ItemGroup>
                 <ProjectReference Include="../C/C.fsproj" />
-                <ProjectReference Remove="../C/C.fsproj" />
+                <ProjectReference Remove="../C/*.fsproj" />
               </ItemGroup>
             </Project>"#,
         );
