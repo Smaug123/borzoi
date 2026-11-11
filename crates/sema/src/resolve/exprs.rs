@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 
-use borzoi_cst::syntax::{AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
+use borzoi_cst::syntax::{
+    AppExpr, AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken, TypeAppExpr,
+};
 use rowan::TextRange;
 
 use crate::binders::{BinderRole, PatternName, pattern_names};
@@ -84,26 +86,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             Expr::App(e) => {
-                let func = e.func();
-                if let Some(f) = &func {
-                    self.resolve_expr(f);
-                    if !e.is_infix() {
-                        self.note_in_file_construction(f);
-                    }
-                }
-                if let Some(a) = e.arg() {
-                    // Resolved after the function, so the head's resolution is
-                    // already recorded when deciding whether `a` may carry
-                    // named arguments.
-                    let callee = match &func {
-                        Some(f) if !e.is_infix() => self.callee_kind(f),
-                        _ => Callee::Function,
-                    };
-                    match callee {
-                        Callee::Function => self.resolve_expr(&a),
-                        named => self.resolve_method_args(&a, named),
-                    }
-                }
+                self.resolve_app(e);
             }
             Expr::DotGet(e) => {
                 // `expr.Member` — resolve the LHS value expression. The member
@@ -253,25 +236,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             Expr::TypeApp(e) => {
-                // `f<T>` — resolve the type-applied head expression (the value
-                // reference `f`) and each type argument (a type use).
-                if let Some(head) = e.expr() {
-                    // A bare-ident head under explicit type arguments (`Pair<int>
-                    // ()`) must not take the opened-type constructor fallback: that
-                    // tier does an arity-0 lookup, so it would name the non-generic
-                    // sibling rather than the arity-matched generic type. Defer the
-                    // fallback (the value frame still resolves a genuine value).
-                    if let Expr::Ident(id) = &head
-                        && let Some(tok) = id.ident()
-                    {
-                        self.resolve_name_use(&tok, false);
-                    } else {
-                        self.resolve_expr(&head);
-                    }
-                }
-                for ty in e.type_args() {
-                    self.resolve_type(&ty);
-                }
+                self.resolve_type_app(e);
             }
             Expr::Assign(e) => {
                 // `target <- value`. The target is a *use* of an existing
@@ -1179,8 +1144,97 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    /// What an application whose function is `func` applies, as far as F#'s
-    /// reading of an `x = y` argument goes.
+    /// Resolve the application `e`: its function, then its argument — the
+    /// argument as named arguments when the function may be a method
+    /// ([`Self::callee_kind`]). Returns `e`'s [`SpineHead`], for an
+    /// application `e` is the function of.
+    ///
+    /// A curried application `f a b (x = y)` nests one [`Expr::App`] per
+    /// argument, and each asks what the spine below it leads to. Each level
+    /// returns its answer to the one above, so the spine is walked once, as
+    /// it is resolved, rather than once from every level.
+    fn resolve_app(&mut self, e: &AppExpr) -> SpineHead {
+        let func = e.func();
+        let spine = match &func {
+            Some(f) => {
+                let spine = self.resolve_spine(f);
+                if !e.is_infix() {
+                    self.note_in_file_construction(f);
+                }
+                Some(spine)
+            }
+            None => None,
+        };
+        if let Some(a) = e.arg() {
+            // Resolved after the function, so the head's resolution is
+            // already recorded when deciding whether `a` may carry named
+            // arguments.
+            let callee = match &spine {
+                Some(spine) if !e.is_infix() => self.callee_kind(spine),
+                _ => Callee::Function,
+            };
+            match callee {
+                Callee::Function => self.resolve_expr(&a),
+                named => self.resolve_method_args(&a, named),
+            }
+        }
+        let head = if e.is_infix() {
+            // An infix operator's application is never a method call.
+            SpineHead::Decided(Callee::Function)
+        } else {
+            spine.unwrap_or(SpineHead::Decided(Callee::MaybeNamed))
+        };
+        #[cfg(test)]
+        assert_eq!(
+            head,
+            spine_head_by_walk(&Expr::App(e.clone())),
+            "the spine threaded up an application differs from a walk down it"
+        );
+        head
+    }
+
+    /// Resolve `f<T>`: the type-applied head expression (the value reference
+    /// `f`) and each type argument (a type use). Returns its [`SpineHead`].
+    fn resolve_type_app(&mut self, e: &TypeAppExpr) -> SpineHead {
+        let spine = match e.expr() {
+            // A bare-ident head under explicit type arguments (`Pair<int>
+            // ()`) must not take the opened-type constructor fallback: that
+            // tier does an arity-0 lookup, so it would name the non-generic
+            // sibling rather than the arity-matched generic type. Defer the
+            // fallback (the value frame still resolves a genuine value).
+            Some(head @ Expr::Ident(_)) => {
+                if let Expr::Ident(id) = &head
+                    && let Some(tok) = id.ident()
+                {
+                    self.resolve_name_use(&tok, false);
+                }
+                SpineHead::Name(head)
+            }
+            Some(head) => self.resolve_spine(&head),
+            None => SpineHead::Decided(Callee::MaybeNamed),
+        };
+        for ty in e.type_args() {
+            self.resolve_type(&ty);
+        }
+        spine
+    }
+
+    /// Resolve `f`, exactly as [`Self::resolve_expr`] does, and return its
+    /// [`SpineHead`]: what an application whose function is `f` applies, as
+    /// far as the syntax decides it.
+    fn resolve_spine(&mut self, f: &Expr) -> SpineHead {
+        match f {
+            Expr::App(app) => self.resolve_app(app),
+            Expr::TypeApp(t) => self.resolve_type_app(t),
+            other => {
+                self.resolve_expr(other);
+                spine_end(other)
+            }
+        }
+    }
+
+    /// What an application applies, as far as F#'s reading of an `x = y`
+    /// argument goes, given where its function's spine leads (`spine`).
     ///
     /// For a method, constructor or union-case application FCS reads a
     /// trailing `x = y` argument as a **named argument** *syntactically*
@@ -1201,37 +1255,20 @@ impl<'a> Resolver<'a> {
     ///   local of this file or an earlier one, or a member of an F# module — and
     ///   a case only when it is this file's.
     ///
-    /// Must be asked after `func` is resolved: it reads the head's recorded
-    /// resolution.
-    fn callee_kind(&self, func: &Expr) -> Callee {
-        // A curried application `f a (x = y)` applies whatever `f` is, and so
-        // does `f<int> (x = y)`.
-        let mut head = func.clone();
-        loop {
-            let next = match &head {
-                // An infix operator's application is never a method call.
-                Expr::App(app) if app.is_infix() => return Callee::Function,
-                Expr::App(app) => app.func(),
-                Expr::TypeApp(t) => t.expr(),
-                Expr::Ident(_) | Expr::LongIdent(_) => break,
-                // Member access (`x.M`, `a?b`, `'T.M`): a method for all we know.
-                Expr::DotGet(_) | Expr::Dynamic(_) | Expr::Typar(_) => {
-                    return Callee::MaybeNamed;
-                }
-                // Not a bare name — parenthesised, annotated, or not a name at
-                // all — so a first-class function value.
-                _ => return Callee::Function,
-            };
-            let Some(next) = next else {
-                return Callee::MaybeNamed;
-            };
-            head = next;
-        }
+    /// The syntax alone decides every case but a bare name
+    /// ([`SpineHead::Name`]); [`Self::resolve_spine`] finds which as it
+    /// resolves `func`, and this reads what a name was resolved to. So it must
+    /// be asked after `func` is resolved.
+    fn callee_kind(&self, spine: &SpineHead) -> Callee {
+        let head = match spine {
+            SpineHead::Decided(callee) => return *callee,
+            SpineHead::Name(head) => head,
+        };
         // What the application applies is what the *whole* path names, which a
         // dotted path records at its whole span (`List.contains`); in
         // `x.M (a = b)` nothing is recorded there — `x` is a value and `M` a
         // member of it — so it stays unproved.
-        let range = match &head {
+        let range = match head {
             Expr::Ident(e) => e.ident().map(|t| t.text_range()),
             Expr::LongIdent(e) => e.long_ident().and_then(|li| {
                 let mut idents = li.idents();
@@ -1435,6 +1472,64 @@ pub(super) enum Callee {
     MaybeNamed,
 }
 
+/// Where an application's spine leads, as far as the syntax decides what the
+/// application applies ([`Resolver::callee_kind`]). A curried application
+/// `f a (x = y)` applies whatever `f` is, and so does `f<int> (x = y)`: the
+/// spine runs down through every non-infix application's function and every
+/// type application's head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SpineHead {
+    /// Decided by the syntax: an infix application, a member access, a head
+    /// that is not a bare name, or a spine that ends in recovery.
+    Decided(Callee),
+    /// A bare name (an [`Expr::Ident`] or [`Expr::LongIdent`]), whose
+    /// resolution decides.
+    Name(Expr),
+}
+
+/// The [`SpineHead`] of `e`, an expression a spine stops at: anything but an
+/// application or a type application, which [`Resolver::resolve_spine`] steps
+/// down through.
+fn spine_end(e: &Expr) -> SpineHead {
+    debug_assert!(
+        !matches!(e, Expr::App(_) | Expr::TypeApp(_)),
+        "a spine runs on through {e:?}"
+    );
+    match e {
+        Expr::Ident(_) | Expr::LongIdent(_) => SpineHead::Name(e.clone()),
+        // Member access (`x.M`, `a?b`, `'T.M`): a method for all we know.
+        Expr::DotGet(_) | Expr::Dynamic(_) | Expr::Typar(_) => {
+            SpineHead::Decided(Callee::MaybeNamed)
+        }
+        // Not a bare name — parenthesised, annotated, or not a name at all —
+        // so a first-class function value.
+        _ => SpineHead::Decided(Callee::Function),
+    }
+}
+
+/// `e`'s [`SpineHead`] by walking down its spine to where it stops: the
+/// reference [`Resolver::resolve_app`]'s threaded answer is held to.
+#[cfg(test)]
+fn spine_head_by_walk(e: &Expr) -> SpineHead {
+    let mut head = e.clone();
+    loop {
+        let next = match &head {
+            Expr::App(app) if app.is_infix() => return SpineHead::Decided(Callee::Function),
+            Expr::App(app) => app.func(),
+            Expr::TypeApp(t) => t.expr(),
+            Expr::Ident(_) | Expr::LongIdent(_) => return SpineHead::Name(head),
+            Expr::DotGet(_) | Expr::Dynamic(_) | Expr::Typar(_) => {
+                return SpineHead::Decided(Callee::MaybeNamed);
+            }
+            _ => return SpineHead::Decided(Callee::Function),
+        };
+        let Some(next) = next else {
+            return SpineHead::Decided(Callee::MaybeNamed);
+        };
+        head = next;
+    }
+}
+
 /// The name the left of a [`named_arg_shape`] element would label, if it can
 /// be a label at all: FCS's `LongOrSingleIdent` with exactly one segment,
 /// optionally behind the `?` of an optional argument (`x`, `?x`; not `a.b`).
@@ -1475,4 +1570,113 @@ fn is_named_arg_label(ident: &borzoi_cst::syntax::IdentExpr) -> bool {
         named_arg_shape(&el),
         Some((Some(Expr::Ident(lhs)), _)) if lhs.syntax() == ident.syntax()
     )
+}
+
+#[cfg(test)]
+mod spine_tests {
+    //! [`Resolver::resolve_app`] threads each application's [`SpineHead`] up
+    //! the spine as it resolves it, and under `cfg(test)` asserts at every
+    //! application that the threaded answer is the one
+    //! [`spine_head_by_walk`] finds walking down. These tests resolve inputs
+    //! that put every kind of spine in front of that assertion.
+
+    use borzoi_cst::parser::parse;
+    use borzoi_cst::syntax::ImplFile;
+    use borzoi_oracle_harness::repetition_shapes::{Kind, SHAPES, nested_in_modules_at};
+    use proptest::prelude::*;
+
+    use crate::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
+
+    use super::*;
+
+    fn resolve(src: &str) {
+        let p = parse(src);
+        let recovery = SyntaxRecovery::of(&p);
+        let file = ImplFile::cast(p.root).expect("impl file");
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
+    }
+
+    #[test]
+    fn every_repetition_shape_threads_the_walked_spine() {
+        for shape in SHAPES.iter().filter(|s| s.kind == Kind::Impl) {
+            resolve(&shape.source(7));
+            resolve(&nested_in_modules_at(&shape.source(3), 5));
+        }
+    }
+
+    /// Declares a function, a value, a union case with a field and a type
+    /// with a method, so a spine's head resolves to each kind
+    /// [`Resolver::callee_kind`] tells apart.
+    const PRELUDE: &str = "\
+type U = Case of a: int
+type T() =
+    static member M(x: int) = x
+let f a b = a
+let v = 1
+";
+
+    /// The pieces of an application: heads of every kind a spine stops at,
+    /// the wrappers it runs down through, arguments (named-argument shaped
+    /// among them), infix operators, offside layout, and unbalanced brackets
+    /// so recovery leaves spines whose function or argument is missing.
+    const FRAGMENTS: &[&str] = &[
+        "f",
+        "v",
+        "Case",
+        "T.M",
+        "U.Case",
+        "x.M",
+        "(f)",
+        "f<int>",
+        "T.M<int>",
+        "(f<int>)",
+        "'T.M",
+        "a?b",
+        "(fun x -> x)",
+        "(f : int -> int)",
+        " ",
+        " a",
+        " 1",
+        " (a = 1)",
+        " (a = 1, x = 2)",
+        " (Case(a = 1))",
+        " [1]",
+        " [|1|]",
+        " ()",
+        " <| ",
+        " |> ",
+        " + ",
+        " = ",
+        ".[0]",
+        "[0]",
+        "(",
+        ")",
+        "<",
+        ">",
+        "\n    ",
+        "\n        ",
+        " in ",
+        "if v then ",
+        " else ",
+        "match v with | _ -> ",
+        "fun a -> ",
+    ];
+
+    fn body() -> impl Strategy<Value = String> {
+        prop::collection::vec(prop::sample::select(FRAGMENTS), 1..40).prop_map(|fs| fs.concat())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn generated_applications_thread_the_walked_spine(body in body()) {
+            resolve(&format!("{PRELUDE}let it =\n    {body}\n"));
+        }
+    }
 }

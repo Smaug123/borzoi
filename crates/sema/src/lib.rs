@@ -43,6 +43,7 @@ mod infer;
 mod infer_project;
 mod match_reach;
 mod member_ty;
+mod node_span;
 mod overload;
 mod qnof;
 mod recovery;
