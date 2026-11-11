@@ -178,13 +178,28 @@ fn a_hidden_include_makes_the_derived_helper_inexact() {
 }
 
 #[test]
-fn a_backslash_spelling_declines_the_exists_probe() {
-    // MSBuild rewrites backslashes in an evaluated value only when the first
-    // path segment exists relative to its working directory, so which path
-    // `->Exists()` probes is environment-dependent. We decline.
-    let (_tmp, _root, parsed) = layout(&format!(
+fn a_windows_spelling_under_a_parent_segment_is_probed_as_msbuild_respells_it() {
+    // MSBuild respells `..\A\A.fsproj` to `../A/A.fsproj` whatever its
+    // working directory, since `..` is a directory under any of them.
+    let (_tmp, root, parsed) = layout(&format!(
         r#"  <ItemGroup>
     <ProjectReference Include="..\A\A.fsproj" />
+    <ProjectReference Include=".\..\M\M.fsproj" />
+  </ItemGroup>
+{NON_EXISTENT_IDIOM}"#
+    ));
+    assert!(!parsed.project_references_uncertain, "{parsed:#?}");
+    assert_eq!(references(&parsed), vec![root.join("A/A.fsproj")]);
+}
+
+#[test]
+fn a_backslash_spelling_that_turns_on_the_working_directory_declines() {
+    // `A\..\..\A\A.fsproj` is respelled only when `A/` exists under
+    // MSBuild's working directory, so which path `->Exists()` probes is not
+    // the project's to say.
+    let (_tmp, _root, parsed) = layout(&format!(
+        r#"  <ItemGroup>
+    <ProjectReference Include="A\..\..\A\A.fsproj" />
   </ItemGroup>
 {NON_EXISTENT_IDIOM}"#
     ));
