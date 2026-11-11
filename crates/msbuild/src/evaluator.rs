@@ -4779,12 +4779,6 @@ fn package_structural_uncertainty_from_compile(
                 project: project.clone(),
             }
         }
-        StructuralCompileItemUncertainty::SdkImportProjectRejected { sdk, project } => {
-            StructuralPackageReferenceUncertainty::SdkImportProjectRejected {
-                sdk: sdk.clone(),
-                project: project.clone(),
-            }
-        }
         StructuralCompileItemUncertainty::ImportProjectUnresolved { project } => {
             StructuralPackageReferenceUncertainty::ImportProjectUnresolved {
                 project: project.clone(),
@@ -5123,15 +5117,18 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     // resolve via the caller-supplied SDK resolver and walk the chosen
     // file *at this position in the body*. The two well-known stems
     // use the explicit `SdkPaths::{props, targets}` fields; any other
-    // `Project` value (e.g. `Sdk.Web.props` shipped by SDK variants)
-    // is treated as a relative path under [`SdkPaths::root`]. Path
-    // components are vetted before any FS touch: `..`, empty segments,
-    // and absolute paths are rejected as `UnsupportedConstruct` so a
-    // malformed or hostile fsproj cannot escape the SDK directory. A
-    // missing-but-well-formed entry point falls through to the
-    // existing IO path and surfaces as `ImportFailed::NotFound`.
-    // Without a resolver, every Sdk import surfaces as
-    // `SdkResolverAbsent`.
+    // `Project` value is resolved against the SDK's directory exactly as
+    // MSBuild resolves it: `Path.Combine(sdkResult.Path, project)`, then
+    // `FileUtilities.NormalizePath` (Evaluator.cs). So `..` may leave the
+    // SDK directory — the Web SDK's `Sdk.Server.targets` imports
+    // `Microsoft.NET.Sdk.Web.ProjectSystem`'s
+    // `..\targets\Microsoft.NET.Sdk.Web.BeforeCommon.targets`, and the
+    // Worker SDK the same directory's `DefaultItems.props` — and an
+    // absolute `Project` names its own file. Neither confines what a
+    // project can read: a plain `<Import Project=...>` reaches any path
+    // already. A missing entry point surfaces as
+    // `ImportFailed::NotFound` from the IO path. Without a resolver,
+    // every Sdk import surfaces as `SdkResolverAbsent`.
     if let Some(sdk_name) = node.attribute("Sdk") {
         let Some(resolver) = state.sdk_resolver else {
             state.push(
@@ -5192,48 +5189,45 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
         }
         let project_attr_unescaped = expansion.value.unescape();
         let project_attr = project_attr_unescaped.as_str();
-        // The two well-known stems are only meaningful for an ordinary
-        // single-root SDK; everything else — including *every* `Project`
-        // value under a locator-style resolution — is a relative path
-        // vetted before any FS touch.
-        let vetted_relative = |state: &mut State<'_>, value: &str| -> Option<String> {
-            if !is_safe_sdk_relative_path(value) {
-                state.push(
-                    DiagnosticKind::UnsupportedConstruct {
-                        element: format!("Import Sdk={sdk_name:?} Project={value:?}"),
-                    },
-                    node.range(),
-                );
-                // A rejected SDK import is dropped and could have carried
-                // Compile items (same reasoning as the unresolved-path arm
-                // above). Inside the SDK tree Compile uncertainty is
-                // tolerated, but dependency items could still be hidden.
-                state.mark_structural_skip_respecting_sdk_compile_tolerance(
-                    StructuralCompileItemUncertainty::SdkImportProjectRejected {
-                        sdk: sdk_name.to_string(),
-                        project: value.to_string(),
-                    },
-                    node.range(),
-                );
-                return None;
-            }
-            Some(value.replace('\\', "/"))
-        };
+        // An empty `Project` names no file: MSBuild fails the evaluation
+        // (MSB4035 for a missing attribute; `Path.Combine` of the SDK
+        // directory with "" names the directory itself, which no import
+        // can load). Decline as the plain `<Import>` path does.
+        if project_attr.trim().is_empty() {
+            state.push(
+                DiagnosticKind::UnsupportedConstruct {
+                    element: format!(
+                        "Import Sdk={sdk_name:?} Project={project_attr_raw:?} \
+                         (names no file, an MSBuild evaluation error)"
+                    ),
+                },
+                node.range(),
+            );
+            state.mark_structural_skip_respecting_sdk_compile_tolerance(
+                StructuralCompileItemUncertainty::SdkImportProjectUnresolved {
+                    sdk: sdk_name.to_string(),
+                    project: project_attr_raw.to_string(),
+                },
+                node.range(),
+            );
+            return;
+        }
+        // MSBuild accepts either separator on either platform, as for a
+        // plain `<Import>`.
+        let relative = project_attr.replace('\\', "/");
+        let under = |root: &Path| normalise(&root.join(&relative));
         match resolution {
             SdkResolution::Single(sdk_paths) => {
                 // Tolerate this SDK's own files too — the
                 // `Microsoft.NET.Sdk.Web` → base `Microsoft.NET.Sdk`
                 // (sibling dir) case (P2.1).
                 state.note_sdk_tolerance(&sdk_paths.root);
+                // The two well-known stems are only meaningful for an
+                // ordinary single-root SDK.
                 let chosen: PathBuf = match project_attr {
                     "Sdk.props" => sdk_paths.props.clone(),
                     "Sdk.targets" => sdk_paths.targets.clone(),
-                    other => {
-                        let Some(normalised) = vetted_relative(state, other) else {
-                            return;
-                        };
-                        sdk_paths.root.join(normalised)
-                    }
+                    _ => under(&sdk_paths.root),
                 };
                 walk_external_file(&chosen, node.range(), state);
             }
@@ -5243,12 +5237,9 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // this walk's state); zero roots contribute nothing and
                 // that is *exact* — MSBuild treats an empty workload
                 // resolver result the same way.
-                let Some(normalised) = vetted_relative(state, project_attr) else {
-                    return;
-                };
                 for root in roots {
                     state.note_sdk_tolerance(&root);
-                    walk_external_file(&root.join(&normalised), node.range(), state);
+                    walk_external_file(&under(&root), node.range(), state);
                 }
             }
         }
@@ -5766,51 +5757,6 @@ fn resolve_property_import_target(
         path.to_path_buf()
     } else {
         current_file_dir.join(path)
-    })
-}
-
-/// Returns true if `attr` is a safe relative path under an SDK root —
-/// i.e. it has at least one non-empty component, no `..` components,
-/// no leading or interior empty components, no Windows drive or UNC
-/// prefix, and is not absolute. MSBuild accepts both forward and back
-/// slashes as separators, so we vet against both.
-///
-/// Used to guard `<Import Sdk="X" Project="..."/>` for `Project`
-/// values other than the two well-known stems: a hostile or malformed
-/// fsproj must not be able to walk outside the SDK directory.
-///
-/// The Windows prefix check matters even when the parser runs on
-/// Linux: `PathBuf::join("C:..")` on any platform produces a path
-/// that, when later canonicalised on Windows, can replace the SDK
-/// root with the drive prefix. `Path::is_absolute()` doesn't catch
-/// `C:foo` (no root separator) so we reject the drive prefix
-/// explicitly. The check is host-independent so a project authored
-/// on Windows can still be lex-checked on a Linux LSP host without
-/// silently bypassing the guard.
-fn is_safe_sdk_relative_path(attr: &str) -> bool {
-    if attr.is_empty() {
-        return false;
-    }
-    if Path::new(attr).is_absolute() {
-        return false;
-    }
-    // Normalise so the component scan also catches `..` after a
-    // backslash and empty segments from `//` runs of either separator.
-    // UNC paths (`\\server\share\...`) become `//server/share/...`
-    // and are caught by the leading-empty-component check.
-    let normalised = attr.replace('\\', "/");
-    if normalised.starts_with('/') {
-        return false;
-    }
-    normalised.split('/').all(|component| {
-        if component.is_empty() || component == ".." {
-            return false;
-        }
-        // Reject `C:`, `C:foo`, etc. — any component that starts
-        // with a single ASCII letter followed by a colon is a
-        // Windows drive prefix and would re-root the join.
-        let bytes = component.as_bytes();
-        !(bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
     })
 }
 

@@ -1242,11 +1242,6 @@ fn structural_package_reference_uncertainty_message(
                 "dropped SDK import '{sdk}' Project=\"{project}\" because the Project path could not be resolved"
             )
         }
-        StructuralPackageReferenceUncertainty::SdkImportProjectRejected { sdk, project } => {
-            format!(
-                "rejected SDK import '{sdk}' Project=\"{project}\" because it is not a safe SDK-relative path"
-            )
-        }
         StructuralPackageReferenceUncertainty::ImportProjectUnresolved { project } => {
             format!(
                 "dropped <Import Project=\"{project}\"> because the Project path could not be resolved"

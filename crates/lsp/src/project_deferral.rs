@@ -796,9 +796,6 @@ fn render_structural(structural: &StructuralCompileItemUncertainty) -> String {
         StructuralCompileItemUncertainty::SdkImportProjectUnresolved { sdk, project } => format!(
             "an `<Import Sdk=\"{sdk}\" Project=\"{project}\">` whose Project path didn't resolve"
         ),
-        StructuralCompileItemUncertainty::SdkImportProjectRejected { sdk, project } => format!(
-            "an `<Import Sdk=\"{sdk}\" Project=\"{project}\">` naming a path outside the SDK root"
-        ),
         StructuralCompileItemUncertainty::ImportProjectUnresolved { project } => {
             format!("an `<Import Project=\"{project}\">` I couldn't resolve to one definite file")
         }

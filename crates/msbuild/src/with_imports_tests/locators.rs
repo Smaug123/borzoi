@@ -6,7 +6,6 @@
 //! Stage B / D1).
 
 use super::*;
-use crate::StructuralPackageReferenceUncertainty;
 use tempfile::TempDir;
 
 fn roots_resolver(
@@ -185,38 +184,38 @@ fn unsupported_layout_marks_package_uncertain() {
     assert!(result.package_references_uncertain);
 }
 
-/// Path vetting applies to locator imports exactly as to custom
-/// single-root SDK entry points: `..` cannot escape the roots.
+/// A locator import's `Project` resolves against every root as MSBuild's
+/// `Path.Combine(root, project)` does, so `..` climbs out of each root to
+/// its own sibling.
 #[test]
-fn locator_import_project_path_is_vetted() {
+fn locator_import_project_climbs_out_of_each_root() {
     let tmp = TempDir::new().unwrap();
-    let manifest = tmp.path().join("manifest");
-    write_at(&manifest, "WorkloadManifest.targets", "<Project/>");
+    let mut roots = Vec::new();
+    for name in ["first", "second"] {
+        let root = tmp.path().join(name).join("manifest");
+        std::fs::create_dir_all(&root).unwrap();
+        roots.push(root);
+        write_at(
+            &tmp.path().join(name).join("shared"),
+            "W.targets",
+            &format!(
+                "<Project><PropertyGroup><Seen>$(Seen);{name}</Seen></PropertyGroup></Project>"
+            ),
+        );
+    }
     let project_path = write_at(
         tmp.path(),
         "Demo.fsproj",
         r#"<Project>
-  <Import Project="../escape.targets" Sdk="My.Locator" />
+  <Import Project="..\shared/W.targets" Sdk="My.Locator" />
 </Project>"#,
     );
-    let result = parse_file_with_sdk_resolution(
-        &project_path,
-        roots_resolver("My.Locator", vec![manifest.clone()]),
+    let result = parse_file_with_sdk_resolution(&project_path, roots_resolver("My.Locator", roots));
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.properties.get("Seen").map(String::as_str),
+        Some(";first;second")
     );
-    assert!(
-        result
-            .package_reference_uncertainties
-            .iter()
-            .any(|cause| matches!(
-                &cause.kind,
-                crate::PackageReferenceUncertaintyCauseKind::Structural(
-                    StructuralPackageReferenceUncertainty::SdkImportProjectRejected { .. }
-                )
-            )),
-        "causes: {:?}",
-        result.package_reference_uncertainties
-    );
-    assert!(result.is_partial);
 }
 
 /// A file-level symlink-merge layout (Nix's combined dotnet tree, but any

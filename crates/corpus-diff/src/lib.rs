@@ -572,11 +572,6 @@ fn structural_compile_item_uncertainty_message(kind: &StructuralCompileItemUncer
                 "dropped SDK import '{sdk}' Project=\"{project}\" because the Project path could not be resolved"
             )
         }
-        StructuralCompileItemUncertainty::SdkImportProjectRejected { sdk, project } => {
-            format!(
-                "rejected SDK import '{sdk}' Project=\"{project}\" because it is not a safe SDK-relative path"
-            )
-        }
         StructuralCompileItemUncertainty::ImportProjectUnresolved { project } => {
             format!(
                 "dropped <Import Project=\"{project}\"> because the Project path could not be resolved"
