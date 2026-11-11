@@ -321,3 +321,59 @@ fn explicit_import_subdir_custom_entry_point_resolves() {
     let dir = canon(tmp.path());
     assert_eq!(paths_of(&result.items), vec![dir.join("fromsub.fs")]);
 }
+
+#[test]
+fn explicit_import_resolves_against_a_relative_sdk_root() {
+    // `SdkPaths` admits a relative root (a relative `DOTNET_ROOT` yields
+    // one). MSBuild's `NormalizePath` resolves it against the working
+    // directory before collapsing `..`, so a root spelt with leading `..`
+    // segments still names its own directory; dropping the segments `..`
+    // cannot pop would name another one.
+    let tmp = TempDir::new().unwrap();
+    let (root, props, targets) = write_synthetic_sdk_with_extras(
+        tmp.path(),
+        "MySdk",
+        "<Project/>",
+        "<Project/>",
+        &[(
+            "Extra.props",
+            r#"<Project>
+  <PropertyGroup>
+    <Seed>fromextra</Seed>
+  </PropertyGroup>
+</Project>"#,
+        )],
+    );
+    // `root` spelt relative to the working directory: up to `/`, then down.
+    let cwd = std::env::current_dir().unwrap();
+    let relative_root = cwd
+        .components()
+        .skip(1)
+        .map(|_| std::path::Component::ParentDir.as_os_str())
+        .chain(root.components().skip(1).map(|c| c.as_os_str()))
+        .collect::<PathBuf>();
+    assert!(relative_root.starts_with(".."), "{relative_root:?}");
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project>
+  <Import Sdk="MySdk" Project="Extra.props" />
+</Project>"#,
+    );
+    let result = parse_file_with_sdk(&project_path, |name| {
+        if name == "MySdk" {
+            Ok(SdkPaths {
+                root: relative_root.clone(),
+                props: props.clone(),
+                targets: targets.clone(),
+            })
+        } else {
+            Err(SdkResolveError::NotFound)
+        }
+    });
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.properties.get("Seed").map(String::as_str),
+        Some("fromextra")
+    );
+}

@@ -5265,7 +5265,25 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
         // file spelt with one, so refuse it here rather than at the IO path.
         let names_directory = relative.ends_with('/');
         let walk_under = |root: &Path, state: &mut State<'_>| {
-            let path = normalise(&root.join(&relative));
+            // `NormalizePath` is `GetFullPath`: a relative root resolves
+            // against the working directory *before* `..` collapses, so a
+            // leading `..` that `normalise` alone could not pop still climbs.
+            let joined = match std::path::absolute(root.join(&relative)) {
+                Ok(joined) => joined,
+                Err(e) => {
+                    state.push(
+                        DiagnosticKind::ImportFailed {
+                            path: root.join(&relative),
+                            reason: ImportFailReason::Io {
+                                message: e.to_string(),
+                            },
+                        },
+                        node.range(),
+                    );
+                    return;
+                }
+            };
+            let path = normalise(&joined);
             if names_directory {
                 state.push(
                     DiagnosticKind::ImportFailed {
