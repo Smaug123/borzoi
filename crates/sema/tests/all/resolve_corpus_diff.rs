@@ -34,26 +34,44 @@
 //! # Uses FCS resolves outside the file
 //!
 //! Every other use FCS resolves — in **any** bucket — names a symbol declared
-//! in a different file (FSharp.Core, the BCL): `id`, `printfn`, `List`, a
-//! named argument's parameter. With the empty environment this sweep resolves
-//! under, the only correct outcome there is to decline. Any in-file binder we
-//! commit to instead (a local that leaked out of its scope and captured
-//! `string`, a label `?x = …` bound to the local `x`), and `Unresolved`, is a
-//! **divergence**, gated by the same assertion. Two kinds of use are not
-//! graded, and are counted on the summary line instead:
+//! outside the file: FSharp.Core, the BCL. The sweep resolves under **exactly
+//! the reference set FCS checked the file against** (each census line reports
+//! it), so those are graded as the in-file ones are, by what we committed to:
 //!
-//! * one whose symbol FCS gave **no** declaration location (IL members and
-//!   fields, unsolved trait calls). That is no evidence about where the target
-//!   lives — FCS's `rangeOfItem` returns none for a default struct
-//!   constructor too, which can be in-file;
+//! * an **assembly-target** use is one whose symbol FCS identifies as declared
+//!   in one of those referenced assemblies. Committing to an assembly
+//!   `Entity`/`Member`/`UnionCase` that FCS's identity names
+//!   ([`assembly_answer_agrees`], the comparator the whole-project gate uses
+//!   too) is a **match**; declining is an **assembly-gap**; any other answer —
+//!   a different assembly declaration, an in-file binder (a local that leaked
+//!   out of its scope and captured `string`), `Unresolved` — is a
+//!   **divergence**, gated by the same assertion;
+//! * an **external** use is one FCS declares in another file but names by no
+//!   identity in a referenced assembly, or a namespace, which no one assembly
+//!   declares (FCS names whichever it met first) and no answer of ours names.
+//!   There is nothing to compare a committed answer with, so the only correct
+//!   outcome is to decline, and any commitment is a divergence.
+//!
+//! Three kinds of use are not graded, and are counted on the summary line
+//! instead:
+//!
+//! * one whose symbol FCS gave **no** declaration location and no identity in
+//!   a referenced assembly (unsolved trait calls, and a default struct
+//!   constructor, which can be in-file and is named by the file's own
+//!   assembly). That is no evidence about where the target lives;
 //! * one at a range where FCS *also* records an in-file symbol, as a use or a
 //!   definition: a type name and its constructor, or the
 //!   `OptionalArgumentAttribute` FCS synthesises at a member whose parameter is
-//!   `?optional`. The in-file record is the one to grade there.
+//!   `?optional`. The in-file record is the one to grade there;
+//! * one at a range where FCS records two **different** out-of-file answers,
+//!   which no single answer of ours could agree with. A constructor record
+//!   that ends with a record of its type's name (`StringBuilder()`, and the
+//!   `.ctor` FCS records one character into `[<Obsolete>]`) answers the same
+//!   site at a level the resolver does not model, and steps aside rather than
+//!   making the site ambiguous.
 //!
 //! The other direction — FCS resolves in-file, we commit to an assembly
-//! `Entity`/`Member` — is graded too (a divergence), but cannot occur here:
-//! the empty `AssemblyEnv` holds no entity to point at.
+//! `Entity`/`Member` — is graded in the in-file slice (a divergence).
 //!
 //! # The manifest
 //!
@@ -64,10 +82,12 @@
 //! changes merge key by key (`tools/manifest-merge.sh`):
 //!
 //! - `<file>` → whether it was compared or skipped, and why; for a compared
-//!   file, whether FCS's check errored, and two counts of the oracle's records:
-//!   `b1=` its in-file B1 uses and `external=` its graded external-target uses.
+//!   file, whether FCS's check errored, and three counts of the oracle's
+//!   records: `b1=` its in-file B1 uses, `assembly=` its assembly-target uses
+//!   and `external=` its graded external uses.
 //! - `<file>:<line>:<col> "<text>"` → every in-file B1 use that is not a match
-//!   (gap, alt-binder, divergence), and every external-target use we did not
+//!   (gap, alt-binder, divergence), every assembly-target use that is not a
+//!   match (assembly-gap, divergence), and every external use we did not
 //!   decline (a divergence).
 //! - `<file>:<line>:<col> "<name>" binder` → every binder FCS declares that the
 //!   walk neither interns nor declines, with its class and construct
@@ -78,10 +98,11 @@
 //! No line counts our own verdicts: such a count changes with every item it
 //! sums, so any two changes to one file's uses would conflict on it. The counts
 //! are of what FCS reported, which moves only when the corpus or the oracle
-//! does. So a file's matches are its `b1` less its listed in-file uses, and its
-//! declined external uses its `external` less its listed external ones — ~22k
-//! and ~18k of them, left unlisted. The sweep checks, file by file, that every
-//! counted record came to exactly one verdict, so the subtraction holds.
+//! does. So a file's in-file matches are its `b1` less its listed in-file uses,
+//! its assembly matches its `assembly` less its listed assembly-target ones,
+//! and its declined external uses its `external` less its listed external
+//! ones, all left unlisted. The sweep checks, file by file, that every counted
+//! record came to exactly one verdict, so the subtraction holds.
 //!
 //! Any difference fails with a line diff. A movement in either direction is
 //! signal: a lost match is a regression, a gained one an improvement, and both
@@ -95,11 +116,14 @@
 //!
 //! Of the uses FCS resolves in-file, only the **B1 lexical** slice is checked:
 //! B2/B3 uses (`x.Length`, overloaded members) need inference we do not do, so
-//! they are skipped — not divergences. (External-target uses are graded in
-//! every bucket, since declining is right whatever machinery FCS needed.)
+//! they are skipped — not divergences. (Out-of-file uses are graded in every
+//! bucket: whatever machinery FCS needed, a committed answer must be its
+//! answer, and declining makes no claim.)
 //! FCS type-checks each file *in isolation* (`uses-census-batch`). Our resolver
-//! runs single-file with empty `ProjectItems` / `AssemblyEnv`, exactly as
-//! `resolve_diff.rs` does.
+//! runs single-file with empty `ProjectItems`, under an `AssemblyEnv` read from
+//! the reference set the census reports. Only the resolver is graded: an answer
+//! inference layers over a deferral (a member found once the receiver's type
+//! is known) is the whole-project gate's to grade.
 //!
 //! `#[ignore]`d like the parser sweep: it type-checks a corpus sample (slow).
 //! Run under `nix develop` (which sets `BORZOI_CORPUS`):
@@ -126,13 +150,18 @@ use crate::common::{
     Bucket, CensusDecl, FileCensus, ResolveDiffUse, census_oracle_binders, census_oracle_uses,
     census_resolve_uses, env_usize_or, invoke_fcs_dump_census, parse_census_jsonl,
 };
+use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::test_support::binder_completeness::{
     commits_behind_unmodelled_binders, unmodelled_binders,
 };
+use borzoi_sema::test_support::{
+    AssemblyDecl, assembly_answer_agrees, assembly_resolution_decl, canonical_assembly,
+};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
+use std::collections::{BTreeSet, HashMap};
 
 /// The sample the checked-in manifest describes: every `DEFAULT_STRIDE`th file.
 const DEFAULT_STRIDE: usize = 13;
@@ -146,7 +175,8 @@ struct Site {
     range: TextRange,
     text: String,
     /// FCS's declaration for this use: the in-file binder's range we *should*
-    /// point at, or that it lies outside the file.
+    /// point at, the assembly declaration it names, or that it lies outside
+    /// the file.
     expected: String,
     /// What we said (FCS resolved an in-file binder here).
     ours: String,
@@ -168,13 +198,24 @@ struct Tally {
     /// In-file B1 uses we left `Deferred` or recorded nothing at — modeling
     /// gaps, not bugs.
     gaps: usize,
-    /// Uses FCS resolved to a symbol declared outside the file, every bucket,
-    /// each checked to be one we did not commit an in-file answer for.
+    /// Uses FCS identified as declared in a referenced assembly, every bucket,
+    /// each graded against our answer by identity.
+    assembly_graded: usize,
+    /// Assembly-target uses our answer named exactly.
+    assembly_matches: usize,
+    /// Assembly-target uses we declined.
+    assembly_gaps: usize,
+    /// Uses FCS declared in another file but named by no identity in a
+    /// referenced assembly, every bucket, each checked to be one we did not
+    /// commit an answer for.
     external_graded: usize,
-    /// External uses at a range where FCS also records an in-file symbol, left
-    /// to the in-file slice.
+    /// Out-of-file uses at a range where FCS also records an in-file symbol,
+    /// left to the in-file slice.
     external_shared_range: usize,
-    /// Uses whose symbol FCS gave no declaration location: no claim to grade.
+    /// Out-of-file ranges where FCS records two different answers.
+    external_ambiguous: usize,
+    /// Uses whose symbol FCS gave no declaration location and no identity in a
+    /// referenced assembly: no claim to grade.
     external_absent: usize,
     /// FCS reported the file as not Ok (its check aborted or threw): skipped.
     fcs_not_ok: usize,
@@ -232,6 +273,12 @@ fn resolution_matches_fcs_over_corpus() {
         "one census line per sampled file"
     );
 
+    let references = OracleReferences::of(&census);
+    eprintln!(
+        "resolve-diff: resolving under the {} assemblies the census checked against",
+        references.paths.len()
+    );
+
     let mut tally = Tally::default();
     {
         // Silence the per-panic backtraces from our parser/resolver on unmodeled
@@ -244,7 +291,7 @@ fn resolution_matches_fcs_over_corpus() {
         let _silence = silence_panics_here();
 
         for file in &census {
-            compare_file(&root, file, &mut tally);
+            compare_file(&root, file, &references, &mut tally);
         }
     }
 
@@ -272,9 +319,16 @@ fn resolution_matches_fcs_over_corpus() {
         tally.unmodelled_binders,
     );
     eprintln!(
-        "resolve-diff: {} external-target uses graded | {} left to a same-range \
-         in-file record | {} with no FCS declaration",
-        tally.external_graded, tally.external_shared_range, tally.external_absent,
+        "resolve-diff: {} assembly-target uses graded ({} match | {} gaps) | {} \
+         external uses graded | {} left to a same-range in-file record | {} \
+         ambiguous ranges | {} with no FCS declaration",
+        tally.assembly_graded,
+        tally.assembly_matches,
+        tally.assembly_gaps,
+        tally.external_graded,
+        tally.external_shared_range,
+        tally.external_ambiguous,
+        tally.external_absent,
     );
 
     print_sites("divergences (gated faults)", &tally.divergences);
@@ -295,9 +349,11 @@ fn resolution_matches_fcs_over_corpus() {
     assert!(
         tally.divergences.is_empty(),
         "{} uses are unambiguous faults: `Unresolved`, an assembly entity, or a \
-         differently-named binder where FCS found an in-file binder, or any \
-         in-file answer where FCS's target is outside the file. A resolver bug \
-         or soundness violation regressed in.",
+         differently-named binder where FCS found an in-file binder; any answer \
+         but the declaration FCS names where its target is in a referenced \
+         assembly; or any answer where FCS's target is outside the file and \
+         named by nothing we can compare. A resolver bug or soundness violation \
+         regressed in.",
         tally.divergences.len(),
     );
 
@@ -316,6 +372,81 @@ fn resolution_matches_fcs_over_corpus() {
         &manifest,
         &regenerate_ignored("resolve_corpus_diff"),
     );
+}
+
+/// The reference set the census checked every file against, and the env our
+/// resolver reads from exactly that set — so neither side can see a declaration
+/// the other cannot.
+struct OracleReferences {
+    paths: Vec<String>,
+    env: AssemblyEnv,
+    /// The simple names of the assemblies in [`Self::env`], up to
+    /// [`canonical_assembly`]: what decides whether FCS's identity for a use
+    /// names a referenced assembly, rather than the checked file's own.
+    names: HashSet<String>,
+}
+
+impl OracleReferences {
+    /// Read the reference set off the census, asserting every file that was
+    /// checked reports the same one: the env is built once, so a file checked
+    /// against a different set would be graded against the wrong one.
+    fn of(census: &[FileCensus]) -> Self {
+        let sets: BTreeSet<&Vec<String>> = census
+            .iter()
+            .filter(|f| f.ok)
+            .map(|f| {
+                f.references.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "census line for {} reports no reference set; is fcs-dump stale?",
+                        f.path
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            sets.len(),
+            1,
+            "every checked file must report the same reference set, got {} distinct ones",
+            sets.len()
+        );
+        let paths = (*sets.first().unwrap()).clone();
+        assert!(
+            !paths.is_empty(),
+            "the census checked files against no references"
+        );
+        let bytes: Vec<Vec<u8>> = paths
+            .iter()
+            .map(|p| std::fs::read(p).unwrap_or_else(|e| panic!("read reference {p}: {e}")))
+            .collect();
+        let views: Vec<Ecma335Assembly> = bytes
+            .iter()
+            .zip(&paths)
+            .map(|(b, p)| {
+                Ecma335Assembly::parse(b).unwrap_or_else(|e| panic!("parse reference {p}: {e:?}"))
+            })
+            .collect();
+        let names = views
+            .iter()
+            .map(|v| canonical_assembly(&v.identity().name).to_string())
+            .collect();
+        let env = AssemblyEnv::from_views(&views)
+            .unwrap_or_else(|e| panic!("build the census reference env: {e:?}"));
+        Self { paths, env, names }
+    }
+
+    /// Whether `decl` names a declaration in one of the referenced assemblies.
+    fn declares(&self, decl: &AssemblyDecl) -> bool {
+        self.names.contains(canonical_assembly(&decl.assembly))
+    }
+}
+
+/// What FCS answers at one out-of-file range, for grading.
+#[derive(Clone, PartialEq, Eq)]
+enum OutOfFile {
+    /// A declaration in a referenced assembly, by identity.
+    Assembly(AssemblyDecl),
+    /// Declared in another file, named by no identity we can compare.
+    External,
 }
 
 /// Print up to [`SAMPLE`] sites of one kind for triage.
@@ -344,9 +475,9 @@ fn print_sites(label: &str, sites: &[Site]) {
     }
 }
 
-/// Compare one census file's in-file B1 uses against our resolution, folding the
-/// outcome into `tally`.
-fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
+/// Compare one census file's in-file B1 uses and out-of-file uses against our
+/// resolution, folding the outcome into `tally`.
+fn compare_file(root: &Path, file: &FileCensus, references: &OracleReferences, tally: &mut Tally) {
     let path = PathBuf::from(&file.path);
     let rel = corpus_relative(root, &path);
     if !file.ok {
@@ -375,7 +506,7 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
             resolve_file(
                 &impl_file,
                 &ProjectItems::default(),
-                &AssemblyEnv::default(),
+                &references.env,
                 &recovery,
             ),
         ))
@@ -404,6 +535,7 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
     // Per kind of record, the verdicts given: listed, or (a match, a declined
     // external use) left to the counts.
     let (mut in_file_listed, mut matches) = (0usize, 0usize);
+    let (mut assembly_listed, mut assembly_matched) = (0usize, 0usize);
     let (mut external_listed, mut external_declined) = (0usize, 0usize);
 
     // Binder completeness: every binder FCS declares that the walk does not
@@ -461,17 +593,99 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
         // symbol is reported at a zero-width range.
         .filter(|u| !u.is_from_definition && u.start != u.end)
         .collect();
+    let out_of_file = out_of_file_answers(&uses, &in_file_ranges, references, tally);
     // The oracle's records this file's line counts, read off the census alone.
     let b1 = uses
         .iter()
         .filter(|u| matches!(u.decl, CensusDecl::InFile(..)) && u.bucket == Some(Bucket::B1))
         .count();
-    let external = uses
-        .iter()
-        .filter(|u| {
-            matches!(u.decl, CensusDecl::OtherFile) && !in_file_ranges.contains(&(u.start, u.end))
-        })
+    let assembly = out_of_file
+        .values()
+        .filter(|a| matches!(a, OutOfFile::Assembly(_)))
         .count();
+    let external = out_of_file.len() - assembly;
+
+    // Out-of-file answers, one per range, in source order so the printed
+    // sample reads top to bottom.
+    let mut out_of_file: Vec<((usize, usize), OutOfFile)> = out_of_file.into_iter().collect();
+    out_of_file.sort_by_key(|(range, _)| *range);
+    for ((start, end), answer) in out_of_file {
+        let use_range = TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(end).unwrap().into(),
+        );
+        let text = source.get(start..end).unwrap_or("");
+        let key = format!("{rel}:{} {text:?}", positions.at(start));
+        let at = |r: TextRange| positions.at(usize::from(r.start()));
+        let res = rf.resolution_at(use_range);
+        let ours = |res: Resolution| match res {
+            Resolution::Local(_) | Resolution::Item(_) => match rf.resolved_def(res) {
+                Some(def) => format!("binder={:?} at {}", def.name, at(def.range)),
+                None => "no-in-file-def".to_string(),
+            },
+            Resolution::Unresolved => "unresolved".to_string(),
+            // Single-file: no earlier file to name.
+            Resolution::EarlierFileType { .. } => "earlier-file".to_string(),
+            Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
+                let decl = assembly_resolution_decl(&references.env, res);
+                format!("assembly {} {}", decl.assembly, decl.full_name)
+            }
+            Resolution::Deferred(_) => unreachable!("a decline is not an answer"),
+        };
+        let mut diverge = |expected: String, ours: String, verdict: &str| {
+            tally
+                .manifest
+                .push((key.clone(), format!("divergence {verdict} {ours}")));
+            tally.divergences.push(Site {
+                path: path.clone(),
+                range: use_range,
+                text: text.to_string(),
+                expected,
+                ours,
+                fcs_check_errors: file.has_check_errors,
+            });
+        };
+        match answer {
+            // FCS named a declaration in a referenced assembly, which our env
+            // holds too: a committed answer must be that declaration. Every
+            // bucket is graded — whatever machinery FCS needed, a commitment
+            // claims the target.
+            OutOfFile::Assembly(expected) => {
+                tally.assembly_graded += 1;
+                match res {
+                    None | Some(Resolution::Deferred(_)) => {
+                        tally.assembly_gaps += 1;
+                        assembly_listed += 1;
+                        tally.manifest.push((key, "assembly-gap".to_string()));
+                    }
+                    Some(res) if assembly_answer_agrees(&references.env, res, &expected) => {
+                        tally.assembly_matches += 1;
+                        assembly_matched += 1;
+                    }
+                    Some(res) => {
+                        assembly_listed += 1;
+                        diverge(
+                            format!("assembly {} {}", expected.assembly, expected.full_name),
+                            ours(res),
+                            "assembly-target",
+                        );
+                    }
+                }
+            }
+            // FCS declared the target in another file and named it by nothing
+            // we can compare, so declining is the only correct outcome.
+            OutOfFile::External => {
+                tally.external_graded += 1;
+                match res {
+                    None | Some(Resolution::Deferred(_)) => external_declined += 1,
+                    Some(res) => {
+                        external_listed += 1;
+                        diverge("outside the file".to_string(), ours(res), "external-target");
+                    }
+                }
+            }
+        }
+    }
 
     for u in uses {
         let use_range = TextRange::new(
@@ -482,64 +696,9 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
         let key = format!("{rel}:{} {text:?}", positions.at(u.start));
         let at = |r: TextRange| positions.at(usize::from(r.start()));
 
-        let (ds, de) = match u.decl {
-            CensusDecl::InFile(ds, de) => (ds, de),
-            // FCS gave no declaration: no claim either way.
-            CensusDecl::Absent => {
-                tally.external_absent += 1;
-                continue;
-            }
-            CensusDecl::OtherFile if in_file_ranges.contains(&(u.start, u.end)) => {
-                tally.external_shared_range += 1;
-                continue;
-            }
-            // FCS resolved the use to a symbol declared outside this file
-            // (FSharp.Core, the BCL). Every bucket is graded: whatever machinery
-            // FCS needed to find the target, the target is not ours, so any
-            // in-file binder we commit to is a wrong answer. Declining is the
-            // only correct outcome with the empty environment this sweep
-            // resolves under.
-            CensusDecl::OtherFile => {
-                let wrong = match rf.resolution_at(use_range) {
-                    None | Some(Resolution::Deferred(_)) => None,
-                    Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => {
-                        Some(match rf.resolved_def(res) {
-                            Some(def) => {
-                                format!("binder={:?} at {}", def.name, at(def.range))
-                            }
-                            None => "no-in-file-def".to_string(),
-                        })
-                    }
-                    Some(Resolution::Unresolved) => Some("unresolved".to_string()),
-                    // Single-file: no earlier file to name.
-                    Some(Resolution::EarlierFileType { .. }) => Some("earlier-file".to_string()),
-                    // Unreachable under `AssemblyEnv::default()`, which holds no
-                    // entity to point at; graded rather than assumed.
-                    Some(
-                        Resolution::Entity(_)
-                        | Resolution::Member { .. }
-                        | Resolution::UnionCase { .. },
-                    ) => Some("assembly".to_string()),
-                };
-                tally.external_graded += 1;
-                if let Some(ours) = wrong {
-                    external_listed += 1;
-                    tally
-                        .manifest
-                        .push((key, format!("divergence external-target {ours}")));
-                    tally.divergences.push(Site {
-                        path: path.clone(),
-                        range: use_range,
-                        text: text.to_string(),
-                        expected: "outside the file".to_string(),
-                        ours,
-                        fcs_check_errors: file.has_check_errors,
-                    });
-                } else {
-                    external_declined += 1;
-                }
-                continue;
-            }
+        // Out-of-file uses were graded above, one answer per range.
+        let CensusDecl::InFile(ds, de) = u.decl else {
+            continue;
         };
         // Of in-file declarations, only the lexical (B1) bucket is reproducible
         // without inference.
@@ -620,15 +779,93 @@ fn compare_file(root: &Path, file: &FileCensus, tally: &mut Tally) {
             None => matches += 1,
         }
     }
-    if in_file_listed + matches != b1 || external_listed + external_declined != external {
+    if in_file_listed + matches != b1
+        || assembly_listed + assembly_matched != assembly
+        || external_listed + external_declined != external
+    {
         tally.unaccounted.push(format!(
             "{rel}: b1={b1} but {in_file_listed} listed + {matches} matches; \
+             assembly={assembly} but {assembly_listed} listed + {assembly_matched} matches; \
              external={external} but {external_listed} listed + {external_declined} declined"
         ));
     }
-    tally
-        .manifest
-        .push((rel, format!("compared {check} b1={b1} external={external}")));
+    tally.manifest.push((
+        rel,
+        format!("compared {check} b1={b1} assembly={assembly} external={external}"),
+    ));
+}
+
+/// FCS's one answer at each out-of-file range of `uses` (non-definition,
+/// non-zero-width records), counting into `tally` the records set aside: those
+/// at a range where FCS also records an in-file symbol, those naming no target
+/// we can read, and ranges with two different answers (see the module docs).
+fn out_of_file_answers(
+    uses: &[ResolveDiffUse],
+    in_file_ranges: &HashSet<(usize, usize)>,
+    references: &OracleReferences,
+    tally: &mut Tally,
+) -> HashMap<(usize, usize), OutOfFile> {
+    let answer = |u: &ResolveDiffUse| -> Option<OutOfFile> {
+        match (&u.decl, &u.assembly) {
+            (CensusDecl::InFile(..), _) => None,
+            // No one assembly declares a namespace (FCS names whichever it met
+            // first), and no answer of ours names one, so it must decline.
+            (_, Some(decl)) if decl.kind.as_deref() == Some("namespace") => {
+                Some(OutOfFile::External)
+            }
+            (_, Some(decl)) if references.declares(decl) => Some(OutOfFile::Assembly(decl.clone())),
+            (CensusDecl::OtherFile, _) => Some(OutOfFile::External),
+            (CensusDecl::Absent, _) => None,
+        }
+    };
+    // Ranges of every record that names its site by the site's own name rather
+    // than as a constructor, in-file or out.
+    let named_at: Vec<(usize, usize)> = uses
+        .iter()
+        .filter(|u| !u.is_constructor)
+        .filter(|u| matches!(u.decl, CensusDecl::InFile(..)) || answer(u).is_some())
+        .map(|u| (u.start, u.end))
+        .collect();
+    // A constructor record ending with a named record that encloses it is the
+    // same written name, which that record grades.
+    let shadowed = |u: &ResolveDiffUse| {
+        u.is_constructor
+            && named_at
+                .iter()
+                .any(|&(start, end)| end == u.end && start <= u.start)
+    };
+
+    let mut answers: HashMap<(usize, usize), OutOfFile> = HashMap::new();
+    let mut ambiguous: HashSet<(usize, usize)> = HashSet::new();
+    for u in uses {
+        if matches!(u.decl, CensusDecl::InFile(..)) {
+            continue;
+        }
+        if in_file_ranges.contains(&(u.start, u.end)) {
+            tally.external_shared_range += 1;
+            continue;
+        }
+        let Some(answer) = answer(u) else {
+            tally.external_absent += 1;
+            continue;
+        };
+        if shadowed(u) {
+            continue;
+        }
+        match answers.get(&(u.start, u.end)) {
+            None => {
+                answers.insert((u.start, u.end), answer);
+            }
+            // The same declaration said twice adjudicates fine.
+            Some(existing) if *existing == answer => {}
+            Some(_) => {
+                ambiguous.insert((u.start, u.end));
+            }
+        }
+    }
+    tally.external_ambiguous += ambiguous.len();
+    answers.retain(|range, _| !ambiguous.contains(range));
+    answers
 }
 
 /// Recursively collect `.fs` implementation files (not `.fsi`), skipping

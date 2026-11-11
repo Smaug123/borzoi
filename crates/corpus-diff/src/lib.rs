@@ -33,7 +33,9 @@ use borzoi_sema::test_support::binder_completeness::{
     OracleBinder, OracleBinderClass, UnmodelledBinder, unmodelled_binders,
 };
 use borzoi_sema::test_support::{
-    assembly_full_name_agrees, certified_expected as certified_structural, logical_full_name,
+    AssemblyDecl, assembly_answer_agrees, assembly_full_name_agrees, assembly_names_agree,
+    assembly_resolution_decl, certified_expected as certified_structural, kind_admits,
+    logical_full_name,
 };
 use borzoi_sema::{
     AssemblyEnv, DeclineCause, DeclineTier, Def, DeferredReason, InferredFile, InferredProject,
@@ -3590,22 +3592,6 @@ impl ProjectDiscoveryOperation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AssemblyDecl {
-    pub assembly: String,
-    pub full_name: String,
-    /// The oracle's `SymbolKind` for the use (`unioncase`, `member`, …), or
-    /// `None` on our own side and wherever the oracle reported none. It is what
-    /// tells a union case from a same-named member or type — a full name alone
-    /// cannot, since FCS renders a case under its union exactly as it renders a
-    /// member under its type.
-    pub kind: Option<String>,
-    /// The same declaration named from the oracle's *structural* facts rather
-    /// than its rendering — `None` on our own side, and for an oracle use with
-    /// no declaring entity. See [`DeclaringEntity`].
-    pub structural: Option<StructuralName>,
-}
-
 /// The member answers **inference** commits in one file
 /// ([`borzoi_sema::InferredFile::member_resolutions`]) that the LSP would serve,
 /// for the reverse direction.
@@ -4076,17 +4062,7 @@ fn served_answer_agrees(
         (
             Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. },
             Err(expected),
-        ) => {
-            let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-            kind_admits(res, expected)
-                && assembly_names_agree(&loaded.assembly_env, res, &actual, expected)
-                && assembly_full_name_agrees_for(
-                    &loaded.assembly_env,
-                    res,
-                    &actual.full_name,
-                    expected,
-                )
-        }
+        ) => assembly_answer_agrees(&loaded.assembly_env, res, expected),
         (
             Resolution::Local(_)
             | Resolution::Item(_)
@@ -4098,26 +4074,6 @@ fn served_answer_agrees(
             | Resolution::Unresolved,
             Ok(_) | Err(_),
         ) => false,
-    }
-}
-
-/// Whether the oracle's symbol kind admits `res` at all, before any name is
-/// compared. A [`Resolution::UnionCase`] names a case and nothing else, so it
-/// agrees only with a record FCS reports as a union case: its full name is
-/// rendered under its union exactly as a member's is under its type, and a
-/// name match alone would score a case committed where FCS bound a same-named
-/// static as agreement. The other assembly variants keep the name comparison
-/// they always had.
-fn kind_admits(res: Resolution, expected: &AssemblyDecl) -> bool {
-    match res {
-        Resolution::UnionCase { .. } => expected.kind.as_deref() == Some("unioncase"),
-        Resolution::Entity(_)
-        | Resolution::Member { .. }
-        | Resolution::Local(_)
-        | Resolution::Item(_)
-        | Resolution::EarlierFileType { .. }
-        | Resolution::Deferred(_)
-        | Resolution::Unresolved => true,
     }
 }
 
@@ -4241,48 +4197,6 @@ fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
             }),
         }),
         (Some(_), None) | (None, Some(_)) | (None, None) => None,
-    }
-}
-
-fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl {
-    match res {
-        Resolution::Entity(handle) => {
-            let entity = env.entity(handle);
-            AssemblyDecl {
-                assembly: entity.assembly.name.clone(),
-                kind: None,
-                full_name: env.entity_full_name(handle),
-                structural: None,
-            }
-        }
-        Resolution::UnionCase { union, case } => AssemblyDecl {
-            assembly: env.entity(union).assembly.name.clone(),
-            kind: None,
-            full_name: format!(
-                "{}.{}",
-                env.entity_full_name(union),
-                env.union_case_name(union, case)
-            ),
-            structural: None,
-        },
-        Resolution::Member { parent, idx } => {
-            let entity = env.entity(parent);
-            AssemblyDecl {
-                assembly: entity.assembly.name.clone(),
-                kind: None,
-                full_name: format!(
-                    "{}.{}",
-                    env.entity_full_name(parent),
-                    env.member_display_name(parent, idx)
-                ),
-                structural: None,
-            }
-        }
-        Resolution::Local(_)
-        | Resolution::Item(_)
-        | Resolution::EarlierFileType { .. }
-        | Resolution::Deferred(_)
-        | Resolution::Unresolved => unreachable!("only assembly resolutions have assembly decls"),
     }
 }
 
@@ -4499,80 +4413,6 @@ fn fcs_use_confirms_resolution(
         }
         Resolution::Deferred(_) | Resolution::Unresolved => false,
     }
-}
-
-/// Canonicalise a core-BCL assembly name to its **ref-pack facade**, so a
-/// comparison holds regardless of how the `fcs-dump` driving it was deployed.
-///
-/// A type-forwarded corelib type (`System.String`, `System.Object`, …) is
-/// *defined* in `System.Private.CoreLib.dll` and *surfaced* through the
-/// `System.Runtime.dll` facade. A framework-dependent `fcs-dump` resolves the
-/// SDK ref pack and reports `System.Runtime`; the self-contained publish CI
-/// ships resolves the implementation framework and reports
-/// `System.Private.CoreLib`. Our side reads the ref-pack assemblies from the
-/// project's assets and so always reports the facade. Both name the same
-/// logical entity, and the full name still has to agree exactly, so a genuine
-/// divergence is still caught rather than absorbed. (The sema harness
-/// `resolve_qualifier_precedence_diff` canonicalises identically.)
-fn canonical_assembly(name: &str) -> &str {
-    match name {
-        "System.Private.CoreLib" => "System.Runtime",
-        other => other,
-    }
-}
-
-/// Whether the oracle's assembly `expected` names the entity our answer `res`
-/// lives in (`actual`): the same name, up to [`canonical_assembly`], or a
-/// facade whose type forwarders send the answer's declaring type to it
-/// ([`assembly_names_type`](borzoi_sema::test_support::assembly_names_type)).
-///
-/// FCS names a type by the assembly it reached it through. A corelib type
-/// FSharp.Core's references introduce — `string`, and `System.String` in an
-/// annotation — is named through the `netstandard` facade FSharp.Core
-/// compiles against, so `name.Length` is `netstandard`'s, while the same
-/// member on a `String` reached by `open System` is `System.Runtime`'s. One
-/// entity, two names; the forwarder table is what proves it the same entity,
-/// and the full name must still agree.
-fn assembly_names_agree(
-    env: &AssemblyEnv,
-    res: Resolution,
-    actual: &AssemblyDecl,
-    expected: &AssemblyDecl,
-) -> bool {
-    if canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly) {
-        return true;
-    }
-    let declaring = match res {
-        Resolution::Entity(handle)
-        | Resolution::Member { parent: handle, .. }
-        | Resolution::UnionCase { union: handle, .. } => handle,
-        Resolution::Local(_)
-        | Resolution::Item(_)
-        | Resolution::EarlierFileType { .. }
-        | Resolution::Deferred(_)
-        | Resolution::Unresolved => return false,
-    };
-    borzoi_sema::test_support::assembly_names_type(env, &expected.assembly, declaring)
-}
-
-/// [`assembly_full_name_agrees`] against the oracle's rendered name **or** the
-/// structural one our own resolution certifies — see [`certified_expected`].
-///
-/// An extra accepted name, never a substituted one: the rendered name is what
-/// most uses agree on already, and the two are not interchangeable. FCS names a
-/// constructor use by its *type* (`System.ArgumentOutOfRangeException`) while
-/// its declaring entity and display name compose to
-/// `System.ArgumentOutOfRangeException.ArgumentOutOfRangeException`, so
-/// substituting would turn agreement into a divergence.
-fn assembly_full_name_agrees_for(
-    env: &AssemblyEnv,
-    res: Resolution,
-    actual: &str,
-    expected: &AssemblyDecl,
-) -> bool {
-    assembly_full_name_agrees(actual, &expected.full_name)
-        || certified_expected(env, res, expected)
-            .is_some_and(|certified| assembly_full_name_agrees(actual, &certified))
 }
 
 /// [`certified_expected`](borzoi_sema::test_support::certified_expected) for an
@@ -5530,6 +5370,7 @@ fn collect_fsprojs_into(dir: &Path, collection: &mut FsprojCollection) {
 mod tests {
     use super::*;
     use borzoi_assembly::{EntityKind, UnionCases};
+    use borzoi_sema::test_support::{assembly_full_name_agrees_for, canonical_assembly};
     use borzoi_sema::{DeclineSite, EntityHandle};
     use proptest::prelude::*;
     use std::ffi::OsString;

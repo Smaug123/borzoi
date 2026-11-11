@@ -34,7 +34,9 @@ zero.
 > **This is the single-project gate, not a corpus sweep.** It points at **one**
 > restored project, reads its **real** referenced assemblies, and **gates
 > divergences and alt-binders to zero** — so it can adjudicate imported-assembly
-> target identity, which a per-file run cannot. If instead you want the
+> target identity in the project's own references, where the per-file
+> `resolve_corpus_diff` gate sees only FSharp.Core and the SDK's ref pack. If
+> instead you want the
 > corpus-wide *worklist* of what we still get wrong or defer — resolved
 > per-file, in isolation, with an empty `AssemblyEnv`, as a measurement rather
 > than a gate — that is [[resolve-divergence-sweep]] (name resolution) or

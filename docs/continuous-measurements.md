@@ -59,7 +59,7 @@ Both halves exist for every axis, and the split is:
 | parser | `parser_corpus`, `parser_corpus_diff` | `parser-divergence` |
 | parser recovery | `parser_corpus_diff` (verdicts), `recovery_sweep` | — |
 | parser on adversarial input | `parser_panic_sweep` | — |
-| in-file resolution | `resolve_corpus_diff` | `resolution-divergence` |
+| per-file resolution (in-file and FSharp.Core/BCL targets) | `resolve_corpus_diff` | `resolution-divergence` |
 | attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
 | resolver walk coverage | `silent_region_sweep` | — |
 | inferred types | `infer_corpus_diff` | — |
@@ -218,7 +218,7 @@ Granularity is chosen per sweep, to keep each file reviewable:
 
 | manifest | entries |
 |---|---|
-| `resolve_corpus_diff` | keyed. One per sampled file (compared or skipped and why; whether FCS's check errored; how many in-file B1 uses FCS reported, `b1=`, and how many uses it resolved outside the file, `external=`) and one per gap, alt-binder or divergence use. The matches (~22k) are a file's `b1` less its listed in-file uses, and the declined external uses (~18k) its `external` less its listed external ones; the sweep checks, file by file, that every counted record came to exactly one verdict. |
+| `resolve_corpus_diff` | keyed. One per sampled file (compared or skipped and why; whether FCS's check errored; how many in-file B1 uses FCS reported, `b1=`; how many it resolved into a referenced assembly, `assembly=`; and how many it resolved outside the file by no identity we can compare, a namespace included, `external=`) and one per gap, alt-binder, assembly-gap or divergence use. The in-file matches (~23k) are a file's `b1` less its listed in-file uses, the assembly matches (~12k) its `assembly` less its listed assembly-target ones, and the declined external uses its `external` less its listed external ones; the sweep checks, file by file, that every counted record came to exactly one verdict. |
 | `infer_corpus_diff` | keyed. One per sampled file, one per declaration fcs-dump could not convert, and one per commit (agree, error-recovered with both types when they differ, or ungraded inside an unconverted declaration). |
 | `attr_resolution_corpus` / `attr_resolution_matrix` | one per FCS attribute record: commit, decline or ambiguous. |
 | `silent_region_sweep` | per clean-parsing corpus file, one per container bucket (`member-of-object-expression`, `attribute`, `let_decl`, …) holding an expression-position name the resolver recorded nothing at, with its count. The run prints a sample of each bucket's names. |
