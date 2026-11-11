@@ -244,6 +244,13 @@ impl UnionCaseIndex {
 struct EntityNode {
     entity: Entity,
     children: Vec<EntityHandle>,
+    /// The entity this one is nested in; `None` for a top-level type. Set once,
+    /// by [`AssemblyEnv::intern`], which is the only place a node is made: it
+    /// interns a top-level type with no parent (its caller records it in
+    /// [`AssemblyEnv::top_level_types`]) and each nested type under the node it
+    /// is listed in. So following parents from any node ends at a top-level type,
+    /// and the path is the one a search of the forest from its roots would find.
+    parent: Option<EntityHandle>,
     /// The assembly this entity (and its nested subtree) came from, when the env
     /// was built per-assembly ([`AssemblyEnv::from_assemblies`],
     /// [`AssemblyEnv::from_views`]); `None` for the synthetic single-group
@@ -1573,6 +1580,7 @@ impl AssemblyEnv {
                 || extension_index_unknowable;
             let handle = self.intern(
                 root,
+                None,
                 assembly,
                 extensions_unknowable,
                 signature_non_authoritative,
@@ -2284,9 +2292,12 @@ impl AssemblyEnv {
     /// Intern `entity` and its nested-type subtree depth-first, returning the
     /// entity's handle. `nested_types` is moved out of the stored entity so it
     /// is not duplicated; navigation goes through the returned child handles.
+    /// `parent` is the node `entity` is nested in, `None` for a top-level type,
+    /// which the caller must record in [`Self::top_level_types`].
     fn intern(
         &mut self,
         mut entity: Entity,
+        parent: Option<EntityHandle>,
         assembly: Option<AssemblyId>,
         extensions_unknowable: bool,
         signature_non_authoritative: bool,
@@ -2297,6 +2308,7 @@ impl AssemblyEnv {
         self.nodes.push(EntityNode {
             entity,
             children: Vec::new(),
+            parent,
             assembly,
             extensions_unknowable,
             signature_non_authoritative,
@@ -2310,6 +2322,7 @@ impl AssemblyEnv {
             .map(|n| {
                 let child = self.intern(
                     n,
+                    Some(handle),
                     assembly,
                     extensions_unknowable,
                     signature_non_authoritative,
@@ -3773,33 +3786,20 @@ impl AssemblyEnv {
     /// As [`Self::enclosing_chain`], but `None` when `handle` is unreachable
     /// from every top-level type — so the first entry, when there is one, is
     /// provably top-level and its namespace provably the chain's.
+    ///
+    /// Every entity this env interned is reachable, since each nested type
+    /// records the entity it is nested in, so `None` means `handle` is not one
+    /// of this env's. The chain is read off those links, in time linear in
+    /// `handle`'s depth.
     pub fn enclosing_chain_from_root(&self, handle: EntityHandle) -> Option<Vec<EntityHandle>> {
-        let mut chain = Vec::new();
-        for &root in &self.top_level_types {
-            if self.push_enclosing_chain_from(root, handle, &mut chain) {
-                return Some(chain);
-            }
+        let mut node = self.nodes.get(handle.index())?;
+        let mut chain = vec![handle];
+        while let Some(parent) = node.parent {
+            chain.push(parent);
+            node = &self.nodes[parent.index()];
         }
-        None
-    }
-
-    fn push_enclosing_chain_from(
-        &self,
-        current: EntityHandle,
-        target: EntityHandle,
-        chain: &mut Vec<EntityHandle>,
-    ) -> bool {
-        chain.push(current);
-        if current == target {
-            return true;
-        }
-        for &child in self.children(current) {
-            if self.push_enclosing_chain_from(child, target, chain) {
-                return true;
-            }
-        }
-        chain.pop();
-        false
+        chain.reverse();
+        Some(chain)
     }
 
     /// What the referenced assemblies say about renaming `[<AutoOpen>]` and
@@ -3900,61 +3900,24 @@ impl AssemblyEnv {
     /// entity names for nested types, and the entity's source name when metadata
     /// records one (`List`, not `ListModule`).
     pub fn entity_full_name(&self, handle: EntityHandle) -> String {
-        let mut segments = Vec::new();
-        if self.push_entity_full_name(handle, &mut segments) {
-            return segments.join(".");
-        }
-
-        let entity = self.entity(handle);
-        segments.extend(entity.namespace.iter().cloned());
-        segments.push(
-            entity
-                .source_name
-                .as_deref()
-                .unwrap_or(&entity.name)
-                .to_string(),
-        );
-        segments.join(".")
-    }
-
-    fn push_entity_full_name(&self, target: EntityHandle, segments: &mut Vec<String>) -> bool {
-        for &root in &self.top_level_types {
-            if self.push_entity_full_name_from(root, target, true, segments) {
-                return true;
+        let source_name = |h: EntityHandle| {
+            let entity = self.entity(h);
+            entity.source_name.as_deref().unwrap_or(&entity.name)
+        };
+        let chain = self.enclosing_chain(handle);
+        let namespace = &self.entity(chain[0]).namespace;
+        let mut name = String::new();
+        let segments = namespace
+            .iter()
+            .map(String::as_str)
+            .chain(chain.into_iter().map(source_name));
+        for (i, segment) in segments.enumerate() {
+            if i > 0 {
+                name.push('.');
             }
+            name.push_str(segment);
         }
-        false
-    }
-
-    fn push_entity_full_name_from(
-        &self,
-        current: EntityHandle,
-        target: EntityHandle,
-        include_namespace: bool,
-        segments: &mut Vec<String>,
-    ) -> bool {
-        let before = segments.len();
-        let entity = self.entity(current);
-        if include_namespace {
-            segments.extend(entity.namespace.iter().cloned());
-        }
-        segments.push(
-            entity
-                .source_name
-                .as_deref()
-                .unwrap_or(&entity.name)
-                .to_string(),
-        );
-        if current == target {
-            return true;
-        }
-        for &child in self.children(current) {
-            if self.push_entity_full_name_from(child, target, false, segments) {
-                return true;
-            }
-        }
-        segments.truncate(before);
-        false
+        name
     }
 
     /// Whether the entity is `public` — the accessibility a *cross-assembly*

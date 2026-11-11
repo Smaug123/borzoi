@@ -231,9 +231,8 @@ fn full_matches(ours: &OurAsm, expected: &str) -> bool {
 /// restored: `Entity::namespace` is empty for one, so [`our_assembly_full`]'s
 /// cheap rendering drops everything above the leaf
 /// (`Checked.int64` for `Microsoft.FSharp.Core.Operators.Checked.int64`).
-/// [`AssemblyEnv::entity_full_name`] reconstructs it, at the cost of a search
-/// from the top-level roots — hence its use only after the cheap form missed,
-/// not for every one of the tens of thousands of assembly uses.
+/// [`AssemblyEnv::entity_full_name`] reconstructs it from the entity's
+/// enclosing chain; it is consulted only after the cheap form missed.
 fn our_assembly_full_nested(env: &AssemblyEnv, res: Resolution) -> Option<String> {
     match res {
         Resolution::Entity(h) => Some(env.entity_full_name(h)),
