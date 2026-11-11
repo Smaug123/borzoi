@@ -279,11 +279,12 @@ fn our_sig_decls(decls: &[SigDecl], scope: Vec<Scope>, out: &mut Vec<Unit>) {
 // FCS side
 // ---------------------------------------------------------------------------
 
-/// Every unit of FCS's tree, in source order, or `Err` when the record's JSON
-/// is too deep for `serde_json` to read as a [`Value`].
-pub fn fcs_units(json: &str, source: &str) -> Result<Vec<Unit>, String> {
-    let dump: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let tree = dump.get("ParseTree").ok_or("record has no ParseTree")?;
+/// Every unit of FCS's tree, in source order.
+pub fn fcs_units(json: &str, source: &str) -> Vec<Unit> {
+    let dump = crate::common::fcs_record::read_fcs_record(json);
+    let tree = dump
+        .get("ParseTree")
+        .expect("fcs-dump record has a ParseTree");
     let line_index = LineIndex::new(source);
     let mut out = Vec::new();
     let sig = match case_name(tree) {
@@ -320,7 +321,7 @@ pub fn fcs_units(json: &str, source: &str) -> Result<Vec<Unit>, String> {
         });
         fcs_decls(decls, sig, vec![Scope::Module(i)], &line_index, &mut out);
     }
-    Ok(out)
+    out
 }
 
 fn fcs_decl_range(decl: &Value, sig: bool, line_index: &LineIndex<'_>) -> Range<usize> {
@@ -601,16 +602,8 @@ impl Verdict {
 }
 
 /// Grade our recovered `parse` of `source` against FCS's `json` record.
-///
-/// `Err` only when FCS's record is unreadable as a tree (too deep for
-/// `serde_json`).
-pub fn grade(
-    parse: &Parse,
-    symbols: &HashSet<String>,
-    json: &str,
-    source: &str,
-) -> Result<Verdict, String> {
-    let fcs = fcs_units(json, source)?;
+pub fn grade(parse: &Parse, symbols: &HashSet<String>, json: &str, source: &str) -> Verdict {
+    let fcs = fcs_units(json, source);
     let ours = our_units(parse);
     let damage = Damage::new(
         parse,
@@ -631,7 +624,7 @@ pub fn grade(
             verdict.relation = Relation::Exact;
         }
     }
-    Ok(verdict)
+    verdict
 }
 
 /// The undamaged units of `fcs` and `ours`, compared under `damage`.
@@ -957,7 +950,7 @@ pub fn recovered_verdict(source: &str) -> Verdict {
     std::io::Write::write_all(&mut tmp, source.as_bytes()).expect("write source");
     let json = super::fcs_ast_batch(tmp.path());
     let parse = borzoi_cst::parser::parse(source);
-    grade(&parse, &HashSet::new(), &json, source).expect("FCS record is readable")
+    grade(&parse, &HashSet::new(), &json, source)
 }
 
 /// Grade our recovered tree of the implementation file `source` against FCS's,

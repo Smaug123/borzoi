@@ -220,7 +220,7 @@ fn grade_cell(source: &str) -> Cell {
             Cell::Successive
         };
     }
-    let verdict = grade(&ours, &Default::default(), &json, source).expect("FCS record is readable");
+    let verdict = grade(&ours, &Default::default(), &json, source);
     assert!(
         verdict.relation != Relation::Divergent,
         "recovery divergence for {source:?}: {}",

@@ -1,0 +1,87 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all fcs_record_stack_bound::every_reader_fits_half_the_deep_stack
+anon_record Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+app Long	2038 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+app_offside_args Long	2038 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+array Long	2037 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+attributes Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+ce_let_bang Long	1356 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+ce_yield Long	2036 repeats (at the bound), depth 4094, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+do_chain Long	2038 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+dot_get Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+dot_index Long	2038 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+downcast Long	2037 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+dynamic_get Long	2038 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+elif Long	1018 repeats (at the bound), depth 4094, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+function_arms Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+function_params Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+generic_method_call Long	679 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+high_precedence_brack_index Long	2037 repeats (at the bound), depth 4094, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+high_precedence_paren_app Long	2037 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+if_then_stmts Long	2037 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+interpolated_fills Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+lambda_chain Long	4 repeats (exponential), depth 42, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+lambda_params Long	2037 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+let_chain Long	1357 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+list_inline Long	2037 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+list_lines Long	2038 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+match_arms Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+measure_juxtaposed Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+measure_product Long	2034 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+members Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+method_call Long	1019 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+module_long_ident Long	4 repeats (flat), depth 21, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+nested_modules Long	1358 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_add Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_add_offside Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_and Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_append Long	2035 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_assign Long	2035 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_bitand Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_bitor Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_compose Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_concat Long	2035 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_cons Long	815 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_custom Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_div Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_dollar Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_eq Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_lt Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_mod Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_mul Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_or Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_pipe Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_pipe_offside Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_pow Long	2035 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_shl Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+op_sub Long	1018 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+open_long_ident Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+pat_and Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+pat_as Long	2034 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+pat_cons Long	2034 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+pat_list Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+pat_long_ident Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+pat_or Long	2036 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+pat_tuple Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+record Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+seq_inline Long	2037 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+seq_lines Long	2037 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+sig_nested_modules Long	1358 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+sig_type_postfix_app Long	1358 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+sig_type_tuple Long	4 repeats (flat), depth 26, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+sig_vals Long	4 repeats (flat), depth 21, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+struct_tuple Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+top_lets Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+try_with_arms Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+tuple Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+type_constraints Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+type_fun Long	2035 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+type_generic_args Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+type_long_ident Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+type_postfix_app Long	1356 repeats (at the bound), depth 4094, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+type_tuple Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+underscore_dot_lambda Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+union_cases Long	4 repeats (flat), depth 33, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+upcast Long	2037 repeats (at the bound), depth 4096, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran
+use_chain Long	1357 repeats (at the bound), depth 4095, fcs-normalise ran, our-normalise ran, ranges ran, recovery ran

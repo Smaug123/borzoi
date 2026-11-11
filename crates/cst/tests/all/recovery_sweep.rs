@@ -546,9 +546,6 @@ fn recover_file(file: &CleanFile) -> Option<FileRecovery> {
     if fcs_parse_had_errors(&clean_json) {
         return None;
     }
-    // FCS's side first: its JSON read fails cleanly on a tree too deep for
-    // `serde_json`, which keeps our own recursive projections off input deep
-    // enough to overflow the stack.
     let fcs_norm = catch_unwind_silent(|| normalise_fcs_dump(&clean_json)).ok()?;
     if catch_unwind_silent(|| normalise_parse(&file.parse)).ok() != Some(fcs_norm) {
         return None;
@@ -571,7 +568,7 @@ fn recover_file(file: &CleanFile) -> Option<FileRecovery> {
         let token = match catch_unwind_silent(|| {
             grade(&damaged, &symbols_for(&file.path), &json, &damaged_src)
         }) {
-            Ok(Ok(v)) => {
+            Ok(v) => {
                 if let Some(d) = &v.first_divergence {
                     out.divergences.push(format!(
                         "{}@{} {}: {}",
@@ -583,7 +580,6 @@ fn recover_file(file: &CleanFile) -> Option<FileRecovery> {
                 }
                 v.token()
             }
-            Ok(Err(_)) => "fcs-unreadable".to_string(),
             Err(_) => "grade-panicked".to_string(),
         };
         out.entries.push((
@@ -677,7 +673,7 @@ fn explain_recovered_file() {
             .map(|e| e.span.clone())
             .chain(fcs_errors),
     );
-    let fcs = fcs_units(&json, &src).expect("FCS record is readable");
+    let fcs = fcs_units(&json, &src);
     for (side, units) in [("fcs ", fcs), ("ours", our_units(&parse))] {
         for u in units {
             let s = u.range.start.min(src.len());

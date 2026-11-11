@@ -1316,7 +1316,7 @@ fn fcs_binder_range(binding: &Value) -> Option<&Value> {
 }
 
 fn collect_fcs_range_facts(json: &str, source: &str) -> Vec<AstRangeFact> {
-    let dump: Value = serde_json::from_str(json).expect("fcs-dump JSON shape");
+    let dump = crate::common::fcs_record::read_fcs_record(json);
     let parse_tree = dump
         .get("ParseTree")
         .expect("fcs-dump payload missing ParseTree");

@@ -123,7 +123,7 @@ fn grade_cell(source: &str) -> Cell {
         assert_eq!(rust, fcs, "AST divergence for source {source:?}");
         return Cell::Accepted;
     }
-    let verdict = grade(&ours, &Default::default(), &json, source).expect("FCS record is readable");
+    let verdict = grade(&ours, &Default::default(), &json, source);
     match verdict.relation {
         Relation::Exact | Relation::OutsideDamage => Cell::Recovered,
         Relation::Divergent => Cell::RecoveryDivergent(
