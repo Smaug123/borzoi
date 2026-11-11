@@ -280,21 +280,24 @@ pub fn parse_global_json(text: &str) -> Result<GlobalJson, GlobalJsonError> {
     })
 }
 
-/// Parse a JSONC document whose top level is an object of string values —
+/// Parse a JSON document whose top level is an object of string values —
 /// the shape `System.Text.Json` deserialises into `IDictionary<string,
-/// string>` (comments skipped, trailing commas allowed) — returning its
-/// entries in document order, or `None` for anything else.
+/// string>` — returning its entries in document order, or `None` for
+/// anything else.
 ///
 /// A `None` claims nothing, so the parser may be stricter than the reference
-/// but never more lenient: it refuses trailing commas, which the reference
-/// accepts, and refuses a form feed anywhere, which this parser would
-/// otherwise skip as whitespace while `System.Text.Json` throws on it.
-pub(super) fn parse_jsonc_string_map(text: &str) -> Option<Vec<(String, String)>> {
+/// (which skips comments and allows trailing commas) but never more lenient.
+/// So it refuses trailing commas; it refuses comments outright rather than
+/// pass them through [`strip_jsonc_comments`], whose comment boundaries are
+/// not the reference's (a `//` comment ends at a lone `\r` in
+/// `System.Text.Json`, not here); and it refuses a form feed anywhere, which
+/// the parser would otherwise skip as whitespace while `System.Text.Json`
+/// throws on it.
+pub(super) fn parse_json_string_map(text: &str) -> Option<Vec<(String, String)>> {
     if text.contains('\u{c}') {
         return None;
     }
-    let stripped = strip_jsonc_comments(text).ok()?;
-    let mut parser = Parser::new(&stripped);
+    let mut parser = Parser::new(text);
     parser.skip_ws().ok()?;
     let value = parser.parse_value().ok()?;
     parser.skip_ws().ok()?;

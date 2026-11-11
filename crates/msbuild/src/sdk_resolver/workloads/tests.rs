@@ -261,7 +261,7 @@ fn baseline_workload_set_does_not_change_the_answer() {
         "10.0.401",
         &[(
             "baseline.workloadset.json",
-            "{\n  // generated\n  \"w.workload\": \"1.0.0/10.0.400\",\n  \"other\": \"2.0.0-rc.1.2\"\n}",
+            "{\n  \"w.workload\": \"1.0.0/10.0.400\",\n  \"other\": \"2.0.0-rc.1.2\"\n}",
         )],
     );
     write_set(
@@ -326,6 +326,11 @@ fn baseline_workload_set_that_may_not_load_degrades() {
             &[("s.workloadset.json", "{\"w\": \"1.0.0+build\"}")],
         ),
         ("10.0.400", &[("s.workloadset.json", "{\"w\": \"1.0.0\",}")]),
+        // Comments are refused outright: System.Text.Json ends a `//`
+        // comment at a lone `\r`, so this one throws on `not-json` there.
+        ("10.0.400", &[("s.workloadset.json", "{}//c\rnot-json")]),
+        ("10.0.400", &[("s.workloadset.json", "{}// c\u{2028}")]),
+        ("10.0.400", &[("s.workloadset.json", "{/* c */}")]),
         (
             "10.0.400",
             &[(

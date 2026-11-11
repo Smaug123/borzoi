@@ -712,7 +712,7 @@ fn check_loadable_workload_sets(workload_sets_root: &Path) -> Result<(), SdkReso
             let Ok(text) = std::fs::read_to_string(&path) else {
                 return malformed(&path, "unreadable or not UTF-8");
             };
-            let Some(entries) = super::global_json::parse_jsonc_string_map(&text) else {
+            let Some(entries) = super::global_json::parse_json_string_map(&text) else {
                 return malformed(&path, "not a JSON object of strings");
             };
             for (id, value) in entries {
