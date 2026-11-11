@@ -109,6 +109,11 @@ const FLAT_FORMS: &[Shape] = &[
     ),
     flat("opens", "", "open System\n", ""),
     flat("records", "", "type R = { X: int }\n", ""),
+    // Distinct names: a walk sets duplicate declarations aside, so identical
+    // repeats never reach its per-declaration work.
+    flat("distinct_unions", "", "type T{i} = C{i} of int\n", ""),
+    flat("distinct_records", "", "type R{i} = { X{i}: int }\n", ""),
+    flat("distinct_lets", "", "let a{i} = b\n", ""),
     flat(
         "statements",
         "let g () = ()\nlet h () =\n",
