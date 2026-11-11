@@ -82,6 +82,7 @@ use super::{
 };
 
 mod item_pass;
+mod item_spec;
 use item_pass::{
     CapturedPackageReference, CurrentFile, DeferredGroupKind, DeferredItemGroup,
     RetainedImportedFile, item_key, replay_deferred_item_groups,
@@ -297,6 +298,12 @@ struct WalkObservations {
 struct OrderedResolvedItem {
     order: usize,
     item: ResolvedItem,
+    /// The item's identity as MSBuild records it — the `Include` fragment,
+    /// trimmed and decoded, which is what a later `Remove`/`Exclude` matches and
+    /// what `@(…)` hands on. `None` for an item spliced from the glob
+    /// resolver, which returns paths rather than the relative spelling MSBuild
+    /// derives from the glob.
+    identity: Option<String>,
 }
 
 fn into_resolved_items(items: Vec<OrderedResolvedItem>) -> Vec<ResolvedItem> {
@@ -1481,6 +1488,14 @@ struct State<'r> {
     /// MSBuild (an unmodelled `Update`/`Remove` mutation). Accumulates into
     /// [`ParsedProject::project_references_uncertain`].
     project_references_uncertain: bool,
+    /// Whether a `<ProjectReference>` `Include` that may run in the real build
+    /// went uncaptured — skipped on an untrusted gate, or one we could not
+    /// evaluate. The list contract tolerates that (a missing edge never
+    /// fabricates one), so it does not raise
+    /// [`Self::project_references_uncertain`]; but a list *derived* from
+    /// `@(ProjectReference)` is then incomplete, and a `Remove` driven by it can
+    /// miss an item MSBuild removes. [`item_pass`]'s item-list view reads it.
+    project_reference_includes_hidden: bool,
     /// Whether the captured package/framework-reference set may diverge from
     /// MSBuild. Accumulates into [`ParsedProject::package_references_uncertain`].
     package_references_uncertain: bool,
@@ -1917,6 +1932,7 @@ impl<'r> State<'r> {
             compile_item_uncertainties: Vec::new(),
             package_context: false,
             project_references_uncertain: false,
+            project_reference_includes_hidden: false,
             package_references_uncertain: false,
             package_reference_uncertainties: Vec::new(),
             current_file: CurrentFile::Entry,
@@ -2393,6 +2409,8 @@ impl<'r> State<'r> {
             compile_item_uncertainties,
             package_context: _,
             project_references_uncertain,
+            // Consumed in the item pass, by a `@(ProjectReference)` view.
+            project_reference_includes_hidden: _,
             package_references_uncertain,
             package_reference_uncertainties,
             current_file: _,

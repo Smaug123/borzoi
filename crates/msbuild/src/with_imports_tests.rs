@@ -28,6 +28,7 @@ mod nested_sdk;
 mod nuget_props_chain;
 mod package_uncertain;
 mod pass_ordering;
+mod project_reference_remove;
 mod resolved_sdk_root;
 mod sdk_custom_entry;
 mod sdk_resolution;

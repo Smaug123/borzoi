@@ -3299,13 +3299,16 @@ fn project_reference_metadata_child_honours_its_condition() {
 
 #[test]
 fn project_reference_mutations_mark_the_list_uncertain() {
-    // We don't model item mutation, so earlier Includes stand un-mutated in
-    // `project_references` — but MSBuild honours the mutation (dotnet 10
-    // probe: a Remove, or an Update writing ReferenceOutputAssembly=false,
-    // strips the reference from ReferencePath). The flag is what stops a
+    // A mutation we don't apply leaves earlier Includes un-mutated in
+    // `project_references` — but MSBuild honours it (dotnet 10 probe: a
+    // Remove, or an Update writing ReferenceOutputAssembly=false, strips the
+    // reference from ReferencePath). The flag is what stops a
     // reference-semantics consumer folding a DLL from the stale list.
     for mutation in [
-        r#"<ProjectReference Remove="../B/B.fsproj" />"#,
+        // A literal Remove that matches is modelled (see
+        // `a_literal_project_reference_remove_is_applied`); one we cannot
+        // compare exactly is not.
+        r#"<ProjectReference Remove="../B/*.fsproj" />"#,
         r#"<ProjectReference Update="../B/B.fsproj" ReferenceOutputAssembly="false" />"#,
         // A mutation behind a condition we can't evaluate may still run in
         // the real build.
@@ -3348,6 +3351,32 @@ fn project_reference_mutations_mark_the_list_uncertain() {
         );
         assert_eq!(p.project_references.len(), 1);
     }
+}
+
+#[test]
+fn a_literal_project_reference_remove_is_applied() {
+    // No filesystem needed: a literal spec is compared by normalised path,
+    // ignoring case, against the entry project's directory.
+    let src = r#"<Project>
+  <ItemGroup>
+    <ProjectReference Include="../B/B.fsproj" />
+    <ProjectReference Include="../C/C.fsproj" />
+    <ProjectReference Remove="./../b/B.FSPROJ" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(!p.project_references_uncertain, "{:?}", p.diagnostics);
+    assert_eq!(p.project_references.len(), 1);
+    assert!(p.project_references[0].include.ends_with("../C/C.fsproj"));
+
+    // `->Exists()` needs the filesystem, which the pure surface never touches.
+    let src = r#"<Project>
+  <ItemGroup>
+    <ProjectReference Include="../B/B.fsproj" />
+    <ProjectReference Remove="@(ProjectReference->Exists())" />
+  </ItemGroup>
+</Project>"#;
+    assert!(parse(src).project_references_uncertain);
 }
 
 #[test]
