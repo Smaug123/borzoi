@@ -166,7 +166,8 @@ fn child_environment(layout: &Layout) -> HashMap<String, String> {
     env
 }
 
-fn msbuild_seen(proj: &Path, env: &HashMap<String, String>) -> String {
+/// MSBuild's `Seen`, or its output when the evaluation fails.
+fn msbuild_seen(proj: &Path, env: &HashMap<String, String>) -> Result<String, String> {
     let mut cmd = Command::new("dotnet");
     cmd.current_dir(proj.parent().unwrap());
     cmd.env_clear();
@@ -175,22 +176,26 @@ fn msbuild_seen(proj: &Path, env: &HashMap<String, String>) -> String {
     cmd.arg(proj);
     let out = BoundedCommand::new(cmd)
         .timeout(MSBUILD_TIMEOUT)
-        .run_ok(format_args!("dotnet msbuild for {}", proj.display()));
-    String::from_utf8(out.stdout)
-        .expect("msbuild stdout is UTF-8")
-        .trim()
-        .to_string()
+        .run()
+        .unwrap_or_else(|e| panic!("dotnet msbuild for {}: {e:?}", proj.display()));
+    let stdout = String::from_utf8(out.stdout).expect("msbuild stdout is UTF-8");
+    if out.status.success() {
+        Ok(stdout.trim().to_string())
+    } else {
+        Err(format!("{stdout}{}", String::from_utf8_lossy(&out.stderr)))
+    }
 }
 
-fn check_seed(seed: u64) {
-    let layout = Layout::new();
-    let mut rng = SplitMix64(seed);
-    let imports: Vec<String> = (0..IMPORTS_PER_PROJECT)
-        .map(|_| {
-            let (_, components) = rng.pick(TARGETS);
-            respell(&mut rng, &layout, components)
-        })
-        .collect();
+/// Write a project importing each of `imports` from `MySdk`, and evaluate it
+/// both ways.
+fn evaluate_both(
+    layout: &Layout,
+    imports: &[String],
+) -> (
+    String,
+    borzoi_msbuild::ParsedProject,
+    Result<String, String>,
+) {
     let body: String = imports
         .iter()
         .map(|p| format!("  <Import Sdk=\"MySdk\" Project=\"{p}\" />\n"))
@@ -201,7 +206,7 @@ fn check_seed(seed: u64) {
     let proj = proj_dir.join("p.proj");
     std::fs::write(&proj, &xml).expect("write project");
 
-    let env = child_environment(&layout);
+    let env = child_environment(layout);
     let sdk_root = layout.sdk_root();
     let resolver = |name: &str| -> Result<SdkResolution, SdkResolveError> {
         if name == "MySdk" {
@@ -216,15 +221,57 @@ fn check_seed(seed: u64) {
     };
     let parsed =
         parse_fsproj_with_imports(&xml, &proj, &HashMap::new(), &env, Some(&resolver), None)
-            .unwrap_or_else(|e| panic!("seed {seed}: our parse: {e}"));
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "seed {seed}: we declined where MSBuild evaluates cleanly:\n{xml}\n{:#?}",
-        parsed.diagnostics
-    );
-    let ours = parsed.properties.get("Seen").cloned().unwrap_or_default();
+            .unwrap_or_else(|e| panic!("our parse: {e}\n{xml}"));
     let theirs = msbuild_seen(&proj, &env);
-    assert_eq!(ours, theirs, "seed {seed}: Seen differs for\n{xml}");
+    (xml, parsed, theirs)
+}
+
+/// Where MSBuild evaluates, we commit and agree; where it fails, we decline.
+/// Returns whether MSBuild evaluated.
+fn assert_certain_implies_exact(
+    label: &str,
+    xml: &str,
+    parsed: &borzoi_msbuild::ParsedProject,
+    theirs: Result<String, String>,
+) -> bool {
+    match theirs {
+        Ok(theirs) => {
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "{label}: we declined where MSBuild evaluates cleanly:\n{xml}\n{:#?}",
+                parsed.diagnostics
+            );
+            let ours = parsed.properties.get("Seen").cloned().unwrap_or_default();
+            assert_eq!(ours, theirs, "{label}: Seen differs for\n{xml}");
+            true
+        }
+        Err(output) => {
+            assert!(
+                !parsed.diagnostics.is_empty(),
+                "{label}: MSBuild fails but we committed {:?}:\n{xml}\n{output}",
+                parsed.properties.get("Seen")
+            );
+            false
+        }
+    }
+}
+
+fn check_seed(seed: u64) {
+    let layout = Layout::new();
+    let mut rng = SplitMix64(seed);
+    let imports: Vec<String> = (0..IMPORTS_PER_PROJECT)
+        .map(|_| {
+            let (_, components) = rng.pick(TARGETS);
+            respell(&mut rng, &layout, components)
+        })
+        .collect();
+    let (xml, parsed, theirs) = evaluate_both(&layout, &imports);
+    let label = format!("seed {seed}");
+    assert!(
+        theirs.is_ok(),
+        "{label}: every spelling names a file, yet MSBuild failed:\n{xml}\n{theirs:?}"
+    );
+    assert_certain_implies_exact(&label, &xml, &parsed, theirs);
 }
 
 #[test]
@@ -241,6 +288,57 @@ fn sdk_import_project_paths_soak() {
     for case in 0..cases as u64 {
         check_seed(seed.wrapping_add(case));
     }
+}
+
+/// A respelling with segments after the file name. Some collapse lexically
+/// (`E.props/.`, `E.props/ghost/..`) and MSBuild imports the file; some leave
+/// a trailing separator (`E.props/`, `E.props/./`), name a child of a file
+/// (`E.props/ghost`) or the SDK directory (`E.props/..`), and MSBuild fails.
+fn respell_with_tail(rng: &mut SplitMix64, layout: &Layout) -> String {
+    let (_, components) = rng.pick(TARGETS);
+    let mut out = respell(rng, layout, components);
+    for _ in 0..1 + rng.below(3) {
+        out.push_str(rng.pick(&["/", "\\"]));
+        out.push_str(rng.pick(&[".", "ghost", "..", "%2e", ""]));
+    }
+    out
+}
+
+/// One import per project: an import MSBuild fails fails the whole
+/// evaluation, so the verdict is per spelling.
+fn check_tail_cases(seed: u64, cases: usize) -> (usize, usize) {
+    let layout = Layout::new();
+    let mut rng = SplitMix64(seed);
+    let (mut imported, mut failed) = (0, 0);
+    for case in 0..cases {
+        let import = respell_with_tail(&mut rng, &layout);
+        let (xml, parsed, theirs) = evaluate_both(&layout, std::slice::from_ref(&import));
+        let label = format!("seed {seed} case {case}");
+        if assert_certain_implies_exact(&label, &xml, &parsed, theirs) {
+            imported += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    (imported, failed)
+}
+
+#[test]
+fn sdk_import_project_path_tails_resolve_as_msbuild_does() {
+    let (imported, failed) = check_tail_cases(0, 16);
+    // Both verdicts must occur, or the generator stopped reaching one side.
+    assert!(
+        imported > 0 && failed > 0,
+        "imported {imported}, failed {failed}"
+    );
+}
+
+#[test]
+#[ignore = "soak: fresh seed, BORZOI_MSBUILD_SOAK_SEED / _CASES"]
+fn sdk_import_project_path_tails_soak() {
+    let (seed, cases) = common::soak_parameters("sdk_import_project_path_tails", 40);
+    let (imported, failed) = check_tail_cases(seed, cases);
+    println!("imported {imported}, failed {failed}");
 }
 
 /// The real Web SDK: `Sdk.Server.targets` imports

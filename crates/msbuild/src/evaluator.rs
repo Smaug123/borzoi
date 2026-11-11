@@ -5215,7 +5215,28 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
         // MSBuild accepts either separator on either platform, as for a
         // plain `<Import>`.
         let relative = project_attr.replace('\\', "/");
-        let under = |root: &Path| normalise(&root.join(&relative));
+        // `NormalizePath` collapses `.`/`..` lexically but keeps a trailing
+        // separator, and a path ending in one names a directory, which
+        // MSBuild never imports (MSB4019; probed, `dotnet msbuild` 10.0.401:
+        // `E.props/`, `E.props/./` and `E.props/x/../` fail, while `E.props/.`
+        // and `E.props/x/..` end in no separator and import `E.props`).
+        // `normalise` drops the separator and macOS's `realpath` accepts a
+        // file spelt with one, so refuse it here rather than at the IO path.
+        let names_directory = relative.ends_with('/');
+        let walk_under = |root: &Path, state: &mut State<'_>| {
+            let path = normalise(&root.join(&relative));
+            if names_directory {
+                state.push(
+                    DiagnosticKind::ImportFailed {
+                        path: path.join(""),
+                        reason: ImportFailReason::NotFound,
+                    },
+                    node.range(),
+                );
+            } else {
+                walk_external_file(&path, node.range(), state);
+            }
+        };
         match resolution {
             SdkResolution::Single(sdk_paths) => {
                 // Tolerate this SDK's own files too — the
@@ -5224,12 +5245,11 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 state.note_sdk_tolerance(&sdk_paths.root);
                 // The two well-known stems are only meaningful for an
                 // ordinary single-root SDK.
-                let chosen: PathBuf = match project_attr {
-                    "Sdk.props" => sdk_paths.props.clone(),
-                    "Sdk.targets" => sdk_paths.targets.clone(),
-                    _ => under(&sdk_paths.root),
-                };
-                walk_external_file(&chosen, node.range(), state);
+                match project_attr {
+                    "Sdk.props" => walk_external_file(&sdk_paths.props, node.range(), state),
+                    "Sdk.targets" => walk_external_file(&sdk_paths.targets, node.range(), state),
+                    _ => walk_under(&sdk_paths.root, state),
+                }
             }
             SdkResolution::Roots(roots) => {
                 // MSBuild's multi-path resolver contract: import `Project`
@@ -5239,7 +5259,7 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // resolver result the same way.
                 for root in roots {
                     state.note_sdk_tolerance(&root);
-                    walk_external_file(&under(&root), node.range(), state);
+                    walk_under(&root, state);
                 }
             }
         }
