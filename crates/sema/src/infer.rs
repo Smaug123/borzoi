@@ -488,6 +488,7 @@
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use borzoi_assembly::{
@@ -511,6 +512,7 @@ use crate::function_ty::{
 use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
+use crate::node_span::NodeSpans;
 use crate::overload::arity_window;
 use crate::qnof::QualifiedNameOfFile;
 use crate::resolve::{CaseKind, ItemId, Resolution, ResolvedFile};
@@ -1771,6 +1773,10 @@ struct Gen<'a> {
     /// have been ([`InferredFile::deepest_expression_walk`]).
     expr_depth: usize,
     deepest_expr_depth: usize,
+    /// The trivia-trimmed span of each node a span was asked of
+    /// ([`Self::node_span`]). A cache of a pure function of the tree, so
+    /// shared access may fill it: borrowed only inside `node_span`.
+    spans: RefCell<NodeSpans>,
 }
 
 /// What a speculative solve ([`Gen::solve`]) changed outside the table and
@@ -1878,7 +1884,14 @@ impl<'a> Gen<'a> {
             trial: None,
             expr_depth: 0,
             deepest_expr_depth: 0,
+            spans: RefCell::new(NodeSpans::default()),
         }
+    }
+
+    /// The source span FCS reports for `node`: its range with leading and
+    /// trailing trivia trimmed ([`NodeSpans::span`]).
+    fn node_span(&self, node: &SyntaxNode) -> TextRange {
+        self.spans.borrow_mut().span(node)
     }
 
     /// Mark the current binding **walk-incomplete** — some sub-expression or
@@ -3098,7 +3111,7 @@ impl<'a> Gen<'a> {
                     arg: bv,
                     dom: r,
                     r,
-                    span: node_span(rhs.syntax()),
+                    span: self.node_span(rhs.syntax()),
                 }));
             }
         } else {
@@ -3581,7 +3594,7 @@ impl<'a> Gen<'a> {
             self.poison.push(exp);
             if let Some(r) = result {
                 self.poison.push(r);
-                self.dropped.push((r, exp, node_span(e.syntax())));
+                self.dropped.push((r, exp, self.node_span(e.syntax())));
             }
         }
         result
@@ -3649,7 +3662,7 @@ impl<'a> Gen<'a> {
                 // ` ` trivia after the comma, but FCS's node spans only the
                 // literal. `()` is two tokens, and FCS spans both.
                 if is_unit_literal(e) {
-                    self.emit(node_span(c.syntax()), v, expected);
+                    self.emit(self.node_span(c.syntax()), v, expected);
                 } else if let Some(lit) = c.literal() {
                     self.emit(lit.text_range(), v, expected);
                 }
@@ -3741,7 +3754,7 @@ impl<'a> Gen<'a> {
                 }
                 let tv = self.table.fresh();
                 self.eq(Ty::Var(tv), Ty::Tuple(elems));
-                self.emit(node_span(t.syntax()), tv, expected);
+                self.emit(self.node_span(t.syntax()), tv, expected);
                 Some(tv)
             }
             // `if c then a else b`: F# uses the *then*-branch's type as the result
@@ -3787,7 +3800,7 @@ impl<'a> Gen<'a> {
                         if let Some(else_branch) = if_expr.else_branch() {
                             self.infer_expr(&else_branch, Some(then_var));
                         }
-                        self.emit(node_span(if_expr.syntax()), then_var, None);
+                        self.emit(self.node_span(if_expr.syntax()), then_var, None);
                         Some(then_var)
                     }
                     Some(exp) => {
@@ -3883,7 +3896,7 @@ impl<'a> Gen<'a> {
                     self.settle();
                     if !matches!(pt, Ty::Var(_))
                         && (self.mentions_inherited_open(sv)
-                            || self.touches_opaque(sv, sv, node_span(m.syntax())))
+                            || self.touches_opaque(sv, sv, self.node_span(m.syntax())))
                     {
                         self.mark_incomplete(Incomplete::InheritedOpen);
                         return None;
@@ -4005,7 +4018,7 @@ impl<'a> Gen<'a> {
             // result is poisoned, as for any failed application.
             Expr::App(app) if !app.is_infix() && !app.is_bracket_indexer() => {
                 let r = self.infer_app(app)?;
-                self.emit(node_span(app.syntax()), r, expected);
+                self.emit(self.node_span(app.syntax()), r, expected);
                 Some(r)
             }
             // A dotted long-ident `s.Length` (Stage 3.3a). The parser stores a
@@ -4267,7 +4280,7 @@ impl<'a> Gen<'a> {
             }
         }
         let v = self.infer_expr(last, expected)?;
-        self.emit(node_span(seq.syntax()), v, expected);
+        self.emit(self.node_span(seq.syntax()), v, expected);
         Some(v)
     }
 
@@ -4368,7 +4381,7 @@ impl<'a> Gen<'a> {
                     arg: arg_var,
                     dom: d,
                     r,
-                    span: node_span(arg.syntax()),
+                    span: self.node_span(arg.syntax()),
                 }));
             }
             None => {
@@ -5018,7 +5031,7 @@ impl<'a> Gen<'a> {
                     args: arg_vids,
                     is_static: true,
                 },
-                node_span(arg.syntax()).end(),
+                self.node_span(arg.syntax()).end(),
             );
             // Discard any argument sub-expression nodes (the shared method-call
             // rule: a method call emits nothing inside itself).
@@ -5056,7 +5069,7 @@ impl<'a> Gen<'a> {
                 args: arg_vids,
                 is_static: false,
             },
-            node_span(arg.syntax()).end(),
+            self.node_span(arg.syntax()).end(),
         );
         // Discard every node emitted inside the call (receiver + argument
         // sub-expressions): a method call emits nothing inside itself (see the doc).
@@ -5227,7 +5240,7 @@ impl<'a> Gen<'a> {
         // The relation to the parameter is not the stand-in's but unknown, so
         // it is opaque rather than dropped.
         self.dropped.retain(|&(_, e, _)| e != expected);
-        self.opaque.push((v, Some(node_span(el.syntax()))));
+        self.opaque.push((v, Some(self.node_span(el.syntax()))));
         v
     }
 
@@ -5367,7 +5380,7 @@ impl<'a> Gen<'a> {
         self.emit(head.text_range(), recv, None);
         self.close_guards(segments.len());
         let result = self.gen_member_access(recv, segments)?;
-        self.emit(node_span(li.syntax()), result, expected);
+        self.emit(self.node_span(li.syntax()), result, expected);
         Some(result)
     }
 
@@ -5405,7 +5418,7 @@ impl<'a> Gen<'a> {
         self.dot_get_receivers
             .push((dg.syntax().text_range(), recv));
         let result = self.gen_member_access(recv, &segments)?;
-        self.emit(node_span(dg.syntax()), result, expected);
+        self.emit(self.node_span(dg.syntax()), result, expected);
         Some(result)
     }
 
@@ -8352,31 +8365,6 @@ fn if_chain_has_final_else(if_expr: &IfThenElseExpr) -> bool {
         Some(Expr::IfThenElse(nested)) => if_chain_has_final_else(&nested),
         // Any other else expression is a genuine value branch.
         Some(_) => true,
-    }
-}
-
-/// The source span FCS reports for `node`: its range with leading and trailing
-/// **trivia** (whitespace, comments) trimmed. A node's raw `text_range()` can
-/// include trivia the parser attached *inside* the node — e.g. the space after
-/// `->` before a lambda body's `if` becomes a leading child of the
-/// `IF_THEN_ELSE_EXPR` — which would be off-by-one against FCS's keyword-anchored
-/// range and so fail the differential. Falls back to the raw range if the node
-/// somehow has no non-trivia token (never for a well-formed construct).
-fn node_span(node: &SyntaxNode) -> TextRange {
-    let mut toks = node
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|t| !t.kind().is_trivia());
-    match toks.next() {
-        Some(first) => {
-            let end = toks
-                .last()
-                .unwrap_or_else(|| first.clone())
-                .text_range()
-                .end();
-            TextRange::new(first.text_range().start(), end)
-        }
-        None => node.text_range(),
     }
 }
 

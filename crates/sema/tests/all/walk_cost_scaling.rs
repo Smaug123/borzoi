@@ -21,8 +21,7 @@
 //! stops at the bound is measured at an eighth of its tallest clean count and
 //! at that count; every shape that can sit in nested modules is measured,
 //! at a fixed length, under [`MODULE_NEST`]` / `[`FACTOR`] modules and under
-//! [`MODULE_NEST`]. [`HEIGHT_EXEMPT`] names the walks still quadratic in the
-//! height, and why.
+//! [`MODULE_NEST`].
 //!
 //! The shapes are [`SHAPES`], every repetition form of the grammar, and
 //! [`FLAT_FORMS`]: repeats that real files make long — bindings that use
@@ -328,60 +327,6 @@ fn every_flat_repetition_walks_in_linear_time() {
 /// its names, not the modules, are most of what the walks look up.
 const NESTED_BODY: usize = 64;
 
-/// The walks known to grow faster than linear in the tree's height, by the
-/// [`HeightPair::name`]s they do so on, which are not held to the bound. Each
-/// says why.
-const HEIGHT_EXEMPT: &[(Walk, &str, &[&str])] = &[
-    (
-        Walk::Resolution,
-        "`callee_kind` walks an application's spine to its head at every \
-         application on it",
-        &[
-            "app",
-            "app_offside_args",
-            "high_precedence_paren_app",
-            "high_precedence_brack_index",
-        ],
-    ),
-    (
-        Walk::Inference,
-        "`node_span` walks every token under a node to find its last, at \
-         every node it spans",
-        &[
-            "method_call",
-            "op_add",
-            "op_sub",
-            "op_mul",
-            "op_div",
-            "op_mod",
-            "op_pow",
-            "op_pipe",
-            "op_pipe_offside",
-            "op_add_offside",
-            "op_compose",
-            "op_and",
-            "op_or",
-            "op_eq",
-            "op_lt",
-            "op_bitand",
-            "op_bitor",
-            "op_shl",
-            "op_dollar",
-            "op_append",
-            "op_concat",
-            "op_assign",
-            "op_custom",
-            "elif",
-        ],
-    ),
-];
-
-fn height_exempt(name: &str, walk: Walk) -> bool {
-    HEIGHT_EXEMPT
-        .iter()
-        .any(|&(w, _, names)| w == walk && names.contains(&name))
-}
-
 /// A tall input at two heights: the short one and one [`FACTOR`] times taller.
 struct HeightPair {
     name: String,
@@ -458,14 +403,6 @@ fn height_pairs() -> Vec<HeightPair> {
 fn every_nesting_walks_in_linear_time_in_its_height() {
     let only = std::env::var("BORZOI_SCALING_ONLY").ok();
     let pairs = on_case_stack(height_pairs);
-    for (_, _, names) in HEIGHT_EXEMPT {
-        for name in *names {
-            assert!(
-                pairs.iter().any(|pair| pair.name == *name),
-                "height-exempt {name} is not a measured pair"
-            );
-        }
-    }
     let mut failures = Vec::new();
     for pair in pairs {
         if only
@@ -485,7 +422,7 @@ fn every_nesting_walks_in_linear_time_in_its_height() {
             "{:28} resolution {:?} -> {:?}, inference {:?} -> {:?}",
             pair.name, timing.short.0, timing.long.0, timing.short.1, timing.long.1
         );
-        let exempt = |walk| exempt(pair.shape, walk) || height_exempt(&pair.name, walk);
+        let exempt = |walk| exempt(pair.shape, walk);
         if !timing.over(exempt).is_empty() {
             timing = measure(RETRIES);
         }
