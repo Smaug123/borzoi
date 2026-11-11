@@ -103,9 +103,21 @@ fn normalise(path: &Path) -> PathBuf {
 }
 
 /// One spelling of `components` (relative to the SDK root), or of the
-/// target's absolute path.
-fn respell(rng: &mut SplitMix64, layout: &Layout, components: &[&str]) -> String {
-    let separator = |rng: &mut SplitMix64| -> &'static str { rng.pick(&["/", "\\", "//", "/\\"]) };
+/// target's absolute path. `escaped_separators` admits `%2f`/`%5c`, which the
+/// evaluator declines: MSBuild decodes them after deciding what is a
+/// separator.
+fn respell(
+    rng: &mut SplitMix64,
+    layout: &Layout,
+    components: &[&str],
+    escaped_separators: bool,
+) -> String {
+    let separators: &[&str] = if escaped_separators {
+        &["/", "\\", "//", "/\\", "%2f", "%5c"]
+    } else {
+        &["/", "\\", "//", "/\\"]
+    };
+    let separator = |rng: &mut SplitMix64| -> &'static str { rng.pick(separators) };
     let mut parts: Vec<String> = Vec::new();
     let absolute = rng.below(6) == 0;
     let segments: Vec<String> = if absolute {
@@ -226,15 +238,18 @@ fn evaluate_both(
     (xml, parsed, theirs)
 }
 
-/// Where MSBuild evaluates, we commit and agree; where it fails, we decline.
-/// Returns whether MSBuild evaluated.
+/// Where we commit, MSBuild evaluates and agrees; where MSBuild fails, we
+/// decline. With `must_commit` (an input inside the modelled domain), we must
+/// also commit wherever MSBuild evaluates. Returns whether MSBuild evaluated.
 fn assert_certain_implies_exact(
     label: &str,
     xml: &str,
     parsed: &borzoi_msbuild::ParsedProject,
     theirs: Result<String, String>,
+    must_commit: bool,
 ) -> bool {
     match theirs {
+        Ok(_) if !must_commit && !parsed.diagnostics.is_empty() => true,
         Ok(theirs) => {
             assert!(
                 parsed.diagnostics.is_empty(),
@@ -262,7 +277,7 @@ fn check_seed(seed: u64) {
     let imports: Vec<String> = (0..IMPORTS_PER_PROJECT)
         .map(|_| {
             let (_, components) = rng.pick(TARGETS);
-            respell(&mut rng, &layout, components)
+            respell(&mut rng, &layout, components, false)
         })
         .collect();
     let (xml, parsed, theirs) = evaluate_both(&layout, &imports);
@@ -271,7 +286,7 @@ fn check_seed(seed: u64) {
         theirs.is_ok(),
         "{label}: every spelling names a file, yet MSBuild failed:\n{xml}\n{theirs:?}"
     );
-    assert_certain_implies_exact(&label, &xml, &parsed, theirs);
+    assert_certain_implies_exact(&label, &xml, &parsed, theirs, true);
 }
 
 #[test]
@@ -290,18 +305,28 @@ fn sdk_import_project_paths_soak() {
     }
 }
 
-/// A respelling with segments after the file name. Some collapse lexically
-/// (`E.props/.`, `E.props/ghost/..`) and MSBuild imports the file; some leave
-/// a trailing separator (`E.props/`, `E.props/./`), name a child of a file
+/// A respelling with segments after the file name, and whether it lies in
+/// the modelled domain. Some tails collapse lexically (`E.props/.`,
+/// `E.props/ghost/..`) and MSBuild imports the file; some leave a trailing
+/// separator (`E.props/`, `E.props/./`), name a child of a file
 /// (`E.props/ghost`) or the SDK directory (`E.props/..`), and MSBuild fails.
-fn respell_with_tail(rng: &mut SplitMix64, layout: &Layout) -> String {
+/// Outside the domain: escaped separators, and a junk segment the `..` after
+/// it erases — MSBuild acts on what it holds (splits the list, rejects the
+/// NUL, globs), so collapsing it away would commit to the wrong file.
+fn respell_with_tail(rng: &mut SplitMix64, layout: &Layout) -> (String, bool) {
     let (_, components) = rng.pick(TARGETS);
-    let mut out = respell(rng, layout, components);
-    for _ in 0..1 + rng.below(3) {
+    let escaped_separators = rng.below(4) == 0;
+    let mut out = respell(rng, layout, components, escaped_separators);
+    let junk = rng.below(3) == 0;
+    if junk {
+        let junk = rng.pick(&["%00", "a;b", "*", " x", "%3b", "%C3%A9", "x?"]);
+        out = format!("{junk}/../{out}");
+    }
+    for _ in 0..rng.below(3) {
         out.push_str(rng.pick(&["/", "\\"]));
         out.push_str(rng.pick(&[".", "ghost", "..", "%2e", ""]));
     }
-    out
+    (out, !escaped_separators && !junk)
 }
 
 /// One import per project: an import MSBuild fails fails the whole
@@ -311,10 +336,10 @@ fn check_tail_cases(seed: u64, cases: usize) -> (usize, usize) {
     let mut rng = SplitMix64(seed);
     let (mut imported, mut failed) = (0, 0);
     for case in 0..cases {
-        let import = respell_with_tail(&mut rng, &layout);
+        let (import, in_domain) = respell_with_tail(&mut rng, &layout);
         let (xml, parsed, theirs) = evaluate_both(&layout, std::slice::from_ref(&import));
         let label = format!("seed {seed} case {case}");
-        if assert_certain_implies_exact(&label, &xml, &parsed, theirs) {
+        if assert_certain_implies_exact(&label, &xml, &parsed, theirs, in_domain) {
             imported += 1;
         } else {
             failed += 1;
@@ -331,6 +356,33 @@ fn sdk_import_project_path_tails_resolve_as_msbuild_does() {
         imported > 0 && failed > 0,
         "imported {imported}, failed {failed}"
     );
+}
+
+/// Spellings outside the modelled domain whose `..` erases a segment MSBuild
+/// acts on. Each fails or imports differently in MSBuild, so committing to the
+/// collapsed path would be wrong; we must decline or agree.
+#[test]
+fn sdk_import_project_paths_outside_the_domain_never_commit_wrongly() {
+    let layout = Layout::new();
+    for import in [
+        // MSB4102: a NUL in the path.
+        "%00/../E.props",
+        // A list: `<root>/E.props` and the project-relative `sub/../E.props`.
+        "E.props;sub/../E.props",
+        // Wildcards glob before normalising.
+        "x?/../E.props",
+        "*/../E.props",
+        // Whitespace is trimmed from a list entry.
+        " x/../E.props",
+        // A decoded `\` is no separator when `..` collapses.
+        ".%5c./../targets/T.props",
+        "sub%5c../E.props",
+        "sub%2f../E.props",
+    ] {
+        let import = import.to_string();
+        let (xml, parsed, theirs) = evaluate_both(&layout, std::slice::from_ref(&import));
+        assert_certain_implies_exact(&import, &xml, &parsed, theirs, false);
+    }
 }
 
 #[test]

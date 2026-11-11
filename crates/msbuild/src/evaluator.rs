@@ -5212,6 +5212,47 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             );
             return;
         }
+        // Commit only on a path spelt from a positive alphabet: ASCII
+        // alphanumerics, `.`, `_`, `-`, `+` and the separators — every real
+        // SDK's spelling. Collapsing `..` below erases the segment before it,
+        // so a character MSBuild would act on there vanishes unseen: a `;`
+        // splits MSBuild's list (`a.props;sub/../b.props` imports both), a
+        // decoded NUL fails it (MSB4102), a wildcard globs, and whitespace
+        // is trimmed. And the only escape admitted is `%2e`: MSBuild turns a
+        // literal `\` into `/` before decoding, so a decoded `\` is no
+        // separator when `..` collapses (`.%5c./..` pops `.\.` whole) yet is
+        // one when the file opens — structure is decided in the escaped domain,
+        // so any escape that could decode to structure declines. Outside the
+        // alphabet, decline.
+        let escaped = expansion.value.as_escaped();
+        let escapes_only_dots = escaped.match_indices('%').all(|(at, _)| {
+            escaped
+                .get(at..at + 3)
+                .is_some_and(|e| e.eq_ignore_ascii_case("%2e"))
+        });
+        if !escapes_only_dots
+            || !project_attr.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '/' | '\\')
+            })
+        {
+            state.push(
+                DiagnosticKind::UnsupportedConstruct {
+                    element: format!(
+                        "Import Sdk={sdk_name:?} Project={project_attr_raw:?} \\
+                         (a path character outside the modelled alphabet)"
+                    ),
+                },
+                node.range(),
+            );
+            state.mark_structural_skip_respecting_sdk_compile_tolerance(
+                StructuralCompileItemUncertainty::SdkImportProjectUnresolved {
+                    sdk: sdk_name.to_string(),
+                    project: project_attr_raw.to_string(),
+                },
+                node.range(),
+            );
+            return;
+        }
         // MSBuild accepts either separator on either platform, as for a
         // plain `<Import>`.
         let relative = project_attr.replace('\\', "/");
