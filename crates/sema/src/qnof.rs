@@ -25,9 +25,9 @@
 //! FCS-differential fixtures in `crates/sema/tests/all/resolve_signatures.rs`
 //! pin the port against observable pairing behaviour.
 
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
+use crate::hash::HashMap;
 use crate::resolve::SourceFile;
 
 /// A file's FCS `QualifiedNameOfFile`: the deduplicated text (the pairing
@@ -96,7 +96,7 @@ pub fn qualified_names(files: &[SourceFile], paths: &[PathBuf]) -> Vec<Qualified
     // FCS's `ModuleNamesDict`: raw name → the directories seen so far, each
     // with its deduped name, in first-seen order (`paths.Count` drives the
     // `___<count>` suffix).
-    let mut dict: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut dict: HashMap<String, Vec<(String, String)>> = HashMap::default();
     files
         .iter()
         .zip(paths)

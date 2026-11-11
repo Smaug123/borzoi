@@ -15,7 +15,7 @@
 //! through, which token that edge of the node ends at, so each node is walked
 //! into at most once per edge however many spans are asked of it.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 use borzoi_cst::syntax::{SyntaxElement, SyntaxNode, SyntaxToken};
 use rowan::{NodeOrToken, TextRange};

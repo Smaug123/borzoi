@@ -1,7 +1,5 @@
 //! The name-resolution engine: long-ident / value / case lookup and the project-open machinery.
 
-use std::collections::{HashMap, HashSet};
-
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::{TextRange, TextSize};
 
@@ -9,6 +7,7 @@ use borzoi_assembly::{EntityKind, UnionCases};
 
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
+use crate::hash::{HashMap, HashSet};
 
 use super::contributors::Contribution;
 use super::id_text;
@@ -212,8 +211,8 @@ where
     G: Iterator<Item = N>,
     N: Iterator<Item = &'n str>,
 {
-    let mut first_supplier: HashMap<&str, usize> = HashMap::new();
-    let mut collided: HashSet<String> = HashSet::new();
+    let mut first_supplier: HashMap<&str, usize> = HashMap::default();
+    let mut collided: HashSet<String> = HashSet::default();
     for (i, names) in groups.enumerate() {
         for name in names {
             match first_supplier.get(name) {
@@ -1727,7 +1726,7 @@ impl<'a> Resolver<'a> {
     /// open-fold does, so an inaccessible name never enters the straddle contest.
     fn direct_tier_ids_at(&self, path: &[String]) -> HashMap<String, (ItemId, usize)> {
         let site = self.container_path.to_vec();
-        let mut out: HashMap<String, (ItemId, usize)> = HashMap::new();
+        let mut out: HashMap<String, (ItemId, usize)> = HashMap::default();
         for (name, id) in self.preceding.direct_value_children(path, &site) {
             out.insert(name, (id, self.preceding.file_of(id)));
         }
@@ -1771,7 +1770,7 @@ impl<'a> Resolver<'a> {
     /// lets a genuinely later submodule win instead of conservatively deferring.
     fn submodule_contributions_at(&self, path: &[String]) -> HashMap<String, SubmoduleFold> {
         let site = self.container_path.to_vec();
-        let mut out: HashMap<String, SubmoduleFold> = HashMap::new();
+        let mut out: HashMap<String, SubmoduleFold> = HashMap::default();
         let current = self.preceding.num_files();
         for (sub, file) in self.auto_open_fragments_reachable(path) {
             // The names this fragment declares in *its* file (ids unused here —
@@ -2194,9 +2193,9 @@ impl<'a> Resolver<'a> {
         // `case_reference`). `pushed_normal` tracks ids already pushed as ordinary
         // entries so an unshadowed case (which serves both namespaces) is not also
         // given a redundant `pattern_only` entry.
-        let mut seen_values: HashSet<String> = HashSet::new();
-        let mut seen_ctors: HashSet<String> = HashSet::new();
-        let mut pushed_normal: HashSet<ItemId> = HashSet::new();
+        let mut seen_values: HashSet<String> = HashSet::default();
+        let mut seen_ctors: HashSet<String> = HashSet::default();
+        let mut pushed_normal: HashSet<ItemId> = HashSet::default();
         let mut entries: Vec<ScopeEntry> = Vec::new();
         // The opened module's own **maybe-literal** value names (this file's
         // members, gated exactly like the same-file pass below). FCS folds a
@@ -2210,7 +2209,7 @@ impl<'a> Resolver<'a> {
         // the case then stays committed. (For a single-fragment fold the
         // cross-file history spans every file, over-approximating the
         // fragment's own members — a wider defer, never a commit.)
-        let mut constant_names: HashSet<String> = HashSet::new();
+        let mut constant_names: HashSet<String> = HashSet::default();
         for item in &self.items {
             if item.attributed
                 && let Some(q) = &item.qualified
@@ -2552,7 +2551,7 @@ impl<'a> Resolver<'a> {
         let direct_tier = if is_namespace {
             self.direct_tier_ids_at(namespace)
         } else {
-            HashMap::new()
+            HashMap::default()
         };
         // Straddle outcomes, pushed after the fold so they out-position the
         // submodule pushes: `value_winners` (direct case wins the value slot

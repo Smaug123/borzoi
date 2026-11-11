@@ -18,12 +18,12 @@
 //! commit — which [`commits_behind_unmodelled_binders`] checks against the
 //! oracle's own record of which uses are in that scope.
 
-use std::collections::HashMap;
 use std::fmt;
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
 use rowan::{TextRange, TextSize};
 
+use crate::hash::HashMap;
 use crate::{Resolution, ResolvedFile};
 
 /// What sort of symbol an oracle definition record defines, restricted to the

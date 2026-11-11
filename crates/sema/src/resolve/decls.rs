@@ -77,7 +77,7 @@ pub(super) fn union_repr_is_private(defn: &TypeDefn) -> bool {
 /// makes the positional contest against in-file types as conservative as the
 /// latest introduction — either can only widen the defer, never mis-bind.
 fn merge_auto_open_shadow(
-    map: &mut std::collections::HashMap<String, AutoOpenTypeShadow>,
+    map: &mut crate::hash::HashMap<String, AutoOpenTypeShadow>,
     name: String,
     new: AutoOpenTypeShadow,
 ) {
@@ -1830,7 +1830,7 @@ impl<'a> Resolver<'a> {
         // already scanned this subtree (the outer collection recurses), so
         // its superset stays in place.
         let saved_rec_module_names = if !saved_recursive_module && nm.is_rec() {
-            let mut names = std::collections::HashSet::new();
+            let mut names = crate::hash::HashSet::default();
             super::collect_nested_module_names(nm.decls(), &mut names);
             Some(std::mem::replace(&mut self.rec_module_names, names))
         } else {

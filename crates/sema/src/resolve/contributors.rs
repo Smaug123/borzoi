@@ -23,7 +23,7 @@
 //! member — so collecting the declarations cannot miss one, and a name it
 //! declares but does not in fact bring into bare scope costs a decline.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, Expr, MemberDefn, MemberLeading,
@@ -41,6 +41,7 @@ use super::{
 use crate::assembly_env::{AssemblyEnv, CoreAttributeAliases, CustomOperationNames};
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
+use crate::hash::HashSet;
 
 /// The bare names one contributor may add to the environment: a closed
 /// over-approximation of them, or `unlisted` when they are spelled nowhere in
@@ -435,7 +436,7 @@ impl Resolver<'_> {
         // declared elsewhere is an extension, whose members are reachable
         // only through the type. The match is exhaustive so that a new kind
         // of declaration has to be classified here.
-        let mut auto_open_types: HashSet<String> = HashSet::new();
+        let mut auto_open_types: HashSet<String> = HashSet::default();
         for decl in &decls {
             match decl {
                 ModuleDecl::Types(types) => {
@@ -494,7 +495,7 @@ impl Resolver<'_> {
                             binders.extend(declared_identifiers(binding.syntax()));
                             continue;
                         };
-                        for name in pattern_names(&head, BinderRole::Let, &HashSet::new()) {
+                        for name in pattern_names(&head, BinderRole::Let, &HashSet::default()) {
                             if let PatternName::Binder(def) = name
                                 && def.kind != DefKind::Parameter
                             {

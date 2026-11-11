@@ -8,7 +8,7 @@
 //! question afresh costs time quadratic in the path's length (its
 //! `type_long_ident`). A trie reads each segment of the question once.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 /// A trie node's index in [`PathSet::nodes`]. The root is [`ROOT`].
 type NodeId = usize;
@@ -38,7 +38,7 @@ impl Default for PathSet {
     fn default() -> Self {
         PathSet {
             log: Vec::new(),
-            nodes: vec![HashMap::new()],
+            nodes: vec![HashMap::default()],
             members: vec![0],
         }
     }
@@ -58,7 +58,7 @@ impl PathSet {
                 Some(&child) => child,
                 None => {
                     let child = self.nodes.len();
-                    self.nodes.push(HashMap::new());
+                    self.nodes.push(HashMap::default());
                     self.members.push(0);
                     self.nodes[node].insert(seg.clone(), child);
                     child
