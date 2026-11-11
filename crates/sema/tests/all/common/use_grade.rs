@@ -86,6 +86,7 @@ fn error_diagnostics(
     sources: &[(PathBuf, String)],
 ) -> Vec<(PathBuf, usize, usize, i64)> {
     let dump: serde_json::Value = serde_json::from_str(json).expect("uses-project JSON");
+    let indices: Vec<LineIndex> = sources.iter().map(|(_, src)| LineIndex::new(src)).collect();
     let mut out = Vec::new();
     for file in dump["Files"].as_array().expect("Files array") {
         for d in file["Diagnostics"].as_array().into_iter().flatten() {
@@ -99,13 +100,13 @@ fn error_diagnostics(
                     .file_name()
                     .expect("file name"),
             );
-            let Some((_, src)) = sources
+            let Some(at) = sources
                 .iter()
-                .find(|(p, _)| p.file_name() == Some(name.as_os_str()))
+                .position(|(p, _)| p.file_name() == Some(name.as_os_str()))
             else {
                 continue;
             };
-            let idx = LineIndex::new(src);
+            let idx = &indices[at];
             let pos = |p: &serde_json::Value| {
                 idx.offset(
                     u32::try_from(p["Line"].as_u64().unwrap()).unwrap(),

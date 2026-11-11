@@ -2347,10 +2347,15 @@ impl<'a> Resolver<'a> {
         // A possible union case the walk does not intern (`type T = X`)
         // declines its name, and no other: in pattern position always, and in
         // expression position unless a value of the name outranks it.
+        // Whether a value supersedes a case is asked only of the cases this
+        // open reaches: the answer scans the file's declarations.
         let own_cases: Vec<(&Vec<String>, bool)> = self
             .export_decls
             .iter()
-            .filter(|d| matches!(d.kind, super::model::ExportDeclKind::OpaqueCase))
+            .filter(|d| {
+                matches!(d.kind, super::model::ExportDeclKind::OpaqueCase)
+                    && d.path.split_last().is_some_and(|(_, c)| c == module_path)
+            })
             .map(|d| {
                 (
                     &d.path,
