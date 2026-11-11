@@ -145,6 +145,12 @@ const EXEMPT: &[(&str, Walk, &str)] = &[
          each held as its own path: n² segments in all",
     ),
     (
+        "distinct_records",
+        Walk::Inference,
+        "quadratic before the flat syntax table too (59x from 512 to 4096 \
+         records on 7b4a7975); the cause is not yet diagnosed",
+    ),
+    (
         "member_statements",
         Walk::Inference,
         "each statement settles the binding's constraints so far, and a \

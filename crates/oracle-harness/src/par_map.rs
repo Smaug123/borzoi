@@ -12,8 +12,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// `f` applied to each of `0..len`, on up to one worker per core, returned in
 /// index order.
 ///
-/// `f` runs on worker threads, so what it returns must be `Send`; a rowan tree
-/// is not, so a sweep hands it an index and parses there. Per-thread state
+/// `f` runs on worker threads, so what it returns must be `Send`; a sweep
+/// hands it an index and reads and parses the file there. The workers have
+/// the default stack: a sweep that resolves or infers runs that on a
+/// `WALK_STACK_BYTES` thread of its own (`stack_probe::on_stack`). Per-thread state
 /// (a [`silence_panics_here`](crate::panic_silence::silence_panics_here)
 /// guard, an accessor trace) must be set up inside `f`, not around the call.
 /// A panic in `f` is re-raised here with its own payload.
