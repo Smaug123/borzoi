@@ -43,7 +43,7 @@ fn hash_constraint_type_basic_shape() {
 }
 
 /// Phase 7.8 — `(x : ##int)`: nested hash. Inner `parse_atomic_type`
-/// recurses into a second `HASH_CONSTRAINT_TYPE`, so the green-tree
+/// recurses into a second `HASH_CONSTRAINT_TYPE`, so the tree
 /// shape is `Hash > [#, Hash > [#, int]]`.
 #[test]
 fn hash_constraint_nested() {
@@ -101,7 +101,7 @@ fn hash_constraint_typar() {
 /// Phase 7.8 — `(x : #Foo<int>)`: hash over a prefix-app. Because
 /// the HPA wrap lives in `parse_atomic_type` (above the hash
 /// branch's recursive `parse_atomic_type` call), the prefix-app
-/// must sit *under* the hash — green shape
+/// must sit *under* the hash — tree shape
 /// `Hash > [#, App(Foo, [int])]`, not `App(Hash(Foo), [int])`.
 /// Pins the FCS layering: `atomType: hashConstraint |
 /// appTypeConPower` (`pars.fsy:6534-6549`).

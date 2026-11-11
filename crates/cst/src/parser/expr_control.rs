@@ -35,8 +35,7 @@ impl<'src> Parser<'src> {
     /// Caller must have already verified that `peek()` returns
     /// `FilteredToken::Raw(Token::If)`.
     pub(super) fn parse_if_then_else(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IF_THEN_ELSE_EXPR));
+        self.builder.start_node(SyntaxKind::IF_THEN_ELSE_EXPR);
 
         // `if` is a raw passthrough — `bump_into` drains trivia + emits the
         // keyword text at its source span.
@@ -200,8 +199,7 @@ impl<'src> Parser<'src> {
                             .get(self.raw_pos)
                             .map(|(_, s)| s.clone())
                             .expect("raw_pos in range");
-                        self.builder
-                            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IF_THEN_ELSE_EXPR));
+                        self.builder.start_node(SyntaxKind::IF_THEN_ELSE_EXPR);
                         self.emit_text(SyntaxKind::ELIF_TOK, elif_raw_span);
                         self.raw_pos += 1;
                     }
@@ -228,8 +226,7 @@ impl<'src> Parser<'src> {
                                 "merged Token::Elif must be backed by a following raw Token::If",
                             );
                         self.drain_raw_up_to(if_raw_span.start);
-                        self.builder
-                            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IF_THEN_ELSE_EXPR));
+                        self.builder.start_node(SyntaxKind::IF_THEN_ELSE_EXPR);
                         self.emit_text(SyntaxKind::IF_TOK, if_raw_span);
                         self.raw_pos += 1;
                     }
@@ -249,7 +246,7 @@ impl<'src> Parser<'src> {
                 // above is closed by the *callee* (this function closes the node
                 // open at its own entry — the `finish_node` below). When the guard
                 // fires it skips that callee, so the nested node must be closed
-                // here to keep the green tree balanced. (In practice the breach
+                // here to keep the tree balanced. (In practice the breach
                 // surfaces in an `elif` *condition* first — itself a guarded,
                 // balanced path — so this only hardens against the bare-recursion
                 // breach, but an unbalanced builder is corruption either way.)
@@ -307,7 +304,7 @@ impl<'src> Parser<'src> {
     /// is handled by the typed-AST facade. FCS's curried encoding is
     /// `Lambda(_, _, [p1], Lambda(_, _, [p2], body))` plus a
     /// `parsedData = Some(args, body)` cache on the outermost node;
-    /// our green tree keeps the args flat under a single `FUN_EXPR`,
+    /// our tree keeps the args flat under a single `FUN_EXPR`,
     /// and the projector reconstructs the chain when asked. Phase 5.4
     /// (or later) will add `match`-style `function | … -> …` sugar.
     ///
@@ -328,8 +325,7 @@ impl<'src> Parser<'src> {
     /// Caller must have already verified that `peek()` is a `fun` in either
     /// spelling ([`DualKeyword::lambda_head`]).
     pub(super) fn parse_fun_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::FUN_EXPR));
+        self.builder.start_node(SyntaxKind::FUN_EXPR);
 
         // `fun` — LexFilter's `OFUN` relabel (LexFilter.fs:2532), or a raw
         // `FUN` where no `CtxtFun` was pushed (see [`DualKeyword`]).
@@ -447,14 +443,12 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
         ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
         match self.peek() {
             Some((Ok(FilteredToken::Virtual(Virtual::End)), _)) => {
-                self.builder
-                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.builder.token(SyntaxKind::ERROR, "");
                 self.pos += 1;
             }
             // A token between the body's close and `CtxtFun`'s is still
@@ -544,7 +538,7 @@ impl<'src> Parser<'src> {
         kw_kind: SyntaxKind,
         keyword: &str,
     ) {
-        self.builder.start_node(FSharpLang::kind_to_raw(node_kind));
+        self.builder.start_node(node_kind);
 
         // `match`/`match!` keyword — plain raw passthrough.
         self.bump_into(kw_kind);
@@ -618,8 +612,7 @@ impl<'src> Parser<'src> {
     /// is the separator), mirroring FCS's per-clause `BarRange`.
     pub(super) fn parse_match_clauses(&mut self, opener: KeywordForm) {
         loop {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::MATCH_CLAUSE));
+            self.builder.start_node(SyntaxKind::MATCH_CLAUSE);
 
             // Optional leading `|` (clause 1) or separator `|` (later clauses).
             if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Bar)), _))) {
@@ -749,8 +742,7 @@ impl<'src> Parser<'src> {
                 self.peek(),
                 Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
             ) {
-                self.builder
-                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.builder.token(SyntaxKind::ERROR, "");
                 self.pos += 1;
             }
             self.builder.finish_node(); // MATCH_CLAUSE
@@ -780,8 +772,7 @@ impl<'src> Parser<'src> {
         // see the doc comment.
         match self.peek() {
             Some((Ok(FilteredToken::Virtual(Virtual::End)), _)) => {
-                self.builder
-                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.builder.token(SyntaxKind::ERROR, "");
                 self.pos += 1;
             }
             // A token between the last clause and the clause-list close is
@@ -847,8 +838,7 @@ impl<'src> Parser<'src> {
     ///
     /// Precondition: the next non-trivia filtered token is `Raw(Token::Try)`.
     pub(super) fn parse_try_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TRY_EXPR));
+        self.builder.start_node(SyntaxKind::TRY_EXPR);
 
         // `try` keyword — plain raw passthrough (like `match`/`while`/`for`).
         self.bump_into(SyntaxKind::TRY_TOK);
@@ -863,8 +853,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
         );
         if body_closed {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
 
@@ -931,8 +920,7 @@ impl<'src> Parser<'src> {
     /// Precondition: the next non-trivia filtered token is a `function` in
     /// either spelling ([`DualKeyword::lambda_head`]).
     pub(super) fn parse_function_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::MATCH_LAMBDA_EXPR));
+        self.builder.start_node(SyntaxKind::MATCH_LAMBDA_EXPR);
 
         // `function` — LexFilter's `OFUNCTION` relabel, or a raw `FUNCTION`
         // where no `CtxtFunction` was pushed (see [`DualKeyword`]).
@@ -979,7 +967,7 @@ impl<'src> Parser<'src> {
     /// dispatch arm; the body-block parse is shared with `do!` via
     /// [`Parser::parse_if_body`].
     fn parse_while_loop(&mut self, node_kind: SyntaxKind, kw_kind: SyntaxKind, keyword: &str) {
-        self.builder.start_node(FSharpLang::kind_to_raw(node_kind));
+        self.builder.start_node(node_kind);
 
         // `while`/`while!` keyword — plain raw passthrough.
         self.bump_into(kw_kind);
@@ -1048,8 +1036,7 @@ impl<'src> Parser<'src> {
     ///   form (`seq { for x in xs -> x }`), handled by
     ///   [`Self::parse_for_arrow_body`].
     fn parse_for_each_loop(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::FOR_EACH_EXPR));
+        self.builder.start_node(SyntaxKind::FOR_EACH_EXPR);
 
         // `for` keyword — plain raw passthrough.
         self.bump_into(SyntaxKind::FOR_TOK);
@@ -1150,8 +1137,7 @@ impl<'src> Parser<'src> {
     /// enclosing context's closers survive). FCS emits no `End` after this
     /// loop's `RightBlockEnd`, so none is consumed here.
     fn parse_for_arrow_body(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::YIELD_OR_RETURN_EXPR));
+        self.builder.start_node(SyntaxKind::YIELD_OR_RETURN_EXPR);
         // `->` — raw passthrough (LexFilter pushes the one-sided SeqBlock but
         // does not relabel the token), like the `fun`/`match` arrow.
         self.bump_into(SyntaxKind::RARROW_TOK);
@@ -1165,8 +1151,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
         ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
     }
@@ -1181,8 +1166,7 @@ impl<'src> Parser<'src> {
     /// `toBody` at the `Virtual::Do`. Caller selected this form via the
     /// `Ident =` lookahead in [`Self::parse_for_expr`].
     fn parse_for_range_loop(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::FOR_EXPR));
+        self.builder.start_node(SyntaxKind::FOR_EXPR);
 
         // `for` keyword — plain raw passthrough.
         self.bump_into(SyntaxKind::FOR_TOK);
@@ -1362,8 +1346,7 @@ impl<'src> Parser<'src> {
             self.emit_text(SyntaxKind::DONE_TOK, de_span);
             self.raw_pos += 1;
         } else {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
         }
         self.pos += 1;
     }

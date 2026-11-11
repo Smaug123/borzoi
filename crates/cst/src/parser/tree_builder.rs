@@ -1,29 +1,19 @@
-//! [`TreeBuilder`]: rowan's [`GreenNodeBuilder`] with the height of the tree
-//! it is building kept alongside.
+//! [`TreeBuilder`]: the syntax table's [`Builder`] with the height of the
+//! tree it is building kept alongside.
 //!
 //! The parser builds many nested nodes from a loop rather than a recursive
 //! call — an application chain `f a a a`, a left-associative operator chain, a
 //! postfix type application `int list list` — by wrapping what it has built
 //! so far under a fresh node ([`TreeBuilder::start_node_at`]). Such a chain is
-//! as deep as it is long, and rowan frees a green tree recursively, so a long
-//! enough one overflows the stack when the tree is dropped (and so does any
-//! consumer that walks the tree recursively). Counting at the builder bounds
-//! every such shape at once, whichever production built it: the parser reads
-//! [`TreeBuilder::height_if_closed_now`] and stops short of
-//! [`super::MAX_TREE_HEIGHT`].
+//! as deep as it is long, and every consumer that walks the tree recursively
+//! (sema's resolution and inference) needs stack in proportion to its height.
+//! Counting at the builder bounds every such shape at once, whichever
+//! production built it: the parser reads [`TreeBuilder::height_if_closed_now`]
+//! and stops short of [`super::MAX_TREE_HEIGHT`].
 
-use rowan::{GreenNode, GreenNodeBuilder};
+use crate::syntax::{Builder, Checkpoint, SyntaxKind, SyntaxNode};
 
-/// A position in the pending children, from [`TreeBuilder::checkpoint`]: the
-/// point [`TreeBuilder::start_node_at`] wraps from.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Checkpoint {
-    rowan: rowan::Checkpoint,
-    /// The pending-child index `rowan` names (rowan's own is opaque).
-    index: usize,
-}
-
-/// One element of rowan's pending-children stack: a token or a finished node.
+/// One finished element awaiting a parent.
 #[derive(Clone, Copy)]
 struct Pending {
     /// Nodes on its longest root-to-leaf path: 0 for a token.
@@ -33,7 +23,7 @@ struct Pending {
     prefix_max: u32,
 }
 
-/// One node of rowan's open-node stack.
+/// One open node.
 #[derive(Clone, Copy)]
 struct Open {
     /// Index of its first pending child.
@@ -46,14 +36,14 @@ struct Open {
     reach: u32,
 }
 
-/// A [`GreenNodeBuilder`] that also tracks the height of what it builds.
+/// A [`Builder`] that also tracks the height of what it builds.
 ///
-/// `pending` mirrors rowan's pending-children stack element for element, and
-/// `open` its open-node stack, so every operation updates both exactly as rowan
-/// updates its own. [`Self::height_if_closed_now`] is then exact, and costs
-/// nothing to read.
+/// `pending` mirrors the builder's elements awaiting a parent element for
+/// element, and `open` its open nodes, so every operation updates both exactly
+/// as the builder updates its own. [`Self::height_if_closed_now`] is then
+/// exact, and costs nothing to read.
 pub(super) struct TreeBuilder {
-    inner: GreenNodeBuilder<'static>,
+    inner: Builder,
     pending: Vec<Pending>,
     open: Vec<Open>,
     /// The tallest pending element outside every open node (a finished root).
@@ -63,36 +53,33 @@ pub(super) struct TreeBuilder {
 impl TreeBuilder {
     pub(super) fn new() -> Self {
         Self {
-            inner: GreenNodeBuilder::new(),
+            inner: Builder::new(),
             pending: Vec::new(),
             open: Vec::new(),
             top_max: 0,
         }
     }
 
-    pub(super) fn token(&mut self, kind: rowan::SyntaxKind, text: &str) {
+    pub(super) fn token(&mut self, kind: SyntaxKind, text: &str) {
         self.inner.token(kind, text);
         self.push(0);
     }
 
-    pub(super) fn start_node(&mut self, kind: rowan::SyntaxKind) {
+    pub(super) fn start_node(&mut self, kind: SyntaxKind) {
         self.inner.start_node(kind);
         self.open_from(self.pending.len());
     }
 
     pub(super) fn checkpoint(&self) -> Checkpoint {
-        Checkpoint {
-            rowan: self.inner.checkpoint(),
-            index: self.pending.len(),
-        }
+        self.inner.checkpoint()
     }
 
     /// Open a node whose children start at `checkpoint`, wrapping the elements
-    /// pushed since. rowan asserts the checkpoint is still valid; that check
-    /// runs first, so nothing here sees an index rowan rejected.
-    pub(super) fn start_node_at(&mut self, checkpoint: Checkpoint, kind: rowan::SyntaxKind) {
-        self.inner.start_node_at(checkpoint.rowan, kind);
-        let cp = checkpoint.index;
+    /// pushed since. The builder asserts the checkpoint is still valid; that
+    /// check runs first, so nothing here sees an index it rejected.
+    pub(super) fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
+        self.inner.start_node_at(checkpoint, kind);
+        let cp = checkpoint.pending_len();
         // The parent keeps only the children before the checkpoint.
         let kept = if cp > self.first_child() {
             self.pending[cp - 1].prefix_max
@@ -115,7 +102,7 @@ impl TreeBuilder {
         let node = self
             .open
             .pop()
-            .expect("rowan's finish_node succeeded, so a node was open");
+            .expect("the builder's finish_node succeeded, so a node was open");
         self.pending.truncate(node.first_child);
         self.push(1 + node.max_child);
     }
@@ -128,35 +115,16 @@ impl TreeBuilder {
         self.open.last().map_or(self.top_max, |node| node.reach) as usize
     }
 
-    pub(super) fn finish(self) -> GreenNode {
+    /// The finished tree's root.
+    pub(super) fn finish(self) -> SyntaxNode {
         self.inner.finish()
     }
 
-    /// Finish the tree and free it without recursing, however tall it is.
-    ///
-    /// rowan frees a green node by freeing its children in turn, one stack
-    /// frame per level. Holding a clone of every node, collected parents
-    /// first, and releasing them in that order means each release only drops a
-    /// reference count, until the last one of each node, by which time its
-    /// children are already held elsewhere. For a tree [`super::parse_inner`]
-    /// throws away, which may be far taller than any tree a parse returns.
+    /// Finish the tree and drop it, however tall it is: for a tree
+    /// [`super::parse_inner`] throws away, which may be far taller than any
+    /// tree a parse returns.
     pub(super) fn discard(self) {
-        debug_assert!(self.open.is_empty(), "discarding an unfinished tree");
-        let root = self.inner.finish();
-        let mut parents_first = Vec::new();
-        let mut stack = vec![root.clone()];
-        while let Some(node) = stack.pop() {
-            for child in node.children() {
-                if let rowan::NodeOrToken::Node(child) = child {
-                    stack.push(child.to_owned());
-                }
-            }
-            parents_first.push(node);
-        }
-        drop(root);
-        for node in parents_first {
-            drop(node);
-        }
+        self.inner.discard();
     }
 
     /// Index of the innermost open node's first pending child (0 outside every
@@ -209,12 +177,6 @@ impl TreeBuilder {
 mod tests {
     use super::*;
     use crate::syntax::WalkEvent;
-    use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode};
-    use rowan::Language;
-
-    fn raw(kind: SyntaxKind) -> rowan::SyntaxKind {
-        FSharpLang::kind_to_raw(kind)
-    }
 
     fn height(root: &SyntaxNode) -> usize {
         let (mut depth, mut height) = (0usize, 0usize);
@@ -246,21 +208,22 @@ mod tests {
     /// returning the builder.
     fn replay(ops: &[Op]) -> TreeBuilder {
         let mut b = TreeBuilder::new();
-        b.start_node(raw(SyntaxKind::IMPL_FILE));
+        b.start_node(SyntaxKind::IMPL_FILE);
         // Live checkpoints, each with the open depth it was taken at: rowan
         // requires a wrap's checkpoint to lie within the innermost open node.
         let mut checkpoints: Vec<(Checkpoint, usize)> = Vec::new();
         for &op in ops {
             match op {
-                Op::Token => b.token(raw(SyntaxKind::IDENT_TOK), "a"),
-                Op::Start => b.start_node(raw(SyntaxKind::PAREN_EXPR)),
+                Op::Token => b.token(SyntaxKind::IDENT_TOK, "a"),
+                Op::Start => b.start_node(SyntaxKind::PAREN_EXPR),
                 Op::Checkpoint => checkpoints.push((b.checkpoint(), b.open.len())),
                 Op::StartAt(n) => {
-                    checkpoints
-                        .retain(|(c, depth)| *depth == b.open.len() && c.index <= b.pending.len());
+                    checkpoints.retain(|(c, depth)| {
+                        *depth == b.open.len() && c.pending_len() <= b.pending.len()
+                    });
                     if !checkpoints.is_empty() {
                         let (cp, _) = checkpoints[n % checkpoints.len()];
-                        b.start_node_at(cp, raw(SyntaxKind::APP_EXPR));
+                        b.start_node_at(cp, SyntaxKind::APP_EXPR);
                     }
                 }
                 Op::Finish => {
@@ -269,7 +232,8 @@ mod tests {
                     }
                 }
             }
-            checkpoints.retain(|(c, depth)| *depth <= b.open.len() && c.index <= b.pending.len());
+            checkpoints
+                .retain(|(c, depth)| *depth <= b.open.len() && c.pending_len() <= b.pending.len());
         }
         b
     }
@@ -284,13 +248,12 @@ mod tests {
                 b.finish_node();
             }
             assert_eq!(b.height_if_closed_now(), predicted, "closing changed it");
-            let actual = height(&SyntaxNode::new_root(b.finish()));
+            let actual = height(&b.finish());
             assert_eq!(predicted, actual, "after {:?}", &ops[..end]);
         }
     }
 
-    #[test]
-    fn tracked_height_is_the_height_of_the_tree_closed_now() {
+    fn ops() -> impl proptest::strategy::Strategy<Value = Vec<Op>> {
         use proptest::prelude::*;
         let op = prop_oneof![
             Just(Op::Token),
@@ -299,23 +262,46 @@ mod tests {
             Just(Op::Finish),
             Just(Op::Checkpoint),
         ];
-        proptest!(|(ops in proptest::collection::vec(op, 0..120))| check(&ops));
+        proptest::collection::vec(op, 0..120)
+    }
+
+    #[test]
+    fn tracked_height_is_the_height_of_the_tree_closed_now() {
+        use proptest::prelude::*;
+        proptest!(|(ops in ops())| check(&ops));
+    }
+
+    /// For any well-formed operation sequence (empty nodes, and wraps from
+    /// every live checkpoint, included), the table the builder writes is
+    /// exactly the one flattening rowan's green tree for the same operations
+    /// gives: `Builder::finish` asserts that under `rowan-reference`, which
+    /// this crate's tests turn on.
+    #[test]
+    fn the_built_table_is_rowans_flattening() {
+        use proptest::prelude::*;
+        proptest!(|(ops in ops())| {
+            let mut b = replay(&ops);
+            while !b.open.is_empty() {
+                b.finish_node();
+            }
+            b.finish();
+        });
     }
 
     #[test]
     fn a_left_nested_wrap_chain_grows_one_level_per_wrap() {
         let mut b = TreeBuilder::new();
-        b.start_node(raw(SyntaxKind::IMPL_FILE));
+        b.start_node(SyntaxKind::IMPL_FILE);
         let cp = b.checkpoint();
-        b.token(raw(SyntaxKind::IDENT_TOK), "f");
+        b.token(SyntaxKind::IDENT_TOK, "f");
         for _ in 0..10 {
-            b.start_node_at(cp, raw(SyntaxKind::APP_EXPR));
-            b.token(raw(SyntaxKind::IDENT_TOK), "a");
+            b.start_node_at(cp, SyntaxKind::APP_EXPR);
+            b.token(SyntaxKind::IDENT_TOK, "a");
             b.finish_node();
         }
         assert_eq!(b.height_if_closed_now(), 11);
         b.finish_node();
-        assert_eq!(height(&SyntaxNode::new_root(b.finish())), 11);
+        assert_eq!(height(&b.finish()), 11);
     }
 
     /// A tall finished sibling does not make a later shallow one count as
@@ -323,17 +309,17 @@ mod tests {
     #[test]
     fn a_tall_sibling_does_not_add_to_the_open_depth() {
         let mut b = TreeBuilder::new();
-        b.start_node(raw(SyntaxKind::IMPL_FILE));
+        b.start_node(SyntaxKind::IMPL_FILE);
         for _ in 0..50 {
-            b.start_node(raw(SyntaxKind::PAREN_EXPR));
+            b.start_node(SyntaxKind::PAREN_EXPR);
         }
-        b.token(raw(SyntaxKind::IDENT_TOK), "a");
+        b.token(SyntaxKind::IDENT_TOK, "a");
         for _ in 0..50 {
             b.finish_node();
         }
         assert_eq!(b.height_if_closed_now(), 51);
         for _ in 0..20 {
-            b.start_node(raw(SyntaxKind::PAREN_EXPR));
+            b.start_node(SyntaxKind::PAREN_EXPR);
         }
         assert_eq!(b.height_if_closed_now(), 51);
     }

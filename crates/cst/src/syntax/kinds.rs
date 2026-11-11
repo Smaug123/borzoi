@@ -1,4 +1,4 @@
-//! `SyntaxKind` — the flat tag attached to every green node and token.
+//! `SyntaxKind` — the flat tag attached to every node and token.
 //!
 //! Variant names mirror FCS's `SynExpr`/`SynPat`/`SynModuleDecl`/… cases
 //! (per `docs/parser-plan.md` D5) so the projector that diffs against
@@ -12,8 +12,9 @@
 
 use crate::language_version::{LanguageFeature, LanguageVersion};
 
-/// `u16` repr is required by rowan: it stores kinds as `u16` internally and
-/// round-trips them through `Language::kind_from_raw` / `kind_to_raw`.
+/// `u16` repr keeps a syntax-table entry small, and is what rowan's trees
+/// store for the rowan reference differential, which round-trips kinds
+/// through [`SyntaxKind::from_raw`].
 ///
 /// SCREAMING_SNAKE_CASE here is the rust-analyzer convention — the kinds map
 /// onto grammar terminals/non-terminals in BNF-flavoured docs (`INT32_LIT`,
@@ -202,7 +203,7 @@ pub enum SyntaxKind {
     /// splits back so this token reaches the parser standalone. The sole
     /// child token of an [`SyntaxKind::INDEX_RANGE_EXPR`]. (The lexer's `..^`
     /// `DOT_DOT_HAT` is lex-filter-split into this `..` plus a `^` `Op` prefix,
-    /// so no dedicated green-tree token is needed for the from-end slice.)
+    /// so no dedicated token is needed for the from-end slice.)
     DOT_DOT_TOK,
 
     /// `,` punctuator separating tuple elements (`1, 2, 3`).
@@ -409,7 +410,7 @@ pub enum SyntaxKind {
     /// and value of an [`SyntaxKind::ASSIGN_EXPR`] (`x <- e`). FCS has no
     /// `LARROW` AST node — the token only survives as the operator position
     /// of `mkSynAssign`'s output and is otherwise range data — so this kind
-    /// exists purely to keep the green tree lossless.
+    /// exists purely to keep the tree lossless.
     LARROW_TOK,
 
     /// `*` separator (FCS's `STAR` token, which fsyacc receives via the
@@ -1204,7 +1205,7 @@ pub enum SyntaxKind {
     /// whitespace-separated (`f (x)`); [`crate::syntax::AppExpr::is_atomic`]
     /// reads it to recover FCS's `App(ExprAtomicFlag.Atomic, …)` flag.
     /// Previously consumed as a bare `ERROR`; the dedicated kind keeps the
-    /// flag in the green tree instead of discarding it. Stamped at every site
+    /// flag in the tree instead of discarding it. Stamped at every site
     /// that builds an [`SyntaxKind::APP_EXPR`] from the marker — expression
     /// application (`parse_app_expr`) and enum-case values (`f(1)` in
     /// `type E = A = f(1)`). The sibling marker in binding heads `let f(x)`
@@ -1768,7 +1769,7 @@ pub enum SyntaxKind {
     /// Phase 6.3 emits the non-struct variant only — `struct (x, y)`
     /// tuple patterns are deferred.
     ///
-    /// We keep the green-tree shape flat — one `COMMA_TOK` between
+    /// We keep the tree shape flat — one `COMMA_TOK` between
     /// each `pat` — paralleling [`SyntaxKind::TUPLE_TYPE`]'s flat
     /// `STAR_TOK` representation. FCS's `SynPat.Tuple` is itself a
     /// flat list, not nested pairs, so this projects one-for-one.
@@ -1953,7 +1954,7 @@ pub enum SyntaxKind {
     /// `Lambda(_, _, simplePats, Lambda(_, _, simplePats, body))`,
     /// plus a `parsedData = Some(args, body)` cache on the outermost
     /// node that lists the original arg patterns flat alongside the
-    /// real body. We keep the green tree *flat*: a single `FUN_EXPR`
+    /// real body. We keep the tree *flat*: a single `FUN_EXPR`
     /// holds the leading `FUN_TOK`, then one or more parameter
     /// patterns, then `RARROW_TOK`, then the body expression — the
     /// projector reconstructs the curried `Lambda` chain when needed.
@@ -2096,7 +2097,7 @@ pub enum SyntaxKind {
 
     /// `SynExpr.TryWith` — `try body with <clauses>` (`SyntaxTree.fsi:759`,
     /// `pars.fsy:4245`) — and `SynExpr.TryFinally` — `try body finally cleanup`
-    /// (`SyntaxTree.fsi:768`, `pars.fsy:4313`, phase 10.20b). One green node
+    /// (`SyntaxTree.fsi:768`, `pars.fsy:4313`, phase 10.20b). One node
     /// covers both forms; the trailing [`SyntaxKind::WITH_TOK`] +
     /// [`SyntaxKind::MATCH_CLAUSE`] list (TryWith) versus
     /// [`SyntaxKind::FINALLY_TOK`] + a finally-body `Expr` (TryFinally)
@@ -2131,7 +2132,7 @@ pub enum SyntaxKind {
     /// `Sequential of debugPoint * isTrueSeq * expr1 * expr2 * range *
     /// trivia`; the binary FCS shape is right-leaning (`Sequential(_, _,
     /// e1, Sequential(_, _, e2, e3, …), …)`), but we keep a flat
-    /// n-ary green-tree shape because the offside `Virtual::BlockSep`
+    /// n-ary tree shape because the offside `Virtual::BlockSep`
     /// scaffolding gives us exactly the boundaries between statements
     /// in one pass — re-nesting them as binary pairs would be lossy
     /// without adding trivia anchors. The projector reconstructs the
@@ -2386,7 +2387,7 @@ pub enum SyntaxKind {
     /// `SynLongIdent` — the dotted-path body, a flat sequence of
     /// [`SyntaxKind::IDENT_TOK`] and [`SyntaxKind::DOT_TOK`] children (`Foo.Bar` = `IDENT, DOT,
     /// IDENT`). FCS stores idents and dotRanges as parallel lists; we
-    /// keep them interleaved because the green tree is already
+    /// keep them interleaved because the tree is already
     /// source-ordered and the projector reconstructs the idents list by
     /// filtering out the dots.
     LONG_IDENT,
@@ -3087,7 +3088,7 @@ impl SyntaxKind {
     /// `#elif` / `#endif` conditional-compilation directives, and
     /// `#if`-eliminated [`INACTIVECODE`](SyntaxKind::INACTIVECODE) regions) —
     /// the tokens that LexFilter / the preprocessor drop before the parser
-    /// sees them, but which a full-fidelity pass splices into the green tree.
+    /// sees them, but which a full-fidelity pass splices into the tree.
     pub fn is_trivia(self) -> bool {
         matches!(
             self,

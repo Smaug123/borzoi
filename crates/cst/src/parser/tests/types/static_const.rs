@@ -23,7 +23,7 @@ fn node_of_kind(parse: &crate::parser::Parse, kind: SyntaxKind) -> SyntaxNode {
 /// `INT32_LIT("42")`. Pins the prefix-app arg routing into the static-const
 /// arm.
 #[test]
-fn static_const_int_green_shape() {
+fn static_const_int_tree_shape() {
     use crate::syntax::StaticConstType;
     let source = "(x : Foo<42>)\n";
     let parse = parse(source);
@@ -38,7 +38,7 @@ fn static_const_int_green_shape() {
 
 /// `Foo<"literal">` → the arg is a `STATIC_CONST_TYPE` over a `STRING_LIT`.
 #[test]
-fn static_const_string_green_shape() {
+fn static_const_string_tree_shape() {
     use crate::syntax::StaticConstType;
     let source = "(x : Foo<\"lit\">)\n";
     let parse = parse(source);
@@ -55,7 +55,7 @@ fn static_const_string_green_shape() {
 /// `Foo<true>` → a `STATIC_CONST_TYPE` over a `BOOL_LIT` (FCS's dedicated
 /// `TRUE` `atomicType` arm; our parser shares the const-payload `BOOL_LIT`).
 #[test]
-fn static_const_bool_green_shape() {
+fn static_const_bool_tree_shape() {
     use crate::syntax::StaticConstType;
     let source = "(x : Foo<true>)\n";
     let parse = parse(source);
@@ -68,7 +68,7 @@ fn static_const_bool_green_shape() {
 
 /// `Foo<null>` → a `STATIC_CONST_NULL_TYPE > [NULL_TOK]`.
 #[test]
-fn static_const_null_green_shape() {
+fn static_const_null_tree_shape() {
     let source = "(x : Foo<null>)\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "got errors: {:?}", parse.errors);
@@ -86,7 +86,7 @@ fn static_const_null_green_shape() {
 /// `Foo<const E>` → `STATIC_CONST_EXPR_TYPE > [CONST_TOK, IDENT_EXPR(E)]`; the
 /// facade `expr()` casts the inner atomic expression.
 #[test]
-fn static_const_expr_green_shape() {
+fn static_const_expr_tree_shape() {
     use crate::syntax::StaticConstExprType;
     let source = "(x : Foo<const E>)\n";
     let parse = parse(source);
@@ -110,7 +110,7 @@ fn static_const_expr_green_shape() {
 /// STATIC_CONST_TYPE(42)]`; `ident()` is the name type, `value()` is the
 /// (static-constant) value type.
 #[test]
-fn static_const_named_green_shape() {
+fn static_const_named_tree_shape() {
     use crate::syntax::StaticConstNamedType;
     let source = "(x : Foo<N=42>)\n";
     let parse = parse(source);
@@ -238,7 +238,7 @@ fn static_const_expr_bad_operand_recovers() {
 /// Pins that the gate admits the fold (filtered `INT32_LIT("-1")`, raw
 /// `Op("-")`) and parses it as the inner atomic expression with no errors.
 #[test]
-fn static_const_expr_negative_literal_green_shape() {
+fn static_const_expr_negative_literal_tree_shape() {
     use crate::syntax::StaticConstExprType;
     let source = "(x : Foo<const -1>)\n";
     let parse = parse(source);
@@ -275,7 +275,7 @@ fn unspaced_sign_after_angle_is_not_a_static_arg() {
 /// Pins that the type-start gate admits the fold (raw cursor `Op("-")`,
 /// filtered `INT32_LIT("-1")`) and the literal carries the sign.
 #[test]
-fn static_const_negative_green_shape() {
+fn static_const_negative_tree_shape() {
     use crate::syntax::StaticConstType;
     let source = "(x : -1)\n";
     let parse = parse(source);
@@ -292,7 +292,7 @@ fn static_const_negative_green_shape() {
 /// (no leading `Type`), then `Type(LongIdent s)`. Pins the leading-slash
 /// measure form.
 #[test]
-fn leading_slash_measure_green_shape() {
+fn leading_slash_measure_tree_shape() {
     use crate::syntax::{TupleSegment, TupleType};
     let source = "(x : float</s>)\n";
     let parse = parse(source);
@@ -357,7 +357,7 @@ fn static_arg_gate_boundaries_recover() {
 /// (the paren-inner gate reaches `parse_type`). Pins the `Paren > Tuple` with a
 /// leading `Slash` segment.
 #[test]
-fn paren_leading_slash_green_shape() {
+fn paren_leading_slash_tree_shape() {
     use crate::syntax::{TupleSegment, TupleType};
     let source = "(x : (/s))\n";
     let parse = parse(source);

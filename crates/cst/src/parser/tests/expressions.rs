@@ -651,7 +651,7 @@ IMPL_FILE@0..2
 }
 
 /// A backticked identifier `` ``foo bar`` `` is also `SynExpr.Ident`. The
-/// green tree preserves the backticks (lossless); the FCS-side `idText`
+/// tree preserves the backticks (lossless); the FCS-side `idText`
 /// strips them, so the differential normaliser must match. Pins that the
 /// `QuotedIdent` lexer token funnels into `IDENT_TOK` just like a plain
 /// `Ident`.
@@ -1785,11 +1785,11 @@ fn parenthesized_colon_in_brackets_is_ok() {
 }
 
 /// Object expression `{ new T with member … }` — the reported bug. Pins the
-/// green-tree shape: an `OBJ_EXPR` carrying the `NEW_EXPR` base call, the `with`,
+/// tree shape: an `OBJ_EXPR` carrying the `NEW_EXPR` base call, the `with`,
 /// and the member, with no errors. (The normalised shape is diffed against FCS
 /// in `parser_diff_obj_expr.rs`.)
 #[test]
-fn obj_expr_member_form_green_tree() {
+fn obj_expr_member_form_tree() {
     let source = "let x =\n    { new IDisposable with\n        member x.Dispose () = () }\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -1843,13 +1843,13 @@ fn new_in_brace_without_with_is_computation() {
     );
 }
 
-/// `a :: b` — the cons operator builds a dedicated `CONS_EXPR` green node
+/// `a :: b` — the cons operator builds a dedicated `CONS_EXPR` node
 /// `[<lhs>, COLON_COLON_TOK, <rhs>]` (lossless, mirroring the pattern-side
 /// `LIST_CONS_PAT`). The FCS-faithful App-of-Tuple projection is exercised by
-/// the differential tests in `tests/all/parser_diff_cons.rs`; here we pin the green
+/// the differential tests in `tests/all/parser_diff_cons.rs`; here we pin the tree
 /// shape.
 #[test]
-fn cons_expr_green_shape() {
+fn cons_expr_tree_shape() {
     let source = "let xs = a :: b\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -2869,7 +2869,7 @@ fn trailing_operand_before_closer_still_parses() {
 /// `STATIC_OPT_WHEN_CLAUSE` of `[WHEN_TOK, STATIC_OPT_CONDITION, EQUALS_TOK,
 /// <branch>]`. The condition subject is a reused `TYPAR_DECL`.
 #[test]
-fn static_optimization_green_shape() {
+fn static_optimization_tree_shape() {
     let source = "let inline f x =\n    g x\n    when 'T : int = h x\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -3075,7 +3075,7 @@ fn static_optimization_only_on_local_bindings() {
 /// recovered), DOT_TOK, INT32_LIT]`. FCS flags it library-only (FS0042); we mirror
 /// that single diagnostic over the whole expression while still building the tree.
 #[test]
-fn cons_field_get_green_shape() {
+fn cons_field_get_tree_shape() {
     let source = "let f c = c.( :: ).0\n";
     let parse = parse(source);
     assert_eq!(

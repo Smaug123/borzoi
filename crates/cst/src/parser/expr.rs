@@ -117,10 +117,8 @@ impl<'src> Parser<'src> {
     /// we keep the surface flat shape `[<main-expr>, STATIC_OPT_WHEN_CLAUSE+]`
     /// and reproduce the nesting in the normaliser.
     fn parse_static_optimization_clauses(&mut self, cp: Checkpoint) {
-        self.builder.start_node_at(
-            cp,
-            FSharpLang::kind_to_raw(SyntaxKind::STATIC_OPTIMIZATION_EXPR),
-        );
+        self.builder
+            .start_node_at(cp, SyntaxKind::STATIC_OPTIMIZATION_EXPR);
         while matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::When)), _))) {
             self.parse_static_optimization_clause();
         }
@@ -134,8 +132,7 @@ impl<'src> Parser<'src> {
     /// [`Self::parse_static_opt_condition`]s; the branch is a
     /// `typedSequentialExprBlock` (so a multi-statement / multi-line body works).
     fn parse_static_optimization_clause(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::STATIC_OPT_WHEN_CLAUSE));
+        self.builder.start_node(SyntaxKind::STATIC_OPT_WHEN_CLAUSE);
         self.bump_into(SyntaxKind::WHEN_TOK);
         self.parse_static_opt_condition();
         while matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::And)), _))) {
@@ -168,8 +165,7 @@ impl<'src> Parser<'src> {
     /// `WhenTyparTyconEqualsTycon`) or the bare `struct` (`'T struct`,
     /// `WhenTyparIsStruct`). Anything else is a clean recovery error.
     fn parse_static_opt_condition(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::STATIC_OPT_CONDITION));
+        self.builder.start_node(SyntaxKind::STATIC_OPT_CONDITION);
         self.parse_typar_decl(false);
         match self.peek() {
             Some((Ok(FilteredToken::Raw(Token::Colon)), _)) => {
@@ -322,8 +318,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _)),
         ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
     }
@@ -569,14 +564,12 @@ impl<'src> Parser<'src> {
                 self.peek(),
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
             ) {
-                self.builder
-                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.builder.token(SyntaxKind::ERROR, "");
                 self.pos += 1;
             }
         }
         if count > 1 {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::SEQUENTIAL_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::SEQUENTIAL_EXPR);
             self.builder.finish_node();
         }
         // `typedSequentialExpr: sequentialExpr COLON typ` (FCS `pars.fsy:4088`):
@@ -596,8 +589,7 @@ impl<'src> Parser<'src> {
         // entirely for a `sequentialExpr` position (`allow_typed = false`, the
         // list/array element path), where FCS has no annotation production.
         if allow_typed && count >= 1 && self.at_typed_annotation_colon() {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPED_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::TYPED_EXPR);
             self.bump_into(SyntaxKind::COLON_TOK);
             self.parse_type();
             self.builder.finish_node();
@@ -772,8 +764,7 @@ impl<'src> Parser<'src> {
             // SynLongIdent (consuming the operator). Source-order children
             // `[lhs, op]`, swapped back to FCS order by the typed-AST
             // accessors — identical to the Pratt infix path.
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::INFIX_APP_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::INFIX_APP_EXPR);
             self.emit_infix_op_as_long_ident();
             self.builder.finish_node();
             // Outer `App(isInfix=false, inner, rhs)`. The RHS is a full
@@ -795,8 +786,7 @@ impl<'src> Parser<'src> {
             // `(r := )..3`) the `:=` stays in the tree and a recovery error is
             // recorded instead, leaving the range to the enclosing frame (an
             // LSP parser sees half-typed input constantly).
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
             if self.peek_is_expr_start() && !self.at_swallowed_seq_closer() {
                 // Depth-guarded: `:=` is right-associative, so a chain
                 // (`a := a := …`) recurses through this RHS `parse_expr` *after*
@@ -856,8 +846,7 @@ impl<'src> Parser<'src> {
     /// `appExpr` LHS at `cp`. Behaviourally identical to the inline tail.
     fn continue_tuple_expr(&mut self, cp: Checkpoint) {
         if self.at_tuple_continuation() {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TUPLE_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::TUPLE_EXPR);
             while self.at_tuple_continuation() {
                 self.bump_into(SyntaxKind::COMMA_TOK);
                 // Multi-line layouts like `(\n  1,\n  2\n)` see LexFilter
@@ -954,8 +943,7 @@ impl<'src> Parser<'src> {
             } else if self.peek_starts_range_bound() {
                 self.parse_pratt_expr(0);
             }
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::INDEX_RANGE_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::INDEX_RANGE_EXPR);
             self.builder.finish_node();
         }
     }
@@ -995,8 +983,7 @@ impl<'src> Parser<'src> {
                 span,
             });
         }
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::INDEX_RANGE_EXPR));
+        self.builder.start_node_at(cp, SyntaxKind::INDEX_RANGE_EXPR);
         self.builder.finish_node();
     }
 
@@ -1175,16 +1162,14 @@ impl<'src> Parser<'src> {
                 // Inner `App(NonAtomic, isInfix=true, op, lhs)`. Children in
                 // source order: lhs (already emitted between cp and now) +
                 // the op wrapped as a single-segment SynLongIdent.
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::INFIX_APP_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::INFIX_APP_EXPR);
                 self.emit_infix_op_as_long_ident();
                 self.builder.finish_node();
 
                 // Outer `App(NonAtomic, isInfix=false, inner, rhs)`. Children
                 // in source order: the just-closed INFIX_APP_EXPR + the
                 // RHS parsed at the operator's right-binding-power.
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
                 self.parse_pratt_expr(rbp);
                 self.builder.finish_node();
                 built_continuation = true;
@@ -1200,8 +1185,7 @@ impl<'src> Parser<'src> {
                 if lbp < min_bp {
                     break;
                 }
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::CONS_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::CONS_EXPR);
                 self.bump_into(SyntaxKind::COLON_COLON_TOK);
                 // The RHS exists (gated by `peek_cons_continuation`'s
                 // RHS-must-exist check), so recurse at the cons rbp.
@@ -1219,8 +1203,7 @@ impl<'src> Parser<'src> {
                 if lbp < min_bp {
                     break;
                 }
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(node_kind));
+                self.builder.start_node_at(cp, node_kind);
                 self.bump_into(op_tok);
                 self.parse_type();
                 self.builder.finish_node();
@@ -1239,8 +1222,7 @@ impl<'src> Parser<'src> {
                 if lbp < min_bp {
                     break;
                 }
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::JOIN_IN_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::JOIN_IN_EXPR);
                 // The `in`'s end byte, captured before the operator is consumed,
                 // for the swallowed-closer probe below.
                 let in_end = self.peek().map(|(_, s)| s.end);
@@ -1344,8 +1326,7 @@ impl<'src> Parser<'src> {
             && !lhs_is_decl_construct
             && !self.at_swallowed_seq_closer()
         {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::ASSIGN_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::ASSIGN_EXPR);
             self.bump_into(SyntaxKind::LARROW_TOK);
             self.parse_assign_rhs();
             self.builder.finish_node();

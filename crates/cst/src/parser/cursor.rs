@@ -1,4 +1,4 @@
-//! Token-stream cursor and green-tree emission primitives: the low-level
+//! Token-stream cursor and tree emission primitives: the low-level
 //! lookahead/`peek`, raw-stream draining for losslessness, text emission, and
 //! the `bump_*` / `next_non_trivia_*` helpers the productions build on.
 
@@ -35,7 +35,7 @@ impl<'src> Parser<'src> {
     /// dropped.
     pub(super) fn restart(self, stop: usize) -> Self {
         // The tree being thrown away is too tall by construction, perhaps far
-        // too tall to drop by rowan's recursive free.
+        // taller than any tree a parse returns.
         self.builder.discard();
         Self {
             tree_height_stop: stop,
@@ -51,7 +51,7 @@ impl<'src> Parser<'src> {
             FileKind::Impl => SyntaxKind::IMPL_FILE,
             FileKind::Sig => SyntaxKind::SIG_FILE,
         };
-        self.builder.start_node(FSharpLang::kind_to_raw(root));
+        self.builder.start_node(root);
         self.trigger_depth_limit();
         self.builder.finish_node();
     }
@@ -139,14 +139,10 @@ impl<'src> Parser<'src> {
         // Emit every remaining source byte as a single ERROR leaf so
         // `text(tree) == source` still holds, then advance both cursors to the
         // end so no production loop can make further progress.
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ERROR));
+        self.builder.start_node(SyntaxKind::ERROR);
         let start = self.raw_consumed_end;
         if start < self.source.len() {
-            self.builder.token(
-                FSharpLang::kind_to_raw(SyntaxKind::ERROR),
-                &self.source[start..],
-            );
+            self.builder.token(SyntaxKind::ERROR, &self.source[start..]);
             self.raw_consumed_end = self.source.len();
         }
         self.builder.finish_node();
@@ -159,7 +155,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Drain raw tokens whose span ends at-or-before `up_to`, emitting each
-    /// into the green tree. Active trivia and the directive / inactive-code
+    /// into the tree. Active trivia and the directive / inactive-code
     /// markers go in at their natural kind; a real token LexFilter rewrote to
     /// a `Virtual` (so the productions never see it) becomes ERROR for
     /// lossless text *and* a `ParseError`. An active lex failure
@@ -213,7 +209,7 @@ impl<'src> Parser<'src> {
         }
     }
 
-    /// Emit a green-tree token whose text is the source slice `span`, clamped
+    /// Emit a token whose text is the source slice `span`, clamped
     /// at `raw_consumed_end` so the overlapping portion of an FCS-faithful
     /// split (see `raw_consumed_end` doc) isn't re-emitted.
     pub(super) fn emit_text(&mut self, kind: SyntaxKind, span: Range<usize>) {
@@ -224,10 +220,10 @@ impl<'src> Parser<'src> {
             &self.source[text_start..span.end]
         };
         self.raw_consumed_end = self.raw_consumed_end.max(span.end);
-        self.builder.token(FSharpLang::kind_to_raw(kind), text);
+        self.builder.token(kind, text);
     }
 
-    /// Consume one filtered-stream entry, emitting a green-tree token whose
+    /// Consume one filtered-stream entry, emitting a token whose
     /// kind is supplied by the caller. Drains any preceding raw trivia
     /// first.
     ///
@@ -243,7 +239,7 @@ impl<'src> Parser<'src> {
     ///   `raw.end <= filtered.end`.
     /// * **Virtual** (LexFilter insertion carrying the *next real token's*
     ///   span, see `Filter::insert_token`). No raw token is consumed; the
-    ///   virtual lands as a zero-width green-tree token so its bytes
+    ///   virtual lands as a zero-width token so its bytes
     ///   aren't double-counted when the next Raw filtered token follows.
     ///
     /// A virtual may only be stamped [`SyntaxKind::ERROR`] or its own marker
@@ -322,7 +318,7 @@ impl<'src> Parser<'src> {
             }
         }
         if is_virtual {
-            self.builder.token(FSharpLang::kind_to_raw(kind), "");
+            self.builder.token(kind, "");
         } else {
             self.emit_text(kind, span);
         }
@@ -355,8 +351,7 @@ impl<'src> Parser<'src> {
             message: message.to_string(),
             span,
         });
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ERROR));
+        self.builder.start_node(SyntaxKind::ERROR);
         self.builder.finish_node();
     }
 
@@ -723,7 +718,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Drain raw trivia, then emit the next non-trivia raw token (expected
-    /// to be `Token::RParen`) directly into the green tree under the given
+    /// to be `Token::RParen`) directly into the tree under the given
     /// syntax kind, advancing `raw_pos` past it.
     ///
     /// `RParen` is "swallowed" by our lexfilter (it never reaches the
@@ -1010,9 +1005,7 @@ mod tests {
                 (Ok(FilteredToken::Raw(Token::Ident("a"))), 0..1),
             ],
         );
-        parser
-            .builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IMPL_FILE));
+        parser.builder.start_node(SyntaxKind::IMPL_FILE);
         parser
     }
 
@@ -1030,7 +1023,7 @@ mod tests {
         parser.bump_into(SyntaxKind::IDENT_TOK);
         parser.bump_into(SyntaxKind::IDENT_TOK);
         parser.builder.finish_node();
-        let root = SyntaxNode::new_root(parser.builder.finish());
+        let root = parser.builder.finish();
         let kinds: Vec<_> = root
             .children_with_tokens()
             .map(|t| (t.kind(), t.to_string()))

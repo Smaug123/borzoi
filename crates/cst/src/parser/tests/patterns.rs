@@ -2,7 +2,7 @@ use super::super::*;
 use super::*;
 
 /// Phase 5 Gap A — `let x as y = w`: minimal top-level `as`-pattern.
-/// Asserts the green shape `AS_PAT > [NAMED_PAT, AS_TOK, NAMED_PAT]`.
+/// Asserts the tree shape `AS_PAT > [NAMED_PAT, AS_TOK, NAMED_PAT]`.
 #[test]
 fn as_pat_top_level_minimal() {
     let source = "let x as y = w\n";
@@ -769,7 +769,7 @@ fn record_pat_via_accessors() {
     );
 }
 
-/// Phase 6.5 — full green-tree shape pin for `let { X = a } = r`. The
+/// Phase 6.5 — full tree shape pin for `let { X = a } = r`. The
 /// `RECORD_PAT` wraps `LBRACE_TOK`, one `RECORD_PAT_FIELD` (`LONG_IDENT`
 /// name, `EQUALS_TOK`, value `NAMED_PAT`), and the reclaimed `RBRACE_TOK`.
 #[test]
@@ -875,7 +875,7 @@ fn isinst_pat_via_accessors() {
     assert_eq!(ty.syntax().text().to_string().trim(), "int");
 }
 
-/// Phase 6.6 — full green-tree shape pin for `let (:? int) = x`. The
+/// Phase 6.6 — full tree shape pin for `let (:? int) = x`. The
 /// `PAREN_PAT` wraps `LPAREN_TOK`, the `IS_INST_PAT` (`COLON_QMARK_TOK`
 /// + `LONG_IDENT_TYPE`), and the reclaimed `RPAREN_TOK`.
 #[test]
@@ -961,7 +961,7 @@ fn optional_val_pat_via_accessors() {
     assert_eq!(ident.text(), "x");
 }
 
-/// Full green-tree shape pin for `let f (?x) = x`. The `OPTIONAL_VAL_PAT`
+/// Full tree shape pin for `let f (?x) = x`. The `OPTIONAL_VAL_PAT`
 /// holds the `QMARK_TOK` sigil and the named `IDENT_TOK`, nested under the
 /// `PAREN_PAT` argument of the function-form binding head.
 #[test]
@@ -1256,7 +1256,7 @@ fn cons_pat_via_accessors() {
 }
 
 /// Phase 6.7 — `let a :: b :: c = z`: right-associativity is reflected in
-/// the green tree — the outer `LIST_CONS_PAT`'s `rhs` is itself a
+/// the tree — the outer `LIST_CONS_PAT`'s `rhs` is itself a
 /// `LIST_CONS_PAT` (`ListCons(a, ListCons(b, c))`), not left-nested.
 #[test]
 fn cons_pat_right_assoc_shape() {
@@ -1281,7 +1281,7 @@ fn cons_pat_right_assoc_shape() {
     assert!(matches!(inner.rhs(), Some(crate::syntax::Pat::Named(_))));
 }
 
-/// Phase 6.7 — full green-tree shape pin for `let h :: t = z`. The
+/// Phase 6.7 — full tree shape pin for `let h :: t = z`. The
 /// `LIST_CONS_PAT` wraps the head `NAMED_PAT`, `COLON_COLON_TOK`, and the
 /// tail `NAMED_PAT`.
 #[test]
@@ -1444,7 +1444,7 @@ fn ands_pat_flat_three() {
     );
 }
 
-/// Phase 6.8 — full green-tree shape pin for `let a & b = z`. The `ANDS_PAT`
+/// Phase 6.8 — full tree shape pin for `let a & b = z`. The `ANDS_PAT`
 /// wraps the two operand `NAMED_PAT`s with the `AMP_TOK` between them.
 #[test]
 fn ands_pat_tree_shape() {
@@ -1527,7 +1527,7 @@ fn or_pat_via_accessors() {
     );
 }
 
-/// Phase 6.9 — `let A | B | C = z`: left-associativity in the green tree — the
+/// Phase 6.9 — `let A | B | C = z`: left-associativity in the tree — the
 /// outer `OR_PAT`'s `lhs` is itself an `OR_PAT` (`Or(Or(A,B), C)`), not
 /// right-nested.
 #[test]
@@ -1558,7 +1558,7 @@ fn or_pat_left_assoc_shape() {
     ));
 }
 
-/// Phase 6.9 — full green-tree shape pin for `let A | B = z`. The `OR_PAT`
+/// Phase 6.9 — full tree shape pin for `let A | B = z`. The `OR_PAT`
 /// wraps the two branch `LONG_IDENT_PAT`s with the `BAR_TOK` between them.
 #[test]
 fn or_pat_tree_shape() {
@@ -1702,10 +1702,10 @@ fn list_pat_offside_separated() {
 
 /// Phase 10.6 — the single paren-pattern argument of a function-form head:
 /// `let f ([<Foo>] x) = w` reaches `LONG_IDENT_PAT > [LONG_IDENT, PAREN_PAT >
-/// ATTRIB_PAT > [ATTRIBUTE_LIST, NAMED_PAT]]`. Pins the green shape and the
+/// ATTRIB_PAT > [ATTRIBUTE_LIST, NAMED_PAT]]`. Pins the tree shape and the
 /// facade accessors (`AttribPat::pat()` / `attributes()`).
 #[test]
-fn attrib_pat_green_shape() {
+fn attrib_pat_tree_shape() {
     let source = "let f ([<Foo>] x) = w\n";
     let parse = parse(source);
     assert!(
@@ -2026,7 +2026,7 @@ fn tuple_element_access_before_non_pathop_errors_like_fcs() {
 
 /// Active-pattern definition head with a curried arg — `let (|Foo|Bar|) x = x`.
 /// FCS folds the name into a single-segment `SynPat.LongIdent`; we mirror that
-/// as `LONG_IDENT_PAT > [ACTIVE_PAT_NAME, NAMED_PAT]`. Pins the green shape,
+/// as `LONG_IDENT_PAT > [ACTIVE_PAT_NAME, NAMED_PAT]`. Pins the tree shape,
 /// the reconstructed case list, and losslessness (every `(`/`|`/`)` kept).
 #[test]
 fn active_pat_name_function_form_tree_shape() {
@@ -2146,7 +2146,7 @@ fn active_pat_name_range_excludes_parens() {
 /// (`SynPat.LongIdent(["global"; …])`), the pattern twin of the `global`-rooted
 /// expression path. A dotted `global.` head is a `LONG_IDENT_PAT` whose first
 /// segment text is the reused keyword `global`. Cross-checked against FCS in
-/// `tests/all/parser_diff_global_pat.rs`; this pins the local green shape.
+/// `tests/all/parser_diff_global_pat.rs`; this pins the local tree shape.
 #[test]
 fn global_rooted_pat_head_is_long_ident() {
     let source = "match x with\n| global.A.B -> 1\n| _ -> 2\n";

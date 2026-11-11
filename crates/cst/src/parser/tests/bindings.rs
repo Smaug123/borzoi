@@ -251,7 +251,7 @@ fn use_x_eq_int_does_not_panic() {
 /// now gathers the offside block through [`Parser::parse_seq_block_body`],
 /// so the two statements wrap in a single `SEQUENTIAL_EXPR`. No errors, the
 /// lossless invariant holds (every source byte still lands somewhere in the
-/// green tree), and `2` does not escape as a sibling `EXPR_DECL`.
+/// tree), and `2` does not escape as a sibling `EXPR_DECL`.
 #[test]
 fn let_binding_offside_rhs_keeps_trailing_inside() {
     let source = "let x =\n    1\n    2\n";
@@ -722,7 +722,7 @@ fn let_binding_mutable_inline_records_error() {
         panic!("expected ModuleDecl::Let")
     };
     let binding = let_decl.bindings().next().expect("binding");
-    // Both flags survive — the green tree is lossless and the typed-AST
+    // Both flags survive — the tree is lossless and the typed-AST
     // projector reads token presence, not order.
     assert!(binding.is_mutable());
     assert!(binding.is_inline());
@@ -1525,14 +1525,14 @@ fn let_binding_ternary_tuple_value_head() {
 }
 
 /// Phase 5.M.1 — `match x with A -> 1`: the minimal single-clause
-/// form (no leading `|`, no `when` guard). Pins the full green shape:
+/// form (no leading `|`, no `when` guard). Pins the full tree shape:
 /// `MATCH_EXPR > [MATCH_TOK, <scrutinee>, WITH_TOK, MATCH_CLAUSE >
 /// [<pat>, RARROW_TOK, <result>, ε]]`. The two zero-width `ERROR`
 /// leaves are the drained `Virtual::RightBlockEnd` (clause SeqBlock
 /// close) and `Virtual::End` (`CtxtMatchClauses` close). A bare
 /// capitalised clause head (`A`) is a ctor reference, so it parses as
 /// `LONG_IDENT_PAT`, mirroring FCS's `SynPat.LongIdent`.
-/// Phase 10.5 — full green-shape pin for a bare attribute carried on a
+/// Phase 10.5 — full tree-shape pin for a bare attribute carried on a
 /// `let` binding. The `[< … >]` list is a *leading child* of the
 /// `LET_DECL` (before `LET_TOK`, matching source order); the attribute
 /// holds only its `LONG_IDENT` path (the `ArgExpr` is the normaliser's
@@ -1576,7 +1576,7 @@ IMPL_FILE@0..18
     assert_eq!(debug_tree(&parse.root), expected);
 }
 
-/// Phase 10.5a — green-shape pin for two `;`-separated attributes in one
+/// Phase 10.5a — tree-shape pin for two `;`-separated attributes in one
 /// `[<A; B>]` list. Both `ATTRIBUTE` nodes sit inside a single `ATTRIBUTE_LIST`,
 /// separated by a `SEMI_TOK`, distinct from the two-list `[<A>] [<B>]` form. The
 /// binding parses cleanly with no attribute-related errors.
@@ -1623,7 +1623,7 @@ IMPL_FILE@0..19
     assert_eq!(debug_tree(&parse.root), expected);
 }
 
-/// Phase 10.5b — green-shape pin for an attribute *argument*. `[<Foo(1, 2)>]`
+/// Phase 10.5b — tree-shape pin for an attribute *argument*. `[<Foo(1, 2)>]`
 /// is `ATTRIBUTE > [LONG_IDENT, <HPP-marker ERROR>, PAREN_EXPR]`: the adjacent
 /// `(` is preceded by LexFilter's `HighPrecedenceParenApp` marker, consumed as
 /// a zero-width `ERROR`, then the parenthesised tuple is the argument atom. The
@@ -1677,7 +1677,7 @@ IMPL_FILE@0..24
     assert_eq!(debug_tree(&parse.root), expected);
 }
 
-/// Phase 10.5c — green-shape pin for an attribute *target*. `[<assembly: Foo>]`
+/// Phase 10.5c — tree-shape pin for an attribute *target*. `[<assembly: Foo>]`
 /// is `ATTRIBUTE > [ATTRIBUTE_TARGET > [IDENT_TOK, COLON_TOK], LONG_IDENT]`: the
 /// `assembly:` prefix precedes the `Foo` path. Parses cleanly with no errors.
 #[test]
@@ -1727,7 +1727,7 @@ IMPL_FILE@0..28
 /// `atomicExprAfterType` through `constant` → `sourceIdentifier` (verified
 /// `ParseHadErrors: false`, `ArgExpr = Const(SourceIdentifier)`), so they are a
 /// valid attribute argument — distinct from a bare ident (`[<Foo Bar>]`, which
-/// is an FCS parse error). This pins the exact green-tree shape
+/// is an FCS parse error). This pins the exact tree shape
 /// (`SOURCE_IDENTIFIER_LIT`); the cross-check against FCS lives in the
 /// differential `diff_ast_attribute_source_identifier_arg` (the normaliser now
 /// models the `SourceIdentifier` const).
@@ -2213,7 +2213,7 @@ IMPL_FILE@0..17
 /// `LONG_IDENT_PAT` whose `LONG_IDENT` head carries the operator token as
 /// `[LPAREN_TOK, IDENT_TOK("+"), RPAREN_TOK]` (the pattern analogue of the
 /// expression-side operator-value), followed by the swept curried arg `a`.
-/// Pins the green shape and the lossless round-trip; the FCS-equivalence
+/// Pins the tree shape and the lossless round-trip; the FCS-equivalence
 /// is covered by `diff_ast_let_operator_head_*`.
 #[test]
 fn let_binding_operator_head_applied() {

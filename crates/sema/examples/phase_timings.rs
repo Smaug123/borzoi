@@ -1,6 +1,8 @@
 //! Wall-clock phase timings of the analysis pipeline over a corpus: parse,
 //! two syntax-tree walks, `resolve_file` and `infer_file`, each file analysed
-//! on its own against the BCL.
+//! on its own against the BCL. Each phase prints its time, nanoseconds per
+//! source byte and throughput; the syntax tables' heap size prints per source
+//! byte too.
 //!
 //! A measurement, not a gate: shared machines make wall time noisy, so nothing
 //! asserts on it. Each phase reports the minimum over `PHASE_TIMINGS_REPS`
@@ -15,7 +17,7 @@
 //!
 //! * `BORZOI_CORPUS` (set by `nix develop`): the corpus root.
 //! * `PHASE_TIMINGS_SUBDIR` (default `src`): the subtree of it to time; the
-//!   compiler's own sources are large real files.
+//!   compiler's own sources are large real files. `.` times the whole corpus.
 //! * `PHASE_TIMINGS_FSHARP_CORE`: an `FSharp.Core.dll` (building
 //!   `tools/fcs-dump` puts one beside it). `System.Runtime.dll` and
 //!   `netstandard.dll` come from the reference pack under `DOTNET_ROOT`.
@@ -51,7 +53,7 @@ fn main() {
     let env = bcl_env();
     let symbols = HashSet::new();
 
-    let parses = phase("parse", reps, || {
+    let parses = phase("parse", reps, bytes, || {
         files
             .iter()
             .map(|s| parse_with_symbols(s, &symbols))
@@ -62,11 +64,15 @@ fn main() {
         .iter()
         .map(|p| p.root.descendants_with_tokens().count())
         .sum();
-    println!("{nodes} nodes, {elements} nodes and tokens");
-    phase("walk: descendants_with_tokens", reps, || {
+    let table_bytes: usize = parses.iter().map(|p| p.root.table_heap_bytes()).sum();
+    println!(
+        "{nodes} nodes, {elements} nodes and tokens; syntax tables {:.1} bytes per source byte",
+        table_bytes as f64 / bytes as f64
+    );
+    phase("walk: descendants_with_tokens", reps, bytes, || {
         parses.iter().map(|p| preorder_walk(&p.root)).sum::<u64>()
     });
-    phase("walk: recursive children()", reps, || {
+    phase("walk: recursive children()", reps, bytes, || {
         parses.iter().map(|p| children_walk(&p.root)).sum::<u64>()
     });
 
@@ -78,13 +84,13 @@ fn main() {
             (file, SyntaxRecovery::of(p))
         })
         .collect();
-    let resolved = phase("resolve_file", reps, || {
+    let resolved = phase("resolve_file", reps, bytes, || {
         impls
             .iter()
             .map(|(file, recovery)| resolve_file(file, &ProjectItems::default(), &env, recovery))
             .collect::<Vec<_>>()
     });
-    phase("infer_file", reps, || {
+    phase("infer_file", reps, bytes, || {
         impls
             .iter()
             .zip(&resolved)
@@ -93,9 +99,10 @@ fn main() {
     });
 }
 
-/// Run `f` `reps` times, print the fastest, and return the last result (so
-/// the work is not optimised away, and later phases can consume it).
-fn phase<T>(label: &str, reps: usize, mut f: impl FnMut() -> T) -> T {
+/// Run `f` `reps` times, print the fastest (as time, per byte of the
+/// `bytes` of source, and as throughput), and return the last result (so the
+/// work is not optimised away, and later phases can consume it).
+fn phase<T>(label: &str, reps: usize, bytes: usize, mut f: impl FnMut() -> T) -> T {
     let mut best = Duration::MAX;
     let mut last = None;
     for _ in 0..reps {
@@ -104,7 +111,13 @@ fn phase<T>(label: &str, reps: usize, mut f: impl FnMut() -> T) -> T {
         best = best.min(start.elapsed());
         last = Some(result);
     }
-    println!("{label:<32} {:>9.1} ms", best.as_secs_f64() * 1e3);
+    let secs = best.as_secs_f64();
+    println!(
+        "{label:<32} {:>9.1} ms {:>8.1} ns/byte {:>8.1} MB/s",
+        secs * 1e3,
+        secs * 1e9 / bytes as f64,
+        bytes as f64 / secs / 1e6
+    );
     last.expect("reps > 0")
 }
 

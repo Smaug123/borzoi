@@ -18,8 +18,12 @@
 //! subtree equality is [`SyntaxNode::structurally_eq`] rather than comparing
 //! green nodes.
 //!
-//! The parser still builds a rowan green tree, and [`SyntaxNode::new_root`]
-//! flattens it (`docs/flat-syntax-tree-plan.md`, Stage 2 removes that step).
+//! The parser writes the table directly through a [`Builder`]. Under the
+//! `rowan-reference` feature (on for this crate's own tests) the builder also
+//! drives rowan's `GreenNodeBuilder` with the same operations, and checks on
+//! [`Builder::finish`] that its table is exactly the one flattening that green
+//! tree gives; the reference differential then rebuilds rowan's red tree from
+//! the same green tree (`docs/flat-syntax-tree-plan.md`).
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -44,14 +48,13 @@ const _: () = {
     send_sync::<SyntaxText>();
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
     kind: SyntaxKind,
     is_token: bool,
     parent: u32,
-    next_sib: u32,
-    prev_sib: u32,
-    /// Exclusive end of this element's subtree in preorder ids.
+    /// Exclusive end of this element's subtree in preorder ids. Also the next
+    /// sibling, when that is still inside the parent's subtree.
     sub_end: u32,
     start: u32,
     end: u32,
@@ -72,17 +75,20 @@ struct Tree {
     child_offsets: Vec<u32>,
     /// The concatenated token text: the source, by losslessness.
     text: String,
-    /// The green tree flattened into `entries`, kept for
+    /// The green tree rowan's builder made from the same operations, for
     /// [`SyntaxNode::reference_green`] only.
+    #[cfg(feature = "rowan-reference")]
     green: rowan::GreenNode,
 }
 
 impl Tree {
+    /// The table of `green`, flattened in preorder: the reference the
+    /// [`Builder`]'s table is held to.
+    #[cfg(feature = "rowan-reference")]
     fn from_green(green: rowan::GreenNode) -> Tree {
         struct Frame<'a> {
             children: rowan::Children<'a>,
             id: u32,
-            prev: u32,
             idx: u32,
         }
         let mut entries = Vec::new();
@@ -91,8 +97,6 @@ impl Tree {
             kind: kind_of(green.kind()),
             is_token: false,
             parent: NONE,
-            next_sib: NONE,
-            prev_sib: NONE,
             sub_end: NONE,
             start: 0,
             end: NONE,
@@ -102,7 +106,6 @@ impl Tree {
         let mut stack = vec![Frame {
             children: green.children(),
             id: 0,
-            prev: NONE,
             idx: 0,
         }];
         while let Some(frame) = stack.last_mut() {
@@ -110,13 +113,8 @@ impl Tree {
                 Some(child) => {
                     let cid = entries.len() as u32;
                     let parent = frame.id;
-                    let prev = frame.prev;
                     let index = frame.idx;
-                    frame.prev = cid;
                     frame.idx += 1;
-                    if prev != NONE {
-                        entries[prev as usize].next_sib = cid;
-                    }
                     let start = text.len() as u32;
                     match child {
                         rowan::NodeOrToken::Token(t) => {
@@ -125,8 +123,6 @@ impl Tree {
                                 kind: kind_of(t.kind()),
                                 is_token: true,
                                 parent,
-                                next_sib: NONE,
-                                prev_sib: prev,
                                 sub_end: cid + 1,
                                 start,
                                 end: text.len() as u32,
@@ -138,8 +134,6 @@ impl Tree {
                                 kind: kind_of(n.kind()),
                                 is_token: false,
                                 parent,
-                                next_sib: NONE,
-                                prev_sib: prev,
                                 sub_end: NONE,
                                 start,
                                 end: NONE,
@@ -148,7 +142,6 @@ impl Tree {
                             stack.push(Frame {
                                 children: n.children(),
                                 id: cid,
-                                prev: NONE,
                                 idx: 0,
                             });
                         }
@@ -203,16 +196,38 @@ impl Tree {
         self.children_of(id).last().copied().unwrap_or(NONE)
     }
 
+    /// The next sibling: the end of this subtree, if the parent's subtree
+    /// goes on past it.
+    #[inline]
+    fn next_sib(&self, id: u32) -> u32 {
+        let e = self.e(id);
+        if e.parent != NONE && e.sub_end < self.e(e.parent).sub_end {
+            e.sub_end
+        } else {
+            NONE
+        }
+    }
+
+    #[inline]
+    fn prev_sib(&self, id: u32) -> u32 {
+        let e = self.e(id);
+        if e.parent == NONE || e.index == 0 {
+            NONE
+        } else {
+            self.children_of(e.parent)[e.index as usize - 1]
+        }
+    }
+
     fn next_node_from(&self, mut c: u32) -> u32 {
         while c != NONE && self.e(c).is_token {
-            c = self.e(c).next_sib;
+            c = self.next_sib(c);
         }
         c
     }
 
     fn prev_node_from(&self, mut c: u32) -> u32 {
         while c != NONE && self.e(c).is_token {
-            c = self.e(c).prev_sib;
+            c = self.prev_sib(c);
         }
         c
     }
@@ -260,8 +275,295 @@ fn child_index(entries: &[Entry]) -> (Vec<u32>, Vec<u32>) {
     (children, offsets)
 }
 
+#[cfg(feature = "rowan-reference")]
 fn kind_of(raw: rowan::SyntaxKind) -> SyntaxKind {
     SyntaxKind::from_raw(raw.0).expect("rowan SyntaxKind out of range")
+}
+
+#[cfg(feature = "rowan-reference")]
+fn raw_kind(kind: SyntaxKind) -> rowan::SyntaxKind {
+    rowan::SyntaxKind(kind as u16)
+}
+
+// ---- building --------------------------------------------------------------
+
+/// One finished element as the [`Builder`] records it, in postorder: an
+/// element is recorded when it finishes, so a node comes after its subtree.
+#[derive(Clone, Copy)]
+struct Finished {
+    kind: SyntaxKind,
+    is_token: bool,
+    /// Elements in its subtree, itself included.
+    size: u32,
+    start: u32,
+    end: u32,
+    /// The rest are postorder ids, set when the parent finishes.
+    parent: u32,
+    index: u32,
+}
+
+/// A position among the finished elements awaiting a parent, from
+/// [`Builder::checkpoint`]: the point [`Builder::start_node_at`] wraps from.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Checkpoint {
+    pending: usize,
+    #[cfg(feature = "rowan-reference")]
+    green: rowan::Checkpoint,
+}
+
+impl Checkpoint {
+    /// How many finished elements were awaiting a parent when it was taken.
+    pub(crate) fn pending_len(self) -> usize {
+        self.pending
+    }
+}
+
+/// Writes a [`Tree`] from the parser's operations, with rowan's
+/// `GreenNodeBuilder` interface: tokens, nodes opened and finished, and
+/// nodes opened around elements already finished
+/// ([`Builder::start_node_at`]).
+///
+/// That last operation is why the table is not written in preorder as it
+/// goes: a node may be opened after its first children are written. Instead
+/// each element is recorded in postorder when it finishes, and in postorder
+/// the subtrees of the elements awaiting a parent are always the contiguous
+/// tail of what is recorded, so wrapping some of them needs no movement at
+/// all. [`Builder::finish`] permutes the record into preorder in one pass.
+pub(crate) struct Builder {
+    post: Vec<Finished>,
+    text: String,
+    /// Postorder ids of the finished elements awaiting a parent, in order.
+    pending: Vec<u32>,
+    /// The open nodes, innermost last: kind, and the index into `pending` of
+    /// the first child.
+    open: Vec<(SyntaxKind, usize)>,
+    #[cfg(feature = "rowan-reference")]
+    green: rowan::GreenNodeBuilder<'static>,
+}
+
+impl Builder {
+    pub(crate) fn new() -> Builder {
+        Builder {
+            post: Vec::new(),
+            text: String::new(),
+            pending: Vec::new(),
+            open: Vec::new(),
+            #[cfg(feature = "rowan-reference")]
+            green: rowan::GreenNodeBuilder::new(),
+        }
+    }
+
+    pub(crate) fn token(&mut self, kind: SyntaxKind, text: &str) {
+        #[cfg(feature = "rowan-reference")]
+        self.green.token(raw_kind(kind), text);
+        let id = self.next_id();
+        let start = self.text_len();
+        self.text.push_str(text);
+        self.post.push(Finished {
+            kind,
+            is_token: true,
+            size: 1,
+            start,
+            end: self.text_len(),
+            parent: NONE,
+            index: 0,
+        });
+        self.pending.push(id);
+    }
+
+    pub(crate) fn start_node(&mut self, kind: SyntaxKind) {
+        #[cfg(feature = "rowan-reference")]
+        self.green.start_node(raw_kind(kind));
+        self.open.push((kind, self.pending.len()));
+    }
+
+    pub(crate) fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            pending: self.pending.len(),
+            #[cfg(feature = "rowan-reference")]
+            green: self.green.checkpoint(),
+        }
+    }
+
+    /// Open a node whose children are the elements finished since
+    /// `checkpoint`. As rowan's, the checkpoint must lie within the innermost
+    /// open node, and none of those elements may have been given a parent
+    /// since.
+    pub(crate) fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
+        #[cfg(feature = "rowan-reference")]
+        self.green.start_node_at(checkpoint.green, raw_kind(kind));
+        let cp = checkpoint.pending;
+        assert!(
+            cp <= self.pending.len(),
+            "checkpoint no longer valid, was finish_node called early?"
+        );
+        if let Some(&(_, first)) = self.open.last() {
+            assert!(
+                cp >= first,
+                "checkpoint no longer valid, was an unmatched start_node_at called?"
+            );
+        }
+        self.open.push((kind, cp));
+    }
+
+    pub(crate) fn finish_node(&mut self) {
+        #[cfg(feature = "rowan-reference")]
+        self.green.finish_node();
+        let (kind, first) = self.open.pop().expect("finish_node with no open node");
+        let id = self.next_id();
+        let children = &self.pending[first..];
+        let (size, start) = match children.first() {
+            Some(&c) => {
+                let subtree_start = c + 1 - self.post[c as usize].size;
+                (
+                    id - subtree_start + 1,
+                    self.post[subtree_start as usize].start,
+                )
+            }
+            None => (1, self.text_len()),
+        };
+        for (k, &c) in children.iter().enumerate() {
+            let child = &mut self.post[c as usize];
+            child.parent = id;
+            child.index = k as u32;
+        }
+        self.pending.truncate(first);
+        self.post.push(Finished {
+            kind,
+            is_token: false,
+            size,
+            start,
+            end: self.text_len(),
+            parent: NONE,
+            index: 0,
+        });
+        self.pending.push(id);
+    }
+
+    /// The finished tree's root. Exactly one node, and nothing open, must
+    /// remain.
+    pub(crate) fn finish(self) -> SyntaxNode {
+        assert!(self.open.is_empty(), "finish with a node still open");
+        assert_eq!(self.pending.len(), 1, "finish without exactly one root");
+        let n = self.post.len();
+        let root = &self.post[n - 1];
+        assert!(!root.is_token, "the root is a token");
+        // An element's preorder id is its postorder subtree start plus its
+        // depth: what precedes its subtree in preorder is what precedes it in
+        // postorder, plus its ancestors. A parent follows its children in
+        // postorder, so a backward pass sees each parent's depth first.
+        let mut pre = vec![0u32; n];
+        for i in (0..n - 1).rev() {
+            pre[i] = pre[self.post[i].parent as usize] + 1;
+        }
+        for (i, depth) in pre.iter_mut().enumerate() {
+            *depth += i as u32 + 1 - self.post[i].size;
+        }
+        let map = |post_id: u32| {
+            if post_id == NONE {
+                NONE
+            } else {
+                pre[post_id as usize]
+            }
+        };
+        let mut entries = vec![
+            Entry {
+                kind: SyntaxKind::ERROR,
+                is_token: false,
+                parent: NONE,
+                sub_end: NONE,
+                start: 0,
+                end: 0,
+                index: 0,
+            };
+            n
+        ];
+        for (f, &id) in self.post.iter().zip(&pre) {
+            entries[id as usize] = Entry {
+                kind: f.kind,
+                is_token: f.is_token,
+                parent: map(f.parent),
+                sub_end: id + f.size,
+                start: f.start,
+                end: f.end,
+                index: f.index,
+            };
+        }
+        let (children, child_offsets) = child_index(&entries);
+        let tree = Tree {
+            entries,
+            children,
+            child_offsets,
+            text: self.text,
+            #[cfg(feature = "rowan-reference")]
+            green: self.green.finish(),
+        };
+        #[cfg(feature = "rowan-reference")]
+        tree.assert_matches_reference();
+        SyntaxNode {
+            tree: Shared::new(tree),
+            id: 0,
+        }
+    }
+
+    /// Drop a finished tree unbuilt. The table frees without recursing
+    /// however tall it is; so does the reference green tree, which rowan would
+    /// otherwise free one stack frame per level.
+    pub(crate) fn discard(self) {
+        debug_assert!(self.open.is_empty(), "discarding an unfinished tree");
+        #[cfg(feature = "rowan-reference")]
+        {
+            let root = self.green.finish();
+            let mut parents_first = Vec::new();
+            let mut stack = vec![root.clone()];
+            while let Some(node) = stack.pop() {
+                for child in node.children() {
+                    if let rowan::NodeOrToken::Node(child) = child {
+                        stack.push(child.to_owned());
+                    }
+                }
+                parents_first.push(node);
+            }
+            drop(root);
+            for node in parents_first {
+                drop(node);
+            }
+        }
+    }
+
+    fn next_id(&self) -> u32 {
+        u32::try_from(self.post.len()).expect("a tree has fewer than 2^32 elements")
+    }
+
+    fn text_len(&self) -> u32 {
+        u32::try_from(self.text.len()).expect("a source is shorter than 4 GiB")
+    }
+}
+
+#[cfg(feature = "rowan-reference")]
+impl Tree {
+    /// Panic, naming the first difference, unless this table is exactly the
+    /// one [`Tree::from_green`] makes from the reference green tree.
+    fn assert_matches_reference(&self) {
+        let reference = Tree::from_green(self.green.clone());
+        assert_eq!(self.text, reference.text, "built text differs from rowan's");
+        assert_eq!(
+            self.entries.len(),
+            reference.entries.len(),
+            "built table has a different element count from rowan's"
+        );
+        if let Some(id) = (0..self.entries.len()).find(|&i| self.entries[i] != reference.entries[i])
+        {
+            panic!(
+                "built table differs from rowan's at element {id}: built {:?}, rowan {:?}",
+                self.entries[id], reference.entries[id]
+            );
+        }
+        assert!(
+            self.children == reference.children && self.child_offsets == reference.child_offsets,
+            "built child index differs from rowan's"
+        );
+    }
 }
 
 /// A subtree's shape, kinds and text: see [`SyntaxNode::structure`].
@@ -390,14 +692,6 @@ identity!(SyntaxNode);
 identity!(SyntaxToken);
 
 impl SyntaxNode {
-    /// The root of the tree flattened from `green`.
-    pub fn new_root(green: rowan::GreenNode) -> SyntaxNode {
-        SyntaxNode {
-            tree: Shared::new(Tree::from_green(green)),
-            id: 0,
-        }
-    }
-
     #[inline]
     pub fn kind(&self) -> SyntaxKind {
         self.tree.e(self.id).kind
@@ -419,13 +713,25 @@ impl SyntaxNode {
         }
     }
 
-    /// The green tree this table was flattened from, for the root only: the
-    /// rowan reference differential (`flat_tree_reference`) rebuilds rowan's
-    /// red tree from it. Not an API: compare subtrees with
-    /// [`SyntaxNode::structurally_eq`] or [`SyntaxNode::structure`].
+    /// The green tree rowan's builder made from the parser's operations, for
+    /// the root only: the rowan reference differential
+    /// (`flat_tree_reference`) rebuilds rowan's red tree from it. Not an API:
+    /// compare subtrees with [`SyntaxNode::structurally_eq`] or
+    /// [`SyntaxNode::structure`].
+    #[cfg(feature = "rowan-reference")]
     #[doc(hidden)]
     pub fn reference_green(&self) -> Option<&rowan::GreenNodeData> {
         (self.id == 0).then(|| &*self.tree.green)
+    }
+
+    /// The heap bytes of the whole table this node belongs to, its text
+    /// included: a measurement for `borzoi-sema`'s `phase_timings` example.
+    #[doc(hidden)]
+    pub fn table_heap_bytes(&self) -> usize {
+        let t = &*self.tree;
+        t.entries.capacity() * size_of::<Entry>()
+            + (t.children.capacity() + t.child_offsets.capacity()) * size_of::<u32>()
+            + t.text.capacity()
     }
 
     /// Whether the two subtrees have the same shape, kinds and token text,
@@ -518,21 +824,21 @@ impl SyntaxNode {
     }
 
     pub fn next_sibling(&self) -> Option<SyntaxNode> {
-        let c = self.tree.e(self.id).next_sib;
+        let c = self.tree.next_sib(self.id);
         opt_node(&self.tree, self.tree.next_node_from(c))
     }
 
     pub fn prev_sibling(&self) -> Option<SyntaxNode> {
-        let c = self.tree.e(self.id).prev_sib;
+        let c = self.tree.prev_sib(self.id);
         opt_node(&self.tree, self.tree.prev_node_from(c))
     }
 
     pub fn next_sibling_or_token(&self) -> Option<SyntaxElement> {
-        opt_element(&self.tree, self.tree.e(self.id).next_sib)
+        opt_element(&self.tree, self.tree.next_sib(self.id))
     }
 
     pub fn prev_sibling_or_token(&self) -> Option<SyntaxElement> {
-        opt_element(&self.tree, self.tree.e(self.id).prev_sib)
+        opt_element(&self.tree, self.tree.prev_sib(self.id))
     }
 
     pub fn first_token(&self) -> Option<SyntaxToken> {
@@ -608,7 +914,7 @@ impl SyntaxNode {
         let first_touching = |id: u32| -> u32 {
             let mut c = t.first_child_or_token(id);
             while c != NONE && !touching(c) {
-                c = t.e(c).next_sib;
+                c = t.next_sib(c);
             }
             c
         };
@@ -622,9 +928,9 @@ impl SyntaxNode {
         };
         let left = first_touching(self.id);
         assert!(left != NONE);
-        let mut right = t.e(left).next_sib;
+        let mut right = t.next_sib(left);
         while right != NONE && !touching(right) {
-            right = t.e(right).next_sib;
+            right = t.next_sib(right);
         }
         let tok = |id| SyntaxToken {
             tree: t.clone(),
@@ -719,11 +1025,11 @@ impl SyntaxToken {
     }
 
     pub fn next_sibling_or_token(&self) -> Option<SyntaxElement> {
-        opt_element(&self.tree, self.tree.e(self.id).next_sib)
+        opt_element(&self.tree, self.tree.next_sib(self.id))
     }
 
     pub fn prev_sibling_or_token(&self) -> Option<SyntaxElement> {
-        opt_element(&self.tree, self.tree.e(self.id).prev_sib)
+        opt_element(&self.tree, self.tree.prev_sib(self.id))
     }
 
     pub fn siblings_with_tokens(
@@ -905,7 +1211,7 @@ impl Iterator for SyntaxNodeChildren {
             self.next = NONE;
             return None;
         }
-        self.next = self.tree.e(c).next_sib;
+        self.next = self.tree.next_sib(c);
         Some(SyntaxNode {
             tree: self.tree.clone(),
             id: c,
@@ -926,7 +1232,7 @@ impl Iterator for SyntaxElementChildren {
         if c == NONE {
             return None;
         }
-        self.next = self.tree.e(c).next_sib;
+        self.next = self.tree.next_sib(c);
         Some(element(&self.tree, c))
     }
 }

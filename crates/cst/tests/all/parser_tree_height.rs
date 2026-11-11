@@ -1,4 +1,4 @@
-//! Every parse yields a tree shallow enough to drop on a 2 MiB stack.
+//! Every parse yields a tree no taller than [`MAX_TREE_HEIGHT`].
 //!
 //! [`parser_depth_limit`](super::parser_depth_limit) bounds the parser's own
 //! *recursion*. That bound does not bound the *tree*: the parser builds many
@@ -6,9 +6,9 @@
 //! `f a a a`, a left-associative operator chain `a + a + a`, a method chain
 //! `a.M().M()`, a postfix type application `int list list`), wrapping what it
 //! has built so far under a fresh node at each step. Such a chain is as deep as
-//! it is long, and everything that walks a rowan tree recursively — rowan's own
-//! green-node `Drop` first of all — recurses once per level. A stack overflow
-//! aborts the process; `catch_unwind` cannot catch it.
+//! it is long, and everything that walks the tree recursively (sema's
+//! resolution and inference) recurses once per level. A stack overflow aborts
+//! the process; `catch_unwind` cannot catch it.
 //!
 //! So the bound is drawn on the tree the builder produces, not on any one
 //! production: no parse returns a tree taller than [`MAX_TREE_HEIGHT`]; the
@@ -20,7 +20,9 @@
 //! past the bound, parsed on an 8 MiB stack (the one its recursion bound is
 //! calibrated for, and a quarter of the stack the LSP parses on), and
 //! its tree dropped on a thread with an explicit 2 MiB stack (a Rust thread's
-//! default, and a tokio worker's). A long input exercises more than the tree:
+//! default, and a tokio worker's): the syntax table frees without recursing,
+//! but the rowan green tree this crate's tests keep beside it
+//! (`rowan-reference`) frees one stack frame per level. A long input exercises more than the tree:
 //! it also turns any recursion the parser or the lex filter does once per
 //! repeat into an abort, and anything quadratic in the repeat count into a
 //! test that does not finish.
@@ -71,8 +73,9 @@ fn parse_kind(kind: Kind, src: &str) -> Parse {
 /// Parse and measure `src` on an 8 MiB thread
 /// (the stack the parser's recursion bound is calibrated for;
 /// see `parser_depth_limit`), then drop the tree on a thread with a 2 MiB
-/// stack. The drop is the point: rowan frees a green tree recursively, so a
-/// tree too tall for the stack aborts the process there.
+/// stack. Under `rowan-reference` the drop frees the reference green tree too,
+/// which rowan does recursively, so a tree too tall for the stack aborts the
+/// process there.
 fn parse_and_drop(kind: Kind, src: String) -> Probe {
     let (probe, tree) = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)

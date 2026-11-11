@@ -318,8 +318,7 @@ impl<'src> Parser<'src> {
     /// `closed_block` handling. The loop ends when the next position is not a
     /// member-block item (a body-close `OBLOCKEND`, or anything else).
     pub(super) fn parse_object_model_repr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::OBJECT_MODEL_REPR));
+        self.builder.start_node(SyntaxKind::OBJECT_MODEL_REPR);
         self.parse_member_block_items();
         self.builder.finish_node(); // OBJECT_MODEL_REPR
     }
@@ -366,8 +365,7 @@ impl<'src> Parser<'src> {
     /// is bumped as `END_TOK`; the trailing layout virtuals after it are left for
     /// the enclosing loop (elided, drained as strays — like other nested reprs).
     pub(super) fn parse_kind_marked_repr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::OBJECT_MODEL_REPR));
+        self.builder.start_node(SyntaxKind::OBJECT_MODEL_REPR);
         // The kind keyword → the marker token the facade keys the kind off.
         let kw = match self.peek() {
             Some((Ok(FilteredToken::Raw(Token::Class)), _)) => SyntaxKind::CLASS_TOK,
@@ -442,8 +440,7 @@ impl<'src> Parser<'src> {
     /// body-closing `OBLOCKEND` is left for the caller's `closed_block`
     /// handling, exactly like the abbreviation arm.
     pub(super) fn parse_delegate_repr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::DELEGATE_REPR));
+        self.builder.start_node(SyntaxKind::DELEGATE_REPR);
         // The `delegate` keyword.
         self.bump_into(SyntaxKind::DELEGATE_TOK);
         // `of` — required by the grammar (`DELEGATE OF topType`). Record a clean
@@ -515,8 +512,7 @@ impl<'src> Parser<'src> {
     /// expression form's [`Self::parse_il_instruction_string`] /
     /// [`Self::skip_inline_il_layout`].
     pub(super) fn parse_inline_il_repr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INLINE_IL_REPR));
+        self.builder.start_node(SyntaxKind::INLINE_IL_REPR);
         self.bump_into(SyntaxKind::LPAREN_TOK);
         // The opening `#` — guaranteed by `peek_is_inline_il_repr_start` to be
         // the next significant raw token, so it is a real filtered token here
@@ -690,10 +686,8 @@ impl<'src> Parser<'src> {
                                 .to_string(),
                             span,
                         });
-                        self.builder.start_node_at(
-                            cp,
-                            FSharpLang::kind_to_raw(SyntaxKind::MEMBER_LET_BINDINGS),
-                        );
+                        self.builder
+                            .start_node_at(cp, SyntaxKind::MEMBER_LET_BINDINGS);
                         self.builder.finish_node();
                         // No `= <expr>` RHS block was parsed; take the no-RHS-block
                         // terminator so the offside `OBLOCKSEP` before the trailing
@@ -747,8 +741,7 @@ impl<'src> Parser<'src> {
                             message: "expected `do` immediately after `static`".to_string(),
                             span,
                         });
-                        self.builder
-                            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEMBER_DO));
+                        self.builder.start_node_at(cp, SyntaxKind::MEMBER_DO);
                         self.builder.finish_node();
                     }
                     false
@@ -916,12 +909,8 @@ impl<'src> Parser<'src> {
     /// `MEMBER_DO`'s first child; `None` is the plain `do`.
     fn parse_member_do(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEMBER_DO)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEMBER_DO)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::MEMBER_DO),
+            None => self.builder.start_node(SyntaxKind::MEMBER_DO),
         }
         self.parse_do_expr();
         self.builder.finish_node(); // MEMBER_DO
@@ -943,12 +932,8 @@ impl<'src> Parser<'src> {
     /// plain (unattributed) form.
     pub(super) fn parse_val_field_at(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::VAL_FIELD)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::VAL_FIELD)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::VAL_FIELD),
+            None => self.builder.start_node(SyntaxKind::VAL_FIELD),
         }
         if matches!(
             self.peek(),
@@ -1043,12 +1028,8 @@ impl<'src> Parser<'src> {
     /// is needed. `None` is the plain (unattributed) form.
     fn parse_auto_property_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         match outer_cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::AUTO_PROPERTY)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::AUTO_PROPERTY)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::AUTO_PROPERTY),
+            None => self.builder.start_node(SyntaxKind::AUTO_PROPERTY),
         }
         // The leading member flags before `val`: `[static] member` (9.9c), or
         // `override`/`default` (9.10a — `override val`/`default val`, FCS leading
@@ -1311,16 +1292,13 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Virtual(Virtual::With)), _))
             )
         {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::GET_SET_MEMBER));
+            self.builder.start_node_at(cp, SyntaxKind::GET_SET_MEMBER);
             self.parse_get_set_clause();
             self.builder.finish_node(); // GET_SET_MEMBER
             true
         } else {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEMBER_DEFN));
-            self.builder
-                .start_node_at(after_kw, FSharpLang::kind_to_raw(SyntaxKind::BINDING));
+            self.builder.start_node_at(cp, SyntaxKind::MEMBER_DEFN);
+            self.builder.start_node_at(after_kw, SyntaxKind::BINDING);
             // A `: T` return-type annotation on the member head — FCS's
             // `memberCore` uses the same `opt_topReturnTypeWithTypeConstraints`
             // production as `localBinding`, projecting identically (the RHS is
@@ -1448,8 +1426,7 @@ impl<'src> Parser<'src> {
     /// argument patterns (swept like a member head's curried args), and the
     /// `= <expr>` body. Caller has verified [`Self::peek_is_get_set_accessor`].
     fn parse_get_set_accessor(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::GET_SET_ACCESSOR));
+        self.builder.start_node(SyntaxKind::GET_SET_ACCESSOR);
         // Optional leading prefixes, in any order (FCS's `opt_attributes
         // opt_access opt_inline`) — all elided by the normaliser.
         loop {
@@ -1601,8 +1578,7 @@ impl<'src> Parser<'src> {
         // immediately after the name: a value member's name is followed by the
         // return-type `:` or the `=`, never an argument-pattern start or `with`.
         if self.member_head_is_named_value() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
+            self.builder.start_node(SyntaxKind::NAMED_PAT);
             self.bump_into(SyntaxKind::IDENT_TOK);
             self.builder.finish_node(); // NAMED_PAT
             return false;
@@ -1690,8 +1666,7 @@ impl<'src> Parser<'src> {
             self.parse_head_binding_pat();
             return true;
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_PAT);
         self.parse_long_ident_path_with("member", true);
         // Explicit value-typar decls after the name (`member M<'a>(x) = …`,
         // `static member F<'T when 'T :> I>() = …`). FCS's `memberCore` carries
@@ -1775,15 +1750,10 @@ impl<'src> Parser<'src> {
     /// [`Self::consume_object_model_item_terminator`]'s `has_rhs_block`.
     fn parse_new_ctor_at(&mut self, outer_cp: Option<Checkpoint>) -> bool {
         match outer_cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEMBER_DEFN)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEMBER_DEFN)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::MEMBER_DEFN),
+            None => self.builder.start_node(SyntaxKind::MEMBER_DEFN),
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::BINDING));
+        self.builder.start_node(SyntaxKind::BINDING);
         // Optional accessibility modifier (`private new(…)` — FCS's `opt_access`
         // before `NEW`; it lands in the head pattern's `accessibility`). Elided by
         // the normaliser, like other accessibility.
@@ -1798,11 +1768,9 @@ impl<'src> Parser<'src> {
         ) {
             self.bump_into(SyntaxKind::ACCESS_TOK);
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_PAT);
         // The head: the `new` keyword *is* the binding's single path segment.
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         self.bump_into(SyntaxKind::NEW_TOK);
         self.builder.finish_node(); // LONG_IDENT
         // The constructor argument — a single `atomicPattern` (`(a)` / `()` /
@@ -1882,12 +1850,8 @@ impl<'src> Parser<'src> {
     /// is the plain (unattributed) form.
     fn parse_abstract_slot_at(&mut self, outer_cp: Option<Checkpoint>) {
         match outer_cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::ABSTRACT_SLOT)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::ABSTRACT_SLOT)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::ABSTRACT_SLOT),
+            None => self.builder.start_node(SyntaxKind::ABSTRACT_SLOT),
         }
         // Optional leading `static` (`static abstract [member] M` — the F# 7 IWSAM
         // static-abstract interface slot). The classifier routes both the
@@ -1910,8 +1874,7 @@ impl<'src> Parser<'src> {
         ) {
             self.bump_into(SyntaxKind::MEMBER_TOK);
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::VAL_SIG));
+        self.builder.start_node(SyntaxKind::VAL_SIG);
         // The optional `access`/`inline` modifiers before the name (FCS's
         // `opt_access opt_inline`). `inline` → `SynValSig.isInline`; an `access`
         // modifier is *illegal* on an abstract slot (it inherits the type's
@@ -2066,8 +2029,7 @@ impl<'src> Parser<'src> {
     /// no-RHS-block terminator. Caller has verified the cursor is at the raw
     /// `inherit` keyword.
     fn parse_inherit_member(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INHERIT_MEMBER));
+        self.builder.start_node(SyntaxKind::INHERIT_MEMBER);
         self.bump_into(SyntaxKind::INHERIT_TOK);
         // The base class — FCS's `atomType`. A missing type is FCS's third
         // `inheritsDefn` production (`Inherit(None, …)` recovery): record an
@@ -2181,8 +2143,7 @@ impl<'src> Parser<'src> {
     /// parsed as impl-style `with member … = …` definitions. The impl form
     /// (`sig = false`, `SynMemberDefn.Interface`) keeps the optional `with`.
     pub(super) fn parse_interface_member(&mut self, sig: bool) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INTERFACE_IMPL));
+        self.builder.start_node(SyntaxKind::INTERFACE_IMPL);
         // The relabelled `interface` keyword (the `OWITH`/`OffsideLet` pattern):
         // the virtual carries the keyword's span, and the raw `Token::Interface`
         // still sits at `raw_pos` with that span. Drain preceding trivia into the
@@ -2268,8 +2229,7 @@ impl<'src> Parser<'src> {
         // enclosing declarations; trivia leaking into the expression would
         // put comments/whitespace under the wrong ancestor.
         self.drain_raw_up_to(span.start);
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::EXPR_DECL));
+        self.builder.start_node(SyntaxKind::EXPR_DECL);
         self.parse_expr();
         self.builder.finish_node();
         true
@@ -2298,8 +2258,7 @@ impl<'src> Parser<'src> {
             .expect("parse_open_decl invoked without a peeked Token::Open");
         self.drain_raw_up_to(open_span.start);
 
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::OPEN_DECL));
+        self.builder.start_node(SyntaxKind::OPEN_DECL);
         self.bump_into(SyntaxKind::OPEN_TOK);
 
         // The open target must begin on `open`'s own logical line. If the
@@ -2322,8 +2281,7 @@ impl<'src> Parser<'src> {
                 message: "expected identifier after `open`".to_string(),
                 span,
             });
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+            self.builder.start_node(SyntaxKind::LONG_IDENT);
             self.builder.finish_node();
             self.builder.finish_node(); // OPEN_DECL
             return;

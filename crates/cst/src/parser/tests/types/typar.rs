@@ -9,7 +9,7 @@ use super::super::*; // shared tree-rendering test helpers (see `tests/mod.rs`)
 /// Phase 7.2 — `(x : 'a)` produces a [`SyntaxKind::VAR_TYPE`] under
 /// the [`SyntaxKind::TYPED_EXPR`], with the children being a
 /// [`SyntaxKind::QUOTE_TOK`] sigil followed by the typar `IDENT_TOK`.
-/// Pins the green-tree shape and that the [`crate::syntax::VarType`]
+/// Pins the tree shape and that the [`crate::syntax::VarType`]
 /// facade's `is_head_type()` reads `false` for the quoted form.
 #[test]
 fn typed_paren_expr_with_quote_typar_shape() {

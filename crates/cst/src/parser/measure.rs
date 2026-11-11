@@ -28,8 +28,7 @@ impl<'src> Parser<'src> {
     /// found by LexFilter's adjacency walk (it is what made the marker fire), so
     /// it is present as a `Greater(true)` and bumped as `GREATER_TOK`.
     pub(super) fn parse_measure_lit_tail(&mut self, cp: Checkpoint) {
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEASURE_LIT_EXPR));
+        self.builder.start_node_at(cp, SyntaxKind::MEASURE_LIT_EXPR);
         // HPA/HPTA virtual: consume as a zero-width ERROR placeholder.
         self.bump_into(SyntaxKind::ERROR);
         if matches!(
@@ -67,8 +66,7 @@ impl<'src> Parser<'src> {
             self.next_non_trivia_filtered_after_pos(),
             Some(FilteredToken::Raw(Token::Greater(_)))
         ) {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEASURE_ANON));
+            self.builder.start_node(SyntaxKind::MEASURE_ANON);
             self.bump_into(SyntaxKind::UNDERSCORE_TOK);
             self.builder.finish_node();
             return;
@@ -99,15 +97,13 @@ impl<'src> Parser<'src> {
             }
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::Op("*")) => {
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEASURE_PRODUCT));
+                    self.builder.start_node_at(cp, SyntaxKind::MEASURE_PRODUCT);
                     self.bump_into(SyntaxKind::STAR_TOK);
                     self.parse_measure_operand();
                     self.builder.finish_node();
                 }
                 Some(Token::Op("/")) => {
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEASURE_DIVIDE));
+                    self.builder.start_node_at(cp, SyntaxKind::MEASURE_DIVIDE);
                     self.bump_into(SyntaxKind::SLASH_TOK);
                     self.parse_measure_operand();
                     self.builder.finish_node();
@@ -131,8 +127,7 @@ impl<'src> Parser<'src> {
     /// `/s * m` stays `Product(Divide(None, Seq[s]), Seq[m])`.
     fn parse_measure_operand(&mut self) {
         if matches!(self.next_non_trivia_raw_at_pos(), Some(Token::Op("/"))) {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEASURE_DIVIDE));
+            self.builder.start_node(SyntaxKind::MEASURE_DIVIDE);
             self.bump_into(SyntaxKind::SLASH_TOK);
             // Depth-guarded: a leading-`/` run (`< / / / … s >`) nests reciprocals
             // here, a recursion below the `parse_type` guard, so count each level.
@@ -147,8 +142,7 @@ impl<'src> Parser<'src> {
     /// `measureTypePower`, always wrapped in a [`SyntaxKind::MEASURE_SEQ`]
     /// (FCS's `measureTypeExpr: measureTypeSeq { Seq … }`).
     fn parse_measure_type_seq(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEASURE_SEQ));
+        self.builder.start_node(SyntaxKind::MEASURE_SEQ);
         let mut any = false;
         while self.at_measure_power_start() {
             self.parse_measure_type_power();
@@ -187,8 +181,7 @@ impl<'src> Parser<'src> {
                     span,
                 });
             }
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEASURE_ONE));
+            self.builder.start_node(SyntaxKind::MEASURE_ONE);
             self.bump_into(SyntaxKind::INT32_LIT);
             self.builder.finish_node();
             return;
@@ -200,8 +193,7 @@ impl<'src> Parser<'src> {
             self.next_non_trivia_raw_at_pos(),
             Some(Token::Op("^" | "^-"))
         ) {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEASURE_POWER));
+            self.builder.start_node_at(cp, SyntaxKind::MEASURE_POWER);
             self.bump_into(SyntaxKind::MEASURE_POWER_OP_TOK);
             self.parse_atomic_rational_const();
             self.builder.finish_node();
@@ -215,8 +207,7 @@ impl<'src> Parser<'src> {
     fn parse_measure_type_atom(&mut self) {
         match self.next_non_trivia_raw_at_pos() {
             Some(Token::Ident(_) | Token::QuotedIdent(_) | Token::Global) => {
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEASURE_NAMED));
+                self.builder.start_node(SyntaxKind::MEASURE_NAMED);
                 self.parse_long_ident_path("unit of measure");
                 self.builder.finish_node();
             }
@@ -226,8 +217,7 @@ impl<'src> Parser<'src> {
             // sigil token kind (`QUOTE_TOK` vs `HAT_TOK`) carries the static-req
             // discriminant, which the normaliser reads back.
             Some(Token::Quote | Token::Op("^")) => {
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEASURE_VAR));
+                self.builder.start_node(SyntaxKind::MEASURE_VAR);
                 let sigil =
                     if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Quote)), _))) {
                         SyntaxKind::QUOTE_TOK
@@ -262,8 +252,7 @@ impl<'src> Parser<'src> {
                 self.builder.finish_node();
             }
             Some(Token::LParen) => {
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEASURE_PAREN));
+                self.builder.start_node(SyntaxKind::MEASURE_PAREN);
                 self.bump_into(SyntaxKind::LPAREN_TOK);
                 // Depth-guarded: nested parenthesised measures (`1.0<((((m))))>`)
                 // recurse here, a cycle below the `parse_type` guard.

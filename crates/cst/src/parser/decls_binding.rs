@@ -46,8 +46,7 @@ impl<'src> Parser<'src> {
             let start = span.start;
             self.drain_raw_up_to(start);
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         let mut segments = 0usize;
         // A leading `_` self-identifier (`member _.M`) is accepted only when the
         // caller opts in; FCS treats it as a path segment whose `idText` is
@@ -234,8 +233,7 @@ impl<'src> Parser<'src> {
     /// attributeListElements seps attribute`, `pars.fsy:1535`). The caller has
     /// verified `peek()` is `Token::LBrackLess`.
     pub(super) fn parse_attribute_list(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ATTRIBUTE_LIST));
+        self.builder.start_node(SyntaxKind::ATTRIBUTE_LIST);
         self.bump_into(SyntaxKind::LBRACK_LESS_TOK);
         self.parse_attribute();
 
@@ -347,8 +345,7 @@ impl<'src> Parser<'src> {
                 Some(FilteredToken::Raw(Token::Colon)),
             )
         {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::ATTRIBUTE_TARGET));
+            self.builder.start_node(SyntaxKind::ATTRIBUTE_TARGET);
             self.bump_into(SyntaxKind::IDENT_TOK);
             self.bump_into(SyntaxKind::COLON_TOK);
             self.builder.finish_node();
@@ -361,8 +358,7 @@ impl<'src> Parser<'src> {
             && let Some((Token::Type, type_span)) = self.next_non_trivia_raw_at_pos_with_span()
         {
             let type_span = type_span.clone();
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::ATTRIBUTE_TARGET));
+            self.builder.start_node(SyntaxKind::ATTRIBUTE_TARGET);
             self.drain_raw_up_to(type_span.start);
             self.emit_text(SyntaxKind::IDENT_TOK, type_span);
             self.raw_pos += 1;
@@ -379,8 +375,7 @@ impl<'src> Parser<'src> {
     /// is a trailing `Expr` child. A *bare* attribute (no arg) leaves the
     /// `ArgExpr` as FCS's synthetic `mkSynUnit`, supplied by the normaliser.
     pub(super) fn parse_attribute(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ATTRIBUTE));
+        self.builder.start_node(SyntaxKind::ATTRIBUTE);
         self.parse_opt_attribute_target();
         match self.peek().cloned() {
             Some((
@@ -395,8 +390,7 @@ impl<'src> Parser<'src> {
                 // dot-continuation below stays `Ident`/`QuotedIdent`. Inside
                 // `[< … >]` there is no enclosing swallowed `)`, so the dot
                 // continuation can gate on the plain filtered peek.
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+                self.builder.start_node(SyntaxKind::LONG_IDENT);
                 self.bump_into(SyntaxKind::IDENT_TOK);
                 while matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Dot)), _))) {
                     let dot_span = self.peek().map(|(_, s)| s.clone()).expect("dot peeked");
@@ -485,14 +479,13 @@ impl<'src> Parser<'src> {
             // closing `>]` and `let` belongs *inside* the decl (after the
             // attributes), so drain it once the node is open.
             Some(cp) => {
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(node));
+                self.builder.start_node_at(cp, node);
                 self.drain_raw_up_to(let_span.start);
             }
             // Plain form: leading trivia/comments stay siblings of the decl.
             None => {
                 self.drain_raw_up_to(let_span.start);
-                self.builder.start_node(FSharpLang::kind_to_raw(node));
+                self.builder.start_node(node);
             }
         }
         // Head keyword (`LET_TOK`), optional `REC_TOK`, first binding (FCS's
@@ -530,14 +523,12 @@ impl<'src> Parser<'src> {
             .expect("parse_extern_decl_at invoked without a peeked extern keyword");
         match cp {
             Some(cp) => {
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXTERN_DECL));
+                self.builder.start_node_at(cp, SyntaxKind::EXTERN_DECL);
                 self.drain_raw_up_to(extern_span.start);
             }
             None => {
                 self.drain_raw_up_to(extern_span.start);
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::EXTERN_DECL));
+                self.builder.start_node(SyntaxKind::EXTERN_DECL);
             }
         }
         self.bump_into(SyntaxKind::EXTERN_TOK);
@@ -545,8 +536,7 @@ impl<'src> Parser<'src> {
         // Return type (`cRetType = opt_attributes (cType | VOID)`). The optional
         // attributes and the C type are elided by the normaliser (the return type
         // reaches the compared AST only through the synthetic RHS's `Typed` wrapper).
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::EXTERN_RET));
+        self.builder.start_node(SyntaxKind::EXTERN_RET);
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::LBrackLess)), _))
@@ -579,8 +569,7 @@ impl<'src> Parser<'src> {
             let start = span.start;
             self.drain_raw_up_to(start);
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         if matches!(
             self.peek(),
             Some((
@@ -648,8 +637,7 @@ impl<'src> Parser<'src> {
             .map(|(_, s)| s.clone())
             .expect("parse_hash_directive invoked without a peeked `#`");
         self.drain_raw_up_to(hash_span.start);
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::HASH_DIRECTIVE_DECL));
+        self.builder.start_node(SyntaxKind::HASH_DIRECTIVE_DECL);
         self.bump_into(SyntaxKind::HASH_TOK);
         // Directive name.
         if matches!(
@@ -726,8 +714,7 @@ impl<'src> Parser<'src> {
     /// into an [`SyntaxKind::EXTERN_ARG`]: optional attributes, the C type, and an
     /// optional argument name (absent → an unnamed `SynPat.Wild`).
     fn parse_extern_arg(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::EXTERN_ARG));
+        self.builder.start_node(SyntaxKind::EXTERN_ARG);
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::LBrackLess)), _))
@@ -883,8 +870,7 @@ impl<'src> Parser<'src> {
     /// synthesises the `Typed` wrapper only for non-bang bindings (keyed on the
     /// binding's leading keyword), so the bang form stays unwrapped to match.
     pub(super) fn parse_binding_with_modifiers(&mut self, allow_modifiers: bool) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::BINDING));
+        self.builder.start_node(SyntaxKind::BINDING);
         // A leading attribute run between the `let`/`and` keyword and the pattern
         // — FCS's `localBinding: attributes opt_access opt_inline opt_mutable
         // headBindingPattern`, `let [<Literal>] x = …`. The lists land as leading
@@ -937,8 +923,7 @@ impl<'src> Parser<'src> {
         if !matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Colon)), _))) {
             return;
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::BINDING_RETURN_INFO));
+        self.builder.start_node(SyntaxKind::BINDING_RETURN_INFO);
         self.bump_into(SyntaxKind::COLON_TOK);
         // `topTypeWithTypeConstraints` (`opt_topReturnTypeWithTypeConstraints`,
         // `pars.fsy:6039`): the return type may carry a trailing `when` constraint
@@ -958,7 +943,7 @@ impl<'src> Parser<'src> {
     /// reverse (`let mutable inline x = …`) with FS0010 at the trailing
     /// `inline`. We mirror the diagnostic but recover by consuming the
     /// trailing `inline` anyway, so both modifier tokens survive in the
-    /// green tree and the `BINDING` shape stays predictable for the typed-AST
+    /// tree and the `BINDING` shape stays predictable for the typed-AST
     /// projection.
     pub(super) fn parse_binding_modifiers(&mut self) {
         let saw_inline_first = matches!(

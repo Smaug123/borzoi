@@ -74,7 +74,7 @@ impl DualKeyword {
         )
     }
 
-    /// The green-tree kind the keyword's text is emitted under, in either
+    /// The kind the keyword's text is emitted under, in either
     /// spelling.
     fn syntax_kind(self) -> SyntaxKind {
         match self {

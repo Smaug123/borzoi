@@ -137,7 +137,7 @@ fn try_fold<'src>(
 /// span covers the sign and the digits (contiguous, since adjacency forbids
 /// intervening trivia), so the dual-stream bump
 /// ([`super::Parser::bump_into`]) reclaims both underlying raw tokens and the
-/// green tree stays lossless. Non-foldable `+`/`-` (spaced, glued-left, or a
+/// tree stays lossless. Non-foldable `+`/`-` (spaced, glued-left, or a
 /// non-literal/unsigned operand) are left untouched for the parser's existing
 /// prefix/infix/`ADJACENT_PREFIX_OP` handling.
 pub(super) fn fold_adjacent_signs<'src>(
@@ -173,7 +173,7 @@ pub(super) fn fold_adjacent_signs<'src>(
 mod tests {
     use crate::parser::parse;
 
-    /// Render the green tree so a test can assert the presence/absence of a
+    /// Render the tree so a test can assert the presence/absence of a
     /// folded literal token (`INT32_LIT "-1"`) without standing up the FCS
     /// oracle — these pin the adjacency logic directly and run everywhere.
     fn tree(src: &str) -> String {

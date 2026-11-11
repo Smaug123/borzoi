@@ -48,16 +48,11 @@ impl<'src> Parser<'src> {
             .expect("parse_val_sig_decl invoked without a peeked Token::Val");
         self.drain_raw_up_to(val_span.start);
         match outer_cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::VAL_DECL)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::VAL_DECL)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::VAL_DECL),
+            None => self.builder.start_node(SyntaxKind::VAL_DECL),
         }
         self.bump_into(SyntaxKind::VAL_TOK);
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::VAL_SIG));
+        self.builder.start_node(SyntaxKind::VAL_SIG);
         // The `opt_inline opt_mutable opt_access` run after `val` (FCS's
         // `valSpfn`, `pars.fsy:746`). `inline` → `SynValSig.isInline`,
         // `mutable` → `isMutable`, an access modifier → `accessibility`; all
@@ -246,10 +241,8 @@ impl<'src> Parser<'src> {
             // attrs), so drain it once the node is open (mirror
             // `parse_type_defn_at`).
             Some(cp) => {
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFNS));
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFN));
+                self.builder.start_node_at(cp, SyntaxKind::TYPE_DEFNS);
+                self.builder.start_node_at(cp, SyntaxKind::TYPE_DEFN);
                 self.drain_raw_up_to(type_span.start);
             }
             // Plain form: leading trivia stays a sibling of the decl node
@@ -258,10 +251,8 @@ impl<'src> Parser<'src> {
             // `bump_into` would mark it ERROR).
             None => {
                 self.drain_raw_up_to(type_span.start);
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFNS));
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFN));
+                self.builder.start_node(SyntaxKind::TYPE_DEFNS);
+                self.builder.start_node(SyntaxKind::TYPE_DEFN);
             }
         }
         self.emit_text(SyntaxKind::TYPE_TOK, type_span.clone());
@@ -292,8 +283,7 @@ impl<'src> Parser<'src> {
                 break;
             };
             self.drain_raw_up_to(and_span.start);
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFN));
+            self.builder.start_node(SyntaxKind::TYPE_DEFN);
             self.bump_into(SyntaxKind::AND_TOK);
             let (closed, offside_attr) = self.parse_sig_type_defn_name_and_body();
             prev_closed = closed;
@@ -534,8 +524,7 @@ impl<'src> Parser<'src> {
             && !self.peek_is_object_model_start()
             && self.peek_starts_type()
         {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_ABBREV));
+            self.builder.start_node(SyntaxKind::TYPE_ABBREV);
             self.parse_type();
             self.builder.finish_node(); // TYPE_ABBREV
         } else if opened_block && self.peek_is_sig_member_block_start() {
@@ -581,8 +570,7 @@ impl<'src> Parser<'src> {
                     Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
                 )
             {
-                self.builder
-                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.builder.token(SyntaxKind::ERROR, "");
                 self.pos += 1;
             }
         } else if self.peek_is_delegate_repr_start() {
@@ -643,8 +631,7 @@ impl<'src> Parser<'src> {
             )
             && self.sig_member_item_follows_block_sep();
         if at_sep_then_item {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), ""); // the OBLOCKSEP
+            self.builder.token(SyntaxKind::ERROR, ""); // the OBLOCKSEP
             self.pos += 1;
         }
         let parsed_bare_members =
@@ -679,8 +666,7 @@ impl<'src> Parser<'src> {
                 // Closing `OBLOCKEND` — consume as a zero-width ERROR advancing
                 // only `pos` (the `parse_type_defn_repr` discipline): a following
                 // swallowed `type`/`and` keyword sharing its byte span survives.
-                self.builder
-                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.builder.token(SyntaxKind::ERROR, "");
                 self.pos += 1;
                 closed_block = true;
             } else {
@@ -1058,8 +1044,7 @@ impl<'src> Parser<'src> {
     /// the loop and is left to the caller's trailing-body handling (skipped with a
     /// diagnostic). The body-closing `OBLOCKEND` is likewise left for the caller.
     fn parse_sig_object_model_repr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::OBJECT_MODEL_REPR));
+        self.builder.start_node(SyntaxKind::OBJECT_MODEL_REPR);
         self.parse_sig_member_block_items();
         self.builder.finish_node(); // OBJECT_MODEL_REPR
     }
@@ -1188,8 +1173,7 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
                     if self.sig_member_item_follows_block_sep() =>
                 {
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 // A `;` / `;;` top separator (FCS's `opt_seps`) between member
@@ -1235,8 +1219,7 @@ impl<'src> Parser<'src> {
     /// Unlike a bare member body, the explicit `end` delimits the body, so there
     /// is no blockless column-0 ambiguity — this needs no `opened_block` gate.
     fn parse_sig_kind_marked_repr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::OBJECT_MODEL_REPR));
+        self.builder.start_node(SyntaxKind::OBJECT_MODEL_REPR);
         // The kind keyword → the marker token the facade reads the kind off. A
         // verbose `begin … end` body carries *no* kind (FCS's
         // `SynTypeDefnKind.Unspecified`, `begin`/`end` pure delimiters), so it
@@ -1425,12 +1408,8 @@ impl<'src> Parser<'src> {
         allow_literal: bool,
     ) -> bool {
         match cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEMBER_SIG)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::MEMBER_SIG)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::MEMBER_SIG),
+            None => self.builder.start_node(SyntaxKind::MEMBER_SIG),
         }
         // A *leading* accessibility modifier (slice V2) — FCS accepts `opt_access`
         // before the keyword only on the `new` ctor (`pars.fsy:1040`,
@@ -1502,8 +1481,7 @@ impl<'src> Parser<'src> {
                 self.bump_into(SyntaxKind::MEMBER_TOK);
             }
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::VAL_SIG));
+        self.builder.start_node(SyntaxKind::VAL_SIG);
         // A name-position `inline` modifier — FCS's `classMemberSpfn` `opt_inline`
         // before `opt_access` (`[static] member [inline] opt_access nameop`,
         // `pars.fsy:969`), setting `SynValSig.isInline`. The flag is elided by the
@@ -1717,8 +1695,7 @@ impl<'src> Parser<'src> {
     /// reads the base from the type child (`base_type: Some(..)`). Caller has
     /// verified the cursor is at the raw `inherit` keyword.
     fn parse_sig_inherit_member(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INHERIT_MEMBER));
+        self.builder.start_node(SyntaxKind::INHERIT_MEMBER);
         self.bump_into(SyntaxKind::INHERIT_TOK);
         if self.peek_starts_atomic_type() {
             self.parse_app_type();

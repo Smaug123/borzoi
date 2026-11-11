@@ -123,7 +123,7 @@ fn giving_a_file_up_whole_is_lossless_and_flat() {
     let filtered = filter_collect(src, LanguageVersion::Preview, active_tokens(&raw)).tokens;
     let mut parser = Parser::new(src, raw, filtered);
     parser.give_up_whole(FileKind::Impl);
-    let root = SyntaxNode::new_root(parser.builder.finish());
+    let root = parser.builder.finish();
     assert_eq!(root.text(), src);
     assert_eq!(height(&root), 2);
     assert!(parser.depth_limit_hit);

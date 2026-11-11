@@ -1,9 +1,8 @@
 //! Concrete-syntax tree.
 //!
-//! The parser builds a lossless green tree with [`rowan::GreenNodeBuilder`],
-//! which is flattened into one preorder table per file (`flat`, see
-//! `docs/flat-syntax-tree-plan.md`); [`SyntaxNode`] and [`SyntaxToken`] are
-//! handles into it. The *typed* facade in this module ([`ImplFile`],
+//! The parser writes a lossless tree as one preorder table per file (`flat`,
+//! see `docs/flat-syntax-tree-plan.md`); [`SyntaxNode`] and [`SyntaxToken`]
+//! are handles into it. The *typed* facade in this module ([`ImplFile`],
 //! [`ModuleOrNamespace`], …) wraps those nodes with strongly-typed accessors
 //! so consumers can navigate the tree without matching on raw
 //! [`SyntaxKind`]s.
@@ -41,11 +40,14 @@ pub use generated::union_types::*;
 pub use generated::{v8, v9};
 pub use kinds::{KindInterval, SyntaxKind, kind_feature, kind_in_surface, kind_interval};
 
-/// Rowan's [`rowan::Language`] is the per-language plumbing that ties our
-/// [`SyntaxKind`] enum to rowan's `u16`-tagged green nodes. Zero-sized.
+/// Ties [`SyntaxKind`] to rowan's `u16`-tagged trees, for the rowan reference
+/// differential (`tests/all/flat_tree_reference.rs`) only. Zero-sized.
+#[cfg(feature = "rowan-reference")]
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FSharpLang {}
 
+#[cfg(feature = "rowan-reference")]
 impl rowan::Language for FSharpLang {
     type Kind = SyntaxKind;
 
@@ -59,6 +61,7 @@ impl rowan::Language for FSharpLang {
 }
 
 mod flat;
+pub(crate) use flat::{Builder, Checkpoint};
 pub use flat::{
     Direction, NodeOrToken, Structure, SyntaxElement, SyntaxNode, SyntaxText, SyntaxToken,
     TextRange, TextSize, TokenAtOffset, WalkEvent,
@@ -107,7 +110,7 @@ fn is_elif_node(node: &SyntaxNode) -> bool {
 }
 
 /// Helper: `` ``foo bar`` `` → `foo bar`; `foo` → `foo`. Identifier tokens keep
-/// their backticks in the green tree (lossless), but FCS stores the unquoted
+/// their backticks in the tree (lossless), but FCS stores the unquoted
 /// `Ident.idText`, so accessors that classify an identifier *by content* must
 /// de-quote first.
 fn dequote_ident(text: &str) -> &str {
@@ -1904,7 +1907,7 @@ impl LetDecl {
 
     /// The `[< … >]` attribute groups attached to this `let` (phase 10.5).
     /// FCS models attributes on each `SynBinding`, attaching a leading
-    /// `opt_attributes` to the *first* binding of the group; our green tree
+    /// `opt_attributes` to the *first* binding of the group; our tree
     /// keeps them as leading `ATTRIBUTE_LIST` children of the `LET_DECL`
     /// (before `LET_TOK`, matching source order), and the normaliser projects
     /// them onto the first binding's `attributes`. Empty for an unattributed
@@ -2427,7 +2430,7 @@ impl TuplePat {
     /// The tuple's element patterns in source order — FCS's
     /// `SynPat.Tuple.elementPats` payload. Two-or-more `Pat` children,
     /// with `COMMA_TOK` separators interleaved between them in the
-    /// green tree. Mirrors [`TupleExpr::elements`] on the pattern side.
+    /// tree. Mirrors [`TupleExpr::elements`] on the pattern side.
     pub fn elements(&self) -> impl Iterator<Item = Pat> + '_ {
         accessor!("TuplePat::elements");
         children(&self.0)
@@ -2478,7 +2481,7 @@ impl ArrayOrListPat {
     /// The element patterns in source order — FCS's
     /// `SynPat.ArrayOrList.elementPats` payload. Each is a full
     /// `parenPattern` (so an element may itself be a `TUPLE_PAT`, `AS_PAT`,
-    /// etc.), with `SEMI_TOK` separators interleaved in the green tree.
+    /// etc.), with `SEMI_TOK` separators interleaved in the tree.
     pub fn elements(&self) -> impl Iterator<Item = Pat> + '_ {
         accessor!("ArrayOrListPat::elements");
         children(&self.0)
@@ -2564,7 +2567,7 @@ impl ListConsPat {
 impl AndsPat {
     /// The conjunction's operand patterns in source order — FCS's
     /// `SynPat.Ands.pats` payload. Two-or-more `Pat` children, with `AMP_TOK`
-    /// separators interleaved between them in the green tree. Mirrors
+    /// separators interleaved between them in the tree. Mirrors
     /// [`TuplePat::elements`]; the `Ands` list is flat (`a & b & c` is one
     /// `Ands` of three, not nested).
     pub fn operands(&self) -> impl Iterator<Item = Pat> + '_ {
@@ -2844,7 +2847,7 @@ impl ParenExpr {
 impl TupleExpr {
     /// The tuple's elements in source order. Equivalent to FCS's
     /// `SynExpr.Tuple.exprs` (the `SynExpr list` field). Commas (and
-    /// trivia) sit between successive elements in the green tree but
+    /// trivia) sit between successive elements in the tree but
     /// the typed accessor filters them out by only yielding `Expr`
     /// children.
     pub fn elements(&self) -> impl Iterator<Item = Expr> + '_ {
@@ -2863,7 +2866,7 @@ impl TupleExpr {
 }
 
 impl SequentialExpr {
-    /// The sequenced statements in source order. The green tree is
+    /// The sequenced statements in source order. The tree is
     /// n-ary (a flat list of `Expr` children); this filters out the
     /// `Virtual::BlockSep`-derived zero-width ERRORs and any other
     /// non-expression children to match how FCS's right-leaning
@@ -3004,7 +3007,7 @@ impl AppExpr {
 
     /// The function position — FCS's `SynExpr.App.funcExpr`. For a
     /// regular [`SyntaxKind::APP_EXPR`] this is the first `Expr` child
-    /// in source order; for an [`SyntaxKind::INFIX_APP_EXPR`] the green
+    /// in source order; for an [`SyntaxKind::INFIX_APP_EXPR`] the
     /// children are stored as `[lhs, op]` (source order), but FCS
     /// records the operator as `funcExpr` — so we return the second
     /// child instead.
@@ -3328,7 +3331,7 @@ impl FunExpr {
     /// The parameter patterns in source order — FCS's `SynExpr.Lambda`
     /// uses a curried encoding (`Lambda(_, _, [p1], Lambda(_, _, [p2],
     /// body))`) plus a `parsedData = Some(args, body)` cache on the
-    /// outermost node; our green tree keeps them flat under one
+    /// outermost node; our tree keeps them flat under one
     /// `FUN_EXPR`, so this is the moral equivalent of `parsedData`'s
     /// first component. Every `Pat` child up to but not including the
     /// body is a parameter — the `RARROW_TOK` separates the two
@@ -4089,7 +4092,7 @@ impl AnonRecdExpr {
 
     /// The field bindings in source order — FCS's
     /// `SynExpr.AnonRecd.recordFields`. Reuses [`RecordField`] (the same
-    /// `RECORD_FIELD` green node the regular record uses).
+    /// `RECORD_FIELD` node the regular record uses).
     pub fn fields(&self) -> impl Iterator<Item = RecordField> + '_ {
         accessor!("AnonRecdExpr::fields");
         children(&self.0)
@@ -4347,7 +4350,7 @@ impl TupleType {
     /// Walk the `TUPLE_TYPE` node's children-and-tokens in source order,
     /// collecting each `Type` node and `STAR_TOK` / `SLASH_TOK` separator
     /// token as a flat segment list. Trivia tokens between segments are
-    /// skipped; their presence in the green tree is preserved separately via
+    /// skipped; their presence in the tree is preserved separately via
     /// `SyntaxNode::text_range`.
     pub fn segments(&self) -> Vec<TupleSegment> {
         accessor!("TupleType::segments");
