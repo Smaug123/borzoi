@@ -274,3 +274,37 @@ fn an_include_the_walk_may_have_skipped_makes_a_derived_remove_decline() {
         );
     }
 }
+
+#[test]
+fn a_helper_remove_matching_on_metadata_declines() {
+    // MSBuild matches `MatchOnMetadata` removes by metadata value, not by
+    // path: here `J`'s copy of `A.fsproj` carries a different `Tag`, so `H`
+    // keeps it and the reference `Remove` takes `../A/A.fsproj`. Matching by
+    // identity instead would empty `H` and keep the reference.
+    let (_tmp, _root, parsed) = layout(
+        r#"  <ItemGroup>
+    <ProjectReference Include="../A/A.fsproj" />
+    <H Include="../A/A.fsproj" Tag="x" />
+    <J Include="../A/A.fsproj" Tag="y" />
+    <H Remove="@(J)" MatchOnMetadata="Tag" />
+    <ProjectReference Remove="@(H)" />
+  </ItemGroup>"#,
+    );
+    assert!(parsed.project_references_uncertain);
+}
+
+#[test]
+fn a_self_doubling_helper_is_bounded() {
+    // Each `@(H)` include appends a copy of the list so far: forty of them ask
+    // for 2^40 items. The list must stop growing (and stop being exact) long
+    // before that, and a `Remove` reading it must then decline.
+    let doublings = "    <H Include=\"@(H)\" />\n".repeat(40);
+    let (_tmp, _root, parsed) = layout(&format!(
+        r#"  <ItemGroup>
+    <ProjectReference Include="../A/A.fsproj" />
+    <H Include="../M/M.fsproj" />
+{doublings}    <ProjectReference Remove="@(H)" />
+  </ItemGroup>"#
+    ));
+    assert!(parsed.project_references_uncertain);
+}

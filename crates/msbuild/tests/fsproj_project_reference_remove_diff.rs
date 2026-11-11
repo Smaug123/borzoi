@@ -183,11 +183,13 @@ enum Op {
         helper: &'static str,
         gate: &'static str,
     },
-    /// `<H Include="spec" Exclude="exclude" />` from the reference alphabet.
+    /// `<H Include="spec" Exclude="exclude" Tag="…" />` from the reference
+    /// alphabet.
     LiteralHelper {
         helper: &'static str,
         spec: &'static str,
         exclude: Option<&'static str>,
+        tag: Option<&'static str>,
     },
     /// `<H Remove="spec" />`.
     HelperRemove {
@@ -199,6 +201,13 @@ enum Op {
     Remove {
         spec: &'static str,
         gate: &'static str,
+    },
+    /// `<target Remove="spec" MatchOnMetadata="Tag" />`: matched by metadata
+    /// value, not by path. MSBuild requires every fragment to be an item
+    /// reference.
+    MetadataRemove {
+        target: &'static str,
+        spec: &'static str,
     },
 }
 
@@ -222,11 +231,16 @@ impl Op {
                 helper,
                 spec: space.reference(rng),
                 exclude: (rng.below(2) == 0).then(|| space.remove(rng)),
+                tag: (rng.below(2) == 0).then(|| *rng.pick(&["x", "y"])),
             },
             6 => Op::HelperRemove {
                 helper,
                 spec: space.remove(rng),
                 gate: space.gate(rng),
+            },
+            7 if space == Space::Any => Op::MetadataRemove {
+                target: rng.pick(&["H1", "h2", "ProjectReference"]),
+                spec: rng.pick(&["@(H1)", "@(h2)", "@(ProjectReference)"]),
             },
             _ => Op::Remove {
                 spec: space.remove(rng),
@@ -248,22 +262,29 @@ impl Op {
             Op::LiteralHelper {
                 helper,
                 spec,
-                exclude: None,
-            } => format!("<{helper} Include=\"{spec}\" />"),
-            Op::LiteralHelper {
-                helper,
-                spec,
-                exclude: Some(exclude),
-            } => format!("<{helper} Include=\"{spec}\" Exclude=\"{exclude}\" />"),
+                exclude,
+                tag,
+            } => {
+                let exclude = exclude.map_or(String::new(), |e| format!(" Exclude=\"{e}\""));
+                let tag = tag.map_or(String::new(), |t| format!(" Tag=\"{t}\""));
+                format!("<{helper} Include=\"{spec}\"{exclude}{tag} />")
+            }
             Op::HelperRemove { helper, spec, gate } => {
                 format!("<{helper} Remove=\"{spec}\"{gate} />")
             }
             Op::Remove { spec, gate } => format!("<{reference} Remove=\"{spec}\"{gate} />"),
+            Op::MetadataRemove { target, spec } => {
+                format!("<{target} Remove=\"{spec}\" MatchOnMetadata=\"Tag\" />")
+            }
         }
     }
 
     fn is_reference_remove(&self) -> bool {
-        matches!(self, Op::Remove { .. })
+        match self {
+            Op::Remove { .. } => true,
+            Op::MetadataRemove { target, .. } => target.eq_ignore_ascii_case("ProjectReference"),
+            _ => false,
+        }
     }
 }
 
@@ -549,6 +570,43 @@ fn a_hidden_include_cannot_hide_a_removal() {
             Op::ExistentHelper {
                 helper: "H1",
                 gate: "",
+            },
+            Op::Remove {
+                spec: "@(H1)",
+                gate: "",
+            },
+        ],
+    }];
+    for with_resolver in [false, true] {
+        check(&mut oracle, &blocks, with_resolver);
+    }
+}
+
+/// A `MatchOnMetadata` remove matches by metadata value: `@(ProjectReference)`
+/// carries no `Tag`, so it removes the untagged helper items whatever their
+/// path, and keeps none of them by path. Matching it by identity instead keeps
+/// `../A/A.fsproj` in the helper but drops `../M/M.fsproj` — the opposite split —
+/// and the reference `Remove` driven by the helper then keeps `../M/M.fsproj`,
+/// which MSBuild removes. (Found by the soak.)
+#[test]
+fn a_metadata_matched_remove_is_not_a_path_match() {
+    let mut oracle = Oracle::spawn();
+    let blocks = [Block::Group {
+        gate: "",
+        ops: vec![
+            Op::Include {
+                spec: "../M/M.fsproj",
+                gate: "",
+            },
+            Op::LiteralHelper {
+                helper: "H1",
+                spec: "../A/A.fsproj;../M/M.fsproj",
+                exclude: None,
+                tag: None,
+            },
+            Op::MetadataRemove {
+                target: "H1",
+                spec: "@(ProjectReference)",
             },
             Op::Remove {
                 spec: "@(H1)",

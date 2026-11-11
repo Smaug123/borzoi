@@ -1002,7 +1002,11 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
         CondGate::Skip | CondGate::Unsupported => return,
     }
     if let Some(remove) = remove {
-        apply_generic_item_remove(item_type, remove, state);
+        if remove_stands_alone(node) {
+            apply_generic_item_remove(item_type, remove, state);
+        } else {
+            state.invalidate_item_list(item_type);
+        }
         return;
     }
     if has_update {
@@ -1035,6 +1039,9 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
                 continue;
             };
             for item in items {
+                if captured.len() > MAX_HELPER_ITEMS {
+                    break;
+                }
                 match excluded.excludes(&item.identity, &state.entry_project_dir) {
                     Some(true) => {}
                     Some(false) => captured.push(item.with_metadata_applied(&metadata)),
@@ -1066,12 +1073,25 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
             None => state.taint_item_list(item_type),
         }
     }
-    state
+    let list = state
         .evaluated_items
         .entry(item_key(item_type))
-        .or_default()
-        .extend(captured);
+        .or_default();
+    let room = MAX_HELPER_ITEMS.saturating_sub(list.len());
+    let overflowed = captured.len() > room;
+    captured.truncate(room);
+    list.extend(captured);
+    if overflowed {
+        state.taint_item_list(item_type);
+    }
 }
+
+/// The most items one helper list holds. `@(H)` appends a copy of `H`, so a
+/// line per doubling grows a list exponentially in the document's size; past
+/// this the list stops growing and is tainted, which bounds both its memory and
+/// every copy an item expression takes of it. Real helper lists are a handful
+/// of package or project identities.
+const MAX_HELPER_ITEMS: usize = 4096;
 
 fn apply_generic_item_remove(item_type: &str, remove: &str, state: &mut State<'_>) {
     if remove_clears_its_own_list(item_type, remove, state) {
@@ -1336,24 +1356,28 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
         .collect()
 }
 
+/// Whether a `Remove` element is one we can apply by path: nothing beside it but
+/// its `Condition`. An `Include`/`Update`/`Exclude` or a metadata child is a
+/// project error, and `MatchOnMetadata` matches by metadata value instead.
+fn remove_stands_alone(node: Node<'_, '_>) -> bool {
+    node.attributes()
+        .all(|attr| matches!(attr.name(), "Remove" | "Condition"))
+        && !node.children().any(|child| child.is_element())
+}
+
 /// Apply a `<ProjectReference Remove="…">` exactly, if it is one we model:
 /// `true` when the list now holds what MSBuild's does, `false` (with nothing
 /// changed) when the caller must treat the mutation as unmodelled.
 ///
-/// The `Remove` stands alone: an `Include`/`Update`/`Exclude` beside it, or a
-/// metadata child, is a project error, and `MatchOnMetadata` matches by
-/// metadata rather than by path. The spec itself must resolve exactly
+/// The `Remove` must [stand alone](remove_stands_alone), and its spec must
+/// resolve exactly
 /// ([`resolve_item_spec`]) and every identity it is compared with must lie in
 /// the domain [`item_spec::comparison_key`] reproduces.
 fn apply_project_reference_remove(node: Node<'_, '_>, state: &mut State<'_>) -> bool {
     let Some(remove) = node.attribute("Remove") else {
         return false;
     };
-    let stands_alone = node
-        .attributes()
-        .all(|attr| matches!(attr.name(), "Remove" | "Condition"))
-        && !node.children().any(|child| child.is_element());
-    if !stands_alone {
+    if !remove_stands_alone(node) {
         return false;
     }
     if remove_clears_its_own_list(
