@@ -1,11 +1,13 @@
 //! Differential-test helpers shared by the harnesses that compare our
 //! [`AssemblyEnv`] resolutions against FCS's.
 //!
-//! Two of them do that — `borzoi-corpus-diff`'s whole-corpus run and the LSP
-//! crate's `resolve_real_project_diff` — and both need the same thing: a way to
-//! decide whether the oracle's name for an imported symbol and ours name the
-//! same declaration. Neither crate can import the other (corpus-diff depends on
-//! `borzoi`, not the reverse), so the comparator lives here, below both.
+//! Three of them do that — `borzoi-corpus-diff`'s whole-corpus run, the LSP
+//! crate's `resolve_real_project_diff`, and this crate's own corpus sweep
+//! (`resolve_corpus_diff`) — and all need the same thing: a way to decide
+//! whether the oracle's name for an imported symbol and ours name the same
+//! declaration ([`assembly_answer_agrees`]). None of them can import another
+//! (corpus-diff depends on `borzoi`, not the reverse), so the comparator lives
+//! here, below all three.
 //!
 //! Gated behind the `test-support` feature: nothing at runtime compares against
 //! an oracle.
@@ -207,6 +209,192 @@ fn chain_position(
         }
     }
     (!env.is_module(chain[position])).then_some(position)
+}
+
+/// A declaration in a referenced assembly, as the oracle names the target of a
+/// use or as [`assembly_resolution_decl`] names one of our answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssemblyDecl {
+    /// The declaring assembly's simple name.
+    pub assembly: String,
+    /// The full name, in the logical domain ([`logical_full_name`]).
+    pub full_name: String,
+    /// The oracle's `SymbolKind` for the use (`unioncase`, `member`, …), or
+    /// `None` on our own side and wherever the oracle reported none. It is what
+    /// tells a union case from a same-named member or type — a full name alone
+    /// cannot, since FCS renders a case under its union exactly as it renders a
+    /// member under its type.
+    pub kind: Option<String>,
+    /// The same declaration named from the oracle's *structural* facts rather
+    /// than its rendering — `None` on our own side, and for an oracle use with
+    /// no declaring entity. See [`DeclaringEntity`].
+    pub structural: Option<StructuralName>,
+}
+
+/// Whether our committed answer `res` names the oracle's assembly declaration
+/// `expected`: an assembly resolution whose kind the oracle's admits
+/// ([`kind_admits`]), whose assembly is the oracle's
+/// ([`assembly_names_agree`]), and whose full name is the oracle's
+/// ([`assembly_full_name_agrees_for`]). Any other resolution does not.
+///
+/// The one comparator every differential that grades an answer into a
+/// referenced assembly shares — `borzoi-corpus-diff`'s whole-project run and
+/// `borzoi-sema`'s corpus sweep — so the two cannot disagree about what
+/// agreement is.
+pub fn assembly_answer_agrees(env: &AssemblyEnv, res: Resolution, expected: &AssemblyDecl) -> bool {
+    match res {
+        Resolution::Entity(_) | Resolution::Member { .. } | Resolution::UnionCase { .. } => {
+            let actual = assembly_resolution_decl(env, res);
+            kind_admits(res, expected)
+                && assembly_names_agree(env, res, &actual, expected)
+                && assembly_full_name_agrees_for(env, res, &actual.full_name, expected)
+        }
+        Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => false,
+    }
+}
+
+/// Whether the oracle's symbol kind admits `res` at all, before any name is
+/// compared. A [`Resolution::UnionCase`] names a case and nothing else, so it
+/// agrees only with a record FCS reports as a union case: its full name is
+/// rendered under its union exactly as a member's is under its type, and a
+/// name match alone would score a case committed where FCS bound a same-named
+/// static as agreement. The other assembly variants keep the name comparison
+/// they always had.
+pub fn kind_admits(res: Resolution, expected: &AssemblyDecl) -> bool {
+    match res {
+        Resolution::UnionCase { .. } => expected.kind.as_deref() == Some("unioncase"),
+        Resolution::Entity(_)
+        | Resolution::Member { .. }
+        | Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => true,
+    }
+}
+
+/// Our answer `res`, an assembly resolution, named as the oracle names a
+/// declaration. Panics on any other resolution.
+pub fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl {
+    match res {
+        Resolution::Entity(handle) => {
+            let entity = env.entity(handle);
+            AssemblyDecl {
+                assembly: entity.assembly.name.clone(),
+                kind: None,
+                full_name: env.entity_full_name(handle),
+                structural: None,
+            }
+        }
+        Resolution::UnionCase { union, case } => AssemblyDecl {
+            assembly: env.entity(union).assembly.name.clone(),
+            kind: None,
+            full_name: format!(
+                "{}.{}",
+                env.entity_full_name(union),
+                env.union_case_name(union, case)
+            ),
+            structural: None,
+        },
+        Resolution::Member { parent, idx } => {
+            let entity = env.entity(parent);
+            AssemblyDecl {
+                assembly: entity.assembly.name.clone(),
+                kind: None,
+                full_name: format!(
+                    "{}.{}",
+                    env.entity_full_name(parent),
+                    env.member_display_name(parent, idx)
+                ),
+                structural: None,
+            }
+        }
+        Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => unreachable!("only assembly resolutions have assembly decls"),
+    }
+}
+
+/// Canonicalise a core-BCL assembly name to its **ref-pack facade**, so a
+/// comparison holds regardless of how the `fcs-dump` driving it was deployed.
+///
+/// A type-forwarded corelib type (`System.String`, `System.Object`, …) is
+/// *defined* in `System.Private.CoreLib.dll` and *surfaced* through the
+/// `System.Runtime.dll` facade. A framework-dependent `fcs-dump` resolves the
+/// SDK ref pack and reports `System.Runtime`; the self-contained publish CI
+/// ships resolves the implementation framework and reports
+/// `System.Private.CoreLib`. Our side reads the ref-pack assemblies from the
+/// project's assets and so always reports the facade. Both name the same
+/// logical entity, and the full name still has to agree exactly, so a genuine
+/// divergence is still caught rather than absorbed.
+pub fn canonical_assembly(name: &str) -> &str {
+    match name {
+        "System.Private.CoreLib" => "System.Runtime",
+        other => other,
+    }
+}
+
+/// Whether the oracle's assembly `expected` names the entity our answer `res`
+/// lives in (`actual`): the same name, up to [`canonical_assembly`], or a
+/// facade whose type forwarders send the answer's declaring type to it
+/// ([`assembly_names_type`]).
+///
+/// FCS names a type by the assembly it reached it through. A corelib type
+/// FSharp.Core's references introduce — `string`, and `System.String` in an
+/// annotation — is named through the `netstandard` facade FSharp.Core
+/// compiles against, so `name.Length` is `netstandard`'s, while the same
+/// member on a `String` reached by `open System` is `System.Runtime`'s. One
+/// entity, two names; the forwarder table is what proves it the same entity,
+/// and the full name must still agree.
+pub fn assembly_names_agree(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &AssemblyDecl,
+    expected: &AssemblyDecl,
+) -> bool {
+    if canonical_assembly(&actual.assembly) == canonical_assembly(&expected.assembly) {
+        return true;
+    }
+    let declaring = match res {
+        Resolution::Entity(handle)
+        | Resolution::Member { parent: handle, .. }
+        | Resolution::UnionCase { union: handle, .. } => handle,
+        Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::EarlierFileType { .. }
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => return false,
+    };
+    assembly_names_type(env, &expected.assembly, declaring)
+}
+
+/// [`assembly_full_name_agrees`] against the oracle's rendered name **or** the
+/// structural one our own resolution certifies — see [`certified_expected`].
+///
+/// An extra accepted name, never a substituted one: the rendered name is what
+/// most uses agree on already, and the two are not interchangeable. FCS names a
+/// constructor use by its *type* (`System.ArgumentOutOfRangeException`) while
+/// its declaring entity and display name compose to
+/// `System.ArgumentOutOfRangeException.ArgumentOutOfRangeException`, so
+/// substituting would turn agreement into a divergence.
+pub fn assembly_full_name_agrees_for(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &str,
+    expected: &AssemblyDecl,
+) -> bool {
+    assembly_full_name_agrees(actual, &expected.full_name)
+        || expected
+            .structural
+            .as_ref()
+            .and_then(|structural| certified_expected(env, res, structural))
+            .is_some_and(|certified| assembly_full_name_agrees(actual, &certified))
 }
 
 /// Every function and value of the F# module `module` that inference reads a type off

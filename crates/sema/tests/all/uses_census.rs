@@ -613,6 +613,7 @@ proptest! {
                 ok,
                 has_check_errors: false,
                 uses: probes.into_iter().map(classify_probe).collect(),
+                references: None,
             })
             .collect();
         prop_assert_eq!(metric_paths(&census, stride, limit), metric_paths(&[], 13, None));

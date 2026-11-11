@@ -20,14 +20,17 @@ non-vacuous (so a broken oracle or empty corpus fails loudly). The gate is
 
 ## Scope — per-file isolation, in-file declarations only
 
-Like `resolve_corpus_diff`, each `.fs` file is resolved **in isolation with an
-empty `AssemblyEnv`**, so it can only adjudicate **in-file** declarations. Uses
-FCS resolves into a referenced assembly (FSharp.Core / BCL / NuGet) have no
-in-file declaration to compare against, so they are tallied under `out-of-file`
-and otherwise skipped. Imported-assembly *target identity* is checked by the
-**whole-project** differential instead — see [[resolve-real-project-diff]] and
-the `corpus-diff` crate, which drive the real assembly closure and FCS's
-`uses-project` oracle.
+Each `.fs` file is resolved **in isolation with an empty `AssemblyEnv`**, so
+this report can only adjudicate **in-file** declarations. Uses FCS resolves into
+a referenced assembly (FSharp.Core / BCL / NuGet) have no in-file declaration to
+compare against, so they are tallied under `out-of-file` and otherwise skipped.
+The `resolve_corpus_diff` *gate* differs here: it resolves each file under the
+reference set the census checked it against (FSharp.Core and the SDK's ref
+pack) and grades those uses by assembly identity, listing each one it declines
+as an `assembly-gap` in its manifest. Target identity in a project's own
+references (NuGet, project references) is checked by the **whole-project**
+differential — see [[resolve-real-project-diff]] and the `corpus-diff` crate,
+which drive the real assembly closure and FCS's `uses-project` oracle.
 
 ## Running
 

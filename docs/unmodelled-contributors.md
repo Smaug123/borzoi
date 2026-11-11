@@ -156,8 +156,9 @@ dotted head, in a nested expression over `async`, nested in one, a `let`
 right-hand side, a pattern). Each cell is graded against FCS and must check
 cleanly or be marked recovered.
 
-The empty-environment sweep `resolve_corpus_diff` cannot identify any
-FSharp.Core builder, so every expression there is over an unknown builder.
+The per-file sweep `resolve_corpus_diff` resolves under FSharp.Core and the
+SDK's ref pack only, so a builder a sibling file or a package declares is an
+unknown builder there.
 
 ## Not on the list
 

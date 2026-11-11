@@ -38,6 +38,7 @@ use borzoi_oracle_harness::{BatchChild, BoundedCommand, default_timeout};
 use borzoi_sema::test_support::binder_completeness::{
     OracleBinder, OracleBinderClass, OracleUse, is_unclassified_value, unmodelled_binders,
 };
+use borzoi_sema::test_support::{AssemblyDecl, DeclaringEntity, StructuralName, logical_full_name};
 use serde::Deserialize;
 
 // ============================================================================
@@ -568,6 +569,12 @@ pub struct FileCensus {
     pub has_check_errors: bool,
     #[serde(rename = "Uses", default)]
     pub uses: Vec<CensusUse>,
+    /// Every assembly the file was checked against (`uses-census-batch` only;
+    /// empty where no check ran). `None` from a subcommand that does not report
+    /// it, so a consumer resolving under the oracle's references cannot mistake
+    /// "not reported" for "checked against nothing".
+    #[serde(rename = "References", default)]
+    pub references: Option<Vec<String>>,
 }
 
 /// The FCS facts about one resolved symbol use that determine its bucket, plus
@@ -627,6 +634,83 @@ pub struct CensusUse {
     pub is_namespace: bool,
     #[serde(rename = "IsModule")]
     pub is_module: bool,
+    /// Which declaration the use binds where it is not a binder of the checked
+    /// file. Required: a record without one must not read as having no target.
+    #[serde(rename = "Identity")]
+    identity: CensusIdentity,
+}
+
+/// What identifies the symbol a census use binds (`fcs-dump`'s
+/// `symbolIdentity`, shared with the `uses` dump): the declaring assembly and
+/// full name, the symbol's kind and generic arity, and its declaring entity
+/// named structurally. Each is `None` where FCS could not produce it.
+#[derive(Deserialize, Default)]
+struct CensusIdentity {
+    #[serde(rename = "Assembly", default)]
+    assembly: Option<String>,
+    #[serde(rename = "FullName", default)]
+    full_name: Option<String>,
+    #[serde(rename = "SymbolKind", default)]
+    symbol_kind: Option<String>,
+    #[serde(rename = "GenericArity", default)]
+    generic_arity: Option<usize>,
+    #[serde(rename = "DeclaringPath", default)]
+    declaring_path: Option<Vec<CensusDeclaringSegment>>,
+    /// `None` for the root namespace, which the oracle reports as absent rather
+    /// than as the string `global` (a namespace can be called that).
+    #[serde(rename = "DeclaringNamespace", default)]
+    declaring_namespace: Option<String>,
+    #[serde(rename = "IsConstructor", default)]
+    is_constructor: bool,
+    #[serde(rename = "LogicalName", default)]
+    logical_name: Option<String>,
+}
+
+/// One segment of a [`CensusIdentity`]'s declaring path: a compiled name and
+/// its cumulative generic-parameter count.
+#[derive(Deserialize)]
+struct CensusDeclaringSegment {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Arity")]
+    arity: usize,
+}
+
+impl CensusUse {
+    /// The declaration FCS names for this use in the currency
+    /// [`borzoi_sema::test_support::assembly_answer_agrees`] compares against,
+    /// or `None` unless FCS reported both an assembly and a full name. The
+    /// full name is taken to the logical domain ([`logical_full_name`]), as
+    /// every name on our side is.
+    fn assembly_decl(&self) -> Option<AssemblyDecl> {
+        let id = &self.identity;
+        let (Some(assembly), Some(full_name)) = (&id.assembly, &id.full_name) else {
+            return None;
+        };
+        Some(AssemblyDecl {
+            assembly: assembly.clone(),
+            full_name: logical_full_name(full_name, &self.symbol_name, id.logical_name.as_deref()),
+            kind: id.symbol_kind.clone(),
+            structural: id
+                .declaring_path
+                .as_ref()
+                .filter(|path| !path.is_empty())
+                .map(|path| StructuralName {
+                    declaring: DeclaringEntity {
+                        namespace: id
+                            .declaring_namespace
+                            .iter()
+                            .flat_map(|namespace| namespace.split('.'))
+                            .map(str::to_string)
+                            .collect(),
+                        path: path.iter().map(|s| (s.name.clone(), s.arity)).collect(),
+                        is_constructor: id.is_constructor,
+                    },
+                    leaf: self.symbol_name.clone(),
+                    leaf_arity: id.generic_arity,
+                }),
+        })
+    }
 }
 
 impl CensusUse {
@@ -857,6 +941,7 @@ pub fn classify_probe(index: usize) -> CensusUse {
         }),
     );
     fields.insert("DeclRange".into(), serde_json::Value::Null);
+    fields.insert("Identity".into(), serde_json::json!({}));
     fields.insert("Class".into(), serde_json::json!(class));
     for (flag_index, flag) in PROBE_FLAGS.iter().enumerate() {
         fields.insert(
@@ -963,6 +1048,14 @@ pub struct ResolveDiffUse {
     /// What machinery a resolver needs (see [`classify`]); `None` for a defining
     /// occurrence.
     pub bucket: Option<Bucket>,
+    /// The declaration FCS names for the symbol by identity, when it reported
+    /// an assembly and a full name — for a target outside the file, what an
+    /// answer into a referenced assembly is graded against.
+    pub assembly: Option<AssemblyDecl>,
+    /// Whether the use is a constructor, which names its own type: beside a
+    /// record of that type's name it answers the same site at a level the
+    /// resolver does not model.
+    pub is_constructor: bool,
 }
 
 /// Where FCS declares the symbol a census use resolves to, relative to the
@@ -1008,6 +1101,8 @@ pub fn census_resolve_uses(file: &FileCensus, source: &str) -> Vec<ResolveDiffUs
                 is_from_definition: u.is_from_definition,
                 decl,
                 bucket,
+                assembly: u.assembly_decl(),
+                is_constructor: u.is_constructor,
             }
         })
         .collect()

@@ -5211,18 +5211,14 @@ let private renderTypeCanonical (t: FSharpType) : string =
             try renderType t with _ -> renderExprType t
     go t
 
-/// Normalise one symbol use to the JSON shape the sema differential consumes:
-/// the symbol's display name, the use range, whether it is the defining
-/// occurrence, the declaration range (`null` for an out-of-any-file symbol),
-/// and — for resolving into referenced assemblies — the declaring assembly's
-/// simple name and the symbol's full name (`null` when FCS cannot produce
-/// them). The latter two let the consumer match an assembly resolution without
-/// a usable in-file declaration range.
-let private projectSymbolUse (u: FSharpSymbolUse) =
-    let declRange : objnull =
-        match u.Symbol.DeclarationLocation with
-        | Some r -> box r
-        | None -> null
+/// What identifies the symbol a use binds, where it is not a binder of the
+/// checked file: the declaring assembly's simple name and the symbol's full name
+/// (`null` when FCS cannot produce them), its kind and generic arity, its
+/// declaring entity named structurally, whether it is a constructor, and the
+/// logical name its name environment keys it by. Shared by `uses` (flattened
+/// into each record) and the census (as each record's `Identity`), so the two
+/// oracles cannot name one symbol differently.
+let private symbolIdentity (u: FSharpSymbolUse) =
     let assemblyName : objnull =
         try box u.Symbol.Assembly.SimpleName with _ -> null
     let fullName : objnull =
@@ -5368,17 +5364,6 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
     // unreadable symbol into a skipped project. `false` on failure is the
     // fail-closed answer: a constructor read as an ordinary member composes a
     // name that matches nothing, so the site stays a divergence.
-    // Whether the compiler *made* this value rather than the author writing it.
-    // A destructuring parameter pattern (`let inline toUnit FakeUnit.FakeUnit =
-    // ()`) gives the parameter a synthetic `_arg1`, whose use spans the pattern
-    // — the same span as the union case the pattern matches. A consumer keyed on
-    // spans sees two answers for one site and cannot tell which is the author's
-    // without this.
-    let isCompilerGenerated : bool =
-        match u.Symbol with
-        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsCompilerGenerated with _ -> false)
-        | _ -> false
-
     let isConstructor : bool =
         match u.Symbol with
         | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsConstructor with _ -> false)
@@ -5393,6 +5378,38 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
         | :? FSharpMemberOrFunctionOrValue as m ->
             (try box m.LogicalName with _ -> null)
         | _ -> null
+    {| Assembly = assemblyName
+       FullName = qualifiedFullName
+       SymbolKind = symbolKind
+       GenericArity = genericArity
+       DeclaringPath = declaringPath
+       DeclaringNamespace = declaringNamespace
+       IsConstructor = isConstructor
+       LogicalName = logicalName |}
+
+/// Normalise one symbol use to the JSON shape the sema differential consumes:
+/// the symbol's display name, the use range, whether it is the defining
+/// occurrence, the declaration range (`null` for an out-of-any-file symbol),
+/// and — for resolving into referenced assemblies — the declaring assembly's
+/// simple name and the symbol's full name (`null` when FCS cannot produce
+/// them). The latter two let the consumer match an assembly resolution without
+/// a usable in-file declaration range.
+let private projectSymbolUse (u: FSharpSymbolUse) =
+    let declRange : objnull =
+        match u.Symbol.DeclarationLocation with
+        | Some r -> box r
+        | None -> null
+    let identity = symbolIdentity u
+    // Whether the compiler *made* this value rather than the author writing it.
+    // A destructuring parameter pattern (`let inline toUnit FakeUnit.FakeUnit =
+    // ()`) gives the parameter a synthetic `_arg1`, whose use spans the pattern
+    // — the same span as the union case the pattern matches. A consumer keyed on
+    // spans sees two answers for one site and cannot tell which is the author's
+    // without this.
+    let isCompilerGenerated : bool =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsCompilerGenerated with _ -> false)
+        | _ -> false
     // What a hover on this use could show as the symbol's type, and where the
     // symbol lives: present for a value — a local or parameter, a module-level
     // value or function, a member — and for a field, `null` for anything else
@@ -5424,18 +5441,18 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
         | :? FSharpField as f -> box {| Kind = box "field"; TypeCanon = canon (fun () -> f.FieldType) |}
         | _ -> null
     {| SymbolName = u.Symbol.DisplayName
-       LogicalName = logicalName
+       LogicalName = identity.LogicalName
        Value = value
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
        DeclRange = declRange
-       Assembly = assemblyName
-       FullName = qualifiedFullName
-       SymbolKind = symbolKind
-       GenericArity = genericArity
-       DeclaringPath = declaringPath
-       DeclaringNamespace = declaringNamespace
-       IsConstructor = isConstructor
+       Assembly = identity.Assembly
+       FullName = identity.FullName
+       SymbolKind = identity.SymbolKind
+       GenericArity = identity.GenericArity
+       DeclaringPath = identity.DeclaringPath
+       DeclaringNamespace = identity.DeclaringNamespace
+       IsConstructor = identity.IsConstructor
        IsCompilerGenerated = isCompilerGenerated |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
@@ -5536,7 +5553,11 @@ let private projectSymbolUseCensus (u: FSharpSymbolUse) =
        IsModule =
         (match ent with
          | Some e -> (try e.IsFSharpModule with _ -> false)
-         | None -> false) |}
+         | None -> false)
+       // Which declaration a use outside the checked file binds, so the
+       // resolution sweep can grade an answer into a referenced assembly as it
+       // grades one into the file.
+       Identity = symbolIdentity u |}
 
 /// Dump every symbol use FCS records for a single file, as the oracle for
 /// the `sema` name resolver. Per use we emit `{ SymbolName, Range,
@@ -6459,7 +6480,12 @@ let private usesProjectBatch () =
 /// line, and for each type-checks it *in isolation* as a single-file project —
 /// reusing the SDK reference set harvested once (by script resolution on the
 /// first usable path) — then emits one compact JSON line
-/// `{ Path, Ok, Error, HasCheckErrors, Uses: [classified-use] }`.
+/// `{ Path, Ok, Error, HasCheckErrors, References, Uses: [classified-use] }`.
+///
+/// `References` is every assembly the file was checked against (the `-r:`
+/// switches, `BORZOI_FCS_EXTRA_REFS` included; empty where no check ran), so
+/// a consumer can resolve under exactly the reference set the oracle used
+/// rather than a set it assembled by hand and hopes agrees.
 ///
 /// Unlike `uses` / `uses-project`, this NEVER aborts on a type error. A corpus
 /// file checked without its siblings cannot resolve cross-file names, but
@@ -6478,6 +6504,7 @@ let private dumpUsesCensusBatchCore () =
     // for every file so the expensive script resolution runs at most once.
     let mutable baseOpts: FSharpProjectOptions option = None
     let mutable switches: string[] = [||]
+    let mutable references: string[] = [||]
     let ensureRefs (absolute: string) =
         if baseOpts.IsNone then
             try
@@ -6491,6 +6518,10 @@ let private dumpUsesCensusBatchCore () =
                     so.OtherOptions
                     |> Array.filter (fun o -> o.StartsWith("-") || o.StartsWith("/"))
                     |> fun s -> Array.append s (extraRefArgs ())
+                references <-
+                    switches
+                    |> Array.filter (fun o -> o.StartsWith "-r:")
+                    |> Array.map (fun o -> o.Substring 3)
             with _ ->
                 ()
 
@@ -6509,6 +6540,7 @@ let private dumpUsesCensusBatchCore () =
                                Ok = false
                                Error = "reference resolution failed"
                                HasCheckErrors = false
+                               References = ([||]: string[])
                                Uses = ([||]: obj[]) |}, options)
                     | Some opts0 ->
                         let sourceText = SourceText.ofString (File.ReadAllText absolute)
@@ -6540,6 +6572,7 @@ let private dumpUsesCensusBatchCore () =
                                    Ok = true
                                    Error = ""
                                    HasCheckErrors = hasCheckErrors
+                                   References = references
                                    Uses = uses |}, options)
                         | FSharpCheckFileAnswer.Aborted ->
                             JsonSerializer.Serialize(
@@ -6547,6 +6580,7 @@ let private dumpUsesCensusBatchCore () =
                                    Ok = false
                                    Error = "type-check aborted"
                                    HasCheckErrors = false
+                                   References = ([||]: string[])
                                    Uses = ([||]: obj[]) |}, options)
                 with ex ->
                     JsonSerializer.Serialize(
@@ -6554,6 +6588,7 @@ let private dumpUsesCensusBatchCore () =
                            Ok = false
                            Error = ex.Message
                            HasCheckErrors = false
+                           References = ([||]: string[])
                            Uses = ([||]: obj[]) |}, options)
             Console.Out.WriteLine(json)
             Console.Out.Flush()
