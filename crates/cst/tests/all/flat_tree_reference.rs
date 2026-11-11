@@ -320,6 +320,9 @@ fn check_skipping_preorder(p: &Pair, f: &SyntaxNode, r: &RNode) {
     assert_eq!(fev, rev, "preorder + skip_subtree");
 }
 
+/// How many tokens' offsets a [`Depth::Local`] check samples per file.
+const LOCAL_OFFSET_SAMPLES: usize = 2000;
+
 fn check_offsets(p: &Pair, f: &SyntaxNode, r: &RNode, depth: Depth) {
     let tokens: Vec<TextRange> = r
         .descendants_with_tokens()
@@ -327,13 +330,15 @@ fn check_offsets(p: &Pair, f: &SyntaxNode, r: &RNode, depth: Depth) {
         .map(|t| t.text_range())
         .collect();
     // `Full`: every offset, and a covering range from every token. `Local`:
-    // every 16th token's boundaries and one offset inside it, and covering
-    // ranges from those tokens only. Each query scans sibling lists linearly
-    // on both sides, so all of them over a corpus file is quadratic; the
-    // exhaustive generated inputs check every offset.
+    // at most `LOCAL_OFFSET_SAMPLES` evenly spaced tokens' boundaries and one
+    // offset inside each, and covering ranges from those tokens only. Each
+    // query scans a sibling list linearly on both sides, so all of them over
+    // a corpus file is quadratic (a 3.6 MB file of one flat module took six
+    // minutes at every 16th token); the exhaustive generated inputs check
+    // every offset.
     let stride = match depth {
         Depth::Full => 1,
-        Depth::Local => 16,
+        Depth::Local => tokens.len().div_ceil(LOCAL_OFFSET_SAMPLES).max(1),
     };
     let offsets: Vec<TextSize> = match depth {
         Depth::Full => (0..=u32::from(f.text_range().end()))
