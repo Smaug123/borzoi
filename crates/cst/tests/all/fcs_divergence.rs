@@ -21,8 +21,8 @@
 //! * `ast_divergence.txt` — both clean and both normalise, but the normalised
 //!   ASTs differ. A real parser bug or a normaliser asymmetry. One path per line.
 //! * `uncompared_fcs_unmodeled.txt` — both clean, but normalising one side
-//!   panicked: a construct the shared normaliser doesn't model yet (or an AST
-//!   too deep for `serde_json`). Can't be compared. One path per line.
+//!   panicked: a construct the shared normaliser doesn't model yet. Can't be
+//!   compared. One path per line.
 //! * `our_parser_panics.txt` — our parser itself panicked. One path per line.
 //! * `uncompared_other.txt` — couldn't even get that far: `(json parse failure)`
 //!   (the JSONL line didn't parse), `<path>\t(unreadable)` (we couldn't read the
@@ -49,6 +49,7 @@ use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::common::corpus_manifest::{check_manifest, regenerate};
+use crate::common::fcs_record::on_deep_stack;
 use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
 use crate::common::{catch_unwind_silent, corpus_root, fcs_ast_batch};
 
@@ -147,11 +148,15 @@ fn regenerate_fcs_divergence() {
 
     let mut b = Buckets::default();
 
-    for path in &files {
-        let line = fcs_ast_batch(path);
-        b.seen += 1;
-        classify(&line, path, &symbols, &mut b);
-    }
+    // A file's FCS record, and our trees over it, may be as deep as fcs-dump
+    // emits.
+    on_deep_stack(|| {
+        for path in &files {
+            let line = fcs_ast_batch(path);
+            b.seen += 1;
+            classify(&line, path, &symbols, &mut b);
+        }
+    });
 
     assert_eq!(
         b.seen,

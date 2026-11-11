@@ -227,12 +227,11 @@ fn grade_cell(source: &str) -> Cell {
             )),
         };
     }
-    match grade(&parse, &HashSet::new(), &json, source) {
-        Ok(v) if v.relation == Relation::Divergent => {
-            Cell::Divergent(format!("{source:?} {}", v.token()))
-        }
-        Ok(_) => Cell::Agree { accepted: false },
-        Err(e) => Cell::Failure(format!("{source:?}: FCS record unreadable: {e}")),
+    let verdict = grade(&parse, &HashSet::new(), &json, source);
+    if verdict.relation == Relation::Divergent {
+        Cell::Divergent(format!("{source:?} {}", verdict.token()))
+    } else {
+        Cell::Agree { accepted: false }
     }
 }
 

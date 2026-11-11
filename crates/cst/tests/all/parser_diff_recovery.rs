@@ -463,12 +463,11 @@ fn recover_debris_grid_matches_fcs() {
             crate::common::fcs_ast_batch(tmp.path())
         };
         let parse = borzoi_cst::parser::parse(src);
-        let verdict =
-            grade(&parse, &Default::default(), &json, src).expect("FCS record is readable");
+        let verdict = grade(&parse, &Default::default(), &json, src);
         if verdict.relation == Relation::Divergent {
             divergent.push(format!("{cell} | divergent"));
         }
-        let fcs = fcs_units(&json, src).expect("FCS record is readable");
+        let fcs = fcs_units(&json, src);
         let ours = our_units(&parse);
         for unit in fcs.iter().filter(|u| u.key.start >= head) {
             if !ours.iter().any(|o| o.key == unit.key) {
@@ -525,7 +524,7 @@ fn recover_continuation_columns_count_utf16_units() {
     let fcs = {
         let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
         std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
-        fcs_units(&crate::common::fcs_ast_batch(tmp.path()), src).expect("FCS record is readable")
+        fcs_units(&crate::common::fcs_ast_batch(tmp.path()), src)
     };
     assert!(has_after(&fcs), "FCS keeps `after`");
     assert!(
@@ -1008,7 +1007,7 @@ fn recover_nested_module_scope_after_a_broken_declaration_matches_fcs() {
             let mut tmp = tempfile::NamedTempFile::with_suffix(".fs").expect("create tempfile");
             std::io::Write::write_all(&mut tmp, src.as_bytes()).expect("write source");
             let json = crate::common::fcs_ast_batch(tmp.path());
-            fcs_units(&json, src).expect("FCS record is readable")
+            fcs_units(&json, src)
         };
         let ours = our_units(&borzoi_cst::parser::parse(src));
         // Each module, by how many modules enclose its declarations.

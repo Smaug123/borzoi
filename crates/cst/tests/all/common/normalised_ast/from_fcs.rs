@@ -26,7 +26,7 @@ use super::model::*;
 /// recovery-AST tests use the tree even when `ParseHadErrors` is true. Callers
 /// that mean "FCS accepts" must check `ParseHadErrors` before comparing trees.
 pub fn normalise_fcs_dump(json: &str) -> NormalisedRoot {
-    let dump: Value = serde_json::from_str(json).expect("fcs-dump JSON shape");
+    let dump = crate::common::fcs_record::read_fcs_record(json);
     let parse_tree = dump
         .get("ParseTree")
         .expect("fcs-dump payload missing ParseTree");

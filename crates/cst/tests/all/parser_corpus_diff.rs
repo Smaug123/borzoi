@@ -136,8 +136,7 @@ enum Bucket {
     OurParsePanicked,
     /// Our normaliser does not model a construct in our (clean) tree.
     OurNormaliserUnmodelled,
-    /// FCS's tree did not normalise: a construct `from_fcs` does not model, or
-    /// a tree deeper than `serde_json`'s recursion limit.
+    /// FCS's tree did not normalise: a construct `from_fcs` does not model.
     FcsNormaliserUnmodelled,
     /// `ast-batch` reported a per-file FCS failure (`{Path, Error}`).
     FcsError,
@@ -224,7 +223,7 @@ impl Outcome {
     ) -> Self {
         let mut reads = BTreeSet::new();
         let recovery = match catch_unwind_silent(|| record(|| grade(parse, symbols, line, src))) {
-            Ok((Ok(v), graded_reads)) => {
+            Ok((v, graded_reads)) => {
                 // An exact recovered tree was compared whole, so everything the
                 // grader read agreed with FCS.
                 if v.relation == Relation::Exact {
@@ -235,11 +234,6 @@ impl Outcome {
                     divergence: v.first_divergence,
                 }
             }
-            // FCS's tree is deeper than `serde_json` reads; nothing to grade.
-            Ok((Err(_), _)) => Recovery {
-                token: "fcs-unreadable".to_string(),
-                divergence: None,
-            },
             Err(_) => panic!("grading a recovered tree panicked"),
         };
         Outcome {
@@ -299,11 +293,6 @@ fn classify(
         return Outcome::recovered(bucket, &ours, symbols, line, src);
     }
 
-    // Normalise the FCS side *first*. Its internal full `Value` parse fails
-    // (caught here) on trees deeper than `serde_json`'s default recursion
-    // limit, so a pathologically deep file is skipped before our own
-    // recursive-descent parser ever runs on it — keeping that parser, which
-    // we do not run under a guard stack, off stack-overflow-deep input.
     let Ok(fcs_norm) = catch_unwind_silent(|| normalise_fcs_dump(line)) else {
         return Outcome::bucket(Bucket::FcsNormaliserUnmodelled);
     };

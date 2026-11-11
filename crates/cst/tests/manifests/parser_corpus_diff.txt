@@ -2,71 +2,13 @@
 # Regenerate with:
 #   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-cst --test all parser_corpus_diff:: -- --ignored
 (corpus)	files=6355
-.github/skills/fsharp-diagnostics/server/Server.fs	fcs-normaliser-unmodelled
-buildtools/fslex/Parsing.fs	fcs-normaliser-unmodelled
-buildtools/fslex/fslexlex.fs	fcs-normaliser-unmodelled
-buildtools/fslex/fslexpars.fs	fcs-normaliser-unmodelled
-buildtools/fsyacc/Parsing.fs	fcs-normaliser-unmodelled
-buildtools/fsyacc/fsyaccast.fs	fcs-normaliser-unmodelled
-buildtools/fsyacc/fsyaccdriver.fs	fcs-normaliser-unmodelled
-buildtools/fsyacc/fsyacclex.fs	fcs-normaliser-unmodelled
-buildtools/fsyacc/fsyaccpars.fs	fcs-normaliser-unmodelled
-docs/fcs-samples/FsiExe/console.fs	fcs-normaliser-unmodelled
-src/Compiler/AbstractIL/il.fs	fcs-normaliser-unmodelled
-src/Compiler/AbstractIL/ilascii.fs	fcs-normaliser-unmodelled
-src/Compiler/AbstractIL/ilbinary.fs	fcs-normaliser-unmodelled
-src/Compiler/AbstractIL/ilnativeres.fs	fcs-normaliser-unmodelled
-src/Compiler/AbstractIL/ilread.fs	fcs-normaliser-unmodelled
-src/Compiler/AbstractIL/ilwrite.fs	fcs-normaliser-unmodelled
-src/Compiler/AbstractIL/ilwritepdb.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/CheckDeclarations.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/CheckFormatStrings.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/CheckIncrementalClasses.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/ConstraintSolver.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/Expressions/CheckComputationExpressions.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/Expressions/CheckExpressions.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/MethodOverrides.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/NameResolution.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/NicePrint.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/PostInferenceChecks.fs	fcs-normaliser-unmodelled
-src/Compiler/Checking/SignatureConformance.fs	fcs-normaliser-unmodelled
-src/Compiler/CodeGen/EraseClosures.fs	fcs-normaliser-unmodelled
-src/Compiler/CodeGen/IlxGen.fs	fcs-normaliser-unmodelled
-src/Compiler/Driver/CompilerDiagnostics.fs	fcs-normaliser-unmodelled
-src/Compiler/Driver/CompilerImports.fs	fcs-normaliser-unmodelled
-src/Compiler/Driver/FxResolver.fs	fcs-normaliser-unmodelled
-src/Compiler/Driver/StaticLinking.fs	fcs-normaliser-unmodelled
-src/Compiler/Driver/fsc.fs	fcs-normaliser-unmodelled
-src/Compiler/Facilities/LanguageFeatures.fs	fcs-normaliser-unmodelled
-src/Compiler/Facilities/prim-parsing.fs	fcs-normaliser-unmodelled
-src/Compiler/Interactive/fsi.fs	fcs-normaliser-unmodelled
-src/Compiler/Optimize/LowerSequences.fs	fcs-normaliser-unmodelled
-src/Compiler/Optimize/LowerStateMachines.fs	fcs-normaliser-unmodelled
-src/Compiler/Service/FSharpCheckerResults.fs	fcs-normaliser-unmodelled
-src/Compiler/Service/FSharpParseFileResults.fs	fcs-normaliser-unmodelled
-src/Compiler/Service/IncrementalBuild.fs	fcs-normaliser-unmodelled
-src/Compiler/Service/SemanticClassification.fs	fcs-normaliser-unmodelled
+buildtools/fsyacc/fsyaccdriver.fs	range-divergent
 src/Compiler/Service/ServiceErrorResolutionHints.fs	both-reject exact 2/2/3
-src/Compiler/Service/ServiceLexing.fs	fcs-normaliser-unmodelled
-src/Compiler/Service/SynExpr.fs	fcs-normaliser-unmodelled
-src/Compiler/Service/TransparentCompiler.fs	fcs-normaliser-unmodelled
-src/Compiler/Symbols/Exprs.fs	fcs-normaliser-unmodelled
-src/Compiler/SyntaxTree/LexFilter.fs	fcs-normaliser-unmodelled
-src/Compiler/SyntaxTree/LexHelpers.fs	fcs-normaliser-unmodelled
-src/Compiler/SyntaxTree/ParseHelpers.fs	fcs-normaliser-unmodelled
-src/Compiler/SyntaxTree/PrettyNaming.fs	fcs-normaliser-unmodelled
-src/Compiler/SyntaxTree/SyntaxTree.fs	fcs-normaliser-unmodelled
-src/Compiler/TypedTree/TypedTreeOps.ExprOps.fs	fcs-normaliser-unmodelled
-src/Compiler/Utilities/sformat.fs	fcs-normaliser-unmodelled
-src/FSharp.Build/FSharpEmbedResourceText.fs	fcs-normaliser-unmodelled
-src/FSharp.Build/Fsc.fs	fcs-normaliser-unmodelled
 src/FSharp.Core/Nullable.fsi	both-reject outside-damage 24/24/59
 src/FSharp.Core/Query.fs	both-reject divergent 206/206/207
 src/FSharp.Core/Query.fsi	both-reject outside-damage 15/15/16
-src/FSharp.Core/array.fs	fcs-normaliser-unmodelled
 src/FSharp.Core/array2.fs	we-accept-fcs-rejects divergent 9/11/14 beyond-fcs:12
 src/FSharp.Core/array3.fs	we-accept-fcs-rejects outside-damage 7/10/12 beyond-fcs:15
-src/FSharp.Core/async.fs	fcs-normaliser-unmodelled
 src/FSharp.Core/fslib-extra-pervasives.fsi	both-reject outside-damage 45/45/51
 src/FSharp.Core/local.fs	both-reject outside-damage 21/21/24 beyond-fcs:111
 src/FSharp.Core/nativeptr.fs	we-accept-fcs-rejects divergent 3/10/14 beyond-fcs:8
@@ -74,15 +16,9 @@ src/FSharp.Core/prim-types-prelude.fs	we-accept-fcs-rejects outside-damage 27/27
 src/FSharp.Core/prim-types-prelude.fsi	we-accept-fcs-rejects outside-damage 28/28/63
 src/FSharp.Core/prim-types.fs	both-reject divergent 97/97/104 beyond-fcs:364
 src/FSharp.Core/prim-types.fsi	both-reject outside-damage 490/490/562
-src/FSharp.Core/quotations.fs	fcs-normaliser-unmodelled
 src/FSharp.Core/seqcore.fs	both-reject outside-damage 47/48/51
-src/fsi/console.fs	fcs-normaliser-unmodelled
-tests/AheadOfTime/Trimming/Program.fs	fcs-normaliser-unmodelled
-tests/EndToEndBuildTests/ProvidedTypes/ProvidedTypes.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/CompilerDirectives/Nowarn.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/codepage/libCodepage.fs	non-utf8
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/times/times01.fs	both-reject exact 8/8/10
-tests/FSharp.Compiler.ComponentTests/CompilerService/AsyncMemoize.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnTypeMembers/E_OnProperty02.fs	both-reject outside-damage 1/1/1
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface.fs	both-reject outside-damage 3/3/4
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/PermittedLocations/E_accessibilityOnInterface01.fs	both-reject outside-damage 3/3/4
@@ -129,24 +65,17 @@ tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbrev
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/TypeAbbreviations/E_UnexpectedCharInTypeName01.fs	both-reject outside-damage 0/0/2
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ApplicationExpressions/BasicApplication/E_PostfixType01.fs	both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ApplicationExpressions/BasicApplication/E_PostfixType03.fs	both-reject outside-damage 1/1/1 beyond-fcs:1
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/ComputationExpressions/Capacity01.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/E_WhitespaceErrors02.fs	both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Joins01.fs	non-utf8
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Linq101Ordering01.fs	non-utf8
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/OperatorsOverClass01.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/OperatorsOverRecords01.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/OperatorsOverTuples01.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/UppercaseIdentifier04.fs	non-utf8
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/QueryExpressions/Utils.fs	non-utf8
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/E_final_yield_dash_gt_01.fs	both-reject outside-damage 2/2/3
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/DataExpressions/SequenceExpressions/ReallyLongArray01.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_InvalidQuotationLiteral01.fs	both-reject outside-damage 0/0/1 beyond-fcs:1
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators01.fs	both-reject outside-damage 4/4/5
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators02.fs	both-reject exact 1/1/3
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators03.fs	both-reject exact 1/1/3
 tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/ExpressionQuotations/Regressions/E_QuotationOperators04.fs	both-reject outside-damage 2/2/3
-tests/FSharp.Compiler.ComponentTests/Conformance/Expressions/OverloadResolutionBasicTests.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/Conformance/InferenceProcedures/ByrefSafetyAnalysis/ByrefSafetyAnalysis.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/Conformance/LexicalFiltering/OffsideExceptions/RelaxWhitespace2.fs	we-reject-fcs-accepts outside-damage 344/344/346
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AsDeclarations/SanityCheck02.fs	both-reject outside-damage 5/5/6
 tests/FSharp.Compiler.ComponentTests/Conformance/ObjectOrientedTypeDefinitions/ClassTypes/AutoProperties/E_IllegalName01.fs	both-reject outside-damage 1/1/1 beyond-fcs:1
@@ -180,8 +109,6 @@ tests/FSharp.Compiler.ComponentTests/EmittedIL/Inlining/Match02.fs	range-diverge
 tests/FSharp.Compiler.ComponentTests/EmittedIL/QueryExpressionStepping/Utils.fs	non-utf8
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DerivedType.fs	both-reject exact 3/3/4
 tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/DoNotInlineX.fs	both-reject outside-damage 9/9/10
-tests/FSharp.Compiler.ComponentTests/EmittedIL/Structure/LocalTypeFunctionInIf.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/FSharpChecker/TransparentCompiler.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_emptyRecord.fsx	both-reject exact 2/2/3
 tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal01.fsx	both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_equal_n01.fs.fsx	both-reject outside-damage 2/2/3
@@ -192,13 +119,9 @@ tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_id_
 tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_let_mutable_equal.fsx	both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_module_mutable_id_equal.fsx	both-reject outside-damage 0/0/1
 tests/FSharp.Compiler.ComponentTests/InteractiveSession/ErrorTestCases/E_type_id_equal_pipe.fsx	both-reject exact 2/2/3
-tests/FSharp.Compiler.ComponentTests/Miscellaneous/ReallyLongList01.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/innerpoly.fsx	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/libtest.fsx	fcs-normaliser-unmodelled
+tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/libtest.fsx	range-divergent
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/measures.fsx	range-divergent
 tests/FSharp.Compiler.ComponentTests/Signatures/TestCasesForGenerationRoundTrip/members_basics.fs	range-divergent
-tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/QueryTrieTests.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.ComponentTests/TypeChecks/Graph/Scenarios.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/AlternateGenericTypeSyntax01.fs	both-reject outside-damage 5/5/6
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/DeclarationElements/ObjectConstructors/E_MissingArgumentForGetterProp01.fs	both-reject outside-damage 2/2/3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/ImplementationFilesAndSignatureFiles/CheckingOfImplementationFiles/E-SignatureAfterSource.fsi	range-divergent
@@ -260,7 +183,6 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFilterin
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/E_UnclosedLetBlock01.fs	both-reject exact 1/1/2
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/LexicalFiltering/HashLight/W_OffsideAccessibility01.fs	both-reject outside-damage 1/1/1 beyond-fcs:3
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/Signatures/SignatureConformance/MissingMethodInImplementation01.fsi	range-divergent
-tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_Regression02.fs	fcs-normaliser-unmodelled
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/CheckingSyntacticTypes/E_Regressions01.fs	both-reject exact 11/11/15
 tests/FSharp.Compiler.ComponentTests/resources/tests/Conformance/TypesAndTypeConstraints/TypeParameterDefinitions/E_LazyInType02.fs	both-reject outside-damage 3/3/4
 tests/FSharp.Compiler.ComponentTests/resources/tests/Diagnostics/General/E_AsBindingOnInheritDecl01.fs	both-reject exact 1/1/2
@@ -331,53 +253,18 @@ tests/FSharp.Compiler.ComponentTests/resources/tests/InteractiveSession/Misc/Pip
 tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/E_productioncoverage01.fs	both-reject exact 3/3/4
 tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/E_productioncoverage03.fs	both-reject outside-damage 1/1/7
 tests/FSharp.Compiler.ComponentTests/resources/tests/Misc/productioncoverage01.fs	we-reject-fcs-accepts outside-damage 27/27/28
-tests/FSharp.Compiler.Service.Tests/EditorTests.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.Service.Tests/ExprTests.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.Service.Tests/MultiProjectAnalysisTests.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.Service.Tests/PerfTests.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.Service.Tests/ProjectAnalysisTests.fs	fcs-normaliser-unmodelled
-tests/FSharp.Compiler.Service.Tests/Symbols.fs	fcs-normaliser-unmodelled
 tests/FSharp.Core.UnitTests/FSharp.Core/ComparersRegression.fs	fcs-error
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/Array2Module.fs	fcs-normaliser-unmodelled
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Collections/SeqModule2.fs	fcs-normaliser-unmodelled
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/Cancellation.fs	fcs-normaliser-unmodelled
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Control/ContinuationsThreadingDetailsStandaloneExe.fs	fcs-normaliser-unmodelled
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/BigIntType.fs	fcs-normaliser-unmodelled
-tests/FSharp.Core.UnitTests/FSharp.Core/Microsoft.FSharp.Core/IntConversionsTestGenerator.fsx	fcs-normaliser-unmodelled
-tests/FSharp.Core.UnitTests/FSharp.Core/OperatorsModule2.fs	fcs-normaliser-unmodelled
-tests/FSharp.Core.UnitTests/FSharp.Core/PrimTypes.fs	fcs-normaliser-unmodelled
 tests/FSharp.Core.UnitTests/FSharp.Core/RecordTypes.fs	we-reject-fcs-accepts divergent 27/27/29
-tests/FSharp.Test.Utilities/TestFramework.fs	fcs-normaliser-unmodelled
-tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest1.fs	fcs-normaliser-unmodelled
-tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest10.fs	fcs-normaliser-unmodelled
-tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE100xnest5.fs	fcs-normaliser-unmodelled
-tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CE200xnest5.fs	fcs-normaliser-unmodelled
-tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CEwCO100xnest5.fs	fcs-normaliser-unmodelled
-tests/benchmarks/FCSBenchmarks/CompilerServiceBenchmarks/ce/CEwCO500xnest1.fs	fcs-normaliser-unmodelled
-tests/benchmarks/FCSBenchmarks/FCSSourceFiles/Program.fs	fcs-normaliser-unmodelled
-tests/fsharp/Compiler/Libraries/Core/LanguagePrimitives/StringFormatTests.fs	fcs-normaliser-unmodelled
 tests/fsharp/core/attributes/test.fsx	range-divergent
-tests/fsharp/core/auto-widen/5.0/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/auto-widen/preview-default-warns/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/auto-widen/preview/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/csext/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/innerpoly/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/large/conditionals/LargeConditionals-200.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/conditionals/LargeConditionals-maxtested.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/lets/LargeLets-500.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/lets/LargeLets-maxtested.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/lists/LargeList-500.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/matches/LargeMatches-200.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/matches/LargeMatches-maxtested.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/mixed/LargeSequentialLet-500.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/mixed/LargeSequentialLet-maxtested.fs	fcs-normaliser-unmodelled
-tests/fsharp/core/large/sequential/LargeSequential-500.fs	fcs-normaliser-unmodelled
+tests/fsharp/core/large/conditionals/LargeConditionals-maxtested.fs	we-reject-fcs-accepts divergent 2/4/5
+tests/fsharp/core/large/lets/LargeLets-500.fs	we-reject-fcs-accepts divergent 2/4/5
+tests/fsharp/core/large/lets/LargeLets-maxtested.fs	we-reject-fcs-accepts divergent 2/4/5
+tests/fsharp/core/large/mixed/LargeSequentialLet-500.fs	we-reject-fcs-accepts divergent 2/4/5
+tests/fsharp/core/large/mixed/LargeSequentialLet-maxtested.fs	we-reject-fcs-accepts divergent 2/4/5
 tests/fsharp/core/large/sequential/LargeSequential-maxtested.fs	fcs-error
-tests/fsharp/core/libtest/test.fsx	fcs-normaliser-unmodelled
+tests/fsharp/core/libtest/test.fsx	range-divergent
 tests/fsharp/core/load-script/loadfail1.fsx	both-reject exact 0/0/2
 tests/fsharp/core/longnames/test.fsx	range-divergent
-tests/fsharp/core/math/numbers/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/math/numbersVS2008/test.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/measures/test.fsx	range-divergent
 tests/fsharp/core/members/absil.fs	both-reject divergent 0/0/1
 tests/fsharp/core/members/absil.fsi	both-reject divergent 15/15/17 beyond-fcs:532
@@ -385,18 +272,12 @@ tests/fsharp/core/members/basics-hw/test.fsx	we-reject-fcs-accepts divergent 177
 tests/fsharp/core/members/basics/test.fs	range-divergent
 tests/fsharp/core/members/console/console2.fs	both-reject divergent 5/5/7
 tests/fsharp/core/nested/test.fsx	range-divergent
-tests/fsharp/core/printf-interpolated/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/printf/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/printing/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/quotes/test.fsx	fcs-normaliser-unmodelled
+tests/fsharp/core/printing/test.fsx	we-reject-fcs-accepts outside-damage 586/586/587
+tests/fsharp/core/quotes/test.fsx	we-reject-fcs-accepts outside-damage 965/965/967
 tests/fsharp/core/recordResolution/test.fsx	we-reject-fcs-accepts divergent 34/40/42
-tests/fsharp/core/subtype/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/core/topinit/generate.fsx	fcs-normaliser-unmodelled
 tests/fsharp/core/unicode/kanji-unicode-utf16.fs	non-utf8
 tests/fsharp/core/unicode/kanji-unicode-utf7-codepage-65000.fs	both-reject outside-damage 1/1/3
-tests/fsharp/regression/12322/test.fsx	fcs-normaliser-unmodelled
-tests/fsharp/tests.fs	fcs-normaliser-unmodelled
-tests/fsharp/typeProviders/helloWorld/provider.fsx	fcs-normaliser-unmodelled
+tests/fsharp/regression/12322/test.fsx	we-reject-fcs-accepts divergent 7/493/494
 tests/fsharp/typecheck/sigs/neg01a.fs	both-reject outside-damage 7/7/8
 tests/fsharp/typecheck/sigs/neg01a.fsi	both-reject outside-damage 10/10/11
 tests/fsharp/typecheck/sigs/neg02.fs	both-reject divergent 1/1/2
@@ -442,7 +323,7 @@ tests/fsharp/typecheck/sigs/neg83.fsx	both-reject exact 1/1/2
 tests/fsharp/typecheck/sigs/neg84.fsx	both-reject exact 1/1/2
 tests/fsharp/typecheck/sigs/neg86.fsx	both-reject outside-damage 7/7/8
 tests/fsharp/typecheck/sigs/neg_anon_2.fs	both-reject outside-damage 0/0/3
-tests/fsharp/typecheck/sigs/pos24.fs	fcs-normaliser-unmodelled
+tests/fsharp/typecheck/sigs/pos24.fs	we-reject-fcs-accepts outside-damage 1/1/2
 tests/service/data/SyntaxTree/Exception/Missing name 01.fs	both-reject exact 1/1/3
 tests/service/data/SyntaxTree/Exception/Missing name 02.fs	both-reject outside-damage 1/1/3
 tests/service/data/SyntaxTree/Exception/Missing name 03.fs	both-reject exact 1/1/3
@@ -903,27 +784,8 @@ tests/service/data/SyntaxTree/UnionCase/Missing name 09.fs	both-reject exact 1/1
 tests/service/data/SyntaxTree/UnionCase/Recover Function Type 01.fs	both-reject outside-damage 2/2/3
 tests/service/data/SyntaxTree/UnionCase/Recover Function Type 02.fs	both-reject outside-damage 2/2/3
 tests/service/data/SyntaxTree/UnionCase/Recover Function Type 03.fs	both-reject outside-damage 2/2/3
-tests/service/data/TestTP/ProvidedTypes.fs	fcs-normaliser-unmodelled
-tests/service/data/TestTP/TestTP.fs	fcs-normaliser-unmodelled
+tests/service/data/TestTP/ProvidedTypes.fs	we-reject-fcs-accepts divergent 534/1240/1242
 vsintegration/ItemTemplates/CodeFile/Template/File.fs	both-reject outside-damage 0/0/1
 vsintegration/ProjectTemplates/LibraryProject/Template/Library1.fs	both-reject outside-damage 0/0/1
 vsintegration/ProjectTemplates/LibraryProject/Template/Script.fsx	both-reject exact 2/2/3
-vsintegration/src/FSharp.Editor/CodeFixes/AddOpenCodeFixProvider.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.Editor/CodeFixes/ImplementInterface.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.Editor/CodeFixes/RemoveUnnecessaryParentheses.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.Editor/Commands/XmlDocCommandService.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.Editor/Completion/CompletionProvider.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.Editor/Completion/SignatureHelp.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.Editor/Navigation/GoToDefinition.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.Editor/Refactor/AddExplicitTypeToParameter.fs	fcs-normaliser-unmodelled
-vsintegration/src/FSharp.ProjectSystem.FSharp/Project.fs	fcs-normaliser-unmodelled
-vsintegration/tests/FSharp.Editor.Tests/CodeFixes/RemoveUnnecessaryParenthesesTests.fs	fcs-normaliser-unmodelled
-vsintegration/tests/MockTypeProviders/DummyProviderForLanguageServiceTesting/ProvidedTypes.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.GotoDefinition.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.NavigationBar.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.ParameterInfo.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/LegacyLanguageService/Tests.LanguageService.Script.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/LegacyProjectSystem/Tests.ProjectSystem.Miscellaneous.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/LegacyProjectSystem/Tests.ProjectSystem.Project.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/LegacyProjectSystem/Tests.ProjectSystem.UpToDate.fs	fcs-normaliser-unmodelled
-vsintegration/tests/UnitTests/Tests.Build.fs	fcs-normaliser-unmodelled
+vsintegration/src/FSharp.ProjectSystem.FSharp/Project.fs	range-divergent

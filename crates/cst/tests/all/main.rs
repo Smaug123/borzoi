@@ -14,6 +14,7 @@ mod ast_projection;
 mod corpus;
 mod corpus_walk;
 mod fcs_divergence;
+mod fcs_record_stack_bound;
 mod kind_name_totality;
 mod langversion_gate;
 mod layout_perturbation_sweep;

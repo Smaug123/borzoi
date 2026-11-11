@@ -18,6 +18,7 @@
 
 pub mod accessor_coverage;
 pub mod corpus_manifest;
+pub mod fcs_record;
 pub mod normalised_ast;
 mod range_audit;
 pub mod recovery;
@@ -54,6 +55,10 @@ pub use borzoi_oracle_harness::panic_silence::catch_unwind_silent;
 /// `f` runs on worker threads, so whatever it builds must be `Send` to come
 /// back; a rowan tree is not, so a sweep hands it an index and parses there.
 /// A panic in `f` is re-raised here with its own payload.
+///
+/// The workers have the deep stack ([`fcs_record::spawn_deep`]): a corpus
+/// file's FCS record, and our own trees over it, may be as deep as fcs-dump
+/// emits.
 pub fn par_map<T: Send>(len: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     let workers = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
@@ -63,7 +68,7 @@ pub fn par_map<T: Send>(len: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     let mut out: Vec<(usize, T)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
-                scope.spawn(|| {
+                fcs_record::spawn_deep(scope, || {
                     let mut mine = Vec::new();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
