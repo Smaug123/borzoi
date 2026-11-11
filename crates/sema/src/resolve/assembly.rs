@@ -986,7 +986,7 @@ impl<'a> Resolver<'a> {
     /// opens **latest-first** (F# is latest-open-wins, not ambiguity), and within
     /// one open its readings as the group orders them (relative before merged
     /// root — see [`OpenGroup`](super::state::OpenGroup)). The one walk order for
-    /// every consumer of [`imports`](Self::imports), so a consumer cannot invert
+    /// every consumer of [`imports`](super::open_scope::OpenScope::imports), so a consumer cannot invert
     /// the precedence.
     ///
     /// Each reading is tagged with the [`DeclineTier`] it belongs to. The
@@ -996,7 +996,8 @@ impl<'a> Resolver<'a> {
     /// here rather than at the consumers is what keeps the two from drifting.
     pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = (DeclineTier, &[String])> {
         let implicit = self.implicit_import_count;
-        self.imports
+        self.opens
+            .imports()
             .iter()
             .enumerate()
             .rev()
@@ -1021,7 +1022,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn explicit_open_reading_prefixes(
         &self,
     ) -> impl Iterator<Item = (DeclineTier, &[String])> {
-        self.imports[self.implicit_import_count..]
+        self.opens.imports()[self.implicit_import_count..]
             .iter()
             .rev()
             .flat_map(|open| {
@@ -1553,7 +1554,7 @@ impl<'a> Resolver<'a> {
     /// nested**. A *plain* `open` of such a type does not import its statics
     /// unqualified (only `open type` does — see [`Self::open_type_statics`]); the
     /// caller uses this only to classify the open — a *module* makes bare-name
-    /// resolution opaque ([`Self::opaque_value_open`]), a *class* brings nothing
+    /// resolution opaque ([`OpenScope::opaque_value_open`](super::open_scope::OpenScope::opaque_value_open)), a *class* brings nothing
     /// unqualified — and either way to suppress the (namespace) opens we model for
     /// *qualified* paths, since the opened type's nested types are unmodelled.
     /// `None` for a namespace path.
@@ -1684,13 +1685,13 @@ impl<'a> Resolver<'a> {
     /// accessible assembly type, or is ambiguous across distinct opens (F# breaks
     /// that by latest-open precedence, which we do not model, so we decline rather
     /// than guess). The explicit-open and enclosing-namespace tiers are suppressed
-    /// while an [`unmodelled_open_active`](Self::unmodelled_open_active) prior open
+    /// while an [`unmodelled_open_active`](super::open_scope::OpenScope::unmodelled_open_active) prior open
     /// could shorten the name through a path we cannot see; a fully-qualified
     /// path (tier 3) needs no open, so it is still honoured.
     pub(super) fn opened_type_target(&self, path: &[String]) -> Option<EntityHandle> {
         // The shortening tiers (explicit opens, enclosing namespace) only when no
         // unmodelled open could invisibly provide the name.
-        if !self.unmodelled_open_active {
+        if !self.opens.unmodelled_open_active() {
             // Tier 1 — opens, in the shared [`Self::open_reading_prefixes`] order
             // (latest-open-first; within an open relative-before-root), mirroring
             // [`Self::resolve_assembly_path_tiered`]. So in `namespace Demo; open

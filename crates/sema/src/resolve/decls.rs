@@ -984,9 +984,8 @@ impl<'a> Resolver<'a> {
                 // priority; see `attribute_candidate`, `decide_type_path`). An
                 // open is scoped to its module, so leaving a nested module
                 // restores the position.
-                self.latest_open_pos = self
-                    .latest_open_pos
-                    .max(open.syntax().text_range().start().into());
+                self.opens
+                    .note_open_at(open.syntax().text_range().start().into());
                 if open.is_type() {
                     // The opened type is the `ty()` child (a `Type`), not
                     // `long_ident()`. (Our parser does not accept a `global`-
@@ -1038,11 +1037,10 @@ impl<'a> Resolver<'a> {
                         // filtered above): nothing is modelled, so bare-name
                         // resolution stays conservative.
                         None => {
-                            self.opaque_value_open = true;
-                            self.open_generation += 1;
+                            self.opens.make_values_opaque();
                         }
                     }
-                    self.unmodelled_open_active = true;
+                    self.opens.make_unmodelled();
                     // EX-2: `open type T` brings T's static content into unqualified
                     // scope, not an instance/static extension into any *method group*
                     // — but a name-keyed claim about that surface would have to
@@ -1100,11 +1098,9 @@ impl<'a> Resolver<'a> {
                     // would bind the hidden one's values at this higher priority (round
                     // 10). We cannot prove absence, so we decline to name a target.
                     let vetoed_by_incomplete_prefix =
-                        !rooted && !path.is_empty() && !self.incomplete_open_prefixes.is_empty();
+                        !rooted && !path.is_empty() && !self.opens.incomplete_prefixes().is_empty();
                     if vetoed_by_incomplete_prefix {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
-                        self.unmodelled_open_active = true;
+                        self.opens.make_wholly_opaque();
                     }
                     // **A dropped TypeDef can BE the module this open names**
                     // (codex round 23). When projection dropped the only entity
@@ -1131,9 +1127,7 @@ impl<'a> Resolver<'a> {
                                     })
                             });
                     if names_uncovered_dropped_path {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
-                        self.unmodelled_open_active = true;
+                        self.opens.make_wholly_opaque();
                     }
                     // A module nested in a project `[<AutoOpen>]` module answers
                     // to its short name, which the walk cannot follow: what
@@ -1141,9 +1135,7 @@ impl<'a> Resolver<'a> {
                     let names_unlent_module =
                         !rooted && self.may_name_unlent_module(&path, &interps);
                     if names_unlent_module {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
-                        self.unmodelled_open_active = true;
+                        self.opens.make_wholly_opaque();
                     }
                     let project_resolved = interps.iter().any(|i| match i {
                         OpenInterpretation::Module(_) => true,
@@ -1168,7 +1160,7 @@ impl<'a> Resolver<'a> {
                         .any(|i| matches!(i, OpenInterpretation::Module(_)));
 
                     // Which readings apply — all of which feed
-                    // [`Resolver::imports`] (the assembly precedence walk —
+                    // [`OpenScope::imports`](super::open_scope::OpenScope::imports) (the assembly precedence walk —
                     // [`Self::resolve_assembly_path_tiered`] tries the relative
                     // before the root within this open and prefers this whole open
                     // over earlier ones, latest-open-wins):
@@ -1250,13 +1242,12 @@ impl<'a> Resolver<'a> {
                                 || self.assemblies.is_abbreviation(handle)
                             {
                                 if project_resolved {
-                                    self.open_generation += 1;
+                                    self.opens.raise_barrier();
                                 } else {
-                                    self.opaque_value_open = true;
-                                    self.open_generation += 1;
+                                    self.opens.make_values_opaque();
                                 }
                             }
-                            self.unmodelled_open_active = true;
+                            self.opens.make_unmodelled();
                             unmodelled = true;
                         }
                     }
@@ -1273,7 +1264,7 @@ impl<'a> Resolver<'a> {
                         })
                         .collect();
                     if !readings.is_empty() {
-                        self.imports.push(OpenGroup { readings });
+                        self.opens.push_import(OpenGroup { readings });
                     }
 
                     // **Project-opaque** fallback: an anonymous-root project module
@@ -1287,8 +1278,7 @@ impl<'a> Resolver<'a> {
                     // `open`'s value resolves — wrong; deferring is correct).
                     if !path.is_empty() && !module_opened && self.open_imports_project_values(&path)
                     {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
+                        self.opens.make_values_opaque();
                     }
 
                     // EX-2 (`docs/extension-scope-enumeration-plan.md`): classify this
@@ -1408,7 +1398,7 @@ impl<'a> Resolver<'a> {
                             && !(project_readings_only && !project_ns);
                         let group = self.assembly_fold_group(gp, &handles, assembly_ns_applies);
                         if group.barrier() {
-                            self.open_generation += 1;
+                            self.opens.raise_barrier();
                         }
                         // The project-module half's OWN hidden-values barrier
                         // (Q14's "may bring names we cannot enumerate" bump).
@@ -1458,7 +1448,7 @@ impl<'a> Resolver<'a> {
                                 .any(|path| path.starts_with(gp.as_slice()))
                             && !self.preceding.opaque_hidden_value_module(gp);
                         if bump_covered_by_screen {
-                            self.open_generation += 1;
+                            self.opens.raise_barrier();
                         }
                         // A group that hides names we cannot LIST needs more than the
                         // per-head staleness veto: the hidden name could itself be a
@@ -1471,25 +1461,25 @@ impl<'a> Resolver<'a> {
                         // its namespace half's types included — keep their dotted
                         // resolution.
                         if group.hides_names() {
-                            self.dotted_opacity.set_opaque();
+                            self.opens.make_dotted_opaque();
                         }
 
                         // -- The namespace reading's prefixes (the reading is a chain
                         // base for later opens — the shortening prefix — and a head
                         // candidate for the same-file module-qualified classifier,
-                        // [`Resolver::explicit_open_prefixes`]). Its *contents* are
+                        // [`OpenScope::explicit_prefixes`](super::open_scope::OpenScope::explicit_prefixes)). Its *contents* are
                         // folded above (assembly half) and below (project cases). A
                         // module alias produces no reading, so it stays out (codex
                         // round 1).
                         if has_reading {
-                            self.assembly_open_prefixes.push((pos, gp.clone()));
+                            self.opens.push_assembly_prefix(pos, gp.clone());
                             if !(project_readings_only && !project_ns) {
-                                self.open_shortening_prefixes.push(ShorteningPrefix {
+                                self.opens.push_shortening_prefix(ShorteningPrefix {
                                     path: gp.clone(),
                                     namespace_reading: true,
                                     module_reading: false,
                                 });
-                                self.explicit_open_prefixes.push((pos, gp.clone()));
+                                self.opens.push_explicit_prefix(pos, gp.clone());
                             }
                         }
 
@@ -1509,7 +1499,7 @@ impl<'a> Resolver<'a> {
                         // -- The assembly *module* half's dotted-head bookkeeping —
                         // keyed on the module handles, not the namespace surface.
                         if !handles.is_empty() {
-                            self.open_shortening_prefixes.push(ShorteningPrefix {
+                            self.opens.push_shortening_prefix(ShorteningPrefix {
                                 path: gp.clone(),
                                 namespace_reading: false,
                                 module_reading: true,
@@ -1527,7 +1517,7 @@ impl<'a> Resolver<'a> {
                                     .assemblies
                                     .any_split_of_a_module_path_has_a_dropped_type(gp)
                             {
-                                self.incomplete_open_prefixes.push(gp.clone());
+                                self.opens.push_incomplete_prefix(gp.clone());
                             }
                             // A *dotted head* through this module (`open M` then
                             // `Sub.f`) is not modelled yet (Slice B of the plan
@@ -1555,14 +1545,14 @@ impl<'a> Resolver<'a> {
                             // residue-bearing surface — an undecodable member could
                             // be the head — is covered by the hidden-name blanket
                             // above; `module_may_hide_nested_modules` feeds the
-                            // `incomplete_open_prefixes` veto separately.)
+                            // `OpenScope::incomplete_prefixes` veto separately.)
                             if handles.iter().any(|&h| {
                                 self.assemblies
                                     .children(h)
                                     .iter()
                                     .any(|&c| self.assemblies.is_public(c))
                             }) {
-                                self.dotted_opacity.set_opaque();
+                                self.opens.make_dotted_opaque();
                             }
                         }
 
@@ -1613,7 +1603,7 @@ impl<'a> Resolver<'a> {
                             // above: hidden names no screen bounds must stale
                             // this open's own assembly entries too.
                             if project_module_bump && !bump_covered_by_screen {
-                                self.open_generation += 1;
+                                self.opens.raise_barrier();
                             }
                             // An explicit `open M` brings M's own members, then
                             // its `[<AutoOpen>]` children's, as the namespace
@@ -1624,12 +1614,12 @@ impl<'a> Resolver<'a> {
                                 self.open_project_namespace_values(gp, pos);
                             }
                             self.module_open_contributions(gp, pos);
-                            self.module_open_prefixes.push((pos, gp.clone()));
+                            self.opens.push_module_prefix(pos, gp.clone());
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
                             // assembly module shares the FQN, the module-half push
                             // above covers it.
-                            self.open_shortening_prefixes.push(ShorteningPrefix {
+                            self.opens.push_shortening_prefix(ShorteningPrefix {
                                 path: gp.clone(),
                                 namespace_reading: false,
                                 module_reading: false,
@@ -1639,9 +1629,9 @@ impl<'a> Resolver<'a> {
                                 && !assembly_ns_applies
                                 && self.project_module_names_enumerable(gp)
                             {
-                                self.dotted_opacity.add_project_module(gp.clone());
+                                self.opens.add_dotted_project_module(gp.clone());
                             } else {
-                                self.dotted_opacity.set_opaque();
+                                self.opens.make_dotted_opaque();
                             }
                         }
                     }
@@ -1770,31 +1760,20 @@ impl<'a> Resolver<'a> {
         // Save every piece of module-scoped resolver *state* the body may mutate,
         // so an `open`, a nested type/module, or an `open type` inside the body
         // does not leak into the enclosing scope (F# scopes all of these to the
-        // module). `imports`, `open_shortening_prefixes`, `open_generation`,
-        // `unmodelled_open_active`, `opaque_value_open`, and `dotted_opacity`
-        // steer name resolution directly — a leaked `open Demo` would
-        // *mis-resolve* a later enclosing sibling through an import not in scope —
-        // so restoring them is a soundness requirement, not just hygiene;
-        // `nested_module_locals` restoration keeps an inner nested name from
-        // over-deferring an outer reference. The *opened* scope entries an
-        // `open type` pushes need no save/restore: they live in the body frame,
-        // which is popped and discarded below, so they vanish with it.
-        // (File-level accumulators — `items`, `defs`, `resolutions`,
-        // `nested_module_exports` — are the file's contribution and persist.)
+        // module). The open state ([`OpenScope`]) steers name resolution
+        // directly — a leaked `open Demo` would *mis-resolve* a later enclosing
+        // sibling through an import not in scope — so restoring it is a
+        // soundness requirement, not just hygiene; it is saved and restored
+        // whole, so no part of it can be missed. `nested_module_locals`
+        // restoration keeps an inner nested name from over-deferring an outer
+        // reference. The *opened* scope entries an `open type` pushes need no
+        // save/restore: they live in the body frame, which is popped and
+        // discarded below, so they vanish with it. (File-level accumulators —
+        // `items`, `defs`, `resolutions`, `nested_module_exports` — are the
+        // file's contribution and persist.)
         let saved_module_path = self.module_path.clone();
         let saved_container = self.container_path.mark();
-        let saved_imports = self.imports.clone();
-        let saved_open_shortening_prefixes = self.open_shortening_prefixes.clone();
-        let saved_incomplete_open_prefixes = self.incomplete_open_prefixes.clone();
-        let saved_explicit_open_prefixes = self.explicit_open_prefixes.clone();
-        let saved_module_open_prefixes = self.module_open_prefixes.clone();
-        let saved_assembly_open_prefixes = self.assembly_open_prefixes.clone();
-        let saved_open_generation = self.open_generation;
-        let saved_pattern_suppressed_case_ids = self.pattern_suppressed_case_ids.clone();
-        let saved_unmodelled_open = self.unmodelled_open_active;
-        let saved_opaque_value_open = self.opaque_value_open;
-        let saved_dotted_opacity = self.dotted_opacity.clone();
-        let saved_latest_open_pos = self.latest_open_pos;
+        let saved_opens = self.opens.clone();
         let saved_recursive_module = self.recursive_module_active;
         let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
         let saved_nested_locals = self.nested_module_locals.mark();
@@ -1860,18 +1839,7 @@ impl<'a> Resolver<'a> {
         self.module_path = saved_module_path;
         self.container_path.leave_to(saved_container);
         self.access_floor = saved_access_floor;
-        self.imports = saved_imports;
-        self.explicit_open_prefixes = saved_explicit_open_prefixes;
-        self.module_open_prefixes = saved_module_open_prefixes;
-        self.assembly_open_prefixes = saved_assembly_open_prefixes;
-        self.open_shortening_prefixes = saved_open_shortening_prefixes;
-        self.incomplete_open_prefixes = saved_incomplete_open_prefixes;
-        self.open_generation = saved_open_generation;
-        self.pattern_suppressed_case_ids = saved_pattern_suppressed_case_ids;
-        self.unmodelled_open_active = saved_unmodelled_open;
-        self.opaque_value_open = saved_opaque_value_open;
-        self.dotted_opacity = saved_dotted_opacity;
-        self.latest_open_pos = saved_latest_open_pos;
+        self.opens = saved_opens;
         self.recursive_module_active = saved_recursive_module;
         if let Some(saved) = saved_rec_module_names {
             self.rec_module_names = saved;

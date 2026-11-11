@@ -486,7 +486,7 @@ impl<'a> Resolver<'a> {
                 self.mark_decl(&name).qualified_case = true;
             }
             if !require_qualified {
-                let generation = self.open_generation;
+                let generation = self.opens.generation();
                 self.module_frame()
                     .push(ScopeEntry::binding(name, res, generation));
             }
@@ -543,7 +543,7 @@ impl<'a> Resolver<'a> {
             ));
         }
         if !require_qualified {
-            let generation = self.open_generation;
+            let generation = self.opens.generation();
             self.module_frame()
                 .push(ScopeEntry::undecided_case(case, generation));
         }
@@ -646,7 +646,7 @@ impl<'a> Resolver<'a> {
         // access on it) — but distinct from a `let` value, because at a dotted
         // *head* it does not commit member access (see [`DeclKinds::exception_ctor`]).
         self.mark_decl(&entry_name).exception_ctor = true;
-        let generation = self.open_generation;
+        let generation = self.opens.generation();
         self.module_frame()
             .push(ScopeEntry::binding(entry_name, res, generation));
     }
@@ -843,7 +843,7 @@ impl<'a> Resolver<'a> {
             // root / a local recognizer); `case_reference` (pattern position) still
             // finds it. Without this an `Item`-backed case would leak into
             // expression lookup and shadow a same-named ordinary value.
-            let mut entry = ScopeEntry::binding(case_name, case_res, self.open_generation);
+            let mut entry = ScopeEntry::binding(case_name, case_res, self.opens.generation());
             entry.pattern_only = true;
             entries.push(entry);
         }
@@ -982,9 +982,9 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .map(|(name, res)| match res {
                         Resolution::Deferred(_) => {
-                            ScopeEntry::undecided_case(name.clone(), self.open_generation)
+                            ScopeEntry::undecided_case(name.clone(), self.opens.generation())
                         }
-                        _ => ScopeEntry::binding(name.clone(), *res, self.open_generation),
+                        _ => ScopeEntry::binding(name.clone(), *res, self.opens.generation()),
                     })
                     .collect()
             })
@@ -1003,7 +1003,7 @@ impl<'a> Resolver<'a> {
                 cases.push(ScopeEntry::binding(
                     name,
                     Resolution::Deferred(DeferredReason::UnboundName),
-                    self.open_generation,
+                    self.opens.generation(),
                 ));
             }
         }
@@ -1618,11 +1618,11 @@ impl<'a> Resolver<'a> {
         };
         let mut entries = Vec::new();
         if has_base {
-            entries.push(unmodelled("base", self.open_generation));
+            entries.push(unmodelled("base", self.opens.generation()));
         }
         match self_tok {
             Some(tok) if tok.text() != "_" => entries.extend(self.bind_self_ident(tok)),
-            Some(_) | None => entries.push(unmodelled("_", self.open_generation)),
+            Some(_) | None => entries.push(unmodelled("_", self.opens.generation())),
         }
         entries
     }
@@ -1645,7 +1645,7 @@ impl<'a> Resolver<'a> {
         });
         let res = Resolution::Local(id);
         self.record(range, res);
-        Some(ScopeEntry::binding(name, res, self.open_generation))
+        Some(ScopeEntry::binding(name, res, self.opens.generation()))
     }
 
     /// Resolve the type-name uses inside a [`Type`], recursing structurally
@@ -1841,8 +1841,8 @@ impl<'a> Resolver<'a> {
     ///
     /// It is sound but deliberately incomplete (records nothing, a sound deferral
     /// D5) when an `open` could bring an *unmodelled type* into scope that might
-    /// shadow the name ([`Self::unmodelled_open_active`] — an opened assembly module
-    /// / `open type`; [`Self::dotted_opacity`] — an opened project module), or
+    /// shadow the name ([`OpenScope::unmodelled_open_active`](super::open_scope::OpenScope::unmodelled_open_active) — an opened assembly module
+    /// / `open type`; [`OpenScope::dotted_opacity`](super::open_scope::OpenScope::dotted_opacity) — an opened project module), or
     /// the path is project-shadowed. The `resolve_assembly_diff.rs` completeness
     /// property measures the remaining gap.
     pub(super) fn resolve_type_path(&mut self, segs: &[SyntaxToken], arity: usize) {
@@ -1982,7 +1982,10 @@ impl<'a> Resolver<'a> {
         // `dotted_opacity` (the `open_imports_project_values` fallback sets only
         // the former), yet an opened project module with unenumerable contents can
         // still supply a shadowing type.
-        if self.unmodelled_open_active || self.dotted_opacity.any() || self.opaque_value_open {
+        if self.opens.unmodelled_open_active()
+            || self.opens.dotted_opacity().any()
+            || self.opens.opaque_value_open()
+        {
             return TypePathResolution::Deferred(DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
         }
 
@@ -2462,7 +2465,8 @@ impl<'a> Resolver<'a> {
                         || self.own_exception_simple_names.contains(last)
                         || self.own_auto_open_type_names.contains(last)
                 }) || self.recursive_module_active
-                    || self.latest_open_pos > u32::from(self.defs[id.index()].range.start());
+                    || self.opens.latest_open_pos()
+                        > u32::from(self.defs[id.index()].range.start());
                 if unreliable {
                     AttrCandidate::Deferred(DeclineSite::pre_walk(
                         DeclineCause::AttributeInFileUnreliable,
@@ -2918,7 +2922,7 @@ impl<'a> Resolver<'a> {
     ///   dropped type at a split can.
     ///
     /// This is the type-position half of a treatment the **value** and **open**
-    /// paths have had since review rounds 9–23 (`incomplete_open_prefixes`,
+    /// paths have had since review rounds 9–23 (`OpenScope::incomplete_prefixes`,
     /// `names_uncovered_dropped_path`, and the fold's `path_dropped` residue,
     /// all in [`super::decls`]). Because an `open` of a dropped-bearing
     /// namespace already raises `unmodelled_open_active` there — which
@@ -2981,10 +2985,10 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether an `open` follows the definition of in-file type `id`
-    /// ([`Self::latest_open_pos`](super::state::Resolver)), so it could
+    /// ([`OpenScope::latest_open_pos`](super::open_scope::OpenScope::latest_open_pos)), so it could
     /// supply a same-named type that wins.
     pub(super) fn opened_after(&self, id: DefId) -> bool {
-        self.latest_open_pos > u32::from(self.defs[id.index()].range.start())
+        self.opens.latest_open_pos() > u32::from(self.defs[id.index()].range.start())
     }
 
     /// What a single-segment type name `name` at `arity` binds when an

@@ -247,7 +247,7 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Item(item_id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    let mut entry = ScopeEntry::binding(name, res, self.open_generation);
+                    let mut entry = ScopeEntry::binding(name, res, self.opens.generation());
                     // A maybe-literal module-level value contests the pattern
                     // namespace as a constant pattern (see
                     // [`ScopeEntry::maybe_constant_pattern`]).
@@ -258,7 +258,7 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    param_entries.push(ScopeEntry::binding(name, res, self.open_generation));
+                    param_entries.push(ScopeEntry::binding(name, res, self.opens.generation()));
                 }
             }
         }
@@ -434,7 +434,7 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    let entry = ScopeEntry::binding(name, res, self.open_generation);
+                    let entry = ScopeEntry::binding(name, res, self.opens.generation());
                     if is_value {
                         value_entries.push(entry);
                     } else {

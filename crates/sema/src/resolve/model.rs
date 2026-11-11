@@ -1609,7 +1609,7 @@ impl ProjectItems {
     /// (`AddModuleOrNamespaceContentsToNameEnv`: exceptions → tycons → vals),
     /// so such a value beats the module's own same-named case in bare pattern
     /// position **regardless of their source order** — the case must defer
-    /// ([`Resolver::pattern_suppressed_case_ids`](super::state::Resolver)).
+    /// ([`OpenScope::is_pattern_suppressed`](super::open_scope::OpenScope::is_pattern_suppressed)).
     /// An inaccessible value is filtered exactly as FCS filters it from the
     /// opened environment, leaving the case committed.
     pub(super) fn module_value_may_be_constant_pattern(
@@ -3179,7 +3179,7 @@ impl DeclineSite {
 ///
 /// Each of the first three is a walk-state boolean the use-site resolvers
 /// consult (see the field docs on the private `Resolver`); the fourth is the
-/// `open_generation` bump. An open that triggers none is fully modelled — it
+/// `OpenScope::generation` bump. An open that triggers none is fully modelled — it
 /// perturbs nothing. One that triggers any defers a category of later names
 /// while it is in scope:
 ///
@@ -3228,7 +3228,7 @@ impl DeclineSite {
 /// which depend on the *use site*, not on any one open: an attribute whose
 /// in-file type precedes a later open (every open advances the open frontier —
 /// `latest_open_pos`), a member/qualified tail pending inference, or
-/// pattern-position case suppression (`pattern_suppressed_case_ids`). So an open
+/// pattern-position case suppression (`OpenScope::is_pattern_suppressed`). So an open
 /// with every field `false` is not *proof* it perturbs nothing — only that it
 /// triggered none of the modeled per-open mechanisms; a caller must not label it
 /// harmless.
@@ -3240,7 +3240,7 @@ pub struct OpenOpacity {
     pub opaque_dotted: bool,
     /// Set `unmodelled_open_active` — qualified paths defer.
     pub unmodelled: bool,
-    /// Raised the `open_generation` barrier — stales earlier opened names and
+    /// Raised the `OpenScope::generation` barrier — stales earlier opened names and
     /// local bindings, so a later dotted head through one defers. Fires even
     /// when the three flags stay `false` (a childless assembly module that also
     /// names a namespace with a constructible type is one such open).
@@ -3251,8 +3251,8 @@ pub struct OpenOpacity {
     /// though it set no flag and raised no barrier.
     pub imported_deferred: bool,
     /// Contributed a namespace **reading** / shortening prefix — a new
-    /// qualified-path precedence entry (`self.imports` and/or
-    /// `self.open_shortening_prefixes` grew). Not a deferral mechanism itself:
+    /// qualified-path precedence entry (`self.opens.imports()` and/or
+    /// `self.opens.shortening_prefixes()` grew). Not a deferral mechanism itself:
     /// a reading usually *resolves* names. But it re-orders qualified-path
     /// precedence, so a later dotted head can root at this reading over a lower
     /// open's, deferring when this reading owns the path with an uncertain

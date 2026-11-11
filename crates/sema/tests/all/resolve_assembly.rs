@@ -1774,7 +1774,7 @@ fn project_namespace_and_relative_assembly_namespace_both_open() {
 fn merged_root_open_does_not_leak_across_top_level_blocks() {
     // SOUNDNESS (block scope): `open Sub` in `namespace Demo` opens the relative
     // `Demo.Sub` *and*, at lower priority, the root `Sub` (one `OpenGroup` in
-    // `Resolver::imports`). That open is scoped to its top-level block — a
+    // `OpenScope::imports`). That open is scoped to its top-level block — a
     // *sibling* block with no such open must NOT see it, so `RootOnly` (reachable
     // only through the root `Sub`) must defer in the second block, never resolve
     // to the leaked `Sub.RootOnly`. Guards the per-block reset of `imports` to
@@ -2435,12 +2435,12 @@ fn an_assembly_open_before_the_value_keeps_it() {
 fn a_module_alias_open_does_not_consult_assembly_types() {
     // Codex review of Stage 1: `open Alias` where `Alias = Zap` (a project
     // module) is a MODULE-only open — `open_interpretations` marks its
-    // namespaces unreachable, so it lands in `module_open_prefixes` but NOT
-    // `explicit_open_prefixes`. FCS keeps the local `Widget` value (probed
+    // namespaces unreachable, so it lands in `OpenScope::module_prefixes` but NOT
+    // `OpenScope::explicit_prefixes`. FCS keeps the local `Widget` value (probed
     // with the fixture referenced: head → `Client.Widget`), so the assembly
     // `Zap.Widget` class must NOT be consulted for eviction here — only a
     // genuine namespace open brings assembly types into the slot. Before the
-    // fix, the scan over `module_open_prefixes` over-evicted and deferred the
+    // fix, the scan over `OpenScope::module_prefixes` over-evicted and deferred the
     // resolvable local head.
     let env = fixture_env();
     let l0 = "module Zap\nlet placeholder = 1\n";
@@ -2466,7 +2466,7 @@ fn a_direct_module_open_merged_with_an_assembly_namespace_evicts() {
     // `Demo.Calc` class occupies the slot and evicts the local `Calc` (probed
     // with the fixture referenced: head `Calc` → `Demo.Calc`, `Calc.Answer` →
     // `Demo.Calc.Answer`). `project_readings_only` filters that assembly-
-    // namespace reading out of `explicit_open_prefixes`, so the eviction check
+    // namespace reading out of `OpenScope::explicit_prefixes`, so the eviction check
     // must consult it via the reading set, not the prefix-list category. Unlike
     // a module *alias* (which produces no reading), this must still evict — so
     // the head defers (the M20t/M20u assembly bar), never records the value.
@@ -4043,7 +4043,7 @@ fn a_rooted_open_is_not_vetoed_by_an_incomplete_prefix() {
     );
 }
 
-/// Review round 11: `incomplete_open_prefixes` is open state, and open state is
+/// Review round 11: `OpenScope::incomplete_prefixes` is open state, and open state is
 /// **block-scoped**. An incomplete module opened in one top-level block was still vetoing
 /// opens in a *sibling* block, where the original open is long out of scope — suppressing
 /// members the sibling legitimately imports.
@@ -4086,7 +4086,7 @@ fn an_incomplete_prefix_does_not_leak_into_a_sibling_top_level_block() {
 }
 
 /// Review round 13, deliberately left standing (§5a of
-/// `docs/assembly-module-open-plan.md`). `incomplete_open_prefixes` is consulted as a
+/// `docs/assembly-module-open-plan.md`). `OpenScope::incomplete_prefixes` is consulted as a
 /// **non-empty-vector** test, so *any* incomplete prefix in scope vetoes a later `open
 /// Sub` — even when a newer, provably-complete prefix would outrank it.
 ///

@@ -73,11 +73,13 @@ mod container;
 mod contributors;
 mod custom_operations;
 use contributors::FileContributions;
+use open_scope::OpenScope;
 use path_set::PathSet;
 mod decls;
 mod exprs;
 mod lookup;
 mod model;
+mod open_scope;
 mod path_set;
 mod state;
 mod types;
@@ -88,10 +90,7 @@ pub use model::{
     ResolvedFile, ResolvedProject,
 };
 pub use state::ActivePatternShape;
-use state::{
-    DottedOpacity, Resolver, implicit_open_groups, implicit_open_namespaces,
-    implicit_shortening_prefixes,
-};
+use state::{Resolver, implicit_open_groups, implicit_open_namespaces};
 
 /// Resolve every name use in `file` to its defining binder — within this file,
 /// through `preceding` to module-qualified bindings of earlier Compile-order
@@ -395,29 +394,13 @@ pub fn resolve_file(
             .long_id()
             .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
             .unwrap_or_default();
-        // Imports are scoped to a *single* top-level block: an `open` in one
+        // Opens are scoped to a *single* top-level block: an `open` in one
         // `namespace`/`module` block does not carry to the next (FCS-verified,
-        // even for two same-named `namespace N` blocks), so reset the open state
-        // to the implicit auto-opens at each block — mirroring the per-nested-
-        // module save/restore in [`Resolver::nested_module`].
-        r.imports = implicit_open_groups(r.assemblies);
-        // The implicit auto-opens are namespace readings, so they lend their
-        // `[<AutoOpen>]` modules as shortening prefixes too
-        // (`Resolver::auto_open_shortening_prefixes`).
-        r.open_shortening_prefixes = implicit_shortening_prefixes(r.assemblies);
-        // Block-scoped like every other open state: an incomplete module opened in one
-        // top-level block must not veto a sibling block's opens (review round 11).
-        r.incomplete_open_prefixes = Vec::new();
-        r.explicit_open_prefixes = Vec::new();
-        r.module_open_prefixes = Vec::new();
-        r.assembly_open_prefixes = Vec::new();
-        r.open_generation = 0;
-        r.latest_open_pos = 0;
+        // even for two same-named `namespace N` blocks), so each block starts
+        // from the implicit auto-opens alone — the state a nested module saves
+        // and restores whole ([`Resolver::nested_module`]).
+        r.opens = OpenScope::block_start(r.assemblies);
         r.block_type_defs = HashSet::new();
-        r.pattern_suppressed_case_ids = HashSet::new();
-        r.unmodelled_open_active = false;
-        r.opaque_value_open = false;
-        r.dotted_opacity = DottedOpacity::default();
         r.recursive_module_active = module.is_rec();
         // An `[<AutoOpen>]` module declared in one `namespace N` block is
         // opened again by every later block of `N`, and only of `N`.
@@ -583,7 +566,8 @@ pub fn resolve_file(
         for decl in module.decls() {
             r.module_decl(&decl);
         }
-        if matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace) && r.latest_open_pos != 0
+        if matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace)
+            && r.opens.latest_open_pos() != 0
         {
             r.global_block_opened = true;
         }
@@ -2297,16 +2281,9 @@ impl<'a> Resolver<'a> {
             augmentation_head_exports: PathSet::default(),
             real_nested_module_exports: PathSet::default(),
             type_path_exports: Vec::new(),
-            imports: implicit_open_groups(assemblies),
+            opens: OpenScope::block_start(assemblies),
             implicit_import_count: implicit_open_groups(assemblies).len(),
-            open_shortening_prefixes: implicit_shortening_prefixes(assemblies),
-            incomplete_open_prefixes: Vec::new(),
-            explicit_open_prefixes: Vec::new(),
-            module_open_prefixes: Vec::new(),
-            assembly_open_prefixes: Vec::new(),
-            open_generation: 0,
             own_namespace_fold: state::RecordedFold::default(),
-            pattern_suppressed_case_ids: HashSet::new(),
             modules_with_hidden_values: HashSet::new(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
@@ -2332,14 +2309,10 @@ impl<'a> Resolver<'a> {
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),
             augmentation_names_unknowable: false,
-            latest_open_pos: 0,
             block_type_defs: HashSet::new(),
             block_starts: Vec::new(),
             augmentable_types: HashSet::new(),
             module_aliases: HashMap::new(),
-            unmodelled_open_active: false,
-            opaque_value_open: false,
-            dotted_opacity: DottedOpacity::default(),
             recursive_module_active: false,
             contributions: FileContributions::default(),
             own_extension_statics: std::collections::BTreeSet::new(),

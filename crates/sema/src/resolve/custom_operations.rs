@@ -627,7 +627,7 @@ impl Resolver<'_> {
         }
         self.decline_custom_operation_binders(ce, &names);
         let pos = u32::from(ce.syntax().text_range().start());
-        let generation = self.open_generation;
+        let generation = self.opens.generation();
         let entries = names
             .into_iter()
             .map(|name| {

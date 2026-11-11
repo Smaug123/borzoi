@@ -533,7 +533,7 @@ impl<'a> Resolver<'a> {
                         entries.push(ScopeEntry::binding(
                             id_text(only).to_string(),
                             Resolution::Deferred(DeferredReason::UnboundName),
-                            self.open_generation,
+                            self.opens.generation(),
                         ));
                         continue;
                     }
@@ -638,7 +638,7 @@ impl<'a> Resolver<'a> {
                     let id = self.intern(def);
                     let res = Resolution::Local(id);
                     self.record(range, res);
-                    entries.push(ScopeEntry::binding(name, res, self.open_generation));
+                    entries.push(ScopeEntry::binding(name, res, self.opens.generation()));
                 }
                 self.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
@@ -804,7 +804,7 @@ impl<'a> Resolver<'a> {
                         entries.push(ScopeEntry::binding(
                             name,
                             Resolution::Deferred(DeferredReason::UnboundName),
-                            self.open_generation,
+                            self.opens.generation(),
                         ));
                     }
                     continue;
@@ -813,7 +813,7 @@ impl<'a> Resolver<'a> {
                 let range = def.range;
                 let res = Resolution::Local(self.intern(def));
                 self.record(range, res);
-                entries.push(ScopeEntry::binding(name, res, self.open_generation));
+                entries.push(ScopeEntry::binding(name, res, self.opens.generation()));
             }
         }
         entries
@@ -940,7 +940,7 @@ impl<'a> Resolver<'a> {
                 let res = Resolution::Local(id);
                 self.record(range, res);
                 aliases.interned(range, res);
-                entries.push(ScopeEntry::binding(name, res, self.open_generation));
+                entries.push(ScopeEntry::binding(name, res, self.opens.generation()));
             }
         }
         self.decline_binding_head_param_exprs = saved;
