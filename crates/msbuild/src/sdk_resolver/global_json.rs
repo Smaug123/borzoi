@@ -280,6 +280,39 @@ pub fn parse_global_json(text: &str) -> Result<GlobalJson, GlobalJsonError> {
     })
 }
 
+/// Parse a JSONC document whose top level is an object of string values —
+/// the shape `System.Text.Json` deserialises into `IDictionary<string,
+/// string>` (comments skipped, trailing commas allowed) — returning its
+/// entries in document order, or `None` for anything else.
+///
+/// A `None` claims nothing, so the parser may be stricter than the reference
+/// but never more lenient: it refuses trailing commas, which the reference
+/// accepts, and refuses a form feed anywhere, which this parser would
+/// otherwise skip as whitespace while `System.Text.Json` throws on it.
+pub(super) fn parse_jsonc_string_map(text: &str) -> Option<Vec<(String, String)>> {
+    if text.contains('\u{c}') {
+        return None;
+    }
+    let stripped = strip_jsonc_comments(text).ok()?;
+    let mut parser = Parser::new(&stripped);
+    parser.skip_ws().ok()?;
+    let value = parser.parse_value().ok()?;
+    parser.skip_ws().ok()?;
+    if parser.pos < parser.src.len() {
+        return None;
+    }
+    let JsonValue::Object(entries) = value else {
+        return None;
+    };
+    entries
+        .into_iter()
+        .map(|(key, value)| match value {
+            JsonValue::String(value) => Some((key, value)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Transcription of the *effect* of
 /// `SdkDirectoryWorkloadManifestProvider.GlobalJsonReader.ParseGlobalJson`
 /// (dotnet/sdk, fetched 2026-07-10): does the workload manifest
@@ -300,9 +333,9 @@ pub fn parse_global_json(text: &str) -> Result<GlobalJson, GlobalJsonError> {
 /// - `workloads-update-mode` with a non-string value throws — pin;
 /// - `workloads-update-mode` with a string value only toggles the
 ///   preference between workload sets and loose manifests, which can
-///   change the outcome only when a `workloadsets` directory exists on
-///   disk — a layout the workload locator resolution already degrades
-///   on — so it is *not* a pin here.
+///   change the outcome only when the host feature band has a
+///   `workloadsets` directory on disk — a layout the workload locator
+///   resolution already degrades on — so it is *not* a pin here.
 fn detect_workload_set_pin(top: &[(String, JsonValue)]) -> bool {
     top.iter()
         .filter(|(key, _)| key.eq_ignore_ascii_case("sdk"))
