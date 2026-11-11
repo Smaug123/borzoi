@@ -5265,6 +5265,31 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
         // file spelt with one, so refuse it here rather than at the IO path.
         let names_directory = relative.ends_with('/');
         let walk_under = |root: &Path, state: &mut State<'_>| {
+            // MSBuild imports `Path.Combine(root, Project)` as an escaped
+            // import expression, so the root is re-parsed too: a `;` splits it
+            // into a list, `*`/`?` glob and `%XX` decodes. A root holding one
+            // names something else to MSBuild; decline.
+            if root.to_string_lossy().contains(['%', ';', '*', '?']) {
+                state.push(
+                    DiagnosticKind::UnsupportedConstruct {
+                        element: format!(
+                            "Import Sdk={sdk_name:?} Project={project_attr_raw:?} \
+                             (the SDK root {} holds a character MSBuild re-parses \
+                             in an import path)",
+                            root.display()
+                        ),
+                    },
+                    node.range(),
+                );
+                state.mark_structural_skip_respecting_sdk_compile_tolerance(
+                    StructuralCompileItemUncertainty::SdkImportProjectUnresolved {
+                        sdk: sdk_name.to_string(),
+                        project: project_attr_raw.to_string(),
+                    },
+                    node.range(),
+                );
+                return;
+            }
             // `NormalizePath` is `GetFullPath`: a relative root resolves
             // against the working directory *before* `..` collapses, so a
             // leading `..` that `normalise` alone could not pop still climbs.

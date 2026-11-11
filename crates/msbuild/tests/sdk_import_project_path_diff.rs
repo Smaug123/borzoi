@@ -52,11 +52,13 @@ struct Layout {
     /// Canonical temp root, so absolute spellings agree with what both
     /// evaluators see (macOS's `/var` → `/private/var`).
     root: PathBuf,
+    /// Where the SDKs live: `<root>/sdks`, or below a further directory.
+    sdks: PathBuf,
 }
 
 impl Layout {
     fn sdks(&self) -> PathBuf {
-        self.root.join("sdks")
+        self.sdks.clone()
     }
 
     fn sdk_root(&self) -> PathBuf {
@@ -64,9 +66,19 @@ impl Layout {
     }
 
     fn new() -> Layout {
+        Layout::under("")
+    }
+
+    /// The SDKs below `<root>/<parent>`.
+    fn under(parent: &str) -> Layout {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let root = std::fs::canonicalize(dir.path()).expect("canonicalise tempdir");
-        let layout = Layout { _dir: dir, root };
+        let sdks = root.join(parent).join("sdks");
+        let layout = Layout {
+            _dir: dir,
+            root,
+            sdks,
+        };
         let sdk_root = layout.sdk_root();
         std::fs::create_dir_all(&sdk_root).expect("mkdir sdk");
         for name in ["Sdk.props", "Sdk.targets"] {
@@ -382,6 +394,26 @@ fn sdk_import_project_paths_outside_the_domain_never_commit_wrongly() {
         let import = import.to_string();
         let (xml, parsed, theirs) = evaluate_both(&layout, std::slice::from_ref(&import));
         assert_certain_implies_exact(&import, &xml, &parsed, theirs, false);
+    }
+}
+
+/// An SDK root holding a character MSBuild re-parses in the combined import
+/// path (`;` splits, `*`/`?` glob, `%XX` decodes): we decline or agree.
+#[test]
+fn sdk_roots_msbuild_would_reparse_never_commit_wrongly() {
+    for parent in ["a;b", "st*r", "q?", "x%41"] {
+        let layout = Layout::under(parent);
+        for import in ["E.props", "../targets/T.props", "../../../../E.props"] {
+            let import = import.to_string();
+            let (xml, parsed, theirs) = evaluate_both(&layout, std::slice::from_ref(&import));
+            assert_certain_implies_exact(
+                &format!("{parent:?} {import}"),
+                &xml,
+                &parsed,
+                theirs,
+                false,
+            );
+        }
     }
 }
 

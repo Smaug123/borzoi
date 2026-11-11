@@ -377,3 +377,48 @@ fn explicit_import_resolves_against_a_relative_sdk_root() {
         Some("fromextra")
     );
 }
+
+#[test]
+fn explicit_import_declines_an_sdk_root_msbuild_would_reparse() {
+    // MSBuild imports `Path.Combine(root, Project)` as an escaped import
+    // expression: a `;` in the root splits it into a list, `*`/`?` glob and
+    // `%XX` decodes. So a root holding one names something else to MSBuild.
+    for dir in ["a;b", "st*r", "q?", "x%41"] {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join(dir);
+        let (root, props, targets) = write_synthetic_sdk_with_extras(
+            &base,
+            "MySdk",
+            "<Project/>",
+            "<Project/>",
+            &[("Extra.props", "<Project/>")],
+        );
+        let project_path = write_at(
+            tmp.path(),
+            "Demo.fsproj",
+            r#"<Project>
+  <Import Sdk="MySdk" Project="Extra.props" />
+</Project>"#,
+        );
+        let result = parse_file_with_sdk(&project_path, |name| {
+            if name == "MySdk" {
+                Ok(SdkPaths {
+                    root: root.clone(),
+                    props: props.clone(),
+                    targets: targets.clone(),
+                })
+            } else {
+                Err(SdkResolveError::NotFound)
+            }
+        });
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| matches!(&d.kind, DiagnosticKind::UnsupportedConstruct { .. })),
+            "{dir:?}: {:?}",
+            result.diagnostics
+        );
+        assert!(result.package_references_uncertain, "{dir:?}");
+    }
+}
