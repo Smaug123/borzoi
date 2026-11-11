@@ -106,7 +106,7 @@ pub fn every_let_pattern_binder_name(root: &SyntaxNode) -> HashSet<String> {
     let mut out = Vec::new();
     let mut walked = Some(HashSet::new());
     let none = HashSet::new();
-    for pat in root.descendants().filter_map(Pat::cast) {
+    for pat in root.descendants_of::<Pat>() {
         collect(&pat, Ctx::LetHead, &none, &mut out, &mut walked);
     }
     out.iter()
@@ -580,8 +580,8 @@ mod tests {
         let parse = parse(source);
         let node = parse
             .root
-            .descendants()
-            .find(|n| n.kind() == SyntaxKind::LONG_IDENT_PAT)
+            .descendants_where(|k| k == SyntaxKind::LONG_IDENT_PAT)
+            .next()
             .expect("a LONG_IDENT_PAT in the tree");
         Pat::cast(node).expect("cast LONG_IDENT_PAT to Pat")
     }
@@ -1471,7 +1471,7 @@ mod tests {
     /// [`pattern_names`] binders, each node walked on its own.
     fn binder_names_node_by_node(root: &SyntaxNode) -> HashSet<String> {
         let mut names = HashSet::new();
-        for pat in root.descendants().filter_map(Pat::cast) {
+        for pat in root.descendants_of::<Pat>() {
             for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
                 if let PatternName::Binder(def) = name {
                     names.insert(def.key().to_string());

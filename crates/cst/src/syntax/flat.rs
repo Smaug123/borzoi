@@ -29,7 +29,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use super::SyntaxKind;
+use super::{AstNode, SyntaxKind};
 
 pub use rowan::{Direction, TextRange, TextSize, TokenAtOffset, WalkEvent};
 
@@ -876,6 +876,69 @@ impl SyntaxNode {
         }
     }
 
+    /// `descendants().filter(|n| keep(n.kind()))`, but building a handle only
+    /// for a node `keep` accepts. A whole-file scan for one kind of node
+    /// otherwise pays a reference-count round trip for every node in the
+    /// file.
+    #[inline]
+    pub fn descendants_where<F: FnMut(SyntaxKind) -> bool>(&self, keep: F) -> DescendantsWhere<F> {
+        DescendantsWhere {
+            tree: self.tree.clone(),
+            next: self.id,
+            end: self.tree.e(self.id).sub_end,
+            keep,
+        }
+    }
+
+    /// `descendants().filter_map(T::cast)`, building a handle only for a node
+    /// whose kind `T` accepts (see [`SyntaxNode::descendants_where`]).
+    #[inline]
+    pub fn descendants_of<T: AstNode>(&self) -> impl Iterator<Item = T> + use<T> {
+        self.descendants_where(T::can_cast).filter_map(T::cast)
+    }
+
+    /// The subtree's tokens whose kind `keep` accepts, in order:
+    /// `descendants_with_tokens().filter_map(into_token)` filtered by kind,
+    /// building a handle only for a token `keep` accepts.
+    #[inline]
+    pub fn tokens_where<F: FnMut(SyntaxKind) -> bool>(&self, keep: F) -> TokensWhere<F> {
+        TokensWhere {
+            tree: self.tree.clone(),
+            next: self.id,
+            end: self.tree.e(self.id).sub_end,
+            keep,
+        }
+    }
+
+    /// The subtree's first token whose kind `keep` accepts:
+    /// `descendants_with_tokens().filter_map(into_token).find(..)`, without a
+    /// handle per element.
+    pub fn first_token_where(
+        &self,
+        mut keep: impl FnMut(SyntaxKind) -> bool,
+    ) -> Option<SyntaxToken> {
+        let t = &*self.tree;
+        let id = (self.id..t.e(self.id).sub_end).find(|&i| {
+            let e = t.e(i);
+            e.is_token && keep(e.kind)
+        })?;
+        opt_token(&self.tree, id)
+    }
+
+    /// The subtree's last token whose kind `keep` accepts (see
+    /// [`SyntaxNode::first_token_where`]).
+    pub fn last_token_where(
+        &self,
+        mut keep: impl FnMut(SyntaxKind) -> bool,
+    ) -> Option<SyntaxToken> {
+        let t = &*self.tree;
+        let id = (self.id..t.e(self.id).sub_end).rev().find(|&i| {
+            let e = t.e(i);
+            e.is_token && keep(e.kind)
+        })?;
+        opt_token(&self.tree, id)
+    }
+
     #[inline]
     pub fn descendants_with_tokens(&self) -> DescendantsWithTokens {
         DescendantsWithTokens {
@@ -1252,6 +1315,60 @@ impl Iterator for Descendants {
             self.next += 1;
             if !self.tree.e(id).is_token {
                 return Some(SyntaxNode {
+                    tree: self.tree.clone(),
+                    id,
+                });
+            }
+        }
+        None
+    }
+}
+
+/// See [`SyntaxNode::descendants_where`].
+pub struct DescendantsWhere<F> {
+    tree: Shared<Tree>,
+    next: u32,
+    end: u32,
+    keep: F,
+}
+
+impl<F: FnMut(SyntaxKind) -> bool> Iterator for DescendantsWhere<F> {
+    type Item = SyntaxNode;
+    #[inline]
+    fn next(&mut self) -> Option<SyntaxNode> {
+        while self.next < self.end {
+            let id = self.next;
+            self.next += 1;
+            let e = self.tree.e(id);
+            if !e.is_token && (self.keep)(e.kind) {
+                return Some(SyntaxNode {
+                    tree: self.tree.clone(),
+                    id,
+                });
+            }
+        }
+        None
+    }
+}
+
+/// See [`SyntaxNode::tokens_where`].
+pub struct TokensWhere<F> {
+    tree: Shared<Tree>,
+    next: u32,
+    end: u32,
+    keep: F,
+}
+
+impl<F: FnMut(SyntaxKind) -> bool> Iterator for TokensWhere<F> {
+    type Item = SyntaxToken;
+    #[inline]
+    fn next(&mut self) -> Option<SyntaxToken> {
+        while self.next < self.end {
+            let id = self.next;
+            self.next += 1;
+            let e = self.tree.e(id);
+            if e.is_token && (self.keep)(e.kind) {
+                return Some(SyntaxToken {
                     tree: self.tree.clone(),
                     id,
                 });

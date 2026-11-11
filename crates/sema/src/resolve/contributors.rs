@@ -126,9 +126,7 @@ pub(super) struct FileContributions {
 /// (`op_Nil`, `op_ColonColon`), which are spelled with no identifier at all.
 pub(super) fn declared_identifiers(node: &SyntaxNode) -> BTreeSet<String> {
     let idents: Vec<String> = node
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        .tokens_where(|k| k == SyntaxKind::IDENT_TOK)
         .filter(|tok| {
             !tok.parent_ancestors().take_while(|n| n != node).any(|n| {
                 Expr::can_cast(n.kind())
@@ -205,8 +203,7 @@ fn augmentation_member_names(defn: &TypeDefn) -> BTreeSet<String> {
 
 /// The compiled names of the operator-named union cases declared in `node`.
 fn operator_case_names(node: &SyntaxNode) -> impl Iterator<Item = String> + '_ {
-    node.descendants()
-        .filter_map(UnionCase::cast)
+    node.descendants_of::<UnionCase>()
         .filter_map(|case| case.operator_name().map(|(name, _)| name.to_string()))
 }
 
@@ -502,7 +499,7 @@ impl Resolver<'_> {
                             }
                         }
                         // An active pattern's cases are pattern constructors.
-                        for ap in head.syntax().descendants().filter_map(ActivePatName::cast) {
+                        for ap in head.syntax().descendants_of::<ActivePatName>() {
                             ap_cases.extend(ap.case_tokens().map(|t| id_text(&t).to_string()));
                         }
                     }
@@ -568,7 +565,7 @@ impl Resolver<'_> {
         {
             out.values.insert(id_text(&name).to_string());
         }
-        for case in defn.syntax().descendants().filter_map(UnionCase::cast) {
+        for case in defn.syntax().descendants_of::<UnionCase>() {
             if let Some(name) = case.ident() {
                 out.names.insert(id_text(&name).to_string());
             }
@@ -617,7 +614,7 @@ fn active_pattern_cases(decls: impl Iterator<Item = ModuleDecl>) -> BTreeSet<Str
         if let ModuleDecl::Let(let_decl) = decl {
             for binding in let_decl.bindings() {
                 if let Some(head) = binding.pat() {
-                    for ap in head.syntax().descendants().filter_map(ActivePatName::cast) {
+                    for ap in head.syntax().descendants_of::<ActivePatName>() {
                         out.extend(ap.case_tokens().map(|t| id_text(&t).to_string()));
                     }
                 }
@@ -842,8 +839,7 @@ impl Resolver<'_> {
         let cases = Contribution {
             names: defn
                 .syntax()
-                .descendants()
-                .filter_map(UnionCase::cast)
+                .descendants_of::<UnionCase>()
                 .filter_map(|c| c.ident())
                 .map(|t| id_text(&t).to_string())
                 .chain(operator_case_names(defn.syntax()))
@@ -1008,13 +1004,11 @@ pub(super) fn signature_contributions(
 ) {
     let renames = sig
         .syntax()
-        .descendants()
-        .filter_map(TypeDefn::cast)
+        .descendants_of::<TypeDefn>()
         .any(|defn| type_defn_renames_core_attribute(&defn))
         || sig
             .syntax()
-            .descendants()
-            .filter_map(ExceptionDefnDecl::cast)
+            .descendants_of::<ExceptionDefnDecl>()
             .any(|exn| exception_named_like_core_attribute(&exn));
     rf.declares_core_attribute_alias = renames;
     let aliases = assemblies.core_attribute_aliases();
@@ -1039,11 +1033,8 @@ pub(super) fn signature_contributions(
     let co_alias_declared = custom_operation_alias || preceding.custom_operation_alias_declared;
     // A signature that aliases `StructAttribute` lets a later file's
     // attribute be `[<Struct>]` whatever it is spelled.
-    rf.contributions.declares_slot_attribute_alias = sig
-        .syntax()
-        .descendants()
-        .filter_map(TypeDefn::cast)
-        .any(|defn| {
+    rf.contributions.declares_slot_attribute_alias =
+        sig.syntax().descendants_of::<TypeDefn>().any(|defn| {
             super::type_defn_renames_attribute(&defn, crate::assembly_env::SLOT_ATTRIBUTE_NAMES)
         });
     let co_aliases = assemblies.custom_operation_aliases();
@@ -1200,8 +1191,7 @@ mod attribute_trust_tests {
             };
             let per_list = sig
                 .syntax()
-                .descendants()
-                .filter_map(AttributeList::cast)
+                .descendants_of::<AttributeList>()
                 .all(|list| {
                     let spellings = attribute_spellings(std::iter::once(list));
                     core_attribute_spellings_trusted(

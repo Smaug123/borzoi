@@ -91,7 +91,7 @@ pub(super) fn file_custom_operations(
     may_be_custom_operation: &dyn Fn(&str) -> bool,
 ) -> CustomOperationNames {
     let mut out = CustomOperationNames::default();
-    for defn in root.descendants().filter_map(TypeDefn::cast) {
+    for defn in root.descendants_of::<TypeDefn>() {
         let scope = if super::is_type_augmentation(&defn) {
             Members::All
         } else {
@@ -116,7 +116,7 @@ pub(super) fn signature_custom_operations(
     may_be_custom_operation: &dyn Fn(&str) -> bool,
 ) -> CustomOperationNames {
     let mut out = CustomOperationNames::default();
-    for list in root.descendants().filter_map(AttributeList::cast) {
+    for list in root.descendants_of::<AttributeList>() {
         let decorated = list.syntax().parent();
         for attr in list.attributes() {
             let Some(spelling) = attr
@@ -138,9 +138,7 @@ pub(super) fn signature_custom_operations(
 /// attribute — declaring a type of the name or an abbreviation of it, for
 /// all a token can say.
 pub(super) fn signature_renames_custom_operation(root: &SyntaxNode) -> bool {
-    root.descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+    root.tokens_where(|k| k == SyntaxKind::IDENT_TOK)
         .filter(|t| CUSTOM_OPERATION_SPELLINGS.contains(&&*id_text(t)))
         .any(|t| {
             !t.parent_ancestors()
@@ -168,7 +166,7 @@ fn type_defn_custom_operations(
     may_be_custom_operation: &dyn Fn(&str) -> bool,
 ) -> CustomOperationNames {
     let mut out = CustomOperationNames::default();
-    for list in defn.syntax().descendants().filter_map(AttributeList::cast) {
+    for list in defn.syntax().descendants_of::<AttributeList>() {
         let member = decorated_member(&list);
         if scope == Members::Static
             && member.as_ref().is_some_and(|m| {
@@ -224,12 +222,7 @@ fn literal(e: &Expr) -> Literal {
     match e {
         Expr::Paren(p) => p.inner().as_ref().map_or(Literal::Unread, literal),
         Expr::Const(c) => {
-            let tokens: Vec<SyntaxToken> = c
-                .syntax()
-                .descendants_with_tokens()
-                .filter_map(|el| el.into_token())
-                .filter(|t| !t.kind().is_trivia())
-                .collect();
+            let tokens: Vec<SyntaxToken> = c.syntax().tokens_where(|k| !k.is_trivia()).collect();
             match tokens.as_slice() {
                 [t] => match string_literal_text(t) {
                     Some(Some(s)) => Literal::Str(s),
@@ -307,9 +300,7 @@ fn attribute_custom_operations(
 /// outside an expression or an attribute — its name among them.
 fn decorated_member_names(member: &SyntaxNode) -> BTreeSet<String> {
     member
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        .tokens_where(|k| k == SyntaxKind::IDENT_TOK)
         .filter(|t| {
             !t.parent_ancestors()
                 .take_while(|n| n != member)
@@ -435,9 +426,7 @@ fn custom_operation_binders(
     }
     let idents = |e: &Expr| -> Vec<SyntaxToken> {
         e.syntax()
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+            .tokens_where(|k| k == SyntaxKind::IDENT_TOK)
             .collect()
     };
     let mut out = Vec::new();
@@ -602,9 +591,7 @@ impl Resolver<'_> {
             CeOps::Known(names) => (names, DeclineCause::CustomOperationMayTake),
             CeOps::Unknown => (
                 ce.syntax()
-                    .descendants_with_tokens()
-                    .filter_map(|el| el.into_token())
-                    .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                    .tokens_where(|k| k == SyntaxKind::IDENT_TOK)
                     .map(|t| id_text(&t).to_string())
                     .collect(),
                 DeclineCause::CustomOperationsUnknown,
@@ -661,9 +648,7 @@ impl Resolver<'_> {
         }
         let idents: Vec<SyntaxToken> = ce
             .syntax()
-            .descendants_with_tokens()
-            .filter_map(|el| el.into_token())
-            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+            .tokens_where(|k| k == SyntaxKind::IDENT_TOK)
             .collect();
         for (binder, resets) in binders {
             let at = binder.text_range().start();
@@ -893,8 +878,7 @@ impl Resolver<'_> {
         };
         let inherits: Vec<InheritMember> = defn
             .syntax()
-            .descendants()
-            .filter_map(InheritMember::cast)
+            .descendants_of::<InheritMember>()
             .filter(|i| i.syntax().ancestors().find_map(TypeDefn::cast).as_ref() == Some(&defn))
             .collect();
         // An abbreviation's operations are its target's, and a delegate's or
