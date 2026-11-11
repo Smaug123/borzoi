@@ -187,16 +187,248 @@ fn manifest_without_targets_file_is_silently_excluded() {
     assert_eq!(result, SdkResolution::Roots(Vec::new()));
 }
 
+/// A host-band workload set is selected by default (`ShouldUseWorkloadSets`
+/// is `UseWorkloadSets ?? true`), so even an empty `workloadsets` directory
+/// there degrades rather than be modelled.
 #[test]
-fn workloadsets_dir_degrades() {
+fn host_band_workloadsets_dir_degrades() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     let version_dir = host_sdk(root, "10.0.300", &["w.workload"]);
     manifest(root, "10.0.100", "w.workload", "1.0.0");
-    fs::create_dir_all(root.join("sdk-manifests/10.0.100/workloadsets")).unwrap();
+    fs::create_dir_all(root.join("sdk-manifests/10.0.300/workloadsets")).unwrap();
 
     let err = resolve_targets(root, &version_dir, &no_user_env()).unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
+}
+
+#[test]
+fn host_band_workload_set_in_the_user_root_degrades() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("dotnet");
+    let user = tmp.path().join("user");
+    let version_dir = host_sdk(&root, "10.0.300", &["w.workload"]);
+    manifest(&root, "10.0.300", "w.workload", "1.0.0");
+    write(&root.join("metadata/workloads/10.0.300/userlocal"), "");
+    write_set(
+        &user,
+        "10.0.300",
+        "10.0.300",
+        &[("set.workloadset.json", "{}")],
+    );
+    let env = WorkloadEnvironment {
+        user_dotnet_root: Some(&user),
+        ..no_user_env()
+    };
+
+    let err = resolve_targets(&root, &version_dir, &env).unwrap_err();
+    assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
+}
+
+/// `{root}/sdk-manifests/{band}/workloadsets/{set}/` holding `files`.
+fn write_set(root: &Path, band: &str, set: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = root
+        .join("sdk-manifests")
+        .join(band)
+        .join("workloadsets")
+        .join(set);
+    fs::create_dir_all(&dir).unwrap();
+    for (name, content) in files {
+        write(&dir.join(name), content);
+    }
+    dir
+}
+
+/// The baseline set a current SDK installer drops under 8.0.100 is selected
+/// only through a `global.json` or install-state version, so with neither the
+/// answer is the one the bare layout gives (#549, #499).
+#[test]
+fn baseline_workload_set_does_not_change_the_answer() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let version_dir = host_sdk(root, "10.0.401", &["w.workload"]);
+    let w = manifest(root, "10.0.400", "w.workload", "1.0.0");
+    let bare = resolve_targets(root, &version_dir, &no_user_env()).unwrap();
+    assert_eq!(bare, SdkResolution::Roots(vec![w]));
+
+    manifest(root, "10.0.400", "w.workload", "2.0.0");
+    let with_set_target = resolve_targets(root, &version_dir, &no_user_env()).unwrap();
+    // A set naming the *older* manifest: were it selected, the answer would
+    // move back to 1.0.0.
+    write_set(
+        root,
+        "8.0.100",
+        "10.0.401",
+        &[(
+            "baseline.workloadset.json",
+            "{\n  \"w.workload\": \"1.0.0/10.0.400\",\n  \"other\": \"2.0.0-rc.1.2\"\n}",
+        )],
+    );
+    write_set(
+        root,
+        "8.0.100",
+        "9.0.203.1",
+        &[
+            ("a.workloadset.json", "{\"x\": \"1.2.3\"}"),
+            ("b.WorkloadSet.json", "{\"y\": \"1.2.3\"}"),
+        ],
+    );
+    assert_eq!(
+        resolve_targets(root, &version_dir, &no_user_env()).unwrap(),
+        with_set_target
+    );
+    assert_eq!(
+        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env()).unwrap(),
+        SdkResolution::Roots(Vec::new())
+    );
+}
+
+/// Sets in a band that is neither the host's nor the baseline's are never
+/// read without a pin, however malformed.
+#[test]
+fn workload_set_of_an_unscanned_band_is_never_read() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let version_dir = host_sdk(root, "10.0.300", &["w.workload"]);
+    let w = manifest(root, "10.0.100", "w.workload", "1.0.0");
+    write_set(
+        root,
+        "10.0.100",
+        "not a version",
+        &[("x.workloadset.json", "{")],
+    );
+
+    let result = resolve_targets(root, &version_dir, &no_user_env()).unwrap();
+    assert_eq!(result, SdkResolution::Roots(vec![w]));
+}
+
+/// `GetAvailableWorkloadSets(8.0.100)` runs unconditionally and throws on a
+/// set it cannot load, failing the real evaluation; each shape here is one
+/// the loader is not certified to survive.
+#[test]
+fn baseline_workload_set_that_may_not_load_degrades() {
+    let cases: &[(&str, &[(&str, &str)])] = &[
+        ("10.0.400", &[("s.workloadset.json", "{")]),
+        ("10.0.400", &[("s.workloadset.json", "null")]),
+        ("10.0.400", &[("s.workloadset.json", "[]")]),
+        ("10.0.400", &[("s.workloadset.json", "{\"w\": null}")]),
+        ("10.0.400", &[("s.workloadset.json", "{\"w\": 1}")]),
+        ("10.0.400", &[("s.workloadset.json", "{\"w\": \"\"}")]),
+        ("10.0.400", &[("s.workloadset.json", "{\"w\": \"1.0\"}")]),
+        ("10.0.400", &[("s.workloadset.json", "{\"w\": \"1.0.0/\"}")]),
+        (
+            "10.0.400",
+            &[("s.workloadset.json", "{\"w\": \"1.0.0/10.0.400/x\"}")],
+        ),
+        ("10.0.400", &[("s.workloadset.json", "{\"w\": \"01.0.0\"}")]),
+        (
+            "10.0.400",
+            &[("s.workloadset.json", "{\"w\": \"1.0.0+build\"}")],
+        ),
+        ("10.0.400", &[("s.workloadset.json", "{\"w\": \"1.0.0\",}")]),
+        // Comments are refused outright: System.Text.Json ends a `//`
+        // comment at a lone `\r`, so this one throws on `not-json` there.
+        ("10.0.400", &[("s.workloadset.json", "{}//c\rnot-json")]),
+        ("10.0.400", &[("s.workloadset.json", "{}// c\u{2028}")]),
+        ("10.0.400", &[("s.workloadset.json", "{/* c */}")]),
+        (
+            "10.0.400",
+            &[(
+                "s.workloadset.json",
+                "{\"w\": \"1.0.0\",\u{c}\"x\": \"1.0.0\"}",
+            )],
+        ),
+        (
+            "10.0.400",
+            &[("s.workloadset.json", "{\"w\": \"1.0.0\", \"W\": \"1.0.0\"}")],
+        ),
+        (
+            "10.0.400",
+            &[("s.workloadset.json", "{\"\u{212a}\": \"1.0.0\"}")],
+        ),
+        (
+            "10.0.400",
+            &[
+                ("a.workloadset.json", "{\"w\": \"1.0.0\"}"),
+                ("b.workloadset.json", "{\"W\": \"1.0.0\"}"),
+            ],
+        ),
+        ("10.0", &[("s.workloadset.json", "{}")]),
+        ("10.0.400.1.2", &[("s.workloadset.json", "{}")]),
+        ("v10.0.400", &[("s.workloadset.json", "{}")]),
+        ("10.0.400+build", &[("s.workloadset.json", "{}")]),
+        ("10.0.400-", &[("s.workloadset.json", "{}")]),
+    ];
+    for (set, files) in cases {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let version_dir = host_sdk(root, "10.0.401", &["w.workload"]);
+        manifest(root, "10.0.400", "w.workload", "1.0.0");
+        write_set(root, "8.0.100", set, files);
+
+        let result = resolve_targets(root, &version_dir, &no_user_env());
+        assert!(
+            matches!(result, Err(SdkResolveError::UnsupportedLayout { .. })),
+            "set {set:?} with {files:?} resolved: {result:?}"
+        );
+    }
+}
+
+/// A set directory with no set file loads as no set, so its name is never
+/// parsed; a directory *named* like a set file is not a file.
+#[test]
+fn baseline_set_directory_shapes() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let version_dir = host_sdk(root, "10.0.401", &["w.workload"]);
+    let w = manifest(root, "10.0.400", "w.workload", "1.0.0");
+    write_set(root, "8.0.100", "not a version", &[("README", "x")]);
+    assert_eq!(
+        resolve_targets(root, &version_dir, &no_user_env()).unwrap(),
+        SdkResolution::Roots(vec![w])
+    );
+
+    let set = write_set(root, "8.0.100", "10.0.401", &[]);
+    fs::create_dir_all(set.join("s.workloadset.json")).unwrap();
+    assert!(matches!(
+        resolve_targets(root, &version_dir, &no_user_env()),
+        Err(SdkResolveError::UnsupportedLayout { .. })
+    ));
+}
+
+#[test]
+fn plain_version_grammar() {
+    for ok in [
+        "0.0.0",
+        "10.0.400",
+        "9.0.100-rc.1.24452.12",
+        "1.2.3-alpha-1.x",
+    ] {
+        assert!(is_plain_release_version(ok), "{ok}");
+        assert!(is_plain_workload_set_version(ok), "{ok}");
+    }
+    assert!(is_plain_workload_set_version("10.0.105.1"));
+    assert!(is_plain_workload_set_version("10.0.105.1-preview.2"));
+    for bad in [
+        "",
+        "1",
+        "1.2",
+        "1.2.3.4",
+        "01.2.3",
+        "1.2.3-",
+        "1.2.3-a..b",
+        "1.2.3-01",
+        "1.2.3+b",
+        "1.2.x",
+        "1234567890.0.0",
+        " 1.2.3",
+        "1.2.3-a_b",
+    ] {
+        assert!(!is_plain_release_version(bad), "{bad}");
+    }
+    for bad in ["1.2.3.4.5", "1.2.3.04", "1.2.3.4-"] {
+        assert!(!is_plain_workload_set_version(bad), "{bad}");
+    }
 }
 
 #[test]
