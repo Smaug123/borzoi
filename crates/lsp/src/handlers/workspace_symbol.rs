@@ -110,7 +110,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         // Clone the parses out of `self` inside a tight scope: `parses_for_project`
         // borrows `semantic`/`workspace`/`docs` mutably, and we need `state.docs`
         // again below for `preferred_uri`. Cloning `ProjectParses` is cheap
-        // (rowan green nodes are Arc'd; `paths`/`texts` are small).
+        // (syntax trees are `Arc`ed; `paths`/`texts` are small).
         let parses = {
             let State {
                 semantic,

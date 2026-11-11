@@ -60,7 +60,7 @@
 
 use std::collections::HashMap;
 
-use rowan::TextRange;
+use borzoi_cst::syntax::TextRange;
 
 use super::generator::seed_tape;
 

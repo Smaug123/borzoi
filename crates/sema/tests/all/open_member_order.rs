@@ -26,9 +26,9 @@
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, resolve_project};
-use rowan::TextRange;
 
 use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
 

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use borzoi_cst::syntax::SyntaxToken;
-use rowan::{TextRange, TextSize};
+use borzoi_cst::syntax::{TextRange, TextSize};
 
 use borzoi_assembly::{EntityKind, UnionCases};
 

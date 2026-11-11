@@ -42,13 +42,13 @@
 
 use crate::uri::UriExt as _;
 use borzoi_cst::lexer::{Token, lex};
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, SyntaxRecovery, resolve_file};
 use lsp_types::{
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams,
     SemanticTokensResult, Uri,
 };
-use rowan::TextRange;
 
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::paths::{lexically_normalize, paths_equal};
@@ -297,7 +297,7 @@ impl Cursor {
     }
 }
 
-/// The byte span of a lexer token as a rowan [`TextRange`], so it can be looked
+/// The byte span of a lexer token as a [`TextRange`], so it can be looked
 /// up against name resolution's occurrence-keyed map.
 fn to_text_range(span: &std::ops::Range<usize>) -> TextRange {
     TextRange::new(

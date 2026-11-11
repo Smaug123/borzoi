@@ -8,7 +8,7 @@
 use crate::recovery::SyntaxRecovery;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use rowan::TextRange;
+use borzoi_cst::syntax::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{Def, DefId};
@@ -881,7 +881,7 @@ pub(super) struct MemberEntry {
     /// for its own members, the augmentation's start for augmentation members
     /// (invisible before it — FCS `FS0039`, probe M4a). A use at an earlier
     /// offset treats the name as absent.
-    pub(super) visible_from: rowan::TextSize,
+    pub(super) visible_from: borzoi_cst::syntax::TextSize,
 }
 
 impl DeclKinds {

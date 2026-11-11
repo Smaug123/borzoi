@@ -210,7 +210,7 @@ fn project_definition(state: &mut State, uri: &Uri, byte: usize) -> Option<Locat
         docs,
         ..
     } = state;
-    // Clone the parses (cheap: `ImplFile`s are rowan handles, `texts` is
+    // Clone the parses (cheap: `ImplFile`s are syntax handles, `texts` is
     // `Arc<str>`) so the `&mut semantic` borrow can drop and we can keep
     // using the data while the `Arc<ResolvedProject>` is in hand. Sizing the
     // fold to this file's Compile index *first* folds only the prefix up to it:

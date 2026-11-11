@@ -50,10 +50,10 @@ use crate::common::{
 };
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::test_support::{DeclaringEntity, StructuralName, certified_expected};
 use borzoi_sema::{AssemblyEnv, Resolution, ResolvedProject, resolve_project};
-use rowan::TextRange;
 
 /// Our pinned verdict for a probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -20,12 +20,12 @@ use std::collections::HashMap;
 
 use crate::common::generator::{Form, RefKind, generate, seed_tape};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
 use proptest::prelude::*;
-use rowan::TextRange;
 
 // ============================================================================
 // Helpers

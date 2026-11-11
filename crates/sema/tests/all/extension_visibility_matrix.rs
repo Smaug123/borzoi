@@ -52,9 +52,9 @@ use crate::common::{
 };
 use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
-use rowan::TextRange;
 
 /// Build the F# auto-open fixture (which carries the `Demo.ExtMatrix` shapes) once.
 ///

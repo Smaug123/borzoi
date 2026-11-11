@@ -28,12 +28,12 @@ use crate::common::{
 };
 use borzoi_assembly::{Augmentation, Ecma335Assembly, EcmaView, UnionCases};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
 use borzoi_sema::{
     AssemblyEnv, InferredFile, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, infer_file,
     resolve_file,
 };
-use rowan::TextRange;
 
 /// Parse and resolve `srcs` as one project in Compile order, with each file's
 /// real [`SyntaxRecovery`]: inference reads nothing from a file whose parse it

@@ -55,9 +55,9 @@ pub mod utf16;
 // The oracle's structural naming of a declaration is shared with the LSP
 // crate's `resolve_real_project_diff`, which compares the same two sides on one
 // project; re-exported so this crate's own callers keep naming them here.
+use borzoi_cst::syntax::TextRange;
 pub use borzoi_sema::test_support::{DeclaringEntity, StructuralName};
 use lsp_types::Uri;
-use rowan::TextRange;
 use serde::{Deserialize, Serialize};
 
 /// A project loaded through the same semantic path the LSP uses for handlers.

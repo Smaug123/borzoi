@@ -18,12 +18,12 @@ use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DeclineCause, DeferredReason, OpenFoldSpace, OpenFoldTarget, ProjectItems,
     Resolution, ResolvedFile, SyntaxRecovery, resolve_file, resolve_project,
 };
-use rowan::TextRange;
 
 /// The parse-recovery record for `src` — the counterpart to the tree-only
 /// `impl_file` helper beside it. Parsing is deterministic, so this describes
@@ -2378,7 +2378,7 @@ fn implicit_enclosing_namespace_does_not_outrank_a_project_case() {
     let src1 = "namespace Demo.Auto\n\nmodule Client =\n    let x = Tag\n";
     let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
     let start = src1.rfind("Tag").expect("the use");
-    let use_at = rowan::TextRange::new(
+    let use_at = borzoi_cst::syntax::TextRange::new(
         u32::try_from(start).unwrap().into(),
         u32::try_from(start + "Tag".len()).unwrap().into(),
     );
@@ -2497,7 +2497,7 @@ fn a_later_type_declaration_evicts_an_opened_value_of_the_same_name() {
     let src = "module M\nopen Demo.Auto\ntype Tag() =\n    member _.Marker = 1\nlet x = Tag\n";
     let rf = resolve(src, &env);
     let start = src.rfind("Tag").expect("the use");
-    let use_at = rowan::TextRange::new(
+    let use_at = borzoi_cst::syntax::TextRange::new(
         u32::try_from(start).unwrap().into(),
         u32::try_from(start + "Tag".len()).unwrap().into(),
     );
@@ -2522,7 +2522,7 @@ fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
                let extraValue () = 1\nlet x = extraValue\n";
     let rf = resolve(src, &env);
     let start = src.rfind("extraValue").expect("the use");
-    let use_at = rowan::TextRange::new(
+    let use_at = borzoi_cst::syntax::TextRange::new(
         u32::try_from(start).unwrap().into(),
         u32::try_from(start + "extraValue".len()).unwrap().into(),
     );
@@ -2548,7 +2548,7 @@ fn implicit_enclosing_namespace_declines_a_shortenable_project_auto_open_value()
                 let t () = shortTarget ()\n";
     let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
     let start = src1.rfind("shortTarget").expect("the use");
-    let use_at = rowan::TextRange::new(
+    let use_at = borzoi_cst::syntax::TextRange::new(
         u32::try_from(start).unwrap().into(),
         u32::try_from(start + "shortTarget".len()).unwrap().into(),
     );

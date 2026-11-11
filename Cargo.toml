@@ -67,6 +67,7 @@ serde_json = "1"
 sha1 = "0.10"
 syn = { version = "2", features = ["full", "visit"] }
 tempfile = "3"
+text-size = "1.1"
 tracing = "0.1"
 tracing-opentelemetry = "0.34"
 tracing-subscriber = "0.3"
@@ -74,9 +75,10 @@ url = "2"
 
 # Third-party crates are optimised in dev and test builds; the workspace's own
 # crates are not. The test suites spend much of their CPU in dependency code
-# (rowan's cursor and node interner, hashbrown, logos), which unoptimised runs
-# several times slower. The workspace's crates keep `opt-level = 0`, and with
-# it the frames of the recursive walks the walk-stack tests bound. Debug
+# (hashbrown, logos, and rowan, whose green trees the cst tests build as a
+# reference), which unoptimised runs several times slower. The workspace's
+# crates keep `opt-level = 0`, and with it the frames of the recursive walks
+# the walk-stack tests bound. Debug
 # assertions and overflow checks stay on everywhere: `opt-level` changes
 # neither.
 [profile.dev.package."*"]

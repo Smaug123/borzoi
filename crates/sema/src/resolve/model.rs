@@ -11,7 +11,7 @@ use crate::recovery::SyntaxRecovery;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use rowan::{TextRange, TextSize};
+use borzoi_cst::syntax::{TextRange, TextSize};
 
 use crate::assembly_env::{
     AssemblyEnv, CustomOperationNames, EntityHandle, MemberIndex, UnionCaseIndex,
@@ -3531,7 +3531,7 @@ pub enum OpaqueRegion {
 /// they were resolved from. This is what lets the incremental fold be
 /// differentially tested against the cold fold (`incremental ≡ batch`): two
 /// independent parses of the same text resolve to *equal* files even though
-/// their rowan nodes differ by identity.
+/// their syntax nodes differ by identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedFile {
     /// All binders introduced in the file, indexed by [`DefId`].

@@ -1269,8 +1269,8 @@ pub fn unmodelled_project_binder_failures(
     out
 }
 
-fn text_range(start: usize, end: usize) -> rowan::TextRange {
-    rowan::TextRange::new(
+fn text_range(start: usize, end: usize) -> borzoi_cst::syntax::TextRange {
+    borzoi_cst::syntax::TextRange::new(
         u32::try_from(start).expect("offset fits u32").into(),
         u32::try_from(end).expect("offset fits u32").into(),
     )
@@ -3220,7 +3220,7 @@ pub fn unconverted_region(
     let Some(file) = file else {
         return (start, end);
     };
-    let range = rowan::TextRange::new((start as u32).into(), (end as u32).into());
+    let range = borzoi_cst::syntax::TextRange::new((start as u32).into(), (end as u32).into());
     let ancestors: Vec<_> = match file.syntax().covering_element(range) {
         borzoi_cst::syntax::NodeOrToken::Node(n) => n.ancestors().collect(),
         borzoi_cst::syntax::NodeOrToken::Token(t) => t.parent_ancestors().collect(),

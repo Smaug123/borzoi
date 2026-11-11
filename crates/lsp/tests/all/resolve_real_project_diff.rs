@@ -103,9 +103,9 @@ use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::SemanticState;
 use borzoi::workspace::Workspace;
 use borzoi_cst::language_version::LanguageVersion;
+use borzoi_cst::syntax::TextRange;
 use borzoi_sema::test_support::{assembly_full_name_agrees, certified_expected};
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
-use rowan::TextRange;
 
 /// How many sites of each kind to print for triage. A run on a large project
 /// can gate on more sites than fit a readable report, and triage needs the

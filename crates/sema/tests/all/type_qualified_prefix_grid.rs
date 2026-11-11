@@ -39,9 +39,9 @@ use crate::common::{
     temp_fs_file,
 };
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{ProjectItems, Resolution, SyntaxRecovery, resolve_file};
-use rowan::TextRange;
 
 /// The qualifier's segments, outermost first; a depth-`d` qualifier is the
 /// first `d`.

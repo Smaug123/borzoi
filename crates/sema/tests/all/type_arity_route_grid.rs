@@ -41,12 +41,12 @@ use crate::common::{
     parse_census_jsonl, parse_fcs_uses_project, temp_fs_file, temp_fs_tree,
 };
 use borzoi_cst::parser::{parse, parse_sig};
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_sema::{
     ProjectFile, ProjectItems, Resolution, ResolvedProject, SourceFile, SyntaxRecovery,
     qualified_names, resolve_file, resolve_project_files,
 };
-use rowan::TextRange;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {

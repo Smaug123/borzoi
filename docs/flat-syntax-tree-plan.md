@@ -2,8 +2,9 @@
 
 > **Status (2026-11-11).** Stage 0 (harness), Stage 1 (the table behind
 > rowan's API), Stage 2 (the parser writes the table) and Stage 4a
-> (kind-filtered scans) implemented; Stage 4's facade-wide borrowed handles
-> measured and deferred (see its gate result); Stage 3 open. Tracks
+> (kind-filtered scans) and Stage 3 (rowan leaves production) implemented;
+> Stage 4's facade-wide borrowed handles measured and deferred (see its gate
+> result). Tracks
 > [#541](https://github.com/WoofWare/borzoi/issues/541).
 
 ## Problem
@@ -159,10 +160,12 @@ in the same stage that moves to borrowed handles, and not before.
 
 After Stage 2 rowan is only a test-only reference implementation (Stages 1–2's
 oracles). `TextRange` / `TextSize` come from `text-size` (rowan's own
-dependency), re-exported from `borzoi_cst::syntax`. The re-export already
-exists on the spike, and consumers' `use rowan::TextRange` lines move to it.
-rowan, and the oracle tests that compare against it, go away together once the
-rowan-shaped API is no longer the contract (Stage 3).
+dependency), re-exported from `borzoi_cst::syntax`, as do our own
+`Direction`, `WalkEvent` and `TokenAtOffset`; consumers' `use rowan::…` lines
+move to `borzoi_cst::syntax`. rowan stays an optional dependency of
+`borzoi-cst` behind the test-only `rowan-reference` feature, which keeps the
+oracles running. Deleting it and them is a separate decision, for once the
+rowan-shaped API is no longer the contract.
 
 ## Implementation plan
 
@@ -252,15 +255,18 @@ loaded by other work (load 11–24), so read the columns against each other:
 
 Parse is now below rowan's, and resolve and infer keep Stage 1's gain.
 
-### Stage 3: drop rowan
+### Stage 3: rowan leaves production
 
 **Dependencies**: Stage 2. **Implements**: D6.
 
-`text-size` replaces rowan's re-exports; the rowan reference tests are deleted
-along with the dependency. Do this when no further stage needs rowan as an
-oracle. If Stage 4 is taken, after it.
+`text-size` replaces rowan's re-exports, and `Direction`, `WalkEvent` and
+`TokenAtOffset` become our own; rowan becomes an optional dependency enabled
+only by `rowan-reference`, so the reference oracles stay. Deleting rowan and
+its oracles outright waits until no stage needs them: Stage 4's deferred
+borrowed handles would.
 
-**Oracle**: `cargo tree -i rowan` is empty; full gate green.
+**Oracle**: `cargo tree -e normal,build -i rowan --workspace` is empty; full
+gate green, reference differentials included.
 
 ### Stage 4 (gated): borrowed typed nodes with generated accessors
 

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use borzoi_assembly::op_name::{compile_op_name, is_operator_spelling, prefix_op_name};
 use borzoi_cst::syntax::SyntaxToken;
-use rowan::TextRange;
+use borzoi_cst::syntax::TextRange;
 
 /// A name introduced by F# source — a `let`-bound value or function, a
 /// parameter, and (in later stages) modules and local pattern binders.
@@ -22,7 +22,7 @@ pub struct Def {
     /// where it can be checked against FCS.
     pub name: String,
     /// Source range of the defining identifier token, as a byte range into
-    /// the file (rowan's [`TextRange`]).
+    /// the file (a [`TextRange`]).
     pub range: TextRange,
     pub kind: DefKind,
     /// `true` for a *provisional* maybe-var binder: a nullary single-segment

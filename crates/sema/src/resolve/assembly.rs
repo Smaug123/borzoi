@@ -2,7 +2,7 @@
 
 use borzoi_assembly::EntityKind;
 use borzoi_cst::syntax::SyntaxToken;
-use rowan::TextRange;
+use borzoi_cst::syntax::TextRange;
 
 use crate::assembly_env::{AheadOfType, EntityHandle, StaticLookup};
 
