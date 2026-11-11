@@ -72,6 +72,16 @@ tracing-opentelemetry = "0.34"
 tracing-subscriber = "0.3"
 url = "2"
 
+# Third-party crates are optimised in dev and test builds; the workspace's own
+# crates are not. The test suites spend much of their CPU in dependency code
+# (rowan's cursor and node interner, hashbrown, logos), which unoptimised runs
+# several times slower. The workspace's crates keep `opt-level = 0`, and with
+# it the frames of the recursive walks the walk-stack tests bound. Debug
+# assertions and overflow checks stay on everywhere: `opt-level` changes
+# neither.
+[profile.dev.package."*"]
+opt-level = 1
+
 # The whole-project corpus gate (`tools/ci/project-corpus-gate.sh`) asks the
 # LSP's request handlers tens of thousands of questions, which unoptimised takes
 # the better part of half an hour. Optimised, but keeping the debug assertions
