@@ -162,10 +162,6 @@ mod properties {
                 sdk: "My.Sdk".to_string(),
                 project: "$(Nope).props".to_string(),
             },
-            StructuralCompileItemUncertainty::SdkImportProjectRejected {
-                sdk: "My.Sdk".to_string(),
-                project: "../escape.props".to_string(),
-            },
             StructuralCompileItemUncertainty::ImportProjectUnresolved {
                 project: "$(Nope)/a.props".to_string(),
             },

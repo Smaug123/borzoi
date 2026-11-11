@@ -348,11 +348,9 @@ pub enum StructuralCompileItemUncertainty {
     /// resolver was available.
     ExplicitSdkUnsupported { sdk: String },
     /// An explicit SDK import's `Project` attribute contained unresolved
-    /// property syntax, so the import was dropped.
+    /// property syntax, named no file at all, or used a character outside the
+    /// path alphabet the walker models, so the import was dropped.
     SdkImportProjectUnresolved { sdk: String, project: String },
-    /// An explicit SDK import named a path we refuse to resolve under the SDK
-    /// root, such as an absolute path or `..` escape.
-    SdkImportProjectRejected { sdk: String, project: String },
     /// A user import that could not be resolved to a definite import
     /// decision, so it was dropped: its `Project` attribute contained
     /// unresolved property syntax, or the resolved path is a
@@ -484,11 +482,9 @@ pub enum StructuralPackageReferenceUncertainty {
     /// An explicit `<Import Sdk="...">` could not be evaluated.
     ExplicitSdkUnsupported { sdk: String },
     /// An explicit SDK import's `Project` attribute contained unresolved
-    /// property syntax, so the import was dropped.
+    /// property syntax, named no file at all, or used a character outside the
+    /// path alphabet the walker models, so the import was dropped.
     SdkImportProjectUnresolved { sdk: String, project: String },
-    /// An explicit SDK import named a path we refuse to resolve under the SDK
-    /// root, such as an absolute path or `..` escape.
-    SdkImportProjectRejected { sdk: String, project: String },
     /// An import that could not be resolved to a definite import decision,
     /// so it was dropped: unresolved property syntax in its `Project`
     /// attribute, or a near-duplicate of an already-imported path under
