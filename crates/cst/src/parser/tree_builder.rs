@@ -208,8 +208,9 @@ impl TreeBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::WalkEvent;
     use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode};
-    use rowan::{Language, WalkEvent};
+    use rowan::Language;
 
     fn raw(kind: SyntaxKind) -> rowan::SyntaxKind {
         FSharpLang::kind_to_raw(kind)

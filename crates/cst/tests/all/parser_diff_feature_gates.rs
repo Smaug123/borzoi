@@ -337,7 +337,7 @@ fn check(source: &str, kind: FileKind, expect: Expect) -> Vec<String> {
                 "AST divergence at {lang_text} for {source:?}\n  rust: {rust:?}\n  fcs:  {fcs:?}"
             ));
         }
-        if ours.root.green() != preview.root.green() {
+        if !ours.root.structurally_eq(&preview.root) {
             failures.push(format!(
                 "the gates are diagnostic-only, but the {lang_text} tree of {source:?} is not the preview tree"
             ));

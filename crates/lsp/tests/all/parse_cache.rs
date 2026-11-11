@@ -12,9 +12,9 @@ use borzoi::cst_panic_safe::parse_with_symbols;
 use borzoi::semantic::ProjectParses;
 use borzoi::server::State;
 use borzoi_cst::language_version::LanguageVersion;
+use borzoi_cst::syntax::Structure;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use lsp_types::Uri;
-use rowan::GreenNode;
 use tempfile::TempDir;
 
 fn write(path: &Path, content: &str) {
@@ -42,26 +42,26 @@ fn two_file_project(tmp: &TempDir, a_src: &str, b_src: &str) -> PathBuf {
 }
 
 /// The comparable content of a `ProjectParses`: per file, its path, its exact
-/// text, and its *structural* tree (a `GreenNode`, whose equality is recursive
-/// and allocation-identity-independent — so a reused tree and a freshly parsed
+/// text, and its *structural* tree (a [`Structure`], equal exactly when the
+/// trees' shape, kinds and text are — so a reused tree and a freshly parsed
 /// identical tree compare equal here, unlike `SyntaxNode`).
-fn snapshot(p: &ProjectParses) -> Vec<(PathBuf, String, GreenNode)> {
+fn snapshot(p: &ProjectParses) -> Vec<(PathBuf, String, Structure)> {
     (0..p.len())
         .map(|i| {
             (
                 p.paths[i].clone(),
                 p.texts[i].to_string(),
-                p.files[i].file.syntax().green().to_owned(),
+                p.files[i].file.syntax().structure(),
             )
         })
         .collect()
 }
 
-/// Rowan `SyntaxNode` equality is *identity* (same tree instance), not
-/// structural: two independent parses of identical text are distinct nodes but
-/// share a structurally-equal `GreenNode`. This underpins the reuse assertions
+/// `SyntaxNode` equality is *identity* (same tree instance), not structural:
+/// two independent parses of identical text are distinct nodes with equal
+/// [`Structure`]s. This underpins the reuse assertions
 /// below — `syntax() == syntax()` there means "the very same tree", i.e. reused
-/// rather than re-parsed. Pin the semantics so a rowan change can't quietly turn
+/// rather than re-parsed. Pin the semantics so a change to it can't quietly turn
 /// the reuse checks vacuous.
 #[test]
 fn syntax_node_equality_is_identity_not_structural() {
@@ -85,9 +85,9 @@ fn syntax_node_equality_is_identity_not_structural() {
         "independent parses must be distinct nodes (identity equality)"
     );
     assert_eq!(
-        f1.syntax().green(),
-        f2.syntax().green(),
-        "...but structurally equal green trees"
+        f1.syntax().structure(),
+        f2.syntax().structure(),
+        "...but structurally equal trees"
     );
 }
 

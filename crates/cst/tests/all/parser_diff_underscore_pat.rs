@@ -362,8 +362,8 @@ fn underscore_pat_below_4_7_is_lenient_lossless() {
         assert_eq!(ours.root.to_string(), *source, "lossless at 4.6");
         let preview = parse_at(source, LanguageVersion::Preview);
         assert_eq!(
-            ours.root.green(),
-            preview.root.green(),
+            ours.root.structure(),
+            preview.root.structure(),
             "the 4.6 tree of {source:?} is the preview tree",
         );
     }
