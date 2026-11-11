@@ -2427,6 +2427,8 @@ impl<'a> Gen<'a> {
         let mut records: ProjectRecords = HashMap::new();
         let recovery = self.resolved.recovery();
         let headerless = is_headerless(file);
+        // Built at the first record, so a file without one pays nothing.
+        let mut member_names: Option<IntrinsicMemberNames> = None;
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
             let repr = match defn.repr() {
                 Some(TypeDefnRepr::Union(repr)) => DeclaredFields::Union(repr),
@@ -2519,7 +2521,10 @@ impl<'a> Gen<'a> {
                     self.union_case_schemes(&repr, declared, scope, &mut out);
                 }
                 DeclaredFields::Record(repr) => {
-                    let fields = self.record_field_schemes(&repr, &defn, file);
+                    let members = member_names
+                        .get_or_insert_with(|| IntrinsicMemberNames::of(file))
+                        .of_type(&defn);
+                    let fields = self.record_field_schemes(&repr, members);
                     records.insert(
                         (path, arity),
                         ProjectRecord {
@@ -2614,15 +2619,15 @@ impl<'a> Gen<'a> {
     /// name: FCS's lookup prefers the member (`{ Equals: int }`'s `r.Equals`
     /// is the generated method). Those are the members a record generates
     /// ([`RECORD_GENERATED_MEMBERS`]) and the ones its definition, or a
-    /// same-file augmentation of its name, declares; a member whose name is
-    /// not read off its head leaves no field read.
+    /// same-file augmentation of its name, declares (`members`, the record's
+    /// [`IntrinsicMemberNames`]); a member whose name is not read off its head
+    /// (`members` is `None`) leaves no field read.
     fn record_field_schemes(
         &self,
         repr: &RecordRepr,
-        defn: &TypeDefn,
-        file: &ImplFile,
+        members: Option<&HashSet<String>>,
     ) -> HashMap<String, Ty> {
-        let Some(members) = intrinsic_member_names(defn, file) else {
+        let Some(members) = members else {
             return HashMap::new();
         };
         // A label declared twice is an error FCS recovers from by keeping
@@ -8843,39 +8848,69 @@ const RECORD_GENERATED_MEMBERS: &[&str] = &[
     "Finalize",
 ];
 
-/// The names of the instance-accessible members the type `defn` declares,
-/// in its definition or a same-file augmentation of its name (`type R with
-/// member …`), or `None` when one is a member whose name is not read off its
-/// head. An interface implementation is reached only through the interface,
-/// so it names nothing here.
-fn intrinsic_member_names(defn: &TypeDefn, file: &ImplFile) -> Option<HashSet<String>> {
-    let last_name = |d: &TypeDefn| {
-        d.long_id()
-            .and_then(|li| li.idents().last())
-            .map(|t| ident_text(&t))
-    };
-    let name = last_name(defn)?;
-    let mut out = HashSet::new();
-    for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
-        if last_name(&d).as_deref() != Some(name.as_str()) {
-            continue;
-        }
-        let mut members: Vec<MemberDefn> = d.members().collect();
-        if let Some(TypeDefnRepr::ObjectModel(om)) = d.repr() {
-            members.extend(om.members());
-        }
-        for m in members {
-            match m {
-                MemberDefn::Interface(_) => {}
-                MemberDefn::Member(mm) => {
-                    let Some(Pat::LongIdent(l)) = mm.binding().and_then(|b| b.pat()) else {
-                        return None;
-                    };
-                    let tok = l.head().and_then(|h| h.idents().last())?;
-                    out.insert(ident_text(&tok));
-                }
-                _ => return None,
+/// The names of the instance-accessible members each type in a file
+/// declares, in its definition or a same-file augmentation of its name (`type
+/// R with member …`), keyed by the last segment of that name; `None` for a
+/// name one of whose definitions declares a member whose name is not read off
+/// its head. An interface implementation is reached only through the
+/// interface, so it names nothing here.
+///
+/// Built in one pass over the file: a record asking of every type
+/// definition for its augmentations would make a file of `n` records cost
+/// `n²`.
+struct IntrinsicMemberNames(HashMap<String, Option<HashSet<String>>>);
+
+impl IntrinsicMemberNames {
+    fn of(file: &ImplFile) -> IntrinsicMemberNames {
+        let mut by_name: HashMap<String, Option<HashSet<String>>> = HashMap::new();
+        for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
+            let Some(name) = type_last_name(&d) else {
+                continue;
+            };
+            let declared = declared_member_names(&d);
+            let entry = by_name.entry(name).or_insert_with(|| Some(HashSet::new()));
+            match (entry.as_mut(), declared) {
+                (Some(names), Some(declared)) => names.extend(declared),
+                _ => *entry = None,
             }
+        }
+        IntrinsicMemberNames(by_name)
+    }
+
+    /// The members of the type `defn` defines, or `None` when one is not
+    /// read (or `defn` has no name).
+    fn of_type(&self, defn: &TypeDefn) -> Option<&HashSet<String>> {
+        self.0.get(&type_last_name(defn)?)?.as_ref()
+    }
+}
+
+/// The last segment of the name a type definition declares.
+fn type_last_name(d: &TypeDefn) -> Option<String> {
+    d.long_id()
+        .and_then(|li| li.idents().last())
+        .map(|t| ident_text(&t))
+}
+
+/// The names of the instance-accessible members the one definition `d`
+/// declares ([`IntrinsicMemberNames`]), or `None` when one is a member whose
+/// name is not read off its head.
+fn declared_member_names(d: &TypeDefn) -> Option<Vec<String>> {
+    let mut members: Vec<MemberDefn> = d.members().collect();
+    if let Some(TypeDefnRepr::ObjectModel(om)) = d.repr() {
+        members.extend(om.members());
+    }
+    let mut out = Vec::new();
+    for m in members {
+        match m {
+            MemberDefn::Interface(_) => {}
+            MemberDefn::Member(mm) => {
+                let Some(Pat::LongIdent(l)) = mm.binding().and_then(|b| b.pat()) else {
+                    return None;
+                };
+                let tok = l.head().and_then(|h| h.idents().last())?;
+                out.push(ident_text(&tok));
+            }
+            _ => return None,
         }
     }
     Some(out)
@@ -10380,5 +10415,107 @@ mod tests {
             .generalise(&resolved_inst, mark)
             .expect("fresh vars generalise");
         assert_eq!(regen, scheme, "generalise ∘ instantiate is the identity");
+    }
+
+    /// `type`'s members, by the per-record scan of every type definition in
+    /// the file that [`super::IntrinsicMemberNames`] replaces: the reference
+    /// it is held to.
+    fn intrinsic_member_names_by_scan(
+        defn: &borzoi_cst::syntax::TypeDefn,
+        file: &ImplFile,
+    ) -> Option<std::collections::HashSet<String>> {
+        use borzoi_cst::syntax::{MemberDefn, Pat, TypeDefn, TypeDefnRepr};
+        let last_name = |d: &TypeDefn| {
+            d.long_id()
+                .and_then(|li| li.idents().last())
+                .map(|t| super::ident_text(&t))
+        };
+        let name = last_name(defn)?;
+        let mut out = std::collections::HashSet::new();
+        for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
+            if last_name(&d).as_deref() != Some(name.as_str()) {
+                continue;
+            }
+            let mut members: Vec<MemberDefn> = d.members().collect();
+            if let Some(TypeDefnRepr::ObjectModel(om)) = d.repr() {
+                members.extend(om.members());
+            }
+            for m in members {
+                match m {
+                    MemberDefn::Interface(_) => {}
+                    MemberDefn::Member(mm) => {
+                        let Some(Pat::LongIdent(l)) = mm.binding().and_then(|b| b.pat()) else {
+                            return None;
+                        };
+                        let tok = l.head().and_then(|h| h.idents().last())?;
+                        out.insert(super::ident_text(&tok));
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// The per-file table answers every type definition as the per-record
+    /// scan of the file does, over every sequence of up to three
+    /// declarations drawn from a vocabulary of the ways a type gains (or
+    /// hides) members: its own body, an augmentation of the same last name
+    /// at another path or in a nested module, an interface implementation,
+    /// and members whose name is not read off the head.
+    #[test]
+    fn intrinsic_member_table_agrees_with_the_per_record_scan() {
+        use borzoi_cst::syntax::TypeDefn;
+        const DECLS: &[&str] = &[
+            "type R = { X: int }\n",
+            "type R =\n    { X: int }\n    member this.Y = 1\n",
+            "type R with\n    member this.A = 1\n",
+            "type R with\n    static member B = 1\n",
+            "type R() =\n    member val C = 1 with get, set\n",
+            "type R with\n    interface System.IDisposable with\n        member this.Dispose() = ()\n",
+            "type S = { Y: int }\n",
+            "type M.R with\n    member this.D = 1\n",
+            "module N =\n    type R with\n        member this.E = 1\n",
+            "type R with\n    static member (+) (a: R, b: R) = a\n",
+            "type R =\n    | P\n    | Q\n    member this.G = 1\n",
+            "type R =\n    abstract H: int\n",
+            "type S with\n    member this.A = 1\n",
+        ];
+        let mut sequences: Vec<Vec<&str>> = vec![vec![]];
+        let mut all = Vec::new();
+        for _ in 0..3 {
+            sequences = sequences
+                .iter()
+                .flat_map(|seq| {
+                    DECLS.iter().map(move |d| {
+                        let mut next = seq.clone();
+                        next.push(*d);
+                        next
+                    })
+                })
+                .collect();
+            all.extend(sequences.iter().cloned());
+        }
+        let (mut declined, mut named) = (0usize, 0usize);
+        for seq in all {
+            let src = seq.concat();
+            let file = ImplFile::cast(parse(&src).root).expect("an implementation file");
+            let table = super::IntrinsicMemberNames::of(&file);
+            for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+                let expected = intrinsic_member_names_by_scan(&defn, &file);
+                match &expected {
+                    None => declined += 1,
+                    Some(names) if !names.is_empty() => named += 1,
+                    Some(_) => {}
+                }
+                assert_eq!(table.of_type(&defn), expected.as_ref(), "{src}");
+            }
+        }
+        // Neither outcome is vacuous: the grid reaches both a declined type and
+        // one with members.
+        assert!(
+            declined > 0 && named > 0,
+            "{declined} declined, {named} named"
+        );
     }
 }
