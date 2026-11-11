@@ -300,9 +300,9 @@ fn raw_token_left_of(root: &SyntaxNode, byte: TextSize) -> Option<SyntaxToken> {
     // `token_at_offset` returns up to two tokens at a boundary. Take the token to
     // the *left* (ending at `byte`); if the cursor is inside a token, that token.
     match root.token_at_offset(byte) {
-        rowan::TokenAtOffset::None => None,
-        rowan::TokenAtOffset::Single(t) => Some(t),
-        rowan::TokenAtOffset::Between(left, _right) => Some(left),
+        borzoi_cst::syntax::TokenAtOffset::None => None,
+        borzoi_cst::syntax::TokenAtOffset::Single(t) => Some(t),
+        borzoi_cst::syntax::TokenAtOffset::Between(left, _right) => Some(left),
     }
 }
 

@@ -31,10 +31,10 @@
 
 use borzoi_cst::parser::{MAX_TREE_HEIGHT, Parse, parse, parse_sig};
 use borzoi_cst::syntax::SyntaxNode;
+use borzoi_cst::syntax::WalkEvent;
 use borzoi_oracle_harness::repetition_shapes::{
     Kind, LONG_INDENTED, NESTED_LONG, SHAPES, SHORT, Shape, nestable_shapes, nested_in_modules,
 };
-use rowan::WalkEvent;
 
 /// The `Send`-able facts about one parse (a `Parse` holds rowan nodes, which
 /// are not `Send`).
@@ -74,7 +74,7 @@ fn parse_kind(kind: Kind, src: &str) -> Parse {
 /// stack. The drop is the point: rowan frees a green tree recursively, so a
 /// tree too tall for the stack aborts the process there.
 fn parse_and_drop(kind: Kind, src: String) -> Probe {
-    let (probe, green) = std::thread::Builder::new()
+    let (probe, tree) = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let parsed = parse_kind(kind, &src);
@@ -83,17 +83,16 @@ fn parse_and_drop(kind: Kind, src: String) -> Probe {
                 roundtrip_ok: parsed.root.text() == src.as_str(),
                 error_messages: parsed.errors.iter().map(|e| e.message.clone()).collect(),
             };
-            // The green tree is `Send`; the red tree over it is not. Dropping
-            // the red tree here leaves `green` the last owner.
-            let green = parsed.root.green().to_owned();
-            (probe, green)
+            // The tree is `Send`, and `parsed.root` is its only handle, so
+            // the drop below frees it.
+            (probe, parsed.root)
         })
         .expect("spawn parse thread")
         .join()
         .expect("parse thread panicked");
     std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
-        .spawn(move || drop(green))
+        .spawn(move || drop(tree))
         .expect("spawn drop thread")
         .join()
         .expect("drop thread panicked");

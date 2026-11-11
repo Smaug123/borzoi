@@ -230,8 +230,8 @@ mod diagnostics_version_dependence {
         let new = parse_at(source, LanguageVersion::Preview);
 
         assert_eq!(
-            old.root.green(),
-            new.root.green(),
+            old.root.structure(),
+            new.root.structure(),
             "the legality gate never alters the tree"
         );
         assert!(

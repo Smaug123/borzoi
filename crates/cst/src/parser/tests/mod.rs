@@ -30,8 +30,8 @@ fn fmt_tree(node: &SyntaxNode, indent: usize, out: &mut String) {
     out.push_str(&format!("{:?}@{:?}\n", node.kind(), node.text_range()));
     for child in node.children_with_tokens() {
         match child {
-            rowan::NodeOrToken::Node(n) => fmt_tree(&n, indent + 1, out),
-            rowan::NodeOrToken::Token(t) => {
+            crate::syntax::NodeOrToken::Node(n) => fmt_tree(&n, indent + 1, out),
+            crate::syntax::NodeOrToken::Token(t) => {
                 out.push_str(&"  ".repeat(indent + 1));
                 out.push_str(&format!(
                     "{:?}@{:?} {:?}\n",
@@ -57,7 +57,7 @@ fn tree_contains_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
 fn assert_lossless(source: &str, parse: &Parse) {
     let mut reconstructed = String::new();
     for el in parse.root.descendants_with_tokens() {
-        if let rowan::NodeOrToken::Token(t) = el {
+        if let crate::syntax::NodeOrToken::Token(t) = el {
             reconstructed.push_str(t.text());
         }
     }

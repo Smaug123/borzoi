@@ -1,10 +1,12 @@
-//! Concrete-syntax tree built on top of [`rowan`].
+//! Concrete-syntax tree.
 //!
-//! This is the "green/red" representation chosen in `docs/parser-plan.md` D3.
-//! The parser builds an untyped [`SyntaxNode`] tree using [`rowan::GreenNodeBuilder`];
-//! the *typed* facade in this module ([`ImplFile`], [`ModuleOrNamespace`], …)
-//! wraps those nodes with strongly-typed accessors so consumers can navigate
-//! the tree without matching on raw [`SyntaxKind`]s.
+//! The parser builds a lossless green tree with [`rowan::GreenNodeBuilder`],
+//! which is flattened into one preorder table per file (`flat`, see
+//! `docs/flat-syntax-tree-plan.md`); [`SyntaxNode`] and [`SyntaxToken`] are
+//! handles into it. The *typed* facade in this module ([`ImplFile`],
+//! [`ModuleOrNamespace`], …) wraps those nodes with strongly-typed accessors
+//! so consumers can navigate the tree without matching on raw
+//! [`SyntaxKind`]s.
 
 #[cfg(feature = "accessor-trace")]
 pub mod accessor_trace;
@@ -56,9 +58,11 @@ impl rowan::Language for FSharpLang {
     }
 }
 
-pub type SyntaxNode = rowan::SyntaxNode<FSharpLang>;
-pub type SyntaxToken = rowan::SyntaxToken<FSharpLang>;
-pub type SyntaxElement = rowan::SyntaxElement<FSharpLang>;
+mod flat;
+pub use flat::{
+    Direction, NodeOrToken, Structure, SyntaxElement, SyntaxNode, SyntaxText, SyntaxToken,
+    TextRange, TextSize, TokenAtOffset, WalkEvent,
+};
 
 /// Common interface for the typed-AST facade. One implementor per node-kind
 /// (see [`ImplFile`], [`ModuleOrNamespace`], …). Mirrors rust-analyzer's
@@ -1962,8 +1966,8 @@ pub enum ExternCTypeSuffix {
 
 fn extern_c_type_base(node: &SyntaxNode) -> Option<ExternCTypeBase> {
     node.children_with_tokens().find_map(|el| match el {
-        rowan::NodeOrToken::Node(n) => LongIdent::cast(n).map(ExternCTypeBase::Path),
-        rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::VOID_TOK => {
+        crate::syntax::NodeOrToken::Node(n) => LongIdent::cast(n).map(ExternCTypeBase::Path),
+        crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::VOID_TOK => {
             Some(ExternCTypeBase::Void(t))
         }
         _ => None,
@@ -2677,10 +2681,10 @@ impl MeasureDivide {
         let mut seen_slash = false;
         for el in self.0.children_with_tokens() {
             match el {
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SLASH_TOK => {
+                crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SLASH_TOK => {
                     seen_slash = true;
                 }
-                rowan::NodeOrToken::Node(n) if Measure::can_cast(n.kind()) => {
+                crate::syntax::NodeOrToken::Node(n) if Measure::can_cast(n.kind()) => {
                     return if seen_slash { None } else { Measure::cast(n) };
                 }
                 _ => {}
@@ -2695,10 +2699,12 @@ impl MeasureDivide {
         let mut seen_slash = false;
         for el in self.0.children_with_tokens() {
             match el {
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SLASH_TOK => {
+                crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SLASH_TOK => {
                     seen_slash = true;
                 }
-                rowan::NodeOrToken::Node(n) if seen_slash && Measure::can_cast(n.kind()) => {
+                crate::syntax::NodeOrToken::Node(n)
+                    if seen_slash && Measure::can_cast(n.kind()) =>
+                {
                     return Measure::cast(n);
                 }
                 _ => {}
@@ -2908,10 +2914,12 @@ impl InterpStringExpr {
         let mut parts: Vec<InterpStringPart> = Vec::new();
         for el in self.0.children_with_tokens() {
             match el {
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INTERP_STRING_FRAGMENT => {
+                crate::syntax::NodeOrToken::Token(t)
+                    if t.kind() == SyntaxKind::INTERP_STRING_FRAGMENT =>
+                {
                     parts.push(InterpStringPart::Fragment(t));
                 }
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IDENT_TOK => {
+                crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IDENT_TOK => {
                     // The only top-level `IDENT_TOK` in an interp-string is a
                     // fill's format qualifier; attach it to the fill it trails.
                     if let Some(InterpStringPart::Fill {
@@ -2922,7 +2930,7 @@ impl InterpStringExpr {
                         *slot = Some(t);
                     }
                 }
-                rowan::NodeOrToken::Node(n) => {
+                crate::syntax::NodeOrToken::Node(n) => {
                     if let Some(expr) = Expr::cast(n) {
                         parts.push(InterpStringPart::Fill {
                             expr,
@@ -3164,8 +3172,10 @@ impl IndexRangeExpr {
         let mut found = None;
         for el in self.0.children_with_tokens() {
             match el {
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DOT_DOT_TOK => break,
-                rowan::NodeOrToken::Node(n) => {
+                crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DOT_DOT_TOK => {
+                    break;
+                }
+                crate::syntax::NodeOrToken::Node(n) => {
                     if let Some(e) = Expr::cast(n) {
                         found = Some(e);
                     }
@@ -3184,10 +3194,10 @@ impl IndexRangeExpr {
         let mut seen_dot_dot = false;
         for el in self.0.children_with_tokens() {
             match el {
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DOT_DOT_TOK => {
+                crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DOT_DOT_TOK => {
                     seen_dot_dot = true;
                 }
-                rowan::NodeOrToken::Node(n) if seen_dot_dot => {
+                crate::syntax::NodeOrToken::Node(n) if seen_dot_dot => {
                     if let Some(e) = Expr::cast(n) {
                         return Some(e);
                     }
@@ -4344,14 +4354,14 @@ impl TupleType {
         self.0
             .children_with_tokens()
             .filter_map(|el| match el {
-                rowan::NodeOrToken::Node(n) => Type::cast(n).map(TupleSegment::Type),
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::STAR_TOK => {
+                crate::syntax::NodeOrToken::Node(n) => Type::cast(n).map(TupleSegment::Type),
+                crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::STAR_TOK => {
                     Some(TupleSegment::Star(t))
                 }
-                rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SLASH_TOK => {
+                crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SLASH_TOK => {
                     Some(TupleSegment::Slash(t))
                 }
-                rowan::NodeOrToken::Token(_) => None,
+                crate::syntax::NodeOrToken::Token(_) => None,
             })
             .collect()
     }

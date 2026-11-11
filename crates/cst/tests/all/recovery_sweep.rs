@@ -287,13 +287,13 @@ struct CstUnit {
 }
 
 impl CstUnit {
-    /// What must be unchanged: a declaration's whole green subtree; for a
-    /// header, the green child nodes inside `range` (name, attributes) — read
+    /// What must be unchanged: a declaration's whole subtree; for a
+    /// header, the child nodes inside `range` (name, attributes) — read
     /// through the clean unit's range on both sides, since a damaged first
     /// declaration can leave nodes of its own in front of the next one.
-    fn identity(&self, range: &Range<usize>) -> Vec<rowan::GreenNode> {
+    fn identity(&self, range: &Range<usize>) -> Vec<borzoi_cst::syntax::Structure> {
         if !self.header {
-            return vec![self.node.green().to_owned()];
+            return vec![self.node.structure()];
         }
         self.node
             .children()
@@ -302,7 +302,7 @@ impl CstUnit {
                 let r = significant_range(c);
                 range.start <= r.start && r.end <= range.end
             })
-            .map(|c| c.green().to_owned())
+            .map(|c| c.structure())
             .collect()
     }
 }

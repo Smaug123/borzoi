@@ -1,6 +1,7 @@
 # Flat per-file syntax table (replacing rowan's red layer)
 
-> **Status (2026-11-10).** Spiked; staged plan below. Tracks
+> **Status (2026-11-11).** Stage 0 (harness) and Stage 1 (the table behind
+> rowan's API) implemented; Stages 2–4 open. Tracks
 > [#541](https://github.com/WoofWare/borzoi/issues/541).
 
 ## Problem

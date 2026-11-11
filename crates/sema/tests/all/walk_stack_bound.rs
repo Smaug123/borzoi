@@ -35,6 +35,7 @@ use std::path::PathBuf;
 
 use borzoi_cst::parser::{MAX_TREE_HEIGHT, Parse, parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile, SyntaxNode};
+use borzoi_cst::syntax::{NodeOrToken, WalkEvent};
 use borzoi_oracle_harness::manifest::{self, Manifest};
 use borzoi_oracle_harness::par_map::par_map;
 use borzoi_oracle_harness::repetition_shapes::{Case, Form, Kind, cases, tallest_clean_count};
@@ -43,7 +44,6 @@ use borzoi_sema::{
     AssemblyEnv, ProjectFile, SourceFile, SyntaxRecovery, WALK_STACK_BYTES, infer_project,
     qualified_names, resolve_project_files,
 };
-use rowan::{GreenNode, NodeOrToken, WalkEvent};
 
 /// The stack every case is walked on: half of [`WALK_STACK_BYTES`], the
 /// margin the bound promises.
@@ -91,12 +91,11 @@ fn case_parse(case: Case) -> Parse {
     parse_kind(kind, &case.source(n))
 }
 
-/// Resolve and infer the tree `green` as a one-file project, the fold the
+/// Resolve and infer the tree `root` as a one-file project, the fold the
 /// language server runs on every file, and return how deep each walk reached:
 /// the node depth of the deepest occurrence resolution recorded (0 for none),
 /// and the most expression levels inference had open at once.
-fn walk(kind: Kind, green: GreenNode, recovery: SyntaxRecovery) -> (usize, usize) {
-    let root = SyntaxNode::new_root(green);
+fn walk(kind: Kind, root: SyntaxNode, recovery: SyntaxRecovery) -> (usize, usize) {
     let file = match kind {
         Kind::Impl => SourceFile::Impl(ImplFile::cast(root.clone()).expect("impl root")),
         Kind::Sig => SourceFile::Sig(SigFile::cast(root.clone()).expect("sig root")),
@@ -182,9 +181,9 @@ fn spell_case(index: usize, stack_bytes: usize) -> String {
 ///
 /// The case is parsed first, on a thread of the full [`WALK_STACK_BYTES`]: the
 /// parser's own recursion is bounded and tested in `borzoi-cst`, and only the
-/// walks are measured here. Its tree crosses to the walk's thread as the
-/// (`Send`) green tree, and this thread keeps a handle on it, so the walk's
-/// thread only drops a reference rather than the tree.
+/// walks are measured here. Its (`Send`) tree crosses to the walk's thread,
+/// and this thread keeps a handle on it, so the walk's thread only drops a
+/// reference rather than the tree.
 #[test]
 #[ignore = "child-process entry for walk_stack_bound"]
 fn probe_child() {
@@ -194,17 +193,17 @@ fn probe_child() {
     let (index, stack_bytes) = spec.split_once(' ').expect("index and stack");
     let case = cases()[index.parse::<usize>().expect("a case index")];
     let stack_bytes: usize = stack_bytes.parse().expect("a stack size");
-    let (green, recovery, height, clean) = stack_probe::on_stack(WALK_STACK_BYTES, move || {
+    let (root, recovery, height, clean) = stack_probe::on_stack(WALK_STACK_BYTES, move || {
         let parsed = case_parse(case);
         let recovery = SyntaxRecovery::of(&parsed);
         let height = tree_height(&parsed.root);
         let clean = parsed.errors.is_empty();
-        (parsed.root.green().to_owned(), recovery, height, clean)
+        (parsed.root, recovery, height, clean)
     });
-    let tree = green.clone();
+    let tree = root.clone();
     let (resolved_depth, inferred_nesting) =
         stack_probe::on_stack(stack_bytes, move || walk(case.shape.kind, tree, recovery));
-    drop(green);
+    drop(root);
     let facts = Facts {
         height,
         clean,

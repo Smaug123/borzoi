@@ -234,8 +234,8 @@ fn declaration_extent(node: &SyntaxNode) -> TextRange {
     let mut next = decl.next_sibling_or_token();
     while let Some(sibling) = next {
         match sibling {
-            rowan::NodeOrToken::Node(_) => break,
-            rowan::NodeOrToken::Token(t) => {
+            borzoi_cst::syntax::NodeOrToken::Node(_) => break,
+            borzoi_cst::syntax::NodeOrToken::Token(t) => {
                 end = t.text_range().end();
                 next = t.next_sibling_or_token();
             }

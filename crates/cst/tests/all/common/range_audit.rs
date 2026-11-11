@@ -735,18 +735,23 @@ fn hash_directive_is_argumentless(node: &SyntaxNode) -> bool {
     let mut saw_name = false;
     for elem in node.children_with_tokens() {
         match elem {
-            rowan::NodeOrToken::Token(token)
+            borzoi_cst::syntax::NodeOrToken::Token(token)
                 if token.kind().is_trivia() || token.text_range().is_empty() => {}
-            rowan::NodeOrToken::Token(token) if token.kind() == SyntaxKind::HASH_TOK => {}
-            rowan::NodeOrToken::Token(token)
+            borzoi_cst::syntax::NodeOrToken::Token(token)
+                if token.kind() == SyntaxKind::HASH_TOK => {}
+            borzoi_cst::syntax::NodeOrToken::Token(token)
                 if token.kind() == SyntaxKind::IDENT_TOK && !saw_name =>
             {
                 saw_name = true;
             }
-            rowan::NodeOrToken::Token(_) | rowan::NodeOrToken::Node(_) if saw_name => {
+            borzoi_cst::syntax::NodeOrToken::Token(_)
+            | borzoi_cst::syntax::NodeOrToken::Node(_)
+                if saw_name =>
+            {
                 return false;
             }
-            rowan::NodeOrToken::Token(_) | rowan::NodeOrToken::Node(_) => {}
+            borzoi_cst::syntax::NodeOrToken::Token(_)
+            | borzoi_cst::syntax::NodeOrToken::Node(_) => {}
         }
     }
     saw_name
