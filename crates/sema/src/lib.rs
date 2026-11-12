@@ -39,6 +39,7 @@ mod binders;
 mod def;
 mod diagnostics;
 mod function_ty;
+pub mod hash;
 mod infer;
 mod infer_project;
 mod match_reach;
