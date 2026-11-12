@@ -2108,6 +2108,11 @@ impl<'r> State<'r> {
     ///   (a case collision, a toolset overwrite). We dropped it from the lookup
     ///   precisely because we cannot model its value, and "cannot model" is not
     ///   "unset": the real build defines *something* non-empty.
+    /// * [`is_toolset_predefined_name`] — a name MSBuild's toolset defines
+    ///   before evaluation starts. The walk holds no value for one only when it
+    ///   has not seeded it (no canonical SDK resolved, the seed was withheld,
+    ///   or the toolset is one whose value we do not know), and the real build
+    ///   holds its own value all the same.
     ///
     /// The other two [`Trust`] channels are deliberately *not* consulted: both
     /// describe a value we hold and may have wrong, whereas this asks about a
@@ -2116,7 +2121,9 @@ impl<'r> State<'r> {
     /// the wholesale decline the over-commitment above exists to avoid.
     fn self_default_absence_is_a_fact(&self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
-        !self.trust_of(name).refused() && !self.env_property_names.contains(&lower)
+        !self.trust_of(name).refused()
+            && !self.env_property_names.contains(&lower)
+            && !is_toolset_predefined_name(&lower)
     }
 
     /// Is the *current* value of `name` exactly what MSBuild holds at this
@@ -2378,42 +2385,13 @@ impl<'r> State<'r> {
         // it is out of sight. Content the walk could not see (an import it
         // could not follow, or one whose gate it could not decide) may have
         // written any of them before this SDK resolved, and a hidden write
-        // leaves no trust record. So under opacity none is seeded. The slot is
-        // still not *empty* in the real build — it holds the hidden value, or
-        // the toolset's own when the hidden content wrote nothing — so each
-        // withheld name is recorded as refused: we hold no value, the real
-        // build holds one we cannot name. Without that mark the SDK's
-        // `Condition="'$(Name)' == ''"` default idiom would read the absence
-        // as a fact (`self_default_absence_is_a_fact` deliberately believes
-        // undefined reads behind opacity) and commit its fallback. The
-        // reserved seeds above stand regardless: MSBuild refuses a write to
-        // them (MSB4004), hidden or not.
-        //
-        // `VisualStudioVersion` is overridable too, but a toolset need not
-        // define it (`toolset_visual_studio_version`); where it does not, an
-        // empty slot is what the real build holds unless the hidden content
-        // wrote it, as for any name behind opacity.
-        let toolset_vsv = toolset_visual_studio_version(&version_dir);
+        // leaves no trust record. So under opacity none is seeded, and every
+        // read of one declines: an undefined read behind opacity is never
+        // exact, and a self-default write never takes the absence of a
+        // toolset-predefined name for a fact (`is_toolset_predefined_name`).
+        // The reserved seeds above stand regardless: MSBuild refuses a write
+        // to them (MSB4004), hidden or not.
         if self.walk_opaque.is_some() {
-            let withheld = [
-                "MSBuildExtensionsPath",
-                "MSBuildExtensionsPath32",
-                "MSBuildSDKsPath",
-            ]
-            .into_iter()
-            .chain(toolset_vsv.map(|_| "VisualStudioVersion"));
-            for name in withheld {
-                if self.lookup.get(name).is_none() {
-                    self.apply_property_provenance(
-                        name,
-                        PropertyProvenance {
-                            taint: TaintOutcome::Keep,
-                            unpinned: UnpinnedOutcome::Keep,
-                            refused: RefusedOutcome::Set,
-                        },
-                    );
-                }
-            }
             return;
         }
         // `VisualStudioVersion` is a toolset constant every name source can
@@ -2426,7 +2404,7 @@ impl<'r> State<'r> {
         if self.lookup.get("VisualStudioVersion").is_none()
             && !self.env_property_names.contains("visualstudioversion")
             && self.trust_of("VisualStudioVersion").is_certain()
-            && let Some(value) = toolset_vsv
+            && let Some(value) = toolset_visual_studio_version(&version_dir)
         {
             self.lookup.insert_computed("VisualStudioVersion", value);
         }
@@ -4848,6 +4826,34 @@ fn toolset_visual_studio_version(version_dir: &Path) -> Option<&'static str> {
         10 => Some("18.0"),
         _ => None,
     }
+}
+
+/// The property names MSBuild's toolset defines, non-empty, before any
+/// project text is evaluated: the toolset seeds of
+/// [`State::seed_toolset_properties`], and `VisualStudioVersion` (seeded only
+/// where the SDK's version says what the toolset defines). Lowercase.
+///
+/// Whenever the walk holds no value for one of these, the real build still
+/// does, so the absence is never a fact (see
+/// [`State::self_default_absence_is_a_fact`]): the SDK's
+/// `<VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</…>`
+/// in `Microsoft.Common.CurrentVersion.targets` would otherwise commit `10.0`
+/// where MSBuild 18 reads `18.0`. `toolset_predefined_names_diff` holds the
+/// list to MSBuild both ways: every name here is defined in an empty project,
+/// and every name the SDK self-defaults that MSBuild predefines is here.
+pub(crate) const TOOLSET_PREDEFINED_NAMES: &[&str] = &[
+    "msbuildtoolspath",
+    "msbuildbinpath",
+    "msbuildtoolsversion",
+    "msbuildruntimetype",
+    "msbuildextensionspath",
+    "msbuildextensionspath32",
+    "msbuildsdkspath",
+    "visualstudioversion",
+];
+
+fn is_toolset_predefined_name(lower: &str) -> bool {
+    TOOLSET_PREDEFINED_NAMES.contains(&lower)
 }
 
 fn is_env_ignored_toolset_name(lower: &str) -> bool {
