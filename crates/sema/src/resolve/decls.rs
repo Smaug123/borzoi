@@ -77,7 +77,7 @@ pub(super) fn union_repr_is_private(defn: &TypeDefn) -> bool {
 /// makes the positional contest against in-file types as conservative as the
 /// latest introduction — either can only widen the defer, never mis-bind.
 fn merge_auto_open_shadow(
-    map: &mut std::collections::HashMap<String, AutoOpenTypeShadow>,
+    map: &mut crate::hash::HashMap<String, AutoOpenTypeShadow>,
     name: String,
     new: AutoOpenTypeShadow,
 ) {
@@ -184,11 +184,19 @@ impl<'a> Resolver<'a> {
     /// F# reaches only through the file's implicit (filename-derived) module,
     /// which we do not model, so they are not cross-file referenceable here.
     pub(super) fn qualified_export_path(&self, name: &str) -> Option<Vec<String>> {
-        self.module_path.as_ref().map(|path| {
-            let mut full = path.clone();
+        self.module_path().map(|path| {
+            let mut full = path.to_vec();
             full.push(name.to_string());
             full
         })
+    }
+
+    /// Dotted path of the module currently being walked (`["Shared"]`), used to
+    /// qualify exports: the container path while
+    /// [`in_exporting_module`](Self::in_exporting_module) holds, `None` in a
+    /// namespace or under an anonymous root.
+    pub(super) fn module_path(&self) -> Option<&[String]> {
+        self.in_exporting_module.then_some(&*self.container_path)
     }
 
     /// Export a value-namespace **constructor case** (a non-qualified union case
@@ -1118,18 +1126,7 @@ impl<'a> Resolver<'a> {
                     // like the incomplete-prefix veto. Candidates that did
                     // yield an interpretation are handled per-group below.
                     let names_uncovered_dropped_path = !path.is_empty()
-                        && self
-                            .open_tier_candidates(&path, rooted)
-                            .iter()
-                            .any(|(full, _)| {
-                                self.assemblies
-                                    .any_split_of_a_module_path_has_a_dropped_type(full)
-                                    && !interps.iter().any(|i| match i {
-                                        OpenInterpretation::Module(p)
-                                        | OpenInterpretation::AssemblyModule(p)
-                                        | OpenInterpretation::Reading(p) => p == full,
-                                    })
-                            });
+                        && self.open_names_an_uncovered_dropped_path(&path, rooted, &interps);
                     if names_uncovered_dropped_path {
                         self.opaque_value_open = true;
                         self.open_generation += 1;
@@ -1781,7 +1778,7 @@ impl<'a> Resolver<'a> {
         // which is popped and discarded below, so they vanish with it.
         // (File-level accumulators — `items`, `defs`, `resolutions`,
         // `nested_module_exports` — are the file's contribution and persist.)
-        let saved_module_path = self.module_path.clone();
+        let saved_in_exporting_module = self.in_exporting_module;
         let saved_container = self.container_path.mark();
         let saved_imports = self.imports.clone();
         let saved_open_shortening_prefixes = self.open_shortening_prefixes.clone();
@@ -1815,7 +1812,7 @@ impl<'a> Resolver<'a> {
         for segment in segs {
             self.container_path.push(segment);
         }
-        self.module_path = (!self.anonymous_root).then(|| self.container_path.to_vec());
+        self.in_exporting_module = !self.anonymous_root;
         // A `module private Sub` scopes its contents to its parent (this module's
         // container); stacked private modules take the deepest floor (see
         // [`Resolver::access_floor`]). A non-private module inherits the enclosing
@@ -1830,7 +1827,7 @@ impl<'a> Resolver<'a> {
         // already scanned this subtree (the outer collection recurses), so
         // its superset stays in place.
         let saved_rec_module_names = if !saved_recursive_module && nm.is_rec() {
-            let mut names = std::collections::HashSet::new();
+            let mut names = crate::hash::HashSet::default();
             super::collect_nested_module_names(nm.decls(), &mut names);
             Some(std::mem::replace(&mut self.rec_module_names, names))
         } else {
@@ -1857,7 +1854,7 @@ impl<'a> Resolver<'a> {
         self.module_frames.pop();
         self.rec_contribution = saved_rec_contribution;
 
-        self.module_path = saved_module_path;
+        self.in_exporting_module = saved_in_exporting_module;
         self.container_path.leave_to(saved_container);
         self.access_floor = saved_access_floor;
         self.imports = saved_imports;
@@ -2032,10 +2029,19 @@ impl<'a> Resolver<'a> {
     /// `name` is already a name ([`id_text`]), not a token's text.
     pub(super) fn mark_decl(&mut self, name: &str) -> &mut super::state::DeclKinds {
         self.container_decls
-            .entry(self.container_path.to_vec())
+            .entry(self.container_path.id())
             .or_default()
             .entry(name.to_string())
             .or_default()
+    }
+
+    /// What [`Self::container_decls`] holds for the container `path`: nothing
+    /// when the walk has not entered it.
+    pub(super) fn declared_in(
+        &self,
+        path: &[String],
+    ) -> Option<&crate::hash::HashMap<String, super::state::DeclKinds>> {
+        self.container_path.get_at(&self.container_decls, path)
     }
 }
 

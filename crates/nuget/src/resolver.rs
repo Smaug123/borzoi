@@ -44,6 +44,27 @@
 //!    the decline here names the one it reports. The closure is the chosen
 //!    packages the flattening reaches.
 //!
+//! # Transitive pinning
+//!
+//! Under central package management with `CentralPackageTransitivePinningEnabled`
+//! ([`ProjectGraph::transitive_pinning`]), the choosing pass raises every
+//! transitive package edge whose name has a central version to that version's
+//! range, and gives the item the root's path, as though the root referenced
+//! it; a direct package reference keeps its own range. Every package item of
+//! a pinned name so carries one range, and is never evicted. A pinned item's
+//! own dependencies are walked whatever is suppressed above it, and the
+//! pinned item records each item found depending on its name (`Parents`).
+//! The flattening then changes in three ways: a downgrade of a pinned package
+//! is attributed to the first of its parents the demanding item descends
+//! from; a downgrade of a direct reference is not recorded at all; and a
+//! first visit whose edge demands more than the chosen range is a downgrade
+//! below the root. Downgrades of the first and third kind are `NU1109`, an
+//! error. A pin above an edge's upper bound is that edge's version conflict,
+//! which restore records but, with no other edge at the pinned range,
+//! never reports: the package leaves the graph, and restore succeeds without
+//! it. `dgspec_resolve_diff.rs` grades each of these against restore, and
+//! `resolver_diff.rs` sweeps pinned graphs.
+//!
 //! # What restore reads
 //!
 //! Restore starts a lookup of every edge it enqueues, chosen or not
@@ -193,6 +214,15 @@ pub struct ProjectGraph {
     /// not this framework's graph reaches it, so no package edge may carry
     /// one here either.
     pub other_projects: Vec<PackageId>,
+    /// Central package management's transitive pinning, when the root
+    /// project enables it (`CentralPackageTransitivePinningEnabled` under
+    /// central package management): the root's central version of each
+    /// package, for this framework. `None` when pinning is off.
+    ///
+    /// Restore raises every transitive package edge to a package with a
+    /// central version to that version, and walks it as though the root
+    /// referenced it: see *Transitive pinning* in the module docs.
+    pub transitive_pinning: Option<BTreeMap<PackageId, VersionRange>>,
 }
 
 impl ProjectGraph {
@@ -208,6 +238,7 @@ impl ProjectGraph {
                 .collect(),
             projects: Vec::new(),
             other_projects: Vec::new(),
+            transitive_pinning: None,
         }
     }
 
@@ -237,11 +268,24 @@ impl ProjectGraph {
     }
 
     /// The shapes the engine cannot model, checked before it: a project named
-    /// twice, a project reference to no project of the graph, and a package
+    /// twice, a project reference to no project of the graph, a package
     /// reference named like a referenced project (NuGet lets a project
     /// override a same-named package in the same list, and otherwise chooses
-    /// between them by type-constraint rules this does not model).
+    /// between them by type-constraint rules this does not model), and a
+    /// floating central version, on which restore fails (`NU1011`) whether or
+    /// not any edge is pinned to it.
     fn check(&self) -> Result<(), ResolveDecline> {
+        if let Some((id, range)) = self
+            .transitive_pinning
+            .iter()
+            .flatten()
+            .find(|(_, range)| range.is_floating())
+        {
+            return Err(ResolveDecline::FloatingRange {
+                id: id.clone(),
+                range: Box::new(range.clone()),
+            });
+        }
         let mut names = BTreeSet::new();
         for project in &self.projects {
             if !names.insert(&project.name) {
@@ -351,11 +395,15 @@ pub enum ResolveDecline {
         range: Box<VersionRange>,
     },
     /// Restore fails with NU1605: an edge demands more than the version the
-    /// engine chose for the package, which a nearer edge settled.
+    /// engine chose for the package, which a nearer edge settled. Under
+    /// transitive pinning, a downgrade below a pinned package, or one found
+    /// at a first visit, is `NU1109` instead (`central`), an error whatever
+    /// the warning policy.
     Downgrade {
         id: PackageId,
         selected: Box<NuGetVersion>,
         required: Box<VersionRange>,
+        central: bool,
     },
     DependencyWithoutRange {
         package: PackageIdentity,
@@ -424,11 +472,13 @@ impl fmt::Display for ResolveDecline {
                 id,
                 selected,
                 required,
+                central,
             } => {
+                let code = if *central { "NU1109" } else { "NU1605" };
                 write!(
                     f,
-                    "package {id} is pinned to {selected} by a nearer dependency, below the \
-                     {required} a deeper one needs (restore fails with NU1605)"
+                    "package {id} is held at {selected} by a nearer dependency, below the \
+                     {required} a deeper one needs (restore fails with {code})"
                 )
             }
             ResolveDecline::EquivalentVersions {
@@ -742,6 +792,15 @@ struct Item {
     /// A package reference of the root project, which is never evicted and
     /// eclipses every transitive edge to its name.
     is_root_package_reference: bool,
+    /// The range index of the item whose dependency this is (`Parent`);
+    /// `None` for the root.
+    parent: Option<RangeIndex>,
+    /// `IsCentrallyPinnedTransitivePackage`: transitive pinning has a central
+    /// version for the name. A transitive such item carries that version's
+    /// range and the root's path ([`Engine::choose`]). A root package
+    /// reference is flagged too, and keeps its own range; nothing the engine
+    /// does with the flag reaches one.
+    pinned: bool,
 }
 
 impl Item {
@@ -753,7 +812,15 @@ impl Item {
             path: Rc::new(Vec::new()),
             suppressions: Rc::new(BTreeSet::new()),
             is_root_package_reference: false,
+            parent: None,
+            pinned: false,
         }
+    }
+
+    /// A transitive item transitive pinning raised (`IsCentrallyPinnedTransitivePackage
+    /// && !IsRootPackageReference`).
+    fn is_pinned_transitive(&self) -> bool {
+        self.pinned && !self.is_root_package_reference
     }
 
     fn range(&self) -> Option<&VersionRange> {
@@ -813,15 +880,59 @@ struct Chosen {
     /// `ParentPathsThatHaveBeenEclipsed`: the parents of the lower items this
     /// one eclipsed from a path sharing no prefix with its own.
     eclipsed_parents: BTreeSet<RangeIndex>,
+    /// `Parents`, kept for an item transitive pinning raised: the range
+    /// index of every item found depending on the name, in the order found
+    /// (NuGet's `HashSet`, which enumerates in insertion order since nothing
+    /// is removed). `None` for any other item.
+    parents: Option<Vec<RangeIndex>>,
 }
 
 impl Chosen {
+    /// The item chosen afresh, its parents starting with its own if
+    /// transitive pinning raised it.
     fn new(item: Item, node: Node, suppressions: Vec<Rc<BTreeSet<NameIndex>>>) -> Chosen {
+        let parents = item
+            .is_pinned_transitive()
+            .then(|| vec![item.parent.expect("a transitive item has a parent")]);
         Chosen {
             item,
             node,
             suppressions,
             eclipsed_parents: BTreeSet::new(),
+            parents,
+        }
+    }
+
+    /// `item` replacing `existing` at the very same range: it takes the
+    /// replaced item's pinning and parents, and nothing else of it.
+    fn replacing(
+        existing: &Chosen,
+        item: Item,
+        node: Node,
+        suppressions: Vec<Rc<BTreeSet<NameIndex>>>,
+    ) -> Chosen {
+        debug_assert_eq!(
+            existing.item.is_root_package_reference, item.is_root_package_reference,
+            "a root package reference is never replaced"
+        );
+        Chosen {
+            item: Item {
+                pinned: existing.item.pinned,
+                ..item
+            },
+            node,
+            suppressions,
+            eclipsed_parents: BTreeSet::new(),
+            parents: existing.parents.clone(),
+        }
+    }
+
+    /// Record `parent` among a pinned item's parents (`Parents?.Add`).
+    fn add_parent(&mut self, parent: RangeIndex) {
+        if let Some(parents) = &mut self.parents
+            && !parents.contains(&parent)
+        {
+            parents.push(parent);
         }
     }
 
@@ -850,8 +961,11 @@ enum Decision {
     Eclipse(RangeIndex),
     /// Evict the chosen item in favour of this one.
     Evict,
-    /// Choose this item (replacing the chosen one), with these suppressions.
-    Choose(Vec<Rc<BTreeSet<NameIndex>>>),
+    /// Choose this item, the first of its name.
+    Choose,
+    /// Replace the chosen item, at the very same range, with this one, with
+    /// these suppressions.
+    Replace(Vec<Rc<BTreeSet<NameIndex>>>),
 }
 
 /// What the flattening reached.
@@ -874,6 +988,8 @@ struct DowngradeRecord {
     id: PackageId,
     selected: Option<NuGetVersion>,
     required: VersionRange,
+    /// `IsCentralTransitive`: restore logs it as `NU1109`.
+    central: bool,
 }
 
 /// `DependencyGraphResolver`, over one project graph and one packages folder.
@@ -1129,6 +1245,9 @@ impl<'a> Engine<'a> {
             let mut queue: VecDeque<Item> = VecDeque::new();
             let mut chosen: BTreeMap<NameIndex, Chosen> = BTreeMap::new();
             let mut direct_references: BTreeSet<NameIndex> = BTreeSet::new();
+            // The path of the root's own references, which a pinned item
+            // takes too (`_rootedDependencyPath`).
+            let rooted = Rc::new(vec![ROOT_RANGE]);
             self.enqueue(&mut queue, Item::root())?;
 
             while let Some(current) = queue.pop_front() {
@@ -1147,8 +1266,8 @@ impl<'a> Engine<'a> {
                     }
                 }
 
-                let decision = match chosen.get(&current.name) {
-                    None => Decision::Choose(vec![current.suppressions.clone()]),
+                let decision = match chosen.get_mut(&current.name) {
+                    None => Decision::Choose,
                     Some(existing) => decide(existing, &current),
                 };
                 match decision {
@@ -1216,12 +1335,19 @@ impl<'a> Engine<'a> {
                         );
                         queue.retain(|item| !item.path.contains(&evicted));
                     }
-                    Decision::Choose(suppressions) => {
+                    Decision::Choose => {
                         let node = self.node_of(&current)?;
                         chosen.insert(
                             current.name,
-                            Chosen::new(current.clone(), node, suppressions),
+                            Chosen::new(current.clone(), node, vec![current.suppressions.clone()]),
                         );
+                    }
+                    Decision::Replace(suppressions) => {
+                        let node = self.node_of(&current)?;
+                        let existing = &chosen[&current.name];
+                        let replacement =
+                            Chosen::replacing(existing, current.clone(), node, suppressions);
+                        chosen.insert(current.name, replacement);
                     }
                 }
 
@@ -1259,28 +1385,59 @@ impl<'a> Engine<'a> {
                     }
                     let is_root_package_reference =
                         is_root && dependency.constraint.allows_package();
-                    if suppressions.contains(&dependency.name) {
+                    // A pinned item's own dependencies are walked whatever is
+                    // suppressed above it.
+                    if !current.pinned && suppressions.contains(&dependency.name) {
                         continue;
                     }
                     if !is_root_package_reference && direct_references.contains(&dependency.name) {
                         continue;
                     }
-                    // Chosen already at this very range, without suppressions:
-                    // its children are in the queue.
-                    if chosen.get(&dependency.name).is_some_and(|other| {
-                        other.item.range_index == dependency.range_index && other.unsuppressed()
-                    }) {
+                    // Chosen already at this very range (the dependency's own,
+                    // before pinning), without suppressions: its children are
+                    // in the queue.
+                    if let Some(other) = chosen.get_mut(&dependency.name)
+                        && other.item.range_index == dependency.range_index
+                        && other.unsuppressed()
+                    {
+                        if !other.item.is_root_package_reference {
+                            other.add_parent(current.range_index);
+                        }
                         continue;
                     }
+                    let pin = self
+                        .graph
+                        .transitive_pinning
+                        .as_ref()
+                        .filter(|_| dependency.constraint.allows_package())
+                        .and_then(|pins| pins.get(&dependency.id));
+                    let pinned = pin.is_some();
+                    // A transitive edge with a central version is raised to
+                    // it and walked as though the root referenced it.
+                    let (edge, item_path) = match pin {
+                        Some(range) if !is_root_package_reference => (
+                            self.intern_edge(
+                                dependency.id.clone(),
+                                range.clone(),
+                                dependency.constraint,
+                                dependency.suppress_parent,
+                                None,
+                            )?,
+                            rooted.clone(),
+                        ),
+                        _ => (dependency.clone(), path.clone()),
+                    };
                     self.enqueue(
                         &mut queue,
                         Item {
-                            name: dependency.name,
-                            range_index: dependency.range_index,
-                            edge: Some(dependency.clone()),
-                            path: path.clone(),
+                            name: edge.name,
+                            range_index: edge.range_index,
+                            edge: Some(edge),
+                            path: item_path,
                             suppressions: suppressions.clone(),
                             is_root_package_reference,
+                            parent: Some(current.range_index),
+                            pinned,
                         },
                     )?;
                 }
@@ -1292,6 +1449,7 @@ impl<'a> Engine<'a> {
     /// `CreateRestoreTargetGraphAsync`: walk the chosen items' dependencies
     /// for cycles, conflicts and downgrades, and return what the walk reaches.
     fn flatten(&self, chosen: &BTreeMap<NameIndex, Chosen>) -> Result<Flattened, ResolveDecline> {
+        let pinning = self.graph.transitive_pinning.is_some();
         let mut visited: BTreeSet<NameIndex> = BTreeSet::new();
         // `nodesById`: the range indices a node was created for.
         let mut nodes: BTreeSet<RangeIndex> = BTreeSet::from([ROOT_RANGE]);
@@ -1349,18 +1507,38 @@ impl<'a> Engine<'a> {
                             {
                                 continue;
                             }
-                            record.insert(DowngradeRecord {
-                                from: item.item.range_index,
-                                to_parent: *child
-                                    .item
-                                    .path
-                                    .last()
-                                    .expect("a chosen item that is not the root has a parent"),
-                                to: edge.name,
-                                id: edge.id.clone(),
-                                selected: child.node.version().cloned(),
-                                required: edge.range.clone(),
-                            });
+                            // A pinned package is downgraded below the first
+                            // of its parents this item descends from; failing
+                            // that, below its own parent, unless it is a
+                            // direct reference under transitive pinning,
+                            // whose downgrade restore does not record.
+                            let to_parent = child
+                                .parents
+                                .iter()
+                                .flatten()
+                                .find(|parent| {
+                                    item.item.path.contains(parent)
+                                        && !item.item.is_root_package_reference
+                                })
+                                .copied()
+                                .or_else(|| {
+                                    (!pinning || !child.item.is_root_package_reference).then(|| {
+                                        *child.item.path.last().expect(
+                                            "a chosen item that is not the root has a parent",
+                                        )
+                                    })
+                                });
+                            if let Some(to_parent) = to_parent {
+                                record.insert(DowngradeRecord {
+                                    from: item.item.range_index,
+                                    to_parent,
+                                    to: edge.name,
+                                    id: edge.id.clone(),
+                                    selected: child.node.version().cloned(),
+                                    required: edge.range.clone(),
+                                    central: pinning && child.item.pinned,
+                                });
+                            }
                         }
                         continue;
                     }
@@ -1368,6 +1546,37 @@ impl<'a> Engine<'a> {
                         nodes.insert(edge.range_index);
                     }
                     continue;
+                }
+                // Under transitive pinning, a first visit that demands more
+                // than the chosen range is a downgrade below the root
+                // (`NU1109`), the node made all the same. (Restore exempts an
+                // edge whose range is the `VersionRange.All` instance, which
+                // only a dependency without a range carries; that declines
+                // before here.)
+                if pinning
+                    && !child.item.is_root_package_reference
+                    && !edge.suppress_parent
+                    && !downgrades.contains_key(&child.item.range_index)
+                    && !is_greater_or_equal(
+                        child
+                            .item
+                            .range()
+                            .expect("a chosen item that is not the root has a range"),
+                        &edge.range,
+                    )
+                {
+                    downgrades.insert(
+                        child.item.range_index,
+                        DowngradeRecord {
+                            from: item.item.range_index,
+                            to_parent: ROOT_RANGE,
+                            to: edge.name,
+                            id: edge.id.clone(),
+                            selected: child.node.version().cloned(),
+                            required: edge.range.clone(),
+                            central: true,
+                        },
+                    );
                 }
                 if let NodeKind::Package { package } = &child.node.kind
                     && !conflicts.contains_key(&child.item.range_index)
@@ -1446,6 +1655,7 @@ impl<'a> Engine<'a> {
                             .expect("a downgraded item that is in the graph resolved to a version"),
                     ),
                     required: Box::new(downgrade.required.clone()),
+                    central: downgrade.central,
                 });
             }
         }
@@ -1486,7 +1696,8 @@ impl<'a> Engine<'a> {
 }
 
 /// What the engine does with `current`, whose name `existing` is chosen for.
-fn decide(existing: &Chosen, current: &Item) -> Decision {
+/// An item at the very same range is recorded among a pinned item's parents.
+fn decide(existing: &mut Chosen, current: &Item) -> Decision {
     // A direct package reference is chosen whatever a transitive edge says.
     if existing.item.is_root_package_reference {
         return Decision::Skip;
@@ -1500,6 +1711,10 @@ fn decide(existing: &Chosen, current: &Item) -> Decision {
         .expect("an item of a chosen name is not the root");
 
     if !is_greater_or_equal(existing_range, current_range) {
+        // NuGet first skips an item whose grandparent is among a pinned
+        // chosen item's parents. Every package item of a pinned name carries
+        // the one pinned range, which is never greater, so none reaches here.
+        debug_assert!(existing.parents.is_none(), "a pinned item is never evicted");
         // The current item demands more. Between packages, it does not evict
         // from within the chosen item's own branch, nor from below a parent
         // the chosen item has already eclipsed.
@@ -1535,11 +1750,16 @@ fn decide(existing: &Chosen, current: &Item) -> Decision {
     // The very same range. A second occurrence from another branch replaces
     // the chosen one, path and all, and its children are enqueued again
     // (those already chosen at their range are not).
+    existing.add_parent(
+        current
+            .parent
+            .expect("an item of a chosen name has a parent"),
+    );
     if existing.unsuppressed() && has_common_ancestor(&existing.item.path, &current.path) {
         return Decision::Skip;
     }
     if current.suppressions.is_empty() {
-        return Decision::Choose(vec![current.suppressions.clone()]);
+        return Decision::Replace(vec![current.suppressions.clone()]);
     }
     if existing
         .suppressions
@@ -1550,7 +1770,7 @@ fn decide(existing: &Chosen, current: &Item) -> Decision {
     }
     let mut suppressions = vec![current.suppressions.clone()];
     suppressions.extend(existing.suppressions.iter().cloned());
-    Decision::Choose(suppressions)
+    Decision::Replace(suppressions)
 }
 
 /// `RemoteDependencyWalker.IsGreaterThanOrEqualTo` for non-floating ranges: is
