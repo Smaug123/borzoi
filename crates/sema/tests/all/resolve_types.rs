@@ -8,12 +8,12 @@
 //! corpora lives in `resolve_diff.rs`.
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DefKind, DeferredReason, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery,
     resolve_file, resolve_project,
 };
-use rowan::TextRange;
 
 /// Parse `src` (asserting it is in the parser subset) and resolve it as a lone
 /// single file.

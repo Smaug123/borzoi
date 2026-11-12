@@ -23,7 +23,7 @@ use std::collections::HashSet;
 
 use borzoi_cst::parser::{FileKind, Parse};
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
-use rowan::{TextRange, TextSize};
+use borzoi_cst::syntax::{TextRange, TextSize};
 
 /// The parse errors reported for a file — or the fact that whoever built this
 /// did not keep them.

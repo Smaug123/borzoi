@@ -41,12 +41,12 @@ use crate::common::{
     parse_fcs_uses_project, temp_fs_tree,
 };
 use borzoi_cst::parser::{parse, parse_sig};
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_sema::{
     AssemblyEnv, InferredProject, ProjectFile, Resolution, ResolvedProject, SourceFile,
     SyntaxRecovery, infer_project, qualified_names, resolve_project_files,
 };
-use rowan::TextRange;
 
 /// A type declaration and how a use spells it: `{T}` is the type's name,
 /// `{P}` the qualifier a position puts before it.

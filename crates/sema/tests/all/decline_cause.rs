@@ -16,11 +16,11 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_sema::{
     AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ProjectItems, Resolution,
     ResolvedFile, SyntaxRecovery, resolve_file,
 };
-use rowan::{TextRange, TextSize};
 
 use crate::attr_resolution_diff::fsharp_core_env;
 

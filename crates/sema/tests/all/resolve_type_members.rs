@@ -26,12 +26,12 @@
 //! augmentations) defer — sound, never a wrong target.
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
     resolve_project,
 };
-use rowan::TextRange;
 
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);
@@ -67,8 +67,8 @@ fn nth(src: &str, needle: &str, n: usize) -> TextRange {
     }
     let i = src[from..].find(needle).expect("occurrence") + from;
     TextRange::new(
-        rowan::TextSize::from(i as u32),
-        rowan::TextSize::from((i + needle.len()) as u32),
+        borzoi_cst::syntax::TextSize::from(i as u32),
+        borzoi_cst::syntax::TextSize::from((i + needle.len()) as u32),
     )
 }
 

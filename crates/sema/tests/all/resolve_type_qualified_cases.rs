@@ -19,11 +19,11 @@ use crate::common::ensure_assembly_fixture_built;
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_sema::{
     AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
     resolve_project,
 };
-use rowan::{TextRange, TextSize};
 
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);

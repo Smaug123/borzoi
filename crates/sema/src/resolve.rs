@@ -54,12 +54,12 @@ use crate::hash::{HashMap, HashSet};
 use crate::recovery::SyntaxRecovery;
 use std::sync::Arc;
 
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ExternDecl, ImplFile, JoinInExpr,
     LongIdent, ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat,
     SigDecl, SigFile, SyntaxKind, SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr, UnionCase,
 };
-use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::binders::every_let_pattern_binder_name;
@@ -629,7 +629,7 @@ impl SourceFile {
         }
     }
 
-    /// The file's root syntax node (rowan node equality is *identity*, so this
+    /// The file's root syntax node (handle equality is *identity*, so this
     /// is the incremental fold's reuse currency).
     pub fn syntax(&self) -> &SyntaxNode {
         match self {
@@ -755,7 +755,7 @@ impl ProjectFile {
     }
 }
 
-/// Wrap an impl-only Compile list for the general fold (rowan clones are
+/// Wrap an impl-only Compile list for the general fold (syntax-handle clones are
 /// reference-counted handles, so this is cheap).
 fn impl_only_files(files: &[ImplFile]) -> Vec<ProjectFile> {
     files.iter().cloned().map(ProjectFile::impl_only).collect()
@@ -1909,7 +1909,7 @@ fn wholesale_extension_contribution(rf: &ResolvedFile, assemblies: &AssemblyEnv)
 /// Whether two Compile items are the **same file**: equal kind and
 /// [`QualifiedNameOfFile`] (a rename can change the QNOF and with it the
 /// pairing, so it must invalidate reuse), and the same **tree instance** —
-/// rowan [`SyntaxNode`] equality is *identity*, not structural (pinned by the
+/// [`SyntaxNode`] equality is *identity*, not structural (pinned by the
 /// LSP's `syntax_node_equality_is_identity_not_structural` test): two clones
 /// of one parsed tree compare equal, two independent parses of identical text
 /// do not. So this answers "is `new` the very tree that produced `prev`'s
@@ -1923,7 +1923,7 @@ fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
         // The same tree read with a different [`SyntaxRecovery`] is not the same
         // input: recovery is an argument to `resolve_file`, and it decides
         // whether the file's annotations may be believed at all. One tree can
-        // carry two readings — a rowan handle clones freely, and the
+        // carry two readings — a handle clones freely, and the
         // bare-`ImplFile` entry points supply `Unretained` for trees a
         // [`ProjectFile`] caller gives a real reading — so identity alone would
         // reuse a resolution the cold fold would not produce.
@@ -2226,7 +2226,7 @@ fn resolve_project_files_incremental_impl(
 /// The source position that stamps a top-level module / namespace header's
 /// [`ExportDecl`](model::ExportDecl)s — its `longId` start, or the node start for
 /// an anonymous / empty header. Provenance only; no Stage-2 derivation reads it.
-fn module_header_pos(module: &ModuleOrNamespace) -> rowan::TextSize {
+fn module_header_pos(module: &ModuleOrNamespace) -> borzoi_cst::syntax::TextSize {
     module
         .long_id()
         .and_then(|li| li.idents().next())
@@ -2371,7 +2371,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn push_export_decl(
         &mut self,
         path: Vec<String>,
-        pos: rowan::TextSize,
+        pos: borzoi_cst::syntax::TextSize,
         kind: model::ExportDeclKind,
     ) {
         let decl = model::ExportDecl {

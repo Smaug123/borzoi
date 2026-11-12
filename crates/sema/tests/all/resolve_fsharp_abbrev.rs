@@ -14,12 +14,12 @@ use std::time::Duration;
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_oracle_harness::BoundedCommand;
 use borzoi_sema::{
     AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery,
     resolve_file,
 };
-use rowan::{TextRange, TextSize};
 
 /// Budget for one fixture `dotnet build`. A cold build restores packages and runs
 /// the F# compiler, which is legitimately minutes, so the bound sits far above the

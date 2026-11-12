@@ -1,9 +1,9 @@
 //! Expression and pattern name resolution.
 
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{
     AppExpr, AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken, TypeAppExpr,
 };
-use rowan::TextRange;
 
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
@@ -189,10 +189,11 @@ impl<'a> Resolver<'a> {
                 {
                     let idents: Vec<SyntaxToken> = base.idents().collect();
                     if let (Some(first), Some(last)) = (idents.first(), idents.last()) {
-                        self.opaque_binders.insert(rowan::TextRange::new(
-                            first.text_range().start(),
-                            last.text_range().end(),
-                        ));
+                        self.opaque_binders
+                            .insert(borzoi_cst::syntax::TextRange::new(
+                                first.text_range().start(),
+                                last.text_range().end(),
+                            ));
                     }
                 }
                 if let Some(arg) = e.arg() {

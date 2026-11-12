@@ -23,9 +23,9 @@
 //! trusted (the hidden constructor could shadow it — FCS picks the active pattern).
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
-use rowan::TextRange;
 
 fn impl_file(src: &str) -> ImplFile {
     let p = parse(src);

@@ -19,9 +19,9 @@
 //! cross-file style of `resolve_cross_file_cases.rs`.
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, DefKind, Resolution, resolve_project};
-use rowan::TextRange;
 
 fn impl_file(src: &str) -> ImplFile {
     let p = parse(src);

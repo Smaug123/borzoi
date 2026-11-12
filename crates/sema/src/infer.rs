@@ -500,7 +500,7 @@ use borzoi_cst::syntax::{
     RecordRepr, SequentialExpr, SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, Type, TypeDefn,
     TypeDefnRepr, UnionRepr, VarType,
 };
-use rowan::{TextRange, TextSize};
+use borzoi_cst::syntax::{TextRange, TextSize};
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{DefId, DefKind};

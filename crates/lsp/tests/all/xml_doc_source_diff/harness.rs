@@ -24,6 +24,7 @@ use borzoi::xml_doc::source::{
 };
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_oracle_harness::BatchChild;
 use borzoi_oracle_harness::corpus_key::Positions;
@@ -31,7 +32,6 @@ use borzoi_sema::{
     AssemblyEnv, Def, DefKind, ProjectFile, Resolution, ResolvedProject, SourceFile,
     SyntaxRecovery, qualified_names, resolve_project_files,
 };
-use rowan::TextRange;
 use serde::Deserialize;
 
 use crate::common::{LineIndex, fcs_dump_batch_child};

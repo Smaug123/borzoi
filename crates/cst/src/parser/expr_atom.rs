@@ -1139,7 +1139,7 @@ impl<'src> Parser<'src> {
     /// bare module `let`. The attributed dispatch, however, must decide *before*
     /// parsing whether to detach the attribute lists into their own
     /// `ATTRIBUTES_DECL` (FCS floats them off `[<A>] let x = e in body` →
-    /// `[Attributes; Expr(LetOrUse)]`) — and rowan's builder cannot retroactively
+    /// `[Attributes; Expr(LetOrUse)]`) — and the tree builder cannot retroactively
     /// split the attributes from the let into sibling nodes. So this predicate
     /// finds the terminator by lookahead instead: scan forward tracking
     /// `BlockBegin`/`BlockEnd` depth (relative to the `let`), and at the first
@@ -1386,7 +1386,7 @@ impl<'src> Parser<'src> {
     /// alternative). Because the construction's closing `)` is LexFilter-
     /// swallowed, a pre-scan cannot locate the end of the args, so the base call
     /// is parsed *for real* under a checkpoint and the node kind is chosen
-    /// afterwards via [`rowan::GreenNodeBuilder`]'s `start_node_at`.
+    /// afterwards via the tree builder's `start_node_at`.
     ///
     /// **Supported:** the `with member …` member form (the reported bug,
     /// `{ new IDisposable with member x.Dispose () = () }`), the optional base
@@ -2350,7 +2350,7 @@ impl<'src> Parser<'src> {
     /// the leading expression is parsed *for real* under a checkpoint and the
     /// node kind ([`SyntaxKind::RECORD_EXPR`] copy-update vs.
     /// [`SyntaxKind::COMPUTATION_EXPR`]) is chosen afterwards via
-    /// [`rowan::GreenNodeBuilder::start_node_at`] — mirroring the `new`-headed
+    /// the tree builder's `start_node_at` — mirroring the `new`-headed
     /// [`Self::parse_obj_or_computation_brace`].
     fn parse_app_head_brace(&mut self) {
         // Checkpoint before the `{` so the chosen node wraps the whole brace.

@@ -24,12 +24,12 @@ use crate::common::ensure_fsharp_core_dll;
 
 use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, SemanticClass,
     SyntaxRecovery, resolve_file, resolve_project,
 };
-use rowan::TextRange;
 
 /// The parse-recovery record for `src` — the counterpart to the tree-only
 /// `impl_file` helper beside it. Parsing is deterministic, so this describes
