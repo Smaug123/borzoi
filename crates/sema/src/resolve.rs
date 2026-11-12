@@ -2278,7 +2278,7 @@ impl<'a> Resolver<'a> {
                     recursive: false,
                 },
             ),
-            container_path: container::ContainerPath::default(),
+            container_path: container::ContainerPath::new(assemblies.names()),
             namespace_depth: 0,
             module_paths: PathSet::default(),
             namespace_paths: Vec::new(),

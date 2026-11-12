@@ -1,8 +1,9 @@
 # Interned names, paths and types in sema
 
-> **Status (2026-11-12).** Plan written; Stages 0 (count harness) and 2
-> (memoised namespace fold surfaces) implemented. Stage 1 (the hasher) is
-> implemented by [#577](https://github.com/WoofWare/borzoi/pull/577).
+> **Status (2026-11-12).** Plan written; Stages 0 (count harness), 1 (the
+> hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
+> namespace fold surfaces), 3 (the name table) and 9 (`OpenScope`)
+> implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -148,8 +149,8 @@ overlay, inserted under a lock and read by id without one (append-only
 chunked storage). If the overlay's lock shows up in the suite's profile, shard
 it by hash.
 
-**Bound.** The overlay grows with every distinct identifier the env's folds
-ever meet, including each prefix of a name as it is typed. The census puts a
+**Bound.** The overlay grows with every distinct identifier and path the
+env's folds ever meet, including each prefix of a name as it is typed. The census puts a
 whole 11.8 MB tree at about 40,000 names. After each fold, the LSP checks the
 overlay against a cap (order of 2²⁰ names) and, when it is over, drops that
 project's env. That turns into a cold rebuild, through machinery that already
@@ -420,6 +421,47 @@ every gate is unchanged; an LSP test drives the overlay over a small cap and
 sees a cold fold against a fresh env.
 
 **Expected**: about 0. This stage is infrastructure, with one real consumer.
+
+**Implemented** (`crates/sema/src/names.rs`), with three departures from D2
+and D3, each because nothing in this stage would read what it adds:
+
+- **No seed.** The table starts empty with each env and holds only what the
+  walks intern. The seed exists so that a `None` from `child` also proves an
+  *env* index lacks a path, and the first map that relies on that is Stage 4's
+  (`value_slot`'s assembly probe) or 5c's; whichever lands first seeds the
+  table with exactly the keys it then trusts the table for. So there is one
+  tier, not a frozen seed and an overlay: id → text and id → path node are
+  lock-free reads from append-only chunked storage (`std`'s `OnceLock`, no
+  `unsafe`), and text → name and `(parent, name)` → child go through one
+  `RwLock`. Measured below, the lock costs nothing visible; Stage 4 restates
+  that on the hot path.
+- **No `names.ident(&SyntaxToken)` yet.** The container walk already holds
+  `id_text`'s output, so it interns through `logical`; `ident` lands with
+  the first caller that holds a token.
+- **The lockstep runs only in debug builds.** `interning-reference` is turned
+  on by the crate's dev-dependency self-reference, which also reaches the
+  examples, so `sema_counts` would otherwise measure the reference too. The
+  tests and corpus sweeps are debug builds and run it. Its first index is the
+  per-walk container trie that `PathId` replaced
+  (`resolve/container.rs`'s `reference`): it asserts that the table's ids
+  biject with the walk-local ones over the containers the walk entered, and
+  that a path the walk never entered has no id or one it never entered either.
+
+The interning-order test (`tests/all/interning_order.rs`) resolves generated
+two-file projects against an empty env, and a sample of the corpus against
+the BCL, then again after pre-interning every path the first run interned,
+plus each path reversed as a decoy, in a shuffled order. A planted dependence
+on an id's value (`prefix_id` answering the root for one index) fails the
+generated half; the corpus half did not catch it, so it is the weaker of the
+two. The LSP drops an env once a fold leaves its table above
+`NameTableCap` (2²⁰ entries) and folds cold against a rebuilt one
+(`an_env_past_its_name_cap_is_rebuilt_and_folded_cold`). The cap counts
+paths as well as names: an edit that rearranges names the table already
+holds interns new paths and no new name.
+
+**Measured** (on Stage 9, which it is stacked on): resolve 1584.1 → 1586.2
+instructions per byte (+0.1%), allocations 1.736 per byte before and after;
+infer 173.5 → 173.0.
 
 ### Stage 4: the open-prefix × head product on ids
 
