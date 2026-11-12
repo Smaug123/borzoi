@@ -142,9 +142,32 @@ An `Exclude` is then applied two ways, by the include fragment it meets:
 | glob (`GlobFragment` → `GetFileList`) | `IsValidExclude` drops one with both kinds; the rest are decoded and globbed | a **wildcard** |
 
 So `Include="*.fs" Exclude="a%2ab.fs"` excludes `axb.fs`, while
-`Include="axb.fs;a%2ab.fs" Exclude="a%2ab.fs"` excludes only `a*b.fs`. All of it
-is pinned against `dotnet msbuild` 10.0.301 by the generative harness's
-hand-picked corners.
+`Include="axb.fs;a%2ab.fs" Exclude="a%2ab.fs"` excludes only `a*b.fs`.
+
+Admitting escaped excludes put more of the file matcher's pattern language in
+reach, and a review found it was not all modelled — in shapes live wildcards
+reach too. The resolver now follows it, or declines by name:
+
+- **Legality** (`FileMatcher.RawFileSpecIsValid`/`IsLegalFileSpec`, ported as
+  `glob::is_legal_filespec`): a `**` that is not a whole segment (`a**b.fs`,
+  live or decoded from `a%2a%2ab.fs`), a `..` after a wildcard, a `...`, a `:`
+  past the second character. MSBuild falls back differently per caller, so the
+  resolver declines (`GlobDecline::IllegalFilespec`).
+- **All files** (`IsAllFilesWildcard`): a filename part of `*.*` matches
+  extensionless files too, as `*` does — except in `FileSpecMatcherTester`'s
+  filename-only branch (`**/*.*` against a literal include), which needs a dot.
+- **Literal names** against a literal include compare as full paths
+  (`./ab.fs` is `ab.fs`), unless either spelling holds a character Windows
+  forbids in a filename (`*?:<>|"`), which compares as written
+  (`FileUtilities.PathIsInvalid`): `./a*b.fs` and `a*b.fs` differ. A wildcard
+  exclude's fixed directory there is a full path too (`sub/../*.fs` is `*.fs`).
+- **Against a glob include** the file matcher relates excludes by spelling: a
+  `..` segment is compared as written (which the resolver does), and a `.`
+  segment too (which `Pattern` would drop, so it declines,
+  `GlobDecline::CurDirSegmentExclude`).
+
+All of it is pinned against `dotnet msbuild` 10.0.301 by the generative
+harness's hand-picked corners, and its generated sweep reaches every row.
 
 ## Risks (durable invariants)
 

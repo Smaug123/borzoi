@@ -46,7 +46,7 @@
 
 mod common;
 
-use borzoi_msbuild::{glob_resolver, parse_fsproj_with_imports};
+use borzoi_msbuild::{DiagnosticKind, GlobDecline, glob_resolver, parse_fsproj_with_imports};
 use common::{Oracle, SplitMix64};
 use std::collections::HashMap;
 
@@ -57,6 +57,9 @@ use std::collections::HashMap;
 /// *pattern* and not as a name; `a;bq.fs` is what `a%3b*.fs` globs.
 const FILES: &[&str] = &[
     "plain.fs", "a b.fs", "a;b.fs", "a;bq.fs", "a*b.fs", "axb.fs", "ab.fs", "pct%.fs", "z.fs",
+    // Extensionless, so `*.*` (all files, to MSBuild) and `*.fs` differ.
+    "ab", // Below the project, so recursive globs and `..` spellings reach it.
+    "sub/c.fs",
 ];
 
 /// Item-spec fragments. Each escaped spelling names one of the files above, so
@@ -95,6 +98,28 @@ const FRAGMENTS: &[&str] = &[
     "$(Esc);z.fs",
     "$(MSBuildProjectDirectory)/plain.fs",
     "$(Pct)25.fs",
+    // Spellings of one name. MSBuild compares literal names as full paths
+    // (`./ab.fs` is `ab.fs`), except a name holding a `*`, `?` or `:`, which
+    // it compares as written.
+    "./ab.fs",
+    "sub/../ab.fs",
+    "sub/../*.fs",
+    "sub/../a%2ab.fs",
+    "sub/*.fs",
+    "./a%2ab.fs",
+    "$(MSBuildProjectDirectory)/a%2ab.fs",
+    "$(MSBuildProjectDirectory)/ab.fs",
+    // The all-files reading of `*.*`, flat and recursive, live and escaped.
+    "*.*",
+    "**/*.*",
+    "sub/*.*",
+    "%2a.%2a",
+    "**/*.fs",
+    // Patterns MSBuild's file matcher refuses: an embedded `**`, live or
+    // decoded from escapes.
+    "a**b.fs",
+    "a%2a%2ab.fs",
+    "ab",
 ];
 
 /// Property values the splices above resolve to.
@@ -152,14 +177,42 @@ impl Fixture {
 /// Lexical normalisation only: several generated identities name files that do
 /// not exist (an escape decoded at the wrong moment is exactly such a name), and
 /// `canonicalize` would erase that difference by failing on both sides.
+/// MSBuild's `FullPath` resolves `.` and `..` lexically (`sub/../ab.fs` is
+/// reported as `ab.fs`), while our identity keeps the spelling it was joined
+/// from; both name the same file, so both sides are resolved the same way.
 fn norm(path: &str) -> String {
-    path.replace('\\', "/")
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split(['/', '\\']) {
+        match seg {
+            "." => {}
+            ".." if out.len() > 1 => {
+                out.pop();
+            }
+            _ => out.push(seg),
+        }
+    }
+    out.join("/")
+}
+
+/// What one seam made of a fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// It committed, and MSBuild agreed exactly (or the check panicked).
+    Committed,
+    /// It declined by name on a shape of MSBuild's file matcher the resolver
+    /// does not reproduce: a pattern the matcher refuses
+    /// (`GlobDecline::IllegalFilespec`), or a glob include meeting excludes
+    /// with a `.` segment, which it compares by spelling
+    /// (`GlobDecline::CurDirSegmentExclude`). Intended.
+    RefusedPattern,
+    /// It declined for any other reason.
+    Declined,
 }
 
 /// `with_resolver` selects the seam under test: with one, includes route through
 /// `route_item_through_resolver` and `Exclude` is applied; without one, the
 /// literal fast path runs. Both are production paths, and both decode.
-fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> bool {
+fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> Outcome {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
     for file in FILES {
@@ -171,7 +224,9 @@ fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> bo
         if cfg!(windows) && file.contains(['*', '?']) {
             continue;
         }
-        std::fs::write(root.join(file), "module M\n").expect("write source");
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().expect("a file has a parent")).expect("mkdir");
+        std::fs::write(path, "module M\n").expect("write source");
     }
     let proj = root.join("Demo.fsproj");
     let xml = fixture.xml();
@@ -191,7 +246,22 @@ fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> bo
     // A diagnostic withdraws the claim — the fail-safe channel. No claim, no
     // check.
     if !parsed.diagnostics.is_empty() || parsed.items_uncertain {
-        return false;
+        let refused_pattern = !parsed.diagnostics.is_empty()
+            && parsed.diagnostics.iter().all(|d| {
+                matches!(
+                    d.kind,
+                    DiagnosticKind::GlobDeclined {
+                        reason: GlobDecline::IllegalFilespec { .. }
+                            | GlobDecline::CurDirSegmentExclude { .. },
+                        ..
+                    }
+                )
+            });
+        return if refused_pattern {
+            Outcome::RefusedPattern
+        } else {
+            Outcome::Declined
+        };
     }
 
     let ours: Vec<String> = parsed
@@ -210,7 +280,7 @@ fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> bo
         ours, theirs,
         "certain-implies-exact violated.\nproject:\n{xml}\nours:   {ours:#?}\ntheirs: {theirs:#?}"
     );
-    true
+    Outcome::Committed
 }
 
 /// Hand-picked corners: one per finding the three review rounds turned up, and
@@ -268,6 +338,53 @@ fn hand_picked_corners() {
         corner("plain.fs", "a%3bb.fs;z.fs", Some("a;b.fs")),
         // An escaped `?` is a literal, against a literal include.
         corner("plain.fs", "a%3fb.fs;axb.fs", Some("a%3fb.fs")),
+        // A name holding a `*` is compared as written, not as a full path:
+        // the absolute spelling of `a*b.fs` does not exclude it…
+        corner(
+            "plain.fs",
+            "a%2ab.fs",
+            Some("$(MSBuildProjectDirectory)/a%2ab.fs"),
+        ),
+        corner("plain.fs", "./a%2ab.fs", Some("a%2ab.fs")),
+        // …while an ordinary name is compared as a full path.
+        corner(
+            "plain.fs",
+            "ab.fs",
+            Some("$(MSBuildProjectDirectory)/ab.fs"),
+        ),
+        corner("plain.fs", "sub/../ab.fs;./ab.fs", Some("ab.fs")),
+        // A filename part of `*.*` is every file, extensionless ones too,
+        // decoded from escapes as well as live…
+        corner("plain.fs", "*", Some("%2a.%2a")),
+        corner("plain.fs", "*.*", None),
+        corner("plain.fs", "ab;axb.fs", Some("*.*")),
+        corner("plain.fs", "**/*.*", None),
+        // …except as the filename-only `**/*.*` against a literal include,
+        // which needs a dot.
+        corner("plain.fs", "ab;axb.fs", Some("**/*.*")),
+        // A pattern MSBuild's file matcher refuses (an embedded `**`, live
+        // or decoded) declines by name: `RefusedPattern`.
+        corner("plain.fs", "*.fs", Some("a%2a%2ab.fs")),
+        corner("plain.fs", "*.fs", Some("a**b.fs")),
+        corner("plain.fs", "a**b.fs", None),
+        // A glob include relates its excludes by spelling when either has a
+        // `.` or `..` segment, so these decline by name; the same exclude
+        // against a literal include is a full path, and commits.
+        corner("plain.fs", "a%3b*.fs", Some("./a%2ab.fs")),
+        corner("plain.fs", "*.fs", Some("./ab.fs")),
+        corner("plain.fs", "./*.fs", Some("a*b.fs")),
+        corner("plain.fs", "ab.fs;axb.fs", Some("./ab.fs")),
+        // A wildcard exclude's fixed directory is a full path against a
+        // literal include (`sub/../*.fs` excludes `plain.fs`), and a spelling
+        // against a glob include (it excludes nothing from `*.fs`).
+        corner("plain.fs", "  plain.fs  ", Some("sub/../*.fs")),
+        corner("plain.fs", "*.fs", Some("sub/../*.fs")),
+        // An absolute exclude meets a relative glob by path.
+        corner(
+            "plain.fs",
+            "*.fs",
+            Some("$(MSBuildProjectDirectory)/a*b.fs"),
+        ),
     ];
     // Each corner must commit through the resolver seam, which globs and
     // applies `Exclude`; a decline there would leave unexercised exactly the
@@ -275,8 +392,10 @@ fn hand_picked_corners() {
     // excludes by design, so it is checked wherever it commits.
     for fixture in &cases {
         check_with(&mut oracle, fixture, false);
-        assert!(
-            check_with(&mut oracle, fixture, true),
+        let outcome = check_with(&mut oracle, fixture, true);
+        assert_ne!(
+            outcome,
+            Outcome::Declined,
             "the corner declined through the resolver seam:\n{}",
             fixture.xml()
         );
@@ -290,33 +409,41 @@ fn generated_item_specs_are_certain_implies_exact() {
     let mut oracle = Oracle::spawn();
     let mut rng = SplitMix64(0xe5ca_9ed1_7ea5);
     let mut fast_committed = 0usize;
+    let mut resolver_committed = 0usize;
     let mut declined_through_resolver = Vec::new();
-    const CASES: usize = 200;
+    const CASES: usize = 300;
     for _ in 0..CASES {
         let fixture = Fixture::generate(&mut rng);
-        if check_with(&mut oracle, &fixture, false) {
+        if check_with(&mut oracle, &fixture, false) == Outcome::Committed {
             fast_committed += 1;
         }
-        if !check_with(&mut oracle, &fixture, true) {
-            declined_through_resolver.push(fixture.xml());
+        match check_with(&mut oracle, &fixture, true) {
+            Outcome::Committed => resolver_committed += 1,
+            Outcome::RefusedPattern => {}
+            Outcome::Declined => declined_through_resolver.push(fixture.xml()),
         }
     }
     // The floor exists so a decline-everything model cannot pass vacuously.
-    // Through the resolver seam the whole generated space is modelled: every
-    // escape, live glob and `Exclude` in the alphabet commits, so a single
-    // decline there is a regression. The literal fast path declines every
-    // glob and every `Exclude` by design (it has no resolver to hand them
-    // to), so only its commits are counted.
+    // Through the resolver seam the generated space is modelled except the
+    // patterns MSBuild's file matcher refuses (`a**b.fs`, and the same decoded
+    // from escapes), which decline by name; any other decline there is a
+    // regression, and those refusals must stay a minority. The literal fast
+    // path declines every glob and every `Exclude` by design (it has no
+    // resolver to hand them to), so only its commits are counted.
     eprintln!(
-        "escaped item specs: {}/{CASES} committed through the resolver seam, \
-         {fast_committed}/{CASES} through the literal fast path",
-        CASES - declined_through_resolver.len()
+        "escaped item specs: {resolver_committed}/{CASES} committed through the resolver \
+         seam ({} refused patterns), {fast_committed}/{CASES} through the literal fast path",
+        CASES - resolver_committed - declined_through_resolver.len()
     );
     assert!(
         declined_through_resolver.is_empty(),
         "{} generated cases declined through the resolver seam; the first:\n{}",
         declined_through_resolver.len(),
         declined_through_resolver[0]
+    );
+    assert!(
+        resolver_committed * 2 >= CASES,
+        "only {resolver_committed}/{CASES} committed through the resolver seam"
     );
     assert!(
         fast_committed > 0,

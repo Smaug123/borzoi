@@ -15,7 +15,11 @@
 //! - `?` matches exactly one character within a segment.
 //! - `**`, as a *whole* segment, matches zero or more whole path
 //!   segments (recursive). `**` embedded in a larger segment (e.g.
-//!   `a**b`) is treated as ordinary `*` wildcards, not recursion.
+//!   `a**b`) parses as two `*` wildcards, but MSBuild's file matcher
+//!   refuses such a filespec ([`is_legal_filespec`]), so the resolver
+//!   declines before matching one.
+//! - A filename part of `*.*` matches every file where MSBuild's matcher
+//!   reads it so ([`Pattern::with_all_files_rule`]).
 //! - Matching is **case-sensitive** and paths are compared with `/`
 //!   separators (backslashes normalise to `/`, runs of `/` collapse, and
 //!   lone `.` current-directory segments are dropped). `..` is left for
@@ -68,6 +72,18 @@ pub enum GlobDecline {
     /// The walk met a symbolic link back to a directory already on its path.
     /// What MSBuild does with a cycle is not modelled.
     SymlinkCycle { path: String },
+    /// MSBuild's file matcher refuses the decoded filespec (see
+    /// `FileMatcher.IsLegalFileSpec`): `a**b.fs`, a `..` after a wildcard, a `...`.
+    /// It then falls back to a different reading per caller, which is not
+    /// modelled.
+    IllegalFilespec { pattern: String },
+    /// A glob include meets excludes, and the include or an exclude has a
+    /// `.` segment. MSBuild's file matcher relates them by spelling, so
+    /// `Include="*.fs" Exclude="./a.fs"` excludes nothing, nor does
+    /// `Include="./*.fs" Exclude="a.fs"`; the matcher here drops a `.`
+    /// segment, so it declines instead. (A `..` segment it keeps, and compares
+    /// by spelling as MSBuild does.)
+    CurDirSegmentExclude { pattern: String },
 }
 
 impl std::fmt::Display for GlobDecline {
@@ -94,6 +110,14 @@ impl std::fmt::Display for GlobDecline {
             GlobDecline::SymlinkCycle { path } => {
                 write!(f, "the symbolic link `{path}` closes a directory cycle")
             }
+            GlobDecline::IllegalFilespec { pattern } => write!(
+                f,
+                "MSBuild's file matcher refuses the pattern `{pattern}`, and its fallback is not modelled"
+            ),
+            GlobDecline::CurDirSegmentExclude { pattern } => write!(
+                f,
+                "`{pattern}` has a `.` segment, which MSBuild's file matcher compares by spelling against excludes"
+            ),
         }
     }
 }
@@ -190,6 +214,98 @@ impl SpecFragment {
     }
 }
 
+/// Characters that make MSBuild reject a filespec outright
+/// (`FileUtilities.InvalidPathChars`): `|`, NUL and the C0 controls.
+fn is_invalid_path_char(c: char) -> bool {
+    c == '|' || c < ' '
+}
+
+/// MSBuild's `FileMatcher.SplitFileSpec`: the fixed directory (up to the
+/// last separator before the first wildcard), the wildcard directory part
+/// (from there to the last separator), and the filename part. A filename
+/// part of `**` moves into the directory part and leaves `*.*` behind, as
+/// MSBuild's does.
+pub(crate) fn split_filespec(spec: &str) -> (&str, String, String) {
+    let is_sep = |c: char| c == '/' || c == '\\';
+    let (dirs, filename) = match spec.rfind(is_sep) {
+        Some(last_sep) => (&spec[..=last_sep], &spec[last_sep + 1..]),
+        None => ("", spec),
+    };
+    let (fixed, mut wildcard_dir) = match dirs.find(['*', '?']) {
+        None => (dirs, String::new()),
+        Some(first_wild) => {
+            let cut = dirs[..first_wild].rfind(is_sep).map_or(0, |i| i + 1);
+            (&dirs[..cut], dirs[cut..].to_string())
+        }
+    };
+    let mut filename = filename.to_string();
+    if filename == "**" {
+        wildcard_dir.push_str("**/");
+        filename = "*.*".to_string();
+    }
+    (fixed, wildcard_dir, filename)
+}
+
+/// `FileMatcher.HasMisplacedRecursiveOperator`: a `**` that is not a whole
+/// path segment.
+fn has_misplaced_recursive_operator(part: &str) -> bool {
+    let b = part.as_bytes();
+    let is_slash = |c: u8| c == b'/' || c == b'\\';
+    (0..b.len().saturating_sub(1)).any(|i| {
+        b[i] == b'*'
+            && b[i + 1] == b'*'
+            && !((i == 0 || is_slash(b[i - 1])) && i + 2 < b.len() && is_slash(b[i + 2]))
+    })
+}
+
+/// Whether MSBuild's file matcher accepts a **decoded** glob filespec at all:
+/// `FileMatcher.RawFileSpecIsValid` and `IsLegalFileSpec`. It refuses a
+/// filespec holding an invalid path character, a `...`, or a `:` anywhere but
+/// the second character; and one whose wildcard directory part holds `..`, or
+/// whose `**` is not a whole path segment (`a**b.fs`). What MSBuild then does
+/// differs by caller — an illegal include is kept as a literal item, an
+/// illegal exclude falls back to a literal comparison — so the resolver
+/// declines rather than reproduce each fallback.
+pub fn is_legal_filespec(spec: &str) -> bool {
+    if spec.chars().any(is_invalid_path_char) || spec.contains("...") {
+        return false;
+    }
+    if spec.rfind(':').is_some_and(|colon| colon != 1) {
+        return false;
+    }
+    let (_, wildcard_dir, filename) = split_filespec(spec);
+    !wildcard_dir.contains("..")
+        && !has_misplaced_recursive_operator(&wildcard_dir)
+        && !has_misplaced_recursive_operator(&filename)
+}
+
+/// Whether a **literal** spelling is one MSBuild compares without normalising
+/// it (`FileUtilities.PathIsInvalid`, consulted by
+/// `NormalizePathForComparisonNoThrow`): one holding an invalid path
+/// character, or whose filename part holds a character Windows forbids in a
+/// filename (`"<>|:*?`, NUL, the C0 controls). Such a spelling is compared as
+/// written, so `./a*b.fs`, `a*b.fs` and its absolute spelling are three
+/// different items to an `Exclude`, while `./ab.fs` and `ab.fs` are one.
+pub fn compares_unnormalised(spelling: &str) -> bool {
+    if spelling.chars().any(is_invalid_path_char) {
+        return true;
+    }
+    let filename = spelling.rsplit(['/', '\\']).next().unwrap_or(spelling);
+    filename
+        .chars()
+        .any(|c| matches!(c, '"' | '<' | '>' | '|' | ':' | '*' | '?') || c < ' ')
+}
+
+/// Whether a decoded glob filespec has the shape MSBuild's
+/// `FileSpecMatcherTester` matches by **filename alone**: an empty fixed
+/// directory and a wildcard directory part of exactly `**`
+/// (`**/*.fs`). That branch uses the plain filename glob, without the
+/// all-files reading of `*.*` ([`Pattern::with_all_files_rule`]).
+pub fn is_recursive_filename_pattern(spec: &str) -> bool {
+    let (fixed, wildcard_dir, _) = split_filespec(spec);
+    fixed.is_empty() && wildcard_dir.trim_end_matches(['/', '\\']) == "**"
+}
+
 /// Normalise a path/pattern fragment: backslashes to `/`, collapse runs
 /// of `/`, drop empty and lone-`.` (current-directory) segments. Returns
 /// the surviving segments. `..` is *not* resolved here — that needs the
@@ -227,20 +343,20 @@ impl Pattern {
         Pattern { segs }
     }
 
-    /// A pattern that matches `literal` followed by `fragment`, both
-    /// **verbatim**: every `*`/`?`/`**` in either is an ordinary character.
-    /// The pattern of a filespec MSBuild does not glob
-    /// ([`SpecFragment::is_wildcard`]), whose decoded text may carry the
-    /// stars of an escaped `%2a`.
-    pub fn literal_with_prefix(literal: &[&str], fragment: &str) -> Pattern {
-        Pattern {
-            segs: literal
-                .iter()
-                .flat_map(|s| split_segments(s))
-                .chain(split_segments(fragment))
-                .map(|s| Seg::Match(s.chars().map(Tok::Lit).collect()))
-                .collect(),
+    /// This pattern with MSBuild's all-files reading of its filename part
+    /// (`FileMatcher.IsAllFilesWildcard`): a final segment of `*.*` matches
+    /// every file, extensionless ones included, exactly as `*` does. The
+    /// file matcher applies it to every glob include and to the excludes it
+    /// is handed; `FileSpecMatcherTester` applies it except in its
+    /// filename-only branch ([`is_recursive_filename_pattern`]). `a*.*` is
+    /// not read this way.
+    pub fn with_all_files_rule(mut self) -> Pattern {
+        if let Some(Seg::Match(toks)) = self.segs.last_mut()
+            && toks.as_slice() == [Tok::Star, Tok::Lit('.'), Tok::Star]
+        {
+            *toks = vec![Tok::Star];
         }
+        self
     }
 
     /// Build a pattern whose leading `literal` segments match **verbatim**
@@ -315,21 +431,6 @@ fn selected_both_ways(include: &Pattern, excludes: &[Pattern], candidate: &str) 
             .iter()
             .any(|e| e.matches_ignoring_ascii_case(candidate));
     (exact, folded)
-}
-
-/// Whether `candidate` survives `excludes`, declining when ASCII case decides
-/// it. The literal-include counterpart of [`select`]'s check.
-pub fn survives_excludes(excludes: &[Pattern], candidate: &str) -> Result<bool, GlobDecline> {
-    let exact = !excludes.iter().any(|e| e.matches(candidate));
-    let folded = !excludes
-        .iter()
-        .any(|e| e.matches_ignoring_ascii_case(candidate));
-    if exact != folded {
-        return Err(GlobDecline::CaseAmbiguous {
-            path: candidate.to_string(),
-        });
-    }
-    Ok(exact)
 }
 
 /// The length in bytes of the longest prefix all of `strings` share.
@@ -1065,11 +1166,70 @@ mod tests {
             matches!(got, Err(GlobDecline::CaseAmbiguous { .. })),
             "{got:?}"
         );
-        // A literal include survives or not regardless of case: no decline.
-        assert_eq!(
-            survives_excludes(&[Pattern::parse("b.fs")], "a.fs"),
-            Ok(true)
-        );
-        assert!(survives_excludes(&[Pattern::parse("A.fs")], "a.fs").is_err());
+    }
+
+    /// `FileMatcher.RawFileSpecIsValid` and `IsLegalFileSpec`, case by case
+    /// from MSBuild's source.
+    #[test]
+    fn legality_follows_msbuilds_file_matcher() {
+        for legal in [
+            "*.fs",
+            "**/*.fs",
+            "src/**/x/*.fs",
+            "**",
+            "../shared/*.fs",
+            "/abs/**/*.fs",
+            "C:/x/*.fs",
+            "a.fs",
+        ] {
+            assert!(is_legal_filespec(legal), "{legal}");
+        }
+        for illegal in [
+            // `**` must be a whole segment.
+            "a**b.fs",
+            "**a/*.fs",
+            "src/x**/*.fs",
+            "*.fs**",
+            // `..` may not follow a wildcard.
+            "*/../x.fs",
+            "**/../*.fs",
+            // `...` anywhere, a `:` anywhere but second, an invalid char.
+            "a.../*.fs",
+            "ab:c*.fs",
+            "a|b*.fs",
+            "a\u{1}*.fs",
+        ] {
+            assert!(!is_legal_filespec(illegal), "{illegal}");
+        }
+    }
+
+    /// `FileUtilities.PathIsInvalid`: only the filename part is checked for
+    /// the characters Windows forbids in a filename.
+    #[test]
+    fn unnormalised_comparison_follows_path_is_invalid() {
+        for raw in ["a*b.fs", "./a?b.fs", "/abs/a:b.fs", "x<y", "a|b/c.fs"] {
+            assert!(compares_unnormalised(raw), "{raw}");
+        }
+        for normalised in ["ab.fs", "./ab.fs", "sub/../ab.fs", "a*b/c.fs", "a b.fs"] {
+            assert!(!compares_unnormalised(normalised), "{normalised}");
+        }
+    }
+
+    /// `IsAllFilesWildcard`: a filename part of `*.*` is every file; `a*.*`
+    /// and a `*.*` directory segment are not.
+    #[test]
+    fn star_dot_star_filename_is_every_file() {
+        let all = Pattern::parse("*.*").with_all_files_rule();
+        assert!(all.matches("ab") && all.matches("ab.fs"));
+        assert!(!Pattern::parse("*.*").matches("ab"));
+        let recursive = Pattern::parse("**/*.*").with_all_files_rule();
+        assert!(recursive.matches("sub/noext"));
+        let prefixed = Pattern::parse("a*.*").with_all_files_rule();
+        assert!(!prefixed.matches("ab"));
+        let dir = Pattern::parse("*.*/x").with_all_files_rule();
+        assert!(!dir.matches("ab/x"));
+        assert!(is_recursive_filename_pattern("**/*.*"));
+        assert!(!is_recursive_filename_pattern("sub/**/*.*"));
+        assert!(!is_recursive_filename_pattern("*.*"));
     }
 }
