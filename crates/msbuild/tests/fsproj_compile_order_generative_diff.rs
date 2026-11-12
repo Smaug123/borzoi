@@ -32,7 +32,8 @@
 //! - literal and `$(…)`-valued includes across `Compile`, `CompileBefore` and
 //!   `CompileAfter`;
 //! - each file in one of several spellings — bare,
-//!   `$(MSBuildProjectDirectory)`-rooted, `./`, `sub/../`, `.\`, lower case —
+//!   `$(MSBuildProjectDirectory)`-rooted, `./`, `sub/../`, `.\`, lower case,
+//!   a trailing `/` —
 //!   in includes and `Update` targets alike. An `Update` matches the full path
 //!   ignoring case, so `Update="a.fs"` moves an item `A.fs`, though on this
 //!   host the two spellings name different files;
@@ -183,6 +184,8 @@ enum Spelling {
     Backslash,
     /// `a.fs`.
     Lower,
+    /// `A.fs/`: MSBuild trims a trailing separator before comparing.
+    TrailingSlash,
 }
 
 impl Spelling {
@@ -195,6 +198,7 @@ impl Spelling {
             Spelling::ParentHop => format!("sub/../{name}"),
             Spelling::Backslash => format!(".\\{name}"),
             Spelling::Lower => name.to_ascii_lowercase(),
+            Spelling::TrailingSlash => format!("{name}/"),
         }
     }
 }
@@ -519,6 +523,7 @@ fn spelling_strategy() -> impl Strategy<Value = Spelling> {
         1 => Just(Spelling::ParentHop),
         1 => Just(Spelling::Backslash),
         1 => Just(Spelling::Lower),
+        1 => Just(Spelling::TrailingSlash),
     ]
 }
 
@@ -951,7 +956,12 @@ fn full_path(include: &Path) -> String {
             other => out.push(other),
         }
     }
-    out.to_string_lossy().into_owned()
+    let mut full = out.to_string_lossy().into_owned();
+    // `GetFullPath` keeps a trailing separator; `components` drops it.
+    if include.to_string_lossy().ends_with('/') && !full.ends_with('/') {
+        full.push('/');
+    }
+    full
 }
 
 /// Spellings the generator does not reach, held to the same property: each
@@ -978,6 +988,33 @@ const CORNERS: &[(&str, bool)] = &[
         r#"    <Compile Include="A.fs" />
     <Compile Include="./B.fs" />
     <Compile Update="$(MSBuildProjectDirectory)/../proj/./b.fs" CompileOrder="CompileFirst" />"#,
+        true,
+    ),
+    // MSBuild trims a spelling's trailing separators before combining it with
+    // the project directory, so `/` names the project directory and `/..`
+    // the root: the bucketless `/` stays out of the list.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="/" CompileOrder="Middle" />
+    <Compile Update="/.." CompileOrder="CompileFirst" />"#,
+        true,
+    ),
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="$(MSBuildProjectDirectory)" />
+    <Compile Update="//" CompileOrder="CompileFirst" />"#,
+        true,
+    ),
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="/" />
+    <Compile Update="$(MSBuildProjectDirectory)/" CompileOrder="CompileFirst" />"#,
+        true,
+    ),
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="sub/" />
+    <Compile Update="sub" CompileOrder="CompileFirst" />"#,
         true,
     ),
     // `..` at the root stays at the root.

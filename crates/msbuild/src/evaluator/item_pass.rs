@@ -1701,7 +1701,11 @@ fn resolve_compile_update_targets(
         let unnormalised = crate::glob::compares_unnormalised(&decoded);
         let normalised = decoded.replace('\\', "/");
         targets.push(UpdateTarget {
-            path: state.entry_project_dir.join(normalised),
+            path: if separator_only(&normalised) {
+                state.entry_project_dir.clone()
+            } else {
+                state.entry_project_dir.join(normalised)
+            },
             unnormalised,
         });
     }
@@ -1728,10 +1732,19 @@ struct MatchKey {
 }
 
 impl MatchKey {
-    fn of_item(include: &Path) -> MatchKey {
+    /// The key of a captured item. An absolute spelling is captured verbatim
+    /// (joining it onto the project directory replaces the directory), so a
+    /// separator-only capture is a separator-only spelling: see
+    /// [`separator_only`].
+    fn of_item(include: &Path, project_dir: &Path) -> MatchKey {
         let text = include.to_string_lossy();
+        let key = if separator_only(&text) {
+            comparison_key(&project_dir.to_string_lossy())
+        } else {
+            comparison_key(&text)
+        };
         MatchKey {
-            key: comparison_key(&text),
+            key,
             unnormalised: crate::glob::compares_unnormalised(&text),
         }
     }
@@ -1850,6 +1863,15 @@ impl UpdateTargets {
     }
 }
 
+/// Whether a spelling is separators alone (`/`, `//`). MSBuild trims a
+/// spelling's trailing separators before combining it with the project
+/// directory (`NormalizeForPathComparison`), so such a spelling names the
+/// project directory, not the root (`/..` names the root). Every other
+/// trailing separator lands where [`comparison_key`] already puts it.
+fn separator_only(spelling: &str) -> bool {
+    !spelling.is_empty() && spelling.bytes().all(|b| b == b'/')
+}
+
 /// A path as `Path.GetFullPath` writes it, for comparison: `.` and empty
 /// segments dropped, `..` resolved lexically (at the root, a `..` stays at the
 /// root, as `GetFullPath` keeps it). No filesystem access: a symlinked
@@ -1888,6 +1910,7 @@ fn take_matching_compile_items(
     span: Range<usize>,
 ) -> Option<Vec<OrderedResolvedItem>> {
     let targets = UpdateTargets::new(targets);
+    let project_dir = state.entry_project_dir.clone();
     let verdicts = compile_buckets(state)
         .map(|bucket| {
             bucket
@@ -1896,7 +1919,7 @@ fn take_matching_compile_items(
                     if ordered.item.kind != ItemKind::Compile {
                         return Ok(false);
                     }
-                    match targets.verdict(&MatchKey::of_item(&ordered.item.include)) {
+                    match targets.verdict(&MatchKey::of_item(&ordered.item.include, &project_dir)) {
                         UpdateMatch::Match => Ok(true),
                         UpdateMatch::NoMatch => Ok(false),
                         UpdateMatch::Undecided(reason) => Err(format!(
