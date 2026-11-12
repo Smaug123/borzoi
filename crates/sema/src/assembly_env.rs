@@ -16,7 +16,6 @@
 //! them in. Until the qualified-path / import slices consume it, it is unused by
 //! the resolver — built and tested ahead of its consumer.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use borzoi_assembly::doc_id::DocIdDialect;
@@ -26,6 +25,7 @@ use borzoi_assembly::{
 };
 
 use crate::def::SemanticClass;
+use crate::hash::{HashMap, HashSet};
 use crate::resolve::{ActivePatternShape, DeclineCause};
 
 mod il_types;
@@ -446,7 +446,7 @@ static RESIDUE_ONLY_SURFACE: OpenFoldSurface = OpenFoldSurface {
 #[derive(Debug, Clone, Default)]
 struct BareValueIndex {
     uncertain: bool,
-    names: std::collections::HashSet<String>,
+    names: crate::hash::HashSet<String>,
 }
 
 /// A container's bare-visible **value** surface, paired with the uncertainty its
@@ -493,7 +493,7 @@ impl ValueSurface<'_> {
 
     /// Add every value name this container definitely contributes to `out`.
     /// Meaningful only when [`Self::is_uncertain`] is `false`.
-    pub fn collect_value_names(&self, out: &mut std::collections::HashSet<String>) {
+    pub fn collect_value_names(&self, out: &mut crate::hash::HashSet<String>) {
         for surface in self.surfaces.iter() {
             for e in &surface.entries {
                 if matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both) {
@@ -1089,7 +1089,7 @@ pub struct AssemblyEnv {
     /// the top-level types would run for every dotted head that is not a direct
     /// member — `System.String` included — making resolution scale as
     /// `dotted uses × referenced entities` (codex review).
-    contested_child_namespace_heads: std::sync::OnceLock<std::collections::HashSet<String>>,
+    contested_child_namespace_heads: std::sync::OnceLock<crate::hash::HashSet<String>>,
     /// Lazily-built companion to [`Self::contested_child_namespace_heads`] for
     /// the *member* half of [`Self::contested_auto_open_surface_declares`]: the
     /// contributor-owned top-level entities of every contested auto-open's
@@ -1104,6 +1104,9 @@ pub struct AssemblyEnv {
     /// [`Self::extension_surface_unknowable`]). Populated by
     /// [`Self::mark_namespace_dropped_type`] (the LSP host).
     namespaces_with_dropped_types: HashSet<Vec<String>>,
+    /// Every prefix of each of [`Self::namespaces_with_dropped_types`], each
+    /// namespace itself included.
+    dropped_type_namespace_prefixes: HashSet<Vec<String>>,
 }
 
 /// The top-level type index key: namespace segments, simple name, and generic
@@ -3239,8 +3242,8 @@ impl AssemblyEnv {
     /// the *contributor* declares into. Only the contributor's content enters
     /// scope through a contested open, so a sibling's child namespace of the
     /// same path contributes nothing.
-    fn build_contested_child_namespace_heads(&self) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
+    fn build_contested_child_namespace_heads(&self) -> crate::hash::HashSet<String> {
+        let mut out = crate::hash::HashSet::default();
         for (contributor, ns) in &self.contested_auto_opens {
             for &h in &self.top_level_types {
                 if self.assembly_provenance(h) != Some(*contributor) || !self.is_public(h) {
@@ -3318,14 +3321,14 @@ impl AssemblyEnv {
     fn build_bare_value_index(&self) -> BareValueIndex {
         let uncertain = || BareValueIndex {
             uncertain: true,
-            names: std::collections::HashSet::new(),
+            names: crate::hash::HashSet::default(),
         };
         // An assembly whose auto-open list could not be read, or whose projection
         // was skipped, may auto-open a container supplying any name at all.
         if self.extension_surface_unknowable {
             return uncertain();
         }
-        let mut names = std::collections::HashSet::new();
+        let mut names = crate::hash::HashSet::default();
         // Namespace-shaped implicit auto-opens, the contested ones FCS still
         // applies per contributor, and the root namespace (no `open` at all).
         let namespaces = self
@@ -4000,7 +4003,7 @@ impl AssemblyEnv {
             let core_namespace = ["Microsoft", "FSharp", "Core"];
             let mut aliases = CoreAttributeAliases {
                 certain: self.abbreviations_may_be_unread(),
-                possible: HashSet::new(),
+                possible: HashSet::default(),
             };
             for node in &self.nodes {
                 let e = &node.entity;
@@ -4838,7 +4841,7 @@ impl AssemblyEnv {
     /// declaring a type of that name would be in it.
     pub(crate) fn type_custom_operations(&self, handle: EntityHandle) -> CustomOperationNames {
         let mut out = CustomOperationNames::default();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut current = handle;
         loop {
             if !seen.insert(current) {
@@ -4983,6 +4986,10 @@ impl AssemblyEnv {
     /// (the LSP), which observes the drop. `namespace` is the dropped type's
     /// enclosing namespace (empty for a root-namespace type).
     pub fn mark_namespace_dropped_type(&mut self, namespace: Vec<String>) {
+        for len in 0..=namespace.len() {
+            self.dropped_type_namespace_prefixes
+                .insert(namespace[..len].to_vec());
+        }
         self.namespaces_with_dropped_types.insert(namespace);
         // The core library is named only over a `System` with no drop.
         self.core_library = Default::default();
@@ -5037,6 +5044,12 @@ impl AssemblyEnv {
         self.namespaces_with_dropped_types.contains(namespace)
     }
 
+    /// Whether `path` is a prefix of (or is) a namespace a referenced assembly
+    /// dropped a type in ([`Self::namespace_has_dropped_type`]).
+    pub(crate) fn prefixes_a_dropped_type_namespace(&self, path: &[String]) -> bool {
+        self.dropped_type_namespace_prefixes.contains(path)
+    }
+
     /// Whether any referenced assembly dropped an undecodable type, anywhere.
     /// A consumer matching types by a spelling that does not tell nesting from
     /// namespace (a documentation-comment ID: `T:A.B.C` is a `C` in `A.B`, a
@@ -5056,7 +5069,7 @@ impl AssemblyEnv {
         if self.assembly_identities_incomplete || self.assembly_identities.is_empty() {
             return false;
         }
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         self.assembly_identities.iter().all(|a| {
             a.as_ref()
                 .is_some_and(|a| seen.insert(a.name.to_lowercase()))
@@ -5971,7 +5984,7 @@ impl AssemblyEnv {
         // binds). Cross-identity collisions are already handled by
         // unique-or-decline: two same-named DLLs decline the hop.
         let mut queue: Vec<(String, Option<usize>)> = vec![(ccu_name.to_string(), None)];
-        let mut visited: HashSet<(String, Option<usize>)> = HashSet::new();
+        let mut visited: HashSet<(String, Option<usize>)> = HashSet::default();
         let mut found: Option<EntityHandle> = None;
         while let Some((name, pinned)) = queue.pop() {
             if !visited.insert((name.clone(), pinned)) {
@@ -6313,7 +6326,7 @@ impl AssemblyEnv {
             .map(|(i, m)| (i, m, self.presence_of(handle, m, Channel::Bare)))
             .filter(|(_, _, p)| *p != Presence::Absent)
             .collect();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         openable
             .iter()
             .map(|(_, m, _)| member_name(m))
@@ -7155,7 +7168,7 @@ impl AssemblyEnv {
         // group stays ≥ 2 and defers — never collapsed into one wrong candidate. A
         // member whose signature cannot be keyed ([`method_partial_key`] returns
         // `None`) gets a unique synthetic key, so it never collapses either.
-        let mut claimed: HashMap<String, EntityHandle> = HashMap::new();
+        let mut claimed: HashMap<String, EntityHandle> = HashMap::default();
         let mut deduped: Vec<(EntityHandle, MemberIndex, &MethodLike)> = Vec::new();
         for (i, &(level, idx, mm)) in group.iter().enumerate() {
             let key = match method_partial_key(mm, &self.entity(level).assembly.name) {
@@ -7330,7 +7343,7 @@ impl AssemblyEnv {
     fn interface_member_chain(&self, handle: EntityHandle) -> InterfaceChain {
         debug_assert_eq!(self.entity(handle).kind, EntityKind::Interface);
         let mut levels: Vec<EntityHandle> = vec![handle];
-        let mut seen: HashSet<EntityHandle> = HashSet::from([handle]);
+        let mut seen: HashSet<EntityHandle> = HashSet::from_iter([handle]);
         let mut i = 0;
         while i < levels.len() {
             let level = levels[i];
@@ -7462,7 +7475,7 @@ impl AssemblyEnv {
     /// never a wrong affirmation. Bounded against metadata cycles by the visited
     /// set.
     pub(crate) fn super_types(&self, start: EntityHandle) -> HashSet<EntityHandle> {
-        let mut out = HashSet::new();
+        let mut out = HashSet::default();
         let mut stack = vec![start];
         while let Some(handle) = stack.pop() {
             if !out.insert(handle) {
@@ -7503,7 +7516,7 @@ impl AssemblyEnv {
     /// not readably completable from another assembly), reusing the same
     /// getter-accessibility rule as [`Self::instance_data_member`].
     pub fn public_instance_member_names(&self, handle: EntityHandle) -> Vec<&str> {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         self.entity(handle)
             .members
             .iter()

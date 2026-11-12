@@ -77,7 +77,7 @@ pub(super) fn union_repr_is_private(defn: &TypeDefn) -> bool {
 /// makes the positional contest against in-file types as conservative as the
 /// latest introduction — either can only widen the defer, never mis-bind.
 fn merge_auto_open_shadow(
-    map: &mut std::collections::HashMap<String, AutoOpenTypeShadow>,
+    map: &mut crate::hash::HashMap<String, AutoOpenTypeShadow>,
     name: String,
     new: AutoOpenTypeShadow,
 ) {
@@ -1126,18 +1126,7 @@ impl<'a> Resolver<'a> {
                     // like the incomplete-prefix veto. Candidates that did
                     // yield an interpretation are handled per-group below.
                     let names_uncovered_dropped_path = !path.is_empty()
-                        && self
-                            .open_tier_candidates(&path, rooted)
-                            .iter()
-                            .any(|(full, _)| {
-                                self.assemblies
-                                    .any_split_of_a_module_path_has_a_dropped_type(full)
-                                    && !interps.iter().any(|i| match i {
-                                        OpenInterpretation::Module(p)
-                                        | OpenInterpretation::AssemblyModule(p)
-                                        | OpenInterpretation::Reading(p) => p == full,
-                                    })
-                            });
+                        && self.open_names_an_uncovered_dropped_path(&path, rooted, &interps);
                     if names_uncovered_dropped_path {
                         self.opaque_value_open = true;
                         self.open_generation += 1;
@@ -1838,7 +1827,7 @@ impl<'a> Resolver<'a> {
         // already scanned this subtree (the outer collection recurses), so
         // its superset stays in place.
         let saved_rec_module_names = if !saved_recursive_module && nm.is_rec() {
-            let mut names = std::collections::HashSet::new();
+            let mut names = crate::hash::HashSet::default();
             super::collect_nested_module_names(nm.decls(), &mut names);
             Some(std::mem::replace(&mut self.rec_module_names, names))
         } else {
@@ -2051,7 +2040,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn declared_in(
         &self,
         path: &[String],
-    ) -> Option<&std::collections::HashMap<String, super::state::DeclKinds>> {
+    ) -> Option<&crate::hash::HashMap<String, super::state::DeclKinds>> {
         self.container_path.get_at(&self.container_decls, path)
     }
 }

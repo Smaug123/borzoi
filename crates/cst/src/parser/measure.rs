@@ -37,12 +37,26 @@ impl<'src> Parser<'src> {
         ) {
             self.bump_into(SyntaxKind::LESS_TOK);
         }
+        let errors_before = self.errors.len();
         self.parse_measure_type_arg();
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::Greater(_))), _))
         ) {
             self.bump_into(SyntaxKind::GREATER_TOK);
+        } else if self.errors.len() == errors_before {
+            // The `>` is in the stream (LexFilter found it before firing the
+            // marker), so the measure grammar stopped short of it at a token no
+            // `measureTypeExpr` production accepts — FCS's parse error, reported
+            // where FCS reports it (`1<f(f)>` at the `(`).
+            let span = self
+                .peek()
+                .map(|(_, s)| s.clone())
+                .unwrap_or_else(|| self.source.len()..self.source.len());
+            self.errors.push(ParseError {
+                message: "unexpected token in unit of measure".to_string(),
+                span,
+            });
         }
         self.builder.finish_node(); // MEASURE_LIT_EXPR
     }
@@ -95,7 +109,7 @@ impl<'src> Parser<'src> {
             if self.depth_limit_latched() {
                 break;
             }
-            match self.next_non_trivia_raw_at_pos() {
+            match self.measure_lookahead() {
                 Some(Token::Op("*")) => {
                     self.builder.start_node_at(cp, SyntaxKind::MEASURE_PRODUCT);
                     self.bump_into(SyntaxKind::STAR_TOK);
@@ -126,7 +140,7 @@ impl<'src> Parser<'src> {
     /// `*`/`/` binds at the enclosing [`Self::parse_measure_type_expr`] loop, so
     /// `/s * m` stays `Product(Divide(None, Seq[s]), Seq[m])`.
     fn parse_measure_operand(&mut self) {
-        if matches!(self.next_non_trivia_raw_at_pos(), Some(Token::Op("/"))) {
+        if matches!(self.measure_lookahead(), Some(Token::Op("/"))) {
             self.builder.start_node(SyntaxKind::MEASURE_DIVIDE);
             self.bump_into(SyntaxKind::SLASH_TOK);
             // Depth-guarded: a leading-`/` run (`< / / / … s >`) nests reciprocals
@@ -189,10 +203,7 @@ impl<'src> Parser<'src> {
         let cp = self.builder.checkpoint();
         self.parse_measure_type_atom();
         // `^` / `^-` power tail, reusing the rational-const exponent parser.
-        if matches!(
-            self.next_non_trivia_raw_at_pos(),
-            Some(Token::Op("^" | "^-"))
-        ) {
+        if matches!(self.measure_lookahead(), Some(Token::Op("^" | "^-"))) {
             self.builder.start_node_at(cp, SyntaxKind::MEASURE_POWER);
             self.bump_into(SyntaxKind::MEASURE_POWER_OP_TOK);
             self.parse_atomic_rational_const();
@@ -205,7 +216,7 @@ impl<'src> Parser<'src> {
     /// [`SyntaxKind::MEASURE_VAR`]), or a parenthesised measure
     /// ([`SyntaxKind::MEASURE_PAREN`]).
     fn parse_measure_type_atom(&mut self) {
-        match self.next_non_trivia_raw_at_pos() {
+        match self.measure_lookahead() {
             Some(Token::Ident(_) | Token::QuotedIdent(_) | Token::Global) => {
                 self.builder.start_node(SyntaxKind::MEASURE_NAMED);
                 self.parse_long_ident_path("unit of measure");
@@ -278,7 +289,7 @@ impl<'src> Parser<'src> {
     /// The head-type typar `^u` (`Op("^")` + ident) is admitted here too; a
     /// bare `^` not followed by an ident is the power operator, not an atom.
     fn at_measure_power_start(&self) -> bool {
-        match self.next_non_trivia_raw_at_pos() {
+        match self.measure_lookahead() {
             Some(
                 Token::Ident(_)
                 | Token::QuotedIdent(_)
@@ -298,8 +309,26 @@ impl<'src> Parser<'src> {
     /// dimensionless `1` measure (`measureTypePower: INT32`). Reuses the
     /// type-side exponent classifier — the same `INT32`-terminal set.
     fn at_measure_one(&self) -> bool {
-        self.next_non_trivia_raw_at_pos()
+        self.measure_lookahead()
             .is_some_and(token_is_int32_exponent)
+    }
+
+    /// The token a measure production at the cursor would consume, read from
+    /// the raw stream (which carries the split tail of a partially consumed
+    /// fused token, [`Self::next_non_trivia_raw_at_pos`]), or `None` when the
+    /// filtered cursor sits on a virtual.
+    ///
+    /// No `measureTypeExpr` production consumes a virtual, but the raw stream
+    /// reads straight past one, so a raw dispatch at a virtual approves a bump
+    /// that would stamp the virtual instead. LexFilter can put one inside the
+    /// brackets: an atom adjacent to a `(` (`1<f(f)>`) carries
+    /// `HIGH_PRECEDENCE_PAREN_APP`, which FCS rejects there, and so must every
+    /// dispatch here.
+    fn measure_lookahead(&self) -> Option<&Token<'src>> {
+        match self.peek() {
+            Some((Ok(FilteredToken::Virtual(_)), _)) => None,
+            _ => self.next_non_trivia_raw_at_pos(),
+        }
     }
 
     /// `true` when the integer-literal at the cursor denotes `1` (the only value
@@ -307,7 +336,6 @@ impl<'src> Parser<'src> {
     /// the value in its radix ([`int32_exponent_is_one`]) so every spelling of
     /// `1` — `1`, `0x1`, `0o1`, `1l` — is the clean `One`.
     fn measure_int_is_one(&self) -> bool {
-        self.next_non_trivia_raw_at_pos()
-            .is_some_and(int32_exponent_is_one)
+        self.measure_lookahead().is_some_and(int32_exponent_is_one)
     }
 }

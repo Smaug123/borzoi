@@ -366,6 +366,11 @@ struct Framework {
     /// A `framework` written into the restore metadata's entry for this
     /// alias, where the SDK writes none (the alias names the framework).
     restore_framework: Option<&'static str>,
+    /// Central entries besides the dependencies' own, `(id, range)`, written
+    /// under central package management: the versions transitive pinning
+    /// raises a transitive package to. One naming a dependency replaces that
+    /// dependency's entry.
+    pins: Vec<(&'static str, &'static str)>,
 }
 
 impl Framework {
@@ -379,6 +384,7 @@ impl Framework {
             prune: Vec::new(),
             references: Vec::new(),
             restore_framework: None,
+            pins: Vec::new(),
         }
     }
 
@@ -400,7 +406,7 @@ struct Project {
     /// The `version`; `None` leaves the key out, which NuGet reads as 1.0.0.
     version: Option<&'static str>,
     frameworks: Vec<Framework>,
-    /// Central package management without pinning, as for the entry.
+    /// Central package management, as for the entry.
     cpm: bool,
     /// `centralPackageTransitivePinningEnabled`, which the legacy engine
     /// reads on a referenced project (it adds the project's central versions
@@ -461,9 +467,12 @@ struct Shape {
     /// The contents of one config file the spec names, `{empty}` standing
     /// for the empty source folder; `None` names none.
     config: Option<&'static str>,
-    /// Central package management without pinning: every dependency centrally
-    /// managed, with a central entry carrying its range.
+    /// Central package management: every dependency centrally managed, with
+    /// a central entry carrying its range.
     cpm: bool,
+    /// `CentralPackageTransitivePinningEnabled` on the entry, which restore
+    /// reads only under central package management.
+    transitive_pinning: bool,
     /// The projects the spec holds besides the entry.
     projects: Vec<Project>,
     /// `restoreUseLegacyDependencyResolver` on the entry: restore runs NuGet's
@@ -487,6 +496,7 @@ impl Shape {
             lock_file: Some("false"),
             config: None,
             cpm: false,
+            transitive_pinning: false,
             projects: Vec::new(),
             legacy_engine: false,
         }
@@ -565,7 +575,7 @@ impl Shape {
                 Some("1.0.0"),
                 &self.frameworks,
                 self.cpm,
-                false,
+                self.transitive_pinning,
                 None,
             ),
         );
@@ -760,12 +770,15 @@ impl Shape {
                     value["assetTargetFallback"] = json!(true);
                 }
                 if cpm {
-                    value["centralPackageVersions"] = framework
+                    let mut central: Map<String, Value> = framework
                         .deps
                         .iter()
                         .map(|dep| (dep.id.clone(), json!(dep.range)))
-                        .collect::<Map<_, _>>()
-                        .into();
+                        .collect();
+                    for (id, range) in &framework.pins {
+                        central.insert((*id).to_owned(), json!(range));
+                    }
+                    value["centralPackageVersions"] = central.into();
                 }
                 if !framework.prune.is_empty() {
                     value["packagesToPrune"] = framework
@@ -1105,7 +1118,10 @@ fn project_of(spec: &DependencyGraphSpec) -> String {
 /// A shape with a prune list is graded against the default engine alone, as
 /// stage 5 grades pruning: the legacy engine prunes neither a package's
 /// edges nor a referenced project's the same way, and a spec selects it only
-/// through a key the reader declines.
+/// through a key the reader declines. So is a shape that pins transitively,
+/// the entry or a referenced project: the legacy engine keeps a package
+/// pinned above an edge's upper bound, which the default engine drops, and
+/// reads a referenced project's pinning, which the default engine does not.
 fn grade_both(oracle: &mut Oracle, packages: &[Pkg], shape: &Shape) -> Graded {
     assert!(!shape.legacy_engine, "the shape selects the engine here");
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1125,7 +1141,12 @@ fn grade_both(oracle: &mut Oracle, packages: &[Pkg], shape: &Shape) -> Graded {
                 .flat_map(|project| &project.frameworks),
         )
         .any(|framework| !framework.prune.is_empty());
-    if prunes {
+    let pins = (shape.cpm && shape.transitive_pinning)
+        || shape
+            .projects
+            .iter()
+            .any(|project| project.cpm && project.transitive_pinning);
+    if prunes || pins {
         return graded;
     }
     let mut legacy = shape.clone();
@@ -2564,9 +2585,6 @@ fn every_unmodelled_field_declines_by_name() {
             the_project(spec)["restore"]["centralPackageVersionsManagementEnabled"] = json!(true);
         }),
         (UnmodelledField::CentralPackageManagement, |spec, _| {
-            the_project(spec)["restore"]["CentralPackageTransitivePinningEnabled"] = json!(true);
-        }),
-        (UnmodelledField::CentralPackageManagement, |spec, _| {
             the_project(spec)["frameworks"]["net8.0"]["dependencies"]["A"]["versionCentrallyManaged"] =
                 json!(true);
         }),
@@ -2883,6 +2901,39 @@ fn gen_reference(rng: &mut SplitMix64, name: &'static str) -> ProjectRef {
     reference
 }
 
+/// Central versions for transitive pinning: up to two packages of the
+/// universe `framework` does not reference, each at an installed version or
+/// between two, inclusive or not, now and then exact; rarely a floating one,
+/// on which restore fails.
+fn gen_pins(rng: &mut SplitMix64, framework: &Framework) -> Vec<(&'static str, &'static str)> {
+    let mut ids: Vec<&'static str> = IDS
+        .iter()
+        .copied()
+        .filter(|id| !framework.deps.iter().any(|dep| dep.id == *id))
+        .collect();
+    let mut pins = Vec::new();
+    for _ in 0..rng.below(3) {
+        if ids.is_empty() {
+            break;
+        }
+        let id = ids.remove(rng.below(ids.len()));
+        let range = if rng.below(20) == 0 {
+            "2.*"
+        } else {
+            *rng.pick(&[
+                "[1.0.0, )",
+                "[2.0.0, )",
+                "[3.0.0, )",
+                "[2.0.0]",
+                "(1.0.0, )",
+                "[1.5.0, )",
+            ])
+        };
+        pins.push((id, range));
+    }
+    pins
+}
+
 fn generate(rng: &mut SplitMix64) -> Generated {
     generate_in(rng, Projects::Sometimes)
 }
@@ -3138,6 +3189,18 @@ fn generate_in(rng: &mut SplitMix64, projects: Projects) -> Generated {
     shape.lock_file = *rng.pick(&[Some("false"), None]);
     shape.config = *rng.pick(&[None, None, Some(SOURCES_CONFIG), Some(MAPPING_CONFIG)]);
     shape.cpm = rng.below(4) == 0;
+    // Pinning, which restore reads only under central package management;
+    // now and then the flag alone.
+    shape.transitive_pinning = if shape.cpm {
+        rng.below(2) == 0
+    } else {
+        rng.below(20) == 0
+    };
+    if shape.cpm && shape.transitive_pinning {
+        for framework in &mut shape.frameworks {
+            framework.pins = gen_pins(rng, framework);
+        }
+    }
     if rng.below(10) == 0 {
         shape.project_name = (*rng.pick(IDS)).to_owned();
     }
@@ -3151,7 +3214,25 @@ fn generate_in(rng: &mut SplitMix64, projects: Projects) -> Generated {
             shape.config = None;
         }
         if projects == Projects::Always {
-            shape.cpm = false;
+            // Central package management here only to pin transitively, half
+            // the time, which reaches into the referenced projects'
+            // dependencies: the sweep that requires pinning's effects on
+            // committed specs. No implicit references, on which it fails.
+            let pin = rng.below(2) == 0;
+            shape.cpm = pin;
+            shape.transitive_pinning = pin;
+            for framework in &mut shape.frameworks {
+                framework.pins = if pin {
+                    gen_pins(rng, framework)
+                } else {
+                    Vec::new()
+                };
+                if pin {
+                    for dep in &mut framework.deps {
+                        dep.auto_referenced = false;
+                    }
+                }
+            }
         }
     }
     Generated { packages, shape }
@@ -3183,7 +3264,15 @@ fn features(
         format!("lock-file={:?}", shape.lock_file),
         format!("config={}", shape.config.is_some()),
         format!("cpm={}", shape.cpm),
+        format!(
+            "transitive-pinning={}",
+            shape.cpm && shape.transitive_pinning
+        ),
     ];
+    if shape.transitive_pinning && !shape.cpm {
+        features.push("pinning-without-cpm".to_owned());
+    }
+    features.extend(pinning_effects(generated, frameworks));
     for framework in &shape.frameworks {
         features.push(format!("framework={}", framework.alias));
         if framework.framework_reference {
@@ -3246,6 +3335,9 @@ fn features(
         features.push(format!("project-version={:?}", project.version));
         if project.cpm {
             features.push("project-cpm".to_owned());
+        }
+        if project.cpm && project.transitive_pinning {
+            features.push("referenced-project-pinning".to_owned());
         }
         if project.frameworks.len() > 1 {
             features.push("project-cross-targeting".to_owned());
@@ -3340,6 +3432,33 @@ fn features(
     features
 }
 
+/// What transitive pinning did to a spec B₁ committed, by B₁ itself: the spec
+/// resolved again with pinning off either commits other closures, or declines
+/// on the downgrade pinning stops restore recording.
+fn pinning_effects(generated: &Generated, frameworks: &[ResolvedFramework]) -> Vec<String> {
+    let shape = &generated.shape;
+    if !(shape.cpm && shape.transitive_pinning) {
+        return Vec::new();
+    }
+    let mut unpinned = shape.clone();
+    unpinned.transitive_pinning = false;
+    let dir = tempfile::tempdir().expect("temp dir");
+    install(&dir.path().join("gp"), &generated.packages);
+    let text = unpinned.render(dir.path());
+    let spec = parse_dgspec(&text).expect("the generator stays in the reader's vocabulary");
+    match resolve_dgspec(&verified(), &spec, &project_of(&spec), &DEFAULT_ENVIRONMENT) {
+        Ok(without) if by_framework(&without) != by_framework(frameworks) => {
+            vec!["pinning-moved-closure".to_owned()]
+        }
+        Err(DgSpecResolveDecline::Resolve { decline, .. })
+            if matches!(*decline, ResolveDecline::Downgrade { .. }) =>
+        {
+            vec!["pinning-rescued-downgrade".to_owned()]
+        }
+        Ok(_) | Err(_) => Vec::new(),
+    }
+}
+
 /// Every variation [`features`] can report on a spec the generator makes.
 fn required_features() -> BTreeSet<String> {
     let mut required: BTreeSet<String> = [
@@ -3372,6 +3491,8 @@ fn required_features() -> BTreeSet<String> {
         "config=true",
         "config=false",
         "cpm=true",
+        "transitive-pinning=true",
+        "pinning-without-cpm",
         "framework-reference",
         "include",
         "suppress-parent",
@@ -3402,6 +3523,10 @@ fn required_project_features() -> BTreeSet<String> {
         "project-version=Some(\"1.0.0\")",
         "project-version=Some(\"2.0.0-beta.1\")",
         "project-cpm",
+        "referenced-project-pinning",
+        "transitive-pinning=true",
+        "pinning-moved-closure",
+        "pinning-rescued-downgrade",
         "project-cross-targeting",
         "project-prune",
         "project-dependency-private-assets",
@@ -5856,19 +5981,6 @@ fn project_reference_declines_are_graded() {
             Some(false),
         ),
         (
-            "a referenced project pinning transitively",
-            Shape::with_projects(
-                vec![Framework::new("net8.0", vec![])],
-                vec![Project {
-                    cpm: true,
-                    transitive_pinning: true,
-                    ..lib_a()
-                }],
-            ),
-            "central-package-management",
-            None,
-        ),
-        (
             "a project in the spec that no reference reaches",
             {
                 let mut shape = Shape::new(vec![Framework::new("net8.0", vec![])]);
@@ -5894,15 +6006,16 @@ fn project_reference_declines_are_graded() {
     }
 }
 
-/// Central package management without transitive pinning moves no closure:
-/// restore resolves each centrally managed dependency's own range, whatever its
+/// Central package management moves no direct reference's closure: restore
+/// resolves each centrally managed dependency's own range, whatever its
 /// central entry or `versionOverride` says, so B₁ commits. Restore fails on a
 /// dependency not centrally managed (`NU1008`), on an implicit reference
 /// whether or not it is (`NU1009`), and on a floating central version
-/// (`NU1011`), and pinning raises a
-/// transitive package to its central version; B₁ declines all three.
+/// (`NU1011`); B₁ declines all three. Transitive pinning raises a transitive
+/// package to its central version, which [`transitive_pinning_is_graded`]
+/// grades shape by shape.
 #[test]
-fn central_package_management_without_pinning_commits() {
+fn central_package_management_commits() {
     let mut oracle = spawn_oracle();
     let packages = vec![
         Pkg::new("A", "1.0.0", vec![group(None, &[("B", "[1.0.0, )")])]),
@@ -6020,7 +6133,7 @@ fn central_package_management_without_pinning_commits() {
             Some("[1.0.0, )"),
             Some("[2.0.0, )"),
             true,
-            false,
+            true,
         ),
     ];
     for (label, managed, implicit, version_override, central_a, central_b, pinning, commits) in
@@ -6432,6 +6545,459 @@ fn b1_declines_environments_it_cannot_grade() {
                 assert_eq!(decline, expected, "{label}")
             }
             other => panic!("{label}: expected an environment decline, got {other:?}"),
+        }
+    }
+}
+
+/// A transitive-pinning row: its label, packages and shape, what B₁ does,
+/// whether B₀ succeeds, and B₀'s log codes.
+type PinnedCase = (
+    &'static str,
+    Vec<Pkg>,
+    Shape,
+    Pinned,
+    bool,
+    &'static [&'static str],
+);
+
+/// What a transitive-pinning row expects of B₁: each framework's closure, or a
+/// decline of the named class.
+enum Pinned {
+    Commits(&'static [(&'static str, &'static [(&'static str, &'static str)])]),
+    Declines(&'static str),
+}
+
+/// Transitive pinning (stage 7a): under central package management, restore
+/// raises every transitive package edge with a central version to that version
+/// and walks it as though the project referenced it. Each row pins B₀'s
+/// verdict and B₁'s, settled against the default engine (the legacy one parts
+/// from it on several rows: it keeps a package pinned above an edge's upper
+/// bound, and walks pruned packages back in), and `grade_spec` holds every
+/// commit to B₀'s closures and warnings.
+#[test]
+fn transitive_pinning_is_graded() {
+    let mut oracle = spawn_oracle();
+    let pk = |id: &str, version: &str, deps: &[(&str, &str)]| {
+        let groups = if deps.is_empty() {
+            vec![]
+        } else {
+            vec![group(None, deps)]
+        };
+        Pkg::new(id, version, groups)
+    };
+    let a_on_b = |range: &str| {
+        vec![
+            pk("A", "1.0.0", &[("B", range)]),
+            pk("B", "1.0.0", &[]),
+            pk("B", "2.0.0", &[]),
+        ]
+    };
+    let pinned = |deps: &[(&str, &str)], pins: &[(&'static str, &'static str)]| {
+        let mut framework = Framework::new(
+            "net8.0",
+            deps.iter().map(|(id, range)| Dep::new(id, range)).collect(),
+        );
+        framework.pins = pins.to_vec();
+        let mut shape = Shape::new(vec![framework]);
+        shape.cpm = true;
+        shape.transitive_pinning = true;
+        shape
+    };
+    let with_lib = |pins: &[(&'static str, &'static str)], lib_deps: Vec<Dep>| {
+        let mut shape = pinned(&[], pins);
+        shape.frameworks[0].references = vec![ProjectRef::new("Lib")];
+        shape.projects = vec![Project::new(
+            "Lib",
+            vec![Framework::new("net8.0", lib_deps)],
+        )];
+        shape
+    };
+    let private = |id: &str, range: &str| Dep {
+        suppress_parent: Some("All"),
+        ..Dep::new(id, range)
+    };
+    let downgraded_direct = || {
+        vec![
+            pk("A", "1.0.0", &[("X", "[2.0.0, )")]),
+            pk("X", "1.0.0", &[]),
+            pk("X", "2.0.0", &[]),
+        ]
+    };
+    // A's own `C [1.0.0, )` and its `B → C [2.0.0, )` share A's path, so
+    // without pinning the deeper one is skipped and downgraded (`NU1605`);
+    // pinning B roots it at the project, where it evicts C 1.0.0.
+    let rerooted = || {
+        vec![
+            pk("A", "1.0.0", &[("C", "[1.0.0, )"), ("B", "[1.0.0, )")]),
+            pk("B", "1.0.0", &[("C", "[2.0.0, )")]),
+            pk("C", "1.0.0", &[]),
+            pk("C", "2.0.0", &[]),
+        ]
+    };
+    // See the row that uses it.
+    let attributed_to_a_dropped_parent = || {
+        vec![
+            pk("A", "1.0.0", &[("X", "[1.0.0]")]),
+            pk("X", "1.0.0", &[]),
+            pk("X", "2.0.0", &[("Z", "[1.0.0, )"), ("Y", "[1.0.0, )")]),
+            pk("W", "1.0.0", &[("Z", "[1.0.0, )")]),
+            pk("V", "1.0.0", &[("Y", "[1.0.0, )")]),
+            pk("Z", "1.0.0", &[("Y", "[2.0.0, )")]),
+            pk("Y", "1.0.0", &[]),
+            pk("Y", "2.0.0", &[]),
+        ]
+    };
+    let net8 = |packages: &'static [(&'static str, &'static str)]| -> &'static [(
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    )] { Box::leak(Box::new([("net8.0", packages)])) };
+    let cases: Vec<PinnedCase> = vec![
+        (
+            "a pin raises a transitive package",
+            a_on_b("[1.0.0, )"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[2.0.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "2.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "an exact pin",
+            a_on_b("[1.0.0, )"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[2.0.0]")]),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "2.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "a pin below the transitive demand fails (NU1109)",
+            a_on_b("[2.0.0, )"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[1.0.0, )")]),
+            Pinned::Declines("resolve:Downgrade"),
+            false,
+            &["NU1109"],
+        ),
+        (
+            "a pin for a package outside the graph adds nothing",
+            vec![pk("A", "1.0.0", &[]), pk("C", "1.0.0", &[])],
+            pinned(&[("A", "[1.0.0, )")], &[("C", "[1.0.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "the pinned version's own dependencies are walked",
+            vec![
+                pk("A", "1.0.0", &[("B", "[1.0.0, )")]),
+                pk("B", "1.0.0", &[]),
+                pk("B", "2.0.0", &[("C", "[1.0.0, )")]),
+                pk("C", "1.0.0", &[]),
+            ],
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[2.0.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "2.0.0"), ("C", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            // The edge's conflict is recorded but never reported, and the
+            // package never enters the flattened graph.
+            "a pin above an edge's upper bound drops the package, silently",
+            a_on_b("[1.0.0, 2.0.0)"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[2.0.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "a pin above an exact edge drops the package too",
+            a_on_b("[1.0.0]"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[2.0.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "a pin whose lower bound is not installed warns NU1603",
+            a_on_b("[1.0.0, )"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[1.5.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "2.0.0")])),
+            true,
+            &["NU1603"],
+        ),
+        (
+            "a pin without an inclusive lower bound warns NU1602",
+            a_on_b("[1.0.0, )"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "(1.0.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "2.0.0")])),
+            true,
+            &["NU1602"],
+        ),
+        (
+            "a pinned package with two parents",
+            vec![
+                pk("A", "1.0.0", &[("B", "[1.0.0, )")]),
+                pk("C", "1.0.0", &[("B", "[1.0.0, )")]),
+                pk("B", "1.0.0", &[]),
+                pk("B", "2.0.0", &[]),
+            ],
+            pinned(
+                &[("A", "[1.0.0, )"), ("C", "[1.0.0, )")],
+                &[("B", "[2.0.0, )")],
+            ),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "2.0.0"), ("C", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "a direct reference keeps its own range over its central entry",
+            a_on_b("[1.0.0, )"),
+            pinned(
+                &[("A", "[1.0.0, )"), ("B", "[1.0.0, )")],
+                &[("B", "[2.0.0, )")],
+            ),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "pinning roots the pinned subtree at the project",
+            rerooted(),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "[1.0.0, )")]),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "1.0.0"), ("C", "2.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "the same graph with nothing pinned is a downgrade",
+            rerooted(),
+            pinned(&[("A", "[1.0.0, )")], &[]),
+            Pinned::Declines("resolve:Downgrade"),
+            true,
+            &["NU1605"],
+        ),
+        (
+            // Restore records no downgrade of a direct reference under
+            // transitive pinning, pinned or not.
+            "a direct reference's downgrade goes unrecorded",
+            downgraded_direct(),
+            pinned(&[("A", "[1.0.0, )"), ("X", "[1.0.0, )")], &[]),
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("X", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "and is recorded without pinning",
+            downgraded_direct(),
+            {
+                let mut shape = pinned(&[("A", "[1.0.0, )"), ("X", "[1.0.0, )")], &[]);
+                shape.transitive_pinning = false;
+                shape
+            },
+            Pinned::Declines("resolve:Downgrade"),
+            true,
+            &["NU1605"],
+        ),
+        (
+            "pinning without central package management is inert",
+            downgraded_direct(),
+            {
+                let mut shape = pinned(&[("A", "[1.0.0, )"), ("X", "[1.0.0, )")], &[]);
+                shape.cpm = false;
+                shape
+            },
+            Pinned::Declines("resolve:Downgrade"),
+            true,
+            &["NU1605"],
+        ),
+        (
+            "a pruned package is not pinned back in",
+            a_on_b("[1.0.0, )"),
+            {
+                let mut shape = pinned(&[("A", "[1.0.0, )")], &[("B", "[2.0.0, )")]);
+                shape.frameworks[0].prune = vec![("B", "(, 2.0.0]")];
+                shape
+            },
+            Pinned::Commits(net8(&[("A", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "pins are per framework",
+            a_on_b("[1.0.0, )"),
+            {
+                let mut shape = pinned(&[("A", "[1.0.0, )")], &[("B", "[2.0.0, )")]);
+                shape.frameworks.push(Framework::new(
+                    "netstandard2.0",
+                    vec![Dep::new("A", "[1.0.0, )")],
+                ));
+                shape
+            },
+            Pinned::Commits(&[
+                ("net8.0", &[("A", "1.0.0"), ("B", "2.0.0")]),
+                ("netstandard2.0", &[("A", "1.0.0"), ("B", "1.0.0")]),
+            ]),
+            true,
+            &[],
+        ),
+        (
+            "a referenced project's dependency is pinned",
+            a_on_b("[1.0.0, )"),
+            with_lib(&[("B", "[2.0.0, )")], vec![Dep::new("B", "[1.0.0, )")]),
+            Pinned::Commits(net8(&[("B", "2.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "a referenced project's dependency pinned below it fails",
+            a_on_b("[1.0.0, )"),
+            with_lib(&[("B", "[1.0.0, )")], vec![Dep::new("B", "[2.0.0, )")]),
+            Pinned::Declines("resolve:Downgrade"),
+            false,
+            &["NU1109"],
+        ),
+        (
+            "a referenced project's private dependency stays out",
+            a_on_b("[1.0.0, )"),
+            with_lib(&[("B", "[2.0.0, )")], vec![private("B", "[1.0.0, )")]),
+            Pinned::Commits(net8(&[])),
+            true,
+            &[],
+        ),
+        (
+            // Restore walks a pinned item's dependencies whatever is
+            // suppressed above it.
+            "a pinned package's dependency escapes the project's suppression",
+            vec![
+                pk("P", "1.0.0", &[("C", "[1.0.0, )")]),
+                pk("C", "1.0.0", &[]),
+            ],
+            with_lib(
+                &[("P", "[1.0.0, )")],
+                vec![Dep::new("P", "[1.0.0, )"), private("C", "[1.0.0, )")],
+            ),
+            Pinned::Commits(net8(&[("C", "1.0.0"), ("P", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "which it does not escape unpinned",
+            vec![
+                pk("P", "1.0.0", &[("C", "[1.0.0, )")]),
+                pk("C", "1.0.0", &[]),
+            ],
+            with_lib(
+                &[],
+                vec![Dep::new("P", "[1.0.0, )"), private("C", "[1.0.0, )")],
+            ),
+            Pinned::Commits(net8(&[("P", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            "a referenced project's own pinning is never read",
+            a_on_b("[1.0.0, )"),
+            {
+                let mut lib = Project::new(
+                    "Lib",
+                    vec![Framework {
+                        pins: vec![("B", "[2.0.0, )")],
+                        ..Framework::new("net8.0", vec![Dep::new("A", "[1.0.0, )")])
+                    }],
+                );
+                lib.cpm = true;
+                lib.transitive_pinning = true;
+                Shape::with_projects(vec![Framework::new("net8.0", vec![])], vec![lib])
+            },
+            Pinned::Commits(net8(&[("A", "1.0.0"), ("B", "1.0.0")])),
+            true,
+            &[],
+        ),
+        (
+            // Z is chosen under W, then replaced by its occurrence under the
+            // pinned X, taking X's path. X leaves the graph (pinned above A's
+            // exact edge), but Z, reached through W, demands more of the
+            // pinned Y than its pin. Restore attributes that downgrade to
+            // the first of Y's parents on Z's path, X, whose node was never
+            // made, so it reports none.
+            "a downgrade attributed to a parent outside the graph is dropped",
+            attributed_to_a_dropped_parent(),
+            pinned(
+                &[("A", "[1.0.0, )"), ("W", "[1.0.0, )"), ("V", "[1.0.0, )")],
+                &[("X", "[2.0.0, )"), ("Y", "[1.0.0, )")],
+            ),
+            Pinned::Commits(net8(&[
+                ("A", "1.0.0"),
+                ("V", "1.0.0"),
+                ("W", "1.0.0"),
+                ("Y", "1.0.0"),
+                ("Z", "1.0.0"),
+            ])),
+            true,
+            &[],
+        ),
+        (
+            // The same, with Y chosen (under A) before X is walked: X joins
+            // Y's parents as its edge to Y finds Y chosen at the pin, rather
+            // than as its pinned item for Y is dequeued.
+            "and so is one whose parent joined as it found the package chosen",
+            vec![
+                pk("A", "1.0.0", &[("Y", "[1.0.0, )")]),
+                pk("B", "1.0.0", &[("X", "[1.0.0]")]),
+                pk("C", "1.0.0", &[("Z", "[1.0.0, )")]),
+                pk("X", "1.0.0", &[]),
+                pk("X", "2.0.0", &[("Z", "[1.0.0, )"), ("Y", "[1.0.0, )")]),
+                pk("Z", "1.0.0", &[("Y", "[2.0.0, )")]),
+                pk("Y", "1.0.0", &[]),
+                pk("Y", "2.0.0", &[]),
+            ],
+            pinned(
+                &[("A", "[1.0.0, )"), ("B", "[1.0.0, )"), ("C", "[1.0.0, )")],
+                &[("X", "[2.0.0, )"), ("Y", "[1.0.0, )")],
+            ),
+            Pinned::Commits(net8(&[
+                ("A", "1.0.0"),
+                ("B", "1.0.0"),
+                ("C", "1.0.0"),
+                ("Y", "1.0.0"),
+                ("Z", "1.0.0"),
+            ])),
+            true,
+            &[],
+        ),
+        (
+            "a floating pin fails the restore (NU1011)",
+            a_on_b("[1.0.0, )"),
+            pinned(&[("A", "[1.0.0, )")], &[("B", "2.*")]),
+            Pinned::Declines("central-package-management"),
+            false,
+            &["NU1011"],
+        ),
+    ];
+    for (label, packages, shape, expected, restores, codes) in &cases {
+        let graded = grade(&mut oracle, packages, shape);
+        assert_eq!(
+            graded.theirs.success, *restores,
+            "{label}: restore's verdict is pinned: {:#?}",
+            graded.theirs
+        );
+        assert_eq!(
+            graded.theirs.codes, *codes,
+            "{label}: restore's log codes are pinned"
+        );
+        match (expected, &graded.ours) {
+            (Pinned::Commits(frameworks), Ok(_)) => {
+                let expected: BTreeMap<String, PackageSet> = frameworks
+                    .iter()
+                    .map(|(framework, packages)| ((*framework).to_owned(), set(packages)))
+                    .collect();
+                assert_eq!(committed(&graded), expected, "{label}");
+            }
+            (Pinned::Declines(class), Err(decline)) => {
+                assert_eq!(decline_class(decline), *class, "{label}: {decline}");
+            }
+            (Pinned::Commits(_), Err(decline)) => panic!("{label}: B₁ declined: {decline}"),
+            (Pinned::Declines(_), Ok(frameworks)) => {
+                panic!("{label}: B₁ must decline, but committed {frameworks:?}")
+            }
         }
     }
 }

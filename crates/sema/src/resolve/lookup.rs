@@ -1,7 +1,5 @@
 //! The name-resolution engine: long-ident / value / case lookup and the project-open machinery.
 
-use std::collections::{HashMap, HashSet};
-
 use borzoi_cst::syntax::SyntaxToken;
 use borzoi_cst::syntax::{TextRange, TextSize};
 
@@ -9,6 +7,7 @@ use borzoi_assembly::{EntityKind, UnionCases};
 
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
+use crate::hash::{HashMap, HashSet};
 
 use super::contributors::Contribution;
 use super::id_text;
@@ -21,6 +20,23 @@ use super::state::{
     RecordedFold, Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix,
     TieredResolution,
 };
+
+#[cfg(test)]
+mod nesting_reference;
+
+/// The candidate full paths an `open` could name
+/// ([`Resolver::open_tier_candidates`]).
+pub(super) struct OpenTierCandidates {
+    /// Each candidate that could name something, highest priority first,
+    /// with whether namespaces are reachable at its tier.
+    pub(super) paths: Vec<(Vec<String>, bool)>,
+    /// `Some(reach)` when some enclosing container's completion was left out
+    /// of [`Self::paths`] because it names nothing: no project module, no
+    /// namespace, and nothing the referenced assemblies hold, since its
+    /// container is longer than `container_path[..reach]`
+    /// ([`Resolver::assembly_open_reach`]).
+    pub(super) unnamed_beyond: Option<usize>,
+}
 
 /// The part of a qualified case path after its head — `B….Color.Red` of
 /// `Alpha.B….Color.Red` — as the same-file candidate walk reads it
@@ -212,8 +228,8 @@ where
     G: Iterator<Item = N>,
     N: Iterator<Item = &'n str>,
 {
-    let mut first_supplier: HashMap<&str, usize> = HashMap::new();
-    let mut collided: HashSet<String> = HashSet::new();
+    let mut first_supplier: HashMap<&str, usize> = HashMap::default();
+    let mut collided: HashSet<String> = HashSet::default();
     for (i, names) in groups.enumerate() {
         for name in names {
             match first_supplier.get(name) {
@@ -973,6 +989,19 @@ impl<'a> Resolver<'a> {
         written: &[String],
         rooted: bool,
     ) -> Vec<OpenInterpretation> {
+        let candidates = self.open_tier_candidates(written, rooted);
+        let out = self.interpretations_of(candidates.paths);
+        #[cfg(test)]
+        self.check_open_interpretations(written, rooted, &out);
+        out
+    }
+
+    /// What an `open` reads its candidate full paths as, highest priority
+    /// first ([`Self::open_interpretations`]).
+    fn interpretations_of(
+        &self,
+        candidates: impl IntoIterator<Item = (Vec<String>, bool)>,
+    ) -> Vec<OpenInterpretation> {
         let mut out: Vec<OpenInterpretation> = Vec::new();
         let consider = |out: &mut Vec<OpenInterpretation>,
                         full: Vec<String>,
@@ -1011,7 +1040,7 @@ impl<'a> Resolver<'a> {
                 out.push(OpenInterpretation::Reading(full));
             }
         };
-        for (full, namespaces_reachable) in self.open_tier_candidates(written, rooted) {
+        for (full, namespaces_reachable) in candidates {
             consider(&mut out, full, namespaces_reachable);
         }
         out
@@ -1020,18 +1049,28 @@ impl<'a> Resolver<'a> {
     /// Every **candidate full path** an `open <written>` could name, tier by
     /// tier — the single tier enumeration behind
     /// [`open_interpretations`](Self::open_interpretations) *and* the
-    /// dropped-path hazard check in `decls.rs`. One enumeration, two
+    /// dropped-path hazard check
+    /// ([`Self::open_names_an_uncovered_dropped_path`]). One enumeration, two
     /// consumers, so the two cannot drift apart ("two traversals over one
     /// space must span the same space" — review round 16; a dropped TypeDef
     /// can BE the module a candidate names, round 23). Each candidate is
     /// paired with whether namespaces are reachable at its tier (see the
     /// tier notes on `open_interpretations`).
+    ///
+    /// Tier 2 lists only the enclosing containers whose completion could name
+    /// something: a project module (asked of the module sets' tries in one
+    /// walk), anything the referenced assemblies hold
+    /// ([`Self::assembly_open_reach`]), or a namespace (the
+    /// enclosing-namespace base). The rest are counted in
+    /// [`OpenTierCandidates::unnamed_beyond`], so an `open` under `d` nested
+    /// modules builds no path for most of them.
     pub(super) fn open_tier_candidates(
         &self,
         written: &[String],
         rooted: bool,
-    ) -> Vec<(Vec<String>, bool)> {
-        let mut out: Vec<(Vec<String>, bool)> = Vec::new();
+    ) -> OpenTierCandidates {
+        let mut paths: Vec<(Vec<String>, bool)> = Vec::new();
+        let mut unnamed_beyond = None;
         if !rooted {
             // Tier 0 — a module alias as the bare head (`open Alias[.rest]` →
             // `Target[.rest]`); the alias is a module, never a namespace.
@@ -1040,7 +1079,7 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                out.push((full, false));
+                paths.push((full, false));
             }
             // Tier 1 — explicit opens (namespace + chained module), latest first.
             // Each opened container also lends the `[<AutoOpen>]` modules it
@@ -1051,23 +1090,118 @@ impl<'a> Resolver<'a> {
                 for auto in self.auto_open_shortening_prefixes(prefix) {
                     let mut full = auto;
                     full.extend_from_slice(written);
-                    out.push((full, false));
+                    paths.push((full, false));
                 }
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                out.push((full, true));
+                paths.push((full, true));
             }
             // Tier 2 — implicit relative resolution, innermost first; namespaces
             // are reachable only at the enclosing-namespace base.
+            let modules = self.project_module_completions(written);
+            let reach = self.assembly_open_reach();
             for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
-                full.extend_from_slice(written);
-                out.push((full, k == self.namespace_depth));
+                if k <= reach || k == self.namespace_depth || modules.binary_search(&k).is_ok() {
+                    let mut full = self.container_path[..k].to_vec();
+                    full.extend_from_slice(written);
+                    paths.push((full, k == self.namespace_depth));
+                } else {
+                    unnamed_beyond = Some(reach);
+                }
             }
         }
         // Tier 3 — the as-written root, kept *in addition* to any relative match.
-        out.push((written.to_vec(), true));
-        out
+        paths.push((written.to_vec(), true));
+        OpenTierCandidates {
+            paths,
+            unnamed_beyond,
+        }
+    }
+
+    /// Whether `open <written>`, whose interpretations are `interps`, names a
+    /// module path a referenced assembly may hold a dropped type along, at a
+    /// candidate with no interpretation — where FCS may open the dropped
+    /// module and the walk sees nothing.
+    pub(super) fn open_names_an_uncovered_dropped_path(
+        &self,
+        written: &[String],
+        rooted: bool,
+        interps: &[OpenInterpretation],
+    ) -> bool {
+        let candidates = self.open_tier_candidates(written, rooted);
+        let listed = candidates.paths.iter().any(|(full, _)| {
+            self.assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(full)
+                && !interps.iter().any(|i| match i {
+                    OpenInterpretation::Module(p)
+                    | OpenInterpretation::AssemblyModule(p)
+                    | OpenInterpretation::Reading(p) => p == full,
+                })
+        });
+        // An unlisted candidate has no interpretation, and every split of it
+        // a dropped type could lie at is a prefix of `container_path[..reach]`.
+        let unlisted = candidates.unnamed_beyond.is_some_and(|reach| {
+            self.assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(&self.container_path[..reach])
+        });
+        let uncovered = listed || unlisted;
+        #[cfg(test)]
+        self.check_uncovered_dropped_path(written, rooted, interps, &candidates, uncovered);
+        uncovered
+    }
+
+    /// The lengths `k`, ascending, for which `self.container_path[..k]`
+    /// followed by `written` is [a project module](Self::is_project_module_path):
+    /// one walk along the container path in each module set's trie, building
+    /// no path.
+    pub(super) fn project_module_completions(&self, written: &[String]) -> Vec<usize> {
+        let path = &self.container_path[..];
+        let mut lens: Vec<usize> = self
+            .module_paths
+            .suffix_member_prefix_lens(path, written)
+            .chain(
+                self.nested_module_exports
+                    .suffix_member_prefix_lens(path, written),
+            )
+            .chain(self.preceding.module_suffix_prefix_lens(path, written))
+            .collect();
+        lens.sort_unstable();
+        lens.dedup();
+        lens
+    }
+
+    /// The longest prefix `self.container_path[..k]` the referenced assemblies
+    /// could carry on into anything an `open` reads: a public namespace, a
+    /// namespace a dropped type was recorded in (each with its prefixes), or
+    /// a public entity, top-level or reached from one through nested modules
+    /// named by the container path. For any longer prefix, no path extending
+    /// it is an assembly module or namespace, and every split of such a path
+    /// that a dropped type could lie at is a prefix of `container_path[..k]`.
+    ///
+    /// Each of those sets holds the prefixes of its members, so the first
+    /// prefix none of them continues ends the walk: it costs one step per
+    /// level the assemblies share with the container path, which they bound,
+    /// not the nesting.
+    fn assembly_open_reach(&self) -> usize {
+        let path = &self.container_path[..];
+        let mut entities: Vec<EntityHandle> = Vec::new();
+        for k in 0..path.len() {
+            let segment = &path[k];
+            let mut next: Vec<EntityHandle> = entities
+                .iter()
+                .filter_map(|&h| self.assemblies.nested_module(h, segment))
+                .collect();
+            next.extend(self.assemblies.public_entities_named(&path[..k], segment));
+            let longer = &path[..=k];
+            if next.is_empty()
+                && !self.assemblies.has_namespace(longer)
+                && !self.assemblies.prefixes_a_dropped_type_namespace(longer)
+            {
+                return k;
+            }
+            entities = next;
+        }
+        path.len()
     }
 
     /// The extra shortening prefixes an **opened container** lends: the
@@ -1732,7 +1866,7 @@ impl<'a> Resolver<'a> {
     /// open-fold does, so an inaccessible name never enters the straddle contest.
     fn direct_tier_ids_at(&self, path: &[String]) -> HashMap<String, (ItemId, usize)> {
         let site = self.container_path.to_vec();
-        let mut out: HashMap<String, (ItemId, usize)> = HashMap::new();
+        let mut out: HashMap<String, (ItemId, usize)> = HashMap::default();
         for (name, id) in self.preceding.direct_value_children(path, &site) {
             out.insert(name, (id, self.preceding.file_of(id)));
         }
@@ -1776,7 +1910,7 @@ impl<'a> Resolver<'a> {
     /// lets a genuinely later submodule win instead of conservatively deferring.
     fn submodule_contributions_at(&self, path: &[String]) -> HashMap<String, SubmoduleFold> {
         let site = self.container_path.to_vec();
-        let mut out: HashMap<String, SubmoduleFold> = HashMap::new();
+        let mut out: HashMap<String, SubmoduleFold> = HashMap::default();
         let current = self.preceding.num_files();
         for (sub, file) in self.auto_open_fragments_reachable(path) {
             // The names this fragment declares in *its* file (ids unused here —
@@ -1931,6 +2065,14 @@ impl<'a> Resolver<'a> {
         written: &[String],
         rooted: bool,
     ) -> Option<Vec<String>> {
+        let found = self.find_project_module(written, rooted);
+        #[cfg(test)]
+        self.check_resolved_project_module(written, rooted, &found);
+        found
+    }
+
+    /// [`Self::resolved_project_module`]'s search.
+    fn find_project_module(&self, written: &[String], rooted: bool) -> Option<Vec<String>> {
         let (head, rest) = written.split_first()?;
         if !rooted {
             // Tier 0 — a lexically in-scope module abbreviation as the bare head:
@@ -1952,12 +2094,15 @@ impl<'a> Resolver<'a> {
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
-            for k in (1..=self.container_path.len()).rev() {
+            if let Some(&k) = self
+                .project_module_completions(written)
+                .iter()
+                .rev()
+                .find(|&&k| k >= 1)
+            {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
-                if self.is_project_module_path(&full) {
-                    return Some(full);
-                }
+                return Some(full);
             }
         }
         // Tier 3 — the path as written (root / fully-qualified).
@@ -2082,6 +2227,18 @@ impl<'a> Resolver<'a> {
         written: &[String],
         rooted: bool,
     ) -> Option<(CrossFileCase, Vec<String>)> {
+        let found = self.find_cross_file_type_case(written, rooted);
+        #[cfg(test)]
+        self.check_cross_file_type_case(written, rooted, &found);
+        found
+    }
+
+    /// [`Self::cross_file_type_case_located`]'s search.
+    fn find_cross_file_type_case(
+        &self,
+        written: &[String],
+        rooted: bool,
+    ) -> Option<(CrossFileCase, Vec<String>)> {
         // An `open type T` (modelled or not) sets `unmodelled_open_active`: T's
         // unmodelled nested types could supply the head segment, shadowing the
         // project type for the qualifier (`open Lib; open type Demo.Thing; Inner.Red`
@@ -2126,7 +2283,14 @@ impl<'a> Resolver<'a> {
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
-            for k in (1..=self.container_path.len()).rev() {
+            // Only a completion the case index holds can hit, and its trie
+            // names them all in one walk along the container path, so no
+            // other completion is built.
+            let completions: Vec<usize> = self
+                .preceding
+                .type_qualified_case_prefix_lens(&self.container_path, written)
+                .collect();
+            for &k in completions.iter().rev().filter(|&&k| k >= 1) {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
                 if let Some(found) = hit(full, CaseTier::Namespace) {
@@ -2199,9 +2363,9 @@ impl<'a> Resolver<'a> {
         // `case_reference`). `pushed_normal` tracks ids already pushed as ordinary
         // entries so an unshadowed case (which serves both namespaces) is not also
         // given a redundant `pattern_only` entry.
-        let mut seen_values: HashSet<String> = HashSet::new();
-        let mut seen_ctors: HashSet<String> = HashSet::new();
-        let mut pushed_normal: HashSet<ItemId> = HashSet::new();
+        let mut seen_values: HashSet<String> = HashSet::default();
+        let mut seen_ctors: HashSet<String> = HashSet::default();
+        let mut pushed_normal: HashSet<ItemId> = HashSet::default();
         let mut entries: Vec<ScopeEntry> = Vec::new();
         // The opened module's own **maybe-literal** value names (this file's
         // members, gated exactly like the same-file pass below). FCS folds a
@@ -2215,7 +2379,7 @@ impl<'a> Resolver<'a> {
         // the case then stays committed. (For a single-fragment fold the
         // cross-file history spans every file, over-approximating the
         // fragment's own members — a wider defer, never a commit.)
-        let mut constant_names: HashSet<String> = HashSet::new();
+        let mut constant_names: HashSet<String> = HashSet::default();
         for item in &self.items {
             if item.attributed
                 && let Some(q) = &item.qualified
@@ -2352,10 +2516,15 @@ impl<'a> Resolver<'a> {
         // A possible union case the walk does not intern (`type T = X`)
         // declines its name, and no other: in pattern position always, and in
         // expression position unless a value of the name outranks it.
+        // Whether a value supersedes a case is asked only of the cases this
+        // open reaches: the answer scans the file's declarations.
         let own_cases: Vec<(&Vec<String>, bool)> = self
             .export_decls
             .iter()
-            .filter(|d| matches!(d.kind, super::model::ExportDeclKind::OpaqueCase))
+            .filter(|d| {
+                matches!(d.kind, super::model::ExportDeclKind::OpaqueCase)
+                    && d.path.split_last().is_some_and(|(_, c)| c == module_path)
+            })
             .map(|d| {
                 (
                     &d.path,
@@ -2557,7 +2726,7 @@ impl<'a> Resolver<'a> {
         let direct_tier = if is_namespace {
             self.direct_tier_ids_at(namespace)
         } else {
-            HashMap::new()
+            HashMap::default()
         };
         // Straddle outcomes, pushed after the fold so they out-position the
         // submodule pushes: `value_winners` (direct case wins the value slot
@@ -6179,20 +6348,57 @@ impl<'a> Resolver<'a> {
     /// Conservative in the safe direction throughout: `false` keeps the caller's
     /// pre-existing defer.
     fn module_like_transparent_for(&self, prefix: &[String], name: &str, member: &str) -> bool {
-        let mut mp = prefix.to_vec();
-        mp.push(name.to_string());
-        if self.container_path.starts_with(&mp) {
-            return true;
-        }
+        let encloses = self.container_path.starts_with(prefix)
+            && self
+                .container_path
+                .get(prefix.len())
+                .is_some_and(|s| s == name);
+        let transparent = encloses
+            || self.module_like_transparent_beside(prefix, self.declared_in(prefix), name, member);
+        #[cfg(test)]
+        assert_eq!(
+            transparent,
+            self.reference_module_like_transparent_for(prefix, name, member),
+            "module_like_transparent_for({prefix:?}, {name}, {member})"
+        );
+        transparent
+    }
+
+    /// [`Self::module_like_transparent_for`] at the enclosing container
+    /// `self.container_path[..k]`, whose declarations are found by its
+    /// interned id rather than a walk of its path. Only a container that
+    /// declares a module `name` beside the walk's own path has that module's
+    /// path built.
+    fn enclosing_module_like_transparent_for(&self, k: usize, name: &str, member: &str) -> bool {
+        self.container_path.get(k).is_some_and(|s| s == name)
+            || self.module_like_transparent_beside(
+                &self.container_path[..k],
+                self.container_decls.get(&self.container_path.prefix_id(k)),
+                name,
+                member,
+            )
+    }
+
+    /// [`Self::module_like_transparent_for`] for a `name` that is not the
+    /// current container or one enclosing it, given what `prefix` declares.
+    fn module_like_transparent_beside(
+        &self,
+        prefix: &[String],
+        declared: Option<&crate::hash::HashMap<String, super::state::DeclKinds>>,
+        name: &str,
+        member: &str,
+    ) -> bool {
         if self.recursive_module_active {
             return false;
         }
-        let Some(&kinds) = self.declared_in(prefix).and_then(|d| d.get(name)) else {
+        let Some(&kinds) = declared.and_then(|d| d.get(name)) else {
             return false;
         };
         if !kinds.module || kinds.alias {
             return false;
         }
+        let mut mp = prefix.to_vec();
+        mp.push(name.to_string());
         if self.preceding.is_exact_project_module(&mp)
             || self.preceding.is_exact_nested_module(&mp)
             || self.is_project_namespace_path(&mp)
@@ -6733,61 +6939,73 @@ impl<'a> Resolver<'a> {
     fn head_contested_by_project_module(&self, head: &SyntaxToken, residual: &SyntaxToken) -> bool {
         let head = &*id_text(head);
         let residual = &*id_text(residual);
-        let relative = (self.namespace_depth.max(1)..=self.container_path.len()).rev();
-        let root_tier: &[usize] = &[0];
-        let written = relative
-            .chain(root_tier.iter().copied())
-            .map(|k| self.container_path[..k].to_vec());
-        let opened = self
-            .explicit_open_prefixes
-            .iter()
-            .map(|(_, prefix)| prefix.clone());
-        for prefix in written.chain(opened) {
-            // A *same-file* module that provably cannot own `residual` does not
-            // contest either: F# backtracks past it to the lexical type, so
-            // standing down would hand the residual to a cross-file case
-            // (FCS-probed, `companion_module_case_matrix` — the `type Kind` +
-            // companion `module Kind` shape).
-            if self.module_like_transparent_for(&prefix, head, residual) {
-                continue;
-            }
-            let mut path = prefix;
-            path.push(head.to_string());
-            // The current container (or an ancestor) does not contest: a
-            // module's own name is not in scope as a head within itself — the
-            // FS0039 own-name rule the candidate walk applies (`module Color;
-            // type Color = Red = 0 …; Color.Red` binds the enum case, probe
-            // M17, codex round 3).
-            if self.container_path.starts_with(&path) {
-                continue;
-            }
-            // ONLY real modules contest — same-file headers +
-            // `real_nested_module_exports`, cross-file module headers + real
-            // nested modules. Everything else a completion could hold is
-            // deliberately absent, because standing down is not a defer here
-            // (the fall-through can EMIT through the cross-file machinery), so
-            // over-inclusion produces wrong targets or lost resolutions:
-            // - NAMESPACES cannot own a 2-segment *expression* residual at all
-            //   (values never live directly under one) — FCS backtracks to the
-            //   lexical type (probe M18, codex round 4).
-            // - The conflated name-shadow set holds cross-file TYPES (via
-            //   `namespace global` even at root completions) — a cross-file
-            //   type never outranks the lexical type (the CF12/CF13 principle;
-            //   probe M19, codex round 5: vetoing here handed the residual to
-            //   an earlier file's same-written-path case, a wrong target),
-            //   cross-file module ALIASES (file-private to FCS, probe CF10 —
-            //   they must not contest), and `extern`s (a value cannot own the
-            //   residual: member access on it commits and errors, probe M9's
-            //   principle — no legal contest exists).
-            if self.module_paths.contains(&path)
-                || self.real_nested_module_exports.contains(&path)
-                || self.preceding.is_exact_project_module(&path)
-                || self.preceding.is_real_nested_module(&path)
-            {
-                return true;
-            }
-        }
-        false
+        // ONLY real modules contest — same-file headers +
+        // `real_nested_module_exports`, cross-file module headers + real
+        // nested modules. Everything else a completion could hold is
+        // deliberately absent, because standing down is not a defer here
+        // (the fall-through can EMIT through the cross-file machinery), so
+        // over-inclusion produces wrong targets or lost resolutions:
+        // - NAMESPACES cannot own a 2-segment *expression* residual at all
+        //   (values never live directly under one) — FCS backtracks to the
+        //   lexical type (probe M18, codex round 4).
+        // - The conflated name-shadow set holds cross-file TYPES (via
+        //   `namespace global` even at root completions) — a cross-file
+        //   type never outranks the lexical type (the CF12/CF13 principle;
+        //   probe M19, codex round 5: vetoing here handed the residual to
+        //   an earlier file's same-written-path case, a wrong target),
+        //   cross-file module ALIASES (file-private to FCS, probe CF10 —
+        //   they must not contest), and `extern`s (a value cannot own the
+        //   residual: member access on it commits and errors, probe M9's
+        //   principle — no legal contest exists).
+        //
+        // And a module that is transparent for `residual`
+        // ([`Self::module_like_transparent_for`]) does not contest: the
+        // current container or an ancestor, since a module's own name is not
+        // in scope as a head within itself — the FS0039 own-name rule the
+        // candidate walk applies (`module Color; type Color = Red = 0 …;
+        // Color.Red` binds the enum case, probe M17, codex round 3) — or a
+        // *same-file* module that provably cannot own `residual`, since F#
+        // backtracks past it to the lexical type, and standing down would
+        // hand the residual to a cross-file case (FCS-probed,
+        // `companion_module_case_matrix` — the `type Kind` + companion
+        // `module Kind` shape).
+        //
+        // The written completions are the enclosing containers
+        // `container_path[..k]` (`k >= namespace_depth`, and the root). The
+        // module sets' tries are asked about all of them in one walk along
+        // the container path, so a head under `d` nested modules costs `d`
+        // probes, not `d` copies and hashes of paths up to `d` long.
+        let path = &self.container_path[..];
+        let written = |k: usize| k == 0 || (self.namespace_depth.max(1)..=path.len()).contains(&k);
+        let head_suffix = [head];
+        let contests_written = self
+            .module_paths
+            .suffix_member_prefix_lens(path, &head_suffix)
+            .chain(
+                self.real_nested_module_exports
+                    .suffix_member_prefix_lens(path, &head_suffix),
+            )
+            .chain(
+                self.preceding
+                    .real_module_suffix_prefix_lens(path, &head_suffix),
+            )
+            .filter(|&k| written(k))
+            .any(|k| !self.enclosing_module_like_transparent_for(k, head, residual));
+        let contested = contests_written
+            || self.explicit_open_prefixes.iter().any(|(_, prefix)| {
+                if self.module_like_transparent_for(prefix, head, residual) {
+                    return false;
+                }
+                let mut path = prefix.clone();
+                path.push(head.to_string());
+                self.module_paths.contains(&path)
+                    || self.real_nested_module_exports.contains(&path)
+                    || self.preceding.is_exact_project_module(&path)
+                    || self.preceding.is_real_nested_module(&path)
+            });
+        #[cfg(test)]
+        self.check_head_contested(head, residual, contested);
+        contested
     }
 
     /// The emit target for member `name` of the type `ty` declared in
