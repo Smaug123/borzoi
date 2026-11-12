@@ -706,21 +706,7 @@ const INERT_BODY: &str = "let x = 0\n";
 /// than linear in the nesting, each with why. Allocation counts are
 /// deterministic, so an entry is held exactly: a shape listed here that comes
 /// back within [`MAX_ALLOCATION_RATIO`] fails until its entry is removed.
-const ALLOCATION_EXEMPT: &[(&str, &str)] = &[
-    (
-        "open_long_ident",
-        "an `open` lists a candidate at every enclosing container \
-         (`open_tier_candidates`), each that container's path followed by the \
-         written one: d paths of up to d + n segments",
-    ),
-    (
-        "pat_long_ident",
-        "a qualified case pattern looks for an earlier file's case at every \
-         enclosing container (`cross_file_type_case_located`), each that \
-         container's path followed by the written one: d paths of up to d + n \
-         segments",
-    ),
-];
+const ALLOCATION_EXEMPT: &[(&str, &str)] = &[];
 
 /// The [`allocation_probe_child`] entry's path, for
 /// [`run_case`](stack_probe::run_case).

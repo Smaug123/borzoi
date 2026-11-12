@@ -763,7 +763,7 @@ pub(super) struct ShorteningPrefix {
 /// can yield both kinds at once — a project module *merges* with a same-path
 /// referenced-assembly namespace — but never a project module *and* a project
 /// namespace (FS0247).
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum OpenInterpretation {
     /// A project module — `open M` brings its direct values into scope.
     Module(Vec<String>),
@@ -953,6 +953,7 @@ impl DeclKinds {
 
 /// What the cross-file type-qualified case index reads a path as — the
 /// result of [`Resolver::cross_file_type_case`].
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum CrossFileCase {
     /// An earlier file's case reads the path, at this tier.
     Hit(CaseTier, ItemId),

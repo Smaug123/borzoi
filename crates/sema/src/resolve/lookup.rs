@@ -23,7 +23,21 @@ use super::state::{
 };
 
 #[cfg(test)]
-mod head_contest_reference;
+mod nesting_reference;
+
+/// The candidate full paths an `open` could name
+/// ([`Resolver::open_tier_candidates`]).
+pub(super) struct OpenTierCandidates {
+    /// Each candidate that could name something, highest priority first,
+    /// with whether namespaces are reachable at its tier.
+    pub(super) paths: Vec<(Vec<String>, bool)>,
+    /// `Some(reach)` when some enclosing container's completion was left out
+    /// of [`Self::paths`] because it names nothing: no project module, no
+    /// namespace, and nothing the referenced assemblies hold, since its
+    /// container is longer than `container_path[..reach]`
+    /// ([`Resolver::assembly_open_reach`]).
+    pub(super) unnamed_beyond: Option<usize>,
+}
 
 /// The part of a qualified case path after its head — `B….Color.Red` of
 /// `Alpha.B….Color.Red` — as the same-file candidate walk reads it
@@ -971,6 +985,19 @@ impl<'a> Resolver<'a> {
         written: &[String],
         rooted: bool,
     ) -> Vec<OpenInterpretation> {
+        let candidates = self.open_tier_candidates(written, rooted);
+        let out = self.interpretations_of(candidates.paths);
+        #[cfg(test)]
+        self.check_open_interpretations(written, rooted, &out);
+        out
+    }
+
+    /// What an `open` reads its candidate full paths as, highest priority
+    /// first ([`Self::open_interpretations`]).
+    fn interpretations_of(
+        &self,
+        candidates: impl IntoIterator<Item = (Vec<String>, bool)>,
+    ) -> Vec<OpenInterpretation> {
         let mut out: Vec<OpenInterpretation> = Vec::new();
         let consider = |out: &mut Vec<OpenInterpretation>,
                         full: Vec<String>,
@@ -1009,7 +1036,7 @@ impl<'a> Resolver<'a> {
                 out.push(OpenInterpretation::Reading(full));
             }
         };
-        for (full, namespaces_reachable) in self.open_tier_candidates(written, rooted) {
+        for (full, namespaces_reachable) in candidates {
             consider(&mut out, full, namespaces_reachable);
         }
         out
@@ -1018,18 +1045,28 @@ impl<'a> Resolver<'a> {
     /// Every **candidate full path** an `open <written>` could name, tier by
     /// tier — the single tier enumeration behind
     /// [`open_interpretations`](Self::open_interpretations) *and* the
-    /// dropped-path hazard check in `decls.rs`. One enumeration, two
+    /// dropped-path hazard check
+    /// ([`Self::open_names_an_uncovered_dropped_path`]). One enumeration, two
     /// consumers, so the two cannot drift apart ("two traversals over one
     /// space must span the same space" — review round 16; a dropped TypeDef
     /// can BE the module a candidate names, round 23). Each candidate is
     /// paired with whether namespaces are reachable at its tier (see the
     /// tier notes on `open_interpretations`).
+    ///
+    /// Tier 2 lists only the enclosing containers whose completion could name
+    /// something: a project module (asked of the module sets' tries in one
+    /// walk), anything the referenced assemblies hold
+    /// ([`Self::assembly_open_reach`]), or a namespace (the
+    /// enclosing-namespace base). The rest are counted in
+    /// [`OpenTierCandidates::unnamed_beyond`], so an `open` under `d` nested
+    /// modules builds no path for most of them.
     pub(super) fn open_tier_candidates(
         &self,
         written: &[String],
         rooted: bool,
-    ) -> Vec<(Vec<String>, bool)> {
-        let mut out: Vec<(Vec<String>, bool)> = Vec::new();
+    ) -> OpenTierCandidates {
+        let mut paths: Vec<(Vec<String>, bool)> = Vec::new();
+        let mut unnamed_beyond = None;
         if !rooted {
             // Tier 0 — a module alias as the bare head (`open Alias[.rest]` →
             // `Target[.rest]`); the alias is a module, never a namespace.
@@ -1038,7 +1075,7 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                out.push((full, false));
+                paths.push((full, false));
             }
             // Tier 1 — explicit opens (namespace + chained module), latest first.
             // Each opened container also lends the `[<AutoOpen>]` modules it
@@ -1049,23 +1086,118 @@ impl<'a> Resolver<'a> {
                 for auto in self.auto_open_shortening_prefixes(prefix) {
                     let mut full = auto;
                     full.extend_from_slice(written);
-                    out.push((full, false));
+                    paths.push((full, false));
                 }
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                out.push((full, true));
+                paths.push((full, true));
             }
             // Tier 2 — implicit relative resolution, innermost first; namespaces
             // are reachable only at the enclosing-namespace base.
+            let modules = self.project_module_completions(written);
+            let reach = self.assembly_open_reach();
             for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
-                full.extend_from_slice(written);
-                out.push((full, k == self.namespace_depth));
+                if k <= reach || k == self.namespace_depth || modules.binary_search(&k).is_ok() {
+                    let mut full = self.container_path[..k].to_vec();
+                    full.extend_from_slice(written);
+                    paths.push((full, k == self.namespace_depth));
+                } else {
+                    unnamed_beyond = Some(reach);
+                }
             }
         }
         // Tier 3 — the as-written root, kept *in addition* to any relative match.
-        out.push((written.to_vec(), true));
-        out
+        paths.push((written.to_vec(), true));
+        OpenTierCandidates {
+            paths,
+            unnamed_beyond,
+        }
+    }
+
+    /// Whether `open <written>`, whose interpretations are `interps`, names a
+    /// module path a referenced assembly may hold a dropped type along, at a
+    /// candidate with no interpretation — where FCS may open the dropped
+    /// module and the walk sees nothing.
+    pub(super) fn open_names_an_uncovered_dropped_path(
+        &self,
+        written: &[String],
+        rooted: bool,
+        interps: &[OpenInterpretation],
+    ) -> bool {
+        let candidates = self.open_tier_candidates(written, rooted);
+        let listed = candidates.paths.iter().any(|(full, _)| {
+            self.assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(full)
+                && !interps.iter().any(|i| match i {
+                    OpenInterpretation::Module(p)
+                    | OpenInterpretation::AssemblyModule(p)
+                    | OpenInterpretation::Reading(p) => p == full,
+                })
+        });
+        // An unlisted candidate has no interpretation, and every split of it
+        // a dropped type could lie at is a prefix of `container_path[..reach]`.
+        let unlisted = candidates.unnamed_beyond.is_some_and(|reach| {
+            self.assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(&self.container_path[..reach])
+        });
+        let uncovered = listed || unlisted;
+        #[cfg(test)]
+        self.check_uncovered_dropped_path(written, rooted, interps, &candidates, uncovered);
+        uncovered
+    }
+
+    /// The lengths `k`, ascending, for which `self.container_path[..k]`
+    /// followed by `written` is [a project module](Self::is_project_module_path):
+    /// one walk along the container path in each module set's trie, building
+    /// no path.
+    pub(super) fn project_module_completions(&self, written: &[String]) -> Vec<usize> {
+        let path = &self.container_path[..];
+        let mut lens: Vec<usize> = self
+            .module_paths
+            .suffix_member_prefix_lens(path, written)
+            .chain(
+                self.nested_module_exports
+                    .suffix_member_prefix_lens(path, written),
+            )
+            .chain(self.preceding.module_suffix_prefix_lens(path, written))
+            .collect();
+        lens.sort_unstable();
+        lens.dedup();
+        lens
+    }
+
+    /// The longest prefix `self.container_path[..k]` the referenced assemblies
+    /// could carry on into anything an `open` reads: a public namespace, a
+    /// namespace a dropped type was recorded in (each with its prefixes), or
+    /// a public entity, top-level or reached from one through nested modules
+    /// named by the container path. For any longer prefix, no path extending
+    /// it is an assembly module or namespace, and every split of such a path
+    /// that a dropped type could lie at is a prefix of `container_path[..k]`.
+    ///
+    /// Each of those sets holds the prefixes of its members, so the first
+    /// prefix none of them continues ends the walk: it costs one step per
+    /// level the assemblies share with the container path, which they bound,
+    /// not the nesting.
+    fn assembly_open_reach(&self) -> usize {
+        let path = &self.container_path[..];
+        let mut entities: Vec<EntityHandle> = Vec::new();
+        for k in 0..path.len() {
+            let segment = &path[k];
+            let mut next: Vec<EntityHandle> = entities
+                .iter()
+                .filter_map(|&h| self.assemblies.nested_module(h, segment))
+                .collect();
+            next.extend(self.assemblies.public_entities_named(&path[..k], segment));
+            let longer = &path[..=k];
+            if next.is_empty()
+                && !self.assemblies.has_namespace(longer)
+                && !self.assemblies.prefixes_a_dropped_type_namespace(longer)
+            {
+                return k;
+            }
+            entities = next;
+        }
+        path.len()
     }
 
     /// The extra shortening prefixes an **opened container** lends: the
@@ -1929,6 +2061,14 @@ impl<'a> Resolver<'a> {
         written: &[String],
         rooted: bool,
     ) -> Option<Vec<String>> {
+        let found = self.find_project_module(written, rooted);
+        #[cfg(test)]
+        self.check_resolved_project_module(written, rooted, &found);
+        found
+    }
+
+    /// [`Self::resolved_project_module`]'s search.
+    fn find_project_module(&self, written: &[String], rooted: bool) -> Option<Vec<String>> {
         let (head, rest) = written.split_first()?;
         if !rooted {
             // Tier 0 — a lexically in-scope module abbreviation as the bare head:
@@ -1950,12 +2090,15 @@ impl<'a> Resolver<'a> {
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
-            for k in (1..=self.container_path.len()).rev() {
+            if let Some(&k) = self
+                .project_module_completions(written)
+                .iter()
+                .rev()
+                .find(|&&k| k >= 1)
+            {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
-                if self.is_project_module_path(&full) {
-                    return Some(full);
-                }
+                return Some(full);
             }
         }
         // Tier 3 — the path as written (root / fully-qualified).
@@ -2080,6 +2223,18 @@ impl<'a> Resolver<'a> {
         written: &[String],
         rooted: bool,
     ) -> Option<(CrossFileCase, Vec<String>)> {
+        let found = self.find_cross_file_type_case(written, rooted);
+        #[cfg(test)]
+        self.check_cross_file_type_case(written, rooted, &found);
+        found
+    }
+
+    /// [`Self::cross_file_type_case_located`]'s search.
+    fn find_cross_file_type_case(
+        &self,
+        written: &[String],
+        rooted: bool,
+    ) -> Option<(CrossFileCase, Vec<String>)> {
         // An `open type T` (modelled or not) sets `unmodelled_open_active`: T's
         // unmodelled nested types could supply the head segment, shadowing the
         // project type for the qualifier (`open Lib; open type Demo.Thing; Inner.Red`
@@ -2124,7 +2279,14 @@ impl<'a> Resolver<'a> {
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
-            for k in (1..=self.container_path.len()).rev() {
+            // Only a completion the case index holds can hit, and its trie
+            // names them all in one walk along the container path, so no
+            // other completion is built.
+            let completions: Vec<usize> = self
+                .preceding
+                .type_qualified_case_prefix_lens(&self.container_path, written)
+                .collect();
+            for &k in completions.iter().rev().filter(|&&k| k >= 1) {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
                 if let Some(found) = hit(full, CaseTier::Namespace) {
@@ -6806,14 +6968,18 @@ impl<'a> Resolver<'a> {
         // probes, not `d` copies and hashes of paths up to `d` long.
         let path = &self.container_path[..];
         let written = |k: usize| k == 0 || (self.namespace_depth.max(1)..=path.len()).contains(&k);
+        let head_suffix = [head];
         let contests_written = self
             .module_paths
-            .child_member_prefix_lens(path, head)
+            .suffix_member_prefix_lens(path, &head_suffix)
             .chain(
                 self.real_nested_module_exports
-                    .child_member_prefix_lens(path, head),
+                    .suffix_member_prefix_lens(path, &head_suffix),
             )
-            .chain(self.preceding.module_child_prefix_lens(path, head))
+            .chain(
+                self.preceding
+                    .real_module_suffix_prefix_lens(path, &head_suffix),
+            )
             .filter(|&k| written(k))
             .any(|k| !self.enclosing_module_like_transparent_for(k, head, residual));
         let contested = contests_written

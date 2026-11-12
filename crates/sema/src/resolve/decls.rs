@@ -1126,18 +1126,7 @@ impl<'a> Resolver<'a> {
                     // like the incomplete-prefix veto. Candidates that did
                     // yield an interpretation are handled per-group below.
                     let names_uncovered_dropped_path = !path.is_empty()
-                        && self
-                            .open_tier_candidates(&path, rooted)
-                            .iter()
-                            .any(|(full, _)| {
-                                self.assemblies
-                                    .any_split_of_a_module_path_has_a_dropped_type(full)
-                                    && !interps.iter().any(|i| match i {
-                                        OpenInterpretation::Module(p)
-                                        | OpenInterpretation::AssemblyModule(p)
-                                        | OpenInterpretation::Reading(p) => p == full,
-                                    })
-                            });
+                        && self.open_names_an_uncovered_dropped_path(&path, rooted, &interps);
                     if names_uncovered_dropped_path {
                         self.opaque_value_open = true;
                         self.open_generation += 1;
