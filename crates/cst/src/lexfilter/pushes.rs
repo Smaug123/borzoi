@@ -3,9 +3,9 @@
 
 use super::{
     AddBlockEnd, Context, Filter, ModuleHeadPrev, NamespacePrev, OffsideDiagnostic,
-    OffsideSeverity, Opener, Pos, PushStrictness, Step, TokenContent, TokenTup, Virtual,
+    OffsideSeverity, Opener, Pos, PushStrictness, Step, TokSpan, TokenContent, TokenTup, Virtual,
 };
-use crate::lexer::{LexError, Span, Token};
+use crate::lexer::TokenKind;
 
 /// A declaration keyword that must appear at module/namespace level, not nested
 /// inside a type — three of FCS's `checkForInvalidDeclsInTypeDefn` keywords.
@@ -105,35 +105,35 @@ fn is_in_member_context(stack: &[Context]) -> bool {
     }
 }
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
+impl<'a> Filter<'a> {
     /// FCS's `checkForInvalidDeclsInTypeDefn` (`LexFilter.fs:1392-1470`) for
     /// `type`/`module`/`exception`: when the keyword is inappropriately nested
     /// inside a type definition, record the FS0058 error (`errorR` in FCS —
     /// recoverable, so the token/context flow is unchanged; only the diagnostic
     /// is added). Gated on the F# 10 `ErrorOnInvalidDeclsInTypeDefinitions`
     /// feature. (`open` is handled parser-side; see [`NestedDeclKeyword`].)
-    fn check_invalid_decl_in_type_defn(&mut self, keyword: NestedDeclKeyword, tok: &TokenTup<'a>) {
+    fn check_invalid_decl_in_type_defn(&mut self, keyword: NestedDeclKeyword, tok: &TokenTup) {
         if !self.reports_invalid_decls_in_type {
             return;
         }
         if is_invalid_decl_in_type_defn(&self.offside_stack, tok.start) {
             self.diagnostics.push(OffsideDiagnostic {
                 message: keyword.message().to_string(),
-                span: tok.span.clone(),
+                span: tok.span.range(),
                 severity: OffsideSeverity::Error,
             });
         }
     }
 
     /// NAMESPACE / MODULE / TYPE context pushes.
-    pub(super) fn module_type_pushes(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn module_type_pushes(&mut self, tt: TokenTup) -> Step {
         // NAMESPACE → push CtxtNamespaceHead, emit NAMESPACE
         // unchanged. (LexFilter.fs:2117) The head's dotted-ident
         // scanner is consumed by the CtxtNamespaceHead transition arm
         // above; this arm only sets the stack up.
-        if let TokenContent::Real(Token::Namespace) = &tt.token {
+        if let TokenContent::Real(TokenKind::Namespace) = &tt.token {
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::NamespaceHead {
                     pos: tt.start,
                     prev: NamespacePrev::Keyword,
@@ -163,11 +163,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // and stored on the head for `end_token_for_a_ctxt` (a forced
         // closure of a nested head emits OBLOCKSEP per
         // LexFilter.fs:1542-1543; a top-of-file head closes silently).
-        if let TokenContent::Real(Token::Module) = &tt.token {
+        if let TokenContent::Real(TokenKind::Module) = &tt.token {
             self.check_invalid_decl_in_type_defn(NestedDeclKeyword::Module, &tt);
             let nested = !matches!(self.offside_stack.as_slice(), [Context::SeqBlock { .. }]);
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::ModuleHead {
                     pos: tt.start,
                     prev: ModuleHeadPrev::Module,
@@ -193,10 +193,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // `equals_end: None` marks the pre-EQUALS state; the
         // EQUALS+CtxtTypeDefns arm above replaces it with
         // `Some(equalsEnd)` when `=` is reached.
-        if let TokenContent::Real(Token::Type) = &tt.token {
+        if let TokenContent::Real(TokenKind::Type) = &tt.token {
             self.check_invalid_decl_in_type_defn(NestedDeclKeyword::Type, &tt);
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::TypeDefns {
                     pos: tt.start,
                     equals_end: None,
@@ -209,7 +209,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     }
 
     /// let/use, bang-binders, the multi-member pop cascade, and member-head pushes.
-    pub(super) fn binding_member_pushes(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn binding_member_pushes(&mut self, tt: TokenTup) -> Step {
         // `static let` — LET arriving while the head is `CtxtMemberHead`
         // (i.e. the `static` keyword has already opened a member-head)
         // pops the MemberHead and pushes `CtxtLetDecl(blockLet=true,
@@ -217,12 +217,14 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // LET's column. Emits OLET. (LexFilter.fs:2146-2151.) Must fire
         // before the generic LET arm below so the MemberHead → LetDecl
         // swap happens instead of stacking LetDecl on top.
-        if matches!(&tt.token, TokenContent::Real(Token::Let | Token::Use))
-            && let Some(Context::MemberHead { pos: head_pos }) = self.head().cloned()
+        if matches!(
+            &tt.token,
+            TokenContent::Real(TokenKind::Let | TokenKind::Use)
+        ) && let Some(Context::MemberHead { pos: head_pos }) = self.head().cloned()
         {
             self.pop_ctxt();
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::LetDecl {
                     block_let: true,
                     pos: head_pos,
@@ -249,13 +251,16 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // `let` from `use` at the parser level, but both flow through
         // the same arm here and both surface as
         // `FSharpTokenKind.OffsideLet` (ServiceLexing.fs:1418).
-        if matches!(&tt.token, TokenContent::Real(Token::Let | Token::Use)) {
+        if matches!(
+            &tt.token,
+            TokenContent::Real(TokenKind::Let | TokenKind::Use)
+        ) {
             let pos = tt.start;
             let block_let = matches!(
                 self.head(),
                 Some(Context::SeqBlock { .. } | Context::MatchClauses { .. })
             );
-            self.push_ctxt(tt.span.clone(), Context::LetDecl { block_let, pos });
+            self.push_ctxt(tt.span, Context::LetDecl { block_let, pos });
             if block_let {
                 return Step::Emit(TokenTup {
                     token: TokenContent::Virtual(Virtual::Let),
@@ -284,16 +289,16 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // so the bang binders never need that special case.
         if matches!(
             &tt.token,
-            TokenContent::Real(Token::LetBang | Token::UseBang | Token::AndBang)
+            TokenContent::Real(TokenKind::LetBang | TokenKind::UseBang | TokenKind::AndBang)
         ) {
             let pos = tt.start;
             let block_let = matches!(self.head(), Some(Context::SeqBlock { .. }));
-            let virt = if matches!(&tt.token, TokenContent::Real(Token::AndBang)) {
+            let virt = if matches!(&tt.token, TokenContent::Real(TokenKind::AndBang)) {
                 Virtual::AndBang
             } else {
                 Virtual::Binder
             };
-            self.push_ctxt(tt.span.clone(), Context::LetDecl { block_let, pos });
+            self.push_ctxt(tt.span, Context::LetDecl { block_let, pos });
             if block_let {
                 return Step::Emit(TokenTup {
                     token: TokenContent::Virtual(virt),
@@ -321,12 +326,12 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if matches!(
             &tt.token,
             TokenContent::Real(
-                Token::Val
-                    | Token::Static
-                    | Token::Abstract
-                    | Token::Member
-                    | Token::Override
-                    | Token::Default
+                TokenKind::Val
+                    | TokenKind::Static
+                    | TokenKind::Abstract
+                    | TokenKind::Member
+                    | TokenKind::Override
+                    | TokenKind::Default
             )
         ) && self.there_is_a_ctxt_member_body_on_the_stack_and_we_should_pop()
         {
@@ -338,7 +343,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // bypass dispatch when popped — they're recovery tokens
             // pre-computed against a known stack and must not re-fire
             // offside rules.
-            let loc_span = tt.span.clone();
+            let loc_span = tt.span;
             let loc_start = tt.start;
             let loc_end = tt.end;
             self.delay_token_no_processing(tt);
@@ -348,7 +353,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 if let Some(v) = end_tok {
                     self.delay_token_no_processing(TokenTup {
                         token: TokenContent::Virtual(v),
-                        span: loc_span.clone(),
+                        span: loc_span,
                         start: loc_start,
                         end: loc_end,
                     });
@@ -366,16 +371,16 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if matches!(
             &tt.token,
             TokenContent::Real(
-                Token::Val
-                    | Token::Static
-                    | Token::Abstract
-                    | Token::Member
-                    | Token::Override
-                    | Token::Default
+                TokenKind::Val
+                    | TokenKind::Static
+                    | TokenKind::Abstract
+                    | TokenKind::Member
+                    | TokenKind::Override
+                    | TokenKind::Default
             )
         ) && !matches!(self.head(), Some(Context::MemberHead { .. }))
         {
-            self.push_ctxt(tt.span.clone(), Context::MemberHead { pos: tt.start });
+            self.push_ctxt(tt.span, Context::MemberHead { pos: tt.start });
             return Step::Emit(tt);
         }
 
@@ -386,12 +391,12 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // route through the generic LET arm above.
         if matches!(
             &tt.token,
-            TokenContent::Real(Token::Public | Token::Private | Token::Internal)
+            TokenContent::Real(TokenKind::Public | TokenKind::Private | TokenKind::Internal)
         ) && self
             .peek_next_token_tup()
-            .is_some_and(|la| matches!(la.token, TokenContent::Real(Token::New)))
+            .is_some_and(|la| matches!(la.token, TokenContent::Real(TokenKind::New)))
         {
-            self.push_ctxt(tt.span.clone(), Context::MemberHead { pos: tt.start });
+            self.push_ctxt(tt.span, Context::MemberHead { pos: tt.start });
             return Step::Emit(tt);
         }
 
@@ -402,23 +407,23 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // already-MemberHead guard prevents double-pushing when the
         // PUBLIC/PRIVATE/INTERNAL arm above has already opened the
         // head for `public new(...)`.
-        if matches!(&tt.token, TokenContent::Real(Token::New))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::New))
             && self
                 .peek_next_token_tup()
-                .is_some_and(|la| matches!(la.token, TokenContent::Real(Token::LParen)))
+                .is_some_and(|la| matches!(la.token, TokenContent::Real(TokenKind::LParen)))
             && !matches!(self.head(), Some(Context::MemberHead { .. }))
         {
-            self.push_ctxt(tt.span.clone(), Context::MemberHead { pos: tt.start });
+            self.push_ctxt(tt.span, Context::MemberHead { pos: tt.start });
             return Step::Emit(tt);
         }
         Step::Pass(tt)
     }
 
     /// EQUALS-driven body-block pushes across the let/type/with/record/member shapes.
-    pub(super) fn equals_pushes(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn equals_pushes(&mut self, tt: TokenTup) -> Step {
         // EQUALS + CtxtLetDecl head → push SeqBlock(AddBlockEnd), emit
         // EQUALS. (LexFilter.fs:2221)
-        if matches!(&tt.token, TokenContent::Real(Token::Equals))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::Equals))
             && matches!(self.head(), Some(Context::LetDecl { .. }))
         {
             self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
@@ -434,7 +439,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // anchor must not re-run the indentation check, or a TypeDefns
         // already flagged offside at `type` gets a second, FCS-absent
         // FS0058 anchored at the `=`. Hence `ignore_indent = true`.
-        if matches!(&tt.token, TokenContent::Real(Token::Equals))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::Equals))
             && let Some(Context::TypeDefns { pos, .. }) = self.head().cloned()
         {
             self.pop_ctxt();
@@ -444,7 +449,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 // Anchored at the dispatch `=` (never EOF); `ignore_indent` also
                 // short-circuits the check, so the flag is doubly irrelevant.
                 false,
-                tt.span.clone(),
+                tt.span,
                 Context::TypeDefns {
                     pos,
                     equals_end: Some(tt.end),
@@ -460,7 +465,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // folds them into the same body. AddBlockEnd vs. NoAddBlockEnd
         // follows `isControlFlowOrNotSameLine` so single-line bindings
         // don't open spurious OBLOCKBEGIN/OBLOCKEND pairs.
-        if matches!(&tt.token, TokenContent::Real(Token::Equals))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::Equals))
             && matches!(self.head(), Some(Context::WithAsLet { .. }))
         {
             let add_block_end = if self.is_control_flow_or_not_same_line(&tt) {
@@ -489,7 +494,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // record bindings use NoAddBlockEnd (record updates use `;` to
         // terminate bindings, so an OBLOCKBEGIN/OBLOCKEND pair would
         // mis-shape the parse).
-        if matches!(&tt.token, TokenContent::Real(Token::Equals))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::Equals))
             && let [
                 ..,
                 outer,
@@ -523,11 +528,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // uses `replaceCtxt` here — the body inherits the head's column so
         // the offside-pop arm above closes the body when subsequent
         // declarations align with (or left of) the member keyword.
-        if matches!(&tt.token, TokenContent::Real(Token::Equals))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::Equals))
             && let Some(Context::MemberHead { pos }) = self.head().cloned()
         {
             self.pop_ctxt();
-            self.push_ctxt(tt.span.clone(), Context::MemberBody { pos });
+            self.push_ctxt(tt.span, Context::MemberBody { pos });
             self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
             return Step::Emit(tt);
         }
@@ -535,7 +540,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     }
 
     /// for/while/fun/function/exception/->/do/then/else/if/match context pushes.
-    pub(super) fn expr_keyword_pushes(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn expr_keyword_pushes(&mut self, tt: TokenTup) -> Step {
         // LAZY / ASSERT → when the operand is on a different line, or is a
         // control-flow keyword, push CtxtSeqBlock(AddBlockEnd) so the whole
         // indented operand block (infix continuations, sequenced statements) is
@@ -544,13 +549,15 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // (LexFilter.fs:2232-2237). The parser re-emits the keyword text from the
         // virtual and reads the delayed `BlockBegin` as the "operand is a block"
         // signal (see `parse_lazy_or_assert`). The same-line, non-control-flow
-        // case (`lazy a`) pushes nothing and keeps the raw `Token::Lazy`, so its
+        // case (`lazy a`) pushes nothing and keeps the raw `TokenKind::Lazy`, so its
         // operand is parsed inline, tight (`lazy a + b` = `(lazy a) + b`).
-        if matches!(&tt.token, TokenContent::Real(Token::Lazy | Token::Assert))
-            && self.is_control_flow_or_not_same_line(&tt)
+        if matches!(
+            &tt.token,
+            TokenContent::Real(TokenKind::Lazy | TokenKind::Assert)
+        ) && self.is_control_flow_or_not_same_line(&tt)
         {
             let virt = match &tt.token {
-                TokenContent::Real(Token::Assert) => Virtual::Assert,
+                TokenContent::Real(TokenKind::Assert) => Virtual::Assert,
                 _ => Virtual::Lazy,
             };
             self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
@@ -570,7 +577,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // stack head), FCS gates this only on the token plus
         // `isControlFlowOrNotSameLine`. A same-line, non-control-flow RHS
         // (`x <- 1`) pushes nothing and is parsed inline.
-        if matches!(&tt.token, TokenContent::Real(Token::LArrow))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::LArrow))
             && self.is_control_flow_or_not_same_line(&tt)
         {
             self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
@@ -579,27 +586,27 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
 
         // FOR → push CtxtFor, pass FOR through unchanged.
         // (LexFilter.fs:2516)
-        if let TokenContent::Real(Token::For) = &tt.token {
+        if let TokenContent::Real(TokenKind::For) = &tt.token {
             let pos = tt.start;
             let depth = self.paren_depth;
-            self.push_ctxt(tt.span.clone(), Context::For { pos, depth });
+            self.push_ctxt(tt.span, Context::For { pos, depth });
             return Step::Emit(tt);
         }
 
         // WHILE → push CtxtWhile, pass WHILE through unchanged.
         // (LexFilter.fs:2521)
-        if let TokenContent::Real(Token::While) = &tt.token {
+        if let TokenContent::Real(TokenKind::While) = &tt.token {
             let pos = tt.start;
             let depth = self.paren_depth;
-            self.push_ctxt(tt.span.clone(), Context::While { pos, depth });
+            self.push_ctxt(tt.span, Context::While { pos, depth });
             return Step::Emit(tt);
         }
 
         // FUN → push CtxtFun, emit OFUN. (LexFilter.fs:2532)
-        if let TokenContent::Real(Token::Fun) = &tt.token {
+        if let TokenContent::Real(TokenKind::Fun) = &tt.token {
             let pos = tt.start;
             let depth = self.paren_depth;
-            self.push_ctxt(tt.span.clone(), Context::Fun { pos, depth });
+            self.push_ctxt(tt.span, Context::Fun { pos, depth });
             return Step::Emit(TokenTup {
                 token: TokenContent::Virtual(Virtual::Fun),
                 span: tt.span,
@@ -627,11 +634,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // `leading_bar` is true iff the next real token is `|` — this
         // shifts the SemiSemi/`|` column gate in the MatchClauses arm
         // so leading-bar clauses align correctly.
-        if let TokenContent::Real(Token::Function) = &tt.token {
+        if let TokenContent::Real(TokenKind::Function) = &tt.token {
             let pos = tt.start;
-            self.push_ctxt(tt.span.clone(), Context::Function { pos });
+            self.push_ctxt(tt.span, Context::Function { pos });
             if let Some(la) = self.peek_next_token_tup() {
-                let leading_bar = matches!(la.token, TokenContent::Real(Token::Bar));
+                let leading_bar = matches!(la.token, TokenContent::Real(TokenKind::Bar));
                 let mc_pos = la.start;
                 // Non-strict push (never aborts, matching FCS's `pushCtxt`), but
                 // the `CtxtMatchClauses` is anchored at the *lookahead*, which on
@@ -645,7 +652,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                     PushStrictness::AlwaysLenient,
                     false,
                     anchor_is_eof,
-                    la.span.clone(),
+                    la.span,
                     Context::MatchClauses {
                         leading_bar,
                         pos: mc_pos,
@@ -670,9 +677,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // The context itself is silent on close (endTokenForACtxt = None,
         // L1545); its observable role is to route the subsequent `WITH`
         // through the L2362 dispatch arm rather than the L2462 catch-all.
-        if let TokenContent::Real(Token::Exception) = &tt.token {
+        if let TokenContent::Real(TokenKind::Exception) = &tt.token {
             self.check_invalid_decl_in_type_defn(NestedDeclKeyword::Exception, &tt);
-            self.push_ctxt(tt.span.clone(), Context::Exception { pos: tt.start });
+            self.push_ctxt(tt.span, Context::Exception { pos: tt.start });
             return Step::Emit(tt);
         }
 
@@ -695,7 +702,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // when a match-arm pattern is itself a sequence-block expression
         // (e.g. an infix-introduced inner block).
         let rarrow_should_push = match &tt.token {
-            TokenContent::Real(Token::RArrow) => match self.offside_stack.as_slice() {
+            TokenContent::Real(TokenKind::RArrow) => match self.offside_stack.as_slice() {
                 [.., Context::Fun { depth, .. }]
                 | [.., Context::For { depth, .. }]
                 | [.., Context::While { depth, .. }] => self.paren_depth == *depth,
@@ -732,13 +739,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // those flows pre-date this arm, but a fully `done`-terminated
         // `do`-block as a standalone statement may need the continuator
         // tweak.
-        if let TokenContent::Real(Token::Do | Token::DoBang) = &tt.token {
+        if let TokenContent::Real(TokenKind::Do | TokenKind::DoBang) = &tt.token {
             let virt = match &tt.token {
-                TokenContent::Real(Token::DoBang) => Virtual::DoBang,
+                TokenContent::Real(TokenKind::DoBang) => Virtual::DoBang,
                 _ => Virtual::Do,
             };
             let pos = tt.start;
-            self.push_ctxt(tt.span.clone(), Context::Do { pos });
+            self.push_ctxt(tt.span, Context::Do { pos });
             self.try_push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
             return Step::Emit(TokenTup {
                 token: TokenContent::Virtual(virt),
@@ -750,9 +757,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
 
         // THEN → push CtxtThen + SeqBlock(AddBlockEnd) for the body,
         // emit OTHEN. (LexFilter.fs:2477)
-        if let TokenContent::Real(Token::Then) = &tt.token {
+        if let TokenContent::Real(TokenKind::Then) = &tt.token {
             let pos = tt.start;
-            self.push_ctxt(tt.span.clone(), Context::Then { pos });
+            self.push_ctxt(tt.span, Context::Then { pos });
             self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
             return Step::Emit(TokenTup {
                 token: TokenContent::Virtual(Virtual::Then),
@@ -775,25 +782,28 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // emit OELSE. The `then`-body SeqBlock + CtxtThen above on the
         // stack are popped by `tokenForcesHeadContextClosure` (ELSE
         // balances CtxtIf deeper) before we get here.
-        if let TokenContent::Real(Token::Else) = &tt.token {
+        if let TokenContent::Real(TokenKind::Else) = &tt.token {
             let pos = tt.start;
             let next = self.peek_next_token_tup();
             if let Some(next) = next
-                && matches!(next.token, TokenContent::Real(Token::If))
+                && matches!(next.token, TokenContent::Real(TokenKind::If))
                 && next.start.line == tt.start.line
             {
                 let if_end_byte = next.span.end;
                 let if_end_pos = next.end;
                 self.pop_next_token_tup();
-                self.push_ctxt(tt.span.clone(), Context::If { pos });
+                self.push_ctxt(tt.span, Context::If { pos });
                 return Step::Emit(TokenTup {
-                    token: TokenContent::Real(Token::Elif),
-                    span: tt.span.start..if_end_byte,
+                    token: TokenContent::Real(TokenKind::Elif),
+                    span: TokSpan {
+                        start: tt.span.start,
+                        end: if_end_byte,
+                    },
                     start: tt.start,
                     end: if_end_pos,
                 });
             }
-            self.push_ctxt(tt.span.clone(), Context::Else { pos });
+            self.push_ctxt(tt.span, Context::Else { pos });
             self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
             return Step::Emit(TokenTup {
                 token: TokenContent::Virtual(Virtual::Else),
@@ -813,9 +823,12 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // ELSE/ELIF balance arm. Multi-line `if`/`then`/`else` aligned
         // at the same column will force the continuator predicate +
         // CtxtIf offside-pop in.
-        if matches!(&tt.token, TokenContent::Real(Token::If | Token::Elif)) {
+        if matches!(
+            &tt.token,
+            TokenContent::Real(TokenKind::If | TokenKind::Elif)
+        ) {
             let pos = tt.start;
-            self.push_ctxt(tt.span.clone(), Context::If { pos });
+            self.push_ctxt(tt.span, Context::If { pos });
             return Step::Emit(tt);
         }
 
@@ -824,10 +837,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // CtxtMatch to CtxtMatchClauses when the `with` keyword arrives.
         if matches!(
             &tt.token,
-            TokenContent::Real(Token::Match | Token::MatchBang)
+            TokenContent::Real(TokenKind::Match | TokenKind::MatchBang)
         ) {
             let pos = tt.start;
-            self.push_ctxt(tt.span.clone(), Context::Match { pos });
+            self.push_ctxt(tt.span, Context::Match { pos });
             return Step::Emit(tt);
         }
         Step::Pass(tt)
@@ -835,7 +848,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
 
     /// WITH dispatch: the match/try clause head, the host-context and brace-shape
     /// bindings, and the catch-all augment.
-    pub(super) fn with_dispatch(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn with_dispatch(&mut self, tt: TokenTup) -> Step {
         // WITH + (CtxtTry | CtxtMatch) head → push CtxtMatchClauses(
         // leadingBar, lookahead-col), emit OWITH. (LexFilter.fs:2347) The
         // lookahead's start position anchors the new context; `leadingBar`
@@ -866,21 +879,21 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // force-closed (WITH balances CtxtTry → suffix-exists-balances
         // fires; the SeqBlock at head doesn't balance → it's popped),
         // leaving CtxtTry at head.
-        if let TokenContent::Real(Token::With) = &tt.token
+        if let TokenContent::Real(TokenKind::With) = &tt.token
             && matches!(
                 self.head(),
                 Some(Context::Match { .. } | Context::Try { .. })
             )
         {
             if let Some(la) = self.peek_next_token_tup() {
-                let leading_bar = matches!(la.token, TokenContent::Real(Token::Bar));
+                let leading_bar = matches!(la.token, TokenContent::Real(TokenKind::Bar));
                 let pos = la.start;
                 let anchor_is_eof = matches!(la.token, TokenContent::Eof);
                 self.try_push_ctxt(
                     PushStrictness::VersionGated,
                     false,
                     anchor_is_eof,
-                    la.span.clone(),
+                    la.span,
                     Context::MatchClauses { leading_bar, pos },
                 );
             }
@@ -939,7 +952,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // single-line lookahead (col > with.end col) anchors at WITH;
         // otherwise the limCtxt anchors so multi-line bindings align
         // with the record/type column.
-        if let TokenContent::Real(Token::With) = &tt.token {
+        if let TokenContent::Real(TokenKind::With) = &tt.token {
             let (lim_pos, lim_is_interface_head): (Option<Pos>, bool) =
                 match self.offside_stack.as_slice() {
                     [
@@ -970,13 +983,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 let is_binding_head_class = matches!(
                     la.as_ref().map(|t| &t.token),
                     Some(TokenContent::Real(
-                        Token::RBrace
-                            | Token::Ident(_)
-                            | Token::QuotedIdent(_)
-                            | Token::Public
-                            | Token::Private
-                            | Token::Internal
-                            | Token::Inline
+                        TokenKind::RBrace
+                            | TokenKind::Ident
+                            | TokenKind::QuotedIdent
+                            | TokenKind::Public
+                            | TokenKind::Private
+                            | TokenKind::Internal
+                            | TokenKind::Inline
                     ))
                 );
 
@@ -987,7 +1000,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                     } else {
                         lim_pos
                     };
-                    self.push_ctxt(tt.span.clone(), Context::WithAsLet { pos: offside_pos });
+                    self.push_ctxt(tt.span, Context::WithAsLet { pos: offside_pos });
 
                     // FCS L2414-2421: peek the candidate token, ask
                     // `isLongIdentEquals` whether the upcoming stream forms
@@ -996,10 +1009,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                     // own offside scope.
                     let is_followed_by_long_ident_equals =
                         if let Some(candidate) = self.pop_next_token_tup() {
-                            let res = match &candidate.token {
-                                TokenContent::Real(tok) => self.is_long_ident_equals(tok),
-                                _ => false,
-                            };
+                            let res = self.is_long_ident_equals(candidate.token);
                             self.delay_token(candidate);
                             res
                         } else {
@@ -1026,12 +1036,12 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 let is_lbrack_less_same_line = la
                     .as_ref()
                     .map(|t| {
-                        matches!(t.token, TokenContent::Real(Token::LBrackLess))
+                        matches!(t.token, TokenContent::Real(TokenKind::LBrackLess))
                             && t.start.line == with_start_line
                     })
                     .unwrap_or(false);
                 if is_lbrack_less_same_line {
-                    self.push_ctxt(tt.span.clone(), Context::WithAsLet { pos: tt.start });
+                    self.push_ctxt(tt.span, Context::WithAsLet { pos: tt.start });
                     self.last_real_end = tt.span.end;
                     return Step::Emit(TokenTup {
                         token: TokenContent::Virtual(Virtual::With),
@@ -1060,7 +1070,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 // Default else (FCS L2444-2459): push CtxtWithAsAugment
                 // anchored at the host's StartPos, then a SeqBlock
                 // (AddBlockEnd) for the body. Return raw WITH.
-                self.push_ctxt(tt.span.clone(), Context::WithAsAugment { pos: lim_pos });
+                self.push_ctxt(tt.span, Context::WithAsAugment { pos: lim_pos });
                 self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
                 return Step::Emit(tt);
             }
@@ -1073,8 +1083,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // pushes a `CtxtWithAsAugment` anchored at `with` itself and
         // tries (no fallback) to open a body SeqBlock; the raw WITH is
         // returned.
-        if let TokenContent::Real(Token::With) = &tt.token {
-            self.push_ctxt(tt.span.clone(), Context::WithAsAugment { pos: tt.start });
+        if let TokenContent::Real(TokenKind::With) = &tt.token {
+            self.push_ctxt(tt.span, Context::WithAsAugment { pos: tt.start });
             self.try_push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
             return Step::Emit(tt);
         }
@@ -1082,7 +1092,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     }
 
     /// FINALLY / WHEN / TRY context pushes.
-    pub(super) fn try_finally_when_pushes(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn try_finally_when_pushes(&mut self, tt: TokenTup) -> Step {
         // FINALLY + CtxtTry head → push SeqBlock(AddBlockEnd), pass
         // FINALLY through unchanged. (LexFilter.fs:2357) The try-body
         // SeqBlock has already been force-closed by the balance machinery
@@ -1090,7 +1100,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // expression scope; FCS uses `AddBlockEnd` (not OneSided) because
         // the finalizer is a full block expression terminated by an outer
         // offside-pop.
-        if let TokenContent::Real(Token::Finally) = &tt.token
+        if let TokenContent::Real(TokenKind::Finally) = &tt.token
             && matches!(self.head(), Some(Context::Try { .. }))
         {
             self.push_ctxt_seq_block(&tt, AddBlockEnd::Yes);
@@ -1104,11 +1114,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // block). For bare `| pat when guard -> body`, FCS doesn't push
         // a SeqBlock for the pattern, so this arm is dormant on simple
         // single-line clauses — but our diff tests must pin the rule.
-        if let TokenContent::Real(Token::When) = &tt.token
+        if let TokenContent::Real(TokenKind::When) = &tt.token
             && matches!(self.head(), Some(Context::SeqBlock { .. }))
         {
             let pos = tt.start;
-            self.push_ctxt(tt.span.clone(), Context::When { pos });
+            self.push_ctxt(tt.span, Context::When { pos });
             return Step::Emit(tt);
         }
 
@@ -1120,9 +1130,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // ORIGHT_BLOCK_END at the WITH/FINALLY, no opening OBLOCKBEGIN.
         // CtxtTry itself pops silently on offside (no virtual token —
         // `endTokenForACtxt` returns None for it).
-        if let TokenContent::Real(Token::Try) = &tt.token {
+        if let TokenContent::Real(TokenKind::Try) = &tt.token {
             let pos = tt.start;
-            self.push_ctxt(tt.span.clone(), Context::Try { pos });
+            self.push_ctxt(tt.span, Context::Try { pos });
             self.push_ctxt_seq_block(&tt, AddBlockEnd::OneSided);
             return Step::Emit(tt);
         }
@@ -1130,7 +1140,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     }
 
     /// STRUCT and INTERFACE (paren-form + member-form) pushes.
-    pub(super) fn struct_interface_pushes(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn struct_interface_pushes(&mut self, tt: TokenTup) -> Step {
         // STRUCT, GUARDED on `CtxtSeqBlock :: (CtxtModuleBody |
         // CtxtTypeDefns) :: _` (LexFilter.fs:2291-2302) so that the
         // typar constraint `<'a when 'a : struct>` does NOT push a
@@ -1139,7 +1149,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // NoAddBlockEnd. Must precede the generic TokenLExprParen
         // handler below so unguarded STRUCT (typar constraint) falls
         // through to that block's `_ => None` arm.
-        if let TokenContent::Real(Token::Struct) = &tt.token
+        if let TokenContent::Real(TokenKind::Struct) = &tt.token
             && matches!(
                 self.offside_stack.as_slice(),
                 [
@@ -1150,7 +1160,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             )
         {
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::Paren {
                     pos: tt.start,
                     opener: Opener::Struct,
@@ -1180,7 +1190,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // (limitPos = typePos = column 0); when INTERFACE is on its
         // own line, the body must indent strictly more than INTERFACE
         // itself.
-        if let TokenContent::Real(Token::Interface) = &tt.token
+        if let TokenContent::Real(TokenKind::Interface) = &tt.token
             && let [
                 ..,
                 Context::TypeDefns {
@@ -1200,18 +1210,18 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             let type_pos_col = type_pos.col;
             let push = if let Some(la) = self.peek_next_token_tup() {
                 match &la.token {
-                    TokenContent::Real(Token::End) => la.start.col >= type_pos_col,
+                    TokenContent::Real(TokenKind::End) => la.start.col >= type_pos_col,
                     TokenContent::Real(
-                        Token::Default
-                        | Token::Override
-                        | Token::Interface
-                        | Token::New
-                        | Token::Type
-                        | Token::Static
-                        | Token::Member
-                        | Token::Abstract
-                        | Token::Inherit
-                        | Token::LBrackLess,
+                        TokenKind::Default
+                        | TokenKind::Override
+                        | TokenKind::Interface
+                        | TokenKind::New
+                        | TokenKind::Type
+                        | TokenKind::Static
+                        | TokenKind::Member
+                        | TokenKind::Abstract
+                        | TokenKind::Inherit
+                        | TokenKind::LBrackLess,
                     ) => la.start.col > limit_col,
                     _ => false,
                 }
@@ -1220,7 +1230,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             };
             if push {
                 self.push_ctxt(
-                    tt.span.clone(),
+                    tt.span,
                     Context::Paren {
                         pos: tt.start,
                         opener: Opener::Interface,
@@ -1238,8 +1248,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // a class body or `type C with` augmentation). Push
         // CtxtInterfaceHead anchored at the keyword and rewrite the
         // token to OINTERFACE_MEMBER → `OffsideInterfaceMember`.
-        if let TokenContent::Real(Token::Interface) = &tt.token {
-            self.push_ctxt(tt.span.clone(), Context::InterfaceHead { pos: tt.start });
+        if let TokenContent::Real(TokenKind::Interface) = &tt.token {
+            self.push_ctxt(tt.span, Context::InterfaceHead { pos: tt.start });
             self.last_real_end = tt.span.end;
             return Step::Emit(TokenTup {
                 token: TokenContent::Virtual(Virtual::InterfaceMember),
@@ -1271,8 +1281,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// Excludes a `MatchClauses` head (FCS's `CtxtMatchClauses :: _` guard): an
     /// infix inside a `when` guard must not open a block for the arm body —
     /// `| _ when a &&⏎ b -> body` keeps `body` in the clause, not a fresh block.
-    pub(super) fn infix_rhs_pushes(&mut self, tt: TokenTup<'a>) -> Step<'a> {
-        if Self::token_is_infix(&tt.token)
+    pub(super) fn infix_rhs_pushes(&mut self, tt: TokenTup) -> Step {
+        if self.token_is_infix(&tt)
             && !matches!(self.head(), Some(Context::MatchClauses { .. }))
             && self.infix_rhs_on_next_line(&tt)
         {
@@ -1286,7 +1296,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// later source line — FCS's `not (isSameLine())` (LexFilter.fs:2332). A
     /// missing / exhausted lookahead counts as "not same line" so a dangling
     /// trailing operator (`a +` at end of input) still opens the recovery block.
-    fn infix_rhs_on_next_line(&mut self, tt: &TokenTup<'a>) -> bool {
+    fn infix_rhs_on_next_line(&mut self, tt: &TokenTup) -> bool {
         match self.peek_next_token_tup() {
             Some(next) => next.start.line != tt.start.line,
             None => true,

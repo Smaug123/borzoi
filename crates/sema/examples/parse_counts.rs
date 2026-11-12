@@ -180,10 +180,9 @@ fn main() {
     });
     let tokens = lexed.iter().map(|l| l.tokens.len()).sum::<usize>();
     phase("lex-filter", reps, bytes, || {
-        files
+        lexed
             .iter()
-            .zip(&lexed)
-            .map(|(s, lexed)| filter_collect(s, lang, lexed.tokens.active()))
+            .map(|lexed| filter_collect(&lexed.tokens, lang))
             .collect::<Vec<_>>()
     });
     drop(lexed);

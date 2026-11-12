@@ -4,15 +4,11 @@ use super::{
     AddBlockEnd, Context, Filter, ModuleHeadPrev, NamespacePrev, PushStrictness, Step,
     TokenContent, TokenTup, Virtual,
 };
-use crate::lexer::{LexError, Span, Token};
+use crate::lexer::TokenKind;
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
+impl<'a> Filter<'a> {
     /// CtxtNamespaceHead / CtxtModuleHead dotted-ident transitions.
-    pub(super) fn head_transitions(
-        &mut self,
-        tt: TokenTup<'a>,
-        use_block_rule: &mut bool,
-    ) -> Step<'a> {
+    pub(super) fn head_transitions(&mut self, tt: TokenTup, use_block_rule: &mut bool) -> Step {
         // CtxtNamespaceHead transition (LexFilter.fs:1726). While the
         // dotted-ident continues — and the continuation token sits to
         // the right of `namespace`'s column — accept it and update the
@@ -30,23 +26,23 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             let is_kw_class = matches!(
                 &tt.token,
                 TokenContent::Real(
-                    Token::Rec | Token::Global | Token::Ident(_) | Token::QuotedIdent(_)
+                    TokenKind::Rec | TokenKind::Global | TokenKind::Ident | TokenKind::QuotedIdent
                 )
             );
-            let is_dot = matches!(&tt.token, TokenContent::Real(Token::Dot));
+            let is_dot = matches!(&tt.token, TokenContent::Real(TokenKind::Dot));
             let head_col_lt = head_pos.col < tt.start.col;
             let accept_kw = prev == NamespacePrev::Keyword && is_kw_class && head_col_lt;
             let accept_dot = prev == NamespacePrev::Ident && is_dot && head_col_lt;
             if accept_kw || accept_dot {
                 let new_prev = match &tt.token {
-                    TokenContent::Real(Token::Ident(_) | Token::QuotedIdent(_)) => {
+                    TokenContent::Real(TokenKind::Ident | TokenKind::QuotedIdent) => {
                         NamespacePrev::Ident
                     }
                     _ => NamespacePrev::Keyword,
                 };
                 self.pop_ctxt();
                 self.push_ctxt(
-                    tt.span.clone(),
+                    tt.span,
                     Context::NamespaceHead {
                         pos: head_pos,
                         prev: new_prev,
@@ -56,12 +52,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             }
             // Transition out — fall through to body+SeqBlock.
             self.pop_ctxt();
-            let fallback = tt.clone();
+            let fallback = tt;
             self.delay_token(tt);
-            self.push_ctxt(
-                fallback.span.clone(),
-                Context::NamespaceBody { pos: head_pos },
-            );
+            self.push_ctxt(fallback.span, Context::NamespaceBody { pos: head_pos });
             self.push_ctxt_seq_block_at(
                 PushStrictness::AlwaysLenient,
                 false,
@@ -92,8 +85,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         }) = self.head().cloned()
         {
             let head_col_lt = head_pos.col < tt.start.col;
-            let is_eq_or_colon =
-                matches!(&tt.token, TokenContent::Real(Token::Equals | Token::Colon));
+            let is_eq_or_colon = matches!(
+                &tt.token,
+                TokenContent::Real(TokenKind::Equals | TokenKind::Colon)
+            );
 
             // Inside `[<...>]` attributes: GREATER_RBRACK at col > head
             // closes the attrs block; any other token at col > head —
@@ -109,10 +104,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // those faux tokens — we just drop the closer, matching the
             // existing CtxtParen-balancing swallow at the catch-all.
             if attrs && head_col_lt {
-                if matches!(&tt.token, TokenContent::Real(Token::GreaterRBrack)) {
+                if matches!(&tt.token, TokenContent::Real(TokenKind::GreaterRBrack)) {
                     self.pop_ctxt();
                     self.push_ctxt(
-                        tt.span.clone(),
+                        tt.span,
                         Context::ModuleHead {
                             pos: head_pos,
                             prev,
@@ -122,7 +117,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                     );
                     return Step::Emit(tt);
                 }
-                if matches!(&tt.token, TokenContent::Real(Token::RParen | Token::RBrace)) {
+                if matches!(
+                    &tt.token,
+                    TokenContent::Real(TokenKind::RParen | TokenKind::RBrace)
+                ) {
                     self.last_real_end = tt.span.end;
                     return Step::Restart;
                 }
@@ -134,7 +132,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             if is_eq_or_colon {
                 self.pop_ctxt();
                 self.push_ctxt(
-                    tt.span.clone(),
+                    tt.span,
                     Context::ModuleBody {
                         pos: head_pos,
                         whole_file: false,
@@ -151,7 +149,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 && head_col_lt
                 && matches!(
                     &tt.token,
-                    TokenContent::Real(Token::Public | Token::Private | Token::Internal)
+                    TokenContent::Real(
+                        TokenKind::Public | TokenKind::Private | TokenKind::Internal
+                    )
                 )
             {
                 return Step::Emit(tt);
@@ -161,11 +161,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // the LBRACK_LESS. Only allowed when prev=Module.
             if prev == ModuleHeadPrev::Module
                 && head_col_lt
-                && matches!(&tt.token, TokenContent::Real(Token::LBrackLess))
+                && matches!(&tt.token, TokenContent::Real(TokenKind::LBrackLess))
             {
                 self.pop_ctxt();
                 self.push_ctxt(
-                    tt.span.clone(),
+                    tt.span,
                     Context::ModuleHead {
                         pos: head_pos,
                         prev,
@@ -181,22 +181,24 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             //   (MODULE | REC | DOT), (REC | IDENT _)   → prev := token
             //   IDENT _, DOT                            → prev := DOT
             let accept_global = prev == ModuleHeadPrev::Module
-                && matches!(&tt.token, TokenContent::Real(Token::Global))
+                && matches!(&tt.token, TokenContent::Real(TokenKind::Global))
                 && head_col_lt;
             let accept_rec_or_ident =
                 matches!(prev, ModuleHeadPrev::Module | ModuleHeadPrev::RecOrDot)
                     && matches!(
                         &tt.token,
-                        TokenContent::Real(Token::Rec | Token::Ident(_) | Token::QuotedIdent(_))
+                        TokenContent::Real(
+                            TokenKind::Rec | TokenKind::Ident | TokenKind::QuotedIdent
+                        )
                     )
                     && head_col_lt;
             let accept_dot = prev == ModuleHeadPrev::Ident
-                && matches!(&tt.token, TokenContent::Real(Token::Dot))
+                && matches!(&tt.token, TokenContent::Real(TokenKind::Dot))
                 && head_col_lt;
             if accept_global || accept_rec_or_ident || accept_dot {
                 let new_prev = match &tt.token {
-                    TokenContent::Real(Token::Global) => ModuleHeadPrev::Global,
-                    TokenContent::Real(Token::Ident(_) | Token::QuotedIdent(_)) => {
+                    TokenContent::Real(TokenKind::Global) => ModuleHeadPrev::Global,
+                    TokenContent::Real(TokenKind::Ident | TokenKind::QuotedIdent) => {
                         ModuleHeadPrev::Ident
                     }
                     // Rec / Dot collapse to the same accept state.
@@ -204,7 +206,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 };
                 self.pop_ctxt();
                 self.push_ctxt(
-                    tt.span.clone(),
+                    tt.span,
                     Context::ModuleHead {
                         pos: head_pos,
                         prev: new_prev,
@@ -223,10 +225,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             let rest_is_top_seq =
                 matches!(self.offside_stack.as_slice(), [Context::SeqBlock { .. }]);
             if rest_is_top_seq {
-                let fallback = tt.clone();
+                let fallback = tt;
                 self.delay_token(tt);
                 self.push_ctxt(
-                    fallback.span.clone(),
+                    fallback.span,
                     Context::ModuleBody {
                         pos: head_pos,
                         whole_file: true,
