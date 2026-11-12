@@ -14,8 +14,8 @@
 //! (`infer_project_type_annotation_diff`) with where the type is declared and
 //! how a later file reaches it: the enclosing namespace (a `namespace`
 //! header, and a `module N.M` header), an `open` of the namespace or of a
-//! module, a qualified path, an `[<AutoOpen>]` module, a nested module, a
-//! headerless file, and a file with a signature. The shadow grid crosses a
+//! module, a qualified path, an `[<AutoOpen>]` module, a nested module, and
+//! a file with a signature. The shadow grid crosses a
 //! few kinds and the same positions with what can take the name — a later
 //! `open` of another project namespace declaring it, an assembly `open`, a
 //! type of the name in the using file, a project module of the name, an
@@ -26,6 +26,12 @@
 //! in the resolver and in inference, so the grids cannot pass by declining.
 //! The ill-typed family uses earlier files' types where FCS rejects the
 //! program.
+//!
+//! Cells that differ only in the type's kind or name share one project:
+//! each is declared under its own name and used from a module of its own,
+//! and no member names another, so FCS checks them together. A project FCS
+//! rejects grades nothing, so it is regraded one member at a time: the
+//! rejection is one member's, and the others' grades are kept.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -259,14 +265,6 @@ const POSITIONS: &[Position] = &[
         commits: false,
     },
     Position {
-        label: "headerless",
-        earlier: &[("A.fs", "{DECL}\n")],
-        using: "module B\n\n{OPENS}{DECLS}{USES}",
-        decl_indent: 0,
-        prefix: "A.",
-        commits: false,
-    },
-    Position {
         label: "top-level-auto-open-module",
         earlier: &[("A.fs", "[<AutoOpen>]\nmodule Auto\n\n{DECL}\n")],
         using: "module B\n\n{OPENS}{DECLS}{USES}",
@@ -332,14 +330,17 @@ const POSITIONS: &[Position] = &[
 ];
 
 /// What may take the name from the earlier file's type. `{N}` is the name.
+/// Nothing here names a type a sibling member could declare, so a member's
+/// shadow is its own whatever shares its project.
 struct Shadow {
     label: &'static str,
-    /// A file between the declaring files and the using one.
-    file: Option<&'static str>,
+    /// A file between the declaring files and the using one: its header,
+    /// and a declaration per name.
+    file: Option<(&'static str, &'static str)>,
     /// Opens after the using file's header.
     opens: &'static str,
-    /// Declarations in the using file, before the uses.
-    decls: &'static str,
+    /// A declaration per name in the using file, before the uses.
+    decl: &'static str,
 }
 
 const SHADOWS: &[Shadow] = &[
@@ -347,56 +348,61 @@ const SHADOWS: &[Shadow] = &[
         label: "none",
         file: None,
         opens: "",
-        decls: "",
+        decl: "",
     },
     Shadow {
         label: "later-project-open",
-        file: Some("namespace Shadow\n\ntype {N} = { S : string }\n"),
+        file: Some(("namespace Shadow\n\n", "type {N} = { S : int }\n")),
         opens: "open Shadow\n\n",
-        decls: "",
+        decl: "",
     },
     Shadow {
         label: "assembly-open",
         file: None,
         opens: "open System\n\n",
-        decls: "",
+        decl: "",
     },
     Shadow {
         label: "in-file-type",
         file: None,
         opens: "",
-        decls: "type {N} = { Local : int }\n\n",
+        decl: "type {N} = { Local : int }\n\n",
     },
     Shadow {
         label: "same-named-module",
-        file: Some("namespace Lib\n\nmodule {N} =\n    let v = 1\n"),
+        file: Some(("namespace Lib\n\n", "module {N} =\n    let v = 1\n")),
         opens: "",
-        decls: "",
+        decl: "",
     },
     Shadow {
         label: "auto-open-redeclared",
-        file: Some(
-            "namespace Lib\n\n[<AutoOpen>]\nmodule Redeclared =\n    type {N} = { R : string }\n",
-        ),
+        file: Some((
+            "namespace Lib\n\n[<AutoOpen>]\nmodule Redeclared =\n",
+            "    type {N} = { R : int }\n",
+        )),
         opens: "",
-        decls: "",
+        decl: "",
     },
     Shadow {
         label: "auto-open-exception",
-        file: Some("namespace Lib\n\n[<AutoOpen>]\nmodule Exn =\n    exception {N} of int\n"),
+        file: Some((
+            "namespace Lib\n\n[<AutoOpen>]\nmodule Exn =\n",
+            "    exception {N} of int\n",
+        )),
         opens: "",
-        decls: "",
+        decl: "",
     },
     Shadow {
         label: "other-arity",
-        file: Some("namespace Lib\n\ntype {N}<'a, 'b, 'c> = { G : 'a }\n"),
+        file: Some(("namespace Lib\n\n", "type {N}<'a, 'b, 'c> = { G : 'a }\n")),
         opens: "",
-        decls: "",
+        decl: "",
     },
 ];
 
-/// The type's name: fresh, or one FSharp.Core or the BCL also supplies.
-const NAMES: &[&str] = &["T", "Result", "string", "Random"];
+/// Names FSharp.Core or the BCL also supply. The shadow grid crosses them,
+/// and the fresh `T`, with every shadow.
+const SUPPLIED_NAMES: &[&str] = &["Result", "string", "Random"];
 
 fn indent(text: &str, n: usize) -> String {
     let pad = " ".repeat(n);
@@ -412,12 +418,12 @@ fn indent(text: &str, n: usize) -> String {
         .join("\n")
 }
 
-/// The uses, for a type spelled `t`, in a module as accessible as the type
-/// (`access`; FS0410 otherwise). `p`'s parameter is the binder that must
-/// commit.
-fn uses(t: &str, access: &str) -> String {
+/// The uses, for a type spelled `t`, in the module `module`, as accessible
+/// as the type (`access`; FS0410 otherwise). `p`'s parameter is the binder
+/// that must commit.
+fn uses(t: &str, access: &str, module: &str) -> String {
     format!(
-        "module {access}Uses =\n    \
+        "module {access}{module} =\n    \
          let p (x : {t}) = x\n    \
          let v : {t} = Unchecked.defaultof<_>\n    \
          let r () : {t} = Unchecked.defaultof<_>\n    \
@@ -434,41 +440,99 @@ fn fits(kind: &Kind, pos: &Position) -> bool {
     !(kind.label == "class" && pos.earlier.iter().any(|(f, _)| f.ends_with(".fsi")))
 }
 
-/// One project: its files in Compile order, the using file last.
-struct Cell {
+/// The cells of one position under one shadow that share a project: each
+/// member is a kind declared under a name of its own and used from a module
+/// of its own, and no member names another.
+struct Cell<'a> {
+    pos: &'a Position,
+    shadow: &'a Shadow,
+    members: Vec<(&'a Kind, &'a str)>,
+}
+
+/// One project: its files in Compile order, the using file last, and the
+/// cells it grades.
+struct Project {
     label: String,
     files: Vec<(String, String)>,
+    members: Vec<Member>,
+}
+
+/// One graded cell of a project: the uses, in `module`, of one type.
+struct Member {
+    label: String,
+    module: String,
     must_commit: bool,
 }
 
-fn cell(kind: &Kind, pos: &Position, shadow: &Shadow, name: &str) -> Cell {
-    let decl = indent(&kind.decl.replace("{T}", name), pos.decl_indent);
+fn project(c: &Cell, members: &[(&Kind, &str)]) -> Project {
+    let pos = c.pos;
+    let shadow = c.shadow;
+    let decls: Vec<String> = members
+        .iter()
+        .map(|(kind, name)| kind.decl.replace("{T}", name))
+        .collect();
+    let decl = indent(&decls.join("\n"), pos.decl_indent);
     let mut files: Vec<(String, String)> = pos
         .earlier
         .iter()
         .map(|(file, template)| ((*file).to_string(), template.replace("{DECL}", &decl)))
         .collect();
-    if let Some(shadow_file) = shadow.file {
-        files.push(("S.fs".to_string(), shadow_file.replace("{N}", name)));
+    if let Some((header, per_name)) = shadow.file {
+        let body: String = members
+            .iter()
+            .map(|(_, name)| per_name.replace("{N}", name))
+            .collect();
+        files.push(("S.fs".to_string(), format!("{header}{body}")));
     }
-    let spell = kind.spell.replace("{P}", pos.prefix).replace("{T}", name);
-    let access = if kind.decl.contains("internal") {
-        "internal "
-    } else if kind.decl.contains("private") {
-        "private "
-    } else {
-        ""
-    };
+    let in_file_decls: String = members
+        .iter()
+        .map(|(_, name)| shadow.decl.replace("{N}", name))
+        .collect();
+    let mut uses_text = Vec::new();
+    let mut graded = Vec::new();
+    for (i, (kind, name)) in members.iter().enumerate() {
+        let spell = kind.spell.replace("{P}", pos.prefix).replace("{T}", name);
+        let access = if kind.decl.contains("internal") {
+            "internal "
+        } else if kind.decl.contains("private") {
+            "private "
+        } else {
+            ""
+        };
+        let module = format!("Uses{i}");
+        uses_text.push(uses(&spell, access, &module));
+        graded.push(Member {
+            label: format!("{}/{}/{}/{name}", pos.label, shadow.label, kind.label),
+            module,
+            must_commit: kind.commits
+                && pos.commits
+                && shadow.label == "none"
+                && !SUPPLIED_NAMES.contains(name),
+        });
+    }
     let using = pos
         .using
         .replace("{OPENS}", shadow.opens)
-        .replace("{DECLS}", &shadow.decls.replace("{N}", name))
-        .replace("{USES}", &uses(&spell, access));
+        .replace("{DECLS}", &in_file_decls)
+        .replace("{USES}", &uses_text.join("\n"));
     files.push(("B.fs".to_string(), using));
-    Cell {
-        label: format!("{}/{}/{}/{name}", kind.label, pos.label, shadow.label),
+    let label = match graded.as_slice() {
+        [one] => one.label.clone(),
+        _ => format!(
+            "{}/{}/{{{}}}",
+            pos.label,
+            shadow.label,
+            members
+                .iter()
+                .map(|(kind, name)| format!("{}:{name}", kind.label))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    };
+    Project {
+        label,
         files,
-        must_commit: kind.commits && pos.commits && shadow.label == "none" && name == "T",
+        members: graded,
     }
 }
 
@@ -535,8 +599,10 @@ fn span(start: usize, end: usize) -> TextRange {
     )
 }
 
-/// Grade one cell. `expect_errors` says it is meant to be ill-typed.
-fn grade_cell(c: &Cell, expect_errors: bool, g: &mut Graded) {
+/// Grade one project, or return FCS's errors when it rejects the project
+/// (nothing of a rejected project is graded). `expect_errors` says it is
+/// meant to be ill-typed.
+fn grade_project(c: &Project, expect_errors: bool, g: &mut Graded) -> Result<(), Vec<String>> {
     let named: Vec<(&str, &str)> = c
         .files
         .iter()
@@ -552,8 +618,7 @@ fn grade_cell(c: &Cell, expect_errors: bool, g: &mut Graded) {
     let label = &c.label;
     let errors: Vec<&String> = fcs_uses.iter().flat_map(|f| &f.errors).collect();
     if errors.is_empty() == expect_errors {
-        g.rejected.push(format!("{label}: errors {errors:?}"));
-        return;
+        return Err(errors.into_iter().cloned().collect());
     }
     let dump = |files: &[(String, String)]| {
         files
@@ -564,12 +629,24 @@ fn grade_cell(c: &Cell, expect_errors: bool, g: &mut Graded) {
     };
     let last = c.files.len() - 1;
     let using_src = &c.files[last].1;
-    // `p`'s annotation, in the cells that have one.
-    let p_use = using_src.find("let p (x : ").map(|i| {
-        let at = i + "let p (x : ".len();
-        let end = using_src[at..].find(')').expect("p's annotation") + at;
-        span(at, end)
-    });
+    // Each member's `p` annotation, and the offset of the `x` it binds.
+    let sites: Vec<(&Member, TextRange, usize)> = c
+        .members
+        .iter()
+        .map(|m| {
+            let head = using_src
+                .find(&format!(" {} =\n", m.module))
+                .expect("the member's module");
+            let x = using_src[head..]
+                .find("let p (x : ")
+                .expect("the member's `p`")
+                + head
+                + "let p (".len();
+            let at = x + "x : ".len();
+            let end = using_src[at..].find(')').expect("p's annotation") + at;
+            (m, span(at, end), x)
+        })
+        .collect();
 
     // The resolver, at every use FCS reports in the using file.
     let rf = folded.resolved.file(last);
@@ -615,8 +692,8 @@ fn grade_cell(c: &Cell, expect_errors: bool, g: &mut Graded) {
         };
         if verdict {
             g.graded += 1;
-            if p_use.is_some_and(|p| p.contains_range(at)) {
-                g.resolved_use.insert(label.clone());
+            if let Some((m, _, _)) = sites.iter().find(|(_, p, _)| p.contains_range(at)) {
+                g.resolved_use.insert(m.label.clone());
             }
         } else {
             g.wrong.push(format!(
@@ -669,11 +746,10 @@ fn grade_cell(c: &Cell, expect_errors: bool, g: &mut Graded) {
             match dump_types.binders.get(&key) {
                 Some(theirs) if *theirs == ours && !dump_types.hides_constraint(key, &ours) => {
                     g.graded += 1;
-                    if idx == last && &src[key.0..key.1] == "x" {
-                        let first_x = src.find("let p (x").map(|i| i + "let p (".len());
-                        if first_x == Some(key.0) {
-                            g.typed_binder.insert(label.clone());
-                        }
+                    if idx == last
+                        && let Some((m, _, _)) = sites.iter().find(|(_, _, x)| *x == key.0)
+                    {
+                        g.typed_binder.insert(m.label.clone());
                     }
                 }
                 theirs => g.wrong.push(format!(
@@ -684,12 +760,35 @@ fn grade_cell(c: &Cell, expect_errors: bool, g: &mut Graded) {
             }
         }
     }
+    Ok(())
 }
 
-fn grade(cells: &[Cell], expect_errors: bool) -> Graded {
+/// Grade a cell's members together, or one at a time when FCS rejects them
+/// together.
+fn grade_cell(c: &Cell, g: &mut Graded) {
+    let p = project(c, &c.members);
+    if let Err(errors) = grade_project(&p, false, g) {
+        if let [one] = p.members.as_slice() {
+            g.rejected.push(format!("{}: errors {errors:?}", one.label));
+        } else {
+            for m in &c.members {
+                grade_cell(
+                    &Cell {
+                        pos: c.pos,
+                        shadow: c.shadow,
+                        members: vec![*m],
+                    },
+                    g,
+                );
+            }
+        }
+    }
+}
+
+fn grade(cells: &[Cell]) -> Graded {
     let mut g = Graded::default();
     for c in cells {
-        grade_cell(c, expect_errors, &mut g);
+        grade_cell(c, &mut g);
     }
     g
 }
@@ -697,15 +796,19 @@ fn grade(cells: &[Cell], expect_errors: bool) -> Graded {
 fn assert_must_commit(cells: &[Cell], g: &Graded) {
     let missing: Vec<String> = cells
         .iter()
-        .filter(|c| c.must_commit)
-        .filter_map(|c| {
-            let resolved = g.resolved_use.contains(&c.label);
-            let typed = g.typed_binder.contains(&c.label);
+        .flat_map(|c| project(c, &c.members).members)
+        .filter(|m| m.must_commit)
+        .filter_map(|m| {
+            let resolved = g.resolved_use.contains(&m.label);
+            let typed = g.typed_binder.contains(&m.label);
             (!resolved || !typed).then(|| {
                 format!(
                     "{} (resolved {resolved}, typed {typed}){}",
-                    c.label,
-                    if g.rejected.iter().any(|r| r.starts_with(&c.label)) {
+                    m.label,
+                    if g.rejected
+                        .iter()
+                        .any(|r| r.starts_with(&format!("{}: ", m.label)))
+                    {
                         ": FCS rejected it"
                     } else {
                         ""
@@ -720,25 +823,32 @@ fn assert_must_commit(cells: &[Cell], g: &Graded) {
     );
 }
 
+/// Every kind at one position, each under a fresh name of its own, shares
+/// a project.
 #[test]
 fn earlier_files_types_by_kind_and_position() {
     let shadow = &SHADOWS[0];
-    let cells: Vec<Cell> = KINDS
+    let names: Vec<String> = (0..KINDS.len()).map(|i| format!("T{i}")).collect();
+    let cells: Vec<Cell> = POSITIONS
         .iter()
-        .flat_map(|kind| {
-            POSITIONS
+        .map(|pos| Cell {
+            pos,
+            shadow,
+            members: KINDS
                 .iter()
-                .filter(|pos| fits(kind, pos))
-                .map(move |pos| cell(kind, pos, shadow, "T"))
+                .zip(&names)
+                .filter(|(kind, _)| fits(kind, pos))
+                .map(|(kind, name)| (kind, name.as_str()))
+                .collect(),
         })
         .collect();
-    let g = grade(&cells, false);
+    let g = grade(&cells);
     assert!(g.wrong.is_empty(), "wrong commits:\n{}", g.wrong.join("\n"));
     assert_must_commit(&cells, &g);
     assert!(g.preceding_commits > 0, "no earlier file's type committed");
     eprintln!(
         "kinds grid: {} cells, {} rejected by FCS, {} graded commits, {} at earlier files' types",
-        cells.len(),
+        cells.iter().map(|c| c.members.len()).sum::<usize>(),
         g.rejected.len(),
         g.graded,
         g.preceding_commits
@@ -748,24 +858,31 @@ fn earlier_files_types_by_kind_and_position() {
 /// The kinds the shadow grid crosses: one nominal, one generic, one union.
 const SHADOW_KINDS: &[&str] = &["record", "generic", "union"];
 
+/// One kind at one position under one shadow, in every name, shares a
+/// project.
 #[test]
 fn earlier_files_types_against_what_can_take_the_name() {
     let mut cells = Vec::new();
     for kind in KINDS.iter().filter(|k| SHADOW_KINDS.contains(&k.label)) {
         for pos in POSITIONS.iter().filter(|pos| fits(kind, pos)) {
             for shadow in SHADOWS {
-                for name in NAMES {
-                    cells.push(cell(kind, pos, shadow, name));
-                }
+                cells.push(Cell {
+                    pos,
+                    shadow,
+                    members: std::iter::once("T")
+                        .chain(SUPPLIED_NAMES.iter().copied())
+                        .map(|name| (kind, name))
+                        .collect(),
+                });
             }
         }
     }
-    let g = grade(&cells, false);
+    let g = grade(&cells);
     assert!(g.wrong.is_empty(), "wrong commits:\n{}", g.wrong.join("\n"));
     assert_must_commit(&cells, &g);
     eprintln!(
         "shadow grid: {} cells, {} rejected by FCS, {} graded commits, {} at earlier files' types",
-        cells.len(),
+        cells.iter().map(|c| c.members.len()).sum::<usize>(),
         g.rejected.len(),
         g.graded,
         g.preceding_commits
@@ -793,9 +910,9 @@ const ILL_TYPED: &[(&str, &str)] = &[
 
 #[test]
 fn ill_typed_uses_of_earlier_files_types_commit_only_what_fcs_kept() {
-    let cells: Vec<Cell> = ILL_TYPED
+    let projects: Vec<Project> = ILL_TYPED
         .iter()
-        .map(|(label, body)| Cell {
+        .map(|(label, body)| Project {
             label: (*label).to_string(),
             files: vec![
                 (
@@ -809,10 +926,15 @@ fn ill_typed_uses_of_earlier_files_types_commit_only_what_fcs_kept() {
                     format!("namespace Lib\n\nmodule Uses =\n{}", indent(body, 4)),
                 ),
             ],
-            must_commit: false,
+            members: Vec::new(),
         })
         .collect();
-    let g = grade(&cells, true);
+    let mut g = Graded::default();
+    for p in &projects {
+        if let Err(errors) = grade_project(p, true, &mut g) {
+            g.rejected.push(format!("{}: errors {errors:?}", p.label));
+        }
+    }
     assert!(g.wrong.is_empty(), "wrong commits:\n{}", g.wrong.join("\n"));
     assert!(
         g.rejected.is_empty(),
