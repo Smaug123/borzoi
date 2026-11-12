@@ -2389,12 +2389,32 @@ impl<'r> State<'r> {
         {
             self.lookup.insert_computed("VisualStudioVersion", value);
         }
+        // The overridable names below take a write from any source, so an
+        // empty slot is the toolset's only if nothing that could have written
+        // it is out of sight. Content the walk could not see (an import it
+        // could not follow, or one whose gate it could not decide) may have
+        // written any of them before this SDK resolved, and a hidden write
+        // leaves no trust record. So under opacity none is seeded, and reads
+        // decline as any undefined read behind opacity does. The reserved
+        // seeds above stand regardless: MSBuild refuses a write to them
+        // (MSB4004), hidden or not.
+        if self.walk_opaque.is_some() {
+            return;
+        }
         let overridable = [
             ("MSBuildExtensionsPath32", dir.clone()),
             ("MSBuildSDKsPath", format!("{dir}/Sdks")),
         ];
         for (name, value) in overridable {
-            if self.lookup.get(name).is_none() {
+            // A name in the environment snapshot that promotion dropped
+            // (spellings that disagree) has *some* value in the real build:
+            // both toolsets probed honour the environment for these two (see
+            // `toolset_honours_env_extensions_path`), so it is one of the
+            // environment's values, not the toolset's path. The slot stays
+            // empty and reads decline.
+            if self.lookup.get(name).is_none()
+                && !self.env_property_names.contains(&name.to_ascii_lowercase())
+            {
                 // Same provenance as the reserved seeds above: our own paths.
                 self.lookup.insert_computed(name, value);
             }

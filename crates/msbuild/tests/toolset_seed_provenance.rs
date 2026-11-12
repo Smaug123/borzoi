@@ -16,7 +16,9 @@
 //!   provenance is **left alone**. Real MSBuild honours a project write here,
 //!   so a write the walker *refused* may really have set the property in the
 //!   real build. The seed is then a fallback rather than the answer, and the
-//!   mark saying so is correct.
+//!   mark saying so is correct. A write the walker never *saw* (behind an
+//!   import it could not follow or decide) leaves no mark at all, so there the
+//!   seed is withheld outright.
 //!
 //! Ground truth (dotnet 10.0.301, probed 2026-08-02, plain `<Project>` writing
 //! each name and reading it back with `-getProperty`):
@@ -45,6 +47,12 @@ fn parse_with_real_sdk(body: &str) -> ParsedProject {
     let tmp = TempDir::new().unwrap();
     let project_path = tmp.path().join("Demo.fsproj");
     std::fs::write(&project_path, body).expect("write project");
+    parse_at_with_real_sdk(body, &project_path)
+}
+
+/// [`parse_with_real_sdk`] for a project already written at `project_path`,
+/// beside whatever files it imports.
+fn parse_at_with_real_sdk(body: &str, project_path: &std::path::Path) -> ParsedProject {
     let dotnet_root = common::dotnet_root_from_env();
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
     let resolver = |name: &str| {
@@ -63,7 +71,7 @@ fn parse_with_real_sdk(body: &str) -> ParsedProject {
     };
     parse_fsproj_with_imports(
         body,
-        &project_path,
+        project_path,
         &HashMap::new(),
         &common::oracle_environment(),
         Some(&resolver as &borzoi_msbuild::SdkResolver<'_>),
@@ -124,4 +132,62 @@ fn a_reserved_toolset_seed_discards_a_refused_writes_uncertainty() {
          it says nothing about the real build's value and must not taint the \
          toolset seed",
     );
+}
+
+/// The other way a slot can be taken before the first SDK resolves: an import
+/// whose gate the walker cannot decide, so the write inside it is one the walk
+/// never saw and left no mark for. Real MSBuild decides the gate, performs the
+/// write and keeps it, so an overridable seed there is a wrong commit unless
+/// it is withheld.
+///
+/// Graded against MSBuild, and the fixture's own claim (that the real build
+/// reads the hidden value) is pinned too, so a gate MSBuild happened to
+/// decide false cannot make the case pass vacuously.
+///
+/// `MSBuildExtensionsPath` is left out here: steering it at a decoy breaks the
+/// real `Sdk.props` import, so MSBuild rejects the document and grades
+/// nothing. `nuget_props_chain.rs` covers it against a decoy toolset tree.
+#[test]
+fn an_overridable_toolset_seed_is_withheld_behind_an_undecided_import() {
+    let mut oracle = common::Oracle::spawn();
+    for name in ["MSBuildSDKsPath", "MSBuildExtensionsPath32"] {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("hidden.props"),
+            format!("<Project><PropertyGroup><{name}>/SPOOFED</{name}></PropertyGroup></Project>"),
+        )
+        .expect("write hidden import");
+        let project_path = tmp.path().join("Demo.fsproj");
+        let body = format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <Import Project="hidden.props" Condition="'$(X.Substring(0,1))' == 'a'" />
+  <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.props" />
+  <PropertyGroup>
+    <Probe>$({name})</Probe>
+  </PropertyGroup>
+  <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.targets" />
+</Project>"#
+        );
+        std::fs::write(&project_path, &body).expect("write project");
+        let parsed = parse_at_with_real_sdk(&body, &project_path);
+        let theirs = oracle
+            .project(&body, &["Probe".to_string()], Some(&project_path), &[])
+            .unwrap_or_else(|| panic!("{name}: MSBuild rejects the fixture"));
+        assert_eq!(
+            theirs.get("Probe").map(String::as_str),
+            Some("/SPOOFED"),
+            "{name}: the fixture rests on the real build performing the hidden write",
+        );
+        let ours = parsed.properties.get("Probe");
+        assert!(
+            parsed.property_provenance_untrusted("Probe") || ours == theirs.get("Probe"),
+            "certain-implies-exact violated for {name}: we committed {ours:?}, \
+             MSBuild reads {:?}",
+            theirs.get("Probe"),
+        );
+    }
 }

@@ -864,3 +864,147 @@ fn body_reached_nested_sdk_honours_directory_build_props_cpm_gate() {
     assert_eq!(result.package_references[0].version, None);
     assert!(has_directory_packages_props_cause(&result));
 }
+
+/// The overridable toolset names: MSBuild defines each before evaluation
+/// starts, and the environment, a caller global or a project write displaces
+/// it (probed — see `State::seed_toolset_properties`). So the walker's seed is
+/// the real build's value only when nothing that could have displaced it is
+/// in play.
+const OVERRIDABLE_TOOLSET_NAMES: [&str; 3] = [
+    "MSBuildExtensionsPath",
+    "MSBuildExtensionsPath32",
+    "MSBuildSDKsPath",
+];
+
+/// `Probe`, the body's copy of `$(name)` taken after the SDK resolved, when
+/// the walk committed it.
+fn committed_probe(result: &ParsedProject) -> Option<&str> {
+    let value = result.properties.get("Probe")?;
+    (!result.property_provenance_untrusted("Probe")).then_some(value.as_str())
+}
+
+fn toolset_probe(name: &str) -> String {
+    format!("<PropertyGroup><Probe>$({name})</Probe></PropertyGroup>")
+}
+
+/// The positive control for the two cases below: with nothing in play that
+/// could displace it, every overridable seed commits, so a decline there is
+/// a refusal the fix bought rather than an exactness it kept.
+#[test]
+fn an_undisplaced_overridable_toolset_seed_commits() {
+    for name in OVERRIDABLE_TOOLSET_NAMES {
+        let tmp = TempDir::new().unwrap();
+        let sdk = write_canonical_sdk_at(tmp.path(), "10.0.301");
+        let project_path = write_at(
+            tmp.path(),
+            "repo/Demo.fsproj",
+            &format!(
+                r#"<Project>
+  <Import Sdk="Fake.Sdk" Project="Sdk.props" />
+  {}
+</Project>"#,
+                toolset_probe(name)
+            ),
+        );
+        let result = parse_file_with_sdk_resolution(&project_path, canonical_sdk_resolver(sdk));
+        assert!(
+            committed_probe(&result).is_some(),
+            "{name}: {:?}",
+            result.diagnostics
+        );
+    }
+}
+
+/// An import whose gate the walk cannot decide may have written the name
+/// before the first SDK resolved. MSBuild decides the gate (`'a' == 'a'`) and
+/// performs the write, so the real build reads the hidden value; the hidden
+/// write leaves no trust record, so only the walk's opacity says the slot may
+/// be taken, and the seed must not fill it.
+#[test]
+fn an_undecided_import_before_the_sdk_withholds_the_overridable_seeds() {
+    for name in OVERRIDABLE_TOOLSET_NAMES {
+        let tmp = TempDir::new().unwrap();
+        let sdk = write_canonical_sdk_at(tmp.path(), "10.0.301");
+        // For `MSBuildExtensionsPath` a decoy toolset tree, so the real
+        // build's `Sdk.props` import resolves — to a different file.
+        let decoy = write_decoy_extensions_path(tmp.path());
+        write_at(
+            tmp.path(),
+            "repo/hidden.props",
+            &format!(
+                "<Project><PropertyGroup><{name}>{}/</{name}></PropertyGroup></Project>",
+                decoy.display()
+            ),
+        );
+        let project_path = write_at(
+            tmp.path(),
+            "repo/Demo.fsproj",
+            &format!(
+                r#"<Project>
+  <PropertyGroup><X>abc</X></PropertyGroup>
+  <Import Project="hidden.props" Condition="'$(X.Substring(0,1))' == 'a'" />
+  <Import Sdk="Fake.Sdk" Project="Sdk.props" />
+  {}
+  <PropertyGroup><ProbeCommonPropsFrom>$(CommonPropsFrom)</ProbeCommonPropsFrom></PropertyGroup>
+</Project>"#,
+                toolset_probe(name)
+            ),
+        );
+        let result = parse_file_with_sdk_resolution(&project_path, canonical_sdk_resolver(sdk));
+        assert_eq!(
+            committed_probe(&result),
+            None,
+            "{name}: {:?}",
+            result.diagnostics
+        );
+        // The import the seed steers: the walk must not commit that the
+        // decoy's `Microsoft.Common.props` was skipped.
+        assert!(
+            result.property_provenance_untrusted("ProbeCommonPropsFrom")
+                || result
+                    .properties
+                    .get("ProbeCommonPropsFrom")
+                    .map(String::as_str)
+                    == Some("decoy"),
+            "{name}: {:?}",
+            result.properties.get("ProbeCommonPropsFrom")
+        );
+    }
+}
+
+/// Two environment spellings of the name with different values: MSBuild
+/// promotes one of them (which one is unspecified — probed, see
+/// `State::new`) and, on an MSBuild 18 toolset, every overridable name keeps
+/// the promoted value. The walk drops the name from its table because it
+/// cannot say which spelling won; the seed must not then fill the slot with
+/// the toolset's own path, which is neither.
+#[test]
+fn colliding_environment_spellings_withhold_the_overridable_seeds() {
+    for name in OVERRIDABLE_TOOLSET_NAMES {
+        let tmp = TempDir::new().unwrap();
+        let sdk = write_canonical_sdk_at(tmp.path(), "10.0.301");
+        let project_path = write_at(
+            tmp.path(),
+            "repo/Demo.fsproj",
+            &format!(
+                r#"<Project Sdk="Fake.Sdk">
+  {}
+</Project>"#,
+                toolset_probe(name)
+            ),
+        );
+        let lower = name.to_ascii_lowercase();
+        let result = parse_file_with_sdk_env(
+            &project_path,
+            canonical_sdk_resolver(sdk),
+            HashMap::new(),
+            env_of(&[(name, "/one/"), (&lower, "/two/")]),
+        );
+        assert_eq!(
+            committed_probe(&result),
+            None,
+            "{name}: {:?}",
+            result.diagnostics
+        );
+    }
+}
