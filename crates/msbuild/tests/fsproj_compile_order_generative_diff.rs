@@ -987,7 +987,8 @@ const CORNERS: &[(&str, bool)] = &[
     <Compile Update="/../../$(MSBuildProjectDirectory)/B.fs" CompileOrder="CompileFirst" />"#,
         true,
     ),
-    // .NET folds `é` and `É`, but not `ı` and `I`: the evaluator declines both.
+    // .NET folds `é` and `É`, which the evaluator declines to decide; `ı` never
+    // matches the ASCII `I`, which it commits to.
     (
         r#"    <Compile Include="A.fs" />
     <Compile Include="é.fs" />
@@ -998,7 +999,7 @@ const CORNERS: &[(&str, bool)] = &[
         r#"    <Compile Include="A.fs" />
     <Compile Include="I.fs" />
     <Compile Update="ı.fs" CompileOrder="CompileFirst" />"#,
-        false,
+        true,
     ),
     // Non-ASCII names that differ by an ASCII character need no folding.
     (

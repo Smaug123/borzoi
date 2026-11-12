@@ -218,8 +218,10 @@ two ways an `Exclude` applies, is `fsproj_item_escape_generative_diff.rs`.
 `crates/msbuild/src/evaluator/item_pass.rs` is the match key: both sides
 normalised as `GetFullPath` writes them (`.` dropped, `..` resolved, at the
 root a `..` stays there), compared `OrdinalIgnoreCase` with ASCII folding
-mirrored. A match that would rest on non-ASCII folding (.NET folds `é`/`É`
-but not `ı`/`I`) or on a spelling MSBuild compares as written
+mirrored. A non-ASCII character never matches an ASCII one (`ı`, `ſ`, `İ`
+and the Kelvin sign match no ASCII letter). A match that would rest on
+folding two non-ASCII characters (`é`/`É` fold; the Angstrom sign and `å` do
+not) or on a spelling MSBuild compares as written
 (`compares_unnormalised`, e.g. `a:b.fs`) declines. The F0 generator's
 spellings dimension (bare, rooted, `./`, `sub/../`, `.\`, lower case) is on
 for includes and `Update` targets, and its oracle-graded corners pin the

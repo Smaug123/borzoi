@@ -279,13 +279,15 @@ fn compile_update_compile_order_moves_every_case_variant() {
 }
 
 /// .NET's `OrdinalIgnoreCase` folds beyond ASCII, by tables the evaluator does
-/// not reproduce: `é.fs` matches `É.fs`, but `ı.fs` does not match `I.fs`, nor
-/// `ſ.fs` `S.fs` (oracle, Linux). So a match that would rest on folding a
-/// non-ASCII character declines rather than guessing either way. Names that
-/// differ by an ASCII character still differ, so they need no decline.
+/// not reproduce: `é.fs` matches `É.fs`, but the Angstrom sign does not match
+/// `å` (oracle, Linux). So a match that would rest on folding two non-ASCII
+/// characters declines rather than guessing either way. A non-ASCII character
+/// never matches an ASCII one (`ı`, `ſ`, `İ`, the Kelvin sign: oracle), and
+/// names that differ by an ASCII character still differ, so neither needs a
+/// decline.
 #[test]
 fn compile_update_compile_order_declines_non_ascii_case_folding() {
-    for (include, target) in [("é.fs", "É.fs"), ("I.fs", "ı.fs"), ("S.fs", "ſ.fs")] {
+    for (include, target) in [("é.fs", "É.fs"), ("å.fs", "\u{212b}.fs")] {
         let src = format!(
             r#"<Project>
   <ItemGroup>
@@ -309,6 +311,72 @@ fn compile_update_compile_order_declines_non_ascii_case_folding() {
     let p = parse(src);
     assert_eq!(file_names(&p.items), ["é1.fs", "é.fs"]);
     assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+    for (include, target) in [
+        ("I.fs", "ı.fs"),
+        ("i.fs", "İ.fs"),
+        ("S.fs", "ſ.fs"),
+        ("K.fs", "\u{212a}.fs"),
+    ] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="{include}" />
+    <Compile Update="{target}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert_eq!(file_names(&p.items), ["A.fs", include], "Update={target}");
+        assert!(
+            !p.items_uncertain,
+            "{include} vs Update={target}: {:?}",
+            p.diagnostics
+        );
+    }
+}
+
+/// Matching an `Update` against the Compile list costs a lookup per item,
+/// not a comparison per item and target: thousands of each, under a
+/// non-ASCII project directory (where every key has a non-ASCII unit), finish
+/// at once. A quadratic matcher takes seconds here even optimised.
+#[test]
+fn compile_update_compile_order_scales_with_items_and_targets() {
+    const N: usize = 4000;
+    let mut src = String::from("<Project>\n  <ItemGroup>\n");
+    for i in 0..N {
+        src.push_str(&format!("    <Compile Include=\"F{i}.fs\" />\n"));
+    }
+    // Every even item, spelt in lower case: they move after every odd one.
+    let targets: Vec<String> = (0..N).step_by(2).map(|i| format!("f{i}.fs")).collect();
+    src.push_str(&format!(
+        "    <Compile Update=\"{}\" CompileOrder=\"CompileLast\" />\n  </ItemGroup>\n</Project>",
+        targets.join(";")
+    ));
+    let start = std::time::Instant::now();
+    let p = parse_fsproj(
+        &src,
+        Path::new("/repo/José/Demo.fsproj"),
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("well-formed XML parses");
+    let elapsed = start.elapsed();
+    let names = file_names(&p.items);
+    assert_eq!(names.len(), N);
+    assert_eq!(
+        (names[0], names[N / 2 - 1]),
+        ("F1.fs", &*format!("F{}.fs", N - 1))
+    );
+    assert_eq!(
+        (names[N / 2], names[N - 1]),
+        ("F0.fs", &*format!("F{}.fs", N - 2))
+    );
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "{N} items against {N} targets took {elapsed:?}"
+    );
 }
 
 /// MSBuild compares a spelling it cannot normalise (`a:b.fs` — `:` is invalid

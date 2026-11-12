@@ -1714,62 +1714,140 @@ enum UpdateMatch {
     Match,
     NoMatch,
     /// MSBuild's verdict rests on something not modelled here (see
-    /// [`update_target_matches`]).
+    /// [`MatchKey::matches`]).
     Undecided(&'static str),
 }
 
-/// Whether the `Update` fragment `target` names the Compile item captured as
-/// `item`, as MSBuild's lazy evaluator decides it: both sides go through
-/// `NormalizePathForComparisonNoThrow` (the full path, so `./a.fs`,
-/// `sub/../a.fs`, `.\a.fs` and the rooted spelling all name `a.fs`), and the
-/// two are compared `OrdinalIgnoreCase` — on every host, unlike file
-/// existence, since the batched path keys an `OrdinalIgnoreCase` dictionary
-/// and the unbatched one compares the same way (both oracle-pinned on Linux,
-/// `docs/compile-item-fidelity-plan.md`).
-///
-/// ASCII case folding is mirrored exactly. Two things are not, and decline:
-///
-/// - a pair differing only where one side has a non-ASCII character, since
-///   .NET folds beyond ASCII by tables not reproduced here (`é` matches `É`,
-///   `ı` does not match `I`);
-/// - a pair that would match where either spelling is one MSBuild compares
-///   as written, not normalised ([`crate::glob::compares_unnormalised`]): the
-///   item is captured joined onto the project directory, so its spelling as
-///   written is gone.
-fn update_target_matches(item: &Path, target: &UpdateTarget) -> UpdateMatch {
-    let item_text = item.to_string_lossy();
-    let item_key = comparison_key(&item_text);
-    let target_key = comparison_key(&target.path.to_string_lossy());
-    let (a, b): (Vec<u16>, Vec<u16>) = (
-        item_key.encode_utf16().collect(),
-        target_key.encode_utf16().collect(),
-    );
-    // `OrdinalIgnoreCase` maps one UTF-16 unit to one, so differing lengths
-    // never match.
-    if a.len() != b.len() {
-        return UpdateMatch::NoMatch;
-    }
-    let mut needs_unicode_folding = false;
-    for (&x, &y) in a.iter().zip(&b) {
-        if x == y {
-            continue;
+/// One side of an `Update` comparison, computed once: the path as
+/// `Path.GetFullPath` writes it ([`comparison_key`]), and whether MSBuild
+/// compares the spelling as written instead
+/// ([`crate::glob::compares_unnormalised`]).
+struct MatchKey {
+    key: String,
+    unnormalised: bool,
+}
+
+impl MatchKey {
+    fn of_item(include: &Path) -> MatchKey {
+        let text = include.to_string_lossy();
+        MatchKey {
+            key: comparison_key(&text),
+            unnormalised: crate::glob::compares_unnormalised(&text),
         }
-        match (u8::try_from(x), u8::try_from(y)) {
-            (Ok(x), Ok(y)) if x.is_ascii() && y.is_ascii() => {
-                if !x.eq_ignore_ascii_case(&y) {
-                    return UpdateMatch::NoMatch;
-                }
+    }
+
+    fn of_target(target: &UpdateTarget) -> MatchKey {
+        MatchKey {
+            key: comparison_key(&target.path.to_string_lossy()),
+            unnormalised: target.unnormalised,
+        }
+    }
+
+    /// Whether an `Update` fragment keyed `target` names the Compile item
+    /// keyed `self`, as MSBuild's lazy evaluator decides it: both sides go
+    /// through `NormalizePathForComparisonNoThrow` (the full path, so `./a.fs`,
+    /// `sub/../a.fs`, `.\a.fs` and the rooted spelling all name `a.fs`), and
+    /// the two are compared `OrdinalIgnoreCase` — on every host, unlike file
+    /// existence, since the batched path keys an `OrdinalIgnoreCase`
+    /// dictionary and the unbatched one compares the same way (both
+    /// oracle-pinned on Linux, `docs/compile-item-fidelity-plan.md`).
+    ///
+    /// ASCII case folding is mirrored exactly, and a non-ASCII character never
+    /// matches an ASCII one (`ı`, `ſ`, `İ` and the Kelvin sign match no ASCII
+    /// letter: oracle, Linux). Two things are not mirrored, and decline:
+    ///
+    /// - a pair differing where both sides have a non-ASCII character, since
+    ///   .NET folds those by tables not reproduced here (`é` matches `É`; the
+    ///   Angstrom sign does not match `å`);
+    /// - a pair that would match where either spelling is one MSBuild
+    ///   compares as written, not normalised: the item is captured joined
+    ///   onto the project directory, so its spelling as written is gone.
+    fn matches(&self, target: &MatchKey) -> UpdateMatch {
+        // `OrdinalIgnoreCase` maps one UTF-16 unit to one, so differing
+        // lengths never match.
+        if self.key.encode_utf16().count() != target.key.encode_utf16().count() {
+            return UpdateMatch::NoMatch;
+        }
+        let mut needs_unicode_folding = false;
+        for (x, y) in self.key.encode_utf16().zip(target.key.encode_utf16()) {
+            if x == y {
+                continue;
             }
-            _ => needs_unicode_folding = true,
+            match (ascii_unit(x), ascii_unit(y)) {
+                (Some(x), Some(y)) => {
+                    if !x.eq_ignore_ascii_case(&y) {
+                        return UpdateMatch::NoMatch;
+                    }
+                }
+                (None, None) => needs_unicode_folding = true,
+                _ => return UpdateMatch::NoMatch,
+            }
         }
+        if needs_unicode_folding {
+            return UpdateMatch::Undecided("non-ASCII case folding");
+        }
+        if self.unnormalised || target.unnormalised {
+            return UpdateMatch::Undecided("a spelling MSBuild compares as written");
+        }
+        UpdateMatch::Match
     }
-    if needs_unicode_folding {
-        return UpdateMatch::Undecided("non-ASCII case folding");
+}
+
+/// The UTF-16 unit as an ASCII byte, if it is one.
+fn ascii_unit(unit: u16) -> Option<u8> {
+    u8::try_from(unit).ok().filter(u8::is_ascii)
+}
+
+/// What every key a [`MatchKey`] could match (or be undecided against)
+/// shares: its UTF-16 units, ASCII folded to lower case and every non-ASCII
+/// unit replaced by one placeholder. Two keys of different shapes differ at
+/// some position by an ASCII letter (folding agrees there) or by an ASCII
+/// unit against a non-ASCII one (which never match), so they cannot match.
+fn match_shape(key: &str) -> Vec<u16> {
+    key.encode_utf16()
+        .map(|unit| match ascii_unit(unit) {
+            Some(byte) => u16::from(byte.to_ascii_lowercase()),
+            None => u16::MAX,
+        })
+        .collect()
+}
+
+/// An `Update` spec's targets, keyed for matching many items: each item is
+/// compared only with the targets of its [`match_shape`], so an `Update`
+/// against a large Compile list costs a lookup per item, whatever the
+/// characters in the project's path.
+struct UpdateTargets {
+    by_shape: HashMap<Vec<u16>, Vec<MatchKey>>,
+}
+
+impl UpdateTargets {
+    fn new(targets: &[UpdateTarget]) -> UpdateTargets {
+        let mut by_shape: HashMap<Vec<u16>, Vec<MatchKey>> = HashMap::new();
+        for target in targets {
+            let key = MatchKey::of_target(target);
+            by_shape.entry(match_shape(&key.key)).or_default().push(key);
+        }
+        UpdateTargets { by_shape }
     }
-    if target.unnormalised || crate::glob::compares_unnormalised(&item_text) {
-        return UpdateMatch::Undecided("a spelling MSBuild compares as written");
+
+    /// Whether any target names the item keyed `item`. An undecided pair
+    /// outranks a match: the verdict as a whole rests on it.
+    fn verdict(&self, item: &MatchKey) -> UpdateMatch {
+        let mut verdict = UpdateMatch::NoMatch;
+        for target in self
+            .by_shape
+            .get(&match_shape(&item.key))
+            .into_iter()
+            .flatten()
+        {
+            match item.matches(target) {
+                UpdateMatch::Undecided(reason) => return UpdateMatch::Undecided(reason),
+                UpdateMatch::Match => verdict = UpdateMatch::Match,
+                UpdateMatch::NoMatch => {}
+            }
+        }
+        verdict
     }
-    UpdateMatch::Match
 }
 
 /// A path as `Path.GetFullPath` writes it, for comparison: `.` and empty
@@ -1803,56 +1881,58 @@ fn comparison_key(path: &str) -> String {
 /// Take every Compile item the `Update` targets name out of its bucket, in
 /// bucket order. `None`, with a diagnostic, when a match is
 /// [`UpdateMatch::Undecided`]: the move would rest on a comparison not
-/// modelled, so the order is not claimed.
+/// modelled, so the order is not claimed. Each item is keyed and judged once.
 fn take_matching_compile_items(
     state: &mut State<'_>,
     targets: &[UpdateTarget],
     span: Range<usize>,
 ) -> Option<Vec<OrderedResolvedItem>> {
-    let undecided = compile_buckets(state)
-        .flat_map(|bucket| bucket.iter())
-        .filter(|ordered| ordered.item.kind == ItemKind::Compile)
-        .find_map(|ordered| {
-            targets.iter().find_map(|target| {
-                match update_target_matches(&ordered.item.include, target) {
-                    UpdateMatch::Undecided(reason) => {
-                        Some((ordered.item.include.clone(), target.path.clone(), reason))
+    let targets = UpdateTargets::new(targets);
+    let verdicts = compile_buckets(state)
+        .map(|bucket| {
+            bucket
+                .iter()
+                .map(|ordered| {
+                    if ordered.item.kind != ItemKind::Compile {
+                        return Ok(false);
                     }
-                    UpdateMatch::Match | UpdateMatch::NoMatch => None,
-                }
-            })
-        });
-    if let Some((item, target, reason)) = undecided {
-        state.push(
-            DiagnosticKind::UnsupportedItemOperation {
-                operation: format!(
-                    "CompileOrder Update of {} whose match against {} rests on {reason}",
-                    target.display(),
-                    item.display()
-                ),
-            },
-            span,
-        );
-        return None;
-    }
+                    match targets.verdict(&MatchKey::of_item(&ordered.item.include)) {
+                        UpdateMatch::Match => Ok(true),
+                        UpdateMatch::NoMatch => Ok(false),
+                        UpdateMatch::Undecided(reason) => Err(format!(
+                            "CompileOrder Update whose match against {} rests on {reason}",
+                            ordered.item.include.display()
+                        )),
+                    }
+                })
+                .collect::<Result<Vec<bool>, String>>()
+        })
+        .collect::<Result<Vec<_>, String>>();
+    let verdicts = match verdicts {
+        Ok(verdicts) => verdicts,
+        Err(operation) => {
+            state.push(DiagnosticKind::UnsupportedItemOperation { operation }, span);
+            return None;
+        }
+    };
     let mut moved = Vec::new();
-    take_matching_compile_items_from_bucket(&mut state.compile_first, targets, &mut moved);
-    take_matching_compile_items_from_bucket(
-        &mut state.explicit_compile_before,
-        targets,
-        &mut moved,
-    );
-    take_matching_compile_items_from_bucket(&mut state.compile_before, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_main, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_after, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.explicit_compile_after, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_last, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_excluded, targets, &mut moved);
+    for (bucket, verdicts) in compile_buckets_mut(state).zip(verdicts) {
+        let mut verdicts = verdicts.into_iter();
+        let mut kept = Vec::with_capacity(bucket.len());
+        for item in bucket.drain(..) {
+            if verdicts.next().expect("one verdict per item") {
+                moved.push(item);
+            } else {
+                kept.push(item);
+            }
+        }
+        *bucket = kept;
+    }
     Some(moved)
 }
 
 /// Every Compile-order bucket, in the order [`take_matching_compile_items`]
-/// walks them.
+/// takes from them.
 fn compile_buckets<'s>(state: &'s State<'_>) -> impl Iterator<Item = &'s Vec<OrderedResolvedItem>> {
     [
         &state.compile_first,
@@ -1867,23 +1947,21 @@ fn compile_buckets<'s>(state: &'s State<'_>) -> impl Iterator<Item = &'s Vec<Ord
     .into_iter()
 }
 
-fn take_matching_compile_items_from_bucket(
-    bucket: &mut Vec<OrderedResolvedItem>,
-    targets: &[UpdateTarget],
-    moved: &mut Vec<OrderedResolvedItem>,
-) {
-    let mut index = 0;
-    while index < bucket.len() {
-        let matches = bucket[index].item.kind == ItemKind::Compile
-            && targets.iter().any(|target| {
-                update_target_matches(&bucket[index].item.include, target) == UpdateMatch::Match
-            });
-        if matches {
-            moved.push(bucket.remove(index));
-        } else {
-            index += 1;
-        }
-    }
+/// [`compile_buckets`], mutably and in the same order.
+fn compile_buckets_mut<'s>(
+    state: &'s mut State<'_>,
+) -> impl Iterator<Item = &'s mut Vec<OrderedResolvedItem>> {
+    [
+        &mut state.compile_first,
+        &mut state.explicit_compile_before,
+        &mut state.compile_before,
+        &mut state.compile_main,
+        &mut state.compile_after,
+        &mut state.explicit_compile_after,
+        &mut state.compile_last,
+        &mut state.compile_excluded,
+    ]
+    .into_iter()
 }
 
 fn insert_ordered_compile_item(
