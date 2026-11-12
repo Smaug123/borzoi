@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 0ba6bd2d76287dda062a0580917ed5d11f5a1226747e331c1507cc61c106439b # shrinks to (cands, incl, excl) = (["c", "c"], ["**"], [])
+cc 990e859497cc4653a8c47cbe784e1655a9538f3ce8148e364020fe368fd003db # shrinks to (pat, path) = ("a/**", "a")
+cc c2ef2db795e4057eea34cffaca46c616946dffc43309ff2c714da42f73af62a9 # shrinks to (cands, incl, excl) = (["baa/c", "ba/bb/c/b"], ["**/b/**"], [])

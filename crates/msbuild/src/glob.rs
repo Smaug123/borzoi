@@ -242,6 +242,14 @@ pub enum Unmodelled {
     /// One of `"<>|:`, which Windows forbids in a filename and MSBuild's
     /// matchers treat specially (as wildcards, or as a drive separator).
     WindowsReservedCharacter,
+    /// A glob meeting excludes, or an exclude, with a wildcard in a directory
+    /// segment other than a whole `**` (`*/a.fs`). MSBuild relates such a
+    /// pattern to the include it filters in ways not modelled. (An include
+    /// with no excludes, `*/*.fs`, is verified.)
+    WildcardDirectorySegment,
+    /// A glob exclude with a wildcard directory part, anchored differently
+    /// from the glob include it filters (one absolute, the other relative).
+    MixedAnchoring,
 }
 
 impl std::fmt::Display for Unmodelled {
@@ -251,6 +259,12 @@ impl std::fmt::Display for Unmodelled {
             Unmodelled::TrailingSeparator => "ends in a path separator",
             Unmodelled::TrailingDotOrSpace => "has a segment ending in `.` or a space",
             Unmodelled::WindowsReservedCharacter => "has one of `\"<>|:`",
+            Unmodelled::WildcardDirectorySegment => {
+                "has a wildcard in a directory segment other than `**`"
+            }
+            Unmodelled::MixedAnchoring => {
+                "has a wildcard directory part and is anchored unlike the include it filters"
+            }
         })
     }
 }
@@ -279,6 +293,24 @@ pub fn unmodelled_shape(spec: &str) -> Option<Unmodelled> {
         }
     }
     None
+}
+
+/// The allow-list's structural half, for a decoded spec read as a **glob**:
+/// wildcards only in the final segment, or as a whole `**` segment
+/// (`src/**/*.fs`, `bin/**`). A wildcard in any other directory segment
+/// (`*/a.fs`, `a*/**`) is [`Unmodelled::WildcardDirectorySegment`].
+pub fn unmodelled_glob_structure(spec: &str) -> Option<Unmodelled> {
+    let segs: Vec<&str> = spec.split(['/', '\\']).collect();
+    let (_, dirs) = segs.split_last()?;
+    dirs.iter()
+        .any(|seg| *seg != "**" && seg.contains(['*', '?']))
+        .then_some(Unmodelled::WildcardDirectorySegment)
+}
+
+/// Whether a decoded glob has a wildcard directory part (`**/a.fs`,
+/// `bin/**`): what [`Unmodelled::MixedAnchoring`] asks of an exclude.
+pub fn has_wildcard_directory_part(spec: &str) -> bool {
+    !split_filespec(spec).1.is_empty()
 }
 
 /// Characters that make MSBuild reject a filespec outright
@@ -389,7 +421,7 @@ impl Pattern {
     /// equal exactly to `**` becomes [`Seg::DoubleStar`]; otherwise each
     /// character becomes a [`Tok`] (`*`/`?`/literal).
     pub fn parse(fragment: &str) -> Pattern {
-        let segs = split_segments(fragment)
+        let mut segs = split_segments(fragment)
             .into_iter()
             .map(|s| {
                 if s == "**" {
@@ -406,7 +438,13 @@ impl Pattern {
                     )
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // MSBuild rewrites a final `**` to `**/*.*` (`FileMatcher.SplitFileSpec`):
+        // the pattern names the files *below* a directory, so `bin/**` does
+        // not match a file called `bin`, and `a*/**` needs `a*` to be one.
+        if segs.last() == Some(&Seg::DoubleStar) {
+            segs.push(Seg::Match(vec![Tok::Star]));
+        }
         Pattern { segs }
     }
 
@@ -746,7 +784,11 @@ mod tests {
 
     /// Independent ground-truth matcher over raw strings.
     fn matches_naive(pattern: &str, path: &str) -> bool {
-        let p = split_segments(pattern);
+        let mut p = split_segments(pattern);
+        // MSBuild's final-`**` rewrite (`**/*.*`), as `Pattern::parse` has it.
+        if p.last() == Some(&"**") {
+            p.push("*");
+        }
         let s = split_segments(path);
         path_match_naive(&p, &s)
     }
@@ -1010,8 +1052,8 @@ mod tests {
         assert!(p.matches("src/a.fs"));
         assert!(p.matches("src/x/y/a.fs"));
         assert!(
-            p.matches("src"),
-            "`**` matches zero segments, so the dir itself matches"
+            !p.matches("src"),
+            "a final `**` is `**/*.*`: it names files below `src/`, not `src`"
         );
         assert!(!p.matches("other/a.fs"));
     }
@@ -1332,5 +1374,30 @@ mod tests {
         ] {
             assert_eq!(unmodelled_shape(spec), Some(shape), "{spec}");
         }
+    }
+
+    /// Wildcards only in the final segment or as a whole `**`; and a final
+    /// `**` names the files below a directory (`FileMatcher.SplitFileSpec`).
+    #[test]
+    fn glob_structure_and_final_double_star() {
+        for modelled in ["*.fs", "src/**/*.fs", "bin/**", "**", "/abs/sub/?.fs"] {
+            assert_eq!(unmodelled_glob_structure(modelled), None, "{modelled}");
+        }
+        for unmodelled in ["*/a.fs", "a*/**", "src/x?/*.fs", "**/a*/b.fs"] {
+            assert_eq!(
+                unmodelled_glob_structure(unmodelled),
+                Some(Unmodelled::WildcardDirectorySegment),
+                "{unmodelled}"
+            );
+        }
+        let bin = Pattern::parse("bin/**");
+        assert!(bin.matches("bin/x.fs") && bin.matches("bin/a/b.fs"));
+        assert!(
+            !bin.matches("bin"),
+            "a file called `bin` is not below `bin/`"
+        );
+        assert!(Pattern::parse("**").matches("a.fs"));
+        assert!(has_wildcard_directory_part("**/a.fs") && has_wildcard_directory_part("bin/**"));
+        assert!(!has_wildcard_directory_part("sub/*.fs"));
     }
 }

@@ -69,16 +69,18 @@ const FILES: &[&str] = &[
     "ab",
     // Below the project, so recursive globs and `..` spellings reach it.
     "sub/c.fs",
-    // Names outside the resolver's allow-list, kept in their own directory
-    // so only the fragments that name it meet them, and named `.txt` so no
-    // `*.fs` glob does (two non-ASCII matches leave .NET's order between
-    // them, which declines every glob that reaches both): a case pair MSBuild's
+    // A name a wildcard directory segment (`*/a%3bb.fs`) would reach.
+    "sub/a;b.fs",
+    // Names outside the resolver's allow-list, kept in a sibling of the
+    // project directory so only the fragments that name it meet them (two
+    // non-ASCII matches leave .NET's order between them, which would decline
+    // every recursive glob that reached both): a case pair MSBuild's
     // `OrdinalIgnoreCase` folds, and a character two UTF-16 units wide (one
     // `?` to us, two to MSBuild). The `:` specs need no file: a literal
     // include is captured whether or not it exists, and one on disk would
     // decline every recursive glob that walks past it.
-    "odd/\u{dc}.txt",
-    "odd/\u{1f98b}.txt",
+    "../odd/\u{dc}.txt",
+    "../odd/\u{1f98b}.txt",
 ];
 
 /// Item-spec fragments. Each escaped spelling names one of the files above, so
@@ -134,6 +136,16 @@ const FRAGMENTS: &[&str] = &[
     "sub/*.*",
     "%2a.%2a",
     "**/*.fs",
+    // A final `**` names the files below a directory, not the directory.
+    "sub/**",
+    "**",
+    // A wildcard directory segment: modelled on an include alone, refused
+    // where it meets excludes.
+    "*/c.fs",
+    // Absolute spellings of globs, which an exclude with a wildcard directory
+    // part must match in anchoring.
+    "$(MSBuildProjectDirectory)/sub/*.fs",
+    "$(MSBuildProjectDirectory)/**/*.fs",
     "ab",
 ];
 
@@ -142,14 +154,17 @@ const FRAGMENTS: &[&str] = &[
 /// ([`gen_spec`]), so the modelled space still dominates the sweep and its
 /// commit floor stays meaningful.
 const OUTSIDE_ALLOW_LIST: &[&str] = &[
+    // A wildcard in a directory segment other than `**`.
+    "*/a%3bb.fs",
+    "a%3b*/**",
     // Patterns MSBuild's file matcher refuses: an embedded `**`, live or
     // decoded from escapes.
     "a**b.fs",
     "a%2a%2ab.fs",
-    "odd/*.txt",
-    "odd/?.txt",
-    "odd/\u{dc}.txt",
-    "odd/\u{fc}.txt",
+    "../odd/*.txt",
+    "../odd/?.txt",
+    "../odd/\u{dc}.txt",
+    "../odd/\u{fc}.txt",
     "odd/a:b.fs",
     "$(MSBuildProjectDirectory)/odd/a:b.fs",
     "*.fs/",
@@ -255,7 +270,12 @@ enum Outcome {
 /// literal fast path runs. Both are production paths, and both decode.
 fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> Outcome {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    // The project sits one level down, so `../odd/` is a sibling no glob
+    // under the project walks into.
+    let root = std::fs::canonicalize(dir.path())
+        .expect("canonicalize")
+        .join("proj");
+    std::fs::create_dir_all(&root).expect("mkdir");
     for file in FILES {
         // `*` and `?` are illegal in Windows filenames, so the file cannot be
         // laid down there. Nothing is lost: MSBuild captures a *literal* include
@@ -422,10 +442,32 @@ fn hand_picked_corners() {
             "$(MSBuildProjectDirectory)/odd/a:b.fs",
             Some("odd/a:b.fs/"),
         ),
-        corner("plain.fs", "odd/\u{1f98b}.txt", Some("sub/../odd/?.txt")),
+        corner(
+            "plain.fs",
+            "../odd/\u{1f98b}.txt",
+            Some("sub/../../odd/?.txt"),
+        ),
         corner("plain.fs", "a%3bb.fs", Some("*.fs.")),
-        corner("plain.fs", "odd/a%3b\u{dc}.txt", Some("odd/a%3b\u{fc}.txt")),
-        corner("plain.fs", "odd/?.txt", None),
+        corner(
+            "plain.fs",
+            "../odd/a%3b\u{dc}.txt",
+            Some("../odd/a%3b\u{fc}.txt"),
+        ),
+        corner("plain.fs", "../odd/?.txt", None),
+        // Round three: a wildcard directory segment, and a final `**`.
+        corner(
+            "plain.fs",
+            "$(MSBuildProjectDirectory)/sub/*.fs",
+            Some("*/a%3bb.fs"),
+        ),
+        corner("plain.fs", "a%3b*/**", None),
+        corner("plain.fs", "sub/**", None),
+        corner("plain.fs", "**", Some("sub/**")),
+        corner(
+            "plain.fs",
+            "$(MSBuildProjectDirectory)/**/*.fs",
+            Some("sub/**"),
+        ),
         // An absolute exclude meets a relative glob by path.
         corner(
             "plain.fs",
@@ -474,7 +516,7 @@ fn generated_item_specs_are_certain_implies_exact() {
     // Through the resolver seam a decline must be the resolver's own, named
     // (a `GlobDecline`); any other is a regression. The named ones come from
     // the low-rate `OUTSIDE_ALLOW_LIST` pool and from globs that reach the
-    // `odd/` names, and run near a quarter of the sweep across seeds, so the
+    // `../odd/` names, and run near a quarter of the sweep across seeds, so the
     // floor of 65% commits catches the resolver widening its refusals into
     // the modelled space. The literal fast
     // path declines every glob and every `Exclude` by design (it has no

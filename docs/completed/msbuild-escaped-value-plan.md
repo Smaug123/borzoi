@@ -155,8 +155,15 @@ Anything else declines (`GlobDecline::OutsideModelledShape`) — the UTF-16
 width of a `?`, .NET's non-ASCII case folding, Windows trailing-dot rules and
 the rest among it, unmodelled and unreachable. (A non-ASCII name found by a
 glob is admitted where it cannot matter: no `?` in play, and no `ı`/`ſ`,
-the two characters `OrdinalIgnoreCase` folds onto ASCII.) Inside the
+the two characters `OrdinalIgnoreCase` folds onto ASCII.) The allow-list has
+a structural half too (`glob::unmodelled_glob_structure`): where a glob meets
+excludes, wildcards may sit only in the final segment or as a whole `**`
+segment, and an exclude with a wildcard directory part must be anchored as
+the include it filters is (both absolute or both relative). Inside the
 allow-list, the resolver follows MSBuild's source, or declines by name:
+
+- **A final `**`** is `**/*.*` (`FileMatcher.SplitFileSpec`): `bin/**` names
+  the files below `bin/`, not a file called `bin`.
 
 - **Legality** (`FileMatcher.RawFileSpecIsValid`/`IsLegalFileSpec`, ported as
   `glob::is_legal_filespec`): a `**` that is not a whole segment (`a**b.fs`,
