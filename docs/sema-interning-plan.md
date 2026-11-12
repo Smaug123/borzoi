@@ -1,6 +1,8 @@
 # Interned names, paths and types in sema
 
-> **Status (2026-11-12).** Plan written; Stage 0 (count harness) implemented.
+> **Status (2026-11-12).** Plan written; Stages 0 (count harness) and 2
+> (memoised namespace fold surfaces) implemented. Stage 1 (the hasher) is
+> implemented by [#577](https://github.com/WoofWare/borzoi/pull/577).
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -340,6 +342,7 @@ above.
 ### Stage 1: the hasher
 
 **Dependencies**: none. **Implements**: D1.
+**Implementation**: [#577](https://github.com/WoofWare/borzoi/pull/577).
 
 `foldhash` joins the vendored registry (the `add-cargo-dependency` skill).
 `borzoi_sema::hash` defines the aliases, every sema map moves to them, and the
@@ -376,6 +379,13 @@ after the memo has filled. Every gate is unchanged.
 
 **Expected**: −5% (measured with the memo and two query sites), more once the
 remaining callers borrow the memo instead of cloning it.
+
+**Measured**: resolve 2642.5 → 2499.1 instructions per byte (−5.4%),
+allocations 2.268 → 2.206 per byte; infer unchanged. `open_namespace_fold_surfaces`
+returns the memo's slice and `ValueSurface` borrows it; the two callers that
+keep surfaces past the query clone them. The fold reads none of what the
+`mark_*` mutators mark, so their reset is defensive: removing it moves no
+case of the property test.
 
 ### Stage 3: the name table, with the walk's container ids as its first consumer
 
