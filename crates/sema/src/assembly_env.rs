@@ -1420,11 +1420,12 @@ impl AssemblyEnv {
         }
     }
 
-    /// How many names this env's table holds. The table only grows, by each
-    /// distinct name the walks against this env meet, so a long-lived host
-    /// bounds it by dropping the env once this passes a cap.
-    pub fn interned_name_count(&self) -> usize {
-        self.names.name_count()
+    /// How many names and paths this env's table holds. The table only
+    /// grows, by each distinct name and path the walks against this env meet,
+    /// so a long-lived host bounds it by dropping the env once this passes a
+    /// cap.
+    pub fn interned_count(&self) -> usize {
+        self.names.entry_count()
     }
 
     /// Build the env from already-enumerated top-level entities (the pure core).

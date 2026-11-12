@@ -148,8 +148,8 @@ overlay, inserted under a lock and read by id without one (append-only
 chunked storage). If the overlay's lock shows up in the suite's profile, shard
 it by hash.
 
-**Bound.** The overlay grows with every distinct identifier the env's folds
-ever meet, including each prefix of a name as it is typed. The census puts a
+**Bound.** The overlay grows with every distinct identifier and path the
+env's folds ever meet, including each prefix of a name as it is typed. The census puts a
 whole 11.8 MB tree at about 40,000 names. After each fold, the LSP checks the
 overlay against a cap (order of 2²⁰ names) and, when it is over, drops that
 project's env. That turns into a cold rebuild, through machinery that already
@@ -453,8 +453,10 @@ plus each path reversed as a decoy, in a shuffled order. A planted dependence
 on an id's value (`prefix_id` answering the root for one index) fails the
 generated half; the corpus half did not catch it, so it is the weaker of the
 two. The LSP drops an env once a fold leaves its table above
-`NameTableCap` (2²⁰ names) and folds cold against a rebuilt one
-(`an_env_past_its_name_cap_is_rebuilt_and_folded_cold`).
+`NameTableCap` (2²⁰ entries) and folds cold against a rebuilt one
+(`an_env_past_its_name_cap_is_rebuilt_and_folded_cold`). The cap counts
+paths as well as names: an edit that rearranges names the table already
+holds interns new paths and no new name.
 
 **Measured**: resolve 1584.9 → 1586.4 instructions per byte (+0.1%),
 allocations 1.736 per byte before and after; infer 173.4 → 172.7.

@@ -340,9 +340,19 @@ impl NameTable {
         (0..count).map(|index| self.path(index))
     }
 
-    /// How many names the table holds: what the LSP bounds an env's table by.
+    /// How many names the table holds.
+    #[cfg(test)]
     pub(crate) fn name_count(&self) -> usize {
         self.read().name_count as usize
+    }
+
+    /// How many entries the table holds, names and paths together: what the
+    /// LSP bounds an env's table by. Paths count apart from names, since
+    /// rearranging names a table already holds interns new paths and no new
+    /// name.
+    pub(crate) fn entry_count(&self) -> usize {
+        let index = self.read();
+        index.name_count as usize + index.path_count as usize
     }
 }
 
@@ -452,6 +462,20 @@ mod tests {
                 prop_assert_eq!(table.lookup_path(p), Some(id));
             }
         }
+    }
+
+    /// The entry count grows with paths that reuse names the table holds.
+    #[test]
+    fn paths_over_known_names_count_as_entries() {
+        let table = NameTable::default();
+        let (a, b) = (table.logical("A"), table.logical("B"));
+        let before = table.entry_count();
+        let mut path = table.root();
+        for i in 0..8 {
+            path = table.intern_child(path, if i % 2 == 0 { a } else { b });
+        }
+        assert_eq!(table.name_count(), 2);
+        assert_eq!(table.entry_count(), before + 8);
     }
 
     /// Interning from many threads at once gives one id per text and per path.

@@ -457,19 +457,20 @@ pub struct SemanticState {
     /// [`ReferenceOutcome::Unread`] with [`CSHARP_REFERENCES_DISABLED`], so the
     /// env is marked incomplete rather than silently missing the reference.
     csharp_project_references_enabled: bool,
-    /// How many names an env's name table may hold before the env is dropped
-    /// ([`Self::drop_env_past_name_cap`]).
+    /// How many entries an env's name table may hold before the env is
+    /// dropped ([`Self::drop_env_past_name_cap`]).
     name_table_cap: NameTableCap,
 }
 
-/// The most names an env's table holds past a fold before the env is dropped
-/// (`docs/sema-interning-plan.md`, D2). The table only grows, by every
-/// distinct name a fold against the env meets — each prefix of a name as it is
-/// typed among them — so a long-lived server bounds it by rebuilding the env,
-/// and with it a fresh table, once a fold leaves it past this. A whole
-/// 11.8 MB source tree interns about 40,000 names, so the default is reached
-/// only by a long session of edits. The table then stays below the cap plus
-/// one fold's names.
+/// The most entries, names and paths together, an env's table holds past a
+/// fold before the env is dropped (`docs/sema-interning-plan.md`, D2). The
+/// table only grows, by every distinct name and path a fold against the env
+/// meets — each prefix of a name as it is typed among them, and each new
+/// arrangement of names already held — so a long-lived server bounds it by
+/// rebuilding the env, and with it a fresh table, once a fold leaves it past
+/// this. A whole 11.8 MB source tree interns about 40,000 names, so the
+/// default is reached only by a long session of edits. The table then stays
+/// below the cap plus one fold's entries.
 #[derive(Debug, Clone, Copy)]
 struct NameTableCap(usize);
 
@@ -1245,13 +1246,13 @@ impl SemanticState {
     /// is past [`Self::name_table_cap`]. The next request then builds a fresh
     /// env, whose fold is cold through the existing [`Arc::ptr_eq`] checks.
     fn drop_env_past_name_cap(&mut self, key: &ProjectId, env: &Arc<AssemblyEnv>) {
-        let names = env.interned_name_count();
-        if names <= self.name_table_cap.0 {
+        let entries = env.interned_count();
+        if entries <= self.name_table_cap.0 {
             return;
         }
         tracing::info!(
             project = %key.as_path().display(),
-            names,
+            entries,
             cap = self.name_table_cap.0,
             "dropping an assembly env whose name table is past its cap"
         );
@@ -6960,7 +6961,9 @@ mod tests {
     /// An env whose name table a fold leaves past the cap is dropped: the next
     /// fold, after an edit that would otherwise reuse the previous one, runs
     /// cold against a freshly built env. Under a cap the table stays within,
-    /// the same edit folds incrementally against the same env.
+    /// the same edits fold incrementally against one env. The first edit
+    /// rearranges names the table already holds, so it grows the table by
+    /// paths alone, which the cap counts too.
     #[test]
     fn an_env_past_its_name_cap_is_rebuilt_and_folded_cold() {
         let tmp = TempDir::new().unwrap();
@@ -6968,44 +6971,59 @@ mod tests {
         write(&proj, &fsproj(&["A.fs", "B.fs"]));
         let a_src = "module A\nmodule B =\n    module C =\n        let x = 1\n";
         write(&tmp.path().join("A.fs"), a_src);
-        write(&tmp.path().join("B.fs"), "module D\nlet y = A.B.C.x\n");
+        let b_src = "module D\nlet y = A.B.C.x\n";
+        write(&tmp.path().join("B.fs"), b_src);
         let b_uri = Uri::from_file_path(tmp.path().join("B.fs")).unwrap();
-        let edited: HashMap<Uri, String> =
-            std::iter::once((b_uri, "module D\nlet y = (A.B.C.x)\n".to_string())).collect();
+        let b_edit = "module D\nmodule A =\n    module D =\n        let z = 2\nlet y = (A.B.C.x)\n";
+        let buffers = |text: &str| -> HashMap<Uri, String> {
+            std::iter::once((b_uri.clone(), text.to_string())).collect()
+        };
 
-        let fold_twice = |cap: usize| {
+        // Fold, edit and fold, edit back and fold: the entries after the
+        // first two folds, whether the last two shared an env, and how many
+        // folds were incremental.
+        let fold_thrice = |cap: usize| {
             let mut ws = Workspace::default();
             let mut sema = SemanticState::new();
             sema.name_table_cap = NameTableCap(cap);
             let (_, first) = sema
                 .resolved_project_and_env_for(&proj, &mut ws, &HashMap::new())
                 .expect("first fold");
-            let names = first.interned_name_count();
+            let first_entries = first.interned_count();
             sema.invalidate_project(&proj);
             let (_, second) = sema
-                .resolved_project_and_env_for(&proj, &mut ws, &edited)
+                .resolved_project_and_env_for(&proj, &mut ws, &buffers(b_edit))
                 .expect("second fold");
+            let second_entries = second.interned_count();
+            sema.invalidate_project(&proj);
+            let (_, third) = sema
+                .resolved_project_and_env_for(&proj, &mut ws, &buffers(b_src))
+                .expect("third fold");
             (
-                names,
-                Arc::ptr_eq(&first, &second),
+                first_entries,
+                second_entries,
+                Arc::ptr_eq(&second, &third),
                 sema.incremental_fold_count(),
             )
         };
 
-        let (names, same_env, incremental) = fold_twice(1 << 20);
+        let (first, second, same_env, incremental) = fold_thrice(1 << 20);
         assert!(
-            names >= 4,
-            "the fold interns the files' module names: {names}"
+            second > first,
+            "the edit's new module paths grow the table: {first} -> {second}"
         );
         assert!(same_env, "within the cap the env is kept");
         assert_eq!(
-            incremental, 1,
-            "within the cap the edit folds incrementally"
+            incremental, 2,
+            "within the cap each edit folds incrementally"
         );
 
-        let (_, same_env, incremental) = fold_twice(names - 1);
+        // The first fold stays within the cap, and the edit's paths, over
+        // names the table already held, take it past: the second fold still
+        // reuses the first, and the third starts again.
+        let (_, _, same_env, incremental) = fold_thrice(first);
         assert!(!same_env, "past the cap the env is rebuilt");
-        assert_eq!(incremental, 0, "past the cap the edit folds cold");
+        assert_eq!(incremental, 1, "past the cap the next edit folds cold");
     }
 
     /// A referenced-assembly change ([`SemanticState::invalidate_assembly_state`])
