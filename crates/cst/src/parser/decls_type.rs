@@ -90,20 +90,16 @@ impl<'src> Parser<'src> {
             // whitespace between the closing `>]` and `type` belongs inside the
             // definition (after the attrs), so drain it once the node is open.
             Some(cp) => {
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFNS));
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFN));
+                self.builder.start_node_at(cp, SyntaxKind::TYPE_DEFNS);
+                self.builder.start_node_at(cp, SyntaxKind::TYPE_DEFN);
                 self.drain_raw_up_to(type_span.start);
             }
             // Plain form: leading trivia stays a sibling of the decl node
             // (mirror `parse_nested_module_decl` / `parse_let_decl_at`).
             None => {
                 self.drain_raw_up_to(type_span.start);
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFNS));
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFN));
+                self.builder.start_node(SyntaxKind::TYPE_DEFNS);
+                self.builder.start_node(SyntaxKind::TYPE_DEFN);
             }
         }
         self.emit_text(SyntaxKind::TYPE_TOK, type_span.clone());
@@ -147,8 +143,7 @@ impl<'src> Parser<'src> {
                 break;
             };
             self.drain_raw_up_to(and_span.start);
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_DEFN));
+            self.builder.start_node(SyntaxKind::TYPE_DEFN);
             self.bump_into(SyntaxKind::AND_TOK);
             let (closed, offside_attr) = self.parse_type_defn_name_and_body();
             prev_closed = closed;
@@ -330,8 +325,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::Quote | Token::Op("^"))), _))
         ) {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_DECLS));
+            self.builder.start_node(SyntaxKind::TYPAR_DECLS);
             self.parse_typar_decl(true);
             self.builder.finish_node();
             self.parse_long_ident_path("type");
@@ -501,12 +495,8 @@ impl<'src> Parser<'src> {
         // `ATTRIBUTE_LIST`s become the `IMPLICIT_CTOR`'s leading children; else a
         // plain (unattributed) ctor node.
         match attr_cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::IMPLICIT_CTOR)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::IMPLICIT_CTOR)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::IMPLICIT_CTOR),
+            None => self.builder.start_node(SyntaxKind::IMPLICIT_CTOR),
         }
         if has_access {
             self.bump_into(SyntaxKind::ACCESS_TOK);
@@ -540,8 +530,7 @@ impl<'src> Parser<'src> {
             self.next_non_trivia_raw_after(lparen_span.end),
             Some(Token::RParen) | None
         ) {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::CONST_PAT));
+            self.builder.start_node(SyntaxKind::CONST_PAT);
             self.bump_into(SyntaxKind::LPAREN_TOK);
             self.bump_swallowed_rparen(SyntaxKind::RPAREN_TOK);
             self.builder.finish_node(); // CONST_PAT
@@ -589,8 +578,7 @@ impl<'src> Parser<'src> {
     /// mode. (The `, ..` flex list — the other `explicitValTyparDeclsCore`
     /// extension — is still unmodelled; it stops cleanly at the close check.)
     pub(super) fn parse_typar_decls_postfix(&mut self, permit_empty: bool) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_DECLS));
+        self.builder.start_node(SyntaxKind::TYPAR_DECLS);
         // Consume the `HighPrecedenceTyApp` virtual *if present* (it is emitted
         // only before an adjacent `<`; the spaced `T <'a>` form has none — the
         // HPA is `opt_` in FCS's `postfixTyparDecls`). Shares the `<`'s span, so
@@ -732,8 +720,7 @@ impl<'src> Parser<'src> {
         if let Some((_, span)) = self.peek().cloned() {
             self.drain_raw_up_to(span.start);
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_DECLS));
+        self.builder.start_node(SyntaxKind::TYPAR_DECLS);
         self.bump_into(SyntaxKind::LPAREN_TOK);
         self.parse_typar_decl(true);
         // Gate the separator on the raw stream too: a `,` the filtered stream
@@ -769,8 +756,7 @@ impl<'src> Parser<'src> {
     /// so those callers pass `false` — an `&` there belongs to (or is a clean
     /// error in) the enclosing construct, never this declaration.
     pub(super) fn parse_typar_decl(&mut self, allow_intersection: bool) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_DECL));
+        self.builder.start_node(SyntaxKind::TYPAR_DECL);
         // Leading attribute run — FCS's `SynTyparDecl.attributes` (`[<Measure>]
         // 'a`). Parse one `[< … >]` list at a time, re-gating each on the
         // raw-aligned `peek_at_type_attribute` (as `parse_signature_parameter`
@@ -841,8 +827,7 @@ impl<'src> Parser<'src> {
     /// cursor is at a `when`. Inter-token spaces land as siblings via the
     /// dual-stream bump, so no explicit drain is needed.
     pub(super) fn parse_typar_constraints(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_CONSTRAINTS));
+        self.builder.start_node(SyntaxKind::TYPAR_CONSTRAINTS);
         self.bump_into(SyntaxKind::WHEN_TOK);
         self.parse_typar_constraint();
         while matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::And)), _))) {
@@ -943,8 +928,7 @@ impl<'src> Parser<'src> {
         let filtered_when = matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::When)), _)));
         let raw_when = matches!(self.next_non_trivia_raw_at_pos(), Some(Token::When));
         if filtered_when && raw_when {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::CONSTRAINED_TYPE));
+            self.builder.start_node_at(cp, SyntaxKind::CONSTRAINED_TYPE);
             self.parse_typar_constraints();
             self.builder.finish_node(); // CONSTRAINED_TYPE
         }
@@ -1022,8 +1006,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_typar_constraint(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_CONSTRAINT));
+        self.builder.start_node(SyntaxKind::TYPAR_CONSTRAINT);
         // Parenthesised `typeAlts` subject — `(^a or ^b) : (member …)` /
         // `(Witnesses or ^T) : (member …)` (FCS's `LPAREN typeAlts rparen COLON
         // LPAREN classMemberSpfn rparen`, `pars.fsy:2679`). Only valid before an
@@ -1133,8 +1116,7 @@ impl<'src> Parser<'src> {
         // (`struct (` / `{|` self-constraints, which FCS *does* accept, still
         // reach it — their heads are `Token::Struct` / `Token::LBraceBar`).
         if !typar_is_subject && self.peek_starts_type_or_anon_recd() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::SELF_CONSTRAINT));
+            self.builder.start_node(SyntaxKind::SELF_CONSTRAINT);
             self.parse_app_type();
             self.builder.finish_node(); // SELF_CONSTRAINT
             self.builder.finish_node(); // TYPAR_CONSTRAINT
@@ -1178,8 +1160,7 @@ impl<'src> Parser<'src> {
     /// error (and no wrapper).
     fn consume_constraint_type_args(&mut self, name: &str, name_span: Range<usize>) {
         if self.at_type_args_no_hpa() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::CONSTRAINT_TYPE_ARGS));
+            self.builder.start_node(SyntaxKind::CONSTRAINT_TYPE_ARGS);
             self.consume_type_args_no_hpa();
             self.builder.finish_node(); // CONSTRAINT_TYPE_ARGS
         } else {
@@ -1442,8 +1423,7 @@ impl<'src> Parser<'src> {
             // `parse_type`. Object-model bodies are a later phase-9 slice, so any
             // other non-type body produces the clean "expected type" error below
             // (never a panic); `parse_type` self-guards and self-drains.
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPE_ABBREV));
+            self.builder.start_node(SyntaxKind::TYPE_ABBREV);
             self.parse_type();
             self.builder.finish_node();
         } else {
@@ -1516,7 +1496,7 @@ impl<'src> Parser<'src> {
         // body has already closed), so it never reaches here. Flag it; recovery
         // then leaves the stray `open` for the enclosing module loop — the same
         // stray-item discipline `bare_trailing_member_follows` documents — so
-        // the green tree is unchanged and only the diagnostic is added. (Other
+        // the tree is unchanged and only the diagnostic is added. (Other
         // stray keywords the module loop already rejects on its own; `open` is
         // special precisely because it is *also* a valid module-level decl.)
         if opened_block && let Some(span) = self.stray_open_in_type_body_span() {
@@ -1550,8 +1530,7 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
             )
         {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
 
@@ -1566,8 +1545,7 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
             );
         if closed_block {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
 
@@ -1695,8 +1673,7 @@ impl<'src> Parser<'src> {
     fn parse_type_defn_augmentation(&mut self) -> bool {
         // The `Augmentation` marker: an empty `OBJECT_MODEL_REPR` carrying the
         // `with`. The members go to the outer slot, so the repr stays empty.
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::OBJECT_MODEL_REPR));
+        self.builder.start_node(SyntaxKind::OBJECT_MODEL_REPR);
         self.bump_into(SyntaxKind::WITH_TOK);
         self.builder.finish_node(); // OBJECT_MODEL_REPR (empty: Augmentation marker)
         self.parse_with_augmentation_members(false, true)
@@ -1829,8 +1806,7 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
             );
         if closed_block {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
         // Optional explicit `end` closer (`… with <members> end`): after the member
@@ -1872,8 +1848,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::DeclEnd)), _))
         ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
         closed_block
@@ -1940,8 +1915,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::End)), _))
         ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
     }

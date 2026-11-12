@@ -232,8 +232,7 @@ impl<'src> Parser<'src> {
     /// the body parsed by the shared [`Self::parse_module_decls`] loop, which
     /// hands control back at the next `namespace` header.
     pub(super) fn parse_impl_file(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IMPL_FILE));
+        self.builder.start_node(SyntaxKind::IMPL_FILE);
 
         // File-form mixing: a leading *whole-file* `module M` header (no `=`)
         // followed by a top-level `namespace` is invalid — a file is either
@@ -325,8 +324,7 @@ impl<'src> Parser<'src> {
             } else {
                 SyntaxKind::MODULE_OR_NAMESPACE
             };
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(kind));
+            self.builder.start_node_at(cp, kind);
             if illegal_prefix {
                 self.errors.push(ParseError {
                     message: "only '#' compiler directives may occur prior to the first \
@@ -347,10 +345,8 @@ impl<'src> Parser<'src> {
         // its (non-projected) children, so the file projects as a single empty
         // `AnonModule` — matching FCS — and the error is flagged.
         if leading_module_head && segment_count >= 2 {
-            self.builder.start_node_at(
-                file_cp,
-                FSharpLang::kind_to_raw(SyntaxKind::MODULE_OR_NAMESPACE),
-            );
+            self.builder
+                .start_node_at(file_cp, SyntaxKind::MODULE_OR_NAMESPACE);
             self.errors.push(ParseError {
                 message: "a 'namespace' may not follow a whole-file 'module' header".to_string(),
                 span: file_span,
@@ -372,8 +368,7 @@ impl<'src> Parser<'src> {
     /// differ. Sig declarations themselves land in phases 10.12–10.15; this slice
     /// parses the file/segment skeleton with empty bodies.
     pub(super) fn parse_sig_file(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::SIG_FILE));
+        self.builder.start_node(SyntaxKind::SIG_FILE);
         // File-form mixing (see `parse_impl_file`): a leading whole-file
         // `module M` header plus a real top-level namespace (≥2 segments) bails
         // the whole file to one empty `AnonModule`.
@@ -419,8 +414,7 @@ impl<'src> Parser<'src> {
             } else {
                 SyntaxKind::MODULE_OR_NAMESPACE
             };
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(kind));
+            self.builder.start_node_at(cp, kind);
             if illegal_prefix {
                 self.errors.push(ParseError {
                     message: "only '#' compiler directives may occur prior to the first \
@@ -436,10 +430,8 @@ impl<'src> Parser<'src> {
         }
         // File-form mixing — wrap all segments in one outer (empty) `AnonModule`.
         if leading_module_head && segment_count >= 2 {
-            self.builder.start_node_at(
-                file_cp,
-                FSharpLang::kind_to_raw(SyntaxKind::MODULE_OR_NAMESPACE),
-            );
+            self.builder
+                .start_node_at(file_cp, SyntaxKind::MODULE_OR_NAMESPACE);
             self.errors.push(ParseError {
                 message: "a 'namespace' may not follow a whole-file 'module' header".to_string(),
                 span: file_span,
@@ -1149,10 +1141,7 @@ impl<'src> Parser<'src> {
                         // `EXPR_DECL`. `needs_sep = false` lets the `let` begin its
                         // own decl even on the same line. (Mirrors the no-valid-
                         // carrier attribute path below.)
-                        self.builder.start_node_at(
-                            cp,
-                            FSharpLang::kind_to_raw(SyntaxKind::ATTRIBUTES_DECL),
-                        );
+                        self.builder.start_node_at(cp, SyntaxKind::ATTRIBUTES_DECL);
                         self.builder.finish_node();
                         needs_sep = false;
                         seen_decl = true;
@@ -1376,8 +1365,7 @@ impl<'src> Parser<'src> {
                     // attribute lists (under `cp`) in an `ATTRIBUTES_DECL`; leave
                     // `needs_sep = false` so the following expression — even on the
                     // same line — begins its own decl.
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::ATTRIBUTES_DECL));
+                    self.builder.start_node_at(cp, SyntaxKind::ATTRIBUTES_DECL);
                     self.builder.finish_node();
                     needs_sep = false;
                     seen_decl = true;
@@ -1486,7 +1474,7 @@ impl<'src> Parser<'src> {
 
             // Virtual tokens between decls (BlockSep, BlockBegin, …) are
             // LexFilter scaffolding Phase 1 doesn't model semantically; emit
-            // them into the green tree as zero-width ERROR placeholders
+            // them into the tree as zero-width ERROR placeholders
             // without generating a user-visible parse error. A BlockSep also
             // resets `needs_sep` — the offside separator is the canonical
             // decl boundary, so the next expr-starter is allowed to begin a
@@ -2113,8 +2101,7 @@ impl<'src> Parser<'src> {
 
     fn bump_layout_virtual(&mut self) {
         if self.raw_module_head_eq().is_some() || self.raw_leading_type_defn() {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         } else {
             self.bump_into(SyntaxKind::ERROR);
@@ -2288,8 +2275,7 @@ impl<'src> Parser<'src> {
             });
             SyntaxKind::ERROR
         };
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(kind));
+        self.builder.start_node_at(cp, kind);
         self.builder.finish_node();
     }
 
@@ -2448,8 +2434,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
         ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
 

@@ -61,7 +61,7 @@ impl<'src> Parser<'src> {
     fn parse_atomic_expr_inner(&mut self) -> EndsInAdjacentApp {
         // Checkpoint the head so the postfix tail can splice it under an
         // `APP_EXPR` / `DOT_GET_EXPR` / `DOT_INDEXED_GET_EXPR` wrapper. With no
-        // postfix following, the checkpoint goes unused and the green tree is
+        // postfix following, the checkpoint goes unused and the tree is
         // byte-identical to the bare head.
         let cp = self.builder.checkpoint();
         // The head's first-token start byte — the object's start for a trailing
@@ -334,11 +334,9 @@ impl<'src> Parser<'src> {
     /// trailing `.member` / application is left for the postfix tail. Caller has
     /// verified [`Self::qmark_opens_optional_arg`].
     fn parse_optional_named_arg_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_EXPR);
         self.bump_into(SyntaxKind::QMARK_TOK);
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         self.bump_into(SyntaxKind::IDENT_TOK);
         self.builder.finish_node(); // LONG_IDENT
         self.builder.finish_node(); // LONG_IDENT_EXPR
@@ -356,8 +354,7 @@ impl<'src> Parser<'src> {
     /// `*.Length` are FCS errors). The caller has verified the cursor is the
     /// lone `Op("*")`.
     pub(super) fn parse_index_wildcard(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INDEX_RANGE_EXPR));
+        self.builder.start_node(SyntaxKind::INDEX_RANGE_EXPR);
         self.bump_into(SyntaxKind::STAR_TOK);
         self.builder.finish_node();
     }
@@ -370,8 +367,7 @@ impl<'src> Parser<'src> {
     /// caller (`parse_atomic_expr`) has already verified the leading
     /// token is `Token::Null`.
     pub(super) fn parse_null_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::NULL_EXPR));
+        self.builder.start_node(SyntaxKind::NULL_EXPR);
         self.bump_into(SyntaxKind::NULL_TOK);
         self.builder.finish_node();
     }
@@ -397,8 +393,7 @@ impl<'src> Parser<'src> {
     /// `^`-sigil `^T.M` is FCS's `IndexFromEnd` (the `^` from-end index prefix),
     /// handled by the minus-level prefix path, not this atom.
     pub(super) fn parse_typar_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TYPAR_EXPR));
+        self.builder.start_node(SyntaxKind::TYPAR_EXPR);
         self.bump_into(SyntaxKind::QUOTE_TOK);
         if matches!(
             self.peek(),
@@ -472,8 +467,7 @@ impl<'src> Parser<'src> {
     /// matching the `%prec dot_lambda` (below `DOT`) precedence. The caller has
     /// verified [`Self::at_dot_lambda`].
     pub(super) fn parse_dot_lambda_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::DOT_LAMBDA_EXPR));
+        self.builder.start_node(SyntaxKind::DOT_LAMBDA_EXPR);
         self.bump_into(SyntaxKind::UNDERSCORE_TOK);
         // `bump_into` drains the `_`↔`.` trivia (the spaced `_ .Foo` form), and
         // a following `parse_atomic_expr` likewise absorbs the `.`↔member
@@ -525,8 +519,7 @@ impl<'src> Parser<'src> {
             }
             _ => unreachable!("parse_quote_expr entered without a quotation opener"),
         };
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::QUOTE_EXPR));
+        self.builder.start_node(SyntaxKind::QUOTE_EXPR);
         self.bump_into(SyntaxKind::LQUOTE_TOK);
         // Drain trivia between the opener and the inner expression so it
         // attaches to `QUOTE_EXPR` rather than the inner expr's node —
@@ -579,7 +572,7 @@ impl<'src> Parser<'src> {
         } else {
             (SyntaxKind::YIELD_OR_RETURN_EXPR, SyntaxKind::YIELD_TOK)
         };
-        self.builder.start_node(FSharpLang::kind_to_raw(node_kind));
+        self.builder.start_node(node_kind);
         self.bump_into(tok_kind);
         if self.peek_is_expr_start() {
             let expr_cp = self.builder.checkpoint();
@@ -594,8 +587,7 @@ impl<'src> Parser<'src> {
             // filtered/raw gate so an offside outer annotation parked behind the
             // yield's close-virtuals is left for the enclosing body.
             if self.at_typed_annotation_colon() {
-                self.builder
-                    .start_node_at(expr_cp, FSharpLang::kind_to_raw(SyntaxKind::TYPED_EXPR));
+                self.builder.start_node_at(expr_cp, SyntaxKind::TYPED_EXPR);
                 self.bump_into(SyntaxKind::COLON_TOK);
                 self.parse_type();
                 self.builder.finish_node();
@@ -625,8 +617,7 @@ impl<'src> Parser<'src> {
     /// as zero-width `ERROR`, then consume the trailing `Virtual::DeclEnd`.
     /// Caller must have verified `peek()` is `Virtual::DoBang`.
     pub(super) fn parse_do_bang(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::DO_BANG_EXPR));
+        self.builder.start_node(SyntaxKind::DO_BANG_EXPR);
 
         // `Virtual::DoBang` — rewrite of raw `Token::DoBang`. Same mechanics
         // as `Virtual::Then`: drain trivia to the virtual's start, emit the
@@ -682,8 +673,7 @@ impl<'src> Parser<'src> {
     /// via [`Self::consume_block_decl_end`]. Caller must have verified `peek()`
     /// is `Virtual::Do`.
     pub(super) fn parse_do_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::DO_EXPR));
+        self.builder.start_node(SyntaxKind::DO_EXPR);
 
         // `Virtual::Do` — rewrite of raw `Token::Do`. Same mechanics as
         // `parse_do_bang`'s `DO_BANG_TOK`: drain trivia to the virtual's start,
@@ -756,8 +746,7 @@ impl<'src> Parser<'src> {
     /// `Virtual::BlockEnd`/`DeclEnd` offside scaffolding around a binder.
     pub(super) fn eat_zero_width_virtual(&mut self, v: Virtual) -> bool {
         if matches!(self.peek(), Some((Ok(FilteredToken::Virtual(vv)), _)) if *vv == v) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
             true
         } else {
@@ -839,8 +828,7 @@ impl<'src> Parser<'src> {
     ///
     /// Caller must have verified `peek()` is `Virtual::Binder`.
     pub(super) fn parse_let_or_use_bang(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LET_OR_USE_EXPR));
+        self.builder.start_node(SyntaxKind::LET_OR_USE_EXPR);
 
         // Head binder `let!`/`use!`, its binding, and the binding's close.
         self.emit_binder_keyword(SyntaxKind::BINDER_TOK);
@@ -1061,10 +1049,8 @@ impl<'src> Parser<'src> {
         if layout_body_idx.is_some() {
             self.close_binder_binding();
             self.parse_bare_seq_body("expected expression after `let`");
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXPR_DECL));
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LET_OR_USE_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::EXPR_DECL);
+            self.builder.start_node_at(cp, SyntaxKind::LET_OR_USE_EXPR);
             self.builder.finish_node(); // LET_OR_USE_EXPR
             self.builder.finish_node(); // EXPR_DECL
             return;
@@ -1093,10 +1079,8 @@ impl<'src> Parser<'src> {
                 // `close_binder_binding` claims either terminator shape.
                 self.close_binder_binding();
                 self.parse_bare_seq_body("expected expression after `let … in`");
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXPR_DECL));
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LET_OR_USE_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::EXPR_DECL);
+                self.builder.start_node_at(cp, SyntaxKind::LET_OR_USE_EXPR);
                 self.builder.finish_node(); // LET_OR_USE_EXPR
                 self.builder.finish_node(); // EXPR_DECL
                 return;
@@ -1106,8 +1090,7 @@ impl<'src> Parser<'src> {
             // `BlockEnd`/`DeclEnd` as their usual zero-width ERRORs) so it does
             // not strand as an "unsupported token In" ERROR. FCS drops it
             // (`InKeyword = None`); the flat `Let` decl is already built.
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LET_DECL));
+            self.builder.start_node_at(cp, SyntaxKind::LET_DECL);
             self.builder.finish_node();
             self.close_binder_binding();
             return;
@@ -1115,8 +1098,7 @@ impl<'src> Parser<'src> {
         // Plain `let x = e` (no explicit `in`) or a recovered RHS: a flat
         // `SynModuleDecl.Let`, leaving the terminator `BlockEnd · DeclEnd` for
         // the loop (unchanged from the pre-let-in behaviour).
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LET_DECL));
+        self.builder.start_node_at(cp, SyntaxKind::LET_DECL);
         self.builder.finish_node();
     }
 
@@ -1251,8 +1233,7 @@ impl<'src> Parser<'src> {
     ///
     /// Caller must have verified `peek()` is `Virtual::Let` or a raw `Token::Let`.
     pub(super) fn parse_let_or_use_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LET_OR_USE_EXPR));
+        self.builder.start_node(SyntaxKind::LET_OR_USE_EXPR);
 
         // Head keyword, optional `rec`, first binding, and any `and`-chain (with
         // FCS error 576 for a non-recursive chain). Shared with the module-level
@@ -1330,7 +1311,7 @@ impl<'src> Parser<'src> {
             // Routed above to `parse_app_head_brace` (deferred node kind).
             BraceBody::AppExprHead => unreachable!("AppExprHead handled before this match"),
         };
-        self.builder.start_node(FSharpLang::kind_to_raw(node_kind));
+        self.builder.start_node(node_kind);
         self.bump_into(SyntaxKind::LBRACE_TOK);
         // Drain trivia between `{` and the body so it attaches to the brace node
         // rather than the inner expr's — symmetric to `parse_paren_expr`. Drain
@@ -1518,8 +1499,7 @@ impl<'src> Parser<'src> {
             || self.peek_obj_expr_interface_only()
             || is_bare_new;
         if is_obj_expr {
-            self.builder
-                .start_node_at(outer_cp, FSharpLang::kind_to_raw(SyntaxKind::OBJ_EXPR));
+            self.builder.start_node_at(outer_cp, SyntaxKind::OBJ_EXPR);
             // The base alias `as <ident>` (`baseSpec`), if present, before the
             // `with`. Shared with `inherit … as base` — emitted as `AS_TOK` (+
             // alias `IDENT_TOK`) and elided by the normaliser (the `Ident option`
@@ -1608,10 +1588,8 @@ impl<'src> Parser<'src> {
             // `computationExpr` body is a bare `sequentialExpr` (a trailing `:`
             // must be parenthesised), matching the generic CE brace path.
             self.finish_seq_block(body_cp, 1, false, SeqBody::Closed);
-            self.builder.start_node_at(
-                outer_cp,
-                FSharpLang::kind_to_raw(SyntaxKind::COMPUTATION_EXPR),
-            );
+            self.builder
+                .start_node_at(outer_cp, SyntaxKind::COMPUTATION_EXPR);
             self.bump_swallowed_closer(
                 SyntaxKind::RBRACE_TOK,
                 |t| matches!(t, Token::RBrace),
@@ -1705,8 +1683,7 @@ impl<'src> Parser<'src> {
                 _
             ))
         ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+            self.builder.token(SyntaxKind::ERROR, "");
             self.pos += 1;
         }
     }
@@ -1722,8 +1699,7 @@ impl<'src> Parser<'src> {
     /// the closer `|}` ([`Token::BarRBrace`]) is a *real* filtered token (not
     /// swallowed like `}`), bumped directly; and there is no `baseInfo`.
     pub(super) fn parse_anon_recd_expr(&mut self, is_struct: bool) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ANON_RECD_EXPR));
+        self.builder.start_node(SyntaxKind::ANON_RECD_EXPR);
         if is_struct {
             // `struct` keyword, then trivia up to the `{|`.
             self.bump_into(SyntaxKind::STRUCT_TOK);
@@ -1782,8 +1758,7 @@ impl<'src> Parser<'src> {
     /// ([`Self::parse_atomic_expr_head`]) has verified the cursor is at `[` or
     /// `[|`; any other token is `unreachable!`.
     pub(super) fn parse_array_or_list_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ARRAY_OR_LIST_EXPR));
+        self.builder.start_node(SyntaxKind::ARRAY_OR_LIST_EXPR);
         let is_array = match self.peek() {
             Some((Ok(FilteredToken::Raw(Token::LBrack)), _)) => {
                 self.bump_into(SyntaxKind::LBRACK_TOK);
@@ -1862,8 +1837,7 @@ impl<'src> Parser<'src> {
     /// requires ≥2 elements (`struct (1)` is a parse error), so a missing comma
     /// after the first element is reported.
     fn parse_struct_tuple_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TUPLE_EXPR));
+        self.builder.start_node(SyntaxKind::TUPLE_EXPR);
         self.bump_into(SyntaxKind::STRUCT_TOK);
         // The opening `(` is a real filtered token (only the closing `)` is
         // swallowed); `bump_into` drains the `struct`/`(` trivia before it.
@@ -2262,8 +2236,7 @@ impl<'src> Parser<'src> {
     /// `HighPrecedenceParenApp` marker). Caller has verified the cursor is at the
     /// raw `inherit` keyword.
     fn parse_record_inherit(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INHERIT_MEMBER));
+        self.builder.start_node(SyntaxKind::INHERIT_MEMBER);
         self.bump_into(SyntaxKind::INHERIT_TOK);
         if self.peek_starts_atomic_type() {
             self.parse_atomic_type();
@@ -2417,7 +2390,7 @@ impl<'src> Parser<'src> {
             );
         if with_follows {
             self.builder
-                .start_node_at(outer_cp, FSharpLang::kind_to_raw(SyntaxKind::RECORD_EXPR));
+                .start_node_at(outer_cp, SyntaxKind::RECORD_EXPR);
             self.parse_record_copy_update_tail();
             self.bump_swallowed_closer(
                 SyntaxKind::RBRACE_TOK,
@@ -2439,10 +2412,8 @@ impl<'src> Parser<'src> {
             // `allow_typed = false` — the `computationExpr` body is a bare
             // `sequentialExpr`), matching the plain CE brace arm.
             self.finish_seq_block(body_cp, 1, false, SeqBody::Closed);
-            self.builder.start_node_at(
-                outer_cp,
-                FSharpLang::kind_to_raw(SyntaxKind::COMPUTATION_EXPR),
-            );
+            self.builder
+                .start_node_at(outer_cp, SyntaxKind::COMPUTATION_EXPR);
             self.bump_swallowed_closer(
                 SyntaxKind::RBRACE_TOK,
                 |t| matches!(t, Token::RBrace),
@@ -2456,8 +2427,7 @@ impl<'src> Parser<'src> {
     /// One record field `F = e` → `RECORD_FIELD > [LONG_IDENT, EQUALS_TOK,
     /// <value-expr>]`. Caller must have checked [`Self::peek_is_record_field_start`].
     fn parse_record_field(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::RECORD_FIELD));
+        self.builder.start_node(SyntaxKind::RECORD_FIELD);
         // Field name — FCS's `RecordFieldName` (a `SynLongIdent`).
         self.parse_long_ident_path("record field");
         // `=`.
@@ -2602,8 +2572,7 @@ impl<'src> Parser<'src> {
     /// same payload helper under a different outer kind (see
     /// [`Self::parse_const_pat`]).
     pub(super) fn parse_const_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::CONST_EXPR));
+        self.builder.start_node(SyntaxKind::CONST_EXPR);
         self.parse_const_payload();
         self.builder.finish_node();
     }
@@ -3031,8 +3000,7 @@ impl<'src> Parser<'src> {
         // `LibraryOnlyUnionCaseFieldGet(Ident "cons", …)`, not over a one-segment
         // `LongIdent`.
         if !self.at_long_ident_segment() || self.at_cons_field_get(self.pos) {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::IDENT_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::IDENT_EXPR);
             self.builder.finish_node();
             return;
         }
@@ -3047,10 +3015,8 @@ impl<'src> Parser<'src> {
     /// head) and [`Self::parse_base_expr`] (the `base` keyword head, emitted as
     /// an `IDENT_TOK` matching FCS's `SynExpr.Ident("base")`).
     fn build_long_ident_expr(&mut self, cp: Checkpoint) {
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT_EXPR);
+        self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT);
         // Each iteration consumes `DOT IDENT`, or a trailing operator-value
         // segment `DOT ( op )` (FCS's `mkSynDot` folding an `opName`
         // qualification onto the long-ident — `Checked.(-)` →
@@ -3132,15 +3098,13 @@ impl<'src> Parser<'src> {
             // then builds the `DotIndexedGet` / `LibraryOnlyUnionCaseFieldGet`
             // (`base.[i]` = `DotIndexedGet(Ident "base", i)`), or reports the
             // trailing-dot error for a dangling `base.`.
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::IDENT_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::IDENT_EXPR);
             self.builder.finish_node();
         } else {
             // A bare `base` with no `.` qualification — an FCS parse error
             // ("Expected '.'"); emit the same diagnostic and keep `base` a
             // lossless `IDENT_EXPR`.
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::IDENT_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::IDENT_EXPR);
             self.builder.finish_node();
             let span = self
                 .peek()
@@ -3182,10 +3146,8 @@ impl<'src> Parser<'src> {
             // whether or not a `.`-qualification follows, so wrap it as a
             // one-segment `LONG_IDENT_EXPR` (its `LONG_IDENT` holds just the
             // `global` `IDENT_TOK`). Unlike `base`, no error is reported.
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+            self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT_EXPR);
+            self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT);
             self.builder.finish_node();
             self.builder.finish_node();
         }
@@ -3302,10 +3264,8 @@ impl<'src> Parser<'src> {
     /// operator (`op_ColonColon`), so only the field number is carried. The set
     /// form `… <- rhs` is the enclosing [`SyntaxKind::ASSIGN_EXPR`] over this get.
     fn parse_cons_field_get_tail(&mut self, cp: Checkpoint, head_start: Option<usize>) {
-        self.builder.start_node_at(
-            cp,
-            FSharpLang::kind_to_raw(SyntaxKind::LIBRARY_ONLY_FIELD_GET_EXPR),
-        );
+        self.builder
+            .start_node_at(cp, SyntaxKind::LIBRARY_ONLY_FIELD_GET_EXPR);
         self.bump_into(SyntaxKind::DOT_TOK);
         self.bump_into(SyntaxKind::LPAREN_TOK);
         self.bump_into(SyntaxKind::COLON_COLON_TOK);
@@ -3424,8 +3384,7 @@ impl<'src> Parser<'src> {
                         message: "trailing dot in long identifier path".to_string(),
                         span: dot_span,
                     });
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::DOT_MISSING_EXPR));
+                    self.builder.start_node_at(cp, SyntaxKind::DOT_MISSING_EXPR);
                     self.bump_into(SyntaxKind::DOT_TOK);
                     self.builder.finish_node();
                     return ends;
@@ -3461,8 +3420,7 @@ impl<'src> Parser<'src> {
                 // call (`f(x)(y)`) is markerless and so is left to
                 // [`Parser::parse_app_expr`]'s whitespace loop — matching FCS,
                 // which makes that second application `NonAtomic`.
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
                 self.bump_into(SyntaxKind::HIGH_PRECEDENCE_PAREN_APP_TOK);
                 let _ = self.parse_atomic_expr_head();
                 self.check_adjacent_malformed_numeric();
@@ -3483,8 +3441,7 @@ impl<'src> Parser<'src> {
                 // range / nested index inside the brackets falls out for free. A
                 // trailing `.Bar` or a second markerless `[j]` chains onto the
                 // *whole* application via this loop / the whitespace-app loop.
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
                 self.bump_into(SyntaxKind::HIGH_PRECEDENCE_BRACK_APP_TOK);
                 self.parse_array_or_list_expr();
                 self.builder.finish_node();
@@ -3592,8 +3549,7 @@ impl<'src> Parser<'src> {
     /// flows to the enclosing context's own recovery, keeping the round-trip
     /// lossless and the parser panic-free.
     fn parse_type_app_tail(&mut self, cp: Checkpoint) {
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPE_APP_EXPR));
+        self.builder.start_node_at(cp, SyntaxKind::TYPE_APP_EXPR);
         // HPA virtual: consume as zero-width ERROR.
         self.bump_into(SyntaxKind::ERROR);
         if matches!(
@@ -3632,10 +3588,8 @@ impl<'src> Parser<'src> {
     /// `Sequential` index, as in a list literal. The closer `]` is a real
     /// `RBRACK_TOK` — unlike `)`, the lex-filter does not swallow it.
     fn parse_dot_indexed_get_tail(&mut self, cp: Checkpoint) {
-        self.builder.start_node_at(
-            cp,
-            FSharpLang::kind_to_raw(SyntaxKind::DOT_INDEXED_GET_EXPR),
-        );
+        self.builder
+            .start_node_at(cp, SyntaxKind::DOT_INDEXED_GET_EXPR);
         self.bump_into(SyntaxKind::DOT_TOK);
         self.bump_into(SyntaxKind::LBRACK_TOK);
         // The index may be a from-end bound (`arr.[^1]`, whose `^` is an ordinary
@@ -3670,8 +3624,7 @@ impl<'src> Parser<'src> {
     /// [`SyntaxKind::PAREN_EXPR`] [`Self::parse_paren_expr`] builds). The caller
     /// has verified the cursor is at the `?`.
     fn parse_dynamic_tail(&mut self, cp: Checkpoint) {
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::DYNAMIC_EXPR));
+        self.builder.start_node_at(cp, SyntaxKind::DYNAMIC_EXPR);
         self.bump_into(SyntaxKind::QMARK_TOK);
         // The `dynamicArg` must be the next *raw* token. For incomplete input
         // inside a swallowed delimiter — `(a?)b`, `a?()b` — the LexFilter has
@@ -3734,8 +3687,7 @@ impl<'src> Parser<'src> {
             // folded here — it chains onto the whole `Dynamic` in the outer loop
             // (`a?b.c` = `DotGet(Dynamic(a, b), [c])`).
             Some((Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))), _)) => {
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::IDENT_EXPR));
+                self.builder.start_node(SyntaxKind::IDENT_EXPR);
                 self.bump_into(SyntaxKind::IDENT_TOK);
                 self.builder.finish_node();
             }
@@ -3770,10 +3722,8 @@ impl<'src> Parser<'src> {
     /// raw-adjacency check as [`Self::parse_postfix_tail`] /
     /// [`Self::parse_ident_expr`].
     fn parse_dot_get_tail(&mut self, cp: Checkpoint) {
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::DOT_GET_EXPR));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node_at(cp, SyntaxKind::DOT_GET_EXPR);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         // Each segment is a raw-adjacent `.` (not across a swallowed closer)
         // followed by an ident or an operator-value `( op )` / `(*)` / `( * )`.
         // A `.[` indexer (excluded by `at_long_ident_segment`) or any other
@@ -3857,7 +3807,7 @@ impl<'src> Parser<'src> {
     /// `LONG_IDENT_EXPR > LONG_IDENT > [LPAREN_TOK, IDENT_TOK(op), RPAREN_TOK]`,
     /// matching FCS's `identExpr: opName` (`pars.fsy:6962`), which builds a
     /// single-segment `SynExpr.LongIdent` whose ident is the mangled `op_*`
-    /// name and whose trivia is `OriginalNotationWithParen <op>`. Our green
+    /// name and whose trivia is `OriginalNotationWithParen <op>`. Our tree
     /// tree stores the raw operator token directly under `IDENT_TOK`; the
     /// FCS-side differential normaliser unwraps the trivia to the same source
     /// spelling. The caller has verified [`Self::at_paren_op_value`].
@@ -3870,10 +3820,8 @@ impl<'src> Parser<'src> {
     /// head-only HPA-argument path (see [`Self::parse_atomic_expr`]).
     pub(super) fn parse_paren_op_value_expr(&mut self, fold: bool) {
         let cp = self.builder.checkpoint();
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT_EXPR);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         self.consume_paren_op_value();
         if fold {
             self.consume_long_ident_qualification_segments();
@@ -3901,10 +3849,8 @@ impl<'src> Parser<'src> {
     /// the head-only HPA-argument path (see [`Self::parse_atomic_expr`]).
     pub(super) fn parse_active_pat_name_expr(&mut self, fold: bool) {
         let cp = self.builder.checkpoint();
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT_EXPR);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         // Emits the `ACTIVE_PAT_NAME` node (shared with pattern position) as a
         // child of the open `LONG_IDENT`.
         self.parse_active_pat_name();
@@ -3970,10 +3916,8 @@ impl<'src> Parser<'src> {
     /// `.(op)` folds onto the same long-ident.
     pub(super) fn parse_star_op_value_expr(&mut self, fold: bool) {
         let cp = self.builder.checkpoint();
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT_EXPR);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         self.consume_star_op_value();
         if fold {
             self.consume_long_ident_qualification_segments();
@@ -4047,8 +3991,7 @@ impl<'src> Parser<'src> {
     /// rparen`, *not* a `parenExprBody`, so a trait-call body there is an FCS
     /// error — `a?(^T : (static member …) x)` must be nested as `a?((…))`).
     fn parse_paren_expr_impl(&mut self, allow_trait_call: bool) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::PAREN_EXPR));
+        self.builder.start_node(SyntaxKind::PAREN_EXPR);
         self.bump_into(SyntaxKind::LPAREN_TOK);
         // Drain raw trivia between `(` and the inner expression so it
         // attaches to `PAREN_EXPR` rather than landing inside the inner
@@ -4162,7 +4105,7 @@ impl<'src> Parser<'src> {
         } else {
             SyntaxKind::PAREN_EXPR
         };
-        self.builder.start_node(FSharpLang::kind_to_raw(kind));
+        self.builder.start_node(kind);
         self.bump_into(SyntaxKind::BEGIN_TOK);
         if !empty {
             // Drain trivia between `begin` and the inner expression so it
@@ -4383,8 +4326,7 @@ impl<'src> Parser<'src> {
     /// gathers), which stops at the swallowed *outer* `)` that the caller then
     /// claims.
     fn parse_trait_call_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TRAIT_CALL_EXPR));
+        self.builder.start_node(SyntaxKind::TRAIT_CALL_EXPR);
         // The support — a single head-type typar `^a`, or the parenthesised
         // alternatives `( ^a or … )` (`at_trait_call_body` verified the shape).
         // The alternatives' *first* operand is a typar (`typarAlts`' base case) —
@@ -4527,8 +4469,7 @@ impl<'src> Parser<'src> {
         // belong to an outer `PAREN_EXPR`, the `#…#` body to the inner
         // `INLINE_IL_EXPR`. This mirrors `(e : T)` →
         // `PAREN_EXPR > [LPAREN_TOK, TYPED_EXPR, RPAREN_TOK]`.
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::PAREN_EXPR));
+        self.builder.start_node(SyntaxKind::PAREN_EXPR);
         self.bump_into(SyntaxKind::LPAREN_TOK);
         // Drain any `(`–`#` trivia under `PAREN_EXPR` (mirrors `parse_paren_expr`)
         // so it doesn't land inside the inline-IL body.
@@ -4536,8 +4477,7 @@ impl<'src> Parser<'src> {
             let start = next_span.start;
             self.drain_raw_up_to(start);
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INLINE_IL_EXPR));
+        self.builder.start_node(SyntaxKind::INLINE_IL_EXPR);
         // The opening `#`. Each step below first skips any offside layout
         // separators (`skip_inline_il_layout`) so a multiline inline IL parses
         // the same as its single-line form.

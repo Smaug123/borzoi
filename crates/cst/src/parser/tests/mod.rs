@@ -51,7 +51,7 @@ fn tree_contains_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
     root.descendants().any(|n| n.kind() == kind)
 }
 
-/// Round-trip property: concatenating all token texts in the green tree
+/// Round-trip property: concatenating all token texts in the tree
 /// reproduces the source exactly. This is the lossless invariant the
 /// trivia pipeline is supposed to maintain.
 fn assert_lossless(source: &str, parse: &Parse) {
@@ -61,7 +61,7 @@ fn assert_lossless(source: &str, parse: &Parse) {
             reconstructed.push_str(t.text());
         }
     }
-    assert_eq!(reconstructed, source, "green tree text != source");
+    assert_eq!(reconstructed, source, "tree text != source");
 }
 
 /// Compact shape of the (single) `INTERP_STRING_EXPR` in `parse`:
@@ -140,7 +140,7 @@ fn first_binding_head_pat(root: &SyntaxNode) -> crate::syntax::Pat {
 
 /// Count the direct token children of `node` with the given `kind`.
 /// Used by the list/array-pattern unit tests to assert delimiter /
-/// separator presence without pinning the full green shape.
+/// separator presence without pinning the full tree shape.
 fn count_tok(node: &SyntaxNode, kind: SyntaxKind) -> usize {
     node.children_with_tokens()
         .filter_map(|el| el.into_token())

@@ -21,8 +21,7 @@ impl<'src> Parser<'src> {
         self.parse_atomic_expr();
         self.check_adjacent_malformed_numeric();
         while self.at_app_continuation() {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
             self.parse_arg_expr();
             self.check_adjacent_malformed_numeric();
             self.builder.finish_node();
@@ -145,8 +144,7 @@ impl<'src> Parser<'src> {
                     self.push_missing_operand_error();
                     EndsInAdjacentApp::No
                 };
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+                self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
                 self.builder.finish_node();
                 ends
             }
@@ -189,8 +187,7 @@ impl<'src> Parser<'src> {
     ///
     /// Returns the operand's [`EndsInAdjacentApp`] flag.
     pub(super) fn parse_address_of_atomic(&mut self, op_kind: SyntaxKind) -> EndsInAdjacentApp {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ADDRESS_OF_EXPR));
+        self.builder.start_node(SyntaxKind::ADDRESS_OF_EXPR);
         self.bump_into(op_kind);
         let ends = if self.peek_starts_atomic_expr() {
             self.parse_atomic_expr_flagged()
@@ -357,7 +354,7 @@ impl<'src> Parser<'src> {
     /// raw token is immediately adjacent — no whitespace, no comment).
     /// Used by [`Parser::at_app_continuation`] to mirror FCS's
     /// malformed-numeric rule at the parser layer. Inspecting raw
-    /// tokens (not the green tree) keeps the check cheap and means
+    /// tokens (not the tree) keeps the check cheap and means
     /// `(1)` — whose last raw is `)` — is correctly treated as a
     /// non-numeric atom even though it wraps a numeric literal.
     ///

@@ -36,8 +36,7 @@ impl<'src> Parser<'src> {
     /// LexFilter-swallowed, recovered from the raw stream by
     /// [`Self::bump_swallowed_closer`].
     pub(super) fn parse_record_repr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::RECORD_REPR));
+        self.builder.start_node(SyntaxKind::RECORD_REPR);
         // Optional repr-level access modifier — `type T = private { … }`
         // (`SynTypeDefnSimpleRepr.Record.accessibility`). Consumed as
         // `ACCESS_TOK` and elided by the normaliser, like other accessibility.
@@ -164,8 +163,7 @@ impl<'src> Parser<'src> {
     /// we consume a stray access modifier as `ACCESS_TOK` and record that error
     /// so the field shape stays predictable.
     fn parse_record_field_decl(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::RECORD_FIELD_DECL));
+        self.builder.start_node(SyntaxKind::RECORD_FIELD_DECL);
         // Leading attribute lists (phase 10.7) — `{ [<A>] X : int }`, FCS's
         // `SynField.attributes` (field 0). They precede the `mutable` keyword and
         // the field name, as leading children of the `RECORD_FIELD_DECL`. An
@@ -389,8 +387,7 @@ impl<'src> Parser<'src> {
         } else {
             SyntaxKind::UNION_REPR
         };
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(kind));
+        self.builder.start_node_at(cp, kind);
         self.builder.finish_node();
         is_enum || saw_bar
     }
@@ -495,8 +492,7 @@ impl<'src> Parser<'src> {
             }
             self.parse_enum_case_value();
             *enum_cases += 1;
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::ENUM_CASE));
+            self.builder.start_node_at(cp, SyntaxKind::ENUM_CASE);
             self.builder.finish_node();
             return;
         }
@@ -513,8 +509,7 @@ impl<'src> Parser<'src> {
             self.bump_into(SyntaxKind::COLON_TOK);
             self.parse_top_type();
             union_case_spans.push(case_span);
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::UNION_CASE));
+            self.builder.start_node_at(cp, SyntaxKind::UNION_CASE);
             self.builder.finish_node();
             return;
         }
@@ -523,8 +518,7 @@ impl<'src> Parser<'src> {
         // exception-definition case data, phase 9.15a).
         self.parse_opt_union_case_of_fields();
         union_case_spans.push(case_span);
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::UNION_CASE));
+        self.builder.start_node_at(cp, SyntaxKind::UNION_CASE);
         self.builder.finish_node();
     }
 
@@ -675,12 +669,8 @@ impl<'src> Parser<'src> {
     /// itself and we simply `bump_into` the keyword.
     pub(super) fn parse_exception_defn_at(&mut self, cp: Option<Checkpoint>) {
         match cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXCEPTION_DEFN)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::EXCEPTION_DEFN)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::EXCEPTION_DEFN),
+            None => self.builder.start_node(SyntaxKind::EXCEPTION_DEFN),
         }
         // The shared `exconCore` (`pars.fsy:exconCore`): `exception` keyword,
         // after-keyword attributes, optional accessibility, the case, and the
@@ -776,8 +766,7 @@ impl<'src> Parser<'src> {
             });
         }
         self.parse_opt_union_case_of_fields();
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::UNION_CASE));
+        self.builder.start_node_at(cp, SyntaxKind::UNION_CASE);
         self.builder.finish_node(); // UNION_CASE
         // Optional `= path` abbreviation (`exconRepr: EQUALS path`). The `=`
         // here is the abbreviation target, not an enum value — which is why the
@@ -815,12 +804,8 @@ impl<'src> Parser<'src> {
     /// `SynExceptionDefnRepr.attributes`). `None` is the plain form.
     pub(super) fn parse_sig_exception_defn_at(&mut self, cp: Option<Checkpoint>) {
         match cp {
-            Some(cp) => self
-                .builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXCEPTION_DEFN)),
-            None => self
-                .builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::EXCEPTION_DEFN)),
+            Some(cp) => self.builder.start_node_at(cp, SyntaxKind::EXCEPTION_DEFN),
+            None => self.builder.start_node(SyntaxKind::EXCEPTION_DEFN),
         }
         self.parse_exception_repr_core();
         // The `with member …` augmentation (`opt_classSpfn`, phase 10.15 second
@@ -946,8 +931,7 @@ impl<'src> Parser<'src> {
     /// bare `|` must terminate the field rather than be absorbed. `parse_app_type`
     /// also stops at the enclosing `*`, so the `*` separates *fields*.
     fn parse_union_case_field(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::UNION_CASE_FIELD));
+        self.builder.start_node(SyntaxKind::UNION_CASE_FIELD);
         // Named field `name : T` — an ident immediately followed by a colon.
         if let Some((Token::Ident(_) | Token::QuotedIdent(_), id_span)) =
             self.next_non_trivia_raw_at_pos_with_span()

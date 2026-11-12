@@ -1,7 +1,7 @@
 use super::super::*;
 use super::*;
 
-/// Phase 10.1 — a typed code quotation `<@ 1 @>`. Pins the green-tree
+/// Phase 10.1 — a typed code quotation `<@ 1 @>`. Pins the tree
 /// shape (`QUOTE_EXPR > [LQUOTE_TOK, CONST_EXPR, RQUOTE_TOK]`), that
 /// the inner expression and both delimiters land as children, and that
 /// the `is_raw` facade reads `false` from the `<@` opener text.
@@ -87,7 +87,7 @@ fn quote_mismatch_recovers_with_error() {
 }
 
 /// Phase 10.2 — a bare computation expression `{ 1 }`. Pins the
-/// green-tree shape, including that the swallowed `}` is recovered from
+/// tree shape, including that the swallowed `}` is recovered from
 /// the raw stream as a `RBRACE_TOK` child of `COMPUTATION_EXPR`.
 #[test]
 fn computation_expr_bare_shape() {
@@ -145,7 +145,7 @@ fn computation_expr_builder_application() {
     );
 }
 
-/// Record expression `{ F = 1 }` — full green shape. The leading longident `F`
+/// Record expression `{ F = 1 }` — full tree shape. The leading longident `F`
 /// followed by `=` selects `RECORD_EXPR > [LBRACE_TOK, RECORD_FIELD >
 /// [LONG_IDENT, EQUALS_TOK, <value>], RBRACE_TOK]` over a computation
 /// expression; the `}` is the swallowed closer.
@@ -1538,7 +1538,7 @@ fn merged_else_if_preserves_intervening_block_comment() {
     );
 
     // The comment must be addressable as a `BLOCK_COMMENT` token
-    // in the green tree (not subsumed into a keyword's text).
+    // in the tree (not subsumed into a keyword's text).
     // Walking `descendants_with_tokens` and looking up its kind
     // catches the regression where the entire `else (* c *) if`
     // run was emitted as one `ELIF_TOK`.
@@ -1690,7 +1690,7 @@ fn elif_chain_at_let_rhs_then_sibling_decl() {
 
 /// Phase 5.2 — `fun x y -> x`: curried two-argument form.
 /// `FunExpr.args()` must yield two `Pat::Named` children in source
-/// order. Since our green tree stores the args flat under one
+/// order. Since our tree stores the args flat under one
 /// `FUN_EXPR` (the moral equivalent of FCS's `parsedData` cache),
 /// both args appear as siblings rather than via the curried
 /// `Lambda(_, Lambda(_, …))` nesting.
@@ -2350,7 +2350,7 @@ fn match_as_let_rhs() {
 }
 
 /// Phase 5.M.2 — `match x with A -> 1 | B -> 2`: two single-line clauses
-/// separated by a bare `|`. Pins the full green shape. The first clause
+/// separated by a bare `|`. Pins the full tree shape. The first clause
 /// carries no `BAR_TOK`; the second clause owns its `BAR_TOK` (mirroring
 /// FCS's per-clause `BarRange`). The single-line LexFilter shape emits
 /// only ONE trailing `RightBlockEnd` (drained as the zero-width `ERROR`
@@ -2448,7 +2448,7 @@ fn match_leading_bar_via_accessors() {
 }
 
 /// Phase 5.M.3 — `match x with A when y -> 1`: the minimal `when`-guard
-/// form. Pins the full green shape: a `WHEN_TOK` + guard `Expr` slot in
+/// form. Pins the full tree shape: a `WHEN_TOK` + guard `Expr` slot in
 /// between the clause pattern and `RARROW_TOK`. The guard is a plain
 /// `IDENT_EXPR` (`y`); the result is a `CONST_EXPR` (`1`). The two
 /// trailing zero-width `ERROR` leaves are the same `RightBlockEnd` / `End`
@@ -2545,7 +2545,7 @@ fn match_when_via_accessors() {
     );
 }
 
-/// Phase 10.4c — `match! x with A -> 1`: full green-shape pin. Identical to
+/// Phase 10.4c — `match! x with A -> 1`: full tree-shape pin. Identical to
 /// `match_single_clause_tree_shape` apart from the `MATCH_BANG_EXPR` node and
 /// the `MATCH_BANG_TOK` keyword (`match!`, six chars), confirming `match!`
 /// reuses the `match` body verbatim (scrutinee + `with` + the shared clause
@@ -2625,7 +2625,7 @@ fn match_bang_via_accessors() {
     );
 }
 
-/// Phase 10.4d — `while c do f`: full green-shape pin. The condition is the
+/// Phase 10.4d — `while c do f`: full tree-shape pin. The condition is the
 /// leading `Expr` child, the body the trailing one; `DO_TOK` separates them and
 /// the `BlockBegin`/`BlockEnd`/`DeclEnd` SeqBlock scaffolding is consumed as
 /// `ERROR` leaves (the same shape `do!` produces).
@@ -2693,7 +2693,7 @@ fn while_via_accessors() {
     );
 }
 
-/// Top-level `do f`: full green-shape pin. The decl is a `SynModuleDecl.Expr`
+/// Top-level `do f`: full tree-shape pin. The decl is a `SynModuleDecl.Expr`
 /// (`EXPR_DECL`) wrapping a `SynExpr.Do` (`DO_EXPR`); `DO_TOK` leads, the body
 /// is the trailing `Expr` child, and the `BlockBegin`/`BlockEnd`/`DeclEnd`
 /// SeqBlock scaffolding is consumed as `ERROR` leaves (the `do!`/`while` shape).
@@ -2789,7 +2789,7 @@ IMPL_FILE@0..18
     assert_eq!(debug_tree(&parse.root), expected);
 }
 
-/// Phase 10.4e — `while! c do f`: full green-shape pin. Identical to
+/// Phase 10.4e — `while! c do f`: full tree-shape pin. Identical to
 /// `while_tree_shape` apart from the `WHILE_BANG_EXPR` node and the
 /// `WHILE_BANG_TOK` keyword (`while!`, six chars), confirming `while!` routes
 /// through the same `parse_while_loop` as plain `while`.
@@ -2857,7 +2857,7 @@ fn while_bang_via_accessors() {
     );
 }
 
-/// `for x in xs do f`: full green-shape pin of a `ForEach`. The binder
+/// `for x in xs do f`: full tree-shape pin of a `ForEach`. The binder
 /// pattern is a `NAMED_PAT` child, `IN_TOK` separates it from the enumerable
 /// collection (the leading `Expr` child), `DO_TOK` from the body (the trailing
 /// `Expr` child), and the `BlockBegin`/`BlockEnd`/`DeclEnd` SeqBlock scaffolding
@@ -2936,7 +2936,7 @@ fn for_each_via_accessors() {
     );
 }
 
-/// `for x in xs -> g x`: full green-shape pin of the comprehension arrow form.
+/// `for x in xs -> g x`: full tree-shape pin of the comprehension arrow form.
 /// The body is a `YIELD_OR_RETURN_EXPR > [RARROW_TOK, <expr>]` (FCS's
 /// `YieldOrReturn((true, false), …)`), and the one-sided SeqBlock close trails
 /// as a single zero-width `ERROR`.
@@ -3011,7 +3011,7 @@ fn for_each_arrow_body_is_yield() {
     );
 }
 
-/// `for i = 1 to 10 do f`: full green-shape pin of a range `For`. The loop
+/// `for i = 1 to 10 do f`: full tree-shape pin of a range `For`. The loop
 /// variable is a bare `IDENT_TOK`, `EQUALS_TOK` precedes the start bound, the
 /// `TO_TOK` direction keyword the end bound, and `DO_TOK` the body; the three
 /// `Expr` children are start, end, body in order, with the SeqBlock scaffolding
@@ -3101,7 +3101,7 @@ fn for_range_via_accessors() {
 }
 
 /// Phase 5.M.4 — `function A -> 1`: the minimal `function` (MatchLambda)
-/// form. Pins the full green shape:
+/// form. Pins the full tree shape:
 /// `MATCH_LAMBDA_EXPR > [FUNCTION_TOK, MATCH_CLAUSE > [<pat>,
 /// RARROW_TOK, <result>, ε]]` with no scrutinee and no `with`. The two
 /// zero-width `ERROR` leaves are the drained `Virtual::RightBlockEnd`
@@ -3236,7 +3236,7 @@ fn match_seq_body_via_accessors() {
     );
 }
 
-/// Phase 5.M.5 — full green-tree shape pin for an offside sequential
+/// Phase 5.M.5 — full tree shape pin for an offside sequential
 /// clause body. The two statements and the `Virtual::BlockSep`-derived
 /// zero-width ERROR between them are wrapped in a single
 /// `SEQUENTIAL_EXPR` under the `MATCH_CLAUSE`, followed by the clause's
@@ -3285,7 +3285,7 @@ IMPL_FILE@0..34
 }
 
 /// Phase 10.20a — `try x with _ -> 0`: the single-line `try`/`with` exception
-/// handler. Pins the green-tree shape `TRY_EXPR > [TRY_TOK, <body>,
+/// handler. Pins the tree shape `TRY_EXPR > [TRY_TOK, <body>,
 /// ERROR(RightBlockEnd), WITH_TOK, MATCH_CLAUSE, ERROR(End)]` — the body is the
 /// leading `Expr` child, the one-sided SeqBlock close and the trailing
 /// `CtxtMatchClauses` close are zero-width ERROR leaves, and the `with`-clause
@@ -3415,7 +3415,7 @@ fn minus_prefix_over_try_records_diagnostic() {
 }
 
 /// Phase 10.20b — `try x finally ()`: the single-line `try`/`finally`
-/// expression. Pins the green-tree shape `TRY_EXPR > [TRY_TOK, <body>,
+/// expression. Pins the tree shape `TRY_EXPR > [TRY_TOK, <body>,
 /// ERROR(RightBlockEnd), FINALLY_TOK, ERROR(BlockBegin), <finally-body>, …]` —
 /// the try body is the leading `Expr` child, `finally` a raw passthrough, and
 /// the finally body a regular block (here the unit literal `()`).

@@ -381,8 +381,7 @@ impl<'src> Parser<'src> {
             } else {
                 self.push_missing_operand_error();
             }
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+            self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
             self.builder.finish_node();
             return;
         }
@@ -411,8 +410,7 @@ impl<'src> Parser<'src> {
     /// precedence level (`parse_minus_expr` again) so chained forms
     /// like `&&x` over `&(...)`, or `& - 1`, lower the right way.
     pub(super) fn parse_address_of(&mut self, op_kind: SyntaxKind) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ADDRESS_OF_EXPR));
+        self.builder.start_node(SyntaxKind::ADDRESS_OF_EXPR);
         self.bump_into(op_kind);
         self.maybe_warn_keyword_after_prefix();
         // As with the `-`/`+`/`%` prefixes, the `&`/`&&` operand is a
@@ -439,8 +437,7 @@ impl<'src> Parser<'src> {
     /// no operand records a clean missing-operand error. Caller has verified the
     /// cursor is at `Token::Op("^")`.
     pub(super) fn parse_from_end_expr(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INDEX_FROM_END_EXPR));
+        self.builder.start_node(SyntaxKind::INDEX_FROM_END_EXPR);
         self.bump_into(SyntaxKind::HAT_TOK);
         // Like the other `minusExpr` prefixes, a `declExpr`-level keyword operand
         // (`^ if …`, `^ match …`) is an FCS error (FS0010); surface the same
@@ -470,7 +467,7 @@ impl<'src> Parser<'src> {
     /// `minusExpr`, not `declExpr`); a missing operand records the
     /// missing-operand error and closes the node losslessly.
     pub(super) fn parse_inferred_cast(&mut self, expr_kind: SyntaxKind, kw_kind: SyntaxKind) {
-        self.builder.start_node(FSharpLang::kind_to_raw(expr_kind));
+        self.builder.start_node(expr_kind);
         self.bump_into(kw_kind);
         self.maybe_warn_keyword_after_prefix();
         // Like the `-`/`&`/`%` prefixes, the `upcast`/`downcast` operand is a
@@ -537,7 +534,7 @@ impl<'src> Parser<'src> {
     /// losslessly (FCS errors too — for `assert` with its dedicated "not a
     /// first-class value" diagnostic, for `lazy` with a plain syntax error).
     pub(super) fn parse_lazy_or_assert(&mut self, expr_kind: SyntaxKind, kw_kind: SyntaxKind) {
-        self.builder.start_node(FSharpLang::kind_to_raw(expr_kind));
+        self.builder.start_node(expr_kind);
 
         // Emit the keyword. The same-line form arrives as the raw `Token::Lazy`/
         // `Token::Assert` (a plain `bump_into`); the offside form arrives as the
@@ -674,8 +671,7 @@ impl<'src> Parser<'src> {
     /// `( … )` has its `)` stripped by LexFilter, so the operand must not be
     /// dragged across it (`(fixed) y`).
     pub(super) fn parse_fixed(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::FIXED_EXPR));
+        self.builder.start_node(SyntaxKind::FIXED_EXPR);
         self.bump_into(SyntaxKind::FIXED_TOK);
         if self.at_swallowed_seq_closer() {
             // `fixed` is the last token inside a paren/brace, so LexFilter has
@@ -729,8 +725,7 @@ impl<'src> Parser<'src> {
         // comparing against it tells whether *this* `new` is that head — the only
         // `new` allowed to become the bare `{ new T }` object expression below.
         let new_span = self.peek().map(|(_, s)| s.clone());
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::NEW_EXPR));
+        self.builder.start_node(SyntaxKind::NEW_EXPR);
         self.bump_into(SyntaxKind::NEW_TOK);
         // The constructed type — FCS's `atomType`.
         if self.peek_starts_atomic_type() {
@@ -888,14 +883,12 @@ impl<'src> Parser<'src> {
     /// infix path (see [`Parser::emit_infix_op_as_long_ident`]). FCS
     /// stamps `IdentTrivia.OriginalNotation` with the source text and
     /// mangles `Ident.idText` (`op_UnaryNegation`, `op_BangPlus`, …);
-    /// our green-tree token *is* the source text, which the FCS-side
+    /// our token *is* the source text, which the FCS-side
     /// normaliser already unwraps via `OriginalNotation` so the diff
     /// lines up.
     pub(super) fn emit_prefix_op_as_long_ident(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_EXPR);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         self.bump_into(SyntaxKind::IDENT_TOK);
         self.builder.finish_node();
         self.builder.finish_node();
@@ -1424,14 +1417,12 @@ impl<'src> Parser<'src> {
     /// shape FCS's `mkSynOperator` produces. FCS additionally mangles
     /// the source text into `Ident.idText = "op_Addition"` and stashes
     /// the original in `IdentTrivia.OriginalNotation "+"`; we keep the
-    /// source text directly in the green-tree token (matching the
+    /// source text directly in the token (matching the
     /// `OriginalNotation` channel) and let the FCS-side normaliser
     /// unwrap `OriginalNotation` so the two sides diff cleanly.
     pub(super) fn emit_infix_op_as_long_ident(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_EXPR));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_EXPR);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         self.bump_into(SyntaxKind::IDENT_TOK);
         self.builder.finish_node();
         self.builder.finish_node();
@@ -1458,8 +1449,7 @@ impl<'src> Parser<'src> {
             self.push_missing_operand_error();
             EndsInAdjacentApp::No
         };
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
+        self.builder.start_node_at(cp, SyntaxKind::APP_EXPR);
         self.builder.finish_node();
         ends
     }

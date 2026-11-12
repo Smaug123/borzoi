@@ -16,7 +16,7 @@ IMPL_FILE@0..0
 /// Phase 10.11 — an empty signature file is a `SIG_FILE` root holding one empty
 /// `MODULE_OR_NAMESPACE` (the implicit `AnonModule`), mirroring the empty `.fs`.
 #[test]
-fn sig_empty_green_shape() {
+fn sig_empty_tree_shape() {
     let parse = parse_sig("");
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
     let expected = "\
@@ -2666,7 +2666,7 @@ fn nested_decl_fs58_gated_off_below_f10() {
 /// Phase 8.2 — whole-file `module Foo` (no `=`) is a `NamedModule`: the
 /// swallowed raw `module` is claimed as `MODULE_TOK`, the name lands in a
 /// bare `LONG_IDENT`, and the body (`let x = 1`) flows in as the module's
-/// decls. Pins the full green shape including the header-before-body
+/// decls. Pins the full tree shape including the header-before-body
 /// layout (the inter-keyword whitespace drains as a sibling).
 #[test]
 fn named_module_header_whole_file() {
@@ -2903,10 +2903,10 @@ fn namespace_header_rec_dotted() {
 /// whole-file `NamedModule` header) but its sole decl is now a
 /// `NESTED_MODULE_DECL`: the swallowed `module` is claimed as `MODULE_TOK`,
 /// the name lands in a `LONG_IDENT`, and the offside body flows in as the
-/// nested module's decls. Pins the full green shape — including the trailing
+/// nested module's decls. Pins the full tree shape — including the trailing
 /// `OBLOCKEND`/`ODECLEND`/`OBLOCKEND` virtuals kept as zero-width `ERROR`s.
 #[test]
-fn nested_module_green_shape() {
+fn nested_module_tree_shape() {
     let source = "module Foo =\n    let x = 1\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -3154,9 +3154,9 @@ fn nested_module_doubly_nested_facade() {
 /// Phase 8.5 — `module Foo = Bar.Baz` is a `MODULE_ABBREV_DECL`: the LHS name
 /// is the first `LONG_IDENT`, the abbreviated path the second (parsed as a bare
 /// path, mirroring FCS's `ident: Ident * longId: LongIdent`). Pins the full
-/// green shape including the `OBLOCKBEGIN`/`OBLOCKEND` zero-width `ERROR`s.
+/// tree shape including the `OBLOCKBEGIN`/`OBLOCKEND` zero-width `ERROR`s.
 #[test]
-fn module_abbrev_green_shape() {
+fn module_abbrev_tree_shape() {
     let source = "module Foo = Bar.Baz\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -3303,7 +3303,7 @@ fn trailing_dot_long_ident_is_error() {
 
 /// A backticked segment can appear anywhere in the path. Pins that the
 /// dot-loop accepts `QuotedIdent` for trailing segments, not just
-/// `Ident`. FCS's `Ident.idText` strips backticks; the green tree keeps
+/// `Ident`. FCS's `Ident.idText` strips backticks; the tree keeps
 /// them.
 #[test]
 fn long_ident_with_backticked_segment() {
@@ -3351,7 +3351,7 @@ IMPL_FILE@0..4
     assert_lossless(source, &parse);
 }
 
-/// Leading and trailing trivia must survive into the green tree with
+/// Leading and trailing trivia must survive into the tree with
 /// the right source offsets — and leading trivia must land as a
 /// *sibling* of the decl, not a child. LSP range queries walk
 /// ancestors-of-a-token; if `// c\n` or leading whitespace lived
@@ -3501,7 +3501,7 @@ fn do_int_parses_cleanly() {
 /// `Virtual::BlockSep` at `[3..4)` — the virtual's span sits *inside*
 /// the raw. Draining only to `span.start` (3) wouldn't flush the `\r\n`
 /// and the zero-width BlockSep would land before the newline in the
-/// green tree, breaking source-order/range fidelity. The virtual must
+/// tree, breaking source-order/range fidelity. The virtual must
 /// appear after the NEWLINE token.
 #[test]
 fn crlf_blocksep_lands_after_newline() {
@@ -3547,10 +3547,10 @@ fn crlf_blocksep_lands_after_newline() {
 
 /// `TYPE_DEFNS > TYPE_DEFN`: the swallowed `type` is claimed as `TYPE_TOK`, the
 /// name lands in a `LONG_IDENT`, and the abbreviation RHS is wrapped in a
-/// `TYPE_ABBREV` repr node. Pins the full green shape — including the
+/// `TYPE_ABBREV` repr node. Pins the full tree shape — including the
 /// `OBLOCKBEGIN`/`OBLOCKEND` virtuals kept as zero-width `ERROR`s.
 #[test]
-fn type_abbrev_green_shape() {
+fn type_abbrev_tree_shape() {
     let source = "type T = int\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -3619,12 +3619,12 @@ fn type_abbrev_facade() {
 /// FCS's `tyconDefn` reduces to its bare `typeNameInfo` alternative, yielding a
 /// `SynTypeDefnSimpleRepr.None` repr with **no parse error**; the `Measure`
 /// attribute is an ordinary type-header attribute (the bodyless-vs-required
-/// distinction is a type-checker concern, not a parser one). The green
+/// distinction is a type-checker concern, not a parser one). The
 /// `TYPE_DEFN` carries the attribute list, the `type` keyword and the name, and
 /// **no repr node** and no `EQUALS_TOK`. Before this the parser demanded an `=`
 /// and flagged "expected `=` in type definition".
 #[test]
-fn type_bodyless_measure_green_shape() {
+fn type_bodyless_measure_tree_shape() {
     let source = "[<Measure>] type m\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -3685,7 +3685,7 @@ fn type_bodyless_facade() {
 /// A bodyless type with a primary constructor but no `=` — `type C(x)`. FCS's
 /// `recover` alternative accepts this without error: the repr stays
 /// `SynTypeDefnSimpleRepr.None` and the constructor is parsed (it lands in the
-/// outer members slot on FCS's side). We keep the `IMPLICIT_CTOR` green child
+/// outer members slot on FCS's side). We keep the `IMPLICIT_CTOR` child
 /// and emit no repr node and no "only class types may take value arguments"
 /// diagnostic (that fires only on the `= <non-class-repr>` path).
 #[test]
@@ -3715,11 +3715,11 @@ fn type_bodyless_ctor_no_error() {
 }
 
 /// The canonical delegate body — `type T = delegate of int -> int`. Pins the
-/// exact green shape: a `DELEGATE_REPR` holding `[DELEGATE_TOK, OF_TOK,
+/// exact tree shape: a `DELEGATE_REPR` holding `[DELEGATE_TOK, OF_TOK,
 /// FUN_TYPE]`, no errors. The differential test covers the normalised AST; this
 /// guards the surface tree the LSP serves.
 #[test]
-fn delegate_basic_green_shape() {
+fn delegate_basic_tree_shape() {
     let source = "type T = delegate of int -> int\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -3881,11 +3881,11 @@ fn delegate_bare_augmentation_errors() {
 
 /// An `and`-chain of bodyless types — `type a\nand b`. FCS keeps these in **one**
 /// `SynModuleDecl.Types` (the `and` continues the chain even when both bodies are
-/// absent), so the green tree is a single `TYPE_DEFNS` holding two `TYPE_DEFN`s,
+/// absent), so the tree is a single `TYPE_DEFNS` holding two `TYPE_DEFN`s,
 /// each with no repr node. Guards that the bodyless path still feeds the
 /// `and`-continuation gate.
 #[test]
-fn type_bodyless_and_chain_green_shape() {
+fn type_bodyless_and_chain_tree_shape() {
     let source = "type a\nand b\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4081,7 +4081,7 @@ fn two_type_decls_are_two_groups() {
 /// children of the first `TYPE_DEFN`), parsing cleanly. Pins the facade
 /// (`TypeDefn::attributes()`) and that the `type T = int` body is unaffected.
 #[test]
-fn type_defn_attribute_green_shape() {
+fn type_defn_attribute_tree_shape() {
     use crate::syntax::{AstNode, ImplFile, ModuleDecl};
     let source = "[<Foo>] type T = int\n";
     let parse = parse(source);
@@ -4123,7 +4123,7 @@ fn type_defn_attribute_green_shape() {
 /// column-0 name emits; we mirror that by draining the `BlockSep` after the
 /// after-keyword attribute list in `parse_type_defn_header`.
 #[test]
-fn type_attr_offside_name_after_keyword_green_shape() {
+fn type_attr_offside_name_after_keyword_tree_shape() {
     use crate::syntax::{AstNode, ImplFile, ModuleDecl};
     let source = "type [<A>]\nT = int\n";
     let parse = parse(source);
@@ -4158,7 +4158,7 @@ fn type_attr_offside_name_after_keyword_green_shape() {
 /// keyword, so the post-`type` separator is left in place and the name parse
 /// records a clean error — we must **not** silently accept it. (Distinct from
 /// the *after*-keyword offside name `type [<A>]⏎T`, which FCS accepts and we
-/// support — see `type_attr_offside_name_after_keyword_green_shape`.) Pinned
+/// support — see `type_attr_offside_name_after_keyword_tree_shape`.) Pinned
 /// lossless + erroring.
 #[test]
 fn type_attr_offside_name_after_type_is_error() {
@@ -4179,7 +4179,7 @@ fn type_attr_offside_name_after_type_is_error() {
 /// (established by the first definition's drained attribute separator) rather
 /// than `prev_closed` to keep going — matching FCS.
 #[test]
-fn type_attr_offside_name_after_keyword_and_chain_green_shape() {
+fn type_attr_offside_name_after_keyword_and_chain_tree_shape() {
     use crate::syntax::{AstNode, ImplFile, ModuleDecl};
     let source = "type [<A>]\nT = int\nand U = string\n";
     let parse = parse(source);
@@ -4257,11 +4257,11 @@ fn type_attr_offside_name_col0_union_body_is_error() {
 
 /// Phase 9.2 — an `and`-chain is **one** `TYPE_DEFNS` carrier holding several
 /// `TYPE_DEFN`, each leading with its keyword (`TYPE_TOK` then `AND_TOK`). Pins
-/// the full green shape, including the per-definition `OBLOCKBEGIN`/`OBLOCKEND`
+/// the full tree shape, including the per-definition `OBLOCKBEGIN`/`OBLOCKEND`
 /// virtuals (zero-width `ERROR`s) and the inter-definition newline kept as a
 /// `TYPE_DEFNS`-level sibling.
 #[test]
-fn type_and_chain_green_shape() {
+fn type_and_chain_tree_shape() {
     let source = "type T = int\nand U = string\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4359,9 +4359,9 @@ fn inline_type_and_chain_is_rejected() {
 
 /// Phase 9.3 — postfix `type T<'a>`: a `TYPAR_DECLS` (with the
 /// `HighPrecedenceTyApp` virtual as a zero-width `ERROR`, then `<`, the decls,
-/// `>`) sits after the name. Pins the full green shape.
+/// `>`) sits after the name. Pins the full tree shape.
 #[test]
-fn type_param_postfix_green_shape() {
+fn type_param_postfix_tree_shape() {
     let source = "type T<'a> = 'a list\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4476,7 +4476,7 @@ fn type_param_form_facade() {
 /// and their commas, and the `)` — read from the raw stream, as LexFilter
 /// swallows it — sits *before* the name.
 #[test]
-fn type_param_prefix_list_green_shape() {
+fn type_param_prefix_list_tree_shape() {
     let source = "type ('a, 'b) T = 'a\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4557,9 +4557,9 @@ fn malformed_postfix_typars_are_rejected() {
 /// Phase 9.4 — `RECORD_REPR > [LBRACE_TOK, RECORD_FIELD_DECL, RBRACE_TOK]`: the `{`
 /// is a real token, the `}` is the LexFilter-swallowed close recovered as
 /// `RBRACE_TOK`, and the field is `[IDENT_TOK, COLON_TOK, <typ>]`. Pins the
-/// full green shape.
+/// full tree shape.
 #[test]
-fn record_green_shape() {
+fn record_tree_shape() {
     let source = "type T = { X : int }\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4689,9 +4689,9 @@ fn empty_record_is_rejected() {
 
 /// Phase 9.5 — `UNION_REPR > [UNION_CASE, BAR_TOK, UNION_CASE > [IDENT_TOK,
 /// OF_TOK, UNION_CASE_FIELD]]`: a nullary case, a `Bar` separator, and a case
-/// with one `of` field. Pins the full green shape.
+/// with one `of` field. Pins the full tree shape.
 #[test]
-fn union_green_shape() {
+fn union_tree_shape() {
     let source = "type T = A | B of int\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4736,7 +4736,7 @@ IMPL_FILE@0..22
 /// `[IDENT_TOK, COLON_TOK, <type>]` — the `topType` signature in place of `of`
 /// fields.
 #[test]
-fn union_fulltype_green_shape() {
+fn union_fulltype_tree_shape() {
     let source = "type T = A : int -> T\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4781,9 +4781,9 @@ IMPL_FILE@0..22
 /// RPAREN_TOK]` and `( :: )` (`op_ColonColon`) is `[LPAREN_TOK, COLON_COLON_TOK,
 /// RPAREN_TOK]`, the closing `)` LexFilter-swallowed and recovered. A bar-less
 /// leading `([])` is a single-case union (not an array-type abbreviation). Pins
-/// the `op_Nil` green shape.
+/// the `op_Nil` tree shape.
 #[test]
-fn union_op_nil_green_shape() {
+fn union_op_nil_tree_shape() {
     let source = "type T = ([]) : int\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -4990,9 +4990,9 @@ fn union_case_access_recovers() {
 
 /// Phase 9.6 — `ENUM_REPR > [ENUM_CASE > [IDENT_TOK, EQUALS_TOK, <value>],
 /// BAR_TOK, ENUM_CASE]`: the repr is chosen post-hoc (any `= value` case ⇒
-/// enum). Pins the full green shape.
+/// enum). Pins the full tree shape.
 #[test]
-fn enum_green_shape() {
+fn enum_tree_shape() {
     let source = "type T = A = 0 | B = 1\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -5621,12 +5621,12 @@ fn enum_mixed_error_anchored_on_cases() {
     assert_lossless(source, &parse);
 }
 
-/// Phase 9.3b — green shape of an inside-`<>` constraint clause. The
+/// Phase 9.3b — tree shape of an inside-`<>` constraint clause. The
 /// `TYPAR_CONSTRAINTS` node nests inside `TYPAR_DECLS` (before `GREATER_TOK`),
 /// each `TYPAR_CONSTRAINT` carrying the subject `TYPAR_DECL` then the
 /// operator/keyword tokens. Inter-token spaces are siblings (lossless).
 #[test]
-fn typar_constraint_green_shape() {
+fn typar_constraint_tree_shape() {
     let source = "type T<'a when 'a : comparison> = 'a list\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -5824,14 +5824,14 @@ fn srtp_constraint_support_alternative_rejects_nullable() {
     assert_lossless(source, &parse);
 }
 
-/// Phase 9.7 — green-tree shape of the canonical instance member. The
+/// Phase 9.7 — tree shape of the canonical instance member. The
 /// `OBJECT_MODEL_REPR` holds one `MEMBER_DEFN` (`[MEMBER_TOK, BINDING]`); the
 /// binding's head is a dotted `LONG_IDENT_PAT` (`this.M`) and its RHS is the
 /// shared `= <expr>` machinery. The member's own RHS-close `OBLOCKEND` is a
 /// zero-width `ERROR` inside `OBJECT_MODEL_REPR`; the body-closing `OBLOCKEND`
 /// is the trailing `ERROR` owned by the `TYPE_DEFN`.
 #[test]
-fn member_green_shape() {
+fn member_tree_shape() {
     let source = "type T =\n  member this.M = 1\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -5879,7 +5879,7 @@ IMPL_FILE@0..29
 /// `BINDING` (ahead of the head `LONG_IDENT_PAT`), where `Binding::is_inline`
 /// reads it back as FCS's `SynBinding.isInline`. No errors.
 #[test]
-fn member_inline_green_shape() {
+fn member_inline_tree_shape() {
     use crate::syntax::{AstNode, Binding};
 
     let source = "type T =\n  member inline this.M = 1\n";
@@ -5938,7 +5938,7 @@ IMPL_FILE@0..36
 /// type lands in a `BINDING_RETURN_INFO > [COLON_TOK, <type>]` child of the
 /// member's `BINDING`, between the head `LONG_IDENT_PAT` and `=`. No errors.
 #[test]
-fn member_return_type_green_shape() {
+fn member_return_type_tree_shape() {
     let source = "type T =\n  member this.M : int = 1\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -6386,11 +6386,11 @@ fn member_adjacent_paren_args_parse() {
     assert_lossless(source, &parse);
 }
 
-/// Phase 9.8a — green-tree shape of an implicit constructor. The `IMPLICIT_CTOR`
+/// Phase 9.8a — tree shape of an implicit constructor. The `IMPLICIT_CTOR`
 /// is a child of `TYPE_DEFN` (parsed in the header, before the repr); the empty
 /// `()` is a bare `CONST_PAT` owning the `(`/`)` (no `PAREN_PAT` wrapper).
 #[test]
-fn implicit_ctor_green_shape() {
+fn implicit_ctor_tree_shape() {
     let source = "type T() =\n  member _.X = 1\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -6853,7 +6853,7 @@ fn static_then_offside_let_is_recovered_error() {
     assert_lossless(source, &parse);
 }
 
-/// Phase 9.9a — green shape + facade of a `static member`: a `MEMBER_DEFN` with
+/// Phase 9.9a — tree shape + facade of a `static member`: a `MEMBER_DEFN` with
 /// a leading `STATIC_TOK` before `MEMBER_TOK`, and a single-segment head
 /// (`["M"]`, no self-id). `MemberMethod::is_static()` reports the `static`.
 #[test]
@@ -7550,9 +7550,9 @@ fn auto_property_attr_facade() {
 /// Phase 9.15a — `EXCEPTION_DEFN > [EXCEPTION_TOK, UNION_CASE]` for the bare
 /// `exception E`: the `exception` keyword passes through (it is not swallowed),
 /// and the name lands in a reused (nullary) `UNION_CASE` — FCS's
-/// `SynExceptionDefnRepr.caseName: SynUnionCase`. Pins the full green shape.
+/// `SynExceptionDefnRepr.caseName: SynUnionCase`. Pins the full tree shape.
 #[test]
-fn exception_bare_green_shape() {
+fn exception_bare_tree_shape() {
     let source = "exception E\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -7571,9 +7571,9 @@ IMPL_FILE@0..12
 }
 
 /// Phase 9.15a — `exception E of int`: the `of` payload reuses the 9.5
-/// `UNION_CASE_FIELD` machinery inside the case node. Pins the full green shape.
+/// `UNION_CASE_FIELD` machinery inside the case node. Pins the full tree shape.
 #[test]
-fn exception_of_int_green_shape() {
+fn exception_of_int_tree_shape() {
     let source = "exception E of int\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -7600,9 +7600,9 @@ IMPL_FILE@0..19
 
 /// Phase 9.15a — `exception E = SomeExn`: the `=` introduces the abbreviation
 /// `longId` target (a `LONG_IDENT` sibling of the nullary case), *not* an enum
-/// value. Pins the full green shape.
+/// value. Pins the full tree shape.
 #[test]
-fn exception_abbrev_green_shape() {
+fn exception_abbrev_tree_shape() {
     let source = "exception E = SomeExn\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -7708,9 +7708,9 @@ fn exception_no_name_is_clean_error() {
 /// `SynExceptionDefn.withKeyword`) is a plain `WITH_TOK` direct child of the
 /// `EXCEPTION_DEFN` (no repr — unlike the type augmentation's `OBJECT_MODEL_REPR`
 /// marker), and the member lands as a direct `MEMBER_DEFN` child (the outer
-/// `members` slot). Pins the full green shape, including the close-virtual drain.
+/// `members` slot). Pins the full tree shape, including the close-virtual drain.
 #[test]
-fn exception_augment_green_shape() {
+fn exception_augment_tree_shape() {
     let source = "exception E with member this.M = 1\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -7968,9 +7968,9 @@ fn val_field_missing_name_does_not_consume_body_close() {
 /// Phase 9.13a — `type T with member this.M = 1`: the `with` (replacing `=`)
 /// becomes an empty `OBJECT_MODEL_REPR` carrying just the `WITH_TOK`
 /// (the `Augmentation` marker), and the member lands as a direct `MEMBER_DEFN`
-/// child of the `TYPE_DEFN` (the outer slot). Pins the full green shape.
+/// child of the `TYPE_DEFN` (the outer slot). Pins the full tree shape.
 #[test]
-fn type_augment_green_shape() {
+fn type_augment_tree_shape() {
     let source = "type T with\n  member this.M = 1\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -8356,10 +8356,10 @@ fn record_empty_trailing_with_recovers() {
 
 /// `begin e end` builds a `PAREN_EXPR` whose `begin`/`end` are real
 /// `BEGIN_TOK`/`END_TOK` children straddling the inner expression (FCS's
-/// `SynExpr.Paren`). Pins the green-tree token placement the normalised diff
+/// `SynExpr.Paren`). Pins the token placement the normalised diff
 /// (`parser_diff_begin_end`) can't see, plus the lossless round-trip.
 #[test]
-fn begin_end_expr_green_shape() {
+fn begin_end_expr_tree_shape() {
     let src = "let x = begin 1 end\n";
     let parse = parse(src);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -8395,7 +8395,7 @@ IMPL_FILE@0..20
 /// `CONST_EXPR` holding just the `BEGIN_TOK`/`END_TOK` pair — *not* a
 /// `PAREN_EXPR`.
 #[test]
-fn begin_end_empty_is_unit_green_shape() {
+fn begin_end_empty_is_unit_tree_shape() {
     let src = "let u = begin end\n";
     let parse = parse(src);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -8429,7 +8429,7 @@ IMPL_FILE@0..18
 /// straddling the body decls. The interleaved zero-width `ERROR`s are the
 /// LexFilter `OBLOCKBEGIN`/`OBLOCKEND`/`ODECLEND` scaffolding.
 #[test]
-fn module_begin_end_green_shape() {
+fn module_begin_end_tree_shape() {
     let src = "module X = begin\n    let y = 1\nend\n";
     let parse = parse(src);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
@@ -8529,7 +8529,7 @@ fn module_begin_end_trailing_attributes_recover() {
 /// is a bare `STRING_LIT` (not a type node). The surrounding zero-width `ERROR`s
 /// are the body-opening/closing `OBLOCKBEGIN`/`OBLOCKEND`, as for every repr.
 #[test]
-fn inline_il_type_repr_green_shape() {
+fn inline_il_type_repr_tree_shape() {
     let source = "type byref<'T> = (# \"!0&\" #)\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);

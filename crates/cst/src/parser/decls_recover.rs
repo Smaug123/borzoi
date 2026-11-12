@@ -67,14 +67,12 @@ impl<'src> Parser<'src> {
             match res {
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                     if depth == 0 {
                         return;
@@ -143,8 +141,7 @@ impl<'src> Parser<'src> {
                 Ok(FilteredToken::Virtual(Virtual::HighPrecedenceTyApp)) => {
                     // A typar `<` (`type C<'T>`) — part of the header, not a
                     // boundary. Step over it (zero-width, like the typar parser).
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 Ok(FilteredToken::Raw(Token::LBrackLess)) => {
@@ -157,8 +154,7 @@ impl<'src> Parser<'src> {
                         self.peek(),
                         Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
                     ) {
-                        self.builder
-                            .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                        self.builder.token(SyntaxKind::ERROR, "");
                         self.pos += 1;
                     }
                 }
@@ -186,14 +182,12 @@ impl<'src> Parser<'src> {
             match res {
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                     if depth == 0 {
                         return;
@@ -222,14 +216,12 @@ impl<'src> Parser<'src> {
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) if depth == 0 => return,
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 _ => self.bump_into(SyntaxKind::ERROR),
@@ -251,29 +243,25 @@ impl<'src> Parser<'src> {
     /// virtuals are consumed zero-width, interior tokens bump as `ERROR`.
     pub(super) fn skip_owith_block_as_error(&mut self) {
         // The `OWITH` itself (zero-width).
-        self.builder
-            .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+        self.builder.token(SyntaxKind::ERROR, "");
         self.pos += 1;
         let mut depth = 0u32;
         while let Some((res, _)) = self.peek() {
             match res {
                 Ok(FilteredToken::Virtual(Virtual::End)) if depth == 0 => {
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                     return;
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) if depth == 0 => return,
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
-                    self.builder
-                        .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                    self.builder.token(SyntaxKind::ERROR, "");
                     self.pos += 1;
                 }
                 _ => self.bump_into(SyntaxKind::ERROR),

@@ -412,10 +412,8 @@ impl<'src> Parser<'src> {
             // `Token::RParen`) instead of folding the *next* curried paren
             // arg into this head, e.g. `f (Some x) (Some y)` keeps two
             // distinct paren args rather than `Some x (Some y)`.
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+            self.builder.start_node(SyntaxKind::LONG_IDENT_PAT);
+            self.builder.start_node(SyntaxKind::LONG_IDENT);
             self.bump_into(SyntaxKind::IDENT_TOK);
             self.sweep_long_ident_dot_continuation();
             self.builder.finish_node(); // LONG_IDENT
@@ -543,8 +541,7 @@ impl<'src> Parser<'src> {
                 .is_some_and(raw_starts_atomic_pat))
             || self.folded_signed_literal_at_cursor();
         if has_typar_decls || has_args {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
+            self.builder.start_node_at(cp, SyntaxKind::LONG_IDENT_PAT);
             if has_typar_decls {
                 // `permit_empty = true`: a value binding's
                 // `explicitValTyparDeclsCore` accepts an empty `< >`.
@@ -552,8 +549,7 @@ impl<'src> Parser<'src> {
             }
             self.sweep_curried_arg_pats();
         } else {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
+            self.builder.start_node_at(cp, SyntaxKind::NAMED_PAT);
         }
         self.builder.finish_node();
         true
@@ -629,8 +625,7 @@ impl<'src> Parser<'src> {
     /// `_`; the normaliser rebuilds FCS's single `idText` (`|Foo|Bar|`,
     /// `|Foo|_|`) from the case tokens.
     pub(super) fn parse_active_pat_name(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ACTIVE_PAT_NAME));
+        self.builder.start_node(SyntaxKind::ACTIVE_PAT_NAME);
         // The `(` span anchors the malformed-name diagnostic below.
         let open_span = self.peek().map(|(_, span)| span.clone());
         self.bump_into(SyntaxKind::LPAREN_TOK); // `(`
@@ -813,8 +808,7 @@ impl<'src> Parser<'src> {
             self.bump_into(SyntaxKind::ERROR);
         }
 
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAME_PAT_PAIRS));
+        self.builder.start_node(SyntaxKind::NAME_PAT_PAIRS);
         self.bump_into(SyntaxKind::LPAREN_TOK);
 
         // The close `)` is LexFilter-swallowed, so probe the raw stream.
@@ -854,8 +848,7 @@ impl<'src> Parser<'src> {
     /// in-delimiter pattern element uses (and the same the record-field value
     /// runs).
     pub(super) fn parse_name_pat_pair(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAME_PAT_PAIR));
+        self.builder.start_node(SyntaxKind::NAME_PAT_PAIR);
 
         if matches!(
             self.peek(),
@@ -1033,8 +1026,7 @@ impl<'src> Parser<'src> {
             }
             match self.next_non_trivia_raw_at_pos() {
                 Some(Token::ColonColon) if Self::PAT_BP_CONS >= min_bp => {
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LIST_CONS_PAT));
+                    self.builder.start_node_at(cp, SyntaxKind::LIST_CONS_PAT);
                     self.bump_into(SyntaxKind::COLON_COLON_TOK);
                     // Right-associative: climb the rhs at the *same* bp so a
                     // following `::` nests into it but looser operators don't.
@@ -1059,8 +1051,7 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node();
                 }
                 Some(Token::Comma) if Self::PAT_BP_COMMA >= min_bp => {
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TUPLE_PAT));
+                    self.builder.start_node_at(cp, SyntaxKind::TUPLE_PAT);
                     while self
                         .next_non_trivia_raw_at_pos()
                         .is_some_and(|t| matches!(t, Token::Comma))
@@ -1095,8 +1086,7 @@ impl<'src> Parser<'src> {
                     // but stops at the next `&` and at looser `,`/`as`
                     // (`a & b, c` ⇒ `Tuple[Ands[a,b], c]`; `a & b as c` ⇒
                     // `As(Ands[a,b], c)`). The first operand is already at `cp`.
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::ANDS_PAT));
+                    self.builder.start_node_at(cp, SyntaxKind::ANDS_PAT);
                     while self
                         .next_non_trivia_raw_at_pos()
                         .is_some_and(|t| matches!(t, Token::Amp))
@@ -1124,8 +1114,7 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node();
                 }
                 Some(Token::As) if Self::PAT_BP_AS >= min_bp => {
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::AS_PAT));
+                    self.builder.start_node_at(cp, SyntaxKind::AS_PAT);
                     self.bump_into(SyntaxKind::AS_TOK);
                     // The `as` rhs is `constrPattern` (an applPat) — never
                     // climbed — so a following `::`/`,`/`:` binds *outside* the
@@ -1174,8 +1163,7 @@ impl<'src> Parser<'src> {
                     // has already stopped at the `->` by then. The rhs emit is
                     // raw-gated (via `emit_pat_atom`) for the swallowed-`)`
                     // invariant, so `(A |) next` bails cleanly.
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::OR_PAT));
+                    self.builder.start_node_at(cp, SyntaxKind::OR_PAT);
                     self.bump_into(SyntaxKind::BAR_TOK);
                     let rhs_cp = self.builder.checkpoint();
                     if self.emit_pat_atom(ctx) {
@@ -1193,8 +1181,7 @@ impl<'src> Parser<'src> {
                     self.builder.finish_node();
                 }
                 Some(Token::Colon) if ctx != PatCtx::Head && Self::PAT_BP_COLON >= min_bp => {
-                    self.builder
-                        .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPED_PAT));
+                    self.builder.start_node_at(cp, SyntaxKind::TYPED_PAT);
                     self.bump_into(SyntaxKind::COLON_TOK);
                     self.parse_type_with_constraints();
                     self.builder.finish_node();
@@ -1279,7 +1266,7 @@ impl<'src> Parser<'src> {
     /// `Virtual::BlockSep` between the comma and the next element — the
     /// same offside scaffolding that the expression-side tuple loop
     /// already drains (see `parse_expr` ~1175). Stamp each one as
-    /// `ERROR` so it survives in the green tree without affecting the
+    /// `ERROR` so it survives in the tree without affecting the
     /// typed-AST projection, mirroring the expression site's discipline.
     pub(super) fn drain_block_sep_after_tuple_comma(&mut self) {
         while matches!(
@@ -1400,8 +1387,7 @@ impl<'src> Parser<'src> {
                 span,
             });
         }
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::ATTRIB_PAT));
+        self.builder.start_node_at(cp, SyntaxKind::ATTRIB_PAT);
         self.builder.finish_node();
     }
 
@@ -1454,8 +1440,7 @@ impl<'src> Parser<'src> {
             .is_some_and(|t| matches!(t, Token::Colon))
             && self.next_tokens_unbroken(1)
         {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TYPED_PAT));
+            self.builder.start_node_at(cp, SyntaxKind::TYPED_PAT);
             self.bump_into(SyntaxKind::COLON_TOK);
             self.parse_type_with_constraints();
             self.builder.finish_node();
@@ -1629,10 +1614,8 @@ impl<'src> Parser<'src> {
     /// sibling `ACTIVE_PAT_NAME` (the normaliser appends its folded `|Foo|Bar|`
     /// segment after the path, matching FCS's `["A"; "B"; "|Foo|Bar|"]`).
     pub(super) fn open_dotted_opname_pat_head(&mut self, kind: DottedOpNameHead) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_PAT);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         // The head segment (an ident, a member self-id `_`, or the `global` root
         // marker) — emitted as `IDENT_TOK` like any long-ident path segment.
         self.bump_into(SyntaxKind::IDENT_TOK);
@@ -1798,16 +1781,13 @@ impl<'src> Parser<'src> {
             }
         };
         if !has_typars && !has_args {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
+            self.builder.start_node(SyntaxKind::NAMED_PAT);
             consume_op(self);
             self.builder.finish_node(); // NAMED_PAT
             return;
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_PAT);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         consume_op(self);
         self.builder.finish_node(); // LONG_IDENT
         if has_typars {
@@ -1848,10 +1828,8 @@ impl<'src> Parser<'src> {
     /// [`Self::sweep_long_ident_dot_continuation`]. Shared by the ident and
     /// `global.`-rooted arms of [`Self::try_emit_atomic_pat_inner`].
     fn emit_rooted_long_ident_pat(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+        self.builder.start_node(SyntaxKind::LONG_IDENT_PAT);
+        self.builder.start_node(SyntaxKind::LONG_IDENT);
         self.bump_into(SyntaxKind::IDENT_TOK);
         self.sweep_long_ident_dot_continuation();
         self.builder.finish_node(); // LONG_IDENT
@@ -1868,8 +1846,7 @@ impl<'src> Parser<'src> {
         // Detected before the `LParen` arm so the active-pattern `(` isn't taken
         // for an ordinary paren pattern.
         if self.at_active_pat_name() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
+            self.builder.start_node(SyntaxKind::NAMED_PAT);
             self.parse_active_pat_name();
             self.builder.finish_node(); // NAMED_PAT
             return true;
@@ -1899,8 +1876,7 @@ impl<'src> Parser<'src> {
             }
             Some((Ok(FilteredToken::Raw(Token::Underscore)), _)) => {
                 // A bare `_` is the wildcard.
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::WILDCARD_PAT));
+                self.builder.start_node(SyntaxKind::WILDCARD_PAT);
                 self.bump_into(SyntaxKind::UNDERSCORE_TOK);
                 self.builder.finish_node(); // WILDCARD_PAT
                 true
@@ -1944,16 +1920,14 @@ impl<'src> Parser<'src> {
                 if self.pat_head_has_dotted_tail() || ident_text_leads_uppercase(text) {
                     self.emit_rooted_long_ident_pat();
                 } else {
-                    self.builder
-                        .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
+                    self.builder.start_node(SyntaxKind::NAMED_PAT);
                     self.bump_into(SyntaxKind::IDENT_TOK);
                     self.builder.finish_node(); // NAMED_PAT
                 }
                 true
             }
             Some((Ok(FilteredToken::Raw(Token::Null)), _)) => {
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::NULL_PAT));
+                self.builder.start_node(SyntaxKind::NULL_PAT);
                 self.bump_into(SyntaxKind::NULL_TOK);
                 self.builder.finish_node(); // NULL_PAT
                 true
@@ -1971,8 +1945,7 @@ impl<'src> Parser<'src> {
                 // ident is a parse error; we record it but still emit the node
                 // (without the ident child) so the round-trip stays lossless and
                 // the caller's curried-arg sweep cannot spin on the consumed `?`.
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::OPTIONAL_VAL_PAT));
+                self.builder.start_node(SyntaxKind::OPTIONAL_VAL_PAT);
                 self.bump_into(SyntaxKind::QMARK_TOK);
                 // The ident gate consults *both* streams, the same dual
                 // discipline the function-form promotion uses: the **filtered**
@@ -2028,8 +2001,7 @@ impl<'src> Parser<'src> {
                 // `let (!!)<'T> … `) are handled one rung up in
                 // `try_emit_head_binding_pat_element`.
                 if self.at_paren_op_value_pat(self.pos) {
-                    self.builder
-                        .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
+                    self.builder.start_node(SyntaxKind::NAMED_PAT);
                     self.consume_paren_op_value();
                     self.builder.finish_node(); // NAMED_PAT
                 } else {
@@ -2048,8 +2020,7 @@ impl<'src> Parser<'src> {
                 // IDENT_TOK("*"), RPAREN_TOK]` via the shared
                 // `consume_star_op_value`. The *head* spelling (`let (*) a b = …`)
                 // is handled in `try_emit_head_binding_pat_element`.
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
+                self.builder.start_node(SyntaxKind::NAMED_PAT);
                 self.consume_star_op_value();
                 self.builder.finish_node(); // NAMED_PAT
                 true
@@ -2116,8 +2087,7 @@ impl<'src> Parser<'src> {
                 // `SynExpr.Quote`. Wrap the shared quotation parser (which emits
                 // the `QUOTE_EXPR` node) in a `QUOTE_PAT`, mirroring FCS's
                 // `SynPat` wrapper around its `SynExpr`.
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::QUOTE_PAT));
+                self.builder.start_node(SyntaxKind::QUOTE_PAT);
                 self.parse_quote_expr();
                 self.builder.finish_node(); // QUOTE_PAT
                 true
@@ -2156,8 +2126,7 @@ impl<'src> Parser<'src> {
     /// error rather than a wrong tree, the same disposition as the deferred
     /// `global.`/`_.`-rooted pattern heads.
     pub(super) fn parse_struct_tuple_pat(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TUPLE_PAT));
+        self.builder.start_node(SyntaxKind::TUPLE_PAT);
         self.bump_into(SyntaxKind::STRUCT_TOK);
         // The opening `(` is a real filtered token (only the closing `)` is
         // swallowed); `bump_into` drains the `struct`/`(` trivia before it.
@@ -2258,8 +2227,7 @@ impl<'src> Parser<'src> {
     /// must have confirmed the current token is accepted by
     /// [`raw_starts_const_payload`] *and* is not `LParen`.
     pub(super) fn parse_const_pat(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::CONST_PAT));
+        self.builder.start_node(SyntaxKind::CONST_PAT);
         self.parse_const_payload();
         self.builder.finish_node();
     }
@@ -2292,8 +2260,7 @@ impl<'src> Parser<'src> {
     /// reachable here yet. They'll land naturally when `parse_pat`
     /// grows beyond the atomic case.
     pub(super) fn parse_paren_pat(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::PAREN_PAT));
+        self.builder.start_node(SyntaxKind::PAREN_PAT);
         self.bump_into(SyntaxKind::LPAREN_TOK);
         // Disambiguate empty (`()` → unit) from non-empty (`(pat)`).
         // The closing `)` is swallowed by LexFilter, so we peek the
@@ -2307,8 +2274,7 @@ impl<'src> Parser<'src> {
             // (`pars.fsy:3873`). Any inter-paren trivia (e.g. `( )`)
             // lands under `PAREN_PAT` via `bump_swallowed_rparen`'s
             // own trivia drain.
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::CONST_PAT));
+            self.builder.start_node(SyntaxKind::CONST_PAT);
             self.builder.finish_node();
         } else {
             // Drain raw trivia between `(` and the inner pattern so it
@@ -2389,8 +2355,7 @@ impl<'src> Parser<'src> {
     /// the current token is `LBrack` or `LBrackBar`; any other token is
     /// `unreachable!`.
     pub(super) fn parse_array_or_list_pat(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ARRAY_OR_LIST_PAT));
+        self.builder.start_node(SyntaxKind::ARRAY_OR_LIST_PAT);
         let is_array = match self.peek() {
             Some((Ok(FilteredToken::Raw(Token::LBrack)), _)) => {
                 self.bump_into(SyntaxKind::LBRACK_TOK);
@@ -2501,8 +2466,7 @@ impl<'src> Parser<'src> {
     ///
     /// Caller must have verified the current token is `Token::LBrace`.
     pub(super) fn parse_record_pat(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::RECORD_PAT));
+        self.builder.start_node(SyntaxKind::RECORD_PAT);
         self.bump_into(SyntaxKind::LBRACE_TOK);
 
         // The close `}` is LexFilter-swallowed, so probe the raw stream.
@@ -2563,8 +2527,7 @@ impl<'src> Parser<'src> {
     /// ([`Self::emit_paren_pat_element`] + [`Self::wrap_pat_tail`]`(cp, true)`),
     /// the same pair every other in-delimiter pattern element uses.
     pub(super) fn parse_record_pat_field(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::RECORD_PAT_FIELD));
+        self.builder.start_node(SyntaxKind::RECORD_PAT_FIELD);
         self.parse_long_ident_path("{");
 
         if matches!(
@@ -2615,8 +2578,7 @@ impl<'src> Parser<'src> {
     /// Caller (`try_emit_head_binding_pat_element`) has verified the cursor is
     /// at a `Token::ColonQMark`.
     pub(super) fn parse_is_inst_pat(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::IS_INST_PAT));
+        self.builder.start_node(SyntaxKind::IS_INST_PAT);
         self.bump_into(SyntaxKind::COLON_QMARK_TOK);
 
         // Gate the type parse on the shared `peek_starts_type_or_anon_recd`

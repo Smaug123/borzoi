@@ -15,9 +15,14 @@ rowan.workspace = true
 # read. The self-reference in `[dev-dependencies]` turns it on for this
 # crate's own tests.
 accessor-trace = []
+# Drives rowan's green-tree builder beside the syntax table's, asserts on
+# every parse that the two trees are the same, and keeps the green tree for
+# the rowan reference differential (`tests/all/flat_tree_reference.rs`).
+# Test-only, on for this crate's own tests through the self-reference below.
+rowan-reference = []
 
 [dev-dependencies]
-borzoi-cst = { path = ".", features = ["accessor-trace"] }
+borzoi-cst = { path = ".", features = ["accessor-trace", "rowan-reference"] }
 borzoi-oracle-harness.workspace = true
 # The metric-path walk the stats dashboard plots by, so a generator's
 # pinned metric namespace is read exactly as it is published.

@@ -1,7 +1,7 @@
 //! Hand-written recursive-descent parser over the [`FilteredToken`] stream.
 //!
-//! Per `docs/parser-plan.md`, the parser builds a rowan green tree via
-//! [`rowan::GreenNodeBuilder`] (wrapped to track the tree's height) and
+//! Per `docs/parser-plan.md`, the parser writes the syntax table through
+//! [`crate::syntax`]'s builder (wrapped to track the tree's height) and
 //! exposes a typed AST in [`crate::syntax`]. Phase 2 grows the Phase 1 scaffold (empty file + lone int literal) one literal
 //! form at a time; see the table in `docs/parser-plan.md` for the running
 //! list of supported `SynConst` variants.
@@ -21,7 +21,7 @@
 //! and `classify`.
 //!
 //! Full-fidelity strategy (plan D7): LexFilter drops trivia and inserts
-//! zero-or-more `Virtual` tokens — but the green tree must satisfy
+//! zero-or-more `Virtual` tokens — but the tree must satisfy
 //! `text(tree) == source` for LSP range fidelity. We therefore walk the
 //! *raw* lexer stream in lockstep with the filtered stream:
 //!
@@ -40,15 +40,13 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use rowan::Language;
-
 use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia};
 use crate::language_version::LanguageVersion;
 use crate::lexer::{LexError, Token};
 use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
 };
-use crate::syntax::{FSharpLang, SyntaxKind, SyntaxNode};
+use crate::syntax::{SyntaxKind, SyntaxNode};
 use dual_keyword::{DualKeyword, KeywordForm};
 use expr::decl_expr_keyword;
 
@@ -145,6 +143,7 @@ mod strings;
 mod tree_builder;
 mod types;
 
+use crate::syntax::Checkpoint;
 use classify::{
     byte_interp_lit_kind, classify_op_text, ident_text_leads_uppercase, ident_token_text,
     int32_exponent_is_one, int32_exponent_is_zero, is_paren_operator_name, is_prefix_op_text,
@@ -164,7 +163,7 @@ use numeric::{
     validate_xint_int32,
 };
 use pat::PatCtx;
-use tree_builder::{Checkpoint, TreeBuilder};
+use tree_builder::TreeBuilder;
 
 /// Outcome of a parse. Holds the tree plus diagnostics partitioned by
 /// severity; the tree is always present (errors become [`SyntaxKind::ERROR`]
@@ -529,7 +528,7 @@ fn parse_inner_stopping_at(
     if parser.depth_limit_hit {
         let span = parser.depth_limit_span.clone().unwrap_or(0..source.len());
         return Parse {
-            root: SyntaxNode::new_root(parser.builder.finish()),
+            root: parser.builder.finish(),
             errors: vec![ParseError {
                 message: "nesting is too deep; parsing stopped here".to_string(),
                 span,
@@ -541,7 +540,7 @@ fn parse_inner_stopping_at(
     }
     // Build the root now: the feature gates below walk it for constructs a
     // language feature introduced after `lang`.
-    let root = SyntaxNode::new_root(parser.builder.finish());
+    let root = parser.builder.finish();
     let gates = feature_gates::feature_gate_diagnostics(&root, lang);
     // Merge the directive errors (collected in source order above), the FS1161
     // tab errors (scanned off the whitespace trivia), the `#elif` trivia gate,
@@ -835,14 +834,14 @@ struct Parser<'src> {
     source: &'src str,
     /// Raw lexer stream — includes trivia. Advanced in lockstep with
     /// `filtered_tokens` so trivia and filter-swallowed tokens reach the
-    /// green tree.
+    /// tree.
     raw_tokens: Vec<RawTok<'src>>,
     raw_pos: usize,
     /// Trivia-free token stream as seen by the productions. `pos` is
     /// monotonic — we only index, never pop.
     filtered_tokens: Vec<FilteredTok<'src>>,
     pos: usize,
-    /// High-water mark of source bytes already emitted into the green tree.
+    /// High-water mark of source bytes already emitted into the tree.
     /// Used to clamp filtered-token text starts so FCS-faithful *overlapping*
     /// splits — `RQuoteBarRBrace` becomes `RQUOTE=[s,e-2)` + `BAR_RBRACE=
     /// [s+1,e)` (LexFilter.fs:2757 `UseShiftedLocation(..., 1, 0)`) — don't
@@ -920,16 +919,14 @@ const MAX_PARSE_DEPTH: u32 = 512;
 /// tree: application chains (`f a a a`), left-associative operator chains,
 /// postfix type applications (`int list list`) and the like are built in a
 /// loop, one wrapping node per repeat, so they are as deep as they are long.
-/// rowan frees a green tree recursively, so dropping a tall enough one
-/// overflows the stack and aborts the process, which `catch_unwind` cannot
-/// catch; any consumer walking the tree recursively has the same exposure.
-/// The parser therefore also stops, with the depth-limit diagnostic, once the
-/// tree it is building nears this height.
+/// Any consumer walking the tree recursively needs stack in proportion to its
+/// height, and a stack overflow aborts the process, which `catch_unwind`
+/// cannot catch. The parser therefore also stops, with the depth-limit
+/// diagnostic, once the tree it is building nears this height. (The tree
+/// itself is a flat table, so freeing it never recurses.)
 ///
-/// Calibration, all in a debug build: rowan drops a 4 000-node-deep tree on a
-/// 2 MiB stack (a Rust thread's default) and overflows by 8 000, but the
-/// tighter limit is `borzoi-sema`'s walks, which need about 8 MiB for a tree
-/// of this height (an operator chain under four hundred nested modules). The
+/// Calibration, in a debug build: `borzoi-sema`'s walks need about 8 MiB for
+/// a tree of this height (an operator chain under four hundred nested modules). The
 /// LSP answers requests on a thread of `borzoi_sema::WALK_STACK_BYTES`
 /// (32 MiB), and sema's `walk_stack_bound` test holds the walks to half of
 /// that over every repetition form of the grammar at this bound. The

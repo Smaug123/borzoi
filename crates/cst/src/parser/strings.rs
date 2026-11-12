@@ -305,8 +305,7 @@ impl<'src> Parser<'src> {
         // it falls through to the ordinary interp shape with the diagnostic
         // attached at the byte-tagged `End` closer below.
         if let Some(lit_kind) = byte_interp_lit_kind(&kind) {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::CONST_EXPR));
+            self.builder.start_node(SyntaxKind::CONST_EXPR);
             self.recover_byte_interp(lit_kind, span);
             self.builder.finish_node();
             return;
@@ -333,8 +332,7 @@ impl<'src> Parser<'src> {
         if let Some(n) = extended_n {
             self.check_extended_braces(n, span.clone());
         }
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::INTERP_STRING_EXPR));
+        self.builder.start_node(SyntaxKind::INTERP_STRING_EXPR);
         self.bump_into(SyntaxKind::INTERP_STRING_FRAGMENT);
         if is_bare {
             self.builder.finish_node();

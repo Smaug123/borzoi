@@ -19,7 +19,7 @@ fn measure_power_node(parse: &crate::parser::Parse) -> SyntaxNode {
 /// RATIONAL_CONST_INTEGER > [INT32_LIT("2")]]` and the facade accessors
 /// (`base` is a `LongIdent`, the exponent an `Integer`, not negated).
 #[test]
-fn measure_power_int_green_shape() {
+fn measure_power_int_tree_shape() {
     use crate::syntax::{AstNode, MeasurePowerType, RationalConst, Type};
     let source = "(x : float<m^2>)\n";
     let parse = parse(source);
@@ -41,7 +41,7 @@ fn measure_power_int_green_shape() {
 
 /// Phase 10.8 — `m^-1`: the `^-` operator spelling. The operator token
 /// carries the trailing minus (`MEASURE_POWER_OP_TOK` text `"^-"`), and the
-/// `Negate` is *not* a green node — it is recovered from `is_negated()`. The
+/// `Negate` is *not* a node — it is recovered from `is_negated()`. The
 /// exponent node itself is a plain `Integer(1)`.
 #[test]
 fn measure_power_negate_operator() {
@@ -72,7 +72,7 @@ fn measure_power_negate_operator() {
 /// [INT32_LIT("1"), SLASH_TOK, INT32_LIT("2")], RPAREN_TOK]` and the
 /// `numerator`/`denominator` accessors.
 #[test]
-fn measure_power_paren_rational_green_shape() {
+fn measure_power_paren_rational_tree_shape() {
     use crate::syntax::{AstNode, MeasurePowerType, RationalConst};
     let source = "(x : float<m^(1/2)>)\n";
     let parse = parse(source);
@@ -97,7 +97,7 @@ fn measure_power_paren_rational_green_shape() {
 /// `Paren(Negate(Integer 2))` — a `RATIONAL_CONST_NEGATE` node wrapping a
 /// `RATIONAL_CONST_INTEGER`, distinct from the operator-driven negate.
 #[test]
-fn measure_power_paren_spaced_negate_green_shape() {
+fn measure_power_paren_spaced_negate_tree_shape() {
     use crate::syntax::{AstNode, MeasurePowerType, RationalConst};
     let source = "(x : float<m^(- 2)>)\n";
     let parse = parse(source);
@@ -123,7 +123,7 @@ fn measure_power_paren_spaced_negate_green_shape() {
 /// Phase 10.8 — `'a^2`: the base of a measure power may be a typar
 /// (`VAR_TYPE`), not only a `LongIdent`.
 #[test]
-fn measure_power_typar_base_green_shape() {
+fn measure_power_typar_base_tree_shape() {
     use crate::syntax::{AstNode, MeasurePowerType, Type};
     let source = "(x : float<'a^2>)\n";
     let parse = parse(source);
@@ -141,7 +141,7 @@ fn measure_power_typar_base_green_shape() {
 /// head atom (not only inside `parse_app_type_con_power`, which sees only
 /// path/typar heads). The `MEASURE_POWER_TYPE` base is the `PAREN_TYPE`.
 #[test]
-fn measure_power_paren_base_green_shape() {
+fn measure_power_paren_base_tree_shape() {
     use crate::syntax::{AstNode, MeasurePowerType, Type};
     let source = "(x : float<(m)^2>)\n";
     let parse = parse(source);
@@ -259,7 +259,7 @@ fn measure_power_caret_then_ident_is_error_not_typar_app() {
 /// so the `APP_TYPE` head is the `MeasurePowerType` and the (single) arg is
 /// `LongIdent(kg)`.
 #[test]
-fn measure_product_over_power_green_shape() {
+fn measure_product_over_power_tree_shape() {
     use crate::syntax::{AppType, AstNode, Type};
     let source = "(x : float<kg m^2>)\n";
     let parse = parse(source);

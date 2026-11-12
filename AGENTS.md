@@ -9,9 +9,11 @@ This is a Cargo workspace with nine members:
 
 - `crates/cst/` — `borzoi-cst`. The lexer, lex-filter (offside rewriter),
   recursive-descent parser, and the CST/AST: a flat preorder table per file
-  (`docs/flat-syntax-tree-plan.md`) behind rowan's red-tree API, flattened
-  from the rowan green tree the parser builds. Self-contained: depends only on
-  `logos` and `rowan`. Intended to be reusable outside this repo.
+  (`docs/flat-syntax-tree-plan.md`) behind rowan's red-tree API, written
+  directly by the parser. Its tests turn on the `rowan-reference` feature,
+  under which every parse also builds rowan's green tree and asserts the two
+  trees are the same. Self-contained: depends only on `logos` and `rowan`.
+  Intended to be reusable outside this repo.
 - `crates/msbuild/` — `borzoi-msbuild`. MSBuild `.fsproj` parser /
   evaluator: extracts the Compile order, expands `$(…)` substitution, evaluates
   the condition subset, detects/follows `Directory.Build.props|targets`,

@@ -1,7 +1,8 @@
 # Flat per-file syntax table (replacing rowan's red layer)
 
-> **Status (2026-11-11).** Stage 0 (harness) and Stage 1 (the table behind
-> rowan's API) implemented; Stages 2–4 open. Tracks
+> **Status (2026-11-11).** Stage 0 (harness), Stage 1 (the table behind
+> rowan's API) and Stage 2 (the parser writes the table) implemented; Stages
+> 3–4 open. Tracks
 > [#541](https://github.com/WoofWare/borzoi/issues/541).
 
 ## Problem
@@ -74,11 +75,21 @@ range. `text` is the concatenation of the token texts, so the lossless
 invariant `tree.text == source` holds by construction and token text is a
 slice of it.
 
-The entry layout is not frozen by this plan. The spike's is 32 bytes, which is
-12 bytes of table per byte of source. Dropping `index` and `prev_sib`
-(computable from the parent, and rarely read) and deriving `end` gets it to
-about 20 bytes. Stage 2 picks the layout by measurement (time and memory, from
-the Stage 0 harness).
+The entry layout is not frozen by this plan. The spike's is 32 bytes. Stage 2
+measured it against a 24-byte entry, `(kind, is_token, parent, subtree_end,
+start, end, index)`, which derives the next sibling from preorder (it is
+`subtree_end`, while that stays inside the parent's subtree) and the previous
+one from the child index. On the build box, over the corpus's `src/` tree,
+min of 5, three alternating rounds:
+
+| layout | table bytes per source byte | parse | `resolve_file` | `infer_file` |
+|---|---|---|---|---|
+| 32-byte entry | 16.8 | 545–574 ms | 2348–2487 ms | 856–915 ms |
+| 24-byte entry | 13.8 | 530–551 ms | 2378–2418 ms | 854–870 ms |
+
+The tables include the child index (8 bytes per element) and the text. The
+smaller entry is no slower anywhere but the `children()` microbenchmark
+(+7%), and is what Stage 2 ships.
 
 ### D2. Handles: `Arc<Tree>` now, borrowed later only if measurement pays for it
 
@@ -219,6 +230,26 @@ green tree after the parse. Consumers change only import paths.
 - Stage 0 harness: parse time below the rowan baseline (360 ms); the harness
   gains a table-memory line (bytes per source byte) so the layout choice is
   measured.
+
+**Result.** `syntax::flat::Builder` records each element in postorder as it
+finishes, so a wrap (`start_node_at`) moves nothing: the subtrees of the
+elements awaiting a parent are always the tail of the record. `finish`
+permutes it into preorder in one pass, an element's preorder id being its
+postorder subtree start plus its depth. That is neither of D3's two shapes,
+and simpler than both. The green builder survives behind the test-only
+`rowan-reference` feature, which drives it in lockstep and asserts on every
+parse that the two tables are identical. So every test in the workspace that
+parses holds Stage 2 to the oracle, not just the reference differential.
+Three alternating rounds on the build box, min of 5 each, with the box
+loaded by other work (load 11–24), so read the columns against each other:
+
+| phase | rowan (Stage 0) | Stage 1 | Stage 2 |
+|---|---|---|---|
+| parse | 602–641 ms | 674–689 ms | 557–600 ms |
+| `resolve_file` | 3284–3340 ms | 2571–2800 ms | 2702–2809 ms |
+| `infer_file` | 1398–1462 ms | 934–960 ms | 950–1017 ms |
+
+Parse is now below rowan's, and resolve and infer keep Stage 1's gain.
 
 ### Stage 3: drop rowan
 

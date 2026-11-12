@@ -107,8 +107,7 @@ impl<'src> Parser<'src> {
                 .is_some_and(|t| matches!(t, Token::RArrow))
                 && p.next_tokens_unbroken(1)
             {
-                p.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::FUN_TYPE));
+                p.builder.start_node_at(cp, SyntaxKind::FUN_TYPE);
                 p.bump_into(SyntaxKind::RARROW_TOK);
                 // Recursive call — handles the return type, including
                 // further arrows (right-associative). `top` propagates: the return
@@ -168,8 +167,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::TUPLE_TYPE));
+        self.builder.start_node_at(cp, SyntaxKind::TUPLE_TYPE);
         self.sweep_tuple_type_separators(top);
         self.builder.finish_node();
     }
@@ -240,8 +238,7 @@ impl<'src> Parser<'src> {
     /// labelled parameters, like an ordinary paren type). Caller has verified
     /// [`Self::peek_starts_struct_tuple_type`] (`struct` then `(`).
     pub(super) fn parse_struct_tuple_type(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::TUPLE_TYPE));
+        self.builder.start_node(SyntaxKind::TUPLE_TYPE);
         self.bump_into(SyntaxKind::STRUCT_TOK);
         // The opening `(` is a real filtered token (only the closing `)` is
         // swallowed); `bump_into` drains the `struct`/`(` trivia before it.
@@ -401,9 +398,8 @@ impl<'src> Parser<'src> {
     /// `topType` / `topTupleType` level). Caller has verified
     /// [`Self::peek_is_signature_parameter`] or [`Self::peek_at_type_attribute`].
     fn parse_signature_parameter(&mut self) {
-        self.builder.start_node(FSharpLang::kind_to_raw(
-            SyntaxKind::SIGNATURE_PARAMETER_TYPE,
-        ));
+        self.builder
+            .start_node(SyntaxKind::SIGNATURE_PARAMETER_TYPE);
         // A leading attribute run (`[<InlineIfLambda>] k : …`) — FCS's
         // `SynType.SignatureParameter.attributes`. Parse one `[< … >]` list at a
         // time, re-gating each on the raw-aligned [`Self::peek_at_type_attribute`]
@@ -538,8 +534,7 @@ impl<'src> Parser<'src> {
             return;
         }
 
-        self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::WITH_NULL_TYPE));
+        self.builder.start_node_at(cp, SyntaxKind::WITH_NULL_TYPE);
         self.bump_into(SyntaxKind::BAR_TOK);
         self.bump_into(SyntaxKind::NULL_TOK);
         self.builder.finish_node();
@@ -580,18 +575,15 @@ impl<'src> Parser<'src> {
         };
         match head {
             SubtypeShorthandHead::Typar(sigil_kind) => {
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::CONSTRAINED_TYPE));
+                self.builder.start_node_at(cp, SyntaxKind::CONSTRAINED_TYPE);
                 self.parse_var_type(sigil_kind);
                 self.bump_into(SyntaxKind::COLON_GREATER_TOK);
                 self.parse_type();
                 self.builder.finish_node(); // CONSTRAINED_TYPE
             }
             SubtypeShorthandHead::Anon => {
-                self.builder.start_node_at(
-                    cp,
-                    FSharpLang::kind_to_raw(SyntaxKind::HASH_CONSTRAINT_TYPE),
-                );
+                self.builder
+                    .start_node_at(cp, SyntaxKind::HASH_CONSTRAINT_TYPE);
                 self.bump_into(SyntaxKind::UNDERSCORE_TOK);
                 self.bump_into(SyntaxKind::COLON_GREATER_TOK);
                 self.parse_type();
@@ -784,8 +776,7 @@ impl<'src> Parser<'src> {
             }
             let next = self.next_non_trivia_raw_at_pos();
             if matches!(next, Some(Token::LBrack)) {
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::ARRAY_TYPE));
+                self.builder.start_node_at(cp, SyntaxKind::ARRAY_TYPE);
                 // The IDENT-adjacent `name[]` arm carries a
                 // `Virtual::HighPrecedenceBrackApp` between the IDENT
                 // and the `[` (`LexFilter.fs:2653`, our
@@ -863,8 +854,7 @@ impl<'src> Parser<'src> {
                 // postfix head before continuing — any parked virtual ends the
                 // type here. The loop-top gate only excludes `BlockSep` /
                 // `BlockEnd`, so this is the exhaustive guard for the rest.
-                self.builder
-                    .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_TYPE));
+                self.builder.start_node_at(cp, SyntaxKind::APP_TYPE);
                 // Call `parse_app_type_con_power` (path/typar only) —
                 // *not* `parse_atomic_type`. FCS's postfix-app rule
                 // (`appTypeWithoutNull appTypeConPower`,
@@ -933,7 +923,7 @@ impl<'src> Parser<'src> {
     /// way.
     fn parse_intersection_tail(&mut self, cp: Checkpoint) {
         self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::INTERSECTION_TYPE));
+            .start_node_at(cp, SyntaxKind::INTERSECTION_TYPE);
         self.parse_intersection_constraint_run();
         self.builder.finish_node();
     }
@@ -1023,10 +1013,8 @@ impl<'src> Parser<'src> {
         ) {
             return;
         }
-        self.builder.start_node_at(
-            cp,
-            FSharpLang::kind_to_raw(SyntaxKind::STATIC_CONST_NAMED_TYPE),
-        );
+        self.builder
+            .start_node_at(cp, SyntaxKind::STATIC_CONST_NAMED_TYPE);
         self.bump_into(SyntaxKind::EQUALS_TOK);
         self.parse_type();
         self.builder.finish_node();
@@ -1110,8 +1098,7 @@ impl<'src> Parser<'src> {
         // no inner-type child (`HashConstraintType::inner` becomes
         // `None`).
         if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Hash)), _))) {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::HASH_CONSTRAINT_TYPE));
+            self.builder.start_node(SyntaxKind::HASH_CONSTRAINT_TYPE);
             self.bump_into(SyntaxKind::HASH_TOK);
             // `HASH atomType` — share the folded-literal-aware atomType gate so
             // `#-1` parses as `HashConstraint(StaticConstant -1)` (FCS) rather
@@ -1220,7 +1207,7 @@ impl<'src> Parser<'src> {
                 }
                 Some((Ok(FilteredToken::Raw(Token::LParen)), _)) => {
                     self.builder
-                        .start_node(FSharpLang::kind_to_raw(SyntaxKind::PAREN_TYPE));
+                        .start_node(SyntaxKind::PAREN_TYPE);
                     self.bump_into(SyntaxKind::LPAREN_TOK);
                     // Check the *raw* stream before draining: LexFilter has
                     // swallowed the matching `)`, so the filtered peek can
@@ -1264,7 +1251,7 @@ impl<'src> Parser<'src> {
                 // off.
                 Some((Ok(FilteredToken::Raw(Token::Null)), _)) => {
                     self.builder
-                        .start_node(FSharpLang::kind_to_raw(SyntaxKind::STATIC_CONST_NULL_TYPE));
+                        .start_node(SyntaxKind::STATIC_CONST_NULL_TYPE);
                     self.bump_into(SyntaxKind::NULL_TOK);
                     self.builder.finish_node();
                     head_can_chain = false;
@@ -1272,7 +1259,7 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Raw(Token::Const)), _)) => {
                     // `CONST atomicExpr` (`pars.fsy:6583`).
                     self.builder
-                        .start_node(FSharpLang::kind_to_raw(SyntaxKind::STATIC_CONST_EXPR_TYPE));
+                        .start_node(SyntaxKind::STATIC_CONST_EXPR_TYPE);
                     self.bump_into(SyntaxKind::CONST_TOK);
                     // Gate the operand on [`Parser::peek_starts_const_arg_expr`] — a
                     // raw-aligned, LParen-safe restriction to exactly the shapes
@@ -1315,7 +1302,7 @@ impl<'src> Parser<'src> {
                 // overlap on `(` never reaches here.
                 Some((Ok(FilteredToken::Raw(tok)), _)) if raw_starts_const_payload(&tok) => {
                     self.builder
-                        .start_node(FSharpLang::kind_to_raw(SyntaxKind::STATIC_CONST_TYPE));
+                        .start_node(SyntaxKind::STATIC_CONST_TYPE);
                     self.parse_const_payload();
                     self.builder.finish_node();
                     head_can_chain = false;
@@ -1340,8 +1327,7 @@ impl<'src> Parser<'src> {
         // "unexpected type application" error). A `'T<int>` typar head *is*
         // an `appTypeCon` and still wraps.
         if head_is_app_con && self.at_type_args_no_hpa() {
-            self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_TYPE));
+            self.builder.start_node_at(cp, SyntaxKind::APP_TYPE);
             self.consume_type_args_no_hpa();
             self.builder.finish_node();
             // `Foo<int>` / `Foo < int >` (and `'T<int>` per FCS's permissive
@@ -1410,7 +1396,7 @@ impl<'src> Parser<'src> {
                 break;
             }
             self.builder
-                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_APP_TYPE));
+                .start_node_at(cp, SyntaxKind::LONG_IDENT_APP_TYPE);
             self.bump_into(SyntaxKind::DOT_TOK);
             // Walk the path: first ident, then greedy `DOT IDENT`
             // pairs. Mirrors `parse_app_type_con_power`'s inner loop,
@@ -1428,8 +1414,7 @@ impl<'src> Parser<'src> {
             // A layout boundary inside the path is a hard stop: FCS
             // rejects the surface, and we break with the same
             // trailing-dot recovery rather than crossing it.
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+            self.builder.start_node(SyntaxKind::LONG_IDENT);
             if matches!(
                 self.peek(),
                 Some((
@@ -1708,8 +1693,7 @@ impl<'src> Parser<'src> {
     /// first field is missing, but still consumes the closing `|}` for
     /// the lossless invariant.
     pub(super) fn parse_anon_recd_type(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ANON_RECD_TYPE));
+        self.builder.start_node(SyntaxKind::ANON_RECD_TYPE);
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::Struct)), _)),
@@ -1803,8 +1787,7 @@ impl<'src> Parser<'src> {
     /// missing we still emit the field node and push a parse error so
     /// the outer loop can keep going on the `;` separators.
     pub(super) fn parse_anon_recd_type_field(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ANON_RECD_TYPE_FIELD));
+        self.builder.start_node(SyntaxKind::ANON_RECD_TYPE_FIELD);
         if matches!(
             self.peek(),
             Some((
@@ -1891,10 +1874,8 @@ impl<'src> Parser<'src> {
                 Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_) | Token::Global)),
                 _,
             )) => {
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_TYPE));
-                self.builder
-                    .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT));
+                self.builder.start_node(SyntaxKind::LONG_IDENT_TYPE);
+                self.builder.start_node(SyntaxKind::LONG_IDENT);
                 self.bump_into(SyntaxKind::IDENT_TOK);
                 // Each iteration consumes `DOT IDENT`. A trailing dot is
                 // a parse error — mirrors `parse_ident_expr` (phase 2).
@@ -2010,7 +1991,7 @@ impl<'src> Parser<'src> {
             return false;
         };
         self.builder
-            .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::MEASURE_POWER_TYPE));
+            .start_node_at(cp, SyntaxKind::MEASURE_POWER_TYPE);
         self.bump_into(SyntaxKind::MEASURE_POWER_OP_TOK);
         self.parse_atomic_rational_const();
         self.builder.finish_node();
@@ -2031,8 +2012,7 @@ impl<'src> Parser<'src> {
     /// lone `Integer(-2)`, while the spaced `m^(- 2)` keeps its `-`.
     pub(super) fn parse_atomic_rational_const(&mut self) {
         if self.at_rational_minus() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::RATIONAL_CONST_NEGATE));
+            self.builder.start_node(SyntaxKind::RATIONAL_CONST_NEGATE);
             self.bump_into(SyntaxKind::MINUS_TOK);
             self.parse_atomic_unsigned_rational_const();
             self.builder.finish_node();
@@ -2053,15 +2033,13 @@ impl<'src> Parser<'src> {
     /// instead of crossing the closer to grab an outer token.
     fn parse_atomic_unsigned_rational_const(&mut self) {
         if self.at_rational_lparen() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::RATIONAL_CONST_PAREN));
+            self.builder.start_node(SyntaxKind::RATIONAL_CONST_PAREN);
             self.bump_into(SyntaxKind::LPAREN_TOK);
             self.parse_rational_const();
             self.bump_swallowed_rparen(SyntaxKind::RPAREN_TOK);
             self.builder.finish_node();
         } else if self.at_int32_exponent() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::RATIONAL_CONST_INTEGER));
+            self.builder.start_node(SyntaxKind::RATIONAL_CONST_INTEGER);
             self.bump_rational_int();
             self.builder.finish_node();
         } else {
@@ -2078,8 +2056,7 @@ impl<'src> Parser<'src> {
     /// [`SyntaxKind::RATIONAL_CONST_INTEGER`].
     pub(super) fn parse_rational_const(&mut self) {
         if self.at_rational_minus() {
-            self.builder
-                .start_node(FSharpLang::kind_to_raw(SyntaxKind::RATIONAL_CONST_NEGATE));
+            self.builder.start_node(SyntaxKind::RATIONAL_CONST_NEGATE);
             self.bump_into(SyntaxKind::MINUS_TOK);
             self.parse_rational_const_body();
             self.builder.finish_node();
@@ -2178,10 +2155,8 @@ impl<'src> Parser<'src> {
             Some(Token::Op("/"))
         );
         if is_rational {
-            self.builder.start_node_at(
-                cp,
-                FSharpLang::kind_to_raw(SyntaxKind::RATIONAL_CONST_RATIONAL),
-            );
+            self.builder
+                .start_node_at(cp, SyntaxKind::RATIONAL_CONST_RATIONAL);
             self.bump_rational_int(); // numerator
             self.bump_into(SyntaxKind::SLASH_TOK);
             // Denominator: raw-gate so a swallowed `)` immediately after the
@@ -2205,10 +2180,8 @@ impl<'src> Parser<'src> {
                 self.push_rational_const_error();
             }
         } else {
-            self.builder.start_node_at(
-                cp,
-                FSharpLang::kind_to_raw(SyntaxKind::RATIONAL_CONST_INTEGER),
-            );
+            self.builder
+                .start_node_at(cp, SyntaxKind::RATIONAL_CONST_INTEGER);
             self.bump_rational_int();
         }
         self.builder.finish_node();
@@ -2281,8 +2254,7 @@ impl<'src> Parser<'src> {
     /// [`SyntaxKind::HAT_TOK`] for `^T` (`TyparStaticReq.HeadType`). The
     /// caller has already verified the sigil is at `peek()`.
     pub(super) fn parse_var_type(&mut self, sigil_kind: SyntaxKind) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::VAR_TYPE));
+        self.builder.start_node(SyntaxKind::VAR_TYPE);
         self.bump_into(sigil_kind);
         // Gate the ident lookahead on the next non-trivia *raw* token,
         // not just the filtered peek: a LexFilter-swallowed `)` between
@@ -2321,8 +2293,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_anon_type(&mut self) {
-        self.builder
-            .start_node(FSharpLang::kind_to_raw(SyntaxKind::ANON_TYPE));
+        self.builder.start_node(SyntaxKind::ANON_TYPE);
         self.bump_into(SyntaxKind::UNDERSCORE_TOK);
         self.builder.finish_node();
     }
