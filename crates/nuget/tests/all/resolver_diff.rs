@@ -1585,34 +1585,34 @@ fn a_resolved_closure_reads_only_the_dependency_lists_of_the_versions_it_rejecte
 /// two; review found three such slips one spelling at a time, so the pool
 /// grows them on purpose.
 fn gen_version_pool(rng: &mut SplitMix64, want: usize) -> Vec<(String, NuGetVersion)> {
+    // Grow `pool` with generated versions it does not yet hold, to `len`.
+    let fill = |rng: &mut SplitMix64, pool: &mut Vec<(String, NuGetVersion)>, len: usize| {
+        for _ in 0..want * 500 {
+            if pool.len() == len {
+                break;
+            }
+            let spelling = gen_version_string(rng);
+            let plain = !spelling.is_empty()
+                && spelling
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+            if !plain {
+                continue;
+            }
+            let Ok(parsed) = NuGetVersion::parse(&spelling) else {
+                continue;
+            };
+            if pool.iter().any(|(_, existing)| existing.eq_strict(&parsed)) {
+                continue;
+            }
+            pool.push((spelling, parsed));
+        }
+        assert_eq!(pool.len(), len, "version pool generator degenerated");
+    };
+
     let mut pool: Vec<(String, NuGetVersion)> = Vec::new();
     let twins = rng.below(2) == 0;
-    let want_generated = if twins { want - 2 } else { want };
-    for _ in 0..want * 500 {
-        if pool.len() == want_generated {
-            break;
-        }
-        let spelling = gen_version_string(rng);
-        let plain = !spelling.is_empty()
-            && spelling
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
-        if !plain {
-            continue;
-        }
-        let Ok(parsed) = NuGetVersion::parse(&spelling) else {
-            continue;
-        };
-        if pool.iter().any(|(_, existing)| existing.eq_strict(&parsed)) {
-            continue;
-        }
-        pool.push((spelling, parsed));
-    }
-    assert_eq!(
-        pool.len(),
-        want_generated,
-        "version pool generator degenerated"
-    );
+    fill(rng, &mut pool, if twins { want - 2 } else { want });
     if twins {
         // A pair with the numeric parts of a generated version, so that the
         // twins sit among the pool's other versions rather than above them.
@@ -1630,9 +1630,35 @@ fn gen_version_pool(rng: &mut SplitMix64, want: usize) -> Vec<(String, NuGetVers
                 pool.push((spelling, parsed));
             }
         }
+        // A generated version can already be a twin; its slot goes to another.
+        fill(rng, &mut pool, want);
     }
     pool.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     pool
+}
+
+/// [`generate_wide`] draws up to four distinct versions from a pool of five to
+/// seven, by rejection, so a pool shorter than asked for hangs it rather than
+/// failing. A generated version can already be one of the twins, so this holds
+/// only because the pool tops itself up; the fresh-seed soak found a pool that
+/// did not, after 30 minutes of CI.
+#[test]
+fn version_pools_hold_as_many_distinct_versions_as_asked_for() {
+    let seeds = env_u64("BORZOI_NUGET_POOL_SEEDS").unwrap_or(5_000);
+    for seed in 0..seeds {
+        for want in 5..=7 {
+            let pool = gen_version_pool(&mut SplitMix64(seed), want);
+            assert_eq!(pool.len(), want, "seed {seed}: {pool:?}");
+            for (index, (_, version)) in pool.iter().enumerate() {
+                assert!(
+                    !pool[index + 1..]
+                        .iter()
+                        .any(|(_, other)| other.eq_strict(version)),
+                    "seed {seed}: {version:?} twice in {pool:?}"
+                );
+            }
+        }
+    }
 }
 
 /// One edge's range over `pool`, aimed at a target whose committed versions are
@@ -1755,6 +1781,8 @@ fn generate_wide(rng: &mut SplitMix64) -> Generated {
     let versions: Vec<Vec<usize>> = (0..ids)
         .map(|_| {
             let want = 1 + rng.below(4);
+            // The rejection loop below never ends on a pool shorter than this.
+            assert!(want <= pool.len(), "{want} distinct versions from {pool:?}");
             let mut chosen: Vec<usize> = Vec::new();
             while chosen.len() < want {
                 let index = rng.below(pool.len());
