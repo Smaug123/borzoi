@@ -26,7 +26,7 @@ use crate::parser_panic_sweep::WIDE;
 /// lexer's error tokens, both line-break spellings and a lone `\r`, a BOM, a
 /// tab, non-ASCII text, and an unlexable byte; plus a sample of the
 /// payload-carrying tokens.
-const LEXICAL: &[&str] = &[
+pub(crate) const LEXICAL: &[&str] = &[
     "$\"a\"",
     "$\"a\"B",
     "$\"a{1}b\"",

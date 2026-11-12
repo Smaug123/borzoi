@@ -1,7 +1,7 @@
 # Token pipeline as struct-of-arrays passes
 
-> **Status (2026-11-12).** Stage 0 (count harness) and Stage 1 (the raw
-> token table) implemented.
+> **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
+> table) and Stage 2 (the frozen filter reference) implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
 > parser's tree builder.
@@ -259,6 +259,17 @@ change in the live filter makes it fail).
 
 **Oracle**: `diff -r` against the live module shows only module paths; the
 property fails against a planted mutation and passes without it.
+
+**Result.** `crate::reference` (under `token-reference`) holds the copy:
+`reference/lexfilter/` is `lexfilter/` without its two unit-test modules and
+`typars_close_op`'s inline tests, and `reference/sign_fold.rs` is the
+pre-Stage-1 `parser/sign_fold.rs` with its imports replaced and its tests
+dropped. `parser::parse_inner` compares each parse's filtered stream, offside
+diagnostics and language-version flag with `reference::filtered_stream`'s,
+using the two copies' identical derived `Debug` as the currency. Planting a
+change in the live filter (dropping `)` from `is_atomic_expr_end`) fails the
+panic sweep's `CORE` triples at `)-1` but no pair, lexical or `WIDE`, so the
+triples are part of this oracle.
 
 ### Stage 3: the filtered token table
 

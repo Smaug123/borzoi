@@ -15,6 +15,7 @@ mod corpus;
 mod corpus_walk;
 mod fcs_divergence;
 mod fcs_record_stack_bound;
+mod filter_reference;
 mod flat_tree_reference;
 mod flat_tree_scans;
 mod kind_name_totality;
