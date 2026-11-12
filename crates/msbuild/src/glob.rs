@@ -84,6 +84,11 @@ pub enum GlobDecline {
     /// segment, so it declines instead. (A `..` segment it keeps, and compares
     /// by spelling as MSBuild does.)
     CurDirSegmentExclude { pattern: String },
+    /// A spec, or a name a glob would match, is outside the shapes the
+    /// resolver models ([`Unmodelled`] says which). The resolver commits only
+    /// inside an allow-list the MSBuild differentials verify, so a shape
+    /// nobody has checked declines here instead of matching the plain way.
+    OutsideModelledShape { spec: String, shape: Unmodelled },
 }
 
 impl std::fmt::Display for GlobDecline {
@@ -117,6 +122,10 @@ impl std::fmt::Display for GlobDecline {
             GlobDecline::CurDirSegmentExclude { pattern } => write!(
                 f,
                 "`{pattern}` has a `.` segment, which MSBuild's file matcher compares by spelling against excludes"
+            ),
+            GlobDecline::OutsideModelledShape { spec, shape } => write!(
+                f,
+                "`{spec}` {shape}, which the glob resolver does not model"
             ),
         }
     }
@@ -212,6 +221,64 @@ impl SpecFragment {
         !(escaping::has_live_wildcard(self.0.as_escaped())
             && escaping::contains_escaped_wildcards(self.0.as_escaped()))
     }
+}
+
+/// Which allow-list rule a spec or name breaks
+/// ([`GlobDecline::OutsideModelledShape`]). Each names MSBuild behaviour the
+/// resolver's plain matching would get wrong, found by review or by the
+/// generative differential: none of it is modelled, so all of it declines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unmodelled {
+    /// A character outside printable ASCII. MSBuild's `?` matches one UTF-16
+    /// code unit, not one character, and its `OrdinalIgnoreCase` folds
+    /// non-ASCII letters onto ASCII ones (`ı` onto `I`).
+    NonAscii,
+    /// A trailing path separator: MSBuild keeps the empty filename part, so
+    /// the spec names a directory, not a file.
+    TrailingSeparator,
+    /// A segment ending in `.` or a space (other than `.` and `..`), which
+    /// MSBuild's Windows-derived filename rules treat specially (`*.fs.`).
+    TrailingDotOrSpace,
+    /// One of `"<>|:`, which Windows forbids in a filename and MSBuild's
+    /// matchers treat specially (as wildcards, or as a drive separator).
+    WindowsReservedCharacter,
+}
+
+impl std::fmt::Display for Unmodelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Unmodelled::NonAscii => "has a character outside printable ASCII",
+            Unmodelled::TrailingSeparator => "ends in a path separator",
+            Unmodelled::TrailingDotOrSpace => "has a segment ending in `.` or a space",
+            Unmodelled::WindowsReservedCharacter => "has one of `\"<>|:`",
+        })
+    }
+}
+
+/// The allow-list: whether a **decoded** spec, or a name a glob would match,
+/// is in the shape the resolver models, and if not, which rule it breaks.
+/// Printable ASCII; no trailing separator, and no segment ending in `.` or a
+/// space (`.` and `..` themselves are segments, not endings); none of
+/// `"<>|:`. Runs of separators collapse, as MSBuild's do (`bin\/**`, the
+/// SDK's own spelling of an output exclude, is `bin/**`). A `*` or `?` is allowed: in a glob it is a wildcard, and in a
+/// literal name (decoded from `%2a`) MSBuild compares it as written
+/// ([`compares_unnormalised`]).
+pub fn unmodelled_shape(spec: &str) -> Option<Unmodelled> {
+    if !spec.chars().all(|c| (' '..='~').contains(&c)) {
+        return Some(Unmodelled::NonAscii);
+    }
+    if spec.contains(['"', '<', '>', '|', ':']) {
+        return Some(Unmodelled::WindowsReservedCharacter);
+    }
+    if spec.ends_with(['/', '\\']) {
+        return Some(Unmodelled::TrailingSeparator);
+    }
+    for seg in spec.split(['/', '\\']) {
+        if seg != "." && seg != ".." && seg.ends_with(['.', ' ']) {
+            return Some(Unmodelled::TrailingDotOrSpace);
+        }
+    }
+    None
 }
 
 /// Characters that make MSBuild reject a filespec outright
@@ -1231,5 +1298,39 @@ mod tests {
         assert!(is_recursive_filename_pattern("**/*.*"));
         assert!(!is_recursive_filename_pattern("sub/**/*.*"));
         assert!(!is_recursive_filename_pattern("*.*"));
+    }
+
+    /// The allow-list admits the shapes the differentials verify and names
+    /// the rule anything else breaks.
+    #[test]
+    fn the_allow_list_names_what_it_refuses() {
+        for modelled in [
+            "a.fs",
+            "./a.fs",
+            "../shared/*.fs",
+            "/abs/**/*.fs",
+            "a*b.fs",
+            "a b.fs",
+            "a;b.fs",
+            "bin\\/**",
+            "pct%.fs",
+        ] {
+            assert_eq!(unmodelled_shape(modelled), None, "{modelled}");
+        }
+        for (spec, shape) in [
+            ("\u{dc}.fs", Unmodelled::NonAscii),
+            ("\u{1f98b}?.fs", Unmodelled::NonAscii),
+            ("a\u{1}.fs", Unmodelled::NonAscii),
+            ("*.fs/", Unmodelled::TrailingSeparator),
+            ("sub\\", Unmodelled::TrailingSeparator),
+            ("*.fs.", Unmodelled::TrailingDotOrSpace),
+            ("sub./a.fs", Unmodelled::TrailingDotOrSpace),
+            ("a.fs ", Unmodelled::TrailingDotOrSpace),
+            ("a:b.fs", Unmodelled::WindowsReservedCharacter),
+            ("a<b.fs", Unmodelled::WindowsReservedCharacter),
+            ("a\"b.fs", Unmodelled::WindowsReservedCharacter),
+        ] {
+            assert_eq!(unmodelled_shape(spec), Some(shape), "{spec}");
+        }
     }
 }

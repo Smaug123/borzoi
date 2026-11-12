@@ -145,8 +145,18 @@ So `Include="*.fs" Exclude="a%2ab.fs"` excludes `axb.fs`, while
 `Include="axb.fs;a%2ab.fs" Exclude="a%2ab.fs"` excludes only `a*b.fs`.
 
 Admitting escaped excludes put more of the file matcher's pattern language in
-reach, and a review found it was not all modelled — in shapes live wildcards
-reach too. The resolver now follows it, or declines by name:
+reach, and two rounds of review found it was not all modelled — mostly in
+shapes live wildcards reach too. Fixing each quirk as found was a deny-list
+with no end, so the resolver's gate is an **allow-list**
+(`glob::unmodelled_shape`): it commits only when every spec it matches
+against, and every name a glob would match, is printable ASCII with no
+trailing separator, no segment ending in `.` or a space, and none of `"<>|:`.
+Anything else declines (`GlobDecline::OutsideModelledShape`) — the UTF-16
+width of a `?`, .NET's non-ASCII case folding, Windows trailing-dot rules and
+the rest among it, unmodelled and unreachable. (A non-ASCII name found by a
+glob is admitted where it cannot matter: no `?` in play, and no `ı`/`ſ`,
+the two characters `OrdinalIgnoreCase` folds onto ASCII.) Inside the
+allow-list, the resolver follows MSBuild's source, or declines by name:
 
 - **Legality** (`FileMatcher.RawFileSpecIsValid`/`IsLegalFileSpec`, ported as
   `glob::is_legal_filespec`): a `**` that is not a whole segment (`a**b.fs`,

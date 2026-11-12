@@ -46,7 +46,7 @@
 
 mod common;
 
-use borzoi_msbuild::{DiagnosticKind, GlobDecline, glob_resolver, parse_fsproj_with_imports};
+use borzoi_msbuild::{DiagnosticKind, glob_resolver, parse_fsproj_with_imports};
 use common::{Oracle, SplitMix64};
 use std::collections::HashMap;
 
@@ -56,10 +56,29 @@ use std::collections::HashMap;
 /// against real files. `axb.fs` and `ab.fs` are what `a*b.fs` matches as a
 /// *pattern* and not as a name; `a;bq.fs` is what `a%3b*.fs` globs.
 const FILES: &[&str] = &[
-    "plain.fs", "a b.fs", "a;b.fs", "a;bq.fs", "a*b.fs", "axb.fs", "ab.fs", "pct%.fs", "z.fs",
+    "plain.fs",
+    "a b.fs",
+    "a;b.fs",
+    "a;bq.fs",
+    "a*b.fs",
+    "axb.fs",
+    "ab.fs",
+    "pct%.fs",
+    "z.fs",
     // Extensionless, so `*.*` (all files, to MSBuild) and `*.fs` differ.
-    "ab", // Below the project, so recursive globs and `..` spellings reach it.
+    "ab",
+    // Below the project, so recursive globs and `..` spellings reach it.
     "sub/c.fs",
+    // Names outside the resolver's allow-list, kept in their own directory
+    // so only the fragments that name it meet them, and named `.txt` so no
+    // `*.fs` glob does (two non-ASCII matches leave .NET's order between
+    // them, which declines every glob that reaches both): a case pair MSBuild's
+    // `OrdinalIgnoreCase` folds, and a character two UTF-16 units wide (one
+    // `?` to us, two to MSBuild). The `:` specs need no file: a literal
+    // include is captured whether or not it exists, and one on disk would
+    // decline every recursive glob that walks past it.
+    "odd/\u{dc}.txt",
+    "odd/\u{1f98b}.txt",
 ];
 
 /// Item-spec fragments. Each escaped spelling names one of the files above, so
@@ -115,11 +134,27 @@ const FRAGMENTS: &[&str] = &[
     "sub/*.*",
     "%2a.%2a",
     "**/*.fs",
+    "ab",
+];
+
+/// Fragments outside the resolver's allow-list: each must decline through the
+/// resolver seam, never match the plain way. Drawn at a low rate
+/// ([`gen_spec`]), so the modelled space still dominates the sweep and its
+/// commit floor stays meaningful.
+const OUTSIDE_ALLOW_LIST: &[&str] = &[
     // Patterns MSBuild's file matcher refuses: an embedded `**`, live or
     // decoded from escapes.
     "a**b.fs",
     "a%2a%2ab.fs",
-    "ab",
+    "odd/*.txt",
+    "odd/?.txt",
+    "odd/\u{dc}.txt",
+    "odd/\u{fc}.txt",
+    "odd/a:b.fs",
+    "$(MSBuildProjectDirectory)/odd/a:b.fs",
+    "*.fs/",
+    "*.fs.",
+    "sub/../*.fs/",
 ];
 
 /// Property values the splices above resolve to.
@@ -130,7 +165,13 @@ const PROP_VALUES: &[&str] = &[
 fn gen_spec(rng: &mut SplitMix64) -> String {
     let n = 1 + rng.below(2);
     (0..n)
-        .map(|_| *rng.pick(FRAGMENTS))
+        .map(|_| {
+            if rng.below(12) == 0 {
+                *rng.pick(OUTSIDE_ALLOW_LIST)
+            } else {
+                *rng.pick(FRAGMENTS)
+            }
+        })
         .collect::<Vec<_>>()
         .join(";")
 }
@@ -199,12 +240,12 @@ fn norm(path: &str) -> String {
 enum Outcome {
     /// It committed, and MSBuild agreed exactly (or the check panicked).
     Committed,
-    /// It declined by name on a shape of MSBuild's file matcher the resolver
-    /// does not reproduce: a pattern the matcher refuses
-    /// (`GlobDecline::IllegalFilespec`), or a glob include meeting excludes
-    /// with a `.` segment, which it compares by spelling
-    /// (`GlobDecline::CurDirSegmentExclude`). Intended.
-    RefusedPattern,
+    /// The resolver declined, naming why (a `GlobDecline`): a pattern MSBuild's
+    /// file matcher refuses, a spec or name outside its allow-list, an order
+    /// it cannot reproduce. Intended: the resolver commits only inside the
+    /// shapes it models. Any *other* diagnostic through the resolver seam is a
+    /// decline the seam should not make.
+    ResolverDeclined,
     /// It declined for any other reason.
     Declined,
 }
@@ -247,18 +288,12 @@ fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> Ou
     // check.
     if !parsed.diagnostics.is_empty() || parsed.items_uncertain {
         let refused_pattern = !parsed.diagnostics.is_empty()
-            && parsed.diagnostics.iter().all(|d| {
-                matches!(
-                    d.kind,
-                    DiagnosticKind::GlobDeclined {
-                        reason: GlobDecline::IllegalFilespec { .. }
-                            | GlobDecline::CurDirSegmentExclude { .. },
-                        ..
-                    }
-                )
-            });
+            && parsed
+                .diagnostics
+                .iter()
+                .all(|d| matches!(d.kind, DiagnosticKind::GlobDeclined { .. }));
         return if refused_pattern {
-            Outcome::RefusedPattern
+            Outcome::ResolverDeclined
         } else {
             Outcome::Declined
         };
@@ -363,7 +398,7 @@ fn hand_picked_corners() {
         // which needs a dot.
         corner("plain.fs", "ab;axb.fs", Some("**/*.*")),
         // A pattern MSBuild's file matcher refuses (an embedded `**`, live
-        // or decoded) declines by name: `RefusedPattern`.
+        // or decoded) declines by name: `ResolverDeclined`.
         corner("plain.fs", "*.fs", Some("a%2a%2ab.fs")),
         corner("plain.fs", "*.fs", Some("a**b.fs")),
         corner("plain.fs", "a**b.fs", None),
@@ -379,6 +414,18 @@ fn hand_picked_corners() {
         // against a glob include (it excludes nothing from `*.fs`).
         corner("plain.fs", "  plain.fs  ", Some("sub/../*.fs")),
         corner("plain.fs", "*.fs", Some("sub/../*.fs")),
+        // Outside the allow-list, each of these once committed a list MSBuild
+        // disagrees with; now each declines by name.
+        corner("plain.fs", "plain.fs", Some("sub/../*.fs/")),
+        corner(
+            "plain.fs",
+            "$(MSBuildProjectDirectory)/odd/a:b.fs",
+            Some("odd/a:b.fs/"),
+        ),
+        corner("plain.fs", "odd/\u{1f98b}.txt", Some("sub/../odd/?.txt")),
+        corner("plain.fs", "a%3bb.fs", Some("*.fs.")),
+        corner("plain.fs", "odd/a%3b\u{dc}.txt", Some("odd/a%3b\u{fc}.txt")),
+        corner("plain.fs", "odd/?.txt", None),
         // An absolute exclude meets a relative glob by path.
         corner(
             "plain.fs",
@@ -419,20 +466,22 @@ fn generated_item_specs_are_certain_implies_exact() {
         }
         match check_with(&mut oracle, &fixture, true) {
             Outcome::Committed => resolver_committed += 1,
-            Outcome::RefusedPattern => {}
+            Outcome::ResolverDeclined => {}
             Outcome::Declined => declined_through_resolver.push(fixture.xml()),
         }
     }
     // The floor exists so a decline-everything model cannot pass vacuously.
-    // Through the resolver seam the generated space is modelled except the
-    // patterns MSBuild's file matcher refuses (`a**b.fs`, and the same decoded
-    // from escapes), which decline by name; any other decline there is a
-    // regression, and those refusals must stay a minority. The literal fast
+    // Through the resolver seam a decline must be the resolver's own, named
+    // (a `GlobDecline`); any other is a regression. The named ones come from
+    // the low-rate `OUTSIDE_ALLOW_LIST` pool and from globs that reach the
+    // `odd/` names, and run near a quarter of the sweep across seeds, so the
+    // floor of 65% commits catches the resolver widening its refusals into
+    // the modelled space. The literal fast
     // path declines every glob and every `Exclude` by design (it has no
     // resolver to hand them to), so only its commits are counted.
     eprintln!(
         "escaped item specs: {resolver_committed}/{CASES} committed through the resolver \
-         seam ({} refused patterns), {fast_committed}/{CASES} through the literal fast path",
+         seam ({} named declines), {fast_committed}/{CASES} through the literal fast path",
         CASES - resolver_committed - declined_through_resolver.len()
     );
     assert!(
@@ -442,7 +491,7 @@ fn generated_item_specs_are_certain_implies_exact() {
         declined_through_resolver[0]
     );
     assert!(
-        resolver_committed * 2 >= CASES,
+        resolver_committed * 100 >= CASES * 65,
         "only {resolver_committed}/{CASES} committed through the resolver seam"
     );
     assert!(

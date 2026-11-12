@@ -38,7 +38,7 @@ pub use diagnostic::{
     PackageReferenceUncertaintyCauseKind, StructuralCompileItemUncertainty,
     StructuralPackageReferenceUncertainty,
 };
-pub use glob::{GlobDecline, SpecFragment};
+pub use glob::{GlobDecline, SpecFragment, Unmodelled};
 pub use imports::detect_implicit_imports;
 /// Escape text that entered from *outside* MSBuild's escaped-value domain — a
 /// filesystem path, a computed toolset seed — so that seeding it as a property

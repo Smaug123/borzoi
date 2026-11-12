@@ -48,6 +48,16 @@
 //! The resolver commits a list only when it is MSBuild's list; otherwise it
 //! returns a [`GlobDecline`] and the evaluator marks the item set uncertain.
 //!
+//! - **An allow-list, not a deny-list.** MSBuild's matchers carry Windows
+//!   filename rules, UTF-16 widths and .NET case folding that the plain
+//!   matching here does not model. Rather than chase each, the resolver
+//!   commits only when every spec it matches against, and every name a glob
+//!   would match, is inside the shape the MSBuild differentials verify
+//!   (`glob::unmodelled_shape`); anything else declines
+//!   ([`GlobDecline::OutsideModelledShape`]), so a shape nobody has checked
+//!   cannot commit a wrong list. Within it, the pattern rules MSBuild's
+//!   source states are ported: legality ([`GlobDecline::IllegalFilespec`]),
+//!   the all-files `*.*`, and how a literal include meets an exclude.
 //! - Recursive (`**`) globs descend at most `MAX_GLOB_DEPTH` components
 //!   to bound runaway enumeration; meeting a directory at that depth
 //!   declines ([`GlobDecline::DepthLimit`]).
@@ -60,11 +70,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{GlobRequest, SpecFragment};
+use crate::{GlobRequest, SpecFragment, Unmodelled};
 
 use crate::glob::{
     GlobDecline, Pattern, compares_unnormalised, is_legal_filespec, is_recursive_filename_pattern,
-    select, split_filespec, split_glob_root, split_segments,
+    select, split_filespec, split_glob_root, split_segments, unmodelled_shape,
 };
 
 /// Maximum number of path components a recursive (`**`) glob descends.
@@ -86,6 +96,14 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
     // wildcard that matches sibling directories.
     let base_norm = req.base_dir.to_string_lossy().replace('\\', "/");
     let base_segs = split_segments(&base_norm);
+
+    // The allow-list: every spec the resolver matches anything against, and
+    // every name a glob would match, must be in the shape it models
+    // (`glob::unmodelled_shape`); anything else declines. A literal include
+    // with no excludes is matched against nothing, so only it goes unchecked.
+    for exclude in req.excludes {
+        within_modelled_shape(&exclude.unescape(), &base_norm)?;
+    }
 
     // A glob include is matched by MSBuild's file matcher, which is handed
     // the excludes `SpecFragment::excludes_from_globs` keeps, each decoded and
@@ -129,11 +147,15 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
             // emitted path is `base_dir.join` (an absolute `norm` replaces the
             // base, a relative one extends it). Every character of `norm` is
             // data, a decoded `%2a` star included.
+            if !req.excludes.is_empty() {
+                within_modelled_shape(&raw, &base_norm)?;
+            }
             if literal_survives_excludes(&raw, req.excludes, &base_segs)? {
                 out.push(req.base_dir.join(&norm));
             }
             continue;
         }
+        within_modelled_shape(&raw, &base_norm)?;
         if !is_legal_filespec(&norm) {
             return Err(GlobDecline::IllegalFilespec { pattern: norm });
         }
@@ -176,16 +198,40 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
         // strings (its `split_segments` drops the empty root segment), which
         // we re-root at `/`.
         let prefix = anchor_segs.join("/");
+        // Every name the walk finds is held to the allow-list too, matched or
+        // not: a name outside it could match where the plain reading says it
+        // does not. A non-ASCII name is the exception, being common and
+        // harmless to an ASCII pattern (which the specs are) except in two
+        // ways: a `?` meeting a character two UTF-16 units wide, and
+        // `OrdinalIgnoreCase` folding `ı` or `ſ` onto ASCII. So it is held
+        // only where a `?` is in play, or it has one of those two.
+        let question = norm.contains('?')
+            || req
+                .excludes
+                .iter()
+                .filter(|e| e.excludes_from_globs())
+                .any(|e| e.unescape().contains('?'));
         let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive)?
             .into_iter()
             .map(|rel| {
-                if prefix.is_empty() {
+                let shape = match unmodelled_shape(&rel) {
+                    Some(Unmodelled::NonAscii)
+                        if !question && !rel.contains(['\u{131}', '\u{17f}']) =>
+                    {
+                        unmodelled_shape(&rel.replace(|c: char| !c.is_ascii(), "x"))
+                    }
+                    shape => shape,
+                };
+                if let Some(shape) = shape {
+                    return Err(GlobDecline::OutsideModelledShape { spec: rel, shape });
+                }
+                Ok(if prefix.is_empty() {
                     rel
                 } else {
                     format!("{prefix}/{rel}")
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
         for key in select(&key_refs, std::slice::from_ref(&pat), glob_excludes)? {
             out.push(Path::new("/").join(&key));
@@ -201,6 +247,26 @@ fn anchor_prefix<'b>(base_segs: &'b [&'b str], norm: &str) -> &'b [&'b str] {
         &[]
     } else {
         base_segs
+    }
+}
+
+/// The allow-list gate for one decoded spec (`glob::unmodelled_shape`). An
+/// absolute spec is checked below the project directory, so spelling a file
+/// as `$(MSBuildProjectDirectory)/a.fs` in a checkout under a non-ASCII path
+/// is still modelled: that prefix is a literal the two sides share.
+fn within_modelled_shape(spec: &str, base_norm: &str) -> Result<(), GlobDecline> {
+    let norm = spec.replace('\\', "/");
+    let base = base_norm.trim_end_matches('/');
+    let checked = norm
+        .strip_prefix(base)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(&norm);
+    match unmodelled_shape(checked) {
+        Some(shape) => Err(GlobDecline::OutsideModelledShape {
+            spec: spec.to_string(),
+            shape,
+        }),
+        None => Ok(()),
     }
 }
 
@@ -275,12 +341,16 @@ fn literal_survives_excludes(
                 pattern.matches_ignoring_ascii_case(&item_full),
             )
         } else {
-            let (ours, theirs) = if compares_unnormalised(item) || compares_unnormalised(&spelling)
-            {
-                (item.to_string(), spelling)
-            } else {
-                (item_full.clone(), lexical_full_path(base_segs, &spelling))
+            // Each operand is normalised, or not, on its own spelling
+            // (`NormalizePathForComparisonNoThrow` is applied to each side).
+            let operand = |spelling: &str| {
+                if compares_unnormalised(spelling) {
+                    spelling.to_string()
+                } else {
+                    format!("/{}", lexical_full_path(base_segs, spelling))
+                }
             };
+            let (ours, theirs) = (operand(item), operand(&spelling));
             (ours == theirs, ours.eq_ignore_ascii_case(&theirs))
         };
         if exact != folded {
