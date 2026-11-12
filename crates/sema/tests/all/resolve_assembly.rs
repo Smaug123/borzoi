@@ -15,12 +15,12 @@ use borzoi_assembly::{
     Member, ModuleValue, SkippedMember, UnionCase, UnionCases,
 };
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AbbreviationVisibility, AssemblyEnv, AssemblyProjectionInput, EntityHandle, ProjectItems,
     Resolution, ResolvedFile, SemanticClass, SyntaxRecovery, resolve_file, resolve_project,
 };
-use rowan::TextRange;
 use std::path::PathBuf;
 
 /// The parse-recovery record for `src` — the counterpart to the tree-only

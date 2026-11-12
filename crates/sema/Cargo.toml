@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 borzoi-cst.workspace = true
 borzoi-assembly.workspace = true
-rowan.workspace = true
 # Structured spans for the resolution fold, so the per-file cost of
 # `resolve_project` shows up in the LSP's OpenTelemetry traces. Optional and
 # gated behind the `otel` feature so the default, reusable core has no `tracing`

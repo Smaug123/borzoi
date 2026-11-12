@@ -576,7 +576,7 @@ fn type_head(ty: &Type) -> Option<SyntaxToken> {
 }
 
 /// The identifier token at exactly `range` under `root`.
-fn ident_at(root: &SyntaxNode, range: rowan::TextRange) -> Option<SyntaxToken> {
+fn ident_at(root: &SyntaxNode, range: borzoi_cst::syntax::TextRange) -> Option<SyntaxToken> {
     root.token_at_offset(range.start())
         .find(|t| t.kind() == SyntaxKind::IDENT_TOK && t.text_range() == range)
 }
@@ -957,7 +957,7 @@ mod tests {
             let file = ImplFile::cast(parsed.root).expect("impl file");
             let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
             let at = src.rfind("foo 1").expect("the use");
-            let range = rowan::TextRange::new(
+            let range = borzoi_cst::syntax::TextRange::new(
                 u32::try_from(at).unwrap().into(),
                 u32::try_from(at + 3).unwrap().into(),
             );
@@ -1027,7 +1027,7 @@ mod tests {
             let resolved = resolve_project_files(&project, &env);
             let src = files[2].1;
             let at = src.rfind("foo 1").expect("the use");
-            let range = rowan::TextRange::new(
+            let range = borzoi_cst::syntax::TextRange::new(
                 u32::try_from(at).unwrap().into(),
                 u32::try_from(at + 3).unwrap().into(),
             );

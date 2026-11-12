@@ -17,12 +17,12 @@
 //!   `is_use() && is_rec()`.
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, LetOrUseExpr};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, SemaDiagnostic, SemaDiagnosticKind, SyntaxRecovery, resolve_file,
 };
 use proptest::prelude::*;
-use rowan::TextRange;
 
 // ============================================================================
 // Helpers

@@ -43,9 +43,9 @@ use crate::common::{
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, TypeDefn, TypeDefnRepr};
 use borzoi_sema::{Resolution, resolve_project_files};
-use rowan::TextRange;
 
 /// Seeds checked against FCS by default.
 const DEFAULT_SEEDS: usize = 72;

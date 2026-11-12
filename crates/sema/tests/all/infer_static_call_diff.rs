@@ -24,11 +24,11 @@ use std::collections::HashMap;
 use crate::common::{ensure_system_runtime_dll, invoke_fcs_dump, parse_fcs_types, temp_fs_file};
 use borzoi_assembly::{Ecma335Assembly, EcmaView, UnionCases};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
 use borzoi_sema::{
     AssemblyEnv, InferredFile, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
 };
-use rowan::TextRange;
 
 /// An [`AssemblyEnv`] over the real BCL `System.Runtime.dll` — so `System.String`
 /// / `System.Math` / `System.Char` / `System.GC` (and their static methods) are

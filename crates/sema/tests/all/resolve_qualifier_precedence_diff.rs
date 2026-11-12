@@ -45,11 +45,11 @@ use crate::common::{
 
 use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, EntityHandle, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
-use rowan::TextRange;
 
 /// An [`AssemblyEnv`] over `dlls`, via the authoritative `from_views`
 /// projection (source names and auto-opens applied). `System.Runtime` rides
@@ -103,7 +103,10 @@ fn at(src: &str, needle: &str) -> TextRange {
 fn qualifier_of(src: &str, path: &str) -> TextRange {
     let whole = at(src, path);
     let head = path.split('.').next().expect("dotted path");
-    TextRange::new(whole.start(), whole.start() + rowan::TextSize::of(head))
+    TextRange::new(
+        whole.start(),
+        whole.start() + borzoi_cst::syntax::TextSize::of(head),
+    )
 }
 
 /// Our identity currency for an entity: `(assembly simple name, dotted full

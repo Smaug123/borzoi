@@ -21,7 +21,7 @@
 use std::fmt;
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
-use rowan::{TextRange, TextSize};
+use borzoi_cst::syntax::{TextRange, TextSize};
 
 use crate::hash::HashMap;
 use crate::{Resolution, ResolvedFile};

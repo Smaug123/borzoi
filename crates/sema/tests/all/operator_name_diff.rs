@@ -28,11 +28,11 @@ use std::collections::HashMap;
 use crate::common::{NormalisedUse, full_bcl_env, invoke_fcs_dump, parse_fcs_uses, temp_fs_file};
 use borzoi_assembly::op_name::operator_display_name;
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
-use rowan::TextRange;
 
 /// FSharp.Core's binary operators with a dedicated compiled name, each usable
 /// infix between two unannotated parameters.

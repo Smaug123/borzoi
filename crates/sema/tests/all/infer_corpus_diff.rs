@@ -314,7 +314,7 @@ fn has_line_directive(source: &str) -> bool {
 /// The byte range of the outermost `let` declaration enclosing `[start, end)`,
 /// or the range itself outside any: the unit FCS's error recovery works in.
 fn enclosing_decl(file: &ImplFile, start: usize, end: usize) -> (usize, usize) {
-    let range = rowan::TextRange::new((start as u32).into(), (end as u32).into());
+    let range = borzoi_cst::syntax::TextRange::new((start as u32).into(), (end as u32).into());
     let outermost = file
         .syntax()
         .covering_element(range)

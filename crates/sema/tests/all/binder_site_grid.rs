@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxNode};
 use borzoi_sema::test_support::binder_completeness::{
     BinderVerdict, OracleUse, UNSCOPED_BINDER_LEAVES, binder_site, binder_verdict, is_unscoped,
@@ -39,7 +40,6 @@ use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
     resolve_project_files,
 };
-use rowan::TextRange;
 
 use crate::common::{
     census_oracle_binders, census_oracle_uses, full_bcl_env, invoke_fcs_dump_census,

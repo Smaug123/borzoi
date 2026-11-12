@@ -15,12 +15,12 @@
 //! `nth`-occurrence needle lands on the intended token.
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
     resolve_project,
 };
-use rowan::TextRange;
 
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);

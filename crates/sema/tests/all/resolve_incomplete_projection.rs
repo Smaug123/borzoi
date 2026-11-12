@@ -30,12 +30,12 @@
 use std::collections::BTreeMap;
 
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DeferredReason, InferredFile, ProjectItems, Resolution, ResolvedFile,
     SyntaxRecovery, Ty, infer_file, resolve_file,
 };
-use rowan::TextRange;
 
 use crate::common::full_bcl_env;
 

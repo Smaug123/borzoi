@@ -46,9 +46,9 @@ use crate::common::{
 };
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
+use borzoi_cst::syntax::TextRange;
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
-use rowan::TextRange;
 
 /// How the union's attribute is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -691,7 +691,8 @@ fn every_union_rqa_cell_agrees_with_fcs() {
         let mut leaf_verdict = String::new();
         if let Some(dot) = probe_text.rfind('.') {
             let leaf = TextRange::new(
-                cell.probe.start() + rowan::TextSize::from(u32::try_from(dot + 1).unwrap()),
+                cell.probe.start()
+                    + borzoi_cst::syntax::TextSize::from(u32::try_from(dot + 1).unwrap()),
                 cell.probe.end(),
             );
             let at_leaf = fcs_at(fu, leaf).or(theirs);

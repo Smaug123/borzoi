@@ -22,9 +22,9 @@ use crate::common::{
     CensusDecl, census_resolve_uses, invoke_fcs_dump_census, parse_census_jsonl, temp_fs_file,
 };
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
-use rowan::TextRange;
 
 /// Ways to declare `E`, each at module level of `module M`. The first is the
 /// single-arity control.

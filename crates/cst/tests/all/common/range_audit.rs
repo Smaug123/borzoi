@@ -766,7 +766,7 @@ pub(super) fn first_significant_token_from(
     offset: usize,
 ) -> Option<SyntaxToken> {
     let root = node.ancestors().last().unwrap_or_else(|| node.clone());
-    let at = rowan::TextSize::try_from(offset).expect("offset fits a TextSize");
+    let at = borzoi_cst::syntax::TextSize::try_from(offset).expect("offset fits a TextSize");
     if at >= root.text_range().end() {
         return None;
     }
@@ -946,9 +946,9 @@ fn has_newline_between(node: &SyntaxNode, start: usize, end: usize) -> bool {
     if start > end || end > len {
         return false;
     }
-    let range = rowan::TextRange::new(
-        rowan::TextSize::try_from(start).expect("offset fits a TextSize"),
-        rowan::TextSize::try_from(end).expect("offset fits a TextSize"),
+    let range = borzoi_cst::syntax::TextRange::new(
+        borzoi_cst::syntax::TextSize::try_from(start).expect("offset fits a TextSize"),
+        borzoi_cst::syntax::TextSize::try_from(end).expect("offset fits a TextSize"),
     );
     root.text().slice(range).contains_char('\n')
 }
@@ -987,7 +987,8 @@ fn leading_xml_doc_start(node: &SyntaxNode, node_start: usize) -> Option<usize> 
     // Walk back from `node_start` rather than forward from the root: the
     // recovered-tree sweeps call this once per declaration, and a forward scan
     // makes that quadratic in the file.
-    let offset = rowan::TextSize::try_from(node_start).expect("offset fits a TextSize");
+    let offset =
+        borzoi_cst::syntax::TextSize::try_from(node_start).expect("offset fits a TextSize");
     let at = if offset >= root.text_range().end() {
         root.last_token()
     } else {

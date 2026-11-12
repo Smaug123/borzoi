@@ -73,12 +73,12 @@ use std::path::PathBuf;
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::{
     ProjectItems, Resolution, ResolvedFile, ResolvedProject, SyntaxRecovery, resolve_file,
     resolve_project,
 };
-use rowan::{TextRange, TextSize};
 
 use crate::common::{FileUses, invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
 

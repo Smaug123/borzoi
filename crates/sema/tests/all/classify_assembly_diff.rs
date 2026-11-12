@@ -24,9 +24,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, SemanticClass, resolve_project};
-use rowan::TextRange;
 
 use crate::common::{
     CensusUse, LineIndex, ensure_abbrev_fixture_built, ensure_assembly_fixture_built,
