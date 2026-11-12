@@ -70,6 +70,7 @@ mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
 mod infer_type_budget;
 mod infer_union_case_diff;
+mod interning_order;
 mod manifest_autoopen_surface_diff;
 mod member_hiding_diff;
 mod module_function_measures_diff;

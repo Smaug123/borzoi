@@ -26,6 +26,7 @@ use borzoi_assembly::{
 
 use crate::def::SemanticClass;
 use crate::hash::{HashMap, HashSet};
+use crate::names::NameTable;
 use crate::resolve::{ActivePatternShape, DeclineCause};
 
 mod il_types;
@@ -1107,6 +1108,10 @@ pub struct AssemblyEnv {
     /// Every prefix of each of [`Self::namespaces_with_dropped_types`], each
     /// namespace itself included.
     dropped_type_namespace_prefixes: HashSet<Vec<String>>,
+    /// The names and paths every walk against this env interns
+    /// ([`Self::names`]). Shared across clones, like the memo caches: a clone
+    /// holds the same entities, so the same ids mean the same text.
+    names: std::sync::Arc<NameTable>,
 }
 
 /// The top-level type index key: namespace segments, simple name, and generic
@@ -1398,6 +1403,30 @@ enum InterfaceChain {
 }
 
 impl AssemblyEnv {
+    /// The name table of this env (`docs/sema-interning-plan.md`, D2): a
+    /// [`Name`](crate::names::Name) or [`PathId`](crate::names::PathId) from
+    /// it is an index into this env, as an [`EntityHandle`] is.
+    pub(crate) fn names(&self) -> &NameTable {
+        &self.names
+    }
+
+    /// A copy of this env with an empty name table of its own, for tests that
+    /// resolve the same input against two tables.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn with_fresh_names(&self) -> Self {
+        AssemblyEnv {
+            names: std::sync::Arc::default(),
+            ..self.clone()
+        }
+    }
+
+    /// How many names this env's table holds. The table only grows, by each
+    /// distinct name the walks against this env meet, so a long-lived host
+    /// bounds it by dropping the env once this passes a cap.
+    pub fn interned_name_count(&self) -> usize {
+        self.names.name_count()
+    }
+
     /// Build the env from already-enumerated top-level entities (the pure core).
     /// On a `(namespace, name)` collision across assemblies the first-enumerated
     /// wins — a deterministic, refine-later choice (real FCS resolution has

@@ -457,6 +457,26 @@ pub struct SemanticState {
     /// [`ReferenceOutcome::Unread`] with [`CSHARP_REFERENCES_DISABLED`], so the
     /// env is marked incomplete rather than silently missing the reference.
     csharp_project_references_enabled: bool,
+    /// How many names an env's name table may hold before the env is dropped
+    /// ([`Self::drop_env_past_name_cap`]).
+    name_table_cap: NameTableCap,
+}
+
+/// The most names an env's table holds past a fold before the env is dropped
+/// (`docs/sema-interning-plan.md`, D2). The table only grows, by every
+/// distinct name a fold against the env meets — each prefix of a name as it is
+/// typed among them — so a long-lived server bounds it by rebuilding the env,
+/// and with it a fresh table, once a fold leaves it past this. A whole
+/// 11.8 MB source tree interns about 40,000 names, so the default is reached
+/// only by a long session of edits. The table then stays below the cap plus
+/// one fold's names.
+#[derive(Debug, Clone, Copy)]
+struct NameTableCap(usize);
+
+impl Default for NameTableCap {
+    fn default() -> Self {
+        NameTableCap(1 << 20)
+    }
 }
 
 impl SemanticState {
@@ -1204,7 +1224,7 @@ impl SemanticState {
                 .is_some_and(|p| p.resolved.len() > want_len && Arc::ptr_eq(&p.env, &env));
             if !keep_deeper {
                 self.prev_resolved.insert(
-                    key,
+                    key.clone(),
                     PrevFold {
                         // The FULL Compile list (syntax handles — cheap), not
                         // just the folded prefix: the incremental fold
@@ -1216,8 +1236,30 @@ impl SemanticState {
                     },
                 );
             }
+            self.drop_env_past_name_cap(&key, &env);
         }
         Some((resolved, env))
+    }
+
+    /// Drop `env`, and every fold of `key`'s against it, once its name table
+    /// is past [`Self::name_table_cap`]. The next request then builds a fresh
+    /// env, whose fold is cold through the existing [`Arc::ptr_eq`] checks.
+    fn drop_env_past_name_cap(&mut self, key: &ProjectId, env: &Arc<AssemblyEnv>) {
+        let names = env.interned_name_count();
+        if names <= self.name_table_cap.0 {
+            return;
+        }
+        tracing::info!(
+            project = %key.as_path().display(),
+            names,
+            cap = self.name_table_cap.0,
+            "dropping an assembly env whose name table is past its cap"
+        );
+        self.assembly_envs
+            .retain(|_, cached| !Arc::ptr_eq(&cached.env, env));
+        self.resolved_projects.remove(key);
+        self.inferred_projects.remove(key);
+        self.prev_resolved.remove(key);
     }
 
     /// The Compile **prefix** up to and including `up_to_index`, resolved and
@@ -6913,6 +6955,57 @@ mod tests {
             !matches!(res, Some(Resolution::Item(_))),
             "stale cross-file Item survived the removal of A.x: {res:?}"
         );
+    }
+
+    /// An env whose name table a fold leaves past the cap is dropped: the next
+    /// fold, after an edit that would otherwise reuse the previous one, runs
+    /// cold against a freshly built env. Under a cap the table stays within,
+    /// the same edit folds incrementally against the same env.
+    #[test]
+    fn an_env_past_its_name_cap_is_rebuilt_and_folded_cold() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fs", "B.fs"]));
+        let a_src = "module A\nmodule B =\n    module C =\n        let x = 1\n";
+        write(&tmp.path().join("A.fs"), a_src);
+        write(&tmp.path().join("B.fs"), "module D\nlet y = A.B.C.x\n");
+        let b_uri = Uri::from_file_path(tmp.path().join("B.fs")).unwrap();
+        let edited: HashMap<Uri, String> =
+            std::iter::once((b_uri, "module D\nlet y = (A.B.C.x)\n".to_string())).collect();
+
+        let fold_twice = |cap: usize| {
+            let mut ws = Workspace::default();
+            let mut sema = SemanticState::new();
+            sema.name_table_cap = NameTableCap(cap);
+            let (_, first) = sema
+                .resolved_project_and_env_for(&proj, &mut ws, &HashMap::new())
+                .expect("first fold");
+            let names = first.interned_name_count();
+            sema.invalidate_project(&proj);
+            let (_, second) = sema
+                .resolved_project_and_env_for(&proj, &mut ws, &edited)
+                .expect("second fold");
+            (
+                names,
+                Arc::ptr_eq(&first, &second),
+                sema.incremental_fold_count(),
+            )
+        };
+
+        let (names, same_env, incremental) = fold_twice(1 << 20);
+        assert!(
+            names >= 4,
+            "the fold interns the files' module names: {names}"
+        );
+        assert!(same_env, "within the cap the env is kept");
+        assert_eq!(
+            incremental, 1,
+            "within the cap the edit folds incrementally"
+        );
+
+        let (_, same_env, incremental) = fold_twice(names - 1);
+        assert!(!same_env, "past the cap the env is rebuilt");
+        assert_eq!(incremental, 0, "past the cap the edit folds cold");
     }
 
     /// A referenced-assembly change ([`SemanticState::invalidate_assembly_state`])
