@@ -23,11 +23,11 @@
 //!
 //! [`Resolution::Item`]: crate::Resolution::Item
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
+use crate::hash::HashMap;
 use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_named_file};
 use crate::resolve::{ItemId, ProjectFile, ResolvedFile, ResolvedProject, signature_partners};
 use crate::ty::Ty;

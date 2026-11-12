@@ -7,8 +7,9 @@
 //! resolver state; the walk that produces them lives in the parent
 //! [`resolve`](super) module.
 
+use crate::hash::{HashMap, HashSet};
 use crate::recovery::SyntaxRecovery;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use borzoi_cst::syntax::{TextRange, TextSize};
@@ -385,7 +386,7 @@ pub struct ProjectItems {
     /// and member access then needs its type (Phase 3). Pure *namespace*
     /// prefixes (the segments above a module — `Demo` in `module Demo.Other`)
     /// are not recorded at all: namespaces merge wholesale.
-    pub(super) module_headers: HashSet<Vec<String>>,
+    pub(super) module_headers: PathSet,
     /// Qualified paths of *nested* `module X = …` declarations
     /// (`["Demo", "Calc"]`), accumulated across earlier files. Unlike
     /// [`Self::module_headers`], these defer on a **proper prefix** too
@@ -452,7 +453,7 @@ pub struct ProjectItems {
     /// submodule's own member, probe CF11), where a type's shadow must not
     /// answer (a type at an open-supplied head is transparent, probes
     /// CF12/CF13).
-    pub(super) real_nested_modules: HashSet<Vec<String>>,
+    pub(super) real_nested_modules: PathSet,
     /// Qualified paths of declared project **namespaces** (`["Outer", "Inner"]`
     /// for `namespace Outer.Inner`), accumulated across files. Lets
     /// [`Resolver::open_interpretations`](super::state::Resolver::open_interpretations) resolve an `open <namespace>`
@@ -603,6 +604,11 @@ pub struct ProjectItems {
     /// cross-file `Lib.Color.Red` / `open Lib; Color.Red` to the case. A latest-wins
     /// map: a later file shadows an earlier same path.
     pub(super) type_qualified_cases: HashMap<Vec<String>, (ItemId, Option<usize>)>,
+    /// The keys of [`Self::type_qualified_cases`], as a trie, so a walk can ask
+    /// about every way of completing a written path at once
+    /// ([`Self::type_qualified_case_prefix_lens`]). Written only beside the
+    /// map, by [`Self::extend_with`].
+    pub(super) type_qualified_case_paths: PathSet,
     /// Every earlier-file **type definition**'s qualified path (`["A", "Pal",
     /// "Color"]` = container + type name) → whether its **case set is fully
     /// indexed** in [`Self::type_qualified_cases`] (`false` for an abbreviation —
@@ -716,6 +722,18 @@ impl ProjectItems {
             .get(path)
             .filter(|(_, access_root_len)| accessible_from(*access_root_len, path, site))
             .map(|(id, _)| *id)
+    }
+
+    /// The lengths `k`, ascending, for which `names[..k]` followed by `written`
+    /// is a path [`Self::type_qualified_case`] holds a case at, whatever the
+    /// reference site: one walk along `names`, building no path.
+    pub(super) fn type_qualified_case_prefix_lens<'a>(
+        &'a self,
+        names: &'a [String],
+        written: &'a [String],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.type_qualified_case_paths
+            .suffix_member_prefix_lens(names, written)
     }
 
     /// Whether an earlier file exports a **type** at exactly `path`, and if so
@@ -950,6 +968,40 @@ impl ProjectItems {
     /// `extern` name does not answer).
     pub(super) fn is_real_nested_module(&self, names: &[String]) -> bool {
         self.real_nested_modules.contains(names)
+    }
+
+    /// The lengths `k` for which `names[..k]` followed by `suffix` is
+    /// [an earlier file's module header](Self::is_exact_project_module) or
+    /// [nested module](Self::is_exact_nested_module), reading each
+    /// segment of `names` once per set.
+    pub(super) fn module_suffix_prefix_lens<'a, S: AsRef<str>>(
+        &'a self,
+        names: &'a [String],
+        suffix: &'a [S],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.module_headers
+            .suffix_member_prefix_lens(names, suffix)
+            .chain(
+                self.nested_module_paths
+                    .suffix_member_prefix_lens(names, suffix),
+            )
+    }
+
+    /// The lengths `k` for which `names[..k]` followed by `suffix` is
+    /// [an earlier file's module header](Self::is_exact_project_module) or
+    /// [real nested module](Self::is_real_nested_module), reading each
+    /// segment of `names` once per set.
+    pub(super) fn real_module_suffix_prefix_lens<'a, S: AsRef<str>>(
+        &'a self,
+        names: &'a [String],
+        suffix: &'a [S],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.module_headers
+            .suffix_member_prefix_lens(names, suffix)
+            .chain(
+                self.real_nested_modules
+                    .suffix_member_prefix_lens(names, suffix),
+            )
     }
 
     /// The latest export at `path` the reference site `site` can **access**,
@@ -1436,7 +1488,13 @@ impl ProjectItems {
             self.real_nested_modules.insert(nested);
         }
         for (path, entry) in idx.type_qualified_cases {
-            self.type_qualified_cases.insert(path, entry);
+            if self
+                .type_qualified_cases
+                .insert(path.clone(), entry)
+                .is_none()
+            {
+                self.type_qualified_case_paths.insert(path);
+            }
         }
         for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
             self.type_paths.insert(
@@ -3752,7 +3810,7 @@ fn build_end_index(
     occurrences: &HashMap<TextRange, Resolution>,
     classify: impl Fn(Resolution) -> Option<SemanticClass>,
 ) -> HashMap<TextSize, (TextSize, SemanticClass)> {
-    let mut by_end: HashMap<TextSize, (TextSize, SemanticClass)> = HashMap::new();
+    let mut by_end: HashMap<TextSize, (TextSize, SemanticClass)> = HashMap::default();
     for (occ, res) in occurrences {
         if let Some(class) = classify(*res) {
             let entry = by_end.entry(occ.end()).or_insert((occ.start(), class));
@@ -3880,37 +3938,37 @@ impl ResolvedFile {
     ) -> ResolvedFile {
         ResolvedFile {
             defs,
-            resolutions: HashMap::new(),
-            or_pattern_aliases: HashSet::new(),
-            opaque_binders: HashSet::new(),
+            resolutions: HashMap::default(),
+            or_pattern_aliases: HashSet::default(),
+            opaque_binders: HashSet::default(),
             // The walk resolves nothing in a signature file.
             opaque_regions: vec![OpaqueRegion::WholeFile],
-            attribute_resolutions: HashMap::new(),
-            own_type_simple_names: HashSet::new(),
+            attribute_resolutions: HashMap::default(),
+            own_type_simple_names: HashSet::default(),
             placed_types: Vec::new(),
             // Filled by the fold from the signature's own declarations.
-            unplaced_types: HashMap::new(),
-            unplaced_type_places: HashMap::new(),
-            own_module_simple_names: HashSet::new(),
-            own_abbrev_type_simple_names: HashSet::new(),
+            unplaced_types: HashMap::default(),
+            unplaced_type_places: HashMap::default(),
+            own_module_simple_names: HashSet::default(),
+            own_abbrev_type_simple_names: HashSet::default(),
             contributions: FileContributions::default(),
             declares_core_attribute_alias: false,
             attribute_shape_unknowable: false,
-            augmentation_instance_names: HashSet::new(),
-            augmentation_static_names: HashSet::new(),
+            augmentation_instance_names: HashSet::default(),
+            augmentation_static_names: HashSet::default(),
             augmentation_names_unknowable: false,
-            preceding_augmentation_instance_names: HashSet::new(),
-            preceding_augmentation_static_names: HashSet::new(),
+            preceding_augmentation_instance_names: HashSet::default(),
+            preceding_augmentation_static_names: HashSet::default(),
             exports: ExportedItems::default(),
             item_base,
             namespace_paths: Vec::new(),
             preceding_declares_extension_source: false,
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,
-            active_pattern_shape: HashMap::new(),
+            active_pattern_shape: HashMap::default(),
             diagnostics: Vec::new(),
             resolution_trace: ResolutionTrace::default(),
-            decline_sites: HashMap::new(),
+            decline_sites: HashMap::default(),
             export_decls: Vec::new(),
             sig_screen: Some(screen),
             sig_exports,
