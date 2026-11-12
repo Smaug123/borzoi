@@ -358,6 +358,17 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             recovery_sweep:: -- --ignored --nocapture
 
+      - name: Hold the syntax table to rowan over the corpus
+        if: steps.gate.outputs.run == 'true'
+        # `SyntaxNode` is a flat preorder table behind rowan's red-tree API
+        # (docs/flat-syntax-tree-plan.md). The ordinary suite holds every
+        # method to rowan's exhaustively over short generated sources; this
+        # holds every corpus file's elements to rowan's on the same green
+        # tree, so a navigation bug that needs real code's shapes cannot land.
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            flat_tree_reference::corpus -- --ignored --nocapture
+
       - name: Sweep the parser for panics on adversarial input
         if: steps.gate.outputs.run == 'true'
         # The corpus above is the F# compiler's own sources: well-formed by
