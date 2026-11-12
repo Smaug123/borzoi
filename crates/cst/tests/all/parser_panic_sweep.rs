@@ -223,6 +223,74 @@ pub(crate) const WIDE: &[&str] = &[
     "\t",
 ];
 
+/// Whole phrases rather than tokens: each opens or continues one of the lex
+/// filter's offside contexts, or is a keyword it relabels (`let`, `let!`,
+/// `do`, `then`, `else`, `with`, `fun`, `function`, `lazy`, `assert`, and the
+/// `in` it turns into `JOIN_IN` inside a brace), with its spaces built in so
+/// that neighbouring pieces stay separate tokens.
+///
+/// The relabels are where the filtered and raw streams disagree most: a
+/// production that finds a token by raw lookahead can take one the filtered
+/// stream still carries as a relabel, leaving that relabel's consumer with its
+/// raw cursor past its own token. Reaching that needs a context several tokens
+/// deep — `[|let x = seq { x else⏎in ` is a `let` whose right-hand side is
+/// closed by the `in` that then joins — and [`WIDE`]'s single tokens, run
+/// together without spaces, almost never build one: three hundred thousand of
+/// its sources found none, where this alphabet finds the shape about once in
+/// thirty thousand.
+const LAYOUT: &[&str] = &[
+    "let x = ",
+    "let! x = ",
+    "use x = ",
+    "and ",
+    "and! x = ",
+    "do ",
+    "do! ",
+    "in ",
+    "x ",
+    "_ ",
+    "{ ",
+    " }",
+    "seq { ",
+    "query { ",
+    "join x ",
+    "[|",
+    "|]",
+    "[ ",
+    " ]",
+    "(",
+    ")",
+    "if x ",
+    "then ",
+    "else ",
+    "elif x ",
+    "match x with ",
+    "| _ -> ",
+    "function ",
+    "fun x -> ",
+    "try ",
+    "with ",
+    "finally ",
+    "for x ",
+    "while x ",
+    "begin ",
+    "end ",
+    "lazy ",
+    "assert ",
+    "type T = ",
+    "member _.M = ",
+    "interface I with ",
+    "module M = ",
+    "#if X\n",
+    "#else\n",
+    "#endif\n",
+    "\n",
+    "\n  ",
+    "  ",
+    ";",
+    ",",
+];
+
 /// One failing input, keyed by *cause* rather than by spelling: a sweep that
 /// reported every source reaching one broken guard would print thousands of
 /// lines describing a single defect.
@@ -451,15 +519,55 @@ fn the_known_virtual_stamp_witnesses_parse() {
     assert_no_failures("known virtual-stamp witnesses", &census);
 }
 
+/// The shapes in which a production claimed, by raw lookahead, a raw token the
+/// filtered stream still carried as a relabel, so the relabel's consumer found
+/// its raw cursor already past its token (`emit_join_in_token`'s assertion; a
+/// release build dropped bytes instead). Pinned by spelling, as above.
+#[test]
+fn the_known_raw_claim_witnesses_parse() {
+    let mut census = Census::default();
+    for src in [
+        // `claim_swallowed_in`, closing the `let`'s binding at the `OBLOCKEND`
+        // that the `in` puts before its `JOIN_IN`. Found by `borzoi-sema`'s
+        // `spans_match_the_scan_on_generated_trees`; the mid-line `#else` lexes
+        // as `#` and `else`.
+        "[|let x = seq { #else\nin ",
+        "[|let x = seq { x else\nin ",
+        // The same claim behind a `CtxtDo`'s `ODECLEND`, which lands at the
+        // `in`'s span before the `JOIN_IN`.
+        "let! x = \n  query { | _ -> do | _ -> in \n",
+        // Found by the [`LAYOUT`] walk.
+        "(let x = let! x = use x =  ]{ finally do! and in \n",
+        "\n[|let x = { x do fun x -> in #else\n  \n",
+    ] {
+        probe(src, &mut census);
+    }
+    assert_no_failures("known raw-claim witnesses", &census);
+}
+
 /// A fresh-seed random walk over [`WIDE`] at lengths the exhaustive halves
 /// cannot reach.
-///
-/// A fixed seed that has passed once passes forever, so this takes a new one
-/// each run and prints it. Reproduce a failure with
-/// `BORZOI_PARSER_PANIC_SEED=<seed>`.
 #[test]
 #[ignore = "fresh-seed sweep; run explicitly when touching the parser"]
 fn fresh_seed_random_sources_parse_without_panicking() {
+    fresh_seed_walk("wide", WIDE);
+}
+
+/// A fresh-seed random walk over [`LAYOUT`]'s phrases, which build the nested
+/// offside contexts that [`WIDE`]'s token soup does not.
+#[test]
+#[ignore = "fresh-seed sweep; run explicitly when touching the parser"]
+fn fresh_seed_random_layout_phrases_parse_without_panicking() {
+    fresh_seed_walk("layout", LAYOUT);
+}
+
+/// Parse random concatenations of 3 to 12 pieces of `alphabet`.
+///
+/// A fixed seed that has passed once passes forever, so this takes a new one
+/// each run and prints it. Reproduce a failure with
+/// `BORZOI_PARSER_PANIC_SEED=<seed>` (and `BORZOI_PARSER_PANIC_CASES=<n>` to
+/// change the number of sources from 30,000).
+fn fresh_seed_walk(name: &str, alphabet: &[&str]) {
     let seed = std::env::var("BORZOI_PARSER_PANIC_SEED")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -474,7 +582,7 @@ fn fresh_seed_random_sources_parse_without_panicking() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(30_000);
-    eprintln!("parser panic sweep seed: {seed} (cases={cases})");
+    eprintln!("parser panic sweep ({name}) seed: {seed} (cases={cases})");
 
     let mut rng = SplitMix64(seed);
     let mut census = Census::default();
@@ -482,12 +590,12 @@ fn fresh_seed_random_sources_parse_without_panicking() {
         let len = 3 + (rng.next() % 10) as usize;
         let mut src = String::new();
         for _ in 0..len {
-            src.push_str(WIDE[(rng.next() % WIDE.len() as u64) as usize]);
+            src.push_str(alphabet[(rng.next() % alphabet.len() as u64) as usize]);
         }
         src.push('\n');
         probe(&src, &mut census);
     }
-    assert_no_failures(&format!("fresh seed {seed}"), &census);
+    assert_no_failures(&format!("{name}, fresh seed {seed}"), &census);
 }
 
 /// SplitMix64 — the same generator `borzoi-nuget`'s soak uses. Reproducible

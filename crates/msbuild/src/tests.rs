@@ -862,6 +862,118 @@ fn choose_undecidable_gate_over_nested_cpm_flag_is_package_uncertain() {
     );
 }
 
+/// A `<Choose>` whose only `<When>` sits outside the condition grammar, so the
+/// branch decision cannot be pinned, holding `branch` in that `<When>`; then
+/// `tail`.
+fn undecided_choose_then(branch: &str, tail: &str) -> String {
+    format!(
+        r#"<Project>
+  <Choose>
+    <When Condition="'$([System.Guid]::NewGuid())' == ''">
+      {branch}
+    </When>
+  </Choose>
+  {tail}
+</Project>"#
+    )
+}
+
+/// Branch bodies holding only items, one per route the item table can take.
+const ITEM_ONLY_BRANCHES: &[&str] = &[
+    r#"<ItemGroup><None Include="x.txt" /></ItemGroup>"#,
+    r#"<ItemGroup><Compile Include="A.fs" /></ItemGroup>"#,
+    r#"<ItemGroup><CompileAfter Include="A.fs" /></ItemGroup>"#,
+    r#"<ItemGroup><PackageReference Include="P" Version="1.0.0" /></ItemGroup>"#,
+    r#"<ItemGroup><ProjectReference Include="../A/A.fsproj" /></ItemGroup>"#,
+    r#"<ItemGroup><ProjectReference Remove="../A/A.fsproj" /></ItemGroup>"#,
+    r#"<Choose><When Condition="'a' == 'a'"><ItemGroup><Helper Include="h" /></ItemGroup></When></Choose>"#,
+];
+
+#[test]
+fn an_undecided_choose_holding_only_items_leaves_later_undefined_reads_exact() {
+    // Static evaluation writes properties in pass 1 and items in pass 3, so an
+    // `<ItemGroup>` cannot define a property: a branch holding only items
+    // hides no write, and a later read of a never-written name is still
+    // exactly empty.
+    for branch in ITEM_ONLY_BRANCHES {
+        let p = parse(&undecided_choose_then(
+            branch,
+            r#"<PropertyGroup><P Condition="'$(NeverWritten)' == ''">set</P></PropertyGroup>"#,
+        ));
+        assert_eq!(p.properties.get("P").map(String::as_str), Some("set"));
+        assert!(
+            !p.property_provenance_untrusted("P"),
+            "{branch}: {:?}",
+            p.property_untrusted_cause("P")
+        );
+    }
+}
+
+#[test]
+fn an_undecided_choose_still_unpins_a_name_its_branch_writes() {
+    // The narrowing above rests on the branch's property writes being
+    // enumerated name by name, so a read of a name the branch does write must
+    // stay untrusted — with items alongside or not.
+    for items in ["", r#"<ItemGroup><None Include="x.txt" /></ItemGroup>"#] {
+        let p = parse(&undecided_choose_then(
+            &format!("<PropertyGroup><Q>x</Q></PropertyGroup>{items}"),
+            r#"<PropertyGroup><P Condition="'$(Q)' == ''">set</P></PropertyGroup>"#,
+        ));
+        assert!(
+            p.property_provenance_untrusted("P"),
+            "{items:?}: P is gated on a name the undecided branch may write"
+        );
+    }
+}
+
+#[test]
+fn an_undecided_choose_marks_only_the_item_sets_its_branches_can_reach() {
+    // (branch, Compile set uncertain, package set uncertain, reference list
+    // uncertain). An Include-only reference branch is at worst a missed
+    // reference, so it leaves the list trusted.
+    let expectations = [
+        (ITEM_ONLY_BRANCHES[0], false, false, false),
+        (ITEM_ONLY_BRANCHES[1], true, false, false),
+        (ITEM_ONLY_BRANCHES[2], true, false, false),
+        (ITEM_ONLY_BRANCHES[3], false, true, false),
+        (ITEM_ONLY_BRANCHES[4], false, false, false),
+        (ITEM_ONLY_BRANCHES[5], false, false, true),
+        (ITEM_ONLY_BRANCHES[6], false, false, false),
+        (
+            r#"<ItemGroup><FrameworkReference Include="F" /></ItemGroup>"#,
+            false,
+            true,
+            false,
+        ),
+        (
+            r#"<Choose><When Condition="'a' == 'b'"><ItemGroup><Compile Include="A.fs" /></ItemGroup></When></Choose>"#,
+            true,
+            false,
+            false,
+        ),
+        (
+            r#"<ItemGroup><compile Include="A.fs" /><PACKAGEREFERENCE Include="P" Version="1.0.0" /></ItemGroup>"#,
+            true,
+            true,
+            false,
+        ),
+    ];
+    for (branch, compile, package, references) in expectations {
+        let p = parse(&undecided_choose_then(branch, ""));
+        assert_eq!(
+            (
+                p.items_uncertain,
+                p.package_references_uncertain,
+                p.project_references_uncertain
+            ),
+            (compile, package, references),
+            "{branch}: compile causes {:?}, package causes {:?}",
+            p.compile_item_uncertainties,
+            p.package_reference_uncertainties
+        );
+    }
+}
+
 #[test]
 fn choose_label_attribute_is_tolerated() {
     // `Label` is a recognized attribute on <When> (pinned) — it must not
@@ -7782,7 +7894,10 @@ fn choose_containing_package_ref_marks_uncertain() {
         p.package_references_uncertain,
         "an un-descended <Choose> can hide package refs"
     );
-    assert!(p.items_uncertain, "and the Compile analogue holds");
+    assert!(
+        !p.items_uncertain,
+        "a branch holding no Compile item cannot change the Compile set"
+    );
 }
 
 #[test]

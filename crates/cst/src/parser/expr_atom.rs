@@ -785,11 +785,21 @@ impl<'src> Parser<'src> {
     /// `let … in⏎ <sibling>` (module or class body) from stranding as an
     /// "unsupported token In" ERROR. Shared by [`Self::close_binder_binding`] and
     /// the class-body item terminator.
+    ///
+    /// The raw `in` is claimed only when the filtered stream does not carry it
+    /// ([`Self::filtered_stream_carries`]). An `in` the lex filter relabelled to
+    /// `Virtual::JoinIn` is still there, and the join consumes it: in `[|let x =
+    /// seq { x else⏎in ` the `in` closes the RHS with an `OBLOCKEND` and then
+    /// joins. Neither is an `ODECLEND` at the `in`'s span proof that it was
+    /// swallowed: popping a `CtxtDo` puts its `ODECLEND` there too, before the
+    /// `JOIN_IN` (`let! x =⏎  query { | _ -> do | _ -> in `), as FCS's lex
+    /// filter does.
     pub(super) fn claim_swallowed_in(&mut self) -> bool {
         let in_span = match self.next_non_trivia_raw_at_pos_with_span() {
             Some((Token::In, s)) => Some(s.clone()),
             _ => None,
         };
+        let in_span = in_span.filter(|in_span| !self.filtered_stream_carries(in_span.start));
         if let Some(in_span) = in_span {
             self.drain_raw_up_to(in_span.start);
             self.emit_text(SyntaxKind::IN_TOK, in_span);
