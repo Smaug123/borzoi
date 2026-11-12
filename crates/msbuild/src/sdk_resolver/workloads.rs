@@ -44,9 +44,15 @@
 //!   `{pack}/Sdk` folders of installed SDK-kind packs whose
 //!   `Sdk/AutoImport.props` exists.
 //!
+//! * Workload sets change the manifest set only when one is *selected*
+//!   (`check_workload_sets` lists the four routes); a set in a band no
+//!   route reaches is inert — the 8.0.100 baseline set every current
+//!   SDK installer drops is the common case — provided it loads.
+//!
 //! What still degrades with [`SdkResolveError::UnsupportedLayout`]
-//! rather than resolving: a `workloadsets` directory or an
-//! install-state pin (both can override manifest versions through
+//! rather than resolving: a `workloadsets` directory in the host feature
+//! band, a baseline workload set not certified to load, or an
+//! install-state file (each can override manifest versions through
 //! machinery we don't model), a `global.json` that engages
 //! workload-set selection (`sdk.workloadVersion` — it selects a
 //! workload set or fails the real evaluation when the set is
@@ -465,21 +471,7 @@ fn enumerate_manifest_roots(
         }
     }
 
-    // Workload sets can pin manifest versions through selection
-    // machinery (global.json workload versions, install state) we don't
-    // model; the presence of any `workloadsets` directory under any
-    // participating root degrades, conservatively across every band.
-    for root in roots.all() {
-        for entry in read_dir_or_degrade(&root.join("sdk-manifests"))? {
-            let sets = entry.path().join("workloadsets");
-            if sets.is_dir() {
-                return Err(unsupported(format!(
-                    "workload set present: {}",
-                    sets.display()
-                )));
-            }
-        }
-    }
+    check_workload_sets(band, roots)?;
 
     // Primary pass: every id directory in `{root}/sdk-manifests/{band}`,
     // shadowed **by directory name** — the highest-precedence root wins by name,
@@ -614,6 +606,195 @@ fn enumerate_manifest_roots(
         }
     });
     Ok(manifests.into_iter().map(|m| m.directory).collect())
+}
+
+/// The feature band that `SdkDirectoryWorkloadManifestProvider` scans for
+/// workload sets alongside the host band, whatever the host band is: the
+/// SDK installers drop their *baseline* workload set under it ("the baseline
+/// workload sets were merged with a fixed 8.0.100 feature band"), so on a
+/// current Microsoft-packaged install it is normally present.
+const BASELINE_WORKLOAD_SET_BAND: &str = "8.0.100";
+
+/// Degrade wherever a workload set could change the manifest set, or could
+/// make the real resolution throw.
+///
+/// `SdkDirectoryWorkloadManifestProvider.RefreshWorkloadManifests` selects a
+/// workload set in exactly four ways:
+///
+/// 1. a version handed to its constructor — never, on the MSBuild path
+///    (`CachingWorkloadResolver` passes the `global.json` path instead);
+/// 2. `global.json`'s `sdk.workloadVersion` — degraded on by
+///    [`WorkloadEnvironment::global_json_pins_workload_set`];
+/// 3. the install state's `workloadVersion` — degraded on, with every other
+///    install-state shape, by `workload_roots`;
+/// 4. by default, the highest workload set of the **host feature band**
+///    whenever there is one, unless `global.json`'s `workloads-update-mode`
+///    or the install state opts out (`InstallStateContents.ShouldUseWorkloadSets`
+///    is `UseWorkloadSets ?? true`) — degraded on here, whenever the host
+///    band has a `workloadsets` directory under any root.
+///
+/// Sets of any other band are reached only by looking up a version that 2
+/// or 3 named, so when neither applies they cannot change what is imported.
+/// But the provider *loads* the sets of [`BASELINE_WORKLOAD_SET_BAND`]
+/// unconditionally, before it knows whether it needs them, and that load
+/// throws on a malformed set — failing the real evaluation. So those are
+/// held to [`check_loadable_workload_sets`]. Every other band's sets are
+/// never read.
+fn check_workload_sets(
+    band: &(String, SdkVersion),
+    roots: &WorkloadRoots,
+) -> Result<(), SdkResolveError> {
+    for root in roots.all() {
+        let manifests = root.join("sdk-manifests");
+        let host_sets = manifests.join(&band.0).join("workloadsets");
+        if host_sets.is_dir() {
+            return Err(unsupported(format!(
+                "workload set present for the host feature band: {}",
+                host_sets.display()
+            )));
+        }
+        let baseline_sets = manifests
+            .join(BASELINE_WORKLOAD_SET_BAND)
+            .join("workloadsets");
+        if baseline_sets.is_dir() {
+            check_loadable_workload_sets(&baseline_sets)?;
+        }
+    }
+    Ok(())
+}
+
+/// Degrade unless loading every workload set under `workload_sets_root` —
+/// `GetAvailableWorkloadSets`' `AddWorkloadSetsForFeatureBand` over each
+/// subdirectory, through `WorkloadSet.FromWorkloadSetFolder` — certainly does
+/// not throw.
+///
+/// What is certified is a strict subset of what loads: each set directory is
+/// named by a plain version (`major.minor.patch[.n][-prerelease]`, which
+/// `WorkloadSet.GetWorkloadSetFeatureBand` must parse), and each
+/// `*.workloadset.json` in it is a JSON object of string values `version` or
+/// `version/band` keyed by ASCII manifest ids, none repeated in any casing
+/// within a file or across a set's files. Anything else — an unreadable file, an unfamiliar
+/// version spelling — degrades, whether or not the reference would in fact
+/// throw on it.
+///
+/// Candidate files are those whose name ends `.workloadset.json` in any
+/// casing (`Directory.GetFiles` matches case-insensitively off Linux), so a
+/// file Linux would skip is still validated; and any such entry that is not
+/// a regular file degrades.
+fn check_loadable_workload_sets(workload_sets_root: &Path) -> Result<(), SdkResolveError> {
+    let malformed = |path: &Path, why: &str| {
+        Err(unsupported(format!(
+            "workload set may fail to load ({why}): {}",
+            path.display()
+        )))
+    };
+    for set_dir in read_dir_or_degrade(workload_sets_root)? {
+        let set_path = set_dir.path();
+        let entries = std::fs::read_dir(&set_path).map_err(|err| {
+            unsupported(format!("cannot enumerate {}: {err}", set_path.display()))
+        })?;
+        let mut ids: Vec<String> = Vec::new();
+        let mut any_set_file = false;
+        for entry in entries {
+            let entry = entry.map_err(|err| {
+                unsupported(format!("cannot enumerate {}: {err}", set_path.display()))
+            })?;
+            let path = entry.path();
+            let Some(name) = entry.file_name().to_str().map(str::to_ascii_lowercase) else {
+                return malformed(&path, "non-UTF-8 file name");
+            };
+            if !name.ends_with(".workloadset.json") {
+                continue;
+            }
+            if !std::fs::metadata(&path).is_ok_and(|meta| meta.is_file()) {
+                return malformed(&path, "not a regular file");
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return malformed(&path, "unreadable or not UTF-8");
+            };
+            let Some(entries) = super::global_json::parse_json_string_map(&text) else {
+                return malformed(&path, "not a JSON object of strings");
+            };
+            for (id, value) in entries {
+                // `ManifestId` compares `OrdinalIgnoreCase`; only on ASCII is
+                // that exactly ASCII case folding.
+                if !id.is_ascii() {
+                    return malformed(&path, "non-ASCII manifest id");
+                }
+                let folded = id.to_ascii_lowercase();
+                if ids.contains(&folded) {
+                    return malformed(&path, "manifest id repeated");
+                }
+                ids.push(folded);
+                let mut parts = value.split('/');
+                let version = parts.next().unwrap_or_default();
+                let band = parts.next();
+                if parts.next().is_some()
+                    || !is_plain_release_version(version)
+                    || band.is_some_and(|band| !is_plain_release_version(band))
+                {
+                    return malformed(&path, "manifest version or band not certified to parse");
+                }
+            }
+            any_set_file = true;
+        }
+        // A directory without set files loads as no set, and its name is
+        // never parsed.
+        if any_set_file {
+            let name = set_dir.file_name();
+            if !name.to_str().is_some_and(is_plain_workload_set_version) {
+                return malformed(&set_path, "workload set version not certified to parse");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `major.minor.patch[-prerelease]` in strict SemVer 2.0 spelling, without
+/// build metadata — a subset of what both `ReleaseVersion` (behind
+/// `SdkFeatureBand`) and `FXVersion` (behind `ManifestVersion`) parse.
+/// Numeric components are capped at nine digits so none can overflow.
+fn is_plain_release_version(s: &str) -> bool {
+    let (core, prerelease) = match s.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (s, None),
+    };
+    let components: Vec<&str> = core.split('.').collect();
+    components.len() == 3
+        && components.iter().all(|c| is_plain_numeric(c))
+        && prerelease.is_none_or(is_plain_prerelease)
+}
+
+/// A workload set version: [`is_plain_release_version`], or the same with a
+/// fourth numeric core component (the workload patch version), which
+/// `WorkloadSet.WorkloadSetVersionToWorkloadSetPackageVersion` drops before
+/// building the feature band from the first three.
+fn is_plain_workload_set_version(s: &str) -> bool {
+    let (core, prerelease) = match s.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (s, None),
+    };
+    let components: Vec<&str> = core.split('.').collect();
+    (components.len() == 3 || components.len() == 4)
+        && components.iter().all(|c| is_plain_numeric(c))
+        && prerelease.is_none_or(is_plain_prerelease)
+}
+
+fn is_plain_numeric(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 9
+        && s.bytes().all(|b| b.is_ascii_digit())
+        && (s == "0" || !s.starts_with('0'))
+}
+
+fn is_plain_prerelease(s: &str) -> bool {
+    s.split('.').all(|ident| {
+        !ident.is_empty()
+            && ident
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && (!ident.bytes().all(|b| b.is_ascii_digit()) || is_plain_numeric(ident))
+    })
 }
 
 /// `SdkDirectoryWorkloadManifestProvider.ResolveManifestDirectory`:
