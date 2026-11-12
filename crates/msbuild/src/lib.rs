@@ -38,7 +38,7 @@ pub use diagnostic::{
     PackageReferenceUncertaintyCauseKind, StructuralCompileItemUncertainty,
     StructuralPackageReferenceUncertainty,
 };
-pub use glob::GlobDecline;
+pub use glob::{GlobDecline, SpecFragment};
 pub use imports::detect_implicit_imports;
 /// Escape text that entered from *outside* MSBuild's escaped-value domain — a
 /// filesystem path, a computed toolset seed — so that seeding it as a property
@@ -180,21 +180,28 @@ pub type SdkResolver<'r> = dyn Fn(&str) -> Result<SdkResolution, SdkResolveError
 /// concern: the evaluator diagnoses and strips them before building the
 /// request, so `include` and `excludes` only ever contain literal or
 /// wildcard path fragments.
+///
+/// Both lists are already split, and still escaped ([`SpecFragment`]): the
+/// split and each fragment's glob-or-literal classification are MSBuild's,
+/// made on escaped text, and the resolver decodes each fragment only at its
+/// own point of use. So an escaped `%3b` never splits a fragment and an
+/// escaped `%2a` never becomes a wildcard in a literal one.
 pub struct GlobRequest<'a> {
     /// The entry project's directory — the base every relative fragment
     /// resolves against (MSBuild resolves item includes relative to
     /// `$(MSBuildProjectDirectory)`, even inside imported files). Always
     /// absolute (the entry `project_path` is required to be rooted).
     pub base_dir: &'a Path,
-    /// The surviving `Include` spec: the `;`-joined literal/wildcard
-    /// fragments in document order, `$(...)`-expanded, with `@()`/`%()`
-    /// references removed. May name files that do not exist (MSBuild
-    /// passes literal includes through regardless); the resolver decides.
-    pub include: &'a str,
-    /// The `Exclude` fragments, `$(...)`-expanded and split on `;`, in
-    /// document order. Empty when the element has no `Exclude`. Applies
-    /// to literal and wildcard includes alike.
-    pub excludes: &'a [String],
+    /// The surviving `Include` fragments in document order,
+    /// `$(...)`-expanded, with `@()`/`%()` references removed. May name
+    /// files that do not exist (MSBuild passes literal includes through
+    /// regardless); the resolver decides.
+    pub include: &'a [SpecFragment],
+    /// The `Exclude` fragments, `$(...)`-expanded, in document order. Empty
+    /// when the element has no `Exclude`. Applies to literal and wildcard
+    /// includes alike, though not identically: see
+    /// [`SpecFragment::excludes_from_globs`].
+    pub excludes: &'a [SpecFragment],
 }
 
 /// Resolver function the caller hands [`parse_fsproj_with_imports`] to
@@ -1042,7 +1049,7 @@ pub fn parse_fsproj(
 /// **Glob expansion.** When `glob_resolver` is supplied, an item
 /// element whose `Include` contains an MSBuild wildcard (or that carries
 /// an `Exclude`) is routed through it: the evaluator builds a
-/// [`GlobRequest`] (project dir + ref-stripped include spec + split
+/// [`GlobRequest`] (project dir + ref-stripped include fragments + split
 /// excludes) and splices the returned paths verbatim, each as an item of
 /// the element's kind. When it is `None`, a wildcard `Include` surfaces
 /// as [`DiagnosticKind::UnsupportedGlob`] and an `Exclude` as

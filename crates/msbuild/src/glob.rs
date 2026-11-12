@@ -44,6 +44,8 @@
 //! a wrong assumption). MSBuild-faithfulness is a separate concern pinned
 //! by the 9b-2 `dotnet msbuild` oracle.
 
+use crate::properties::escaping::{self, Escaped};
+
 /// Why a fragment's expansion cannot be reproduced exactly, so the resolver
 /// declines rather than commit a list MSBuild may not produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +124,72 @@ pub struct Pattern {
     segs: Vec<Seg>,
 }
 
+/// One `;`-separated fragment of an item `Include` or `Exclude`, still in
+/// MSBuild's **escaped** domain — the unit [`crate::GlobRequest`] carries
+/// across the resolver seam.
+///
+/// MSBuild splits a spec on the `;`s of its escaped text, classifies each
+/// fragment as a glob or a literal on that escaped text, and only then
+/// decodes it. A fragment is therefore the product of the split: it never
+/// holds a live `;`, so nothing downstream has a reason to split it again,
+/// and its classification ([`Self::is_wildcard`]) is asked of the escaped
+/// text this type keeps. Decoding is the last step, at [`Self::unescape`].
+/// An escaped `%3b` decodes to a `;` that is part of a filename, and an
+/// escaped `%2a` to a star that is part of one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecFragment(Escaped);
+
+impl SpecFragment {
+    /// Split an escaped item spec into its fragments as MSBuild does: on
+    /// every `;` of the escaped text, each fragment trimmed, empty ones
+    /// dropped. `a%3bb.fs;z.fs` is two fragments, the first naming `a;b.fs`.
+    pub fn split_escaped(spec: &str) -> Vec<SpecFragment> {
+        Escaped::from_xml(spec)
+            .split_list()
+            .map(SpecFragment)
+            .collect()
+    }
+
+    /// One fragment the evaluator has already split off an escaped spec
+    /// (trimmed, non-empty, no live `;`).
+    pub(crate) fn from_split(fragment: &str) -> SpecFragment {
+        debug_assert!(!fragment.contains(';') && fragment.trim() == fragment);
+        SpecFragment(Escaped::from_xml(fragment))
+    }
+
+    /// The fragment's escaped spelling, for display.
+    pub fn as_escaped(&self) -> &str {
+        self.0.as_escaped()
+    }
+
+    /// The fragment at its point of use: decoded, exactly once.
+    pub fn unescape(&self) -> String {
+        self.0.unescape()
+    }
+
+    /// Whether MSBuild expands this fragment as a glob
+    /// (`EngineFileUtilities.FilespecHasWildcards`): a live `*`/`?` and no
+    /// escaped one. When true, every `*`/`?` in [`Self::unescape`] is a
+    /// wildcard; when false, the decoded text is a literal path, stars and all
+    /// (`a%2a*.fs` is the one item `a**.fs`).
+    pub fn is_wildcard(&self) -> bool {
+        self.0.is_filespec_wildcard()
+    }
+
+    /// Whether this `Exclude` fragment takes part in excluding from a
+    /// **glob** include — MSBuild's `EngineFileUtilities.IsValidExclude`,
+    /// which drops an exclude carrying both a live and an escaped wildcard
+    /// before the file matcher sees any. The ones it keeps are decoded and
+    /// then parsed as patterns, so an escaped `%2a` in one *is* a wildcard
+    /// there: `Include="*.fs" Exclude="a%2ab.fs"` excludes `axb.fs`, while
+    /// against the literal include `axb.fs` the same exclude matches only a
+    /// file named `a*b.fs` (both pinned against `dotnet msbuild` 10.0.301).
+    pub fn excludes_from_globs(&self) -> bool {
+        !(escaping::has_live_wildcard(self.0.as_escaped())
+            && escaping::contains_escaped_wildcards(self.0.as_escaped()))
+    }
+}
+
 /// Normalise a path/pattern fragment: backslashes to `/`, collapse runs
 /// of `/`, drop empty and lone-`.` (current-directory) segments. Returns
 /// the surviving segments. `..` is *not* resolved here — that needs the
@@ -159,6 +227,22 @@ impl Pattern {
         Pattern { segs }
     }
 
+    /// A pattern that matches `literal` followed by `fragment`, both
+    /// **verbatim**: every `*`/`?`/`**` in either is an ordinary character.
+    /// The pattern of a filespec MSBuild does not glob
+    /// ([`SpecFragment::is_wildcard`]), whose decoded text may carry the
+    /// stars of an escaped `%2a`.
+    pub fn literal_with_prefix(literal: &[&str], fragment: &str) -> Pattern {
+        Pattern {
+            segs: literal
+                .iter()
+                .flat_map(|s| split_segments(s))
+                .chain(split_segments(fragment))
+                .map(|s| Seg::Match(s.chars().map(Tok::Lit).collect()))
+                .collect(),
+        }
+    }
+
     /// Build a pattern whose leading `literal` segments match **verbatim**
     /// — any `*`/`?`/`**` in them are ordinary characters, not wildcards —
     /// followed by the glob segments parsed from `fragment`.
@@ -180,10 +264,12 @@ impl Pattern {
         Pattern { segs }
     }
 
-    /// Whether this pattern contains any wildcard (`*`, `?`, or `**`).
-    /// A pure-literal fragment takes the no-filesystem passthrough in the
-    /// resolver (9b-2).
-    pub fn is_glob(&self) -> bool {
+    /// Whether this pattern contains any wildcard (`*`, `?`, or `**`). The
+    /// resolver does not ask: whether a fragment globs is MSBuild's
+    /// classification of its escaped text ([`SpecFragment::is_wildcard`]),
+    /// which the parsed pattern no longer carries.
+    #[cfg(test)]
+    fn is_glob(&self) -> bool {
         self.segs.iter().any(|seg| match seg {
             Seg::DoubleStar => true,
             Seg::Match(toks) => toks.iter().any(|t| matches!(t, Tok::Star | Tok::Question)),

@@ -38,7 +38,7 @@ with the value. It is never re-derived from the text.**
 
 That is the whole model, and it is the direct analogue of the escaped-value
 rule (*scan and split before you decode; trim in the domain; decode at the
-leaf* — `docs/msbuild-escaped-value-plan.md`). The escaped-value work removed a
+leaf* — `docs/completed/msbuild-escaped-value-plan.md`). The escaped-value work removed a
 side-channel (`literal_percents`) by making the *type* carry the escaping rule.
 This work removes a side-channel (`unpinned_value_properties` +
 `sdk_package_tainted_properties`, re-derived per use site by a second parser) by

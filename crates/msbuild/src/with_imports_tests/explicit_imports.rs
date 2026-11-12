@@ -1132,44 +1132,72 @@ fn non_ascii_case_pair_that_dotnet_distinguishes_imports_both() {
     assert!(!result.is_partial);
 }
 
+/// A `Project` with a *live* `*` alongside an escaped `%2a` is not a glob:
+/// MSBuild takes the whole filespec literally (`FilespecHasWildcards`), so
+/// `*.props%2a` imports the one file named `*.props*` — and not `a.props`,
+/// which the live star alone would have matched. Pinned against
+/// `dotnet msbuild` 10.0.301 (`-getProperty:P` reads `star`).
+#[cfg(unix)]
 #[test]
-fn declined_mixed_wildcard_import_makes_later_undefined_reads_inexact() {
-    // A `Project` with a *live* `*` alongside an escaped `%2a` (a literal
-    // star) cannot be expressed as a glob, so the import is declined
-    // (`UnsupportedGlob`). MSBuild, though, may import a real file named
-    // `*.props` here, and that file could define anything — so the decline
-    // must latch walk opacity (C.2b). The proof: a *later* import gated on a
-    // plain undefined property, which would otherwise read exactly False and
-    // be a clean exclusion (see
-    // `user_import_gated_on_exact_undefined_property_is_not_items_uncertain`),
-    // must now read as inexact and mark the item set uncertain.
+fn mixed_wildcard_import_imports_the_literal_file() {
     let tmp = TempDir::new().unwrap();
     let project_path = write_at(
         tmp.path(),
         "Demo.fsproj",
         r#"<Project>
   <Import Project="*.props%2a" />
-  <Import Project="extra.props" Condition="'$(IncludeExtra)' == 'true'" />
+</Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "*.props*",
+        r#"<Project><PropertyGroup><P>star</P></PropertyGroup></Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "a.props",
+        r#"<Project><PropertyGroup><P>plain</P></PropertyGroup></Project>"#,
+    );
+    let result = parse_file(&project_path);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.properties.get("P").map(String::as_str), Some("star"));
+}
+
+/// The literal reading's other half: with no file named `*.props*`, MSBuild
+/// fails the import (MSB4019, "was not found") rather than silently importing
+/// nothing as a glob that matched nothing would — so the evaluation degrades.
+#[test]
+fn mixed_wildcard_import_of_a_missing_file_is_a_failed_import() {
+    let tmp = TempDir::new().unwrap();
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project>
+  <Import Project="*.props%2a" />
   <ItemGroup>
     <Compile Include="A.fs" />
   </ItemGroup>
 </Project>"#,
     );
+    write_at(
+        tmp.path(),
+        "a.props",
+        r#"<Project><PropertyGroup><P>plain</P></PropertyGroup></Project>"#,
+    );
     let result = parse_file(&project_path);
     assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, DiagnosticKind::UnsupportedGlob { .. })),
-        "the mixed live/escaped wildcard import is declined: {:?}",
+        result.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            DiagnosticKind::ImportFailed {
+                reason: ImportFailReason::NotFound,
+                ..
+            }
+        )),
+        "{:?}",
         result.diagnostics
     );
-    assert!(
-        result.items_uncertain,
-        "the declined import left the walk opaque, so the later undefined \
-         import gate can no longer be proven exactly False: {:?}",
-        result.diagnostics
-    );
+    assert!(result.is_partial);
+    assert_eq!(result.properties.get("P"), None);
 }
 
 #[test]

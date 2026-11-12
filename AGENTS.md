@@ -46,7 +46,7 @@ This is a Cargo workspace with nine members:
   `fsproj_item_escape_generative_diff.rs` (item specs over an escape-bearing
   alphabet — the harness that guards MSBuild's escaped-value domain, where the
   rule is *scan and split before you decode; trim in the domain; decode at the
-  leaf*; see `docs/msbuild-escaped-value-plan.md`), and
+  leaf*; see `docs/completed/msbuild-escaped-value-plan.md`), and
   `fsproj_global_perturbation_diff.rs`. All assert
   *certain-implies-exact*: when we commit a value, MSBuild must agree exactly;
   a decline makes no claim.

@@ -14,8 +14,14 @@
 //!
 //! ## Semantics (pinned against real `dotnet msbuild`)
 //!
-//! For each `;`-separated `Include` fragment, in document order:
+//! For each `Include` fragment, in document order:
 //!
+//! - Fragments arrive split and still escaped ([`SpecFragment`]). Whether
+//!   one is a glob is MSBuild's classification of its escaped text
+//!   ([`SpecFragment::is_wildcard`]), so an escaped `%2a` is a star in a
+//!   filename and `a%2a*.fs` is the literal `a**.fs`; each is decoded here,
+//!   after that, and never split again, so an escaped `%3b` is a `;` in a
+//!   filename.
 //! - A **literal** fragment is emitted regardless of whether the file
 //!   exists (MSBuild passes literal includes through unconditionally); an
 //!   `Exclude` that matches it still removes it.
@@ -28,7 +34,10 @@
 //!   a relative exclude is anchored at the project directory, an absolute
 //!   one kept as-is. So a relative include with an absolute exclude (e.g.
 //!   `$(MSBuildProjectDirectory)/Gen.fs`) — or the mirror — filters
-//!   correctly rather than silently missing.
+//!   correctly rather than silently missing. An exclude carrying an escaped
+//!   wildcard applies differently to the two kinds of include, as MSBuild's
+//!   does: a name against a literal, a decoded pattern against a glob
+//!   ([`SpecFragment::excludes_from_globs`]).
 //!
 //! Fragments are concatenated in document order and **not** deduplicated:
 //! MSBuild keeps duplicates from overlapping fragments (e.g. `a.fs;*.fs`
@@ -51,7 +60,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::GlobRequest;
+use crate::{GlobRequest, SpecFragment};
 
 use crate::glob::{
     GlobDecline, Pattern, select, split_glob_root, split_segments, survives_excludes,
@@ -78,36 +87,71 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
     let base_segs = split_segments(&base_norm);
 
     // Anchor every exclude into that frame: an absolute exclude keeps its
-    // path (its own wildcards remain wildcards), a relative one is rooted at
-    // the project directory with the base kept literal.
-    let excludes: Vec<Pattern> = req
+    // path, a relative one is rooted at the project directory with the base
+    // kept literal. MSBuild applies an exclude two ways (see
+    // `SpecFragment::excludes_from_globs`): against a literal include, as a
+    // glob only when the exclude is one by its own escaped-text
+    // classification; against a glob include, every decoded `*`/`?` is a
+    // wildcard, and an exclude mixing live and escaped wildcards is dropped.
+    let anchored = |exclude: &SpecFragment, wildcards: bool| {
+        let norm = exclude.unescape().replace('\\', "/");
+        let prefix: &[&str] = if norm.starts_with('/') {
+            &[]
+        } else {
+            &base_segs
+        };
+        if wildcards {
+            Pattern::with_literal_prefix(prefix, &norm)
+        } else {
+            Pattern::literal_with_prefix(prefix, &norm)
+        }
+    };
+    let literal_excludes: Vec<Pattern> = req
         .excludes
         .iter()
-        .map(|e| {
-            let norm = e.replace('\\', "/");
-            if norm.starts_with('/') {
-                Pattern::parse(&norm)
-            } else {
-                Pattern::with_literal_prefix(&base_segs, &norm)
-            }
-        })
+        .map(|e| anchored(e, e.is_wildcard()))
+        .collect();
+    let glob_excludes: Vec<Pattern> = req
+        .excludes
+        .iter()
+        .filter(|e| e.excludes_from_globs())
+        .map(|e| anchored(e, true))
         .collect();
 
     let mut out: Vec<PathBuf> = Vec::new();
-    // The evaluator already trimmed/$()-expanded each fragment and stripped
-    // `@()`/`%()` references, so each is a literal or wildcard path.
-    for frag in req
-        .include
-        .split(';')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let norm = frag.replace('\\', "/");
+    // The evaluator already split, trimmed and $()-expanded each fragment
+    // and stripped `@()`/`%()` references, so each is a literal or wildcard
+    // path, classified on its escaped text and decoded here.
+    for frag in req.include {
+        let norm = frag.unescape().replace('\\', "/");
         let absolute = norm.starts_with('/');
-        // Split only the *fragment* at its first wildcard, then prepend the
-        // literal base (for relative specs) to get the walk root and key
-        // prefix. The base is never fed to `split_glob_root`, so its `*`/`?`
-        // never act as a wildcard boundary.
+        if !frag.is_wildcard() {
+            // Literal passthrough: MSBuild emits a literal include whether
+            // or not the file exists; only a matching Exclude removes it.
+            // The exclude check runs in the absolute frame; the emitted path
+            // reproduces it as a `PathBuf` via `base_dir.join` (an absolute
+            // `norm` replaces the base, a relative one extends it). Every
+            // character of `norm` is data, a decoded `%2a` star included.
+            let key_segs: Vec<&str> = if absolute {
+                split_segments(&norm)
+            } else {
+                base_segs
+                    .iter()
+                    .copied()
+                    .chain(split_segments(&norm))
+                    .collect()
+            };
+            if survives_excludes(&literal_excludes, &key_segs.join("/"))? {
+                out.push(req.base_dir.join(&norm));
+            }
+            continue;
+        }
+        // A glob: no escaped wildcard (that would have made it literal), so
+        // every `*`/`?` in the decoded `norm` is a wildcard, while a decoded
+        // `%3b` is a `;` in a filename. Split only the *fragment* at its first
+        // wildcard, then prepend the literal base (for relative specs) to get
+        // the walk root and key prefix. The base is never fed to
+        // `split_glob_root`, so its `*`/`?` never act as a wildcard boundary.
         let frag_root = split_glob_root(&norm);
         let anchor_segs: Vec<String> = if absolute {
             frag_root.prefix.clone()
@@ -125,46 +169,33 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
         } else {
             Pattern::with_literal_prefix(&base_segs, &norm)
         };
-        if pat.is_glob() {
-            // Root the walk at the literal anchor so `../shared/*.fs`
-            // enumerates the sibling directory and `/opt/lib/*.fs` the
-            // absolute one. `anchor_segs` is absolute (or empty → `/`).
-            let walk_root = abs_from_segments(&anchor_segs);
-            // A `**`-free tail matches files at one fixed depth below the
-            // walk root, so there is no point descending further.
-            let depth = frag_root.tail_depth.unwrap_or(MAX_GLOB_DEPTH);
-            let recursive = frag_root.tail_depth.is_none();
-            // Re-attach the literal prefix to each enumerated path so keys,
-            // include pattern, and excludes all live in one frame. `select`
-            // matches/orders them and returns leading-`/`-stripped absolute
-            // strings (its `split_segments` drops the empty root segment),
-            // which we re-root at `/`.
-            let prefix = anchor_segs.join("/");
-            let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive)?
-                .into_iter()
-                .map(|rel| {
-                    if prefix.is_empty() {
-                        rel
-                    } else {
-                        format!("{prefix}/{rel}")
-                    }
-                })
-                .collect();
-            let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-            for key in select(&key_refs, std::slice::from_ref(&pat), &excludes)? {
-                out.push(Path::new("/").join(&key));
-            }
-        } else {
-            // Literal passthrough: MSBuild emits a literal include whether
-            // or not the file exists; only a matching Exclude removes it. The
-            // exclude check runs against the same absolute-frame string
-            // (`anchor_segs` joined); the emitted path reproduces it as a
-            // `PathBuf` via `base_dir.join` (an absolute `norm` replaces the
-            // base, a relative one extends it).
-            let key = anchor_segs.join("/");
-            if survives_excludes(&excludes, &key)? {
-                out.push(req.base_dir.join(&norm));
-            }
+        // Root the walk at the literal anchor so `../shared/*.fs` enumerates
+        // the sibling directory and `/opt/lib/*.fs` the absolute one.
+        // `anchor_segs` is absolute (or empty → `/`).
+        let walk_root = abs_from_segments(&anchor_segs);
+        // A `**`-free tail matches files at one fixed depth below the walk
+        // root, so there is no point descending further.
+        let depth = frag_root.tail_depth.unwrap_or(MAX_GLOB_DEPTH);
+        let recursive = frag_root.tail_depth.is_none();
+        // Re-attach the literal prefix to each enumerated path so keys,
+        // include pattern, and excludes all live in one frame. `select`
+        // matches/orders them and returns leading-`/`-stripped absolute
+        // strings (its `split_segments` drops the empty root segment), which
+        // we re-root at `/`.
+        let prefix = anchor_segs.join("/");
+        let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive)?
+            .into_iter()
+            .map(|rel| {
+                if prefix.is_empty() {
+                    rel
+                } else {
+                    format!("{prefix}/{rel}")
+                }
+            })
+            .collect();
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        for key in select(&key_refs, std::slice::from_ref(&pat), &glob_excludes)? {
+            out.push(Path::new("/").join(&key));
         }
     }
     Ok(out)
@@ -303,10 +334,14 @@ mod tests {
     /// excludes, returning paths relative to `base` as `/`-joined strings
     /// for compact assertions.
     fn run_rel(base: &Path, include: &str, excludes: &[&str]) -> Vec<String> {
-        let excludes: Vec<String> = excludes.iter().map(|s| s.to_string()).collect();
+        let include = SpecFragment::split_escaped(include);
+        let excludes: Vec<SpecFragment> = excludes
+            .iter()
+            .flat_map(|s| SpecFragment::split_escaped(s))
+            .collect();
         let req = GlobRequest {
             base_dir: base,
-            include,
+            include: &include,
             excludes: &excludes,
         };
         resolve(&req)
@@ -416,10 +451,10 @@ mod tests {
     #[test]
     fn paths_are_joined_onto_base_dir() {
         let tmp = fixture();
-        let excludes: Vec<String> = Vec::new();
+        let excludes: Vec<SpecFragment> = Vec::new();
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "a.fs",
+            include: &SpecFragment::split_escaped("a.fs"),
             excludes: &excludes,
         };
         assert_eq!(
@@ -438,10 +473,14 @@ mod tests {
     /// Resolve and canonicalise the results, so `..`/`/private` differences
     /// don't defeat equality when the glob root is outside `base`.
     fn resolve_canon(base: &Path, include: &str, excludes: &[&str]) -> Vec<PathBuf> {
-        let excludes: Vec<String> = excludes.iter().map(|s| s.to_string()).collect();
+        let include = SpecFragment::split_escaped(include);
+        let excludes: Vec<SpecFragment> = excludes
+            .iter()
+            .flat_map(|s| SpecFragment::split_escaped(s))
+            .collect();
         let req = GlobRequest {
             base_dir: base,
-            include,
+            include: &include,
             excludes: &excludes,
         };
         resolve(&req)
@@ -772,8 +811,12 @@ mod tests {
             let tmp = materialise(&sc.files);
             let req = GlobRequest {
                 base_dir: tmp.path(),
-                include: &sc.include,
-                excludes: &sc.excludes,
+                include: &SpecFragment::split_escaped(&sc.include),
+                excludes: &sc
+                    .excludes
+                    .iter()
+                    .flat_map(|e| SpecFragment::split_escaped(e))
+                    .collect::<Vec<_>>(),
             };
             let got = resolve(&req).expect("the fixture is decidable");
             let want = reference(tmp.path(), &sc.files, &sc.include, &sc.excludes);
@@ -838,10 +881,10 @@ mod tests {
     fn a_symlink_cycle_declines() {
         let tmp = fixture();
         std::os::unix::fs::symlink(tmp.path(), tmp.path().join("sub/back")).unwrap();
-        let excludes: Vec<String> = Vec::new();
+        let excludes: Vec<SpecFragment> = Vec::new();
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "**/*.fs",
+            include: &SpecFragment::split_escaped("**/*.fs"),
             excludes: &excludes,
         };
         assert!(matches!(
@@ -851,7 +894,7 @@ mod tests {
         // A single-level glob never descends, so the cycle decides nothing.
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "*.fs",
+            include: &SpecFragment::split_escaped("*.fs"),
             excludes: &excludes,
         };
         assert_eq!(resolve(&req).unwrap().len(), 4);
@@ -866,10 +909,10 @@ mod tests {
         }
         fs::create_dir_all(&deep).unwrap();
         fs::write(deep.join("x.fs"), b"// f\n").unwrap();
-        let excludes: Vec<String> = Vec::new();
+        let excludes: Vec<SpecFragment> = Vec::new();
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "**/*.fs",
+            include: &SpecFragment::split_escaped("**/*.fs"),
             excludes: &excludes,
         };
         assert!(matches!(resolve(&req), Err(GlobDecline::DepthLimit { .. })));

@@ -505,7 +505,7 @@ pub(super) fn evaluate(
     props: &PropertyMap,
     fs_probes_allowed: bool,
 ) -> Option<Evaluated> {
-    // Stage E3 of `docs/msbuild-escaped-value-plan.md`. The evaluator runs
+    // Stage E3 of `docs/completed/msbuild-escaped-value-plan.md`. The evaluator runs
     // *inside* the escaped domain, mirroring MSBuild's `Expander`
     // (`Expander.cs:3982/4010/4129`): a property splice contributes its escaped
     // value (leave-escaped), a `.NET` method unescapes its receiver and each
@@ -1576,7 +1576,7 @@ mod tests {
         evaluate(inner, props, false).map(|e| (e.value.unescape(), e.issues))
     }
 
-    /// Stage E3 of `docs/msbuild-escaped-value-plan.md`: the evaluator runs
+    /// Stage E3 of `docs/completed/msbuild-escaped-value-plan.md`: the evaluator runs
     /// inside the escaped domain — unescape receiver/args in, escape result out —
     /// instead of declining any escape-bearing expression. Every row pinned
     /// against `dotnet msbuild` 10.0.301 (2026-07-12).
