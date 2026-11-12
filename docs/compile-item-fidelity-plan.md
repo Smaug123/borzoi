@@ -123,10 +123,19 @@ stages (the `msbuild-condition-oracle` skill's stub-project method):
 - **Multi-byte escapes.** *Settled from source* by the escaped-value plan:
   `EscapingUtilities.cs:112` decodes each `%XX` pair as a single UTF-16 char
   (`%E2` → U+00E2), *not* byte-wise UTF-8.
-- **Case sensitivity of path matching on unix.** MSBuild's comparison
-  dictionaries are `OrdinalIgnoreCase` even off-Windows; confirm whether
-  `Update="A.fs"` matches include `a.fs` under `dotnet msbuild` on this
-  platform, and mirror exactly (needed by F2).
+- **Case sensitivity of path matching on unix.** *Settled by oracle*
+  (`targetItems`, Linux, 2026-11-12): a compile-order `Update` matches
+  ignoring case. `Update="A.fs"` moves the item `a.fs`, through the lazy
+  evaluator's batched path (an all-literal spec, keyed in an
+  `OrdinalIgnoreCase` dictionary) and through the unbatched one alike (a
+  `%`-bearing fragment, `Update="%41.fs"`). The same probes confirmed fact 2
+  on this platform: `./a.fs`, `sub/../a.fs`, `.\a.fs` and
+  `$(MSBuildProjectDirectory)/A.fs` all move `a.fs`. So F2's match key is the
+  lexically normalised full path compared ordinal-ignore-case. .NET's
+  `OrdinalIgnoreCase` folds beyond ASCII, so a non-ASCII key either mirrors
+  that folding or declines. Today's exact `PathBuf` comparison commits a wrong
+  order for `Update="A.fs"` against `a.fs`, which is why F0's generator keeps
+  case variants out of `Update` targets.
 - **Trailing dots/spaces** in fragments are trimmed only on Windows —
   expected out of scope (unix hosts), but pin one case to document it.
 - **`Exclude` interaction with the glob-resolver seam**: the escaped half
