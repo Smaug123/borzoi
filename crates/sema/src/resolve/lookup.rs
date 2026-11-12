@@ -611,7 +611,12 @@ impl<'a> Resolver<'a> {
         // and its name-unknown residue feeds the group verdict, instead of the
         // whole module half deferring wholesale.
         if assembly_ns_applies {
-            surfaces.extend(self.assemblies.open_namespace_fold_surfaces(gp));
+            surfaces.extend(
+                self.assemblies
+                    .open_namespace_fold_surfaces(gp)
+                    .iter()
+                    .cloned(),
+            );
         }
         // The **project namespace half**'s own constructible type names join the
         // fold as a contestant-only surface (codex review of §7's machinery
