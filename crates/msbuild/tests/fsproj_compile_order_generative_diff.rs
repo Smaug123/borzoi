@@ -27,7 +27,7 @@
 //!
 //! ## The generated space
 //!
-//! Stages F0 and F2 of `docs/compile-item-fidelity-plan.md`:
+//! Stages F0–F4 of `docs/completed/compile-item-fidelity-plan.md`:
 //!
 //! - literal and `$(…)`-valued includes across `Compile`, `CompileBefore` and
 //!   `CompileAfter`;
@@ -52,8 +52,10 @@
 //!   again to items `Include`d after the `Update`. The evaluator declines
 //!   them, and the oracle sees the bug wherever it changes the order.
 //!
-//! Escapes beyond the one escaped spelling are the escape generative
-//! differential's.
+//! Two of the files carry characters MSBuild escapes (a space and a `;`), so
+//! escapes meet every other dimension at once (stage F4). Escape spellings in
+//! general (padding, `%25`, splices of escaped values) are the escape
+//! generative differential's.
 //!
 //! Inputs come from a proptest runner with its persisted-failure file, so a
 //! divergence shrinks to a small witness and reproduces.
@@ -79,9 +81,11 @@ use proptest::test_runner::{Config as ProptestConfig, TestRunner};
 // meaningful and the XML stays well-formed by construction.
 // ---------------------------------------------------------------------------
 
-/// Source files. Distinct under case folding, so no two can collide in
-/// MSBuild's case-insensitive batching of `Update` targets.
-const FILES: [&str; 5] = ["A.fs", "B.fs", "C.fs", "D.fs", "E.fs"];
+/// Source files, as MSBuild text spells them (escaped): the last two name
+/// `S p.fs` and `S;q.fs`, so escapes meet the spellings, `Update` matching
+/// and batching (stage F4). Distinct under case folding, so no two can collide
+/// in MSBuild's case-insensitive batching of `Update` targets.
+const FILES: [&str; 7] = ["A.fs", "B.fs", "C.fs", "D.fs", "E.fs", "S p.fs", "S%3bq.fs"];
 
 const PROP_NAMES: [&str; 3] = ["Src", "Pair", "Order"];
 
@@ -850,7 +854,7 @@ fn most_generated_cases_are_certain() {
     }
     eprintln!("{certain}/{total} generated cases were certain");
     assert!(
-        certain * 2 >= total,
+        certain * 20 >= total * 11,
         "only {certain}/{total} generated cases were certain; the differential \
          property is barely exercising the oracle — rebalance the generator \
          weights or investigate an over-degrading evaluator"

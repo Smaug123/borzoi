@@ -764,7 +764,7 @@ pub enum ExpandVerdict {
 /// plan's D1) nor `%XX` escapes in *plain text outside `$(…)`* (MSBuild
 /// unescapes those in the evaluated value while `substitute` passes them
 /// through without an issue — the known gap tracked in
-/// `docs/compile-item-fidelity-plan.md`); the generators and corner lists
+/// `docs/completed/compile-item-fidelity-plan.md`); the generators and corner lists
 /// honour this. `%XX` *inside* a `$(…)` expression is in scope: the
 /// expression evaluator declines it, landing the case in `Partial`.
 ///
