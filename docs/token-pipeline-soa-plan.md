@@ -1,0 +1,312 @@
+# Token pipeline as struct-of-arrays passes
+
+> **Status (2026-11-12).** Plan written; Stage 0 (count harness) implemented.
+> Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
+> flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
+> parser's tree builder.
+
+## Problem
+
+A parse runs three passes before the productions see a token, and each hands
+the next a vector of fat enums.
+
+1. **Lex.** `directives::lex_with_symbols_full_trivia` wraps
+   `lexer::interp::InterpDriver`, which wraps logos. Every token comes out as
+   `(Result<TriviaToken<'a>, PreprocError>, Range<usize>)`, about 56 bytes, and
+   in full-trivia mode passes through a `VecDeque` on its way. `parse_inner`
+   collects them into `Vec<RawTok>`.
+2. **Lex-filter.** `lexfilter::filter_collect` consumes a *clone* of the
+   active tokens, turns each into a `TokenTup` (token, `Range<usize>` span,
+   two `Pos`), scans every byte of every token and gap again for `\n` to keep
+   its line cursor (`Filter::advance_cursor_to`), moves `TokenTup`s through
+   its `Step` dispatch and its delayed stack, boxes a `Token` for every
+   `ODUMMY` it queues, and collects `Vec<(Result<FilteredToken, LexError>,
+   Range<usize>)>`.
+3. **Scans.** `sign_fold` rewrites that vector, and three diagnostic scans
+   (`tab_diagnostics`, `reserved_ident_diagnostics`,
+   `operator_char_diagnostics`) each walk the whole raw vector again.
+
+Then the productions walk both vectors in lockstep (`Parser::raw_tokens`,
+`Parser::filtered_tokens`).
+
+Measured with Stage 0's harness (`crates/sema/examples/parse_counts.rs`) on
+the stack tip (5295c60c), over the corpus's `src/` tree (259 files, 11.8 MB,
+2.73 M raw tokens, 0.232 per byte), min of 3. Instruction and allocation
+counts are the measure; the machines are loaded, so wall time is printed for
+orientation only.
+
+| phase | instructions / byte | allocations / byte | bytes allocated / byte | wall (loaded) |
+|---|---|---|---|---|
+| lex (full trivia, collected) | 75.7 | 0.0004 | 43.2 | 5.2 ns/B |
+| lex-filter (from collected raw) | 242.9 | 0.0272 | 23.4 | 16.0 ns/B |
+| parse (everything) | 546.3 | 0.0356 | 109.2 | 35.4 ns/B |
+
+So lexing plus filtering is 319 of a parse's 546 instructions per byte, and
+the productions, scans and table build the remaining ~228. A profile of
+`parse` on the same tree puts `filter_collect` at 40%,
+`Filter::hw_token_fetch` at 35% inclusive and 13.6% self, the productions at
+29.5%, lexing (`DriverCore`) at 13%, `TreeBuilder::finish` at 7.3%, `memmove`
+at 4.5% (mostly `TokenTup`s moved between filter steps), and malloc/free at
+3%. The lexer's 43 bytes allocated per byte are the growth of a vector of
+56-byte items; the filter's 0.027 allocations per byte are mostly `ODUMMY`
+boxes.
+
+The issue's target is 10–20 ns per byte for the parse. Raw logos alone runs
+at about 13.7 instructions per byte, so most of today's lex and filter cost is
+representation and plumbing, not the work. The productions' share is not
+addressed here beyond what a smaller token representation buys them.
+
+## Design
+
+### D1. Two token tables, each a struct of arrays
+
+**The raw table** holds the lossless full-trivia stream: every token, trivia,
+directive line and inactive region, in source order. It is
+`RawTokens { kinds: Vec<RawKind>, starts: Vec<u32> }` with `starts` one longer
+than `kinds`: the stream tiles the source (the full-trivia driver already
+guarantees that, `DriverCore::fill_inactive_gap`), so token `i` spans
+`starts[i]..starts[i + 1]` and the last entry is the source length. That is 6
+bytes per token, against 56.
+
+**The filtered table** holds the stream the productions read: kinds, starts
+and ends (`u16`, `u32`, `u32`), 10 bytes per token. Its spans are not a tiling
+(virtual tokens are zero-width or synthetic, `RQuoteBarRBrace` splits into two
+overlapping tokens, sign-folding merges two), so it keeps both ends.
+
+Offsets are `u32`. The syntax table already refuses a source of 4 GiB or more
+(`syntax::flat`, "a source is shorter than 4 GiB"); the token tables assert
+the same precondition at the same place in the pipeline, the start.
+
+### D2. Kinds are payload-free, and a token's payload is its text
+
+Every `&'a str` payload of `lexer::Token` is the token's own text (logos's
+default for a `&str` field is the matched slice, and no callback narrows it),
+so `(kind, text)` determines the token. `Less(bool)` / `Greater(bool)` are
+`false` at lex time; the filter's typar promotion is a filtered kind of its
+own. `InterpString(InterpKind)` becomes one kind per `InterpKind` variant and
+byte suffix; the extended forms' `n` is the count of leading `$`, which their
+regex fixes.
+
+- `TokenKind` (`#[repr(u16)]`): one variant per `Token` shape.
+- `RawKind`: `Lexed(TokenKind)`, the directive and inactive-code trivia, and
+  the three lexer errors. One dataful variant, so it niche-packs into 2 bytes
+  (asserted at compile time).
+- `FilteredKind`: a non-trivia `TokenKind`, a `Virtual`, a typar-promoted
+  `<`/`>`, or a lexer error.
+
+`Token::kind` and `Token::from_kind` are generated by one macro from one
+variant list, so a `Token` variant missing from the list is a non-exhaustive
+match, not a silent gap. Reconstructing a `Token` from `(kind, text)` is a
+`match` and a slice, which is what lets the productions keep matching on
+`Token` values while the storage changes underneath (D5).
+
+### D3. Line numbers come from a newline table, not from rescanning tokens
+
+The filter needs a `Pos { line, col }` for every token it pulls and the UTF-16
+column of a context's anchor for FS0058 messages. Today it scans each token's
+bytes and each gap's for `\n` as it pulls, and keeps a sparse `(line, start)`
+list for the UTF-16 conversion.
+
+The issue suggests taking lines from the lexer's own newline tokens. That is
+not the right source: a lone `\r` is a `Newline` token but not a line break
+for FCS (`newline = '\n' | '\r' '\n'`, `lex.fsl:315`), block comments,
+strings and inactive regions hold line breaks no `Newline` token marks, and
+the filter's input has directive lines and inactive regions removed, whose
+lines FCS still counts. The exact definition is "the byte after every `\n` in
+the source", so the table is that: `line_starts: Vec<u32>`, computed in one
+pass over the bytes. A token's line is then found by a cursor that only moves
+forward (the filter pulls in source order), and a line's start is an index,
+not a search.
+
+### D4. The filter runs on indices
+
+The filter reads the raw table directly: it skips trivia by kind, and its
+`TokenTup` becomes (filtered kind, `u32` span, two `Pos`), about 20 bytes and
+`Copy`, with no `Token` payload. `ODUMMY`'s inner token becomes a `TokenKind`,
+so the box goes. It writes the filtered table.
+
+### D5. The productions keep their `Token` patterns
+
+The parser has about 2,750 `Token::…` patterns. Rewriting them to compare
+kinds would be the largest diff in the plan and buys little: matching a
+reconstructed enum costs what matching a stored one does. So `Parser::peek`
+and the raw-side accessors return a `Token` (or the old tuple) *by value*,
+rebuilt from the tables, and the productions' patterns stay. A later stage
+may move hot sites to kind comparisons where a profile says so.
+
+### D6. Diagnostic scans fold only where measurement says so
+
+The issue suggests folding the three diagnostic scans into the parser's
+drain. Over a 2-byte kind array they become cheap scans in their own right,
+and keeping each a pure function of the token table keeps it testable alone,
+which a fold into the drain (which restarts with the parse, and stops early
+at the depth limit) would not. So D1 comes first, and Stage 7 measures what
+the scans cost over the table before folding any of them, into the lexing
+pass rather than the drain.
+
+### D7. The reference implementations
+
+The pipeline is rewritten in place, so every stage is held to the code it
+replaces, kept as a test-only reference behind a `token-reference` feature
+of `borzoi-cst`, which this crate's own tests turn on (the
+`rowan-reference` pattern):
+
+- **The raw stream.** The full-trivia driver iterator stays the production
+  lexer until Stage 6 replaces it with a table-writing pass, and the LSP
+  keeps using the swallow-mode iterator. So it is the reference for the raw
+  table throughout: the table must reconstruct exactly the stream the
+  iterator yields, item for item, spans included.
+- **The filtered stream.** Stage 2 freezes a verbatim copy of `lexfilter/`
+  and `sign_fold` as the reference before anything in them changes. The
+  filtered table must reconstruct exactly the stream the frozen copy
+  produces from the iterator, with the same offside diagnostics and the same
+  `shape_depends_on_language_version`.
+
+Under the feature, `parse_inner` runs the reference beside the new pipeline
+and asserts equality on every parse, so every test that parses holds the
+stage to its oracle (the flat table's Stage 2 did the same with rowan), and
+the cst corpus sweeps hold it over the whole corpus. Each stage also adds a
+direct property over generated inputs: every one- and two-piece source over
+the panic sweep's `WIDE` alphabet and over a lexical alphabet (every string,
+interpolated-string, comment, numeric and directive shape, both line-break
+spellings, a BOM, tabs, non-ASCII text and an unlexable byte), under symbol
+sets that make the `#if` arms both active and inactive, plus a proptest
+random walk over both.
+
+The FCS lex-filter differential and the parser corpus manifests are
+unchanged throughout; any movement in them is a defect in the stage.
+
+## Implementation plan
+
+> Implement this plan with each stage on its own branch, stacked as necessary
+> on previous branches, so that a reviewer can review each branch in isolation.
+
+Every stage lands alone with the full gate green and every manifest
+unchanged, and reports its `parse_counts` before and after.
+
+### Stage 0: count harness
+
+**Dependencies**: none. **Implements**: the measurement every later stage
+reports.
+
+`crates/sema/examples/parse_counts.rs`: lex, lex-filter and parse over
+`$BORZOI_CORPUS/src`, each fed the previous phase's output, reporting
+instructions (macOS `proc_pid_rusage`), allocations and bytes allocated per
+source byte, min of N, beside wall time. It lives in `borzoi-sema` because a
+`borzoi-cst` example sees that crate's dev-dependencies, which turn on
+`rowan-reference`. Each later stage updates its phases to the pipeline's
+current entry points.
+
+**Oracle**: it runs to completion under `nix develop` and reproduces the
+baseline table above.
+
+### Stage 1: the raw token table
+
+**Dependencies**: Stage 0. **Implements**: D1 (raw table), D2 (`TokenKind`,
+`RawKind`), D7 (raw stream reference).
+
+`TokenKind`, `RawKind`, `Token::kind` / `Token::from_kind`, and
+`tokens::RawTokens`, built in one pass from the full-trivia driver, with the
+preprocessor errors and `#elif` spans the parse needs collected in the same
+pass. The parser's raw side (`Parser::raw_tokens`), `sign_fold`, the three
+diagnostic scans and the filter's input read the table; the raw-side
+accessors return the old tuple by value (D5).
+
+**Oracle**:
+- The table reconstructs the driver iterator's stream exactly, over the
+  generated inputs of D7 and, through the lockstep assertion in
+  `parse_inner`, every parse in the cst suite and corpus sweeps.
+- The tiling precondition holds on every input (asserted in the builder; the
+  generated inputs reach the error, directive and inactive-code paths).
+- `size_of::<RawKind>() == 2` at compile time.
+- `parse_counts`: lex allocates fewer bytes per byte.
+
+### Stage 2: freeze the filter reference
+
+**Dependencies**: Stage 1. **Implements**: D7 (filtered stream reference).
+
+A verbatim copy of `lexfilter/` and `sign_fold` under
+`token-reference`, fed by the driver iterator, plus the lockstep assertion
+and the generated-input property comparing it with the live filter. At this
+stage the two are the same code, so the property passes by construction; what
+the stage proves is that the harness compares what it claims to (a planted
+change in the live filter makes it fail).
+
+**Oracle**: `diff -r` against the live module shows only module paths; the
+property fails against a planted mutation and passes without it.
+
+### Stage 3: the filtered token table
+
+**Dependencies**: Stage 2. **Implements**: D1 (filtered table), D2
+(`FilteredKind`), D5.
+
+`filter_collect` writes a `FilteredTokens` table; `sign_fold` rewrites the
+table; `Parser::peek` and its neighbours rebuild the old tuple by value. The
+streaming `lexfilter::filter` stays, as a view over the table, for the FCS
+differential and the LSP.
+
+**Oracle**: lockstep and generated-input equality with the frozen reference
+(tokens, spans, diagnostics, the language-version flag); FCS lex-filter
+differential and manifests unchanged.
+
+### Stage 4: the filter reads the raw table by index
+
+**Dependencies**: Stage 3. **Implements**: D4.
+
+`Filter` takes `&RawTokens` instead of an iterator, skips trivia by kind, and
+its `TokenTup` loses the `Token` payload; `ODUMMY` carries a `TokenKind`.
+
+**Oracle**: as Stage 3. `parse_counts`: the filter's allocations per byte
+fall to the table's own growth.
+
+### Stage 5: the newline table
+
+**Dependencies**: Stage 4. **Implements**: D3.
+
+`line_starts` computed once per source; `Filter::advance_cursor_to` becomes a
+forward cursor over it, and `Filter::utf16_col` indexes it.
+
+**Oracle**: as Stage 3 (positions decide where virtual tokens go and what the
+FS0058 messages say, so the stream and diagnostics comparison covers them),
+plus a direct property: the table equals the naive scan, on every generated
+input.
+
+### Stage 6: the lexer writes the raw table
+
+**Dependencies**: Stage 1 (parallel to 2–5). **Implements**: D1's "one pass".
+
+A table-writing pass beside `DriverCore`: logos tokens become kinds as they
+are produced, without materialising `Token`, `TriviaToken` or a `VecDeque`
+entry per token. The iterator drivers stay for the LSP and as the reference.
+
+**Oracle**: the directly written table equals the one Stage 1 builds from the
+iterator, over the generated inputs and, in lockstep, every parse.
+
+### Stage 7: measure, then fold the diagnostic scans
+
+**Dependencies**: Stage 6. **Implements**: D6.
+
+Measure the three scans over the raw table. Fold a scan into the lexing pass
+only where it costs more than a few instructions per byte.
+
+**Oracle**: the folded diagnostics equal the separate scans' (kept
+test-only), over the generated inputs and every parse; `parse_counts` shows
+the gain that justified the fold.
+
+### Stage 8: retire the references
+
+**Dependencies**: Stages 5 and 7. **Implements**: the end state.
+
+Delete the frozen filter copy and the lockstep assertions, and decide whether
+the iterator drivers become views over the table (then the LSP's swallow-mode
+callers read the table). Optional, by profile: move the productions' hottest
+`peek` sites to kind comparisons (D5).
+
+**Oracle**: full gate and manifests unchanged.
+
+## Non-goals
+
+- The productions' own cost and `TreeBuilder::finish` (the flat table's).
+- Incremental relexing.
+- Changing what any pass computes: every stage is a representation change
+  held to a reference, and a behaviour change found on the way is its own PR.
