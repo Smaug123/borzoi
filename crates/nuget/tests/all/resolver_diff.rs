@@ -43,7 +43,8 @@ use std::path::Path;
 use crate::common::{Oracle, SplitMix64, gen_version_string};
 use borzoi_nuget::{
     DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId, PackageIdentity,
-    PackagePaths, ResolveDecline, VersionRange, resolve_offline,
+    PackagePaths, ProjectGraph, ResolveDecline, TargetContext, VersionRange, resolve_graph,
+    resolve_offline,
 };
 use serde_json::json;
 
@@ -228,13 +229,50 @@ fn restore_with_engine(
     universe: &[serde_json::Value],
     direct_json: &[serde_json::Value],
 ) -> EngineOutcome {
-    EngineOutcome::parse(&oracle.request(&json!({
+    restore_pinned(oracle, engine, tfm, universe, direct_json, None)
+}
+
+/// [`restore_with_engine`], under central package management with transitive
+/// pinning when `pins` is given: each direct reference centrally managed at
+/// its own range, and `pins` the central versions of other packages.
+fn restore_pinned(
+    oracle: &mut Oracle,
+    engine: &str,
+    tfm: &str,
+    universe: &[serde_json::Value],
+    direct_json: &[serde_json::Value],
+    pins: Option<&[(String, String)]>,
+) -> EngineOutcome {
+    let mut request = json!({
         "op": "restore",
         "engine": engine,
         "framework": tfm,
         "packages": universe,
         "direct": direct_json,
-    })))
+    });
+    if let Some(pins) = pins {
+        request["pins"] = pins
+            .iter()
+            .map(|(id_, range_)| json!({ "id": id_, "range": range_ }))
+            .collect();
+    }
+    EngineOutcome::parse(&oracle.request(&request))
+}
+
+/// The resolver's graph for `direct`, pinning transitively by `pins` when
+/// given.
+fn pinned_graph(
+    direct: &[DirectPackageRequirement],
+    pins: Option<&[(String, String)]>,
+) -> ProjectGraph {
+    ProjectGraph {
+        transitive_pinning: pins.map(|pins| {
+            pins.iter()
+                .map(|(id_, range_)| (id(id_), range(range_)))
+                .collect()
+        }),
+        ..ProjectGraph::of_packages(direct)
+    }
 }
 
 /// [`borzoi_nuget::ResolvedPackageClosure::examined`] holds every version
@@ -243,12 +281,14 @@ fn restore_with_engine(
 /// Reading such a version throws (`FindPackageByIdResource.GetDependencyInfo`,
 /// run as the package is enqueued), so a read outside `examined` fails this
 /// restore, whatever the version's dependencies.
+#[allow(clippy::too_many_arguments)]
 fn assert_examined_covers_what_restore_reads(
     oracle: &mut Oracle,
     tfm: &str,
     packages: &[Pkg],
     direct: &[(&str, &str)],
     direct_json: &[serde_json::Value],
+    pins: Option<&[(String, String)]>,
     resolved: &borzoi_nuget::ResolvedPackageClosure,
     closure: &BTreeSet<(String, String)>,
 ) {
@@ -280,7 +320,7 @@ fn assert_examined_covers_what_restore_reads(
         return;
     }
     let universe = universe_json(&poisoned);
-    let outcome = restore_with_engine(oracle, "default", tfm, &universe, direct_json);
+    let outcome = restore_pinned(oracle, "default", tfm, &universe, direct_json, pins);
     assert!(
         outcome == EngineOutcome::Resolved(closure.clone()),
         "`dotnet restore` reads a version outside `examined`: with every version \
@@ -342,6 +382,8 @@ enum RestoreFailure {
     Conflict,
     /// NU1605, an error under the SDK's default `WarningsAsErrors`.
     Downgrade,
+    /// NU1109: a downgrade below a package transitive pinning raised.
+    CentralDowngrade,
 }
 
 impl RestoreFailure {
@@ -352,6 +394,7 @@ impl RestoreFailure {
             "NU1106" => RestoreFailure::Undecided,
             "NU1107" => RestoreFailure::Conflict,
             "NU1605" => RestoreFailure::Downgrade,
+            "NU1109" => RestoreFailure::CentralDowngrade,
             other => panic!("restore failed with {other}, which no outcome class covers"),
         }
     }
@@ -363,6 +406,7 @@ impl RestoreFailure {
             RestoreFailure::Undecided => "undecided",
             RestoreFailure::Conflict => "conflict",
             RestoreFailure::Downgrade => "downgrade",
+            RestoreFailure::CentralDowngrade => "central-downgrade",
         }
     }
 }
@@ -473,7 +517,11 @@ impl OurOutcome {
             ResolveDecline::VersionConflict { .. } => {
                 OurOutcome::ClaimsFails(RestoreFailure::Conflict)
             }
-            ResolveDecline::Downgrade { .. } => OurOutcome::ClaimsFails(RestoreFailure::Downgrade),
+            ResolveDecline::Downgrade { central, .. } => OurOutcome::ClaimsFails(if *central {
+                RestoreFailure::CentralDowngrade
+            } else {
+                RestoreFailure::Downgrade
+            }),
             ResolveDecline::UnsupportedProjectFramework { .. } => {
                 OurOutcome::Declined("unsupported-framework")
             }
@@ -553,6 +601,18 @@ fn compare(
     packages: &[Pkg],
     direct: &[(&str, &str)],
 ) -> Comparison {
+    compare_pinned(oracle, tfm, packages, direct, None)
+}
+
+/// [`compare`], under transitive pinning by `pins` when given (see
+/// [`restore_pinned`]).
+fn compare_pinned(
+    oracle: &mut Oracle,
+    tfm: &str,
+    packages: &[Pkg],
+    direct: &[(&str, &str)],
+    pins: Option<&[(String, String)]>,
+) -> Comparison {
     let root = tempfile::tempdir().expect("root");
     let universe = materialize(root.path(), packages);
 
@@ -566,10 +626,15 @@ fn compare(
         .collect::<Vec<_>>();
 
     let restore = RestoreOutcome {
-        legacy: restore_with_engine(oracle, "legacy", tfm, &universe, &direct_json),
-        default: restore_with_engine(oracle, "default", tfm, &universe, &direct_json),
+        legacy: restore_pinned(oracle, "legacy", tfm, &universe, &direct_json, pins),
+        default: restore_pinned(oracle, "default", tfm, &universe, &direct_json, pins),
     };
-    let result = resolve_offline(root.path(), &framework(tfm), &direct_reqs);
+    let result = resolve_graph(
+        root.path(),
+        &framework(tfm),
+        &TargetContext::default(),
+        &pinned_graph(&direct_reqs, pins),
+    );
     let ours = OurOutcome::of(&result);
 
     match (&ours, &restore.default) {
@@ -613,6 +678,7 @@ fn compare(
             packages,
             direct,
             &direct_json,
+            pins,
             resolved,
             mine,
         );
@@ -1136,6 +1202,9 @@ struct Generated {
     tfm: String,
     packages: Vec<Pkg>,
     direct: Vec<(String, String)>,
+    /// Transitive pinning's central versions of packages the project does not
+    /// reference, `(id, range)`; `None` with pinning off.
+    pins: Option<Vec<(String, String)>>,
 }
 
 fn gen_range(rng: &mut SplitMix64, target: usize) -> String {
@@ -1242,6 +1311,7 @@ fn generate(rng: &mut SplitMix64) -> Generated {
         tfm: tfm.to_owned(),
         packages,
         direct,
+        pins: None,
     }
 }
 
@@ -1315,6 +1385,7 @@ fn generate_consistent(rng: &mut SplitMix64) -> Generated {
         tfm: "net8.0".to_owned(),
         packages,
         direct: vec![(maybe_recase(rng, "P0"), "[1.0.0, )".to_owned())],
+        pins: None,
     }
 }
 
@@ -1409,6 +1480,7 @@ fn generate_multi_version(rng: &mut SplitMix64) -> Generated {
         tfm: "net8.0".to_owned(),
         packages,
         direct,
+        pins: None,
     }
 }
 
@@ -1456,6 +1528,133 @@ fn multi_version_graphs_resolve_identically() {
         resolved > 50,
         "generator degenerated: only {resolved}/{total} graphs resolved"
     );
+}
+
+/// `g` under transitive pinning: each package of the universe the project
+/// does not reference gets a central version half the time, at an installed
+/// version or between two, inclusive or not, now and then exact; and now and
+/// then a package the universe does not hold gets one too. The pin may spell
+/// the id in another case.
+fn with_pins(rng: &mut SplitMix64, mut g: Generated) -> Generated {
+    let direct: BTreeSet<String> = g
+        .direct
+        .iter()
+        .map(|(id_, _)| id_.to_ascii_lowercase())
+        .collect();
+    let ids: BTreeSet<String> = g.packages.iter().map(|pkg| pkg.id.clone()).collect();
+    let mut pins = Vec::new();
+    for id_ in ids {
+        if direct.contains(&id_.to_ascii_lowercase()) || rng.below(2) == 0 {
+            continue;
+        }
+        let versions: Vec<&str> = g
+            .packages
+            .iter()
+            .filter(|pkg| pkg.id == id_)
+            .map(|pkg| pkg.version.as_str())
+            .collect();
+        let version = if rng.below(6) == 0 {
+            "1.5.0".to_owned()
+        } else {
+            (*rng.pick(&versions)).to_owned()
+        };
+        let range = match rng.below(6) {
+            0 => format!("[{version}]"),
+            1 => format!("({version}, )"),
+            _ => format!("[{version}, )"),
+        };
+        pins.push((maybe_recase(rng, &id_), range));
+    }
+    if rng.below(5) == 0 {
+        pins.push(("Absent".to_owned(), "[1.0.0, )".to_owned()));
+    }
+    g.pins = Some(pins);
+    g
+}
+
+/// What transitive pinning did to one graph, by our own resolver: a `NU1109`
+/// it claims (which [`compare`] has held to restore), else the outcome with
+/// the pins against the one without them.
+fn pinning_effect(g: &Generated, pinned: &OurOutcome) -> &'static str {
+    let root = tempfile::tempdir().expect("root");
+    materialize(root.path(), &g.packages);
+    let direct: Vec<DirectPackageRequirement> = g
+        .direct
+        .iter()
+        .map(|(id_, range_)| req(id_, range_))
+        .collect();
+    let unpinned = OurOutcome::of(&resolve_offline(root.path(), &framework(&g.tfm), &direct));
+    match (&unpinned, pinned) {
+        (_, OurOutcome::ClaimsFails(RestoreFailure::CentralDowngrade)) => "central-downgrade",
+        (OurOutcome::Resolved(a), OurOutcome::Resolved(b)) if a == b => "resolved-alike",
+        (OurOutcome::Resolved(_), OurOutcome::Resolved(_)) => "moved-closure",
+        (OurOutcome::ClaimsFails(_), OurOutcome::Resolved(_)) => "rescued",
+        _ => "other",
+    }
+}
+
+/// Transitive pinning over the multi-version graphs, where it bites: a pin
+/// raises a package and roots its subtree at the project, which moves
+/// eclipsing and evictions below it, and restore stops recording a direct
+/// reference's downgrade. Sound as [`compare`] holds it, complete as
+/// [`multi_version_graphs_resolve_identically`] is, and with each effect of
+/// pinning graded on enough graphs that the sweep cannot pass vacuously.
+#[test]
+fn pinned_multi_version_graphs_resolve_identically() {
+    let mut oracle = Oracle::spawn();
+    let mut resolved = 0usize;
+    let mut total = 0usize;
+    let mut restore_only: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    let mut effects: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for seed in [0x91_u64, 0x7A5E, 0xCE47, 0x0B0E] {
+        let mut rng = SplitMix64(seed);
+        for case in 0..100 {
+            let mut g = generate_multi_version(&mut rng);
+            // Half the graphs ask every transitive edge for no more than
+            // 1.0.0, so that they mostly resolve unpinned and a pin has room
+            // to raise a package.
+            if case % 2 == 1 {
+                for dep in g.packages.iter_mut().flat_map(|pkg| {
+                    pkg.groups
+                        .iter_mut()
+                        .flat_map(|group| group.deps.iter_mut())
+                }) {
+                    dep.range = "[1.0.0, )".to_owned();
+                }
+            }
+            let g = with_pins(&mut rng, g);
+            let comparison = g.compare(&mut oracle);
+            total += 1;
+            *effects
+                .entry(pinning_effect(&g, &comparison.ours))
+                .or_default() += 1;
+            match comparison.ours {
+                OurOutcome::Resolved(_) => resolved += 1,
+                OurOutcome::Declined(why)
+                    if matches!(comparison.restore.default, EngineOutcome::Resolved(_)) =>
+                {
+                    *restore_only.entry(why).or_default() += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    eprintln!(
+        "pinned multi-version: {resolved}/{total} resolved, effects {effects:?}, \
+         restore-only declines {restore_only:?}"
+    );
+    assert!(
+        restore_only.is_empty(),
+        "declined pinned graph(s) the default engine resolves: {restore_only:?}"
+    );
+    for effect in ["moved-closure", "rescued", "central-downgrade"] {
+        assert!(
+            effects.get(effect).copied().unwrap_or(0) >= 5,
+            "generator degenerated: pinning had effect {effect} on too few graphs: {effects:?}"
+        );
+    }
 }
 
 /// What a resolved closure needs from the versions it *rejected*, stated exactly.
@@ -1834,12 +2033,19 @@ fn generate_wide(rng: &mut SplitMix64) -> Generated {
         tfm: "net8.0".to_owned(),
         packages,
         direct,
+        pins: None,
     }
 }
 
 impl Generated {
     fn compare(&self, oracle: &mut Oracle) -> Comparison {
-        compare(oracle, &self.tfm, &self.packages, &self.direct_refs())
+        compare_pinned(
+            oracle,
+            &self.tfm,
+            &self.packages,
+            &self.direct_refs(),
+            self.pins.as_deref(),
+        )
     }
 
     /// The direct references, borrowed as [`compare`] takes them.
@@ -2185,6 +2391,7 @@ fn generate_cross_disputes(rng: &mut SplitMix64) -> Generated {
         tfm: "net8.0".to_owned(),
         packages,
         direct,
+        pins: None,
     }
 }
 
@@ -2338,6 +2545,7 @@ fn generate_twins(rng: &mut SplitMix64) -> Generated {
         tfm: "net8.0".to_owned(),
         packages,
         direct,
+        pins: None,
     }
 }
 
@@ -2458,10 +2666,11 @@ fn randomised_soundness_soak() {
     for _ in 0..graphs {
         // The single-version graphs, the multi-version ones whose conflicts
         // slice 6b resolves, the cross disputes the legacy conflict pass can
-        // fail to settle, the twins NuGet orders as one, and the wide
-        // vocabulary. Only the last is counted: the floors below are about
-        // the shapes it exists to reach.
-        match rng.below(7) {
+        // fail to settle, the twins NuGet orders as one, either of the first
+        // two under transitive pinning, and the wide vocabulary. Only the
+        // last is counted: the floors below are about the shapes it exists
+        // to reach.
+        match rng.below(8) {
             0 => {
                 generate(&mut rng).compare(&mut oracle);
             }
@@ -2477,6 +2686,14 @@ fn randomised_soundness_soak() {
                 let g = generate_twins(&mut rng);
                 let comparison = g.compare(&mut oracle);
                 assert_twin_obligations(&g, &comparison);
+            }
+            4 => {
+                let g = if rng.below(2) == 0 {
+                    generate(&mut rng)
+                } else {
+                    generate_multi_version(&mut rng)
+                };
+                with_pins(&mut rng, g).compare(&mut oracle);
             }
             _ => {
                 let g = generate_wide(&mut rng);
