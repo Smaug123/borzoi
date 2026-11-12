@@ -1,7 +1,8 @@
 //! The walk's current container path, with an interned id for each prefix.
 
-use std::collections::HashMap;
 use std::ops::Deref;
+
+use crate::hash::HashMap;
 
 /// A container path the walk has entered, interned by [`ContainerPath`]: a
 /// map keyed by it answers for an enclosing container without hashing that
@@ -36,7 +37,7 @@ impl Default for ContainerPath {
         ContainerPath {
             segments: Vec::new(),
             prefix_ids: vec![ContainerId::ROOT],
-            children: HashMap::new(),
+            children: HashMap::default(),
             entered: 1,
         }
     }
@@ -229,7 +230,7 @@ mod tests {
         #[test]
         fn container_ids_name_paths_one_to_one(moves in moves()) {
             let mut path = ContainerPath::default();
-            let mut seen = HashMap::new();
+            let mut seen = HashMap::default();
             check(&path, &mut seen);
             walk(&mut path, &moves, &mut seen);
         }

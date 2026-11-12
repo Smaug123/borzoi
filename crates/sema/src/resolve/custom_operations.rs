@@ -28,7 +28,7 @@
 //! `[<Extension>]` method), and every one a referenced assembly declares on
 //! an extension member, is an operation of every builder.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use borzoi_cst::syntax::{
     AstNode, Attribute, AttributeList, Binding, ComputationExpr, Expr, InheritMember, Pat,
@@ -40,6 +40,7 @@ use super::model::{DeclineCause, Resolution};
 use super::state::{Frame, MarkReach, ScopeEntry};
 use crate::assembly_env::{BuilderValue, CustomOperationNames};
 use crate::def::{DefId, DefKind, id_text};
+use crate::hash::HashSet;
 
 /// The names a builder's custom operations may take.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -668,7 +669,7 @@ impl Resolver<'_> {
         for (binder, resets) in binders {
             let at = binder.text_range().start();
             self.opaque_binders.insert(binder.text_range());
-            let mut declined: HashSet<String> = HashSet::from([id_text(&binder).to_string()]);
+            let mut declined: HashSet<String> = HashSet::from_iter([id_text(&binder).to_string()]);
             if resets {
                 // Over-approximate: every identifier in a pattern before the
                 // `into`, case names included, which only declines more.

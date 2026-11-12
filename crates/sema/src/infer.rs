@@ -489,7 +489,6 @@
 //! [D8]: ../../../docs/type-checker-plan.md
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 
 use borzoi_assembly::{
     EntityKind, EqualityComparison, FSharpConstraints, Member, MemberMeasures, Primitive, TypeRef,
@@ -509,6 +508,7 @@ use crate::function_ty::{
     Arith, Builtin, FunctionTyGap, ModuleFunctionScheme, UnionCaseScheme, builtin_operator,
     module_function_scheme, union_case_scheme,
 };
+use crate::hash::{HashMap, HashSet};
 use crate::infer_project::{ModuleValue, PrecedingGap, PrecedingTypes};
 use crate::match_reach::{ClausePat, ConstKind, Ctor, provably_reachable};
 use crate::member_ty::type_ref_to_ty;
@@ -1415,8 +1415,8 @@ struct ExtensionScope {
     /// un-walkable member name) folds into
     /// [`Self::project_source_present`] instead. Both sets empty in
     /// [`Default`], matching the no-source unit-test scope.
-    augmentation_instance_names: std::collections::HashSet<String>,
-    augmentation_static_names: std::collections::HashSet<String>,
+    augmentation_instance_names: crate::hash::HashSet<String>,
+    augmentation_static_names: crate::hash::HashSet<String>,
 }
 
 impl ExtensionScope {
@@ -1826,60 +1826,60 @@ impl<'a> Gen<'a> {
         Gen {
             resolved,
             preceding,
-            module_binders: HashMap::new(),
-            walked_binders: HashSet::new(),
+            module_binders: HashMap::default(),
+            walked_binders: HashSet::default(),
             env,
             ext_scope,
             table: InferTable::new(),
             constraints: Vec::new(),
             settled_args: Vec::new(),
             exprs: Vec::new(),
-            def_vars: HashMap::new(),
-            local_defs: HashSet::new(),
+            def_vars: HashMap::default(),
+            local_defs: HashSet::default(),
             local_emits: Vec::new(),
             dot_get_receivers: Vec::new(),
             incompleteness: Vec::new(),
-            ungraded_ranges: HashSet::new(),
-            match_locals: HashSet::new(),
+            ungraded_ranges: HashSet::default(),
+            match_locals: HashSet::default(),
             guards: Vec::new(),
             guard_stack: Vec::new(),
-            guard_on_member: HashMap::new(),
-            param_slots: HashMap::new(),
-            param_owner: HashMap::new(),
-            param_defs: HashSet::new(),
-            def_schemes: HashMap::new(),
+            guard_on_member: HashMap::default(),
+            param_slots: HashMap::default(),
+            param_owner: HashMap::default(),
+            param_defs: HashSet::default(),
+            def_schemes: HashMap::default(),
             complete: true,
             cur_body: None,
             poison: Vec::new(),
             cur_params: Vec::new(),
-            member_resolutions: HashMap::new(),
+            member_resolutions: HashMap::default(),
             cur_mark: 0,
-            scheme_inst_vars: HashSet::new(),
+            scheme_inst_vars: HashSet::default(),
             constrained: Vec::new(),
-            head_typars: HashMap::new(),
+            head_typars: HashMap::default(),
             reading_head: false,
-            typar_params: HashSet::new(),
+            typar_params: HashSet::default(),
             rigid_typars: Vec::new(),
-            withheld_defs: HashSet::new(),
+            withheld_defs: HashSet::default(),
             rigid_rejected: false,
             binding_emissions: (0, 0),
             declares_typars: false,
             binding_params: Vec::new(),
-            rejected_defs: HashSet::new(),
-            rejecting_modules: HashSet::new(),
-            project_types: HashMap::new(),
+            rejected_defs: HashSet::default(),
+            rejecting_modules: HashSet::default(),
+            project_types: HashMap::default(),
             anonymous_module: None,
-            project_cases: HashMap::new(),
-            own_union_cases: HashSet::new(),
-            constructor_names: HashMap::new(),
-            project_records: HashMap::new(),
-            decl_typars: HashMap::new(),
-            sealed_project_types: HashMap::new(),
+            project_cases: HashMap::default(),
+            own_union_cases: HashSet::default(),
+            constructor_names: HashMap::default(),
+            project_records: HashMap::default(),
+            decl_typars: HashMap::default(),
+            sealed_project_types: HashMap::default(),
             dropped: Vec::new(),
             eq_failures: 0,
             bounded_flex: Vec::new(),
             undecided_uses: Vec::new(),
-            param_annotations: HashMap::new(),
+            param_annotations: HashMap::default(),
             opaque: Vec::new(),
             trial: None,
             expr_depth: 0,
@@ -2135,7 +2135,7 @@ impl<'a> Gen<'a> {
                 a.kind() == SyntaxKind::NESTED_MODULE_DECL && self.rejecting_modules.contains(&a)
             })
         };
-        let mut out = HashSet::new();
+        let mut out = HashSet::default();
         for node in file.syntax().descendants() {
             let (decl_attributed, bindings): (bool, Vec<Binding>) =
                 if let Some(decl) = LetDecl::cast(node.clone()) {
@@ -2222,7 +2222,7 @@ impl<'a> Gen<'a> {
         // keyword are found among its children, which are also its
         // declarations, so both are read once per module rather than once per
         // type in it, which would cost a module of `n` types `n²`.
-        let mut renames_cache: HashMap<SyntaxNode, bool> = HashMap::new();
+        let mut renames_cache: HashMap<SyntaxNode, bool> = HashMap::default();
         let mut renames_module = |node: &SyntaxNode| {
             *renames_cache.entry(node.clone()).or_insert_with(|| {
                 self.attribute_may_be(node, |h| {
@@ -2230,8 +2230,8 @@ impl<'a> Gen<'a> {
                 })
             })
         };
-        let mut module_headers: HashMap<SyntaxNode, Option<Vec<String>>> = HashMap::new();
-        let mut out = HashMap::new();
+        let mut module_headers: HashMap<SyntaxNode, Option<Vec<String>>> = HashMap::default();
+        let mut out = HashMap::default();
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
             let Some(name) = defn.long_id().and_then(|li| {
                 let mut idents = li.idents();
@@ -2342,7 +2342,7 @@ impl<'a> Gen<'a> {
         }
         // Every definition of a container's name and arity, augmentations
         // aside (they extend, not redeclare).
-        let mut declared: HashMap<(TextRange, String, usize), usize> = HashMap::new();
+        let mut declared: HashMap<(TextRange, String, usize), usize> = HashMap::default();
         for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
             if matches!(defn.repr(), Some(TypeDefnRepr::ObjectModel(om)) if om.is_augmentation()) {
                 continue;
@@ -2368,7 +2368,7 @@ impl<'a> Gen<'a> {
         }
         // Two blocks of one namespace are one container: a path and arity
         // computed twice is a type declared twice.
-        let mut paths: HashMap<(Vec<String>, usize), usize> = HashMap::new();
+        let mut paths: HashMap<(Vec<String>, usize), usize> = HashMap::default();
         for key in out.values() {
             *paths.entry(key.clone()).or_default() += 1;
         }
@@ -2436,8 +2436,8 @@ impl<'a> Gen<'a> {
             .map(|e| e.id())
             .collect();
         self.constructor_names = constructor_names(file, self.resolved);
-        let mut out = HashMap::new();
-        let mut records: ProjectRecords = HashMap::new();
+        let mut out = HashMap::default();
+        let mut records: ProjectRecords = HashMap::default();
         let recovery = self.resolved.recovery();
         let headerless = is_headerless(file);
         // Built at the first record, so a file without one pays nothing.
@@ -2641,11 +2641,11 @@ impl<'a> Gen<'a> {
         members: Option<&HashSet<String>>,
     ) -> HashMap<String, Ty> {
         let Some(members) = members else {
-            return HashMap::new();
+            return HashMap::default();
         };
         // A label declared twice is an error FCS recovers from by keeping
         // the first, where a map keeps the last: neither is read.
-        let mut labels: HashMap<String, usize> = HashMap::new();
+        let mut labels: HashMap<String, usize> = HashMap::default();
         for f in repr.fields() {
             if let Some(tok) = f.ident() {
                 *labels.entry(ident_text(&tok)).or_default() += 1;
@@ -4230,7 +4230,7 @@ impl<'a> Gen<'a> {
     /// the variables [`Self::arg_check_binds_only_current_vars`] refuses to
     /// let an argument check ground.
     fn mentions_inherited_open(&mut self, v: TyVid) -> bool {
-        let mut roots = HashSet::new();
+        let mut roots = HashSet::default();
         collect_var_roots(&self.table.resolve(&Ty::Var(v)), &mut roots);
         roots
             .into_iter()
@@ -4667,7 +4667,7 @@ impl<'a> Gen<'a> {
     /// recorded with its constraint ([`Self::constrained`]) and poisoned, so it
     /// is checked once the binding is solved and never generalised while open.
     fn constrained_scheme_use(&mut self, scheme: &ModuleFunctionScheme) -> TyVid {
-        let mut fresh: HashMap<u32, TyVid> = HashMap::new();
+        let mut fresh: HashMap<u32, TyVid> = HashMap::default();
         let body = self.instantiate_rec(&scheme.ty, &mut fresh);
         for (i, req) in scheme.requirements.iter().enumerate() {
             let Some(req) = req else { continue };
@@ -5924,7 +5924,7 @@ impl<'a> Gen<'a> {
         if in_body {
             return;
         }
-        let mut typars = HashMap::new();
+        let mut typars = HashMap::default();
         for name in names {
             typars.entry(name).or_insert_with(|| self.table.fresh());
         }
@@ -6173,10 +6173,10 @@ impl<'a> Gen<'a> {
                 .get(&def)
                 .map(|&dv| (Ty::Var(slot), Ty::Var(dv)))
         }));
-        let mut scrutinee_roots: HashSet<TyVid> = HashSet::new();
+        let mut scrutinee_roots: HashSet<TyVid> = HashSet::default();
         collect_var_roots(&self.table.resolve(&Ty::Var(sv)), &mut scrutinee_roots);
         for recv in receivers {
-            let mut recv_roots: HashSet<TyVid> = HashSet::new();
+            let mut recv_roots: HashSet<TyVid> = HashSet::default();
             collect_var_roots(&self.table.resolve(&Ty::Var(recv)), &mut recv_roots);
             if recv_roots
                 .iter()
@@ -6306,7 +6306,7 @@ impl<'a> Gen<'a> {
     fn sealed_project_types(&self) -> HashMap<Vec<String>, HashSet<usize>> {
         let own_unions = self.project_cases.values().map(|pc| &pc.scheme.union);
         let own_records = self.project_records.values().map(|r| &r.record);
-        let mut out: HashMap<Vec<String>, HashSet<usize>> = HashMap::new();
+        let mut out: HashMap<Vec<String>, HashSet<usize>> = HashMap::default();
         for ty in own_unions
             .chain(own_records)
             .chain(self.preceding.sealed_types())
@@ -7068,7 +7068,7 @@ impl<'a> Gen<'a> {
     /// past its budget and returns what it was given.
     fn open_roots(&mut self, v: TyVid) -> HashSet<TyVid> {
         let ty = self.table.resolve(&Ty::Var(v));
-        let mut vars = HashSet::new();
+        let mut vars = HashSet::default();
         collect_var_roots(&ty, &mut vars);
         vars.into_iter().map(|v| self.table.root(v)).collect()
     }
@@ -7185,7 +7185,7 @@ impl<'a> Gen<'a> {
             return false;
         };
         let declared = record.record.clone();
-        let mut fresh: HashMap<u32, TyVid> = HashMap::new();
+        let mut fresh: HashMap<u32, TyVid> = HashMap::default();
         let receiver = self.instantiate_rec(&declared, &mut fresh);
         let field = self.instantiate_rec(&field, &mut fresh);
         self.eq(receiver, head.clone());
@@ -7538,7 +7538,7 @@ impl<'a> Gen<'a> {
         // The poison closure: every variable reachable (after resolution) from a
         // poisoned variable. `resolve` is deep, so one pass reaches a fixpoint.
         let poison = std::mem::take(&mut self.poison);
-        let mut poison_roots: HashSet<TyVid> = HashSet::new();
+        let mut poison_roots: HashSet<TyVid> = HashSet::default();
         for v in &poison {
             let resolved = self.table.resolve(&Ty::Var(*v));
             collect_var_roots(&resolved, &mut poison_roots);
@@ -7559,7 +7559,7 @@ impl<'a> Gen<'a> {
         }
 
         // Assign `Param(i)` by first appearance, then substitute.
-        let mut assign: HashMap<TyVid, u32> = HashMap::new();
+        let mut assign: HashMap<TyVid, u32> = HashMap::default();
         for &v in &order {
             let next = assign.len() as u32;
             assign.entry(v).or_insert(next);
@@ -7573,7 +7573,7 @@ impl<'a> Gen<'a> {
     /// current binding's mark, so a use inside a later function generalises in turn
     /// (`let h x = (id, x)` ⇒ `'a -> ('b -> 'b) * 'a`).
     fn instantiate(&mut self, scheme: &Ty) -> Ty {
-        let mut fresh: HashMap<u32, TyVid> = HashMap::new();
+        let mut fresh: HashMap<u32, TyVid> = HashMap::default();
         self.instantiate_rec(scheme, &mut fresh)
     }
 
@@ -7644,7 +7644,7 @@ impl<'a> Gen<'a> {
             .filter(|(_, guard)| self.guard_holds(*guard))
             .map(|(def, _)| def)
             .collect();
-        let mut types = HashMap::new();
+        let mut types = HashMap::default();
         for (range, var, guard) in exprs {
             if !self.guard_holds(guard) || self.ungraded_ranges.contains(&range) {
                 continue;
@@ -7654,7 +7654,7 @@ impl<'a> Gen<'a> {
                 types.insert(range, ty);
             }
         }
-        let mut def_types = HashMap::new();
+        let mut def_types = HashMap::default();
         for (def, var) in def_vars {
             // A **parameter** is published below, from what fixes it, never
             // from its binder variable: on an incomplete binding that variable
@@ -7810,11 +7810,11 @@ impl<'a> Gen<'a> {
             })
             .collect();
         InferredFile {
-            types: HashMap::new(),
-            def_types: HashMap::new(),
-            member_resolutions: HashMap::new(),
+            types: HashMap::default(),
+            def_types: HashMap::default(),
+            member_resolutions: HashMap::default(),
             incompleteness: std::mem::take(&mut self.incompleteness),
-            receiver_types: HashMap::new(),
+            receiver_types: HashMap::default(),
             module_values,
             project_types: std::mem::take(&mut self.project_types),
             project_cases: self.take_item_cases(),
@@ -8435,7 +8435,7 @@ fn is_simple_param_element(p: &Pat) -> bool {
 
 /// Whether the named patterns anywhere in `pats` bind some name twice.
 fn binds_a_name_twice(pats: &[Pat]) -> bool {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     pats.iter()
         .flat_map(|p| p.syntax().descendants().filter_map(NamedPat::cast))
         .filter_map(|n| n.ident())
@@ -8784,7 +8784,7 @@ fn is_headerless(file: &ImplFile) -> bool {
 /// those kinds counts, and every value's, local ones included, which can only
 /// make a name contested.
 fn constructor_names(file: &ImplFile, resolved: &ResolvedFile) -> HashMap<String, usize> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::default();
     for e in resolved.exports().iter() {
         *counts.entry(e.name().to_string()).or_default() += 1;
     }
@@ -8850,13 +8850,15 @@ struct IntrinsicMemberNames(HashMap<String, Option<HashSet<String>>>);
 
 impl IntrinsicMemberNames {
     fn of(file: &ImplFile) -> IntrinsicMemberNames {
-        let mut by_name: HashMap<String, Option<HashSet<String>>> = HashMap::new();
+        let mut by_name: HashMap<String, Option<HashSet<String>>> = HashMap::default();
         for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
             let Some(name) = type_last_name(&d) else {
                 continue;
             };
             let declared = declared_member_names(&d);
-            let entry = by_name.entry(name).or_insert_with(|| Some(HashSet::new()));
+            let entry = by_name
+                .entry(name)
+                .or_insert_with(|| Some(HashSet::default()));
             match (entry.as_mut(), declared) {
                 (Some(names), Some(declared)) => names.extend(declared),
                 _ => *entry = None,
@@ -8911,7 +8913,7 @@ mod tests {
     //! `tests/all/infer_binder_types_diff.rs`). Each resolves and infers a snippet and
     //! reads binder types back by name.
 
-    use std::collections::HashMap;
+    use crate::hash::HashMap;
 
     use borzoi_cst::parser::parse;
     use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -9001,7 +9003,7 @@ mod tests {
             ("decimal", "Decimal"),
         ];
         let mut roots: Vec<borzoi_assembly::Entity> = Vec::new();
-        let mut bcl_done = std::collections::HashSet::new();
+        let mut bcl_done = crate::hash::HashSet::default();
         for (alias, target) in pairs {
             let mut marker = synthetic_entity(
                 &["Microsoft", "FSharp", "Core"],
@@ -10411,7 +10413,7 @@ mod tests {
     fn intrinsic_member_names_by_scan(
         defn: &borzoi_cst::syntax::TypeDefn,
         file: &ImplFile,
-    ) -> Option<std::collections::HashSet<String>> {
+    ) -> Option<crate::hash::HashSet<String>> {
         use borzoi_cst::syntax::{MemberDefn, Pat, TypeDefn, TypeDefnRepr};
         let last_name = |d: &TypeDefn| {
             d.long_id()
@@ -10419,7 +10421,7 @@ mod tests {
                 .map(|t| super::ident_text(&t))
         };
         let name = last_name(defn)?;
-        let mut out = std::collections::HashSet::new();
+        let mut out = crate::hash::HashSet::default();
         for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
             if last_name(&d).as_deref() != Some(name.as_str()) {
                 continue;

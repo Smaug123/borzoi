@@ -50,8 +50,8 @@
 //! rather than letting the body bind that. The dropped non-case heads are a coverage
 //! gap, never a wrong answer.
 
+use crate::hash::{HashMap, HashSet};
 use crate::recovery::SyntaxRecovery;
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use borzoi_cst::syntax::{
@@ -389,7 +389,7 @@ pub fn resolve_file(
     // The same-file `[<AutoOpen>]` type shadows each top-level block leaves
     // behind, by the block's path: a later block of the same namespace opens
     // those modules again.
-    let mut block_auto_open_type_shadows = HashMap::new();
+    let mut block_auto_open_type_shadows = HashMap::default();
     for module in file.modules() {
         let block_key: Vec<String> = module
             .long_id()
@@ -413,8 +413,8 @@ pub fn resolve_file(
         r.assembly_open_prefixes = Vec::new();
         r.open_generation = 0;
         r.latest_open_pos = 0;
-        r.block_type_defs = HashSet::new();
-        r.pattern_suppressed_case_ids = HashSet::new();
+        r.block_type_defs = HashSet::default();
+        r.pattern_suppressed_case_ids = HashSet::default();
         r.unmodelled_open_active = false;
         r.opaque_value_open = false;
         r.dotted_opacity = DottedOpacity::default();
@@ -797,7 +797,7 @@ fn impl_only_files(files: &[ImplFile]) -> Vec<ProjectFile> {
 /// same-QNOF-deduplicated impl's members resolving to the impl), and its
 /// partner stays `None`.
 pub fn signature_partners(files: &[ProjectFile]) -> Vec<Option<usize>> {
-    let mut pending: HashMap<&str, usize> = HashMap::new();
+    let mut pending: HashMap<&str, usize> = HashMap::default();
     let mut partner = vec![None; files.len()];
     for (i, pf) in files.iter().enumerate() {
         match &pf.file {
@@ -1074,8 +1074,8 @@ fn sig_type_slot_name(defn: &TypeDefn) -> Option<SyntaxToken> {
 /// syntactically, modelled or not, since a declaration the export walk skips
 /// still occupies its name.
 fn contested_bare_value_names(decls: &[SigDecl]) -> HashSet<String> {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut contested: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::default();
+    let mut contested: HashSet<String> = HashSet::default();
     let mut note = |name: String| {
         if !seen.insert(name.clone()) {
             contested.insert(name);
@@ -1138,7 +1138,7 @@ fn collect_sig_container_exports(
     // both types' cases at one type-qualified path, which FCS tells apart by
     // arity: neither type's cases export type-qualified.
     let contested_types: HashSet<String> = {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         decls
             .iter()
             .filter_map(|decl| match decl {
@@ -1299,7 +1299,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut auto_open_type_containers = Vec::new();
     let mut value_paths = Vec::new();
     let mut bare_value_paths: Vec<Vec<String>> = Vec::new();
-    let mut namespaces: HashSet<Vec<String>> = HashSet::new();
+    let mut namespaces: HashSet<Vec<String>> = HashSet::default();
     let mut namespace_slot_type_names: Vec<(Vec<String>, String)> = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
@@ -1555,7 +1555,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
 /// comments, directives, inactive code) is excluded: a name mentioned only in
 /// a comment must not screen.
 fn sig_token_names(sig: &SigFile) -> HashSet<String> {
-    let mut names = HashSet::new();
+    let mut names = HashSet::default();
     for token in sig
         .syntax()
         .descendants_with_tokens()
@@ -1823,7 +1823,7 @@ fn signature_slot(
 /// gives it ([`ResolvedFile::unplaced_type_places`]); an exception's arity
 /// is 0.
 fn signature_type_decls(sig: &SigFile) -> (HashMap<String, usize>, model::TypePlaces) {
-    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::default();
     let type_names = sig
         .syntax()
         .descendants()
@@ -1837,7 +1837,7 @@ fn signature_type_decls(sig: &SigFile) -> (HashMap<String, usize>, model::TypePl
     for name in type_names.chain(exception_names) {
         *counts.entry(id_text(&name).to_string()).or_default() += 1;
     }
-    let mut places = model::TypePlaces::new();
+    let mut places = model::TypePlaces::default();
     for fragment in sig.modules() {
         let container = match fragment.kind() {
             ModuleOrNamespaceKind::NamedModule => header_long_id_path(&fragment),
@@ -2283,24 +2283,24 @@ impl<'a> Resolver<'a> {
         Resolver {
             defs: Vec::new(),
             items: Vec::new(),
-            resolutions: HashMap::new(),
-            or_pattern_aliases: HashSet::new(),
-            opaque_binders: HashSet::new(),
+            resolutions: HashMap::default(),
+            or_pattern_aliases: HashSet::default(),
+            opaque_binders: HashSet::default(),
             opaque_regions: Vec::new(),
-            dropped_decls: HashSet::new(),
+            dropped_decls: HashSet::default(),
             scopes: Vec::new(),
             typar_scopes: Vec::new(),
-            type_defs: HashMap::new(),
-            type_slot_classes: HashMap::new(),
-            type_slot_history: HashMap::new(),
-            type_access_roots: HashMap::new(),
-            case_repr_roots: HashMap::new(),
-            container_decls: HashMap::new(),
-            type_cases: HashMap::new(),
-            type_members: HashMap::new(),
-            unindexed_augmented_names: HashSet::new(),
-            module_like_names: HashMap::new(),
-            top_level: HashMap::new(),
+            type_defs: HashMap::default(),
+            type_slot_classes: HashMap::default(),
+            type_slot_history: HashMap::default(),
+            type_access_roots: HashMap::default(),
+            case_repr_roots: HashMap::default(),
+            container_decls: HashMap::default(),
+            type_cases: HashMap::default(),
+            type_members: HashMap::default(),
+            unindexed_augmented_names: HashSet::default(),
+            module_like_names: HashMap::default(),
+            top_level: HashMap::default(),
             preceding,
             assemblies,
             item_base: preceding.next_base(),
@@ -2314,10 +2314,10 @@ impl<'a> Resolver<'a> {
             global_block_opened: false,
             lexical_auto_open_paths: Vec::new(),
             nested_module_locals: PathSet::default(),
-            top_level_nested_locals: HashMap::new(),
+            top_level_nested_locals: HashMap::default(),
             nested_module_exports: PathSet::default(),
             augmentation_head_locals: PathSet::default(),
-            top_level_augmentation_locals: HashMap::new(),
+            top_level_augmentation_locals: HashMap::default(),
             augmentation_head_exports: PathSet::default(),
             real_nested_module_exports: PathSet::default(),
             type_path_exports: Vec::new(),
@@ -2330,37 +2330,37 @@ impl<'a> Resolver<'a> {
             assembly_open_prefixes: Vec::new(),
             open_generation: 0,
             own_namespace_fold: state::RecordedFold::default(),
-            pattern_suppressed_case_ids: HashSet::new(),
-            modules_with_hidden_values: HashSet::new(),
+            pattern_suppressed_case_ids: HashSet::default(),
+            modules_with_hidden_values: HashSet::default(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,
-            attribute_resolutions: HashMap::new(),
-            own_type_simple_names: HashSet::new(),
-            own_module_simple_names: HashSet::new(),
-            own_binder_simple_names: HashSet::new(),
-            case_field_names: HashMap::new(),
-            own_generic_type_simple_names: HashSet::new(),
-            own_type_decl_counts: HashMap::new(),
+            attribute_resolutions: HashMap::default(),
+            own_type_simple_names: HashSet::default(),
+            own_module_simple_names: HashSet::default(),
+            own_binder_simple_names: HashSet::default(),
+            case_field_names: HashMap::default(),
+            own_generic_type_simple_names: HashSet::default(),
+            own_type_decl_counts: HashMap::default(),
             placed_types: Vec::new(),
-            type_decl_counts: HashMap::new(),
-            type_def_arities: HashMap::new(),
-            type_defs_by_arity: HashMap::new(),
-            own_type_scoped: HashMap::new(),
-            own_union_cases: HashMap::new(),
-            type_typar_frames: HashMap::new(),
-            own_exception_simple_names: HashSet::new(),
-            own_abbrev_type_simple_names: HashSet::new(),
-            own_auto_open_type_names: HashSet::new(),
+            type_decl_counts: HashMap::default(),
+            type_def_arities: HashMap::default(),
+            type_defs_by_arity: HashMap::default(),
+            own_type_scoped: HashMap::default(),
+            own_union_cases: HashMap::default(),
+            type_typar_frames: HashMap::default(),
+            own_exception_simple_names: HashSet::default(),
+            own_abbrev_type_simple_names: HashSet::default(),
+            own_auto_open_type_names: HashSet::default(),
             attribute_shape_unknowable: false,
-            augmentation_instance_names: HashSet::new(),
-            augmentation_static_names: HashSet::new(),
+            augmentation_instance_names: HashSet::default(),
+            augmentation_static_names: HashSet::default(),
             augmentation_names_unknowable: false,
             latest_open_pos: 0,
-            block_type_defs: HashSet::new(),
+            block_type_defs: HashSet::default(),
             block_starts: Vec::new(),
-            augmentable_types: HashSet::new(),
-            module_aliases: HashMap::new(),
+            augmentable_types: HashSet::default(),
+            module_aliases: HashMap::default(),
             unmodelled_open_active: false,
             opaque_value_open: false,
             dotted_opacity: DottedOpacity::default(),
@@ -2369,25 +2369,25 @@ impl<'a> Resolver<'a> {
             own_extension_statics: std::collections::BTreeSet::new(),
             rec_contribution: None,
             declares_core_attribute_alias: false,
-            custom_operation_clauses: HashMap::new(),
-            in_file_constructions: HashMap::new(),
+            custom_operation_clauses: HashMap::default(),
+            in_file_constructions: HashMap::default(),
             module_frames: Vec::new(),
-            auto_open_type_paths: HashSet::new(),
-            rec_module_names: HashSet::new(),
-            auto_open_type_shadow_names: HashMap::new(),
+            auto_open_type_paths: HashSet::default(),
+            rec_module_names: HashSet::default(),
+            auto_open_type_shadow_names: HashMap::default(),
             anonymous_root: false,
             access_floor: None,
-            pending_items: HashSet::new(),
-            ap_body_case_names: HashSet::new(),
-            active_pattern_shape: HashMap::new(),
-            excluded_param_ranges: HashSet::new(),
+            pending_items: HashSet::default(),
+            ap_body_case_names: HashSet::default(),
+            active_pattern_shape: HashMap::default(),
+            excluded_param_ranges: HashSet::default(),
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
             recovery: SyntaxRecovery::Unretained,
-            decline_sites: HashMap::new(),
+            decline_sites: HashMap::default(),
             export_decls: Vec::new(),
-            member_decl_counts: HashMap::new(),
+            member_decl_counts: HashMap::default(),
         }
     }
 
@@ -2650,7 +2650,7 @@ impl<'a> Resolver<'a> {
             attribute_resolutions: self.attribute_resolutions,
             placed_types: std::mem::take(&mut self.placed_types),
             unplaced_types,
-            unplaced_type_places: HashMap::new(),
+            unplaced_type_places: HashMap::default(),
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
@@ -2662,8 +2662,8 @@ impl<'a> Resolver<'a> {
             augmentation_names_unknowable: self.augmentation_names_unknowable,
             // Stamped by the Compile-order fold; a single file has no
             // preceding files.
-            preceding_augmentation_instance_names: HashSet::new(),
-            preceding_augmentation_static_names: HashSet::new(),
+            preceding_augmentation_instance_names: HashSet::default(),
+            preceding_augmentation_static_names: HashSet::default(),
             exports: ExportedItems { items: self.items },
             item_base: self.item_base,
             namespace_paths: self.namespace_paths,

@@ -18,6 +18,9 @@ tracing = { workspace = true, optional = true }
 # D8). Default features only (no `dogged`/`persistent`); its lone transitive dep
 # is `log`, already in the workspace lockfile.
 ena.workspace = true
+# The hasher behind every map and set sema builds (`src/hash.rs`). No
+# dependencies of its own.
+foldhash.workspace = true
 
 [features]
 # Emit per-file `resolve_file` spans from the resolution fold. Off by default so
