@@ -267,7 +267,7 @@ impl<'src> Parser<'src> {
                     // above, so the shared `(`-after predicate's `RParen` arm is
                     // unreachable here; using it keeps this dispatch in lockstep
                     // with the lookaheads that admitted the `(`.
-                    Some(t) if raw_after_lparen_starts_expr(t) => self.parse_paren_expr(),
+                    Some(t) if raw_after_lparen_starts_expr(&t) => self.parse_paren_expr(),
                     other => unreachable!(
                         "parse_atomic_expr LParen dispatch: peek_is_expr_start should have filtered {other:?}",
                     ),
@@ -627,7 +627,7 @@ impl<'src> Parser<'src> {
             debug_assert!(
                 matches!(
                     self.raw_tokens.get(self.raw_pos),
-                    Some((Ok(TriviaToken::Lexed(Token::DoBang)), s)) if *s == do_span,
+                    Some((Ok(TriviaToken::Lexed(Token::DoBang)), s)) if s == do_span,
                 ),
                 "Virtual::DoBang must be backed by a raw Token::DoBang at raw_pos with matching span"
             );
@@ -683,7 +683,7 @@ impl<'src> Parser<'src> {
             debug_assert!(
                 matches!(
                     self.raw_tokens.get(self.raw_pos),
-                    Some((Ok(TriviaToken::Lexed(Token::Do)), s)) if *s == do_span,
+                    Some((Ok(TriviaToken::Lexed(Token::Do)), s)) if s == do_span,
                 ),
                 "Virtual::Do must be backed by a raw Token::Do at raw_pos with matching span"
             );
@@ -730,7 +730,7 @@ impl<'src> Parser<'src> {
             matches!(
                 self.raw_tokens.get(self.raw_pos),
                 Some((Ok(TriviaToken::Lexed(Token::LetBang | Token::UseBang | Token::AndBang)), s))
-                    if *s == span,
+                    if s == span,
             ),
             "binder virtual must be backed by a raw let!/use!/and! at raw_pos with matching span"
         );
@@ -877,7 +877,7 @@ impl<'src> Parser<'src> {
         debug_assert!(
             matches!(
                 self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::Let | Token::Use)), s)) if *s == span,
+                Some((Ok(TriviaToken::Lexed(Token::Let | Token::Use)), s)) if s == span,
             ),
             "Virtual::Let must be backed by a raw Token::Let / Token::Use at raw_pos with matching span"
         );
@@ -3194,8 +3194,8 @@ impl<'src> Parser<'src> {
         let Some((_, dot)) = self.peek() else {
             return false;
         };
-        self.raw_tokens[self.raw_pos..]
-            .iter()
+        self.raw_tokens
+            .items(self.raw_pos..)
             .filter(|(_, s)| s.start >= dot.end)
             .find_map(|(res, s)| match res {
                 Ok(tt) => raw_significant(tt).map(|_| s.start),
@@ -3649,7 +3649,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => {
                 match self.next_non_trivia_raw_after(lparen_span.end) {
                     Some(t)
-                        if raw_after_lparen_starts_expr(t)
+                        if raw_after_lparen_starts_expr(&t)
                             && !matches!(t, Token::RParen | Token::Hash) =>
                     {
                         // A genuine non-empty paren body — the shared paren path
@@ -4204,10 +4204,7 @@ impl<'src> Parser<'src> {
     /// alternative and is left to [`Parser::parse_type_alt_operand`] to parse (or
     /// reject) — the commit itself is already sound, since a `(`-headed typar has
     /// no other parse in this position.
-    fn consume_trait_call_support<'a>(sig: &mut impl Iterator<Item = &'a Token<'src>>) -> bool
-    where
-        'src: 'a,
-    {
+    fn consume_trait_call_support(sig: &mut impl Iterator<Item = Token<'src>>) -> bool {
         match sig.next() {
             // Single head typar `^a`.
             Some(Token::Op("^")) => {
@@ -4251,13 +4248,10 @@ impl<'src> Parser<'src> {
     /// is non-empty. That is enough for the commit (a paren-headed typar has no
     /// other parse here); rejecting an ill-formed alternative is
     /// [`Parser::parse_type_alt_operand`]'s job, as it is on the constraint side.
-    fn consume_type_alts_tail<'a>(
-        sig: &mut impl Iterator<Item = &'a Token<'src>>,
+    fn consume_type_alts_tail(
+        sig: &mut impl Iterator<Item = Token<'src>>,
         requires_or: bool,
-    ) -> bool
-    where
-        'src: 'a,
-    {
+    ) -> bool {
         // The first alternative is a *typar*, whose extent is known, so directly
         // after it only the separator or the list's closer is legal. `requires_or`
         // (a `'a`-sigil first typar) rules the closer out: FCS rejects the

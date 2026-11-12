@@ -7,7 +7,7 @@ use super::*;
 impl<'src> Parser<'src> {
     pub(super) fn new(
         source: &'src str,
-        raw_tokens: Vec<RawTok<'src>>,
+        raw_tokens: RawTokens<'src>,
         filtered_tokens: Vec<FilteredTok<'src>>,
     ) -> Self {
         Self {
@@ -166,47 +166,72 @@ impl<'src> Parser<'src> {
     /// already covered by the directive's trivia token, and the LSP lexer
     /// producer owns the diagnostic).
     pub(super) fn drain_raw_up_to(&mut self, up_to: usize) {
-        while let Some((res, span)) = self.raw_tokens.get(self.raw_pos).cloned() {
+        while self.raw_pos < self.raw_tokens.len() {
+            let span = self.raw_tokens.span(self.raw_pos);
             if span.end > up_to {
                 break;
             }
-            let emit = match res {
-                Ok(TriviaToken::Lexed(tok)) => match trivia_kind(&tok) {
-                    Some(k) => Some((k, None)),
-                    None => Some((
+            // Trivia (active whitespace and comments, and the directive and
+            // inactive-code markers, which are never in the filtered stream,
+            // so this raw drain is their only path into the tree) is emitted
+            // as itself; anything else reaching the drain is an `ERROR`.
+            let kind = self.raw_tokens.kind(self.raw_pos);
+            let (kind, error) = match kind.trivia_syntax_kind() {
+                Some(k) => (k, None),
+                None => match self.raw_tokens.get(self.raw_pos).map(|(res, _)| res) {
+                    Some(Ok(TriviaToken::Lexed(tok))) => (
                         SyntaxKind::ERROR,
                         Some(format!(
                             "unsupported token {tok:?} rewritten by LexFilter; Phase 1 does not \
                              parse the surrounding construct"
                         )),
-                    )),
+                    ),
+                    Some(Err(PreprocError::Lex(e))) => {
+                        (SyntaxKind::ERROR, Some(format!("lex error: {e:?}")))
+                    }
+                    other => unreachable!(
+                        "a non-trivia table entry is a token or a lex error, not {other:?}"
+                    ),
                 },
-                // Directive / inactive-code trivia: never in the filtered
-                // stream, so this raw drain is the only path into the tree.
-                Ok(marker) => Some((
-                    marker
-                        .trivia_syntax_kind()
-                        .expect("non-Lexed marker is trivia"),
-                    None,
-                )),
-                Err(PreprocError::Lex(e)) => {
-                    Some((SyntaxKind::ERROR, Some(format!("lex error: {e:?}"))))
-                }
-                // Structural directive error — bytes already covered by the
-                // directive trivia token; skip (advance only).
-                Err(_) => None,
             };
-            if let Some((kind, error)) = emit {
-                if let Some(message) = error {
-                    self.errors.push(ParseError {
-                        message,
-                        span: span.clone(),
-                    });
-                }
-                self.emit_text(kind, span);
+            if let Some(message) = error {
+                self.errors.push(ParseError {
+                    message,
+                    span: span.clone(),
+                });
             }
+            self.emit_text(kind, span);
             self.raw_pos += 1;
         }
+    }
+
+    /// Whether the raw token at `raw_pos` is a significant token whose text the
+    /// tree already holds part of: a fused raw token the lex-filter split, of
+    /// which an earlier piece has been bumped (see
+    /// [`Self::next_non_trivia_raw_at_pos`]).
+    fn raw_pos_is_a_split_token(&self) -> bool {
+        self.raw_pos < self.raw_tokens.len()
+            && self.raw_tokens.span(self.raw_pos).start < self.raw_consumed_end
+            && matches!(self.raw_tokens.kind(self.raw_pos), RawKind::Lexed(_))
+            && !self.raw_tokens.kind(self.raw_pos).is_trivia()
+    }
+
+    /// The first significant raw token at or after index `from` whose span
+    /// starts at or after byte `skip_before`, with its span. Trivia is skipped;
+    /// a lexer error ends the scan with `None`, as does the end of the stream.
+    fn significant_raw_from(
+        &self,
+        from: usize,
+        skip_before: usize,
+    ) -> Option<(Token<'src>, Range<usize>)> {
+        for i in from..self.raw_tokens.len() {
+            let span = self.raw_tokens.span(i);
+            if span.start < skip_before || self.raw_tokens.kind(i).is_trivia() {
+                continue;
+            }
+            return self.raw_tokens.token(i).map(|t| (t, span));
+        }
+        None
     }
 
     /// Emit a token whose text is the source slice `span`, clamped
@@ -311,8 +336,8 @@ impl<'src> Parser<'src> {
         //   advances twice. The next raw token starts at/after `span.end`, so
         //   the loop stops there.
         if !is_virtual {
-            while let Some((_, raw_span)) = self.raw_tokens.get(self.raw_pos)
-                && raw_span.end <= span.end
+            while self.raw_pos < self.raw_tokens.len()
+                && self.raw_tokens.span(self.raw_pos).end <= span.end
             {
                 self.raw_pos += 1;
             }
@@ -415,26 +440,15 @@ impl<'src> Parser<'src> {
     /// otherwise `( <bad> )` would commit to unit and then
     /// `bump_swallowed_rparen` would hit its `unreachable!` on the
     /// `Err` token it didn't expect.
-    pub(super) fn next_non_trivia_raw_after(&self, byte: usize) -> Option<&Token<'src>> {
+    pub(super) fn next_non_trivia_raw_after(&self, byte: usize) -> Option<Token<'src>> {
         // Raw spans are sorted and contiguous (the full-trivia stream covers
         // every byte in order), so binary-search to the first token starting
         // at-or-after `byte` rather than rescanning from index 0. The callers
         // are hot (the per-operator continuation gates, head-classification
         // lookaheads) and `byte` advances monotonically through the file, so a
         // from-zero skip is O(position) per call — O(n²) over a large file.
-        let start = self
-            .raw_tokens
-            .partition_point(|(_, span)| span.start < byte);
-        for (res, _) in &self.raw_tokens[start..] {
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(t) => return Some(t),
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
-        }
-        None
+        let start = self.raw_tokens.count_starting_before(byte);
+        self.significant_raw_from(start, 0).map(|(t, _)| t)
     }
 
     /// `true` if the next significant raw token after byte `op_end` is a
@@ -495,24 +509,15 @@ impl<'src> Parser<'src> {
     /// `)` (not an atomic-pat start), so the args lookahead declines. Lex
     /// errors and a non-`)` significant token (which `at_paren_op_value`
     /// rules out) both stop the scan (`None`).
-    pub(super) fn raw_after_paren_op_close(&self, op_end: usize) -> Option<&Token<'src>> {
+    pub(super) fn raw_after_paren_op_close(&self, op_end: usize) -> Option<Token<'src>> {
         // Binary-search to the first raw token at-or-after `op_end` (spans are
         // sorted/contiguous) rather than rescanning from index 0 — see
         // [`Self::next_non_trivia_raw_after`].
-        let start = self
-            .raw_tokens
-            .partition_point(|(_, span)| span.start < op_end);
-        for (res, span) in &self.raw_tokens[start..] {
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(Token::RParen) => return self.next_non_trivia_raw_after(span.end),
-                    Some(_) => return None,
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
+        let start = self.raw_tokens.count_starting_before(op_end);
+        match self.significant_raw_from(start, 0)? {
+            (Token::RParen, span) => self.next_non_trivia_raw_after(span.end),
+            _ => None,
         }
-        None
     }
 
     /// First non-trivia raw token at-or-after `raw_pos`, accounting
@@ -553,28 +558,15 @@ impl<'src> Parser<'src> {
     ///
     /// Mirrors the loop in [`Parser::at_tuple_continuation`]; lex
     /// errors count as stoppers (return `None`).
-    pub(super) fn next_non_trivia_raw_at_pos(&self) -> Option<&Token<'src>> {
+    pub(super) fn next_non_trivia_raw_at_pos(&self) -> Option<Token<'src>> {
         let consumed = self.raw_consumed_end;
-        if let Some((Ok(TriviaToken::Lexed(raw)), raw_span)) = self.raw_tokens.get(self.raw_pos)
-            && raw_span.start < consumed
-            && trivia_kind(raw).is_none()
+        if self.raw_pos_is_a_split_token()
             && let Some((Ok(FilteredToken::Raw(t)), _)) = self.peek()
         {
-            return Some(t);
+            return Some(t.clone());
         }
-        for (res, span) in self.raw_tokens.iter().skip(self.raw_pos) {
-            if span.start < consumed {
-                continue;
-            }
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(t) => return Some(t),
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
-        }
-        None
+        self.significant_raw_from(self.raw_pos, consumed)
+            .map(|(t, _)| t)
     }
 
     /// The `n`-th (0-based) significant (non-trivia) raw token at/after the
@@ -593,29 +585,28 @@ impl<'src> Parser<'src> {
     /// normal raw scan (which skips the partially-consumed fused raw because its
     /// span starts before `raw_consumed_end`). Without this, index 0 would be
     /// the *ident* behind the split tail and a head typar would be missed.
-    pub(super) fn nth_significant_raw_at_pos(&self, n: usize) -> Option<&Token<'src>> {
+    pub(super) fn nth_significant_raw_at_pos(&self, n: usize) -> Option<Token<'src>> {
         let consumed = self.raw_consumed_end;
         let mut shift = 0;
-        if let Some((Ok(TriviaToken::Lexed(raw)), raw_span)) = self.raw_tokens.get(self.raw_pos)
-            && raw_span.start < consumed
-            && trivia_kind(raw).is_none()
+        if self.raw_pos_is_a_split_token()
             && let Some((Ok(FilteredToken::Raw(t)), _)) = self.peek()
         {
             if n == 0 {
-                return Some(t);
+                return Some(t.clone());
             }
             shift = 1;
         }
-        self.raw_tokens
-            .iter()
-            .skip(self.raw_pos)
-            .filter(move |(_, span)| span.start >= consumed)
-            .map_while(|(res, _)| match res {
-                Ok(tt) => Some(raw_significant(tt)),
-                Err(_) => None,
+        let raw = &self.raw_tokens;
+        (self.raw_pos..raw.len())
+            .filter(|&i| raw.span(i).start >= consumed)
+            .map_while(|i| match raw.kind(i) {
+                RawKind::Lexed(_) => Some(i),
+                kind if kind.is_trivia() => Some(i),
+                _ => None,
             })
-            .flatten()
+            .filter(|&i| !raw.kind(i).is_trivia())
             .nth(n - shift)
+            .and_then(|i| raw.token(i))
     }
 
     /// First non-trivia raw token at-or-after `raw_pos`, paired with its
@@ -625,28 +616,14 @@ impl<'src> Parser<'src> {
     /// [`Parser::next_non_trivia_raw_after`] for two-token lookahead.
     pub(super) fn next_non_trivia_raw_at_pos_with_span(
         &self,
-    ) -> Option<(&Token<'src>, Range<usize>)> {
+    ) -> Option<(Token<'src>, Range<usize>)> {
         let consumed = self.raw_consumed_end;
-        if let Some((Ok(TriviaToken::Lexed(raw)), raw_span)) = self.raw_tokens.get(self.raw_pos)
-            && raw_span.start < consumed
-            && trivia_kind(raw).is_none()
+        if self.raw_pos_is_a_split_token()
             && let Some((Ok(FilteredToken::Raw(t)), span)) = self.peek()
         {
-            return Some((t, span.clone()));
+            return Some((t.clone(), span.clone()));
         }
-        for (res, span) in self.raw_tokens.iter().skip(self.raw_pos) {
-            if span.start < consumed {
-                continue;
-            }
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(t) => return Some((t, span.clone())),
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
-        }
-        None
+        self.significant_raw_from(self.raw_pos, consumed)
     }
 
     /// Consume exactly one FCS `seps` / `seps_block` group, returning whether
@@ -761,7 +738,7 @@ impl<'src> Parser<'src> {
         closer: &str,
         construct: &str,
     ) {
-        while let Some((res, span)) = self.raw_tokens.get(self.raw_pos).cloned() {
+        while let Some((res, span)) = self.raw_tokens.get(self.raw_pos) {
             if let Ok(tt) = &res
                 && let Some(tk) = raw_trivia_kind(tt)
             {
@@ -999,7 +976,7 @@ mod tests {
     fn parser_parked_on_a_virtual() -> Parser<'static> {
         let mut parser = Parser::new(
             "a",
-            vec![(Ok(TriviaToken::Lexed(Token::Ident("a"))), 0..1)],
+            lex_full_trivia("a", &HashSet::new()).tokens,
             vec![
                 (Ok(FilteredToken::Virtual(Virtual::BlockBegin)), 0..1),
                 (Ok(FilteredToken::Raw(Token::Ident("a"))), 0..1),

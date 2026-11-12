@@ -833,7 +833,7 @@ impl<'src> Parser<'src> {
                     });
                 }
                 self.builder.finish_node();
-            } else if next.is_some_and(raw_starts_postfix_app_head)
+            } else if next.as_ref().is_some_and(raw_starts_postfix_app_head)
                 && matches!(
                     self.peek(),
                     Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_postfix_app_head(t)
@@ -2330,9 +2330,9 @@ impl<'src> Parser<'src> {
         // First non-trivia raw at-or-after `raw_pos`. A swallowed `)`
         // (or any other non-Comma raw) here means the comma is for a
         // surrounding construct, not us.
-        for (res, _) in self.raw_tokens.iter().skip(self.raw_pos) {
+        for (res, _) in self.raw_tokens.items(self.raw_pos..) {
             match res {
-                Ok(t) if raw_is_trivia(t) => continue,
+                Ok(t) if raw_is_trivia(&t) => continue,
                 Ok(TriviaToken::Lexed(Token::Comma)) => return true,
                 _ => return false,
             }
@@ -2383,7 +2383,7 @@ impl<'src> Parser<'src> {
         let Some((tok, span)) = self.next_non_trivia_raw_at_pos_with_span() else {
             return false;
         };
-        if raw_starts_anon_recd_type(tok) {
+        if raw_starts_anon_recd_type(&tok) {
             return true;
         }
         if matches!(tok, Token::Struct) {
@@ -2436,6 +2436,7 @@ impl<'src> Parser<'src> {
             return true;
         }
         self.next_non_trivia_raw_at_pos()
+            .as_ref()
             .is_some_and(raw_starts_atomic_type)
     }
 
@@ -2499,13 +2500,14 @@ impl<'src> Parser<'src> {
                 matches!(self.next_non_trivia_raw_at_pos(), Some(Token::LParen))
                     && self
                         .next_non_trivia_raw_after(after)
-                        .is_some_and(|t| matches!(t, Token::RParen) || raw_starts_minus_expr(t))
+                        .is_some_and(|t| matches!(t, Token::RParen) || raw_starts_minus_expr(&t))
             }
             Some((Ok(FilteredToken::Raw(t)), _))
                 if raw_starts_atomic_expr(t) || token_is_folded_signed_literal(t) =>
             {
-                self.next_non_trivia_raw_at_pos()
-                    .is_some_and(|r| raw_starts_atomic_expr(r) || matches!(r, Token::Op("-" | "+")))
+                self.next_non_trivia_raw_at_pos().is_some_and(|r| {
+                    raw_starts_atomic_expr(&r) || matches!(r, Token::Op("-" | "+"))
+                })
             }
             _ => false,
         }

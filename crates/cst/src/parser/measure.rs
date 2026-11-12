@@ -299,6 +299,7 @@ impl<'src> Parser<'src> {
     /// type-side exponent classifier — the same `INT32`-terminal set.
     fn at_measure_one(&self) -> bool {
         self.next_non_trivia_raw_at_pos()
+            .as_ref()
             .is_some_and(token_is_int32_exponent)
     }
 
@@ -308,6 +309,7 @@ impl<'src> Parser<'src> {
     /// `1` — `1`, `0x1`, `0o1`, `1l` — is the clean `One`.
     fn measure_int_is_one(&self) -> bool {
         self.next_non_trivia_raw_at_pos()
+            .as_ref()
             .is_some_and(int32_exponent_is_one)
     }
 }

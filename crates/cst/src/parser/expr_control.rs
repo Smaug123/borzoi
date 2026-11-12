@@ -217,8 +217,9 @@ impl<'src> Parser<'src> {
                         // between them — whitespace, block comments — at
                         // the OUTER scope so they're addressable as their
                         // own tokens.
-                        let if_raw_span = self.raw_tokens[self.raw_pos..]
-                            .iter()
+                        let if_raw_span = self
+                            .raw_tokens
+                            .items(self.raw_pos..)
                             .find_map(|(res, s)| {
                                 matches!(res, Ok(TriviaToken::Lexed(Token::If))).then(|| s.clone())
                             })
@@ -663,17 +664,15 @@ impl<'src> Parser<'src> {
                     // the clause's `->`. Read the raw stream: a `;` inside parens
                     // (`when (a;) -> b`) is followed by the swallowed `)`, which the
                     // filtered stream does not show.
-                    let last_significant =
-                        self.raw_tokens[..self.raw_pos]
-                            .iter()
-                            .rev()
-                            .find_map(|(tok, span)| match tok {
-                                Ok(TriviaToken::Lexed(t)) if trivia_kind(t).is_none() => {
-                                    Some((t.clone(), span.clone()))
-                                }
-                                Ok(TriviaToken::Lexed(_)) => None,
-                                _ => None,
-                            });
+                    let last_significant = self.raw_tokens.items(..self.raw_pos).rev().find_map(
+                        |(tok, span)| match tok {
+                            Ok(TriviaToken::Lexed(t)) if trivia_kind(&t).is_none() => {
+                                Some((t.clone(), span.clone()))
+                            }
+                            Ok(TriviaToken::Lexed(_)) => None,
+                            _ => None,
+                        },
+                    );
                     if let Some((Token::Semi, semi)) = last_significant {
                         self.errors.push(ParseError {
                             message: "unexpected `;` at the end of a `when` guard".to_string(),

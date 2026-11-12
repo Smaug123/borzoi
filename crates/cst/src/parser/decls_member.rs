@@ -86,7 +86,7 @@ impl<'src> Parser<'src> {
         // keyword appears in a run at most once, so a repeat (`val⏎val`, the
         // second starting the next item) ends it, and no run is longer than
         // `static member val`.
-        let mut seen: Vec<&Token<'src>> = Vec::new();
+        let mut seen: Vec<Token<'src>> = Vec::new();
         for i in 0..3 {
             match self.nth_significant_raw_at_pos(i) {
                 Some(
@@ -132,13 +132,10 @@ impl<'src> Parser<'src> {
     /// (`peek_is_member_sig_start`) so the classifier and [`Self::parse_abstract_
     /// slot_at`] stay in lockstep: an over-accept routes an unparseable form into
     /// the slot parser, an under-accept leaves a valid one on the error path.
-    fn raw_is_abstract_slot_name<'a>(
-        tok: Option<&'a Token<'src>>,
-        sig: &mut impl Iterator<Item = &'a Token<'src>>,
-    ) -> bool
-    where
-        'src: 'a,
-    {
+    fn raw_is_abstract_slot_name(
+        tok: Option<Token<'src>>,
+        sig: &mut impl Iterator<Item = Token<'src>>,
+    ) -> bool {
         match tok {
             Some(Token::Ident(_) | Token::QuotedIdent(_)) => true,
             Some(Token::LParenStarRParen) => true,
@@ -146,7 +143,7 @@ impl<'src> Parser<'src> {
                 // Active-pattern name (`(|Foo|_|)`): `(` then a bare `|`.
                 Some(Token::Bar) => true,
                 // Operator name (`(+)`, `( * )`): `( op )`.
-                Some(t) if is_paren_operator_name(t) || matches!(t, Token::Op("*")) => {
+                Some(t) if is_paren_operator_name(&t) || matches!(t, Token::Op("*")) => {
                     matches!(sig.next(), Some(Token::RParen))
                 }
                 _ => false,
@@ -294,14 +291,12 @@ impl<'src> Parser<'src> {
     /// already-consumed prefix), but yields successive tokens for a short
     /// fixed-length lookahead. Starts from `raw_pos`, so taking the first few
     /// tokens is O(small) rather than O(file).
-    pub(super) fn significant_raw_from_cursor(&self) -> impl Iterator<Item = &Token<'src>> {
+    pub(super) fn significant_raw_from_cursor(&self) -> impl Iterator<Item = Token<'src>> {
         let consumed = self.raw_consumed_end;
-        self.raw_tokens
-            .iter()
-            .skip(self.raw_pos)
-            .filter(move |(_, span)| span.start >= consumed)
-            .filter_map(|(res, _)| res.as_ref().ok())
-            .filter_map(raw_significant)
+        let raw = &self.raw_tokens;
+        (self.raw_pos..raw.len())
+            .filter(move |&i| raw.span(i).start >= consumed && !raw.kind(i).is_trivia())
+            .filter_map(|i| raw.token(i))
     }
 
     /// Parse an object-model repr (`member …` block, phase 9.7) into a
@@ -1381,11 +1376,10 @@ impl<'src> Parser<'src> {
         let consumed = self.raw_consumed_end;
         let mut sig = self
             .raw_tokens
-            .iter()
-            .skip(self.raw_pos)
+            .items(self.raw_pos..)
             .filter(move |(_, span)| span.start >= consumed)
             .filter_map(|(res, span)| {
-                let token = raw_significant(res.as_ref().ok()?)?;
+                let token = raw_significant(res.ok()?)?;
                 Some((token, span.start))
             });
         let mut next = sig.next();
@@ -1413,7 +1407,7 @@ impl<'src> Parser<'src> {
         // front of any of it on the filtered stream, outside the attribute
         // lists, whose argument expressions carry their own layout.
         next.is_some_and(|(token, start)| {
-            matches!(ident_token_text(token), Some("get") | Some("set"))
+            matches!(ident_token_text(&token), Some("get") | Some("set"))
                 && self.reaches_unbroken_outside_attributes(start)
         })
     }
@@ -1484,6 +1478,7 @@ impl<'src> Parser<'src> {
         if is_getter
             && !self
                 .next_non_trivia_raw_at_pos()
+                .as_ref()
                 .is_some_and(raw_starts_atomic_pat)
             && !self.folded_signed_literal_at_cursor()
         {
@@ -2097,7 +2092,7 @@ impl<'src> Parser<'src> {
         // keyword is the always-erroring `AS BASE` form.
         let (alias_present, valid_base_alias) = match self.next_non_trivia_raw_at_pos() {
             Some(t @ (Token::Ident(_) | Token::QuotedIdent(_))) => {
-                (true, ident_token_text(t) == Some("base"))
+                (true, ident_token_text(&t) == Some("base"))
             }
             Some(Token::Base) => (true, false),
             _ => (false, false),
@@ -2163,7 +2158,7 @@ impl<'src> Parser<'src> {
         debug_assert!(
             matches!(
                 self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::Interface)), s)) if *s == kw_span,
+                Some((Ok(TriviaToken::Lexed(Token::Interface)), s)) if s == kw_span,
             ),
             "interface token must be backed by a raw Token::Interface at raw_pos with matching span"
         );
