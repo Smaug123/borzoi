@@ -1,9 +1,8 @@
 //! Pure extraction of the name occurrences a pattern contributes: the binders
 //! it introduces, and the or-pattern *aliases* that re-spell one of them.
 
-use std::collections::HashSet;
-
 use crate::def::{Def, DefKind};
+use crate::hash::HashSet;
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, LongIdentPat, Pat, SyntaxNode, SyntaxToken};
 
@@ -104,8 +103,8 @@ pub fn pattern_names(
 /// every occurrence's name is a binder's name.
 pub fn every_let_pattern_binder_name(root: &SyntaxNode) -> HashSet<String> {
     let mut out = Vec::new();
-    let mut walked = Some(HashSet::new());
-    let none = HashSet::new();
+    let mut walked = Some(HashSet::default());
+    let none = HashSet::default();
     for pat in root.descendants_of::<Pat>() {
         collect(&pat, Ctx::LetHead, &none, &mut out, &mut walked);
     }
@@ -596,7 +595,7 @@ mod tests {
     /// or-pattern goes through here and gets the absence checked for free; the
     /// or-pattern cases read [`pattern_names`] directly.
     fn binders(pat: &Pat, role: BinderRole) -> Vec<Def> {
-        pattern_names(pat, role, &HashSet::new())
+        pattern_names(pat, role, &HashSet::default())
             .into_iter()
             .map(|name| match name {
                 PatternName::Binder(def) => def,
@@ -960,7 +959,7 @@ mod tests {
                 usize::from(range.end()) - offset
             )
         };
-        pattern_names(&head_pat(pat_src), role, &HashSet::new())
+        pattern_names(&head_pat(pat_src), role, &HashSet::default())
             .iter()
             .map(|occurrence| match occurrence {
                 PatternName::Binder(def) => format!("{}@{}", def.name, show(def.range)),
@@ -1042,7 +1041,7 @@ mod tests {
             pattern_names(
                 &head_pat("(A None | B None)"),
                 BinderRole::Pattern,
-                &HashSet::new()
+                &HashSet::default()
             )
             .iter()
             .all(|o| matches!(o, PatternName::Binder(def) if def.provisional))
@@ -1065,7 +1064,7 @@ mod tests {
         let names = pattern_names(
             &head_pat(src),
             BinderRole::Pattern,
-            &HashSet::from([argument]),
+            &HashSet::from_iter([argument]),
         );
         let rendered: Vec<String> = names
             .iter()
@@ -1418,7 +1417,7 @@ mod tests {
                 .pat()
                 .expect("head pat");
 
-            let occurrences = pattern_names(&pat, BinderRole::Let, &HashSet::new());
+            let occurrences = pattern_names(&pat, BinderRole::Let, &HashSet::default());
             let text = |range: TextRange| {
                 &src[usize::from(range.start())..usize::from(range.end())]
             };
@@ -1470,9 +1469,9 @@ mod tests {
     /// [`every_let_pattern_binder_name`]'s specification: every pattern node's
     /// [`pattern_names`] binders, each node walked on its own.
     fn binder_names_node_by_node(root: &SyntaxNode) -> HashSet<String> {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         for pat in root.descendants_of::<Pat>() {
-            for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
+            for name in pattern_names(&pat, BinderRole::Let, &HashSet::default()) {
                 if let PatternName::Binder(def) = name {
                     names.insert(def.key().to_string());
                 }

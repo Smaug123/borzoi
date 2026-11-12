@@ -92,14 +92,18 @@
 ///     -> {"ok":true,"nearest":index-into-groups | -1} | {"ok":false}
 ///   {"op":"restore","engine":"legacy"|"default","framework":tfm,
 ///      "packages":[{"id":..,"version":..,"nuspec":xml}, ..],
-///      "direct":[{"id":..,"range":..}, ..]}
+///      "direct":[{"id":..,"range":..}, ..],
+///      "pins":[{"id":..,"range":..}, ..]?}
 ///     The end-to-end offline resolver oracle: a real restore of a one-project
 ///     PackageReference graph through `RestoreRunner`, the entry point
 ///     `dotnet restore` reaches, over a local feed built from the supplied
 ///     nuspecs. `engine` selects NuGet's dependency resolver: "legacy"
 ///     (`RestoreUseLegacyDependencyResolver`: RemoteDependencyWalker +
 ///     GraphOperations) or "default" (the .NET 10 SDK's
-///     `DependencyGraphResolver`).
+///     `DependencyGraphResolver`). With `pins`, the project uses central
+///     package management with transitive pinning: every direct reference is
+///     centrally managed at its own range, and `pins` are the central versions
+///     of the packages it does not reference.
 ///     -> {"ok":true,"resolved":true,"packages":[{"id":lower,"version":norm}, ..],
 ///         "nugetCommands":identity}
 ///          (sorted by lowercased id; the packages the assets file lists)
@@ -569,11 +573,26 @@ let private respondRestore (sdkDir: string) (root: JsonElement) : string =
 
         let dependencies = Text.Json.Nodes.JsonObject()
 
+        let pins =
+            match root.TryGetProperty "pins" with
+            | true, pins -> Some pins
+            | false, _ -> None
+
+        let centralVersions = Text.Json.Nodes.JsonObject()
+
         for d in root.GetProperty("direct").EnumerateArray() do
             let dep = Text.Json.Nodes.JsonObject()
+            let range = d.GetProperty("range").GetString()
             dep["target"] <- Text.Json.Nodes.JsonValue.Create "Package"
-            dep["version"] <- Text.Json.Nodes.JsonValue.Create(d.GetProperty("range").GetString())
+            dep["version"] <- Text.Json.Nodes.JsonValue.Create range
+            if pins.IsSome then
+                dep["versionCentrallyManaged"] <- Text.Json.Nodes.JsonValue.Create true
+                centralVersions[d.GetProperty("id").GetString()] <- Text.Json.Nodes.JsonValue.Create range
             dependencies[d.GetProperty("id").GetString()] <- dep
+
+        for pin in pins |> Option.map (fun pins -> pins.EnumerateArray() |> Seq.toList) |> Option.defaultValue [] do
+            centralVersions[pin.GetProperty("id").GetString()] <-
+                Text.Json.Nodes.JsonValue.Create(pin.GetProperty("range").GetString())
 
         let restoreMetadata =
             Text.Json.Nodes.JsonObject.Parse(
@@ -603,10 +622,17 @@ let private respondRestore (sdkDir: string) (root: JsonElement) : string =
         if legacy then
             restoreMetadata["restoreUseLegacyDependencyResolver"] <- Text.Json.Nodes.JsonValue.Create true
 
+        if pins.IsSome then
+            restoreMetadata["centralPackageVersionsManagementEnabled"] <- Text.Json.Nodes.JsonValue.Create true
+            restoreMetadata["CentralPackageTransitivePinningEnabled"] <- Text.Json.Nodes.JsonValue.Create true
+
         let frameworks = Text.Json.Nodes.JsonObject()
         let projectFramework = Text.Json.Nodes.JsonObject()
         projectFramework["targetAlias"] <- Text.Json.Nodes.JsonValue.Create tfm
         projectFramework["dependencies"] <- dependencies
+
+        if pins.IsSome then
+            projectFramework["centralPackageVersions"] <- centralVersions
         frameworks[tfm] <- projectFramework
 
         let project = Text.Json.Nodes.JsonObject()

@@ -5,8 +5,11 @@
 //! a bound, not left to swap the machine: `RLIMIT_AS` and `RLIMIT_DATA` are
 //! not enforced on macOS, so the bound is drawn here, in the allocator. A
 //! test binary installs [`LimitedAlloc`] as its global allocator; it holds no
-//! limit until one is set, and costs two relaxed atomic operations per
-//! allocation. A child copy of the binary
+//! limit until one is set, and costs a few relaxed atomic operations per
+//! allocation. It also counts the allocations made ([`allocations`]): unlike
+//! time, how many allocations a walk makes is the same on every run, and unlike
+//! the bytes it holds at its peak, it sees work whose memory is freed as soon
+//! as it is made. A child copy of the binary
 //! ([`stack_probe`](crate::stack_probe)) sets one with [`limit_live_bytes`]
 //! before it runs its case; an allocation past it fails, which aborts the
 //! child with Rust's `memory allocation of … bytes failed`, and the parent
@@ -31,6 +34,8 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 /// The most [`LIVE`] may be.
 static LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// How many times `alloc` or `alloc_zeroed` has been called.
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Count `bytes` more as live, or refuse if that passes the limit.
 fn reserve(bytes: usize) -> bool {
@@ -51,6 +56,7 @@ fn release(bytes: usize) {
 // only adds bookkeeping; a refusal returns null, which `GlobalAlloc` permits.
 unsafe impl GlobalAlloc for LimitedAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         if !reserve(layout.size()) {
             return std::ptr::null_mut();
         }
@@ -63,6 +69,7 @@ unsafe impl GlobalAlloc for LimitedAlloc {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         if !reserve(layout.size()) {
             return std::ptr::null_mut();
         }
@@ -117,4 +124,11 @@ pub fn peak_bytes() -> usize {
 /// Start measuring [`peak_bytes`] from what is held now.
 pub fn reset_peak() {
     PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+/// How many blocks have been allocated since the process began, as
+/// [`LimitedAlloc`] counts them: every `alloc`, none of the `realloc`s that
+/// grow a block in place or move it.
+pub fn allocations() -> usize {
+    ALLOCATIONS.load(Ordering::Relaxed)
 }

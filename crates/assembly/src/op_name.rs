@@ -118,16 +118,78 @@ fn op_char_name(c: char) -> Option<&'static str> {
         .find_map(|&(k, v)| (k == c).then_some(v))
 }
 
+/// The bytes of `OP_CHAR_TABLE`'s characters, as a set: bit `b` is set for
+/// each character whose code is `b`. Every one is ASCII (asserted here), so no
+/// byte of a multi-byte UTF-8 character is in the set, and a spelling's bytes
+/// are all in it exactly when its characters are all in the table.
+const OP_CHAR_BYTES: u128 = {
+    let mut set = 0u128;
+    let mut i = 0;
+    while i < OP_CHAR_TABLE.len() {
+        let c = OP_CHAR_TABLE[i].0;
+        assert!(c.is_ascii(), "operator characters are ASCII");
+        set |= 1 << c as u32;
+        i += 1;
+    }
+    set
+};
+
+const fn is_op_char_byte(b: u8) -> bool {
+    b < 128 && OP_CHAR_BYTES >> b & 1 == 1
+}
+
+// Every `OP_NAME_TABLE` entry is a non-empty run of operator characters (the
+// space among them), so a spelling with any other byte is no entry, and
+// `classify` rejects it without a lookup.
+const _: () = {
+    let mut i = 0;
+    while i < OP_NAME_TABLE.len() {
+        let entry = OP_NAME_TABLE[i].0.as_bytes();
+        assert!(!entry.is_empty(), "an operator table entry is non-empty");
+        let mut j = 0;
+        while j < entry.len() {
+            assert!(
+                is_op_char_byte(entry[j]),
+                "an operator table entry has only operator characters"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+};
+
+/// What a spelling is to `PrettyNaming.CompileOpName`.
+enum OpSpelling {
+    /// Not an operator: an identifier, a keyword, an active-pattern name.
+    NotOperator,
+    /// An `OP_NAME_TABLE` entry, with its dedicated compiled name.
+    Table(&'static str),
+    /// A non-empty run of operator characters, the space excluded, that is no
+    /// table entry: compiled character by character.
+    Custom,
+}
+
+fn classify(spelling: &str) -> OpSpelling {
+    // Nearly every spelling is an identifier, which fails this on its first
+    // byte; every operator, from the table or custom, passes it.
+    if spelling.is_empty() || !spelling.bytes().all(is_op_char_byte) {
+        return OpSpelling::NotOperator;
+    }
+    if let Some(&(_, compiled)) = OP_NAME_TABLE.iter().find(|&&(k, _)| k == spelling) {
+        OpSpelling::Table(compiled)
+    } else if spelling.contains(' ') {
+        OpSpelling::NotOperator
+    } else {
+        OpSpelling::Custom
+    }
+}
+
 /// Whether `spelling` is an operator: a table entry, or a non-empty run of
 /// operator characters (`PrettyNaming.IsOperatorDisplayName` on the core name,
 /// which excludes the space). An identifier, a keyword, and an active-pattern
 /// name (`|A|_|`, which has letters) are not.
 pub fn is_operator_spelling(spelling: &str) -> bool {
-    OP_NAME_TABLE.iter().any(|&(k, _)| k == spelling)
-        || (!spelling.is_empty()
-            && spelling
-                .chars()
-                .all(|c| c != ' ' && op_char_name(c).is_some()))
+    !matches!(classify(spelling), OpSpelling::NotOperator)
 }
 
 /// The name FCS's parser gives the operator spelled `spelling`
@@ -137,17 +199,19 @@ pub fn is_operator_spelling(spelling: &str) -> bool {
 /// `+` is `op_Addition`; a custom operator spells each character, so `+.` is
 /// `op_PlusDot` and `>>=` is `op_GreaterGreaterEquals`.
 pub fn compile_op_name(spelling: &str) -> Cow<'_, str> {
-    if let Some(&(_, compiled)) = OP_NAME_TABLE.iter().find(|&&(k, _)| k == spelling) {
-        return Cow::Borrowed(compiled);
+    match classify(spelling) {
+        OpSpelling::NotOperator => Cow::Borrowed(spelling),
+        OpSpelling::Table(compiled) => Cow::Borrowed(compiled),
+        OpSpelling::Custom => {
+            let mut out = String::from("op_");
+            for c in spelling.chars() {
+                out.push_str(
+                    op_char_name(c).expect("a custom operator has only operator characters"),
+                );
+            }
+            Cow::Owned(out)
+        }
     }
-    if !is_operator_spelling(spelling) {
-        return Cow::Borrowed(spelling);
-    }
-    let mut out = String::from("op_");
-    for c in spelling.chars() {
-        out.push_str(op_char_name(c).expect("an operator spelling has only operator characters"));
-    }
-    Cow::Owned(out)
 }
 
 /// The name FCS's parser gives the operator of a *prefix* application whose
@@ -323,6 +387,188 @@ mod tests {
     fn non_operators_are_left_alone() {
         for s in ["x", "op_Addition", "|A|_|", "|A|", "base", "_", "", "a+"] {
             assert_eq!(compile_op_name(s), s, "{s:?}");
+        }
+    }
+
+    /// The reference for [`is_operator_spelling`]: `IsOperatorDisplayName`
+    /// read off the two tables by linear scan, character by character.
+    fn reference_is_operator_spelling(spelling: &str) -> bool {
+        OP_NAME_TABLE.iter().any(|&(k, _)| k == spelling)
+            || (!spelling.is_empty()
+                && spelling
+                    .chars()
+                    .all(|c| c != ' ' && OP_CHAR_TABLE.iter().any(|&(k, _)| k == c)))
+    }
+
+    /// The reference for [`compile_op_name`], by linear scan of the tables.
+    fn reference_compile_op_name(spelling: &str) -> Cow<'_, str> {
+        if let Some(&(_, compiled)) = OP_NAME_TABLE.iter().find(|&&(k, _)| k == spelling) {
+            return Cow::Borrowed(compiled);
+        }
+        if !reference_is_operator_spelling(spelling) {
+            return Cow::Borrowed(spelling);
+        }
+        let mut out = String::from("op_");
+        for c in spelling.chars() {
+            let &(_, name) = OP_CHAR_TABLE
+                .iter()
+                .find(|&&(k, _)| k == c)
+                .expect("an operator spelling has only operator characters");
+            out.push_str(name);
+        }
+        Cow::Owned(out)
+    }
+
+    /// Spellings built from pieces weighted towards what the fast paths
+    /// branch on: whole table entries (so spliced into other text when
+    /// several are drawn), operator characters, the space that only table
+    /// entries may hold, identifier characters, backticks, and non-ASCII
+    /// characters (whose UTF-8 bytes must not read as operator characters).
+    fn spelling() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::prelude::*;
+        let table_entry =
+            proptest::sample::select(OP_NAME_TABLE.iter().map(|&(k, _)| k).collect::<Vec<_>>())
+                .prop_map(String::from);
+        // The entries with a space are few, and only such an entry, exactly,
+        // makes a spelling with a space an operator.
+        let spaced_entry = proptest::sample::select(
+            OP_NAME_TABLE
+                .iter()
+                .map(|&(k, _)| k)
+                .filter(|k| k.contains(' '))
+                .collect::<Vec<_>>(),
+        )
+        .prop_map(String::from);
+        let op_char =
+            proptest::sample::select(OP_CHAR_TABLE.iter().map(|&(c, _)| c).collect::<Vec<_>>())
+                .prop_map(String::from);
+        let piece = prop_oneof![
+            4 => table_entry,
+            2 => spaced_entry,
+            4 => op_char,
+            1 => Just(" ".to_string()),
+            2 => "[A-Za-z0-9_']",
+            1 => Just("``".to_string()),
+            1 => Just("`".to_string()),
+            1 => proptest::sample::select(vec!["é", "→", "\u{80}", "\u{3c}\u{301}", "\0"])
+                .prop_map(String::from),
+        ];
+        proptest::collection::vec(piece, 0..5).prop_map(|pieces| pieces.concat())
+    }
+
+    /// What [`spelling`] must reach for the equivalence property to say
+    /// anything about each branch of the fast path.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum SpellingClass {
+        Empty,
+        /// A table entry exactly, one without a space.
+        TableEntry,
+        /// A table entry exactly, one with a space (a non-operator otherwise).
+        SpacedTableEntry,
+        /// A run of operator characters that is not a table entry.
+        CustomOperator,
+        /// Operator characters and a space, not a table entry.
+        SpacedNonEntry,
+        /// A table entry inside a longer non-operator spelling.
+        EntryInText,
+        /// Anything else that is not an operator.
+        Other,
+    }
+
+    fn classify_for_coverage(s: &str) -> SpellingClass {
+        let entry = OP_NAME_TABLE.iter().any(|&(k, _)| k == s);
+        let op_chars = OP_CHAR_TABLE
+            .iter()
+            .map(|&(c, _)| c)
+            .filter(|&c| c != ' ')
+            .collect::<Vec<_>>();
+        let all_op = !s.is_empty() && s.chars().all(|c| op_chars.contains(&c));
+        let all_op_or_space = !s.is_empty() && s.chars().all(|c| c == ' ' || op_chars.contains(&c));
+        if s.is_empty() {
+            SpellingClass::Empty
+        } else if entry && s.contains(' ') {
+            SpellingClass::SpacedTableEntry
+        } else if entry {
+            SpellingClass::TableEntry
+        } else if all_op {
+            SpellingClass::CustomOperator
+        } else if all_op_or_space {
+            SpellingClass::SpacedNonEntry
+        } else if OP_NAME_TABLE.iter().any(|&(k, _)| s.contains(k)) {
+            SpellingClass::EntryInText
+        } else {
+            SpellingClass::Other
+        }
+    }
+
+    const SPELLING_CASES: u32 = 4096;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(SPELLING_CASES))]
+
+        /// The fast paths answer exactly as the linear scans of the tables do.
+        #[test]
+        fn fast_paths_agree_with_the_table_scan(s in spelling()) {
+            proptest::prop_assert_eq!(
+                is_operator_spelling(&s),
+                reference_is_operator_spelling(&s),
+                "is_operator_spelling({:?})", s
+            );
+            proptest::prop_assert_eq!(
+                compile_op_name(&s),
+                reference_compile_op_name(&s),
+                "compile_op_name({:?})", s
+            );
+        }
+    }
+
+    /// Every table entry and every operator character, alone, agree too: the
+    /// generator draws them, but this makes the claim for each one.
+    #[test]
+    fn every_table_entry_and_operator_character_agrees() {
+        let singles = OP_NAME_TABLE
+            .iter()
+            .map(|&(k, _)| k.to_string())
+            .chain(OP_CHAR_TABLE.iter().map(|&(c, _)| c.to_string()));
+        for s in singles {
+            assert_eq!(
+                is_operator_spelling(&s),
+                reference_is_operator_spelling(&s),
+                "{s:?}"
+            );
+            assert_eq!(compile_op_name(&s), reference_compile_op_name(&s), "{s:?}");
+        }
+    }
+
+    /// [`spelling`] reaches every class the fast path distinguishes, each
+    /// often enough that the property's case budget samples it many times.
+    #[test]
+    fn the_spelling_generator_reaches_every_class() {
+        use proptest::strategy::{Strategy, ValueTree};
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let strategy = spelling();
+        let mut counts = std::collections::HashMap::<SpellingClass, u32>::new();
+        for _ in 0..SPELLING_CASES {
+            let s = strategy
+                .new_tree(&mut runner)
+                .expect("generate a spelling")
+                .current();
+            *counts.entry(classify_for_coverage(&s)).or_default() += 1;
+        }
+        for class in [
+            SpellingClass::Empty,
+            SpellingClass::TableEntry,
+            SpellingClass::SpacedTableEntry,
+            SpellingClass::CustomOperator,
+            SpellingClass::SpacedNonEntry,
+            SpellingClass::EntryInText,
+            SpellingClass::Other,
+        ] {
+            let n = counts.get(&class).copied().unwrap_or(0);
+            assert!(
+                n >= 20,
+                "{class:?} drawn {n} times in {SPELLING_CASES}: {counts:?}"
+            );
         }
     }
 }

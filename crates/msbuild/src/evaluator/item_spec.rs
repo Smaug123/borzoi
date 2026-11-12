@@ -37,16 +37,21 @@
 //!
 //! Existence adds three restrictions:
 //!
-//! - **No backslash.** MSBuild rewrites the backslashes in an evaluated value
-//!   only when its first path segment exists relative to the *process working
-//!   directory* (`FileUtilities.MaybeAdjustFilePath`), so which spelling
-//!   `->Exists()` sees depends on where MSBuild runs.
+//! - **No backslash.** `->Exists()` reads the identity verbatim, and MSBuild
+//!   rewrites the backslashes of an `Include` only when its first path segment
+//!   exists relative to the *process working directory*
+//!   (`FileUtilities.MaybeAdjustFilePath`). [`include_spelling`] applies that
+//!   rewrite when capturing an `Include` wherever the working directory cannot
+//!   change it — `..\X\X.fsproj` is captured as `../X/X.fsproj` — so a
+//!   backslash that survives into an identity is one whose spelling depends on
+//!   where MSBuild runs, or an escaped `%5c`.
 //! - **No trailing separator.** `File.Exists` answers `false` for one outright
 //!   and `Directory.Exists` does not, a split not worth reproducing.
 //! - **No dangling symlink at the leaf.** .NET's Unix `File.Exists` reads the
 //!   leaf with `lstat`, so a symlink to nothing may exist for it while `stat`
 //!   says otherwise; [`probe_exists`] declines rather than pick.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 /// Whether `identity` is inside the domain both functions share (see the
@@ -121,6 +126,64 @@ pub(super) fn exists_probe(identity: &str, project_dir: &Path) -> Option<PathBuf
     full_path(identity, project_dir).map(PathBuf::from)
 }
 
+/// The spelling MSBuild gives an item spec once it has expanded it:
+/// `FileUtilities.MaybeAdjustFilePath`, which `ExpandIntoStringLeaveEscaped`
+/// applies to the *whole* expanded spec (escaped text, before the `;` split),
+/// so the item identities split from it inherit one decision.
+///
+/// On Unix that function collapses every run of `/` and `\` into one `/`, but
+/// only when the spec's first path segment (`'`/`"` quotes stripped) is a
+/// directory under the process working directory — or, for a rooted spec, when
+/// the root holds it. We commit only where the answer cannot turn on the
+/// filesystem:
+///
+/// - no backslash, or a spec MSBuild never touches (`$(`, `@(`, `\\`): as is;
+/// - first segment `.` or `..`, which name directories under any working
+///   directory that exists: respelled;
+/// - no separator after the first character, unrooted: as is.
+///
+/// `None` for any other spelling with a backslash, and for one whose `raw`
+/// text holds a `$(` (each spliced piece is respelled on its own by the same
+/// rule, before the whole is). `raw` is the attribute text, `expanded` its
+/// escaped expansion.
+pub(super) fn include_spelling<'a>(raw: &str, expanded: &'a str) -> Option<Cow<'a, str>> {
+    let unchanged = Some(Cow::Borrowed(expanded));
+    if cfg!(windows) || !expanded.contains('\\') {
+        return unchanged;
+    }
+    if raw.contains("$(") {
+        return None;
+    }
+    if ["$(", "@(", "\\\\"].iter().any(|p| expanded.starts_with(p)) {
+        return unchanged;
+    }
+    let mut collapsed = String::with_capacity(expanded.len());
+    for c in expanded.chars() {
+        let slash = matches!(c, '/' | '\\');
+        if !(slash && collapsed.ends_with('/')) {
+            collapsed.push(if slash { '/' } else { c });
+        }
+    }
+    let unquoted = ['\'', '"']
+        .iter()
+        .find_map(|q| {
+            collapsed
+                .strip_prefix(*q)
+                .and_then(|rest| rest.strip_suffix(*q))
+                .filter(|inner| !inner.is_empty())
+        })
+        .unwrap_or(&collapsed);
+    let first = unquoted.chars().next().map_or(0, char::len_utf8);
+    match unquoted[first..].find('/') {
+        Some(at) => match &unquoted[..first + at] {
+            "." | ".." => Some(Cow::Owned(collapsed)),
+            _ => None,
+        },
+        None if unquoted.starts_with('/') => None,
+        None => unchanged,
+    }
+}
+
 /// `File.Exists(path) || Directory.Exists(path)` for a path from
 /// [`exists_probe`]: whether anything is there, following symlinks. `None` for a
 /// symlink at the leaf whose target is missing, where .NET's `lstat` and our
@@ -173,6 +236,146 @@ mod tests {
             comparison_key("a.fsproj", Path::new("/rööt")),
             None,
             "a non-ASCII project directory folds by .NET's table, not ours"
+        );
+    }
+
+    /// `FileUtilities.MaybeAdjustFilePath` on Unix, transcribed, with the one
+    /// question that reaches outside the string left to the caller: whether a
+    /// first path segment names a directory (`dir_exists`) or, for a rooted
+    /// spelling with no second segment, anything (`exists`). Both are asked
+    /// of `Path.Combine(cwd, segment)`.
+    fn maybe_adjust_file_path(
+        value: &str,
+        dir_exists: &dyn Fn(&str) -> bool,
+        exists: &dyn Fn(&str) -> bool,
+    ) -> String {
+        if value.is_empty()
+            || value.starts_with("$(")
+            || value.starts_with("@(")
+            || value.starts_with("\\\\")
+        {
+            return value.to_string();
+        }
+        let mut new_value = String::new();
+        if value.contains('\\') {
+            for c in value.chars() {
+                let slash = c == '/' || c == '\\';
+                if !(slash && (new_value.ends_with('/'))) {
+                    new_value.push(if slash { '/' } else { c });
+                }
+            }
+        } else {
+            new_value = value.to_string();
+        }
+        let chars: Vec<char> = new_value.chars().collect();
+        let unquoted: &[char] = if chars.len() > 2
+            && ((chars[0] == '\'' && chars[chars.len() - 1] == '\'')
+                || (chars[0] == '"' && chars[chars.len() - 1] == '"'))
+        {
+            &chars[1..chars.len() - 1]
+        } else {
+            &chars
+        };
+        let looks_like_path = {
+            let directory_length = unquoted
+                .iter()
+                .skip(1)
+                .position(|&c| c == '/')
+                .map_or(0, |at| at + 1);
+            if directory_length != 0 {
+                dir_exists(&unquoted[..directory_length].iter().collect::<String>())
+            } else {
+                unquoted.first() == Some(&'/') && exists(&unquoted.iter().collect::<String>())
+            }
+        };
+        if new_value.contains('/') && looks_like_path {
+            new_value
+        } else {
+            value.to_string()
+        }
+    }
+
+    /// Every string up to `len` characters over `alphabet`.
+    fn all_strings(alphabet: &[char], len: usize) -> Vec<String> {
+        let mut all = vec![String::new()];
+        let mut layer = vec![String::new()];
+        for _ in 0..len {
+            layer = layer
+                .iter()
+                .flat_map(|prefix| {
+                    alphabet.iter().map(move |c| {
+                        let mut s = prefix.clone();
+                        s.push(*c);
+                        s
+                    })
+                })
+                .collect();
+            all.extend(layer.iter().cloned());
+        }
+        all
+    }
+
+    /// `include_spelling` commits only to a spelling MSBuild produces whatever
+    /// the working directory holds — the process's working directory exists,
+    /// so `.` and `..` name directories under it and every other relative
+    /// segment may or may not — and it does commit whenever that is so and
+    /// the answer turns on no rooted path.
+    #[test]
+    fn include_spelling_is_maybe_adjust_file_path_wherever_the_cwd_cannot_matter() {
+        let alphabet = ['.', '\\', '/', 'a', ';', '\'', '$', '(', '@', '%'];
+        let mut committed_respellings = 0;
+        for value in all_strings(&alphabet, 6) {
+            let under = |cwd_holds_it: bool, root_holds_it: bool| {
+                let dir_exists = move |segment: &str| {
+                    if segment.starts_with('/') {
+                        root_holds_it
+                    } else {
+                        matches!(segment, "." | "..") || cwd_holds_it
+                    }
+                };
+                let exists = move |_: &str| root_holds_it;
+                maybe_adjust_file_path(&value, &dir_exists, &exists)
+            };
+            let answers: Vec<String> = [(false, false), (false, true), (true, false), (true, true)]
+                .into_iter()
+                .map(|(cwd, root)| under(cwd, root))
+                .collect();
+            let settled = answers.iter().all(|a| a == &answers[0]);
+            match include_spelling(&value, &value) {
+                Some(spelling) => {
+                    assert!(settled, "{value:?} turns on the filesystem: {answers:?}");
+                    assert_eq!(spelling, answers[0], "{value:?}");
+                    if spelling != value {
+                        committed_respellings += 1;
+                    }
+                }
+                None => assert!(
+                    !settled || value.contains("$("),
+                    "{value:?} is settled as {:?} but declined",
+                    answers[0]
+                ),
+            }
+        }
+        assert!(committed_respellings > 1000, "{committed_respellings}");
+    }
+
+    #[test]
+    fn include_spelling_declines_a_spliced_backslash() {
+        // Each piece of a `$(…)` expansion is respelled on its own before the
+        // whole is, and that pass is not modelled. (Here the whole-spec pass
+        // happens to settle it; the decline is ours, not MSBuild's.)
+        assert_eq!(include_spelling("$(Dir)/A.fsproj", "..\\X/A.fsproj"), None);
+        assert_eq!(
+            include_spelling("$(Dir)/A.fsproj", "../X/A.fsproj"),
+            Some(Cow::Borrowed("../X/A.fsproj"))
+        );
+        assert_eq!(
+            include_spelling(
+                "..\\A\\A.fsproj;Sub\\B.fsproj",
+                "..\\A\\A.fsproj;Sub\\B.fsproj"
+            ),
+            Some(Cow::Owned("../A/A.fsproj;Sub/B.fsproj".to_string())),
+            "the whole spec is respelled by its first segment"
         );
     }
 
