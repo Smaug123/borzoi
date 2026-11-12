@@ -358,8 +358,9 @@ pub enum StructuralCompileItemUncertainty {
     /// folding (where MSBuild's ordinal-ignore-case dedup verdict cannot
     /// be reproduced exactly).
     ImportProjectUnresolved { project: String },
-    /// A user-authored `<Choose>` can contain Compile items, but this evaluator
-    /// does not descend it.
+    /// A user-authored `<Choose>` we could not evaluate may add Compile items:
+    /// one whose branch decision we could not pin down, with a Compile item in
+    /// a still-possible branch, or one MSBuild would refuse to load.
     UnsupportedChoose,
 }
 
@@ -369,9 +370,10 @@ impl StructuralCompileItemUncertainty {
     /// we never saw.
     ///
     /// True for everything except [`Self::UnsupportedChoose`]: `handle_choose`
-    /// scans a `<Choose>`'s still-possible branches for reference mutations
-    /// itself, so an Include-only branch stays at worst a missed reference
-    /// rather than a wrong list.
+    /// scans a `<Choose>`'s still-possible branches for reference operations
+    /// itself, so a Compile-only branch says nothing about the list, and an
+    /// Include-only one stays at worst a missed reference rather than a wrong
+    /// list.
     ///
     /// Public because a consumer explaining a dropped reference set must borrow
     /// exactly this subset — attributing the drop to a Compile-only `<Choose>`
@@ -491,8 +493,10 @@ pub enum StructuralPackageReferenceUncertainty {
     /// Unicode case folding. See the compile-side twin
     /// [`StructuralCompileItemUncertainty::ImportProjectUnresolved`].
     ImportProjectUnresolved { project: String },
-    /// A `<Choose>` can contain package/framework references, but this
-    /// evaluator does not descend it.
+    /// A `<Choose>` we could not evaluate may add package/framework
+    /// references: one whose branch decision we could not pin down, with a
+    /// package-affecting item in a still-possible branch, or one MSBuild would
+    /// refuse to load.
     UnsupportedChoose,
 }
 

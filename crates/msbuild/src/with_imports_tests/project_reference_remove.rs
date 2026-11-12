@@ -212,6 +212,65 @@ fn a_helper_in_an_undecided_choose_branch_cannot_be_read_as_empty() {
 }
 
 #[test]
+fn an_undecided_choose_holding_other_items_leaves_the_idiom_exact() {
+    // Neither branch can touch `ProjectReference` or the helper the idiom
+    // derives from it, so the Remove reads a list we know exactly.
+    for branch in [
+        r#"<None Include="../A/A.fsproj" />"#,
+        r#"<Compile Include="A.fs" />"#,
+        r#"<Unrelated Include="../M/M.fsproj" />"#,
+    ] {
+        let (_tmp, root, parsed) = layout(&format!(
+            r#"  <Choose>
+    <When Condition="'$([System.Guid]::NewGuid())' != ''">
+      <ItemGroup>
+        {branch}
+      </ItemGroup>
+    </When>
+  </Choose>
+  <ItemGroup>
+    <ProjectReference Include="../A/A.fsproj" />
+    <ProjectReference Include="../M/M.fsproj" />
+  </ItemGroup>
+{NON_EXISTENT_IDIOM}"#
+        ));
+        assert!(
+            !parsed.project_references_uncertain,
+            "{branch}: diags {:?}",
+            parsed.diagnostics
+        );
+        assert_eq!(references(&parsed), vec![root.join("A/A.fsproj")]);
+    }
+}
+
+#[test]
+fn a_reference_include_in_an_undecided_choose_makes_a_derived_remove_decline() {
+    // MSBuild runs this branch (the GUID is never empty). Alone it is a missed
+    // reference. Read through the idiom it leaves the derived helper
+    // incomplete: on a case-sensitive filesystem `../a/A.fsproj` is missing,
+    // and its removal — by path, ignoring case — takes the captured
+    // `../A/A.fsproj` with it. The guard is held here on any filesystem.
+    let branch = r#"  <Choose>
+    <When Condition="'$([System.Guid]::NewGuid())' != ''">
+      <ItemGroup>
+        <ProjectReference Include="../a/A.fsproj" />
+      </ItemGroup>
+    </When>
+  </Choose>"#;
+    let captured = r#"  <ItemGroup>
+    <ProjectReference Include="../A/A.fsproj" />
+  </ItemGroup>"#;
+    let alone = layout(&format!("{captured}\n{branch}")).2;
+    assert!(
+        !alone.project_references_uncertain,
+        "diags: {:?}",
+        alone.diagnostics
+    );
+    let (_tmp, _root, parsed) = layout(&format!("{captured}\n{branch}\n{NON_EXISTENT_IDIOM}"));
+    assert!(parsed.project_references_uncertain);
+}
+
+#[test]
 fn a_remove_with_match_on_metadata_declines() {
     let (_tmp, _root, parsed) = layout(
         r#"  <ItemGroup>
