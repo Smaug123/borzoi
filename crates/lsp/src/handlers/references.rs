@@ -488,7 +488,7 @@ fn single_file_references(
 /// filter is coarser, dropping the left operand of such an equality too.
 fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
     let mut ranges = HashSet::new();
-    for expression in root.descendants().filter_map(Expr::cast) {
+    for expression in root.descendants_of::<Expr>() {
         let argument = match expression {
             Expr::App(application) => {
                 if application.is_infix() {
@@ -577,11 +577,7 @@ fn ambiguous_argument_label(element: &Expr) -> Option<TextRange> {
     };
     if !equals.is_infix()
         || !equals.func().is_some_and(|operator| {
-            let mut tokens = operator
-                .syntax()
-                .descendants_with_tokens()
-                .filter_map(|element| element.into_token())
-                .filter(|token| !token.kind().is_trivia());
+            let mut tokens = operator.syntax().tokens_where(|k| !k.is_trivia());
             matches!(
                 tokens.next(),
                 Some(token) if token.kind() == SyntaxKind::IDENT_TOK && token.text() == "="

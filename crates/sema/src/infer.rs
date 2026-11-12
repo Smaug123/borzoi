@@ -2158,9 +2158,7 @@ impl<'a> Gen<'a> {
                 if let Some(pat) = binding.pat() {
                     out.extend(
                         pat.syntax()
-                            .descendants_with_tokens()
-                            .filter_map(|el| el.into_token())
-                            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                            .tokens_where(|k| k == SyntaxKind::IDENT_TOK)
                             .map(|t| t.text_range()),
                     );
                 }
@@ -2212,8 +2210,7 @@ impl<'a> Gen<'a> {
         let env = self.env;
         let type_names: HashSet<String> = file
             .syntax()
-            .descendants()
-            .filter_map(TypeDefn::cast)
+            .descendants_of::<TypeDefn>()
             .filter_map(|d| d.long_id())
             .flat_map(|li| li.idents().map(|t| ident_text(&t)).collect::<Vec<_>>())
             .collect();
@@ -2232,7 +2229,7 @@ impl<'a> Gen<'a> {
         };
         let mut module_headers: HashMap<SyntaxNode, Option<Vec<String>>> = HashMap::default();
         let mut out = HashMap::default();
-        for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        for defn in file.syntax().descendants_of::<TypeDefn>() {
             let Some(name) = defn.long_id().and_then(|li| {
                 let mut idents = li.idents();
                 let first = idents.next()?;
@@ -2343,7 +2340,7 @@ impl<'a> Gen<'a> {
         // Every definition of a container's name and arity, augmentations
         // aside (they extend, not redeclare).
         let mut declared: HashMap<(TextRange, String, usize), usize> = HashMap::default();
-        for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        for defn in file.syntax().descendants_of::<TypeDefn>() {
             if matches!(defn.repr(), Some(TypeDefnRepr::ObjectModel(om)) if om.is_augmentation()) {
                 continue;
             }
@@ -2442,7 +2439,7 @@ impl<'a> Gen<'a> {
         let headerless = is_headerless(file);
         // Built at the first record, so a file without one pays nothing.
         let mut member_names: Option<IntrinsicMemberNames> = None;
-        for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        for defn in file.syntax().descendants_of::<TypeDefn>() {
             let repr = match defn.repr() {
                 Some(TypeDefnRepr::Union(repr)) => DeclaredFields::Union(repr),
                 Some(TypeDefnRepr::Record(repr)) => DeclaredFields::Record(repr),
@@ -2834,11 +2831,7 @@ impl<'a> Gen<'a> {
             {
                 Vec::new()
             }
-            _ => pat
-                .syntax()
-                .descendants()
-                .filter_map(NamedPat::cast)
-                .collect(),
+            _ => pat.syntax().descendants_of::<NamedPat>().collect(),
         };
         let mut defs: Vec<DefId> = names
             .iter()
@@ -2911,8 +2904,9 @@ impl<'a> Gen<'a> {
             // `LET_OR_USE_EXPR`), so these batches do not nest.
             debug_assert!(
                 rhs.syntax()
-                    .descendants()
-                    .all(|n| n.kind() != SyntaxKind::LET_DECL),
+                    .descendants_where(|k| k == SyntaxKind::LET_DECL)
+                    .next()
+                    .is_none(),
                 "a LET_DECL nested inside a walked binding's RHS breaks sequential solve"
             );
             let mark = self.begin_binding();
@@ -3099,8 +3093,9 @@ impl<'a> Gen<'a> {
         if let Some(rhs) = rhs {
             debug_assert!(
                 rhs.syntax()
-                    .descendants()
-                    .all(|n| n.kind() != SyntaxKind::LET_DECL),
+                    .descendants_where(|k| k == SyntaxKind::LET_DECL)
+                    .next()
+                    .is_none(),
                 "a LET_DECL nested inside a walked binding's body breaks sequential solve"
             );
             // The body walk: check mode against the annotation, the top-level
@@ -3162,8 +3157,9 @@ impl<'a> Gen<'a> {
             if let Some(rhs) = rhs {
                 debug_assert!(
                     rhs.syntax()
-                        .descendants()
-                        .all(|n| n.kind() != SyntaxKind::LET_DECL),
+                        .descendants_where(|k| k == SyntaxKind::LET_DECL)
+                        .next()
+                        .is_none(),
                     "a LET_DECL nested inside a walked binding's RHS breaks sequential solve"
                 );
                 let _ = self.infer_expr(&rhs, Some(dv));
@@ -4183,8 +4179,9 @@ impl<'a> Gen<'a> {
     fn pattern_rhs(&mut self, pat: &Pat, pat_ty: Ty, rhs: &Expr, site: BinderSite) {
         let annotated = pat
             .syntax()
-            .descendants()
-            .any(|n| n.kind() == SyntaxKind::TYPED_PAT);
+            .descendants_where(|k| k == SyntaxKind::TYPED_PAT)
+            .next()
+            .is_some();
         if annotated {
             let expected = self.table.fresh();
             self.infer_expr(rhs, Some(expected));
@@ -5894,11 +5891,7 @@ impl<'a> Gen<'a> {
             .args()
             .map(|arg| arg.syntax().clone())
             .chain(ret.map(|t| t.syntax().clone()))
-            .flat_map(|n| {
-                n.descendants()
-                    .filter_map(VarType::cast)
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|n| n.descendants_of::<VarType>().collect::<Vec<_>>())
             .collect();
         if mentions.iter().any(VarType::is_head_type) {
             return;
@@ -5916,8 +5909,7 @@ impl<'a> Gen<'a> {
         }
         let in_body = body.is_some_and(|b| {
             b.syntax()
-                .descendants()
-                .filter_map(VarType::cast)
+                .descendants_of::<VarType>()
                 .filter_map(|v| v.ident())
                 .any(|tok| names.contains(&ident_text(&tok)))
         });
@@ -8392,8 +8384,9 @@ fn moves_its_continuation(binding: &Binding) -> bool {
     matches!(peeled, Pat::Tuple(_))
         && pat
             .syntax()
-            .descendants()
-            .all(|n| n.kind() != SyntaxKind::NAMED_PAT)
+            .descendants_where(|k| k == SyntaxKind::NAMED_PAT)
+            .next()
+            .is_none()
         && matches!(
             unparenthesize(rhs),
             Some(Expr::Ident(_) | Expr::LongIdent(_))
@@ -8437,7 +8430,7 @@ fn is_simple_param_element(p: &Pat) -> bool {
 fn binds_a_name_twice(pats: &[Pat]) -> bool {
     let mut seen = HashSet::default();
     pats.iter()
-        .flat_map(|p| p.syntax().descendants().filter_map(NamedPat::cast))
+        .flat_map(|p| p.syntax().descendants_of::<NamedPat>())
         .filter_map(|n| n.ident())
         .any(|tok| !seen.insert(ident_text(&tok)))
 }
@@ -8802,7 +8795,7 @@ fn constructor_names(file: &ImplFile, resolved: &ResolvedFile) -> HashMap<String
             }
         }
     }
-    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+    for defn in file.syntax().descendants_of::<TypeDefn>() {
         // A union's or record's own name constructs nothing, unless it is a
         // struct (a default constructor), which an attribute may make it.
         if matches!(
@@ -8851,7 +8844,7 @@ struct IntrinsicMemberNames(HashMap<String, Option<HashSet<String>>>);
 impl IntrinsicMemberNames {
     fn of(file: &ImplFile) -> IntrinsicMemberNames {
         let mut by_name: HashMap<String, Option<HashSet<String>>> = HashMap::default();
-        for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        for d in file.syntax().descendants_of::<TypeDefn>() {
             let Some(name) = type_last_name(&d) else {
                 continue;
             };
@@ -10238,13 +10231,13 @@ mod tests {
             // Find the `ConstExpr` in the RHS.
             let cst = file
                 .syntax()
-                .descendants()
-                .find_map(Expr::cast)
+                .descendants_of::<Expr>()
+                .next()
                 .and_then(|e| match e {
                     Expr::Const(c) => Some(c),
                     _ => None,
                 })
-                .or_else(|| file.syntax().descendants().find_map(ConstExpr::cast))
+                .or_else(|| file.syntax().descendants_of::<ConstExpr>().next())
                 .expect("a const literal");
             let ty = super::literal_ty(&cst);
             match ty {
@@ -10422,7 +10415,7 @@ mod tests {
         };
         let name = last_name(defn)?;
         let mut out = crate::hash::HashSet::default();
-        for d in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        for d in file.syntax().descendants_of::<TypeDefn>() {
             if last_name(&d).as_deref() != Some(name.as_str()) {
                 continue;
             }
@@ -10491,7 +10484,7 @@ mod tests {
             let src = seq.concat();
             let file = ImplFile::cast(parse(&src).root).expect("an implementation file");
             let table = super::IntrinsicMemberNames::of(&file);
-            for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+            for defn in file.syntax().descendants_of::<TypeDefn>() {
                 let expected = intrinsic_member_names_by_scan(&defn, &file);
                 match &expected {
                     None => declined += 1,

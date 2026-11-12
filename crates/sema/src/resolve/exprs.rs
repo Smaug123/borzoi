@@ -184,8 +184,8 @@ impl<'a> Resolver<'a> {
                 // `base`, so it is an opaque binder.
                 if let Some(base) = e
                     .syntax()
-                    .descendants()
-                    .find_map(borzoi_cst::syntax::LongIdent::cast)
+                    .descendants_of::<borzoi_cst::syntax::LongIdent>()
+                    .next()
                 {
                     let idents: Vec<SyntaxToken> = base.idents().collect();
                     if let (Some(first), Some(last)) = (idents.first(), idents.last()) {

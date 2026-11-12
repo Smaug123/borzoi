@@ -130,13 +130,12 @@ pub fn resolve_file(
     // which is sound: a spurious match only adds a defer.
     if file
         .syntax()
-        .descendants()
-        .filter_map(ExceptionDefnDecl::cast)
+        .descendants_of::<ExceptionDefnDecl>()
         .any(|e| exception_named_like_core_attribute(&e))
     {
         r.declares_core_attribute_alias = true;
     }
-    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+    for defn in file.syntax().descendants_of::<TypeDefn>() {
         if type_defn_renames_core_attribute(&defn) {
             r.declares_core_attribute_alias = true;
         }
@@ -202,11 +201,7 @@ pub fn resolve_file(
     // exception is never in `type_defs`, so an in-file *type* hit for a name
     // an exception also declares may be resolving past the closer exception
     // FCS would bind (codex on stage 4).
-    for exn in file
-        .syntax()
-        .descendants()
-        .filter_map(ExceptionDefnDecl::cast)
-    {
+    for exn in file.syntax().descendants_of::<ExceptionDefnDecl>() {
         if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
             r.own_type_simple_names.insert(id_text(&name).to_string());
             r.own_exception_simple_names
@@ -250,11 +245,7 @@ pub fn resolve_file(
     // would wrong-target uses inside.
     //
     // Whole-file and order-independent like the type pre-scan above.
-    for nm in file
-        .syntax()
-        .descendants()
-        .filter_map(NestedModuleDecl::cast)
-    {
+    for nm in file.syntax().descendants_of::<NestedModuleDecl>() {
         // A nested header is written `module X`; `long_id` is dotted only on a
         // malformed one, where the last segment is still the module the body
         // hangs off.
@@ -270,11 +261,7 @@ pub fn resolve_file(
     // nested auto-open module is itself a `NestedModuleDecl` this descendants
     // walk visits. Like every pre-scan above, file-global and
     // order-independent by design.
-    for nm in file
-        .syntax()
-        .descendants()
-        .filter_map(NestedModuleDecl::cast)
-    {
+    for nm in file.syntax().descendants_of::<NestedModuleDecl>() {
         if !attrs_auto_open(nm.attributes()) {
             continue;
         }
@@ -324,7 +311,7 @@ pub fn resolve_file(
     // `Thing` in bare expression scope, and a namespace-level union does the same.
     // File-wide and kind-blind, like the binder scan — over-collection only
     // defers, and a case name that never becomes bare-visible costs one deferral.
-    for case in file.syntax().descendants().filter_map(UnionCase::cast) {
+    for case in file.syntax().descendants_of::<UnionCase>() {
         if let Some(name) = case.ident() {
             r.own_binder_simple_names.insert(id_text(&name).to_string());
         }
@@ -342,34 +329,24 @@ pub fn resolve_file(
     // following name, which costs one deferral.
     {
         let mut prev_was_into = false;
-        for tok in file
-            .syntax()
-            .descendants_with_tokens()
-            .filter_map(|t| t.into_token())
-            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
-        {
+        for tok in file.syntax().tokens_where(|k| k == SyntaxKind::IDENT_TOK) {
             if prev_was_into {
                 r.own_binder_simple_names.insert(id_text(&tok).to_string());
             }
             prev_was_into = id_text(&tok) == "into";
         }
     }
-    for join in file.syntax().descendants().filter_map(JoinInExpr::cast) {
+    for join in file.syntax().descendants_of::<JoinInExpr>() {
         let Some(lhs) = join.lhs() else { continue };
         // Every ident in the binding position, not just a bare one: the `join`
         // keyword itself lexes as an ident, so the LHS is the application
         // `join Thing` rather than the binder alone. Over-collecting (the keyword,
         // a `groupJoin` alias) only ever defers, which is what this oracle is for.
-        for tok in lhs
-            .syntax()
-            .descendants_with_tokens()
-            .filter_map(|t| t.into_token())
-            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
-        {
+        for tok in lhs.syntax().tokens_where(|k| k == SyntaxKind::IDENT_TOK) {
             r.own_binder_simple_names.insert(id_text(&tok).to_string());
         }
     }
-    for ext in file.syntax().descendants().filter_map(ExternDecl::cast) {
+    for ext in file.syntax().descendants_of::<ExternDecl>() {
         if let Some(last) = ext.name().and_then(|n| n.idents().last()) {
             r.own_binder_simple_names.insert(id_text(&last).to_string());
         }
@@ -833,9 +810,9 @@ struct SignatureSurface {
 /// readings of them defer.
 fn has_access_token(node: &SyntaxNode) -> bool {
     use borzoi_cst::syntax::SyntaxKind;
-    node.descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .any(|t| t.kind() == SyntaxKind::ACCESS_TOK)
+    node.tokens_where(|k| k == SyntaxKind::ACCESS_TOK)
+        .next()
+        .is_some()
 }
 
 /// The accessibility classification of one signature `val` (FCS-probed
@@ -868,10 +845,7 @@ enum SigValAccess {
 /// `ACCESS_TOK` slot before the ident (`val mutable inline private x : T`).
 fn sig_val_access(vd_node: &SyntaxNode, ident: &SyntaxToken) -> SigValAccess {
     use borzoi_cst::syntax::SyntaxKind;
-    let mut toks = vd_node
-        .descendants_with_tokens()
-        .filter_map(|el| el.into_token())
-        .filter(|t| t.kind() == SyntaxKind::ACCESS_TOK);
+    let mut toks = vd_node.tokens_where(|k| k == SyntaxKind::ACCESS_TOK);
     let Some(tok) = toks.next() else {
         return SigValAccess::Exported;
     };
@@ -1001,9 +975,9 @@ fn may_publish_statics(
     !attrs.is_empty()
         && (abbreviation
             || syntax
-                .descendants_with_tokens()
-                .filter_map(|el| el.into_token())
-                .any(|t| t.kind() == SyntaxKind::STATIC_TOK))
+                .tokens_where(|k| k == SyntaxKind::STATIC_TOK)
+                .next()
+                .is_some())
 }
 
 /// Whether a signature type's cases are **certainly** in bare scope where
@@ -1522,11 +1496,10 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         .collect();
     // Every attribute spelling the signature writes, as written: the trust
     // rule expands each to the names FCS may look it up under.
-    let attribute_spellings: HashSet<String> = contributors::attribute_spellings(
-        sig.syntax().descendants().filter_map(AttributeList::cast),
-    )
-    .into_iter()
-    .collect();
+    let attribute_spellings: HashSet<String> =
+        contributors::attribute_spellings(sig.syntax().descendants_of::<AttributeList>())
+            .into_iter()
+            .collect();
     let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),
@@ -1826,13 +1799,11 @@ fn signature_type_decls(sig: &SigFile) -> (HashMap<String, usize>, model::TypePl
     let mut counts: HashMap<String, usize> = HashMap::default();
     let type_names = sig
         .syntax()
-        .descendants()
-        .filter_map(TypeDefn::cast)
+        .descendants_of::<TypeDefn>()
         .filter_map(|defn| defn.long_id().and_then(|li| li.idents().last()));
     let exception_names = sig
         .syntax()
-        .descendants()
-        .filter_map(ExceptionDefnDecl::cast)
+        .descendants_of::<ExceptionDefnDecl>()
         .filter_map(|exn| exn.union_case().and_then(|c| c.ident()));
     for name in type_names.chain(exception_names) {
         *counts.entry(id_text(&name).to_string()).or_default() += 1;

@@ -1294,9 +1294,7 @@ mod tests {
             let parse = parse(&src);
             let comments: Vec<(usize, String)> = parse
                 .root
-                .descendants_with_tokens()
-                .filter_map(NodeOrToken::into_token)
-                .filter(|t| t.kind() == SyntaxKind::LINE_COMMENT)
+                .tokens_where(|k| k == SyntaxKind::LINE_COMMENT)
                 .filter_map(|t| {
                     doc_line_text(t.text()).map(|l| (usize::from(t.text_range().start()), l.to_string()))
                 })

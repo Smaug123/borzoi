@@ -287,8 +287,8 @@ mod tests {
 
     /// The `Type` node of the first annotation in `source`.
     fn annotation(root: &SyntaxNode) -> SyntaxNode {
-        root.descendants()
-            .find(|n| n.kind() == SyntaxKind::BINDING_RETURN_INFO)
+        root.descendants_where(|k| k == SyntaxKind::BINDING_RETURN_INFO)
+            .next()
             .expect("the source annotates a binding")
             .children()
             .next()
@@ -326,8 +326,7 @@ mod tests {
         let root = ImplFile::cast(parsed.root.clone()).expect("impl file");
         let slots: Vec<_> = root
             .syntax()
-            .descendants()
-            .filter(|n| n.kind() == SyntaxKind::BINDING_RETURN_INFO)
+            .descendants_where(|k| k == SyntaxKind::BINDING_RETURN_INFO)
             .map(|n| n.children().next().expect("a type"))
             .collect();
         assert_eq!(slots.len(), 2, "one annotation per binding");
@@ -375,8 +374,7 @@ mod tests {
         let root = ImplFile::cast(parsed.root.clone()).expect("impl file");
         let slots: Vec<_> = root
             .syntax()
-            .descendants()
-            .filter(|n| n.kind() == SyntaxKind::BINDING_RETURN_INFO)
+            .descendants_where(|k| k == SyntaxKind::BINDING_RETURN_INFO)
             .map(|n| n.children().next().expect("a type"))
             .collect();
         assert_eq!(slots.len(), 2, "one annotation per member");

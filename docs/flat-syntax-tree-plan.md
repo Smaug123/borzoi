@@ -1,8 +1,9 @@
 # Flat per-file syntax table (replacing rowan's red layer)
 
 > **Status (2026-11-11).** Stage 0 (harness), Stage 1 (the table behind
-> rowan's API) and Stage 2 (the parser writes the table) implemented; Stages
-> 3–4 open. Tracks
+> rowan's API), Stage 2 (the parser writes the table) and Stage 4a
+> (kind-filtered scans) implemented; Stage 4's facade-wide borrowed handles
+> measured and deferred (see its gate result); Stage 3 open. Tracks
 > [#541](https://github.com/WoofWare/borzoi/issues/541).
 
 ## Problem
@@ -277,6 +278,45 @@ delete the owned handle when the last category lands.
 **Oracle**: per category, the generated accessors pass the accessor coverage
 check and every corpus manifest unchanged; astgen's `up_to_date` test covers
 the generated signatures.
+
+**Gate result (2026-11-11).** Instead of converting walks by hand, the
+measurement took the upper bound directly: a throwaway build whose handle
+holds a leaked `&'static Tree`, so a clone is a copy and a drop does nothing,
+which is everything borrowed handles could save. A profile pointed at the
+whole-file scans the gate names, and they share a shape:
+`descendants().filter_map(T::cast)` (or a token scan filtered by kind) clones
+a handle for every element of the file to keep a handful. So a third variant
+adds kind-filtered scans to the owned handles (`descendants_where`,
+`descendants_of`, `tokens_where`, `first_token_where`, `last_token_where`),
+which test the raw entry's kind before building a handle, and converts the
+call sites that filter only by kind. On the build box, four alternating
+rounds, min of 3 each, under heavy outside load (medians):
+
+| variant | `resolve_file` | `infer_file` |
+|---|---|---|
+| Stage 2 (`Arc` handles) | 3185 ms | 1171 ms |
+| + kind-filtered scans | 3043 ms (−4.5%) | 1056 ms (−10%) |
+| leaked handles (borrowed upper bound) | 2858 ms (−10%) | 1003 ms (−14%) |
+
+The scans take about half of resolve's possible gain and 70% of infer's,
+without touching a typed accessor, and ship as **Stage 4a**. What borrowed
+handles would add on top is about 5–6% of each phase, for a signature change
+across every accessor and consumer, and the separate walk-count work will
+shrink it further, since it removes the walks whose handle traffic this is.
+So the facade-wide migration is not taken now. Re-measure it (the leaked-handle
+variant is a four-line change to `syntax/flat.rs`'s `Shared`) after the walk
+work lands.
+
+### Stage 4a: kind-filtered scans
+
+**Dependencies**: Stage 2. **Implements**: most of D2's end-state gain,
+without D2's signature change.
+
+**Oracle**: `tests/all/flat_tree_scans.rs` holds each scan to the composition
+of general walks it stands for, on every node of every two-piece source over
+the panic sweep's wide alphabet, as an implementation and as a signature
+file, under four kind filters and for four typed casts; every corpus manifest
+unchanged.
 
 ## Non-goals
 

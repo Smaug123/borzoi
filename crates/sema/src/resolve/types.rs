@@ -1180,11 +1180,7 @@ impl<'a> Resolver<'a> {
         // opaque binder.
         for m in members {
             if let MemberDefn::Inherit(i) = m {
-                let mut tokens = i
-                    .syntax()
-                    .descendants_with_tokens()
-                    .filter_map(|el| el.into_token())
-                    .filter(|t| !t.kind().is_trivia());
+                let mut tokens = i.syntax().tokens_where(|k| !k.is_trivia());
                 if let Some(first) = tokens.next() {
                     let end = tokens.last().unwrap_or_else(|| first.clone());
                     self.opaque_binders.insert(TextRange::new(
@@ -2310,8 +2306,7 @@ impl<'a> Resolver<'a> {
     /// resolve at the *nested* scope, when the walk reaches them).
     pub(super) fn resolve_attributes_under(&mut self, node: &borzoi_cst::syntax::SyntaxNode) {
         let lists: Vec<borzoi_cst::syntax::AttributeList> = node
-            .descendants()
-            .filter_map(borzoi_cst::syntax::AttributeList::cast)
+            .descendants_of::<borzoi_cst::syntax::AttributeList>()
             .collect();
         self.resolve_attribute_lists(lists.into_iter());
     }

@@ -176,8 +176,7 @@ impl Declarations {
             );
         }
         let members = defn
-            .descendants()
-            .filter(|n| is_member_node(n.kind()))
+            .descendants_where(is_member_node)
             .filter(|n| owning_type(n).as_ref() == Some(defn));
         for member in members {
             // A constructor: `new` heads its signature, and leaves a
