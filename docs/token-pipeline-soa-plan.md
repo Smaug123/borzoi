@@ -2,8 +2,9 @@
 
 > **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
 > table), Stage 2 (the frozen filter reference), Stage 3 (the filtered
-> token table), Stage 4 (the filter reads the raw table by index) and
-> Stage 5 (the newline table) implemented.
+> token table), Stage 4 (the filter reads the raw table by index),
+> Stage 5 (the newline table) and Stage 6 (the lexer writes the raw table)
+> implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
 > parser's tree builder.
@@ -457,6 +458,39 @@ entry per token. The iterator drivers stay for the LSP and as the reference.
 
 **Oracle**: the directly written table equals the one Stage 1 builds from the
 iterator, over the generated inputs and, in lockstep, every parse.
+
+**Result.** The preprocessor's state machine (`DriverCore`) no longer owns a
+queue: each `DriverCore::step` writes what it produces (no item, one, or
+several) into a `Sink`. The iterators (`Queued`, behind both `Driver` and
+`FullTriviaDriver`) drain a `VecDeque` sink, and `tokens::lex_full_trivia`
+hands the state machine a `TableWriter`, which turns each item into a kind
+and a start as it is produced. Monomorphised over the writer, a token's
+`TriviaToken` and `Result` wrappers are built and taken apart in place
+rather than queued. `apply_directive` returns the error it reports instead
+of pushing it onto a queue, so the test-only reference walkers need no sink.
+logos still produces a `Token`, whose kind the writer takes.
+
+Under `token-reference`, `lex_full_trivia` also runs the iterator and asserts
+that the table rebuilds its stream exactly, with the same preprocessor errors
+and `#elif` spans, so every parse checks the new pass against the iterator.
+`token_table_reference` makes the same comparison over the generated inputs.
+Two planted bugs in the direct path fail it: dropping the `#elif` spans, and
+dropping the unclosed-`#if` errors in the writer. Both also fail
+`filter_reference` through the parse's lockstep assertion. A bug in the
+shared state machine moves both sides alike, so this oracle cannot see it.
+The driver's own tests still can: dropping the `DoubleElse` error fails
+`double_else_is_reported`.
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine:
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 83.6 | 78.2 | 4.06 | 4.05 |
+| lex-filter | 189.8 | 189.8 | 5.76 | 5.76 |
+| parse | 529.3 | 523.7 | 52.45 | 52.44 |
+
+Lexing costs 6% fewer instructions. Most of what remains is logos and the
+interpolated-string driver around it, which this stage leaves alone.
 
 ### Stage 7: measure, then fold the diagnostic scans
 
