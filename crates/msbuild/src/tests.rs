@@ -396,6 +396,34 @@ fn compile_update_compile_order_declines_an_unnormalised_spelling() {
     assert!(p.items_uncertain, "{:?}", p.diagnostics);
 }
 
+/// Replaying MSBuild's batching over an `Update` spec costs a lookup per
+/// fragment, not a comparison with every earlier one: a spec of many distinct
+/// targets, against a single item, finishes at once.
+#[test]
+fn compile_update_compile_order_scales_with_a_long_update_spec() {
+    const N: usize = 20_000;
+    let targets: Vec<String> = (0..N).map(|i| format!("T{i}.fs")).collect();
+    let src = format!(
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="T7.fs" />
+    <Compile Update="{}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#,
+        targets.join(";")
+    );
+    let start = std::time::Instant::now();
+    let p = parse(&src);
+    let elapsed = start.elapsed();
+    assert_eq!(file_names(&p.items), ["T7.fs", "A.fs"]);
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "a {N}-target Update took {elapsed:?}"
+    );
+}
+
 /// MSBuild's lazy evaluator abandons batching an `Update` spec at a fragment
 /// that repeats an earlier one's path or holds an escape, and strands the
 /// fragments before it, which then reach later `Include`s (an upstream bug;

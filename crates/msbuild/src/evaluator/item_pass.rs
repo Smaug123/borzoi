@@ -1749,9 +1749,12 @@ fn resolve_compile_update_targets(
 /// conservative.
 #[derive(Default)]
 struct UpdateBatch {
-    /// The fragments batched so far: each key, and whether its written text
-    /// differs from it (so that abandoning would strand it).
-    keys: Vec<(MatchKey, bool)>,
+    /// The keys batched so far, by [`match_shape`]: a key can collide only
+    /// with keys of its own shape, so each fragment costs a lookup.
+    keys: HashMap<Vec<u16>, Vec<MatchKey>>,
+    /// Whether a batched fragment's written text differs from its key, so
+    /// that abandoning the spec would strand it.
+    any_strandable: bool,
     abandoned: bool,
 }
 
@@ -1766,19 +1769,22 @@ impl UpdateBatch {
             return false;
         }
         let key = MatchKey::of_target(target);
+        let shape = match_shape(&key.key);
         let collides = entry.contains('%')
             || self
                 .keys
-                .iter()
-                .any(|(earlier, _)| earlier.matches(&key) != UpdateMatch::NoMatch);
+                .get(&shape)
+                .into_iter()
+                .flatten()
+                .any(|earlier| earlier.matches(&key) != UpdateMatch::NoMatch);
         if collides {
             self.abandoned = true;
-            return self.keys.iter().any(|&(_, strandable)| strandable);
+            return self.any_strandable;
         }
         // A spelling MSBuild does not normalise is its own key, and is
         // removed by it.
-        let strandable = !target.unnormalised && entry != key.key;
-        self.keys.push((key, strandable));
+        self.any_strandable |= !target.unnormalised && entry != key.key;
+        self.keys.entry(shape).or_default().push(key);
         false
     }
 }
