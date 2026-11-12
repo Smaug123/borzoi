@@ -169,13 +169,20 @@ id is 4 bytes. Today no consumer compares results across projects:
 
 ### D3. Typed ids: `Name` and `PathId`
 
-- **`Name`**: one identifier in F#'s *logical* domain, `idText`-normalised,
-  with operators compiled (`` ``+`` `` and `+` both become `op_Addition`).
-  It has two constructors. `names.ident(&SyntaxToken)` normalises through
-  `id_text`, and because it takes the token, nothing can normalise a name
-  twice (`id_text` is not idempotent). `names.logical(&str)` takes metadata
-  names, which are already logical. There is no `From<&str>`. Display names
-  are rendered from a `Name`, never stored as one.
+- **`Name`**: one identifier in F#'s *logical* domain, the text `id_text`
+  produces. Backticks are stripped, and only a *bare* operator is compiled,
+  so `+` becomes `op_Addition` while `` ``+`` `` is the literal identifier
+  `+`, a different name. FCS holds that distinction
+  (`a_quoted_definition_is_a_different_name`,
+  `a_quoted_operator_name_is_never_its_compiled_name`). A prefix
+  application's operator takes its prefix name, so a token's position in the
+  tree is part of its name. `Name` has two constructors.
+  `names.ident(&SyntaxToken)` goes through `id_text` unchanged; because it
+  takes the token, nothing can normalise a name twice (`id_text` is not
+  idempotent: `` ``+`` ``'s name `+` would itself become `op_Addition`).
+  `names.logical(&str)` takes text that is already a name: metadata names, and
+  `Def::key`'s output. There is no `From<&str>`. Display names are rendered
+  from a `Name`, never stored as one.
 - **`PathId`**: a node in a trie of `Name`s, `(parent: PathId, last: Name)`,
   whose root is the empty path. `names.child(parent, name) -> Option<PathId>`
   never inserts; `names.intern_child` does. Every map keyed by `PathId` got its
