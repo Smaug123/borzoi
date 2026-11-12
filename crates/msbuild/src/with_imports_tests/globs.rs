@@ -428,7 +428,17 @@ fn unpinned_exclude_value_marks_the_reference_list_uncertain() {
     );
     let out = vec![dir.join("C/C.fsproj")];
     let (result, requests) = parse_file_capturing_glob(&project_path, out);
-    assert_eq!(requests.len(), 1, "the Exclude routes through the resolver");
+    // The project never writes `TargetFramework`, so the walk that trusted the
+    // read is discarded for one under the carve-out (see `walk_with_imports`),
+    // and each walk asks the resolver once — the same question.
+    assert!(
+        !requests.is_empty(),
+        "the Exclude routes through the resolver"
+    );
+    assert!(
+        requests.iter().all(|r| *r == requests[0]),
+        "every walk asks the same question: {requests:?}"
+    );
     assert!(
         result.project_references_uncertain,
         "an Exclude expanded from an unpinned property may go the other \

@@ -868,3 +868,190 @@ fn case_variant_sweep_soak() {
     let census = case_variant_sweep(&mut oracle, &mut rng, cases);
     eprintln!("property-body case-variant soak: {census:?}");
 }
+
+/// The four TFM intrinsics (`[MSBuild]::GetTarget{Framework,Platform}{Identifier,Version}`)
+/// over every TFM a compositional alphabet spells: a base (known monikers in
+/// assorted casings, a bare `net` with a .NET Framework compact version, an
+/// unknown word, whitespace, nothing), a version (dotted, compact, single
+/// component, nothing) and a platform suffix (none, real ones, a versioned one,
+/// a bare `-`). Each is graded certain-implies-exact against MSBuild, as a
+/// quoted literal and as a defined property's value, and with an explicit
+/// `minParts` for the two version functions.
+///
+/// The empty TFM is an explicit row because the Web SDK's `Sdk.props` reads
+/// `GetTargetPlatformIdentifier($(TargetFramework))` before any project body has
+/// defined `TargetFramework`; a decline there leaves every ASP.NET project's
+/// SDK chain undecided.
+#[test]
+fn tfm_intrinsic_sweep() {
+    const BASES: &[&str] = &[
+        "",
+        "net",
+        "NET",
+        "netcoreapp",
+        "netstandard",
+        "NetStandard",
+        "garbage",
+        " ",
+    ];
+    const VERSIONS: &[&str] = &["", "10.0", "8.0", "2.0", "472", "3.1", "5"];
+    const PLATFORMS: &[&str] = &[
+        "",
+        "-windows",
+        "-Windows",
+        "-browser",
+        "-windows10.0.19041.0",
+        "-windows7",
+        "-android",
+        "-",
+        "--windows",
+        "-windows-x",
+        "-windows.",
+        "-1",
+        "-win_dows",
+    ];
+    const FUNCTIONS: &[&str] = &[
+        "GetTargetPlatformIdentifier",
+        "GetTargetPlatformVersion",
+        "GetTargetFrameworkIdentifier",
+        "GetTargetFrameworkVersion",
+    ];
+    let mut oracle = Oracle::spawn();
+    let mut exact = 0usize;
+    let mut partial = 0usize;
+    let mut violations = Vec::new();
+    for base in BASES {
+        for version in VERSIONS {
+            for platform in PLATFORMS {
+                let tfm = format!("{base}{version}{platform}");
+                for function in FUNCTIONS {
+                    let mut calls = vec![
+                        (format!("$([MSBuild]::{function}('{tfm}'))"), props(&[])),
+                        (
+                            format!("$([MSBuild]::{function}($(TargetFramework)))"),
+                            props(&[("TargetFramework", tfm.as_str())]),
+                        ),
+                    ];
+                    if function.ends_with("Version") {
+                        calls.push((format!("$([MSBuild]::{function}('{tfm}', 3))"), props(&[])));
+                    }
+                    for (value, props) in calls {
+                        let Some(committed) = ours(&value, &props) else {
+                            partial += 1;
+                            continue;
+                        };
+                        exact += 1;
+                        let theirs = oracle.expand(&format!("|{value}|"), &props);
+                        let theirs = theirs.as_deref().map(|t| {
+                            t.strip_prefix('|')
+                                .and_then(|t| t.strip_suffix('|'))
+                                .expect("sentinels survive MSBuild expansion verbatim")
+                        });
+                        if theirs != Some(committed.as_str()) {
+                            violations.push(format!(
+                                "{value} under {props:?}: we commit {committed:?}, MSBuild gives {theirs:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("TFM intrinsic sweep: {exact} exact, {partial} partial");
+    assert!(
+        violations.is_empty(),
+        "certain-implies-exact violated in {} cases:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+    for (value, props) in [
+        ("$([MSBuild]::GetTargetPlatformIdentifier(''))", props(&[])),
+        (
+            "$([MSBuild]::GetTargetPlatformIdentifier($(TargetFramework)))",
+            props(&[("TargetFramework", "")]),
+        ),
+    ] {
+        assert_eq!(
+            check_expand_certain_implies_exact(&mut oracle, value, &props),
+            ExpandVerdict::Exact,
+            "{value} under {props:?} must commit: the Web SDK's `Sdk.props` gates on it"
+        );
+    }
+    assert!(exact >= 200, "too few committed cases: {exact}");
+}
+
+/// `[System.IO.Path]::GetFileNameWithoutExtension` over every string of up to
+/// four characters from an alphabet of name characters, dots, both separators,
+/// a space and an escape, as a quoted literal and as a defined property's
+/// value. Graded certain-implies-exact against MSBuild.
+///
+/// The Publish SDK (imported by the Web and Worker SDKs) derives
+/// `PublishProfileName` this way and gates the `.pubxml` import on it, so a
+/// decline leaves every ASP.NET project's import set undecided.
+#[test]
+fn get_file_name_without_extension_sweep() {
+    const ALPHABET: &[&str] = &["a", "B", "0", ".", "-", "_", "/", "\\", " ", "%2e"];
+    let mut strings = vec![String::new()];
+    let mut frontier = vec![String::new()];
+    for _ in 0..4 {
+        frontier = frontier
+            .iter()
+            .flat_map(|prefix| ALPHABET.iter().map(move |c| format!("{prefix}{c}")))
+            .collect();
+        strings.extend(frontier.iter().cloned());
+    }
+    let mut oracle = Oracle::spawn();
+    let mut exact = 0usize;
+    let mut violations = Vec::new();
+    for s in &strings {
+        // A quote inside the literal would end it early; the property form
+        // carries every string.
+        let mut calls = vec![(
+            "$([System.IO.Path]::GetFileNameWithoutExtension($(P)))".to_string(),
+            props(&[("P", s.as_str())]),
+        )];
+        if !s.contains('\'') {
+            calls.push((
+                format!("$([System.IO.Path]::GetFileNameWithoutExtension('{s}'))"),
+                props(&[]),
+            ));
+        }
+        for (value, props) in calls {
+            let Some(committed) = ours(&value, &props) else {
+                continue;
+            };
+            exact += 1;
+            let theirs = oracle.expand(&format!("|{value}|"), &props);
+            let theirs = theirs.as_deref().map(|t| {
+                t.strip_prefix('|')
+                    .and_then(|t| t.strip_suffix('|'))
+                    .expect("sentinels survive MSBuild expansion verbatim")
+            });
+            if theirs != Some(committed.as_str()) {
+                violations.push(format!(
+                    "{value} under {props:?}: we commit {committed:?}, MSBuild gives {theirs:?}"
+                ));
+            }
+        }
+    }
+    eprintln!(
+        "GetFileNameWithoutExtension sweep: {exact} committed of {} strings",
+        strings.len()
+    );
+    assert!(
+        violations.is_empty(),
+        "certain-implies-exact violated in {} cases:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+    // The Publish SDK's own shape must commit.
+    assert_eq!(
+        ours(
+            "$([System.IO.Path]::GetFileNameWithoutExtension($(PublishProfile)))",
+            &props(&[("PublishProfile", "Default")]),
+        )
+        .as_deref(),
+        Some("Default")
+    );
+    assert!(exact >= 1000, "too few committed cases: {exact}");
+}
