@@ -509,7 +509,7 @@ nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --i
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_diff_feature_gates:: -- --ignored  # ~2 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_panic_sweep::fresh_seed -- --ignored  # ~10 s
-nix develop -c cargo test -p borzoi-cst  --test all layout_perturbation_sweep:: -- --ignored  # ~10 min
+nix develop -c cargo test -p borzoi-cst  --profile gate --test all layout_perturbation_sweep:: -- --ignored  # ~1.5 min
 nix develop -c cargo test -p borzoi-cst  --test all recovery_sweep::       -- --ignored  # ~3 min
 nix develop -c cargo test -p borzoi-cst  --test all flat_tree_reference::corpus -- --ignored  # ~2.5 min
 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
