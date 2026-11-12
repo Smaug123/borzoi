@@ -2394,11 +2394,33 @@ impl<'r> State<'r> {
         // it is out of sight. Content the walk could not see (an import it
         // could not follow, or one whose gate it could not decide) may have
         // written any of them before this SDK resolved, and a hidden write
-        // leaves no trust record. So under opacity none is seeded, and reads
-        // decline as any undefined read behind opacity does. The reserved
-        // seeds above stand regardless: MSBuild refuses a write to them
-        // (MSB4004), hidden or not.
+        // leaves no trust record. So under opacity none is seeded. The slot is
+        // still not *empty* in the real build — it holds the hidden value, or
+        // the toolset's own when the hidden content wrote nothing — so each
+        // withheld name is recorded as refused: we hold no value, the real
+        // build holds one we cannot name. Without that mark the SDK's
+        // `Condition="'$(Name)' == ''"` default idiom would read the absence
+        // as a fact (`self_default_absence_is_a_fact` deliberately believes
+        // undefined reads behind opacity) and commit its fallback. The
+        // reserved seeds above stand regardless: MSBuild refuses a write to
+        // them (MSB4004), hidden or not.
         if self.walk_opaque.is_some() {
+            for name in [
+                "MSBuildExtensionsPath",
+                "MSBuildExtensionsPath32",
+                "MSBuildSDKsPath",
+            ] {
+                if self.lookup.get(name).is_none() {
+                    self.apply_property_provenance(
+                        name,
+                        PropertyProvenance {
+                            taint: TaintOutcome::Keep,
+                            unpinned: UnpinnedOutcome::Keep,
+                            refused: RefusedOutcome::Set,
+                        },
+                    );
+                }
+            }
             return;
         }
         let overridable = [

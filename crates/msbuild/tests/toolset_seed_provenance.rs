@@ -140,6 +140,12 @@ fn a_reserved_toolset_seed_discards_a_refused_writes_uncertainty() {
 /// write and keeps it, so an overridable seed there is a wrong commit unless
 /// it is withheld.
 ///
+/// Withholding is not the end of it: the name then reads as undefined, and the
+/// SDK's `Condition="'$(Name)' == ''"` default idiom must not take that absence
+/// as a fact either, since the real build holds a value (the hidden one, or the
+/// toolset's own when the hidden import writes nothing). So the grid crosses
+/// what the hidden import holds with how the body reads the name.
+///
 /// Graded against MSBuild, and the fixture's own claim (that the real build
 /// reads the hidden value) is pinned too, so a gate MSBuild happened to
 /// decide false cannot make the case pass vacuously.
@@ -151,15 +157,27 @@ fn a_reserved_toolset_seed_discards_a_refused_writes_uncertainty() {
 fn an_overridable_toolset_seed_is_withheld_behind_an_undecided_import() {
     let mut oracle = common::Oracle::spawn();
     for name in ["MSBuildSDKsPath", "MSBuildExtensionsPath32"] {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("hidden.props"),
-            format!("<Project><PropertyGroup><{name}>/SPOOFED</{name}></PropertyGroup></Project>"),
-        )
-        .expect("write hidden import");
-        let project_path = tmp.path().join("Demo.fsproj");
-        let body = format!(
-            r#"<Project>
+        for hidden_writes in [true, false] {
+            for default_fill in [false, true] {
+                let tmp = TempDir::new().unwrap();
+                let hidden = if hidden_writes {
+                    format!("<PropertyGroup><{name}>/SPOOFED</{name}></PropertyGroup>")
+                } else {
+                    String::new()
+                };
+                std::fs::write(
+                    tmp.path().join("hidden.props"),
+                    format!("<Project>{hidden}</Project>"),
+                )
+                .expect("write hidden import");
+                let fill = if default_fill {
+                    format!("<{name} Condition=\"'$({name})' == ''\">/FALLBACK</{name}>")
+                } else {
+                    String::new()
+                };
+                let project_path = tmp.path().join("Demo.fsproj");
+                let body = format!(
+                    r#"<Project>
   <PropertyGroup>
     <X>abc</X>
     <TargetFramework>net10.0</TargetFramework>
@@ -167,27 +185,40 @@ fn an_overridable_toolset_seed_is_withheld_behind_an_undecided_import() {
   <Import Project="hidden.props" Condition="'$(X.Substring(0,1))' == 'a'" />
   <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.props" />
   <PropertyGroup>
+    {fill}
     <Probe>$({name})</Probe>
   </PropertyGroup>
   <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.targets" />
 </Project>"#
-        );
-        std::fs::write(&project_path, &body).expect("write project");
-        let parsed = parse_at_with_real_sdk(&body, &project_path);
-        let theirs = oracle
-            .project(&body, &["Probe".to_string()], Some(&project_path), &[])
-            .unwrap_or_else(|| panic!("{name}: MSBuild rejects the fixture"));
-        assert_eq!(
-            theirs.get("Probe").map(String::as_str),
-            Some("/SPOOFED"),
-            "{name}: the fixture rests on the real build performing the hidden write",
-        );
-        let ours = parsed.properties.get("Probe");
-        assert!(
-            parsed.property_provenance_untrusted("Probe") || ours == theirs.get("Probe"),
-            "certain-implies-exact violated for {name}: we committed {ours:?}, \
-             MSBuild reads {:?}",
-            theirs.get("Probe"),
-        );
+                );
+                std::fs::write(&project_path, &body).expect("write project");
+                let case =
+                    format!("{name}, hidden write {hidden_writes}, default fill {default_fill}");
+                let parsed = parse_at_with_real_sdk(&body, &project_path);
+                let theirs = oracle
+                    .project(&body, &["Probe".to_string()], Some(&project_path), &[])
+                    .unwrap_or_else(|| panic!("{case}: MSBuild rejects the fixture"));
+                let theirs = theirs.get("Probe").map(String::as_str);
+                if hidden_writes {
+                    assert_eq!(
+                        theirs,
+                        Some("/SPOOFED"),
+                        "{case}: the fixture rests on the real build performing the hidden write",
+                    );
+                } else {
+                    assert_ne!(
+                        theirs,
+                        Some("/FALLBACK"),
+                        "{case}: the fixture rests on the real build holding the toolset's value",
+                    );
+                }
+                let ours = parsed.properties.get("Probe").map(String::as_str);
+                assert!(
+                    parsed.property_provenance_untrusted("Probe") || ours == theirs,
+                    "certain-implies-exact violated for {case}: we committed {ours:?}, \
+                     MSBuild reads {theirs:?}",
+                );
+            }
+        }
     }
 }
