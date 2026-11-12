@@ -66,7 +66,7 @@
 
 use std::collections::HashMap;
 
-use borzoi_cst::syntax::TextRange;
+use rowan::TextRange;
 
 /// What a generated name occurrence refers to. Recorded so tests can assert
 /// that a tape exercised a construct rather than silently skipping it.

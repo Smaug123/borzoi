@@ -152,7 +152,6 @@ use crate::common::{
 };
 use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::test_support::binder_completeness::{
     commits_behind_unmodelled_binders, unmodelled_binders,
@@ -161,6 +160,7 @@ use borzoi_sema::test_support::{
     AssemblyDecl, assembly_answer_agrees, assembly_resolution_decl, canonical_assembly,
 };
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 use std::collections::{BTreeSet, HashMap};
 
 /// The sample the checked-in manifest describes: every `DEFAULT_STRIDE`th file.

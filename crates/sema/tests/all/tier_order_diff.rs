@@ -84,11 +84,11 @@ use crate::common::{
 };
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DeclineSite, ProjectItems, Resolution, SyntaxRecovery, resolve_file,
 };
+use rowan::TextRange;
 
 /// Which assembly the probe references first. FCS imports references in this
 /// order and the name environment is last-write-wins, so it is a *dimension*,

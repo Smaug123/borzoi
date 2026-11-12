@@ -25,13 +25,13 @@
 use crate::uri::UriExt as _;
 use std::collections::{HashMap, HashSet};
 
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AppExpr, AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, ResolvedProject, SyntaxRecovery,
     resolve_file,
 };
 use lsp_types::{Location, ReferenceParams, Uri};
+use rowan::TextRange;
 
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::handlers::{indexed_range_to_lsp, preferred_uri, smallest_resolution_with_range};

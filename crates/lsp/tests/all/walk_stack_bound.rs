@@ -254,8 +254,8 @@ fn exercise_server(session: Session, stack_bytes: usize) {
     let (server, client) = Connection::memory();
     let (uri_tx, uri_rx) = mpsc::channel();
     let src = session.src.clone();
-    // The state is built on the server's thread, whose stack is the one
-    // under test.
+    // The state is built on the server's thread: it holds rowan trees, which
+    // are not `Send`.
     let server = std::thread::Builder::new()
         .name("server".into())
         .stack_size(stack_bytes)

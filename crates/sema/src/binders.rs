@@ -3,8 +3,8 @@
 
 use crate::def::{Def, DefKind};
 use crate::hash::HashSet;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, LongIdentPat, Pat, SyntaxNode, SyntaxToken};
+use rowan::TextRange;
 
 /// The role a pattern plays where it appears, which fixes the [`DefKind`] of
 /// the names it introduces.

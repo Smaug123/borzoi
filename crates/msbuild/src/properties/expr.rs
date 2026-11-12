@@ -877,6 +877,13 @@ fn eval_static(
                 .map(|p| str_result(&p))
                 .ok_or(Unsupported)
         }
+        "System.IO.Path" if member_name.eq_ignore_ascii_case("GetFileNameWithoutExtension") => {
+            let [arg] = args else { return Err(Unsupported) };
+            let s = eval_string_arg(arg, props, issues, depth)?;
+            file_name_without_extension(&s)
+                .map(str_result)
+                .ok_or(Unsupported)
+        }
         "System.IO.Path" if member_name.eq_ignore_ascii_case("IsPathRooted") => {
             let [arg] = args else { return Err(Unsupported) };
             // `eval_string_arg`'s declines (nested functions, indexer-to-`Char`,
@@ -1210,6 +1217,25 @@ fn version_lt(a: &[i64], b: &[i64]) -> bool {
         }
     }
     false
+}
+
+/// `[System.IO.Path]::GetFileNameWithoutExtension(s)` for a separator-free
+/// name: everything before the last `.` (`a.b.c` → `a.b`, `.a` → `""`), or
+/// the whole name when it has none. Declines anything outside non-empty ASCII
+/// alphanumerics, `.`, `-` and `_` — a separator brings in .NET's per-host
+/// path splitting and MSBuild's backslash fixup, whitespace and escapes their
+/// own trimming and decoding rules, none of which this needs to model to serve
+/// the Publish SDK's `$(PublishProfile)`. Graded by
+/// `get_file_name_without_extension_sweep`.
+fn file_name_without_extension(name: &str) -> Option<&str> {
+    let in_domain = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    if !in_domain {
+        return None;
+    }
+    Some(name.rfind('.').map_or(name, |dot| &name[..dot]))
 }
 
 /// `[System.IO.Path]::IsPathRooted(s)`: pinned against dotnet msbuild
@@ -1950,6 +1976,9 @@ mod tests {
                 "",
             ),
             ("[MSBuild]::GetTargetPlatformIdentifier('net472')", ""),
+            // The empty TFM: what the Web SDK's `Sdk.props` reads before the
+            // project body defines `TargetFramework`.
+            ("[MSBuild]::GetTargetPlatformIdentifier('')", ""),
             ("[MSBuild]::GetTargetPlatformVersion('net10.0')", "0.0"),
             ("[MSBuild]::GetTargetPlatformVersion('net10.0', 2)", "0.0"),
             ("[MSBuild]::GetTargetPlatformVersion('net10.0', 1)", "0"),

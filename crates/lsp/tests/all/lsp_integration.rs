@@ -102,8 +102,9 @@ impl Server {
     /// and the hierarchical-documentSymbol client capability. The server
     /// thread runs until the test sends `shutdown` + `exit`.
     ///
-    /// The test hands the docs across by value and builds state *inside*
-    /// the spawned closure, on the server's thread.
+    /// `State` isn't `Send` (rowan's red layer is per-thread), so the test
+    /// hands the docs across by value and builds state *inside* the
+    /// spawned closure.
     fn start(initial_docs: Vec<(Uri, String)>) -> Self {
         Self::start_with_caps(initial_docs, hierarchical_caps())
     }

@@ -673,8 +673,30 @@ fn parse_target_framework_version_part_count(arg: &str) -> Option<usize> {
     }
 }
 
+/// The framework part of a TFM — everything before the platform's `-` —
+/// lowercased, or `None` where the platform part is outside the shape whose
+/// framework-function answers are oracle-pinned (`tfm_intrinsic_sweep`): an
+/// ASCII letter then ASCII alphanumerics and dots (`windows`,
+/// `windows10.0.19041.0`). NuGet gives up on the whole TFM for some other
+/// spellings — an empty platform (`net10.0-`) is `Unsupported`, version `0.0`
+/// — so stripping the suffix unexamined would commit the wrong framework.
+fn tfm_framework_part(tfm: &str) -> Option<String> {
+    let (framework, platform) = match tfm.split_once('-') {
+        Some((framework, platform)) => (framework, Some(platform)),
+        None => (tfm, None),
+    };
+    if let Some(platform) = platform {
+        let mut bytes = platform.bytes();
+        let starts_with_letter = bytes.next().is_some_and(|b| b.is_ascii_alphabetic());
+        if !starts_with_letter || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'.') {
+            return None;
+        }
+    }
+    Some(framework.to_ascii_lowercase())
+}
+
 fn infer_target_framework_identifier(tfm: &str) -> Option<&'static str> {
-    let short = tfm.split('-').next().unwrap_or("").to_ascii_lowercase();
+    let short = tfm_framework_part(tfm)?;
     if let Some(suffix) = parse_prefixed_version(&short, "netstandard") {
         return parse_prefixed_framework_version(suffix).map(|_| ".NETStandard");
     }
@@ -698,7 +720,7 @@ fn infer_target_framework_identifier(tfm: &str) -> Option<&'static str> {
 }
 
 fn infer_target_framework_version(tfm: &str, min_parts: usize) -> Option<String> {
-    let short = tfm.split('-').next().unwrap_or("").to_ascii_lowercase();
+    let short = tfm_framework_part(tfm)?;
     let version = if let Some(suffix) = parse_prefixed_version(&short, "netstandard") {
         parse_prefixed_framework_version(suffix)?
     } else if let Some(suffix) = parse_prefixed_version(&short, "netcoreapp") {
@@ -773,7 +795,14 @@ pub(crate) fn parse_msbuild_version(value: &str) -> Result<[u32; 4], ()> {
 /// yet pinned, and the plain SDK chain (net10.0 / net8.0 / netstandard2.x)
 /// never targets a platform. This is exact-or-decline: we never commit a wrong
 /// moniker.
+///
+/// The empty TFM is the one unrecognised input that commits (`""`, graded by
+/// `tfm_intrinsic_sweep`): the Web SDK's `Sdk.props` asks it of
+/// `$(TargetFramework)` before any project body has defined the property.
 pub(crate) fn infer_target_platform_identifier(tfm: &str) -> Option<String> {
+    if tfm.is_empty() {
+        return Some(String::new());
+    }
     if tfm.contains('-') {
         return None;
     }

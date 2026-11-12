@@ -7,12 +7,12 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxNode};
-use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_sema::{
     AssemblyEnv, DefKind, InferredFile, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, Ty,
     resolve_file,
 };
 use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Uri};
+use rowan::{TextRange, TextSize};
 
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
@@ -28,7 +28,7 @@ pub mod semantic_tokens;
 pub mod workspace_diagnostic;
 pub mod workspace_symbol;
 
-/// A byte range as an LSP [`Range`] over `text`.
+/// A rowan byte range as an LSP [`Range`] over `text`.
 pub fn range_to_lsp(text: &str, range: TextRange) -> Range {
     indexed_range_to_lsp(&LineIndex::new(text), range)
 }

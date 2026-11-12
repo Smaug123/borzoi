@@ -825,7 +825,7 @@ impl<'src> Parser<'src> {
     /// Parse a `tupleExpr`. If the parsed sub-expression is followed
     /// by `,`, the sub-expression plus following comma-separated
     /// sub-expressions are wrapped in a [`SyntaxKind::TUPLE_EXPR`] using
-    /// a builder checkpoint to splice the already-emitted first element
+    /// rowan's `Checkpoint` to splice the already-emitted first element
     /// underneath the tuple node.
     ///
     /// The comma binds looser than the `..` range operator and every infix

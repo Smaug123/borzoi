@@ -17,9 +17,9 @@ use super::{
 };
 use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ItemId, Resolution, resolve_project};
+use rowan::TextRange;
 
 /// One cell: a probe reached through a body of `open`s (and, for the contest
 /// cells, interleaved `let` bindings), in expression or pattern position.

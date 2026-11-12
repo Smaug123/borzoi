@@ -28,9 +28,9 @@ use crate::common::{
     parse_census_jsonl, temp_fs_file,
 };
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// One write into the type-name environment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

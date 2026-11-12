@@ -871,7 +871,7 @@ impl UnionCase {
     /// `op_Nil` for `([])` and `op_ColonColon` for `( :: )` (FSharp.Core's `list`
     /// constructors, FCS's `CompileOpName`). `None` for an ordinary ident-named
     /// case (use [`Self::ident`]).
-    pub fn operator_name(&self) -> Option<(&'static str, crate::syntax::TextRange)> {
+    pub fn operator_name(&self) -> Option<(&'static str, rowan::TextRange)> {
         accessor!("UnionCase::operator_name");
         operator_case_name(&self.0)
     }
@@ -884,7 +884,7 @@ impl UnionCase {
 /// The single production source of these derived names (FCS records `op_Nil` /
 /// `op_ColonColon` as the `SynIdent.idText`); consumed by name resolution and
 /// the differential normaliser alike.
-fn operator_case_name(node: &SyntaxNode) -> Option<(&'static str, crate::syntax::TextRange)> {
+fn operator_case_name(node: &SyntaxNode) -> Option<(&'static str, rowan::TextRange)> {
     let mut lbrack = None;
     let mut rbrack = None;
     for tok in node.children_with_tokens().filter_map(|el| el.into_token()) {
@@ -962,7 +962,7 @@ impl EnumCase {
     /// — `op_Nil` for `([])` and `op_ColonColon` for `( :: )` (FCS's bar-led
     /// `unionCaseName EQUALS atomicExpr`, e.g. `| ([]) = 0`). `None` for an
     /// ordinary ident-named case.
-    pub fn operator_name(&self) -> Option<(&'static str, crate::syntax::TextRange)> {
+    pub fn operator_name(&self) -> Option<(&'static str, rowan::TextRange)> {
         accessor!("EnumCase::operator_name");
         operator_case_name(&self.0)
     }
@@ -2314,7 +2314,7 @@ impl ActivePatName {
     /// it folds `(|Foo|Bar|)` into a one-segment `SynLongIdent` whose single
     /// `idText` is `"|Foo|Bar|"`, ranged over exactly the bars-and-names span.
     /// `None` for a malformed name with no `|` (recovery).
-    pub fn name_range(&self) -> Option<crate::syntax::TextRange> {
+    pub fn name_range(&self) -> Option<rowan::TextRange> {
         accessor!("ActivePatName::name_range");
         let mut bars = self
             .0
@@ -2323,7 +2323,7 @@ impl ActivePatName {
             .filter(|t| t.kind() == SyntaxKind::BAR_TOK);
         let first = bars.next()?;
         let last = bars.last().unwrap_or_else(|| first.clone());
-        Some(crate::syntax::TextRange::new(
+        Some(rowan::TextRange::new(
             first.text_range().start(),
             last.text_range().end(),
         ))

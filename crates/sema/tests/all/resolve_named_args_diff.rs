@@ -32,11 +32,11 @@ use crate::common::{
     invoke_fcs_dump_census_project, parse_census_jsonl, temp_fs_file,
 };
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file, resolve_project,
 };
+use rowan::TextRange;
 
 /// The declarations every call shape is checked against.
 const PRELUDE: &str = "\

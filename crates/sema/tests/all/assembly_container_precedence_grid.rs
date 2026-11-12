@@ -63,9 +63,9 @@ use crate::common::{
 use crate::resolve_signatures::project;
 use crate::unmodelled_contributor_grid::{agrees, env_of, fcs_at, render_fcs};
 use borzoi_assembly::EntityKind;
-use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
+use rowan::{TextRange, TextSize};
 
 /// The fixture assembly's simple name.
 pub(crate) const FIXTURE_ASM: &str = "SemaContainerPrecedenceFixture";

@@ -29,11 +29,11 @@
 use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{Ecma335Assembly, Member};
-use borzoi_cst::syntax::TextRange;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, SyntaxRecovery,
     qualified_names, resolve_project_files,
 };
+use rowan::TextRange;
 
 use crate::common::{
     FileUses, ensure_fsharp_core_dll, ensure_system_runtime_dll, invoke_fcs_dump_project_with_refs,

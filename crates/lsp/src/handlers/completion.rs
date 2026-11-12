@@ -30,12 +30,12 @@
 //! not hacked here).
 
 use crate::uri::UriExt as _;
-use borzoi_cst::syntax::TextSize;
 use borzoi_cst::syntax::{
     AstNode, DotGetExpr, Expr, ImplFile, LongIdentExpr, SyntaxKind, SyntaxNode, SyntaxToken,
 };
 use borzoi_sema::{AssemblyEnv, InferredFile, InferredProject, Resolution, ResolvedFile, Ty};
 use lsp_types::{CompletionItem, CompletionParams, CompletionResponse, Position};
+use rowan::TextSize;
 
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
@@ -175,7 +175,7 @@ enum Receiver {
     /// identified by the whole `DOT_GET_EXPR`'s range: its type is inference's
     /// receiver type for that access, which is recorded whether or not the
     /// (partly typed) member resolves.
-    DotGet(borzoi_cst::syntax::TextRange),
+    DotGet(rowan::TextRange),
 }
 
 /// The receiver anchored by a member-access `dot` token. The dot always lives
@@ -233,7 +233,7 @@ fn receiver_before_dot(dot: &SyntaxToken) -> Option<Receiver> {
 /// `s.Le`); any other expression is the access's receiver, looked up by the
 /// `DOT_GET_EXPR`'s own range `dot_get`. `None` on a malformed shape (an empty
 /// paren recovery hole, an ident with no token).
-fn receiver_of_expr(mut expr: Expr, dot_get: borzoi_cst::syntax::TextRange) -> Option<Receiver> {
+fn receiver_of_expr(mut expr: Expr, dot_get: rowan::TextRange) -> Option<Receiver> {
     loop {
         match expr {
             Expr::Paren(p) => expr = p.inner()?,

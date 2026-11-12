@@ -37,11 +37,11 @@ use crate::common::{
 
 use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
+use rowan::TextRange;
 
 /// Dump and normalise the attribute resolutions FCS records for `src`.
 fn attrs_of(label: &str, src: &str) -> AttrsOracle {

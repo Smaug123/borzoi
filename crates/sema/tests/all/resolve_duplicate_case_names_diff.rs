@@ -30,9 +30,9 @@ use crate::common::{
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project, resolve_project_files};
+use rowan::TextRange;
 
 fn impl_file(src: &str) -> ImplFile {
     let p = parse(src);

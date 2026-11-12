@@ -658,7 +658,7 @@ impl<'src> Parser<'src> {
     /// nests as `App(App(int, list), option)` — the outer `App`'s first
     /// `Type` child is the previous inner `App`, not a flat sibling list.
     /// Mirrors FCS's `App(name, None, [arg], [], None, true, range)`
-    /// shape; the node keeps children in source order `[arg,
+    /// shape; the rowan node keeps children in source order `[arg,
     /// head]` with the head's [`SyntaxKind::APP_TYPE`] accessor reading
     /// the *last* `Type` child.
     ///

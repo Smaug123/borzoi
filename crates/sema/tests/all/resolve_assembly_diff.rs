@@ -20,10 +20,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use borzoi_assembly::{Ecma335Assembly, EcmaView, Member};
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// The fixture's assembly simple name (its `<AssemblyName>`), which FCS reports
 /// as the declaring assembly of the fixture's symbols.

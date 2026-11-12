@@ -18,7 +18,7 @@
 //! 'rec'") — but during type-checking (`CheckExpressions.fs`), not parsing, so
 //! it belongs here rather than in `borzoi-cst`'s parser.
 
-use borzoi_cst::syntax::TextRange;
+use rowan::TextRange;
 
 /// A semantic diagnostic over one file, keyed by the source range it concerns.
 ///

@@ -88,9 +88,9 @@ use crate::common::{
     parse_census_jsonl,
 };
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// Where the report is written. Defaults to `resolve-divergence/` at the
 /// **workspace root** — not the cwd, which is the crate directory when cargo runs

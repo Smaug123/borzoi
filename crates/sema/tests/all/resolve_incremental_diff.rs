@@ -20,7 +20,7 @@
 //! A generator produces a fixed set of cross-referencing files and a sequence of
 //! edits (body tweaks, added/removed declarations, attribute and `[<AutoOpen>]`
 //! toggles, new union types). Each edit yields a new snapshot; the harness folds
-//! the sequence incrementally — reusing a file's parse tree verbatim (a syntax
+//! the sequence incrementally — reusing a file's parse tree verbatim (a rowan
 //! handle clone, preserving *identity*, exactly as the LSP's stage-1 parse cache
 //! does) whenever its source text is unchanged — and asserts the incremental
 //! result equals a cold fold at every step. Feeding each step's incremental
@@ -915,7 +915,7 @@ fn export_edit_recomputes_the_suffix() {
 /// `resolve_file`'s output is a pure function of `(file, preceding, assemblies,
 /// recovery)`, and recovery is load-bearing: `Unretained` makes every
 /// annotation in the file decline. Reuse keys on tree *identity*, and a tree is
-/// a syntax handle that can be cloned into two `ProjectFile`s carrying different
+/// a rowan handle that can be cloned into two `ProjectFile`s carrying different
 /// readings — the bare-`ImplFile` fold entry points supply `Unretained` for the
 /// very trees `resolve_project_files` gives a real reading. Without recovery in
 /// the key the incremental fold serves the stale resolution and silently
@@ -929,7 +929,7 @@ fn a_different_recovery_reading_of_one_tree_is_not_reused() {
     let src = "module A\nlet v : System.String = failwith \"\"\n";
     let parsed = parse(src);
     let reported = SyntaxRecovery::of(&parsed);
-    // One tree, cloned — handle equality is identity, so both files are the
+    // One tree, cloned — rowan equality is identity, so both files are the
     // *same* tree as far as the reuse key is concerned.
     let tree = ImplFile::cast(parsed.root).expect("impl file");
     let qnof = borzoi_sema::qualified_names(
@@ -1020,7 +1020,7 @@ fn a_signature_slot_contributes_its_types_in_the_incremental_fold() {
         "extending a cached prefix across the signature differs from a cold fold"
     );
     let use_at = sources[2].1.find("T)").expect("the use");
-    let at = borzoi_cst::syntax::TextRange::new(
+    let at = rowan::TextRange::new(
         u32::try_from(use_at).unwrap().into(),
         u32::try_from(use_at + 1).unwrap().into(),
     );

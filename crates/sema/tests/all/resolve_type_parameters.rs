@@ -15,11 +15,11 @@
 //! value scope stack and the container-keyed `type_defs` map.
 
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
+use rowan::TextRange;
 
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);

@@ -43,7 +43,6 @@ use borzoi_assembly::{
     format_member_untyped, join_quoted,
 };
 use borzoi_cst::parser::FileKind;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, DefKind, EntityHandle, InferredFile, MemberIndex, ProjectItems, Resolution,
@@ -51,6 +50,7 @@ use borzoi_sema::{
     resolve_file,
 };
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
+use rowan::TextRange;
 
 use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
 use crate::goto_source::DefinitionDocument;

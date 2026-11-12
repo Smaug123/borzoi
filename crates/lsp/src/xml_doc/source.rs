@@ -57,11 +57,11 @@
 use std::collections::HashMap;
 
 use borzoi_cst::syntax::NodeOrToken;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use borzoi_sema::{
     Def, DefKind, ProjectFile, Resolution, ResolvedProject, SourceFile, signature_partners,
 };
+use rowan::TextRange;
 
 use super::depth::{BoundedParseError, parse_bounded};
 use super::pairing::{self, Declarations, Pairing};

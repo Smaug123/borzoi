@@ -24,11 +24,11 @@ use std::path::Path;
 
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
+use rowan::TextRange;
 
 /// The parse-recovery record for `src` — the counterpart to the tree-only
 /// `impl_file` helper beside it. Parsing is deterministic, so this describes
