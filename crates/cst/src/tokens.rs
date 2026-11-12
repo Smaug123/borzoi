@@ -1,5 +1,7 @@
-//! The raw token table: the lossless full-trivia token stream of a source as a
-//! struct of arrays, one [`RawKind`] and one `u32` start offset per token.
+//! The token tables: the lossless full-trivia token stream of a source as a
+//! struct of arrays, one [`RawKind`] and one `u32` start offset per token
+//! ([`RawTokens`]), and the filtered stream the productions read
+//! ([`FilteredTokens`]).
 //!
 //! The full-trivia stream tiles the source (every byte belongs to exactly one
 //! token, trivia, directive line or inactive region, in order), so a token's
@@ -19,6 +21,7 @@ use std::ops::{Bound, Range, RangeBounds};
 
 use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia};
 use crate::lexer::{LexError, Token, TokenKind};
+use crate::lexfilter::{FilteredItem, FilteredToken, Virtual};
 use crate::syntax::SyntaxKind;
 
 /// One item of the full-trivia stream, as the driver iterator yields it and as
@@ -334,5 +337,260 @@ pub fn lex_full_trivia<'src>(source: &'src str, symbols: &HashSet<String>) -> Le
         tokens,
         preproc_errors,
         elif_directives: driver.elif_directives().to_vec(),
+    }
+}
+
+/// The kind of one entry of the filtered stream: what the productions read.
+///
+/// The filter emits no trivia, so a [`FilteredKind::Token`] is never a trivia
+/// kind ([`FilteredTokens::push`] asserts it). A `<` or `>` the filter promoted
+/// to delimit a type application is a kind of its own, since the lexer's
+/// [`Token::Less`] / [`Token::Greater`] carry `false` and the promotion is the
+/// filter's fact, not the lexer's.
+///
+/// Its two dataful variants do not share a niche, so a kind is 4 bytes, not 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FilteredKind {
+    /// A lexed token, passed through or split off a fused one by the filter.
+    /// A [`TokenKind::Less`] / [`TokenKind::Greater`] is the unpromoted
+    /// `Less(false)` / `Greater(false)`.
+    Token(TokenKind),
+    /// `Token::Less(true)`.
+    TyparLess,
+    /// `Token::Greater(true)`.
+    TyparGreater,
+    /// A token the filter synthesised.
+    Virtual(Virtual),
+    /// [`LexError::UnterminatedString`] from active code, passed through.
+    UnterminatedString,
+    /// [`LexError::UnterminatedComment`] from active code, passed through.
+    UnterminatedComment,
+    /// [`LexError::Unknown`] from active code, passed through.
+    UnknownToken,
+}
+
+const _: () = assert!(std::mem::size_of::<FilteredKind>() == 4);
+
+impl FilteredKind {
+    /// The kind of a filtered-stream entry.
+    ///
+    /// # Panics
+    ///
+    /// On a trivia token, which the filter never emits.
+    pub fn of(res: &Result<FilteredToken<'_>, LexError>) -> FilteredKind {
+        match res {
+            Ok(FilteredToken::Raw(Token::Less(true))) => FilteredKind::TyparLess,
+            Ok(FilteredToken::Raw(Token::Greater(true))) => FilteredKind::TyparGreater,
+            Ok(FilteredToken::Raw(token)) => {
+                let kind = token.kind();
+                assert!(
+                    !RawKind::Lexed(kind).is_trivia(),
+                    "the filtered stream holds no trivia, but has {token:?}"
+                );
+                FilteredKind::Token(kind)
+            }
+            Ok(FilteredToken::Virtual(v)) => FilteredKind::Virtual(*v),
+            Err(LexError::UnterminatedString) => FilteredKind::UnterminatedString,
+            Err(LexError::UnterminatedComment) => FilteredKind::UnterminatedComment,
+            Err(LexError::Unknown) => FilteredKind::UnknownToken,
+        }
+    }
+
+    /// Whether an entry of this kind is a lexer error.
+    pub fn is_error(self) -> bool {
+        matches!(
+            self,
+            FilteredKind::UnterminatedString
+                | FilteredKind::UnterminatedComment
+                | FilteredKind::UnknownToken
+        )
+    }
+
+    /// The filtered-stream entry of this kind whose text is `text`.
+    #[inline]
+    pub fn rebuild(self, text: &str) -> Result<FilteredToken<'_>, LexError> {
+        match self {
+            FilteredKind::Token(kind) => Ok(FilteredToken::Raw(Token::from_kind(kind, text))),
+            FilteredKind::TyparLess => Ok(FilteredToken::Raw(Token::Less(true))),
+            FilteredKind::TyparGreater => Ok(FilteredToken::Raw(Token::Greater(true))),
+            FilteredKind::Virtual(v) => Ok(FilteredToken::Virtual(v)),
+            FilteredKind::UnterminatedString => Err(LexError::UnterminatedString),
+            FilteredKind::UnterminatedComment => Err(LexError::UnterminatedComment),
+            FilteredKind::UnknownToken => Err(LexError::Unknown),
+        }
+    }
+}
+
+/// The filtered token stream of one source: the stream the productions read,
+/// as a struct of arrays, one [`FilteredKind`] and one span per token.
+///
+/// Its spans do not tile the source (a virtual token is zero-width or borrows
+/// its neighbour's span, a split `@>|}` yields two overlapping tokens, and a
+/// sign fold merges two), so each token keeps both ends. As in [`RawTokens`],
+/// a token's payload is its text: every entry the filter emits has
+/// `source[span]` as its text, which [`FilteredTokens::push`] asserts in a
+/// debug build, so [`FilteredTokens::get`] rebuilds the entry from its kind and
+/// span. See `docs/token-pipeline-soa-plan.md` (D1, D2, D5).
+#[derive(Debug, Clone)]
+pub struct FilteredTokens<'src> {
+    source: &'src str,
+    kinds: Vec<FilteredKind>,
+    starts: Vec<u32>,
+    ends: Vec<u32>,
+}
+
+impl<'src> FilteredTokens<'src> {
+    /// An empty table over `source`.
+    ///
+    /// # Panics
+    ///
+    /// If `source` is 4 GiB or longer (the table holds `u32` offsets).
+    pub fn new(source: &'src str) -> Self {
+        assert!(
+            u32::try_from(source.len()).is_ok(),
+            "a source is shorter than 4 GiB"
+        );
+        FilteredTokens {
+            source,
+            kinds: Vec::new(),
+            starts: Vec::new(),
+            ends: Vec::new(),
+        }
+    }
+
+    /// The table of `items`, over `source`. Panics as [`FilteredTokens::new`]
+    /// and [`FilteredTokens::push`] do.
+    pub fn from_items(
+        source: &'src str,
+        items: impl IntoIterator<Item = FilteredItem<'src>>,
+    ) -> Self {
+        let mut table = FilteredTokens::new(source);
+        for item in items {
+            table.push(item);
+        }
+        table
+    }
+
+    /// Append an entry of the filtered stream.
+    ///
+    /// # Panics
+    ///
+    /// On a trivia token (see [`FilteredKind::of`]), or on a span outside the
+    /// source; in a debug build, also on a token whose payload is not
+    /// `source[span]`, which the table could not rebuild.
+    pub fn push(&mut self, (res, span): FilteredItem<'src>) {
+        let kind = FilteredKind::of(&res);
+        debug_assert!(
+            kind.rebuild(&self.source[span.clone()]) == res,
+            "{res:?} at {span:?} is not rebuilt from its kind and text"
+        );
+        self.push_kind(kind, span);
+    }
+
+    fn push_kind(&mut self, kind: FilteredKind, span: Range<usize>) {
+        assert!(
+            span.start <= span.end && span.end <= self.source.len(),
+            "{kind:?} at {span:?} lies outside a source of {} bytes",
+            self.source.len()
+        );
+        self.kinds.push(kind);
+        // In range: `span.end` is at most the source length, which `new`
+        // bounds below 4 GiB.
+        self.starts.push(span.start as u32);
+        self.ends.push(span.end as u32);
+    }
+
+    /// The number of tokens.
+    pub fn len(&self) -> usize {
+        self.kinds.len()
+    }
+
+    /// Whether the stream is empty.
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+
+    /// Token `i`'s kind.
+    pub fn kind(&self, i: usize) -> FilteredKind {
+        self.kinds[i]
+    }
+
+    /// Token `i`'s byte span.
+    pub fn span(&self, i: usize) -> Range<usize> {
+        self.starts[i] as usize..self.ends[i] as usize
+    }
+
+    /// Token `i`'s text.
+    pub fn text(&self, i: usize) -> &'src str {
+        &self.source[self.span(i)]
+    }
+
+    /// Token `i`'s kind, or `None` past the end. Cheaper than
+    /// [`FilteredTokens::get`] for a lookahead that tests the kind alone.
+    pub fn kind_at(&self, i: usize) -> Option<FilteredKind> {
+        self.kinds.get(i).copied()
+    }
+
+    /// Token `i`'s span, or `None` past the end.
+    pub fn span_at(&self, i: usize) -> Option<Range<usize>> {
+        (i < self.len()).then(|| self.span(i))
+    }
+
+    /// Token `i` as the filter emitted it, or `None` past the end.
+    #[inline]
+    pub fn get(&self, i: usize) -> Option<FilteredItem<'src>> {
+        (i < self.len()).then(|| self.item(i))
+    }
+
+    #[inline]
+    fn item(&self, i: usize) -> FilteredItem<'src> {
+        let span = self.span(i);
+        (self.kinds[i].rebuild(&self.source[span.clone()]), span)
+    }
+
+    /// The tokens from index `from` on, as the filter emitted them.
+    pub fn items_from(
+        &self,
+        from: usize,
+    ) -> impl DoubleEndedIterator<Item = FilteredItem<'src>> + ExactSizeIterator + '_ {
+        (from.min(self.len())..self.len()).map(|i| self.item(i))
+    }
+
+    /// Every token, as the filter emitted it.
+    pub fn items(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = FilteredItem<'src>> + ExactSizeIterator + '_ {
+        self.items_from(0)
+    }
+
+    /// Every token, as the filter emitted it, consuming the table.
+    pub fn into_items(self) -> impl Iterator<Item = FilteredItem<'src>> {
+        (0..self.len()).map(move |i| self.item(i))
+    }
+
+    /// Overwrite token `i` with a token of kind `kind` spanning `span`.
+    pub(crate) fn set(&mut self, i: usize, kind: FilteredKind, span: Range<usize>) {
+        assert!(
+            span.start <= span.end && span.end <= self.source.len(),
+            "{kind:?} at {span:?} lies outside a source of {} bytes",
+            self.source.len()
+        );
+        self.kinds[i] = kind;
+        self.starts[i] = span.start as u32;
+        self.ends[i] = span.end as u32;
+    }
+
+    /// Copy token `from` over token `to`.
+    pub(crate) fn copy_within(&mut self, from: usize, to: usize) {
+        self.kinds[to] = self.kinds[from];
+        self.starts[to] = self.starts[from];
+        self.ends[to] = self.ends[from];
+    }
+
+    /// Keep the first `len` tokens.
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.kinds.truncate(len);
+        self.starts.truncate(len);
+        self.ends.truncate(len);
     }
 }

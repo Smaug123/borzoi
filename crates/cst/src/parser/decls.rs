@@ -866,7 +866,7 @@ impl<'src> Parser<'src> {
         // `!seen_decl` re-base there resets `depth`/`depth_pos` past that leading
         // scaffolding so the body top level still reads as depth 0.
         let mut depth = 0i32;
-        let mut depth_pos = self.pos;
+        let mut depth_pos = self.filtered.pos();
         let mut line_ends = LineEnd::default();
         while let Some((res, span)) = self.peek().cloned() {
             self.advance_block_depth(&mut depth, &mut depth_pos);
@@ -1516,7 +1516,7 @@ impl<'src> Parser<'src> {
                 // register as a change against this baseline.
                 if !seen_decl {
                     depth = 0;
-                    depth_pos = self.pos;
+                    depth_pos = self.filtered.pos();
                 }
                 continue;
             }
@@ -2089,8 +2089,9 @@ impl<'src> Parser<'src> {
     /// see a dedent's `OBLOCKEND` between the attributes and the `let`; there
     /// the `let` belongs to an enclosing scope, not to these attributes.
     fn let_keyword_follows_block_seps(&self) -> bool {
-        self.filtered_tokens[self.pos..]
-            .iter()
+        self.filtered
+            .tokens()
+            .items_from(self.filtered.pos())
             .find(|(res, _)| !matches!(res, Ok(FilteredToken::Virtual(Virtual::BlockSep))))
             .is_some_and(|(res, _)| {
                 matches!(
@@ -2104,7 +2105,7 @@ impl<'src> Parser<'src> {
     fn bump_layout_virtual(&mut self) {
         if self.raw_module_head_eq().is_some() || self.raw_leading_type_defn() {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         } else {
             self.bump_into(SyntaxKind::ERROR);
         }
@@ -2437,7 +2438,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         is_abbrev
@@ -2484,11 +2485,10 @@ impl<'src> Parser<'src> {
             return false;
         }
         let mut it = self
-            .filtered_tokens
-            .iter()
-            .skip(self.pos)
-            .filter_map(|(res, _)| res.as_ref().ok())
-            .filter(|ft| !matches!(ft, FilteredToken::Raw(t) if trivia_kind(t).is_some()));
+            .filtered
+            .tokens()
+            .items_from(self.filtered.pos())
+            .filter_map(|(res, _)| res.ok());
 
         // First path segment must be an identifier (or the `global` head).
         if !matches!(

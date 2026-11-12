@@ -167,7 +167,7 @@ impl<'src> Parser<'src> {
                 );
                 self.emit_text(kw.syntax_kind(), span);
                 self.raw_pos += 1;
-                self.pos += 1;
+                self.filtered.advance();
             }
             KeywordForm::Raw => self.bump_into(kw.syntax_kind()),
         }

@@ -237,7 +237,7 @@ impl<'src> Parser<'src> {
                         );
                     }
                 }
-                self.pos += 1;
+                self.filtered.advance();
 
                 // Depth-guarded: a long `elif` chain recurses here (each level
                 // opens a nested `IF_THEN_ELSE_EXPR`) *below* `parse_pratt_expr`'s
@@ -445,12 +445,12 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
         match self.peek() {
             Some((Ok(FilteredToken::Virtual(Virtual::End)), _)) => {
                 self.builder.token(SyntaxKind::ERROR, "");
-                self.pos += 1;
+                self.filtered.advance();
             }
             // A token between the body's close and `CtxtFun`'s is still
             // inside the lambda: an operator line undented past the body but
@@ -742,7 +742,7 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
             ) {
                 self.builder.token(SyntaxKind::ERROR, "");
-                self.pos += 1;
+                self.filtered.advance();
             }
             self.builder.finish_node(); // MATCH_CLAUSE
 
@@ -772,7 +772,7 @@ impl<'src> Parser<'src> {
         match self.peek() {
             Some((Ok(FilteredToken::Virtual(Virtual::End)), _)) => {
                 self.builder.token(SyntaxKind::ERROR, "");
-                self.pos += 1;
+                self.filtered.advance();
             }
             // A token between the last clause and the clause-list close is
             // still inside `CtxtMatchClauses`: an operator line undented past
@@ -853,7 +853,7 @@ impl<'src> Parser<'src> {
         );
         if body_closed {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         // Branch on the keyword after the body: `with` (TryWith) or `finally`
@@ -1103,10 +1103,9 @@ impl<'src> Parser<'src> {
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
-        ) && matches!(
-            self.filtered_tokens.get(self.pos + 1),
-            Some((Ok(FilteredToken::Raw(Token::RArrow)), _))
-        ) {
+        ) && (self.filtered.tokens().kind_at(self.filtered.pos() + 1)
+            == Some(FilteredKind::Token(TokenKind::RArrow)))
+        {
             self.bump_into(SyntaxKind::ERROR);
         }
         if matches!(
@@ -1151,7 +1150,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(Virtual::RightBlockEnd)), _)),
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
     }
 
@@ -1347,6 +1346,6 @@ impl<'src> Parser<'src> {
         } else {
             self.builder.token(SyntaxKind::ERROR, "");
         }
-        self.pos += 1;
+        self.filtered.advance();
     }
 }

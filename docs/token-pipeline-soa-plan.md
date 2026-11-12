@@ -1,7 +1,8 @@
 # Token pipeline as struct-of-arrays passes
 
 > **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
-> table) and Stage 2 (the frozen filter reference) implemented.
+> table), Stage 2 (the frozen filter reference) and Stage 3 (the filtered
+> token table) implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
 > parser's tree builder.
@@ -284,6 +285,50 @@ differential and the LSP.
 **Oracle**: lockstep and generated-input equality with the frozen reference
 (tokens, spans, diagnostics, the language-version flag); FCS lex-filter
 differential and manifests unchanged.
+
+**Result.** The table is `tokens::FilteredTokens`, one `FilteredKind` and a
+`u32` start and end per token. `FilteredKind` has two dataful variants
+(`Token(TokenKind)` and `Virtual(Virtual)`), which do not share a niche, so it
+is 4 bytes and a token 12, not 10; the lexer errors are unit variants of their
+own, as in `RawKind`. `FilteredTokens::push` asserts that the filter emits no
+trivia and, in a debug build, that each token's payload is its source text, so
+the table can rebuild it. `filter_collect` writes the table, `sign_fold`
+compacts it in place, and `lexfilter::filter` is a view over it, so the FCS
+lex-filter differential grades the representation the parser reads.
+
+D5's by-value rebuild on every `peek` cost 150 instructions per byte (the
+productions peek the token at the cursor dozens of times per token), so the
+productions read through `parser::filtered_cursor::FilteredCursor` instead: it
+rebuilds the token at the cursor once per move and lends it out, and its
+fields are private to its module, so nothing moves the position without
+refreshing the lent token. `peek` returns a reference, as before. Lookaheads
+past the cursor rebuild by value; the ones that test a single unit kind compare
+`FilteredTokens::kind_at`.
+
+`tests/all/filter_reference.rs` holds the table to the frozen filter directly,
+before the sign fold (the parse's lockstep assertion holds it after), over the
+lexical pairs plus `FILTER_SHAPES` (type applications, the fused-token splits,
+the sign fold, and the keywords whose contexts close with virtuals), over the
+`CORE` triples, and over a random walk, and checks the pairs reach every kind
+rebuilt by a rule of its own. Two planted bugs: dropping the end offset when
+the fold compacts the table fails the lexical pairs (through `FILTER_SHAPES`),
+the random walk, and the panic sweep's `CORE` triples; rebuilding a promoted `>`
+as `Greater(false)` fails the lexical pairs, the random walk and the kind
+round-trip, and no panic-sweep case, so `FILTER_SHAPES` is part of this
+oracle.
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine:
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 83.6 | 83.6 | 4.06 | 4.06 |
+| lex-filter | 257.9 | 264.0 | 23.40 | 10.76 |
+| parse | 581.8 | 608.8 | 70.09 | 57.45 |
+
+Bytes allocated by the filter fall by 54%, and by the whole parse by 18%.
+Instructions rise by 5%: the filter converts each token it emits to a kind
+(+6, gone when the filter emits kinds, Stage 4), the cursor rebuilds each
+token once, and the lookaheads past the cursor rebuild what they read.
 
 ### Stage 4: the filter reads the raw table by index
 

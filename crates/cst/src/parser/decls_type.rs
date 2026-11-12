@@ -1531,7 +1531,7 @@ impl<'src> Parser<'src> {
             )
         {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         // Closing `OBLOCKEND` — consume as a zero-width ERROR advancing only
@@ -1546,7 +1546,7 @@ impl<'src> Parser<'src> {
             );
         if closed_block {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         // Trailing `with`-augmentation (phase 9.13b) — FCS's `opt_classDefn`
@@ -1637,19 +1637,16 @@ impl<'src> Parser<'src> {
     fn stray_open_in_type_body_span(&self) -> Option<Range<usize>> {
         match self.peek() {
             Some((Ok(FilteredToken::Raw(Token::Open)), span)) => Some(span.clone()),
-            // Behind the body's `OBLOCKSEP`: scan past the separator (and any
-            // trivia) to the first significant filtered token and accept it only
-            // if it is the `open`.
+            // Behind the body's `OBLOCKSEP`: accept the filtered token after the
+            // separator only if it is the `open`.
             Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _)) => self
-                .filtered_tokens
-                .iter()
-                .skip(self.pos + 1)
-                .find_map(|(res, span)| match res {
-                    Ok(FilteredToken::Raw(t)) if trivia_kind(t).is_some() => None,
-                    Ok(FilteredToken::Raw(Token::Open)) => Some(Some(span.clone())),
-                    _ => Some(None),
-                })
-                .flatten(),
+                .filtered
+                .tokens()
+                .get(self.filtered.pos() + 1)
+                .and_then(|(res, span)| match res {
+                    Ok(FilteredToken::Raw(Token::Open)) => Some(span),
+                    _ => None,
+                }),
             _ => None,
         }
     }
@@ -1748,7 +1745,7 @@ impl<'src> Parser<'src> {
         // (`opt_classSpfn`, phase 10.15) the members are member **sigs** (`member
         // M : int`), so route to the sig member-block items / start gate instead
         // of the impl member bodies.
-        let pos_before_members = self.pos;
+        let pos_before_members = self.filtered.pos();
         if sig {
             if self.peek_is_sig_member_block_start() {
                 self.parse_sig_member_block_items();
@@ -1784,7 +1781,7 @@ impl<'src> Parser<'src> {
         }
         // Whether any member was consumed — the discriminant for claiming an
         // *empty* block's explicit `end` below.
-        let had_members = self.pos > pos_before_members;
+        let had_members = self.filtered.pos() > pos_before_members;
 
         // Close the augment. Both `tyconDefnAugmentation` and `opt_classDefn` are
         // `WITH classDefnBlock declEnd`, so the member block leaves *two* trailing
@@ -1807,7 +1804,7 @@ impl<'src> Parser<'src> {
             );
         if closed_block {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
         // Optional explicit `end` closer (`… with <members> end`): after the member
         // block's `OBLOCKEND`, LexFilter surfaces the `end` keyword as an `OEND`
@@ -1842,14 +1839,14 @@ impl<'src> Parser<'src> {
             self.drain_raw_up_to(end_span.start);
             self.emit_text(SyntaxKind::END_TOK, end_span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         }
         if matches!(
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::DeclEnd)), _))
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
         closed_block
     }
@@ -1886,7 +1883,7 @@ impl<'src> Parser<'src> {
             self.drain_raw_up_to(with_span.start);
             self.emit_text(SyntaxKind::WITH_TOK, with_span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         // The head binding, then any `and`-chained continuations. The `and` is
@@ -1916,7 +1913,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(Virtual::End)), _))
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
     }
 }

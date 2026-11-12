@@ -20,6 +20,7 @@
 
 use crate::language_version::LanguageVersion;
 use crate::lexer::{LexError, Span, Token};
+use crate::tokens::FilteredTokens;
 
 mod balance;
 mod continuators;
@@ -65,7 +66,7 @@ struct PositionWithColumn {
 ///
 /// Only the variants needed by the currently-ported rules are listed. Extend
 /// as the port progresses; the harness panics loudly on an unmapped FCS name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Virtual {
     /// `OLET` — replaces the `let`/`use` that begins an offside binding.
     Let,
@@ -659,6 +660,10 @@ enum Step<'a> {
     Emit(TokenTup<'a>),
 }
 
+/// One element of the filtered stream: the (possibly-[`Virtual`]) token — or a
+/// lexer error passed through from the input — together with its byte span.
+pub type FilteredItem<'a> = (Result<FilteredToken<'a>, LexError>, Span);
+
 /// Apply the offside-rule filter to a raw lexer stream. Trivia (whitespace,
 /// newlines, comments) is consumed internally for position tracking and does
 /// not appear in the output.
@@ -666,21 +671,20 @@ enum Step<'a> {
 /// `source` is the original text the token spans index into; the filter scans
 /// each token's bytes to keep its line/column cursor honest across multi-line
 /// tokens (block comments, triple/verbatim/continuation strings).
-/// One element of the filtered stream: the (possibly-[`Virtual`]) token — or a
-/// lexer error passed through from the input — together with its byte span.
-pub type FilteredItem<'a> = (Result<FilteredToken<'a>, LexError>, Span);
-
 pub fn filter<'a, I>(source: &'a str, tokens: I) -> impl Iterator<Item = FilteredItem<'a>>
 where
     I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>,
 {
-    // The streaming entry point the lex-filter differential tests consume as a
-    // pure token stream. It cannot surface the diagnostics accumulator (it moves
-    // the `Filter` into an opaque `impl Iterator`), so it pins the default
-    // language version — the same "latest" surface the offside arithmetic has
-    // always assumed. A caller that needs the offside diagnostics uses
-    // [`filter_collect`] instead.
-    Filter::new(source, LanguageVersion::DEFAULT, tokens)
+    // The entry point the lex-filter differential tests consume as a pure
+    // token stream: a view over the table [`filter_collect`] writes, so the
+    // differential grades the representation the parser reads. It surfaces
+    // neither the diagnostics nor the language-version flag, so it pins the
+    // default language version — the same "latest" surface the offside
+    // arithmetic has always assumed. A caller that needs the offside
+    // diagnostics uses [`filter_collect`] instead.
+    filter_collect(source, LanguageVersion::DEFAULT, tokens)
+        .tokens
+        .into_items()
 }
 
 /// Run the offside filter to completion, returning the full token stream, the
@@ -697,7 +701,7 @@ where
     I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>,
 {
     let mut f = Filter::new(source, lang, tokens);
-    let tokens: Vec<FilteredItem<'a>> = f.by_ref().collect();
+    let tokens = FilteredTokens::from_items(source, f.by_ref());
     FilterRun {
         tokens,
         diagnostics: f.diagnostics,
@@ -768,7 +772,7 @@ impl PushedContext {
 /// side outputs.
 pub struct FilterRun<'a> {
     /// The filtered token stream, in emission order.
-    pub tokens: Vec<FilteredItem<'a>>,
+    pub tokens: FilteredTokens<'a>,
     /// The offside / indentation diagnostics (FS0058 family) accumulated
     /// during the run.
     pub diagnostics: Vec<OffsideDiagnostic>,

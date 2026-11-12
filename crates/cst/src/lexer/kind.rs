@@ -104,6 +104,7 @@ macro_rules! token_kinds {
             /// [`Token::kind`] on every token the lexer produces, given that
             /// token's text. A [`Token::Less`] / [`Token::Greater`] comes back
             /// with the lexer's `false`.
+            #[inline]
             pub fn from_kind(kind: TokenKind, text: &'a str) -> Token<'a> {
                 match kind {
                     $(TokenKind::$unit => Token::$unit,)*

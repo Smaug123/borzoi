@@ -204,19 +204,18 @@ impl<'src> Parser<'src> {
             // hazard), and the filtered position must form an operator value.
             let op_target = matches!(raw_after, Some(Token::LParen | Token::LParenStarRParen))
                 && self
-                    .next_non_trivia_filtered_index_after(self.pos)
+                    .next_non_trivia_filtered_index_after(self.filtered.pos())
                     .is_some_and(|j| {
-                        matches!(
-                            self.filtered_tokens.get(j),
-                            Some((Ok(FilteredToken::Raw(Token::LParenStarRParen)), _))
-                        ) || self.at_paren_op_value_pat(j)
+                        (self.filtered.tokens().kind_at(j)
+                            == Some(FilteredKind::Token(TokenKind::LParenStarRParen)))
+                            || self.at_paren_op_value_pat(j)
                     });
             // A `_`-rooted path after the modifier (`let private _.M = …`) — the
             // raw lookahead must be the `_` itself (rejecting the swallowed-`)`
             // hazard); the path check runs on the filtered stream from there.
             let before_underscore_path = matches!(raw_after, Some(Token::Underscore))
                 && self
-                    .next_non_trivia_filtered_index_after(self.pos)
+                    .next_non_trivia_filtered_index_after(self.filtered.pos())
                     .is_some_and(|j| self.underscore_rooted_path_at(j));
             if before_ident || before_active_pat || op_target || before_underscore_path {
                 self.bump_into(SyntaxKind::ACCESS_TOK);
@@ -258,7 +257,7 @@ impl<'src> Parser<'src> {
                         | FilteredToken::Raw(Token::Less(_))
                 )
             );
-            let has_args = Self::op_head_args_follow(after, raw_after);
+            let has_args = Self::op_head_args_follow(after.as_ref(), raw_after);
             self.emit_operator_head(is_star, has_typars, has_args);
             return true;
         }
@@ -288,7 +287,7 @@ impl<'src> Parser<'src> {
             return true;
         }
 
-        if !Self::is_atomic_pat_start(&self.filtered_tokens, self.pos) {
+        if !Self::is_atomic_pat_start(self.filtered.tokens(), self.filtered.pos()) {
             return false;
         }
 
@@ -370,7 +369,7 @@ impl<'src> Parser<'src> {
                 // still sees the `(` it precedes (a paren-pattern start) and gates
                 // promotion; a spaced `f (x)` has no virtual and matches the `Raw`
                 // arm directly.
-                let after_starts_pat = after.is_some_and(|ft| {
+                let after_starts_pat = after.as_ref().is_some_and(|ft| {
                     matches!(ft, FilteredToken::Raw(t) if raw_starts_atomic_pat(t))
                         || matches!(ft, FilteredToken::Virtual(Virtual::HighPrecedenceParenApp))
                 });
@@ -386,7 +385,7 @@ impl<'src> Parser<'src> {
                 // stays a `Named` value rather than being promoted.
                 let raw_after_is_fold_sign =
                     matches!(raw_after, Some(Token::Op(s)) if s == "-" || s == "+");
-                let after_is_folded = after.is_some_and(
+                let after_is_folded = after.as_ref().is_some_and(
                     |ft| matches!(ft, FilteredToken::Raw(t) if token_is_folded_signed_literal(t)),
                 );
                 after_starts_pat
@@ -568,7 +567,7 @@ impl<'src> Parser<'src> {
     /// right after `(` is, in pattern position, unambiguously the leading bar
     /// of an active-pattern name (FCS's `LPAREN BAR …` active-pattern path).
     pub(super) fn at_active_pat_name(&self) -> bool {
-        self.at_active_pat_name_at(self.pos)
+        self.at_active_pat_name_at(self.filtered.pos())
     }
 
     /// As [`Self::at_active_pat_name`], but for the filtered token at `idx`
@@ -577,11 +576,12 @@ impl<'src> Parser<'src> {
     /// (`Foo.(|Bar|_|)`), so the active-pattern lookahead must be index-based
     /// (mirroring [`Self::at_paren_op_value`]'s `lparen_pos` parameter).
     pub(super) fn at_active_pat_name_at(&self, idx: usize) -> bool {
-        let Some((Ok(FilteredToken::Raw(Token::LParen)), span)) = self.filtered_tokens.get(idx)
-        else {
-            return false;
-        };
-        matches!(self.next_non_trivia_raw_after(span.end), Some(Token::Bar))
+        let tokens = self.filtered.tokens();
+        tokens.kind_at(idx) == Some(FilteredKind::Token(TokenKind::LParen))
+            && matches!(
+                self.next_non_trivia_raw_after(tokens.span(idx).end),
+                Some(Token::Bar)
+            )
     }
 
     /// `true` when the raw stream at/after `byte` opens an active-pattern name —
@@ -1317,10 +1317,10 @@ impl<'src> Parser<'src> {
     /// - The const-literal token set accepted by
     ///   [`raw_starts_const_payload`] → [`SyntaxKind::CONST_PAT`].
     /// - `Token::LQuote`/`Token::LQuoteRaw` (`<@`/`<@@`) → [`SyntaxKind::QUOTE_PAT`].
-    pub(super) fn is_atomic_pat_start(filtered_tokens: &[FilteredTok<'src>], pos: usize) -> bool {
+    pub(super) fn is_atomic_pat_start(filtered_tokens: &FilteredTokens<'src>, pos: usize) -> bool {
         matches!(
             filtered_tokens.get(pos),
-            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_atomic_pat(t)
+            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_atomic_pat(&t)
         )
     }
 
@@ -1332,7 +1332,7 @@ impl<'src> Parser<'src> {
         debug_assert!(
             ok || self.depth_limit_hit,
             "emit_atomic_pat called without an atomic pat start at pos {}",
-            self.pos
+            self.filtered.pos()
         );
     }
 
@@ -1518,13 +1518,11 @@ impl<'src> Parser<'src> {
         }
         // Walk the dotted path `<head> (. ident)*` to the *final* `.`, whose
         // following token is the `opName`.
-        let mut seg_idx = self.pos;
+        let mut seg_idx = self.filtered.pos();
         loop {
             let dot_idx = self.next_non_trivia_filtered_index_after(seg_idx)?;
-            if !matches!(
-                self.filtered_tokens.get(dot_idx),
-                Some((Ok(FilteredToken::Raw(Token::Dot)), _))
-            ) {
+            if self.filtered.tokens().kind_at(dot_idx) != Some(FilteredKind::Token(TokenKind::Dot))
+            {
                 return None;
             }
             let after_idx = self.next_non_trivia_filtered_index_after(dot_idx)?;
@@ -1536,7 +1534,7 @@ impl<'src> Parser<'src> {
             // idents). Anything else (`A.B.C`, an ordinary dotted path) is not
             // this form.
             if !matches!(
-                self.filtered_tokens.get(after_idx),
+                self.filtered.tokens().get(after_idx),
                 Some((
                     Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
                     _
@@ -1558,14 +1556,14 @@ impl<'src> Parser<'src> {
     /// stream (so a LexFilter-swallowed closer is never mistaken for one).
     fn underscore_rooted_path_at(&self, idx: usize) -> bool {
         let Some((Ok(FilteredToken::Raw(Token::Underscore)), underscore)) =
-            self.filtered_tokens.get(idx)
+            self.filtered.tokens().get(idx)
         else {
             return false;
         };
         let Some(dot_idx) = self.next_non_trivia_filtered_index_after(idx) else {
             return false;
         };
-        let Some((Ok(FilteredToken::Raw(Token::Dot)), dot)) = self.filtered_tokens.get(dot_idx)
+        let Some((Ok(FilteredToken::Raw(Token::Dot)), dot)) = self.filtered.tokens().get(dot_idx)
         else {
             return false;
         };
@@ -1588,10 +1586,9 @@ impl<'src> Parser<'src> {
     /// [`Self::peek_dotted_opname_pat_head`]'s lookahead and
     /// [`Self::open_dotted_opname_pat_head`]'s segment walk.
     fn opname_pat_kind_at(&self, idx: usize) -> Option<DottedOpNameHead> {
-        if matches!(
-            self.filtered_tokens.get(idx),
-            Some((Ok(FilteredToken::Raw(Token::LParenStarRParen)), _))
-        ) {
+        if self.filtered.tokens().kind_at(idx)
+            == Some(FilteredKind::Token(TokenKind::LParenStarRParen))
+        {
             Some(DottedOpNameHead::Operator { is_star: true })
         } else if self.at_paren_op_value_pat(idx) {
             Some(DottedOpNameHead::Operator { is_star: false })
@@ -1625,12 +1622,12 @@ impl<'src> Parser<'src> {
         // bump each `. ident` whose post-`.` token is *not* the `opName`. The loop
         // stops at the final `.` (its successor is the `opName`), bumped just below.
         while matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Dot)), _))) {
-            let after_idx = match self.next_non_trivia_filtered_index_after(self.pos) {
+            let after_idx = match self.next_non_trivia_filtered_index_after(self.filtered.pos()) {
                 Some(idx) if self.opname_pat_kind_at(idx).is_none() => idx,
                 _ => break,
             };
             debug_assert!(matches!(
-                self.filtered_tokens.get(after_idx),
+                self.filtered.tokens().get(after_idx),
                 Some((
                     Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
                     _
@@ -1693,7 +1690,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::LParenStarRParen)), _))
         ) {
             Some(true)
-        } else if self.at_paren_op_value_pat(self.pos) {
+        } else if self.at_paren_op_value_pat(self.filtered.pos()) {
             Some(false)
         } else {
             None
@@ -1711,17 +1708,21 @@ impl<'src> Parser<'src> {
     pub(super) fn operator_head_after(
         &self,
         is_star: bool,
-    ) -> (Option<&FilteredToken<'src>>, Option<Token<'src>>) {
+    ) -> (Option<FilteredToken<'src>>, Option<Token<'src>>) {
         if is_star {
-            let star_end = self.filtered_tokens.get(self.pos).map(|(_, s)| s.end);
+            let star_end = self.peek().map(|(_, s)| s.end);
             (
                 self.next_non_trivia_filtered_after_pos(),
                 star_end.and_then(|end| self.next_non_trivia_raw_after(end)),
             )
         } else {
-            let op_end = self.filtered_tokens.get(self.pos + 1).map(|(_, s)| s.end);
+            let op_end = self
+                .filtered
+                .tokens()
+                .get(self.filtered.pos() + 1)
+                .map(|(_, s)| s.end);
             (
-                self.next_non_trivia_filtered_after_index(self.pos + 1),
+                self.next_non_trivia_filtered_after_index(self.filtered.pos() + 1),
                 op_end.and_then(|end| self.raw_after_paren_op_close(end)),
             )
         }
@@ -2002,7 +2003,7 @@ impl<'src> Parser<'src> {
                 // The *applied* / typar'd forms (`let (+) a b = …`,
                 // `let (!!)<'T> … `) are handled one rung up in
                 // `try_emit_head_binding_pat_element`.
-                if self.at_paren_op_value_pat(self.pos) {
+                if self.at_paren_op_value_pat(self.filtered.pos()) {
                     self.builder.start_node(SyntaxKind::NAMED_PAT);
                     self.consume_paren_op_value();
                     self.builder.finish_node(); // NAMED_PAT
