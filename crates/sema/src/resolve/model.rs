@@ -7,8 +7,9 @@
 //! resolver state; the walk that produces them lives in the parent
 //! [`resolve`](super) module.
 
+use crate::hash::{HashMap, HashSet};
 use crate::recovery::SyntaxRecovery;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use borzoi_cst::syntax::{TextRange, TextSize};
@@ -3809,7 +3810,7 @@ fn build_end_index(
     occurrences: &HashMap<TextRange, Resolution>,
     classify: impl Fn(Resolution) -> Option<SemanticClass>,
 ) -> HashMap<TextSize, (TextSize, SemanticClass)> {
-    let mut by_end: HashMap<TextSize, (TextSize, SemanticClass)> = HashMap::new();
+    let mut by_end: HashMap<TextSize, (TextSize, SemanticClass)> = HashMap::default();
     for (occ, res) in occurrences {
         if let Some(class) = classify(*res) {
             let entry = by_end.entry(occ.end()).or_insert((occ.start(), class));
@@ -3937,37 +3938,37 @@ impl ResolvedFile {
     ) -> ResolvedFile {
         ResolvedFile {
             defs,
-            resolutions: HashMap::new(),
-            or_pattern_aliases: HashSet::new(),
-            opaque_binders: HashSet::new(),
+            resolutions: HashMap::default(),
+            or_pattern_aliases: HashSet::default(),
+            opaque_binders: HashSet::default(),
             // The walk resolves nothing in a signature file.
             opaque_regions: vec![OpaqueRegion::WholeFile],
-            attribute_resolutions: HashMap::new(),
-            own_type_simple_names: HashSet::new(),
+            attribute_resolutions: HashMap::default(),
+            own_type_simple_names: HashSet::default(),
             placed_types: Vec::new(),
             // Filled by the fold from the signature's own declarations.
-            unplaced_types: HashMap::new(),
-            unplaced_type_places: HashMap::new(),
-            own_module_simple_names: HashSet::new(),
-            own_abbrev_type_simple_names: HashSet::new(),
+            unplaced_types: HashMap::default(),
+            unplaced_type_places: HashMap::default(),
+            own_module_simple_names: HashSet::default(),
+            own_abbrev_type_simple_names: HashSet::default(),
             contributions: FileContributions::default(),
             declares_core_attribute_alias: false,
             attribute_shape_unknowable: false,
-            augmentation_instance_names: HashSet::new(),
-            augmentation_static_names: HashSet::new(),
+            augmentation_instance_names: HashSet::default(),
+            augmentation_static_names: HashSet::default(),
             augmentation_names_unknowable: false,
-            preceding_augmentation_instance_names: HashSet::new(),
-            preceding_augmentation_static_names: HashSet::new(),
+            preceding_augmentation_instance_names: HashSet::default(),
+            preceding_augmentation_static_names: HashSet::default(),
             exports: ExportedItems::default(),
             item_base,
             namespace_paths: Vec::new(),
             preceding_declares_extension_source: false,
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,
-            active_pattern_shape: HashMap::new(),
+            active_pattern_shape: HashMap::default(),
             diagnostics: Vec::new(),
             resolution_trace: ResolutionTrace::default(),
-            decline_sites: HashMap::new(),
+            decline_sites: HashMap::default(),
             export_decls: Vec::new(),
             sig_screen: Some(screen),
             sig_exports,

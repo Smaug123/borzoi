@@ -615,11 +615,10 @@ mod tests {
     //! reference *is* the spec, and the `ena`-backed table must agree with it on
     //! arbitrary constraint sequences.
 
-    use std::collections::HashMap;
-
     use proptest::prelude::*;
 
     use super::{InferTable, TypeBudget, UnifyError};
+    use crate::hash::HashMap;
     use crate::ty::{Ty, TyVid};
 
     /// Number of inference variables both solvers share (generated terms draw
@@ -754,7 +753,7 @@ mod tests {
     /// canonical forms mean equal substitutions (same ground parts, same
     /// partition of the unbound variables).
     fn canonicalize(types: &[Ty]) -> Vec<Ty> {
-        let mut rename: HashMap<u32, u32> = HashMap::new();
+        let mut rename: HashMap<u32, u32> = HashMap::default();
         let mut next = 0u32;
         types
             .iter()
