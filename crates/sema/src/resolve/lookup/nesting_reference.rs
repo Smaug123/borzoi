@@ -140,7 +140,7 @@ impl Resolver<'_> {
             .scope
             .explicit_open_prefixes
             .iter()
-            .map(|(_, prefix)| (prefix.clone(), true));
+            .map(|open| (open.path.clone(), true));
         let mut passed_a_module = false;
         let mut passed_beside = false;
         let mut contested_by = None;

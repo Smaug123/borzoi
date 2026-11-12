@@ -1750,7 +1750,7 @@ fn thread_forward(
     paired_screen: Option<&model::SigScreen>,
     partner: Option<usize>,
 ) {
-    preceding.extend_with(rf, paired_screen, partner);
+    preceding.extend_with(rf, assemblies.names(), paired_screen, partner);
     ext.wholesale |= wholesale_extension_contribution(rf, assemblies);
     ext.instance_names
         .extend(rf.augmentation_instance_names.iter().cloned());
@@ -2255,7 +2255,7 @@ impl<'a> Resolver<'a> {
             typar_scopes: Vec::new(),
             type_defs: HashMap::default(),
             type_slot_classes: HashMap::default(),
-            type_slot_history: HashMap::default(),
+            type_slot_history: crate::names::ChildMap::default(),
             type_access_roots: HashMap::default(),
             case_repr_roots: HashMap::default(),
             container_decls: HashMap::default(),
@@ -2294,6 +2294,7 @@ impl<'a> Resolver<'a> {
             augmentation_head_exports: PathSet::default(),
             real_nested_module_exports: PathSet::default(),
             type_path_exports: Vec::new(),
+            type_path_export_ids: HashMap::default(),
             implicit_import_count: implicit_open_groups(assemblies).len(),
             own_namespace_fold: state::RecordedFold::default(),
             modules_with_hidden_values: HashSet::default(),
@@ -3339,7 +3340,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, None);
+        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
         assert!(
             pi.modules_with_hidden_values
                 .contains(&Vec::<String>::new()),
@@ -3372,7 +3373,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, None);
+        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
         assert!(
             pi.auto_open_module_paths.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
@@ -3395,7 +3396,7 @@ mod export_decl_tests {
             rf2.export_decls
         );
         let mut pi2 = ProjectItems::default();
-        pi2.extend_with(&rf2, None, None);
+        pi2.extend_with(&rf2, &crate::names::NameTable::default(), None, None);
         assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
     }
 
@@ -3416,7 +3417,7 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            pi.extend_with(&rf, None, None);
+            pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
             assert!(
                 !pi.nested_module_paths.contains(&segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
@@ -3437,7 +3438,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, None);
+        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(

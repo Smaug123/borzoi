@@ -12,7 +12,7 @@ use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
     TypeSlot,
 };
-use super::open_scope::{AutoOpenExit, ModuleExit};
+use super::open_scope::{AutoOpenExit, ModuleExit, OpenedPrefix};
 use super::state::{Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix};
 use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path};
 
@@ -309,8 +309,12 @@ impl<'a> Resolver<'a> {
         if self.anonymous_root {
             return;
         }
+        let names = self.assemblies.names();
+        let id = names.intern_child(self.container_path.id(), names.logical(name));
         let mut path = self.container_path.to_vec();
         path.push(name.to_string());
+        self.type_path_export_ids
+            .insert(id, self.type_path_exports.len());
         self.type_path_exports.push((path, cases_enumerable, slot));
     }
 
@@ -1470,7 +1474,11 @@ impl<'a> Resolver<'a> {
                                     namespace_reading: true,
                                     module_reading: false,
                                 });
-                                self.scope.explicit_open_prefixes.push((pos, gp.clone()));
+                                self.scope.explicit_open_prefixes.push(OpenedPrefix::new(
+                                    self.assemblies.names(),
+                                    pos,
+                                    gp.clone(),
+                                ));
                             }
                         }
 
@@ -1605,7 +1613,11 @@ impl<'a> Resolver<'a> {
                                 self.open_project_namespace_values(gp, pos);
                             }
                             self.module_open_contributions(gp, pos);
-                            self.scope.module_open_prefixes.push((pos, gp.clone()));
+                            self.scope.module_open_prefixes.push(OpenedPrefix::new(
+                                self.assemblies.names(),
+                                pos,
+                                gp.clone(),
+                            ));
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
                             // assembly module shares the FQN, the module-half push

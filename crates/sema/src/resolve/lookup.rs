@@ -8,6 +8,7 @@ use borzoi_assembly::{EntityKind, UnionCases};
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
 use crate::hash::{HashMap, HashSet};
+use crate::names::PathId;
 
 use super::contributors::Contribution;
 use super::id_text;
@@ -1838,7 +1839,9 @@ impl<'a> Resolver<'a> {
     /// at all, only "some project source contests".
     fn direct_project_type_contestants(&self, container: &[String]) -> Vec<(String, usize)> {
         let site = &self.container_path;
-        let mut out = self.preceding.direct_type_contestants(container, site);
+        let mut out =
+            self.preceding
+                .direct_type_contestants(self.assemblies.names(), container, site);
         let current = self.preceding.num_files();
         out.extend(
             self.type_path_exports
@@ -4355,8 +4358,10 @@ impl<'a> Resolver<'a> {
         // reconstructed self path or the raw already-qualified spelling.
         if reconstructed
             .as_deref()
-            .is_some_and(|p| self.preceding.binds_along_path(p))
-            || self.preceding.binds_along_path(names)
+            .is_some_and(|p| self.preceding.binds_along_path(self.assemblies.names(), p))
+            || self
+                .preceding
+                .binds_along_path(self.assemblies.names(), names)
         {
             return false;
         }
@@ -4366,7 +4371,9 @@ impl<'a> Resolver<'a> {
             let child_path: Vec<String> =
                 self.container_path.iter().chain(names).cloned().collect();
             if self.same_name_entity_shadows_head(head)
-                || self.preceding.binds_along_path(&child_path)
+                || self
+                    .preceding
+                    .binds_along_path(self.assemblies.names(), &child_path)
             {
                 return false;
             }
@@ -4753,9 +4760,9 @@ impl<'a> Resolver<'a> {
                 .explicit_open_prefixes
                 .iter()
                 .rev() // latest open first — the winner under latest-wins
-                .filter(|(open_pos, _)| kinds.module_pos.is_none_or(|p| *open_pos > p))
-                .find_map(|(_, prefix)| {
-                    self.open_contests_candidate(prefix, head, res, in_pattern, use_pos, true)
+                .filter(|open| kinds.module_pos.is_none_or(|p| open.pos > p))
+                .find_map(|open| {
+                    self.open_contests_candidate(&open.path, head, res, in_pattern, use_pos, true)
                 });
             if let Some(outcome) = contest {
                 return outcome;
@@ -4791,14 +4798,14 @@ impl<'a> Resolver<'a> {
         let below = namespace
             .as_ref()
             .is_some_and(|outcome| !matches!(outcome, SameFileQualified::Miss));
-        if let Some(outcome) =
-            self.scope
-                .explicit_open_prefixes
-                .iter()
-                .rev()
-                .find_map(|(_, prefix)| {
-                    self.open_contests_candidate(prefix, head, res, in_pattern, use_pos, below)
-                })
+        if let Some(outcome) = self
+            .scope
+            .explicit_open_prefixes
+            .iter()
+            .rev()
+            .find_map(|open| {
+                self.open_contests_candidate(&open.path, head, res, in_pattern, use_pos, below)
+            })
         {
             return outcome;
         }
@@ -5021,7 +5028,10 @@ impl<'a> Resolver<'a> {
             // its unchased target (FCS commits through it, probes CF8/CF8pat),
             // so both defer.
             // A type at a module segment of a longer residual is contention.
-            match self.preceding.exported_type_at(&ty_path) {
+            match self
+                .preceding
+                .exported_type_at(self.assemblies.names(), &ty_path)
+            {
                 Some(cases_enumerable) if in_pattern && cases_enumerable && mids.is_empty() => {}
                 Some(_) => return Some(SameFileQualified::DeferStop),
                 // Anything ELSE the conflated name-shadow set holds at the
@@ -5818,7 +5828,8 @@ impl<'a> Resolver<'a> {
                         self.preceding.is_real_nested_module(&path)
                             || self.preceding.declares_member_at(&path)
                     } else {
-                        self.preceding.binds_along_path(&path)
+                        self.preceding
+                            .binds_along_path(self.assemblies.names(), &path)
                             || self.preceding.declares_member_at(&path)
                     };
                     if names_head {
@@ -6529,11 +6540,15 @@ impl<'a> Resolver<'a> {
         // walk knows. A value may have entered there too, so they are
         // ordered once the value's position is known (below).
         let mut at_block_start: Vec<(SlotClass, Option<FoldOrder>)> = Vec::new();
+        // Every map below is keyed by interned paths and names, so a head the
+        // env's table never interned is in none of them, and a prefix whose
+        // child of that name was never interned holds nothing under it.
+        let names = self.assemblies.names();
+        let head_name = names.lookup(head);
         for k in 0..=self.container_path.len() {
             for &(pos, class) in self
                 .type_slot_history
-                .get(&self.container_path.prefix_id(k))
-                .and_then(|m| m.get(head))
+                .get(self.container_path.prefix_id(k), head_name, head)
                 .into_iter()
                 .flatten()
             {
@@ -6563,19 +6578,16 @@ impl<'a> Resolver<'a> {
         // block's start.
         let namespace = self.enclosing_namespace();
         if !namespace.is_empty() {
-            let mut path = namespace.to_vec();
-            path.push(head.to_string());
-            if let Some(class) = self
-                .preceding
-                .exported_type_slot(&path)
-                .map(|slot| slot.class_at(&path, namespace))
-                .filter(|class| *class != SlotClass::Keeps)
-            {
-                let order = self
-                    .preceding
-                    .exported_type_order(&path)
-                    .map(FoldOrder::earlier_file);
-                at_block_start.push((class, order));
+            let namespace_id = self.container_path.prefix_id(namespace.len());
+            if let Some(exported) = self.preceding.exported_type_by_id(
+                names,
+                head_name.and_then(|n| names.child(namespace_id, n)),
+                || child_text(namespace, head),
+            ) {
+                let class = exported.slot.class_in(namespace, namespace);
+                if class != SlotClass::Keeps {
+                    at_block_start.push((class, exported.order().map(FoldOrder::earlier_file)));
+                }
             }
         }
         let open_prefixes = self
@@ -6588,9 +6600,9 @@ impl<'a> Resolver<'a> {
         // the type ([`FoldOrder`]), when the walk knows — what a value the
         // same `open` supplied is ordered against (below).
         let mut project_type_opens: Vec<(u32, Option<OrderedTypeOpen<'_>>)> = Vec::new();
-        for (pos, prefix) in open_prefixes {
-            let mut path = prefix.clone();
-            path.push(head.to_string());
+        for open in open_prefixes {
+            let (pos, prefix) = (&open.pos, &open.path);
+            let path_id = head_name.and_then(|n| names.child(open.id, n));
             // The LAST same-path export wins — a redefinition (illegal, but
             // live mid-edit: FS0037 within a file, FS0248 across files)
             // shadows every earlier definition, and every other consumer of a
@@ -6602,41 +6614,39 @@ impl<'a> Resolver<'a> {
             // The `open` brings the type only if it is accessible where the
             // `open` is written, which these prefixes do not record.
             let seen = |slot: TypeSlot| {
-                slot.class_through_scoped_open(&path, namespace, &self.container_path)
+                slot.class_through_scoped_open_in(prefix, namespace, &self.container_path)
             };
-            let class = if let Some((_, _, slot)) =
-                self.type_path_exports.iter().rfind(|(p, _, _)| p == &path)
-            {
-                // This file's type: the open adds this file's earlier blocks
-                // one fragment at a time.
-                let order = self
-                    .container_path
-                    .get_at(&self.type_defs, prefix)
-                    .and_then(|m| m.get(head))
-                    .map(|&id| {
-                        self.same_file_fold_order(
-                            self.defs[id.index()].range.start().into(),
-                            FoldTier::Types,
-                        )
-                    });
-                Some((seen(*slot), order.map(|o| (prefix.as_slice(), o))))
-            } else {
-                self.preceding.exported_type_slot(&path).map(|slot| {
+            let class =
+                if let Some((_, _, slot)) = self.latest_type_path_export(path_id, prefix, head) {
+                    // This file's type: the open adds this file's earlier blocks
+                    // one fragment at a time.
                     let order = self
-                        .preceding
-                        .exported_type_order(&path)
-                        .map(FoldOrder::earlier_file);
-                    (seen(slot), order.map(|o| (prefix.as_slice(), o)))
-                })
-            };
+                        .type_defs
+                        .get(&open.id)
+                        .and_then(|m| m.get(head))
+                        .map(|&id| {
+                            self.same_file_fold_order(
+                                self.defs[id.index()].range.start().into(),
+                                FoldTier::Types,
+                            )
+                        });
+                    Some((seen(*slot), order.map(|o| (prefix.as_slice(), o))))
+                } else {
+                    self.preceding
+                        .exported_type_by_id(names, path_id, || child_text(prefix, head))
+                        .map(|exported| {
+                            let order = exported.order().map(FoldOrder::earlier_file);
+                            (seen(exported.slot), order.map(|o| (prefix.as_slice(), o)))
+                        })
+                };
             if let Some((class, order)) = class {
                 note(*pos, class);
                 if class != SlotClass::Keeps {
                     project_type_opens.push((*pos, order));
                 }
             } else if self
-                .container_path
-                .get_at(&self.type_defs, prefix)
+                .type_defs
+                .get(&open.id)
                 .is_some_and(|m| m.contains_key(head))
             {
                 // A same-file type filed under the opened module's container
@@ -6847,8 +6857,8 @@ impl<'a> Resolver<'a> {
                     .explicit_open_prefixes
                     .iter()
                     .chain(&self.scope.module_open_prefixes)
-                    .filter(|(p, _)| *p == value_pos)
-                    .map(|(_, reading)| reading)
+                    .filter(|open| open.pos == value_pos)
+                    .map(|open| open.id)
                     .collect::<HashSet<_>>()
                     .len();
                 (readings == 1 && !self.item_is_case(id)).then(|| {
@@ -6862,6 +6872,33 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// This file's latest type export at `prefix` extended by `head`, whose
+    /// interned id is `path_id` (`None` when the env's table never interned
+    /// the path, so that no export is there).
+    fn latest_type_path_export(
+        &self,
+        path_id: Option<PathId>,
+        prefix: &[String],
+        head: &str,
+    ) -> Option<&(Vec<String>, bool, TypeSlot)> {
+        let found = path_id
+            .and_then(|id| self.type_path_export_ids.get(&id))
+            .map(|&i| &self.type_path_exports[i]);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            let path = child_text(prefix, head);
+            let reference = self.type_path_exports.iter().rfind(|(p, _, _)| *p == path);
+            assert_eq!(
+                found.map(std::ptr::from_ref),
+                reference.map(std::ptr::from_ref),
+                "the interned type-export index disagrees with a scan at {path:?}"
+            );
+        }
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = (prefix, head);
+        found
+    }
+
     /// Whether the in-file type that entered the slot at `type_pos` is the
     /// latest type named `head` in scope, of any slot class and from any
     /// source: an enclosing container's, an earlier block's (position 0,
@@ -6869,10 +6906,11 @@ impl<'a> Resolver<'a> {
     /// namespace's, or the enclosing namespace's (position 0). A later one
     /// takes a type-qualified path from it.
     fn lexical_type_is_latest(&self, head: &str, type_pos: u32) -> bool {
+        let names = self.assemblies.names();
+        let head_name = names.lookup(head);
         let lexical = (0..=self.container_path.len()).flat_map(|k| {
             self.type_slot_history
-                .get(&self.container_path.prefix_id(k))
-                .and_then(|m| m.get(head))
+                .get(self.container_path.prefix_id(k), head_name, head)
                 .into_iter()
                 .flatten()
                 .filter_map(move |&(pos, _)| {
@@ -6887,17 +6925,20 @@ impl<'a> Resolver<'a> {
             .explicit_open_prefixes
             .iter()
             .chain(&self.scope.module_open_prefixes)
-            .filter(|(_, prefix)| {
-                let mut path = prefix.clone();
-                path.push(head.to_string());
-                self.type_path_exports.iter().any(|(p, _, _)| *p == path)
-                    || self.preceding.exported_type_slot(&path).is_some()
+            .filter(|open| {
+                let path_id = head_name.and_then(|n| names.child(open.id, n));
+                self.latest_type_path_export(path_id, &open.path, head)
+                    .is_some()
                     || self
-                        .container_path
-                        .get_at(&self.type_defs, prefix)
+                        .preceding
+                        .exported_type_by_id(names, path_id, || child_text(&open.path, head))
+                        .is_some()
+                    || self
+                        .type_defs
+                        .get(&open.id)
                         .is_some_and(|m| m.contains_key(head))
             })
-            .map(|(pos, _)| *pos);
+            .map(|open| open.pos);
         let assembly = self
             .scope
             .assembly_open_prefixes
@@ -6906,9 +6947,17 @@ impl<'a> Resolver<'a> {
             .map(|(pos, _)| *pos);
         let enclosing = {
             let ns = self.enclosing_namespace();
-            let mut path = ns.to_vec();
-            path.push(head.to_string());
-            (!ns.is_empty() && self.preceding.exported_type_slot(&path).is_some()).then_some(0)
+            let ns_id = self.container_path.prefix_id(ns.len());
+            (!ns.is_empty()
+                && self
+                    .preceding
+                    .exported_type_by_id(
+                        names,
+                        head_name.and_then(|n| names.child(ns_id, n)),
+                        || child_text(ns, head),
+                    )
+                    .is_some())
+            .then_some(0)
         };
         lexical
             .chain(opened)
@@ -6996,7 +7045,8 @@ impl<'a> Resolver<'a> {
             .filter(|&k| written(k))
             .any(|k| !self.enclosing_module_like_transparent_for(k, head, residual));
         let contested = contests_written
-            || self.scope.explicit_open_prefixes.iter().any(|(_, prefix)| {
+            || self.scope.explicit_open_prefixes.iter().any(|open| {
+                let prefix = &open.path;
                 if self.module_like_transparent_for(prefix, head, residual) {
                     return false;
                 }
@@ -7250,3 +7300,12 @@ pub(super) fn is_synthesized_name(name: &str) -> bool {
 /// ([`FoldOrder`]): what [`Resolver::value_slot`] orders a value the same
 /// `open` entered against.
 type OrderedTypeOpen<'a> = (&'a [String], FoldOrder);
+
+/// `prefix` extended by `head`: the spelling the interning reference keys a
+/// child path by.
+fn child_text(prefix: &[String], head: &str) -> Vec<String> {
+    let mut path = Vec::with_capacity(prefix.len() + 1);
+    path.extend_from_slice(prefix);
+    path.push(head.to_string());
+    path
+}

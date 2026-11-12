@@ -22,7 +22,7 @@ use super::model::{
 };
 use super::open_scope::OpenScope;
 use super::path_set::PathSet;
-use crate::names::PathId;
+use crate::names::{ChildMap, PathId};
 
 /// The opens in scope that could supply a **dotted-path head** the walk does
 /// not otherwise see ([`OpenOpacityState::dotted`](crate::resolve::open_scope::OpenOpacityState::dotted)).
@@ -1079,8 +1079,11 @@ pub(super) struct Resolver<'a> {
     /// container and simple name — all of them, not the last-wins one
     /// [`Self::type_slot_classes`] keeps: same-named types of different
     /// arities each take the unqualified slot, and the latest of any of them
-    /// is what orders a value ([`Self::head_value_slot`]).
-    pub(super) type_slot_history: HashMap<PathId, HashMap<String, Vec<TypeSlotDef>>>,
+    /// is what orders a value ([`Self::head_value_slot`]). Keyed by the
+    /// container's interned path and the name's, so a probe for a name the
+    /// table never interned costs no hashing of its text past the one
+    /// lookup that says so.
+    pub(super) type_slot_history: ChildMap<Vec<TypeSlotDef>>,
     /// Each in-file type's **access-root** — keyed by container path, like [`Self::type_defs`], and
     /// populated by the same [`define_type`](Self::define_type) call. `None` =
     /// public; `Some(k)` = accessible only from a site within the `k`-segment
@@ -1334,6 +1337,10 @@ pub(super) struct Resolver<'a> {
     /// entry also carries the type's [`TypeSlot`], consumed by
     /// [`head_value_slot`](Self::head_value_slot) to decide eviction.
     pub(super) type_path_exports: Vec<(Vec<String>, bool, TypeSlot)>,
+    /// Each path in [`Self::type_path_exports`], interned, to the index of
+    /// its latest entry there: the entry a later definition at the same path
+    /// shadows the earlier ones with.
+    pub(super) type_path_export_ids: HashMap<PathId, usize>,
     /// How many *leading* [`OpenScope::imports`](crate::resolve::open_scope::OpenScope::imports) groups are the implicit
     /// auto-opens ([`implicit_open_groups`]). Constant for the file: every
     /// reset re-seeds `imports` with exactly that list, and explicit opens

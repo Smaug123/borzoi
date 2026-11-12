@@ -220,12 +220,13 @@ impl<'a> Resolver<'a> {
             .entry(self.container_path.to_vec())
             .or_default()
             .insert(key.clone(), slot);
-        self.type_slot_history
-            .entry(self.container_path.id())
-            .or_default()
-            .entry(key.clone())
-            .or_default()
-            .push((u32::from(range.start()), slot));
+        let def = (u32::from(range.start()), slot);
+        self.type_slot_history.update(
+            self.assemblies.names(),
+            self.container_path.id(),
+            &key,
+            |history| history.push(def),
+        );
         // The parallel access-root entry (same key, same last-wins): a `private`
         // type is accessible only within its container's subtree, so a same-file
         // module-qualified `A.Foo.Red` from an inaccessible site (a sibling) does
@@ -1043,10 +1044,10 @@ impl<'a> Resolver<'a> {
     /// FCS's unqualified slot (its [`SlotClass`] is not
     /// [`SlotClass::Keeps`]).
     fn type_in_scope_may_take_slot(&self, name: &str) -> bool {
+        let interned = self.assemblies.names().lookup(name);
         (0..=self.container_path.len()).any(|k| {
             self.type_slot_history
-                .get(&self.container_path.prefix_id(k))
-                .and_then(|m| m.get(name))
+                .get(self.container_path.prefix_id(k), interned, name)
                 .is_some_and(|entries| entries.iter().any(|(_, class)| *class != SlotClass::Keeps))
         })
     }
