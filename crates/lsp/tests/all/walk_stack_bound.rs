@@ -30,6 +30,7 @@ use std::time::Duration;
 use borzoi::server::{SERVER_STACK_BYTES, run};
 use borzoi_cst::parser::{MAX_TREE_HEIGHT, Parse, parse, parse_sig};
 use borzoi_cst::syntax::SyntaxNode;
+use borzoi_cst::syntax::{NodeOrToken, WalkEvent};
 use borzoi_oracle_harness::par_map::par_map;
 use borzoi_oracle_harness::repetition_shapes::{Case, Form, Kind, cases, tallest_clean_count};
 use borzoi_oracle_harness::stack_probe::{self, Outcome};
@@ -45,7 +46,6 @@ use lsp_types::{
     ReferenceParams, SemanticTokensParams, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, Uri, WorkDoneProgressParams,
 };
-use rowan::{NodeOrToken, WalkEvent};
 
 use crate::common::runtime_project_state_in;
 

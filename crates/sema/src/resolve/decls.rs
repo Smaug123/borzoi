@@ -45,10 +45,10 @@ pub(super) fn header_is_private(node: &borzoi_cst::syntax::SyntaxNode) -> bool {
     use borzoi_cst::syntax::SyntaxKind;
     for el in node.children_with_tokens() {
         match el {
-            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => {
+            borzoi_cst::syntax::NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => {
                 return false;
             }
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => {
+            borzoi_cst::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => {
                 return t.text() == "private";
             }
             _ => {}

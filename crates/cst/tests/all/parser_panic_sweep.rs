@@ -90,7 +90,7 @@ fn every_parse_setting() -> impl Iterator<Item = (FileKind, LanguageVersion)> {
 /// `"try)..\n"` is a member of this product — a keyword, a closer the lex
 /// filter swallows, and a range head with nothing to bind to — and that is the
 /// shape this alphabet is sized to reach.
-const CORE: &[&str] = &[
+pub(crate) const CORE: &[&str] = &[
     "(", ")", "[", "]", "{", "}", "|", ".", "..", "*", "-", "&", "?", "_", "1", "x", "\n", " ",
     "match", "with", "let", "fun", "try", "if", "->", "=",
 ];
@@ -99,7 +99,7 @@ const CORE: &[&str] = &[
 /// bracket families, the string and quotation openers, the type-relation and
 /// pipeline operators, and the declaration keywords. Too large to enumerate
 /// exhaustively past pairs, which is what the random half is for.
-const WIDE: &[&str] = &[
+pub(crate) const WIDE: &[&str] = &[
     "(",
     ")",
     "[",

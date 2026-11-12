@@ -17,8 +17,7 @@
 
 use std::collections::HashMap;
 
-use borzoi_cst::syntax::{SyntaxElement, SyntaxNode, SyntaxToken};
-use rowan::{NodeOrToken, TextRange};
+use borzoi_cst::syntax::{NodeOrToken, SyntaxElement, SyntaxNode, SyntaxToken, TextRange};
 
 /// The spans of the nodes of one tree, remembered as they are found.
 #[derive(Default)]

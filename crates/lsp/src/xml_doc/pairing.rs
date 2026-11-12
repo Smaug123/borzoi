@@ -30,9 +30,9 @@
 
 use std::collections::HashMap;
 
+use borzoi_cst::syntax::NodeOrToken;
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use borzoi_sema::{Def, DefKind};
-use rowan::NodeOrToken;
 
 use super::source::{
     ancestors, covering, ident_text, in_head_pattern, is_self_identifier, type_arity, unticked,

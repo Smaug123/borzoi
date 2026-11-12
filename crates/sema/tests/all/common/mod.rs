@@ -3222,8 +3222,8 @@ pub fn unconverted_region(
     };
     let range = rowan::TextRange::new((start as u32).into(), (end as u32).into());
     let ancestors: Vec<_> = match file.syntax().covering_element(range) {
-        rowan::NodeOrToken::Node(n) => n.ancestors().collect(),
-        rowan::NodeOrToken::Token(t) => t.parent_ancestors().collect(),
+        borzoi_cst::syntax::NodeOrToken::Node(n) => n.ancestors().collect(),
+        borzoi_cst::syntax::NodeOrToken::Token(t) => t.parent_ancestors().collect(),
     };
     let region = ancestors
         .iter()

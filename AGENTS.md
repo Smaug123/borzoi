@@ -8,8 +8,10 @@ You should find the F# compiler checked out in ../fsharp ; shout if it's not the
 This is a Cargo workspace with nine members:
 
 - `crates/cst/` — `borzoi-cst`. The lexer, lex-filter (offside rewriter),
-  recursive-descent parser, and rowan-backed CST/AST. Self-contained: depends
-  only on `logos` and `rowan`. Intended to be reusable outside this repo.
+  recursive-descent parser, and the CST/AST: a flat preorder table per file
+  (`docs/flat-syntax-tree-plan.md`) behind rowan's red-tree API, flattened
+  from the rowan green tree the parser builds. Self-contained: depends only on
+  `logos` and `rowan`. Intended to be reusable outside this repo.
 - `crates/msbuild/` — `borzoi-msbuild`. MSBuild `.fsproj` parser /
   evaluator: extracts the Compile order, expands `$(…)` substitution, evaluates
   the condition subset, detects/follows `Directory.Build.props|targets`,
@@ -298,7 +300,7 @@ The parser and lex-filter are checked for byte-faithful behaviour against the
 real F# Compiler Service by *differential* tests living in `crates/cst/tests/all/`:
 
 - **What the parser diff tests.** FCS is asked for its `ParsedInput` via
-  `tools/fcs-dump ast`; our parser produces a rowan CST/AST. Both are projected
+  `tools/fcs-dump ast`; our parser produces a CST/AST. Both are projected
   to the shared `crates/cst/tests/all/common/normalised_ast/` model and compared
   with `assert_eq!`. This tests the *modelled syntactic structure* and the
   caller-selected parse-status expectation (both clean, both erroring, or a
@@ -499,6 +501,7 @@ nix develop -c cargo test -p borzoi-cst  --test all parser_diff_feature_gates:: 
 nix develop -c cargo test -p borzoi-cst  --test all parser_panic_sweep::fresh_seed -- --ignored  # ~10 s
 nix develop -c cargo test -p borzoi-cst  --test all layout_perturbation_sweep:: -- --ignored  # ~10 min
 nix develop -c cargo test -p borzoi-cst  --test all recovery_sweep::       -- --ignored  # ~3 min
+nix develop -c cargo test -p borzoi-cst  --test all flat_tree_reference::corpus -- --ignored  # ~2.5 min
 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
 nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored  #  ~25 s
 nix develop -c cargo test -p borzoi-sema --test all silent_region_sweep:: -- --ignored  #  ~1.5 min

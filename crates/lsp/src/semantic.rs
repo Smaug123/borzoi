@@ -1573,12 +1573,10 @@ fn build_parses(
                     );
                     return Err(FoldRefusal::ParserPanic { file: include });
                 };
-                // Green-node equality is recursively structural (rowan compares
-                // header + children, tokens by kind + text — verified against
-                // the vendored source), so this is an allocation-free tree
-                // comparison; both directions are pinned by the mid-edit
+                // `structurally_eq` compares shape, kinds and token text, an
+                // allocation-free tree comparison; both directions are pinned by the mid-edit
                 // (reconverges, folds) and straddling (differs, refuses) tests.
-                if other.root.green() != parse.root.green() {
+                if !other.root.structurally_eq(&parse.root) {
                     tracing::info!(
                         project = %project.display(),
                         file = %include.display(),
@@ -3962,8 +3960,8 @@ mod tests {
             "and rejected one threshold down"
         );
         assert_eq!(
-            guessed.root.green(),
-            parse(LanguageVersion::V10_0).root.green(),
+            guessed.root.structure(),
+            parse(LanguageVersion::V10_0).root.structure(),
             "with the same tree, which is why the shape gate cannot see it"
         );
 

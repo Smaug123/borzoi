@@ -57,12 +57,14 @@ fn cst_access(node: &borzoi_cst::syntax::SyntaxNode) -> Option<NormalisedAccess>
 fn cst_type_header_access(node: &borzoi_cst::syntax::SyntaxNode) -> Option<NormalisedAccess> {
     for elem in node.children_with_tokens() {
         match elem {
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => {
+            borzoi_cst::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => {
                 return Some(cst_access_from_token(&t));
             }
             // The name is the first `LONG_IDENT` child; a before-name access
             // must precede it. Anything from here on is the after-name slot.
-            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => return None,
+            borzoi_cst::syntax::NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => {
+                return None;
+            }
             _ => {}
         }
     }
@@ -76,7 +78,7 @@ fn cst_type_header_access(node: &borzoi_cst::syntax::SyntaxNode) -> Option<Norma
 /// overall `SynValSigAccess` field — sits after and must be ignored.
 fn cst_access_before_name_ident(node: &borzoi_cst::syntax::SyntaxNode) -> Option<NormalisedAccess> {
     for elem in node.children_with_tokens() {
-        if let rowan::NodeOrToken::Token(t) = elem {
+        if let borzoi_cst::syntax::NodeOrToken::Token(t) = elem {
             match t.kind() {
                 SyntaxKind::ACCESS_TOK => return Some(cst_access_from_token(&t)),
                 SyntaxKind::IDENT_TOK => return None,
@@ -101,12 +103,12 @@ fn cst_member_sig_access(
 ) -> Option<NormalisedAccess> {
     for elem in ms.children_with_tokens() {
         match elem {
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => {
+            borzoi_cst::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => {
                 return Some(cst_access_from_token(&t));
             }
             // The `VAL_SIG` holds the name (and any `with get/set` accessor
             // access after it); a leading modifier must precede it.
-            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::VAL_SIG => break,
+            borzoi_cst::syntax::NodeOrToken::Node(n) if n.kind() == SyntaxKind::VAL_SIG => break,
             _ => {}
         }
     }
@@ -605,7 +607,7 @@ fn normalise_hash_directive_payload(
     let mut args = Vec::new();
     for elem in h.syntax().children_with_tokens() {
         match elem {
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IDENT_TOK => {
+            borzoi_cst::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IDENT_TOK => {
                 if seen_name {
                     // The three magic source identifiers are `SourceIdentifier` —
                     // but *only* the bare keyword-string spelling. A backtick-quoted
@@ -629,7 +631,7 @@ fn normalise_hash_directive_payload(
                     seen_name = true;
                 }
             }
-            rowan::NodeOrToken::Node(n) => {
+            borzoi_cst::syntax::NodeOrToken::Node(n) => {
                 if let Some(c) = ConstExpr::cast(n) {
                     match normalise_const(&c) {
                         NormalisedConst::String { value, kind } => {

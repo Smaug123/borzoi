@@ -86,11 +86,11 @@ fn height(root: &SyntaxNode) -> usize {
     let (mut depth, mut height) = (0usize, 0usize);
     for event in root.preorder() {
         match event {
-            rowan::WalkEvent::Enter(_) => {
+            crate::syntax::WalkEvent::Enter(_) => {
                 depth += 1;
                 height = height.max(depth);
             }
-            rowan::WalkEvent::Leave(_) => depth -= 1,
+            crate::syntax::WalkEvent::Leave(_) => depth -= 1,
         }
     }
     height

@@ -223,7 +223,7 @@ fn lone_intptr_literal() {
     let any_intptr = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INTPTR_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INTPTR_LIT));
     assert!(any_intptr, "expected an INTPTR_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -236,7 +236,7 @@ fn lone_uintptr_literal() {
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
     let any_uintptr = parse.root.descendants_with_tokens().any(
-        |el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINTPTR_LIT),
+        |el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINTPTR_LIT),
     );
     assert!(any_uintptr, "expected a UINTPTR_LIT in the tree");
     assert_lossless(source, &parse);
@@ -271,7 +271,7 @@ fn lone_oct_and_bin_int_literals() {
         assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
         assert_lossless(source, &parse);
         let any_int32 = parse.root.descendants_with_tokens().any(
-            |el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INT32_LIT),
+            |el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INT32_LIT),
         );
         assert!(any_int32, "expected INT32_LIT for {source:?}");
     }
@@ -313,10 +313,9 @@ fn lone_hex_suffixed_byte_literal() {
     let source = "0xFFuy\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
-    let any_byte = parse
-        .root
-        .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::BYTE_LIT));
+    let any_byte = parse.root.descendants_with_tokens().any(
+        |el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::BYTE_LIT),
+    );
     assert!(any_byte, "expected a BYTE_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -331,7 +330,7 @@ fn lone_bin_suffixed_uint64_literal() {
     let any_uint64 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT64_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT64_LIT));
     assert!(any_uint64, "expected a UINT64_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -387,7 +386,7 @@ fn lone_uint32_ul_literal() {
     let any_uint32 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT32_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT32_LIT));
     assert!(any_uint32, "expected a UINT32_LIT in the tree");
 }
 
@@ -403,7 +402,7 @@ fn lone_uint64_uL_literal() {
     let any_uint64 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT64_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT64_LIT));
     assert!(any_uint64, "expected a UINT64_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -419,7 +418,7 @@ fn lone_int64_literal_at_max() {
     let any_int64 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INT64_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::INT64_LIT));
     assert!(any_int64, "expected an INT64_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -435,7 +434,7 @@ fn lone_uint64_literal_at_max() {
     let any_uint64 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT64_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::UINT64_LIT));
     assert!(any_uint64, "expected a UINT64_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -488,7 +487,7 @@ fn lone_float64_exponent_literal() {
     let any_ieee64 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE64_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE64_LIT));
     assert!(any_ieee64, "expected an IEEE64_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -505,7 +504,7 @@ fn lone_xieee64_literal() {
     let any_ieee64 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE64_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE64_LIT));
     assert!(any_ieee64, "expected an IEEE64_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -537,10 +536,9 @@ fn lone_char_escape_literal() {
     let source = "'\\n'\n";
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
-    let any_char = parse
-        .root
-        .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::CHAR_LIT));
+    let any_char = parse.root.descendants_with_tokens().any(
+        |el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::CHAR_LIT),
+    );
     assert!(any_char, "expected a CHAR_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -977,7 +975,7 @@ fn lone_string_with_escape_literal() {
     let any_string = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::STRING_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::STRING_LIT));
     assert!(any_string, "expected a STRING_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -1074,7 +1072,7 @@ fn verbatim_string_with_escaped_quote() {
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
     let any_string = parse.root.descendants_with_tokens().any(|el| {
-            matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::VERBATIM_STRING_LIT)
+            matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::VERBATIM_STRING_LIT)
         });
     assert!(any_string, "expected a VERBATIM_STRING_LIT in the tree");
     assert_lossless(source, &parse);
@@ -1126,7 +1124,7 @@ fn lone_decimal_integer_literal() {
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
     let any_decimal = parse.root.descendants_with_tokens().any(
-        |el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DECIMAL_LIT),
+        |el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DECIMAL_LIT),
     );
     assert!(any_decimal, "expected a DECIMAL_LIT in the tree");
     assert_lossless(source, &parse);
@@ -1139,7 +1137,7 @@ fn lone_decimal_exponent_literal() {
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
     let any_decimal = parse.root.descendants_with_tokens().any(
-        |el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DECIMAL_LIT),
+        |el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::DECIMAL_LIT),
     );
     assert!(any_decimal, "expected a DECIMAL_LIT in the tree");
     assert_lossless(source, &parse);
@@ -1212,7 +1210,7 @@ fn lone_user_num_with_underscore_literal() {
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
     let any_user_num = parse.root.descendants_with_tokens().any(
-        |el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::USER_NUM_LIT),
+        |el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::USER_NUM_LIT),
     );
     assert!(any_user_num, "expected a USER_NUM_LIT in the tree");
     assert_lossless(source, &parse);
@@ -1230,7 +1228,7 @@ fn keyword_string_in_expr_position() {
     let parse = parse(source);
     assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
     let any_source_ident = parse.root.descendants_with_tokens().any(|el| {
-            matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SOURCE_IDENTIFIER_LIT)
+            matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::SOURCE_IDENTIFIER_LIT)
         });
     assert!(
         any_source_ident,
@@ -1290,7 +1288,7 @@ fn lone_float32_dotless_literal() {
     let any_ieee32 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE32_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE32_LIT));
     assert!(any_ieee32, "expected an IEEE32_LIT in the tree");
     assert_lossless(source, &parse);
 }
@@ -1306,7 +1304,7 @@ fn lone_xieee32_literal() {
     let any_ieee32 = parse
         .root
         .descendants_with_tokens()
-        .any(|el| matches!(el, rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE32_LIT));
+        .any(|el| matches!(el, crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::IEEE32_LIT));
     assert!(any_ieee32, "expected an IEEE32_LIT in the tree");
     assert_lossless(source, &parse);
 }

@@ -3390,7 +3390,7 @@ fn line_comment_before_literal_preserved() {
     let mut int_tok = None;
     let mut comment_tok = None;
     for el in parse.root.descendants_with_tokens() {
-        if let rowan::NodeOrToken::Token(t) = el {
+        if let crate::syntax::NodeOrToken::Token(t) = el {
             match t.kind() {
                 SyntaxKind::INT32_LIT => int_tok = Some(t),
                 SyntaxKind::LINE_COMMENT => comment_tok = Some(t),
@@ -3517,7 +3517,7 @@ fn crlf_blocksep_lands_after_newline() {
         .root
         .descendants_with_tokens()
         .filter_map(|el| match el {
-            rowan::NodeOrToken::Token(t) => Some(t.kind()),
+            crate::syntax::NodeOrToken::Token(t) => Some(t.kind()),
             _ => None,
         })
         .collect();
