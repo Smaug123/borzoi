@@ -238,25 +238,41 @@ The open-scope flags share their lifecycle with the rest of the open state:
 `resolve_file` resets 17 fields by hand at each block.
 
 - **`OpenScope`** holds that whole group. A block starts with
-  `OpenScope::block_start(env, module)`. A nested module runs as
-  `let outer = self.scope.clone(); …; self.scope = outer.leave(inner)`, where
-  `leave` names each field that does not simply come back:
-  `auto_open_type_shadow_names` merges, `rec_module_names` is conditional,
-  and `access_floor` is computed. A field added to `OpenScope` cannot be
-  missed by the restore. Today each of the 21 hand-written pairs can be.
+  `OpenScope::block_start(imports, shortening, header)`. A nested module runs
+  as `let outer = self.scope.clone(); …; self.scope = outer.leave(&mut
+  self.scope, exit)`, where `leave` names each field that does not simply
+  come back. Only `auto_open_type_shadow_names` is named: an `[<AutoOpen>]`
+  module merges what its body grew into its container. `rec_module_names` and
+  `access_floor`, which the module's header sets, come back to their values at
+  entry like every other field (the conditional restore the walk spelled out
+  by hand was always a restore to the entry value), and the debug assertion
+  checks it. A field added to `OpenScope` cannot be missed by the restore.
+  Today each of the 21 hand-written pairs can be.
+  - The container path and the block's local shadow sets
+    (`nested_module_locals`, `augmentation_head_locals`) share the lifetime
+    but stay outside `OpenScope`: each is restored through its own mark, which
+    costs nothing, where a clone would copy every path the file has entered.
+  - `rec_module_names` is shared (`Rc`), since it is only ever replaced
+    whole and a nested module clones the scope.
+  - `block_type_defs` is reset at each block but is not restored after a
+    nested module (a nested module's types stay in the block's set), so it is
+    a per-block accumulator, not open scope, and stays outside.
 - **The opacity part of `OpenScope`** is `OpenOpacityState { value, dotted,
   unmodelled }`, with raise-only methods, since the flags are monotone within a
   scope. Its predicates are named after the questions the read sites ask:
   `lookup.rs` and `types.rs` each spell three-flag conjunctions inline today.
   The `OpenOpacity` trace record that `resolution-explain` prints becomes
   `after.raised_since(before)`, so it cannot drift from the state.
-- **An implication that the code contradicts.** `opaque_value_open`'s doc
-  says the flag implies dotted opacity. `types.rs` says it does not, because
-  `open_imports_project_values` sets only `opaque_value_open`. The stage keeps
-  today's behaviour exactly. It records which state combinations the corpus
-  reaches, and either encodes the implication in the type (which can only add
-  deferrals: the manifests may move, and only toward `Deferred`) or corrects
-  the doc.
+- **An implication that the code contradicts, settled.** `opaque_value_open`'s
+  doc said the flag implies dotted opacity. It does not: the
+  `open_imports_project_values` fallback and `open_type_union_cases` raise
+  the value part alone, and the census (Stage 9) reaches that state on the
+  corpus. The read sites that defer under either part ask
+  `bare_or_dotted_heads_unknowable`; two read the dotted part alone (the
+  type-qualified case past enumerable project modules, and that channel's
+  module list). Encoding the implication would add deferrals there, so the
+  stage keeps today's behaviour and corrects the doc: the three parts are
+  independent.
 - **File-wide unknowables** become a set of reasons with `raise` and no
   `clear`. The ones a prescan computes before the walk become an immutable
   value the walk borrows.
@@ -505,6 +521,20 @@ opacity combinations is recorded in the PR, which settles D5's implication
 question.
 
 **Expected**: about 0.
+
+**Measured**: resolve 1583.2 → 1585.1 instructions per byte (+0.1%),
+allocations 1.736 → 1.736 per byte; infer unchanged. A nested module clones
+the same fields it saved by hand before, plus a reference count.
+
+**Census.** States change only at an `open`, so the state after each open,
+and at each read of a predicate, enumerates the reachable ones. Over the whole
+corpus (5,202 files, each resolved on its own, so no earlier file's modules are
+in scope and the enumerable-project-module part of the dotted state cannot
+rise), the reachable states are: nothing raised; the dotted part alone; the
+value part alone; and the value and unqualified parts together. The value part
+was never raised with the dotted part, nor the unqualified part without the
+value part. So the value part does not imply the dotted part on real code,
+and D5's implication is false, not merely unencoded.
 
 ### Stage 10: file-wide unknowables and windows
 

@@ -106,7 +106,7 @@ impl Resolver<'_> {
         if self.container_path.starts_with(&mp) {
             return true;
         }
-        if self.recursive_module_active {
+        if self.scope.recursive_module_active {
             return false;
         }
         let Some(&kinds) = self.declared_in(prefix).and_then(|d| d.get(name)) else {
@@ -137,6 +137,7 @@ impl Resolver<'_> {
             .chain(std::iter::once(0))
             .map(|k| (self.container_path[..k].to_vec(), false));
         let opened = self
+            .scope
             .explicit_open_prefixes
             .iter()
             .map(|(_, prefix)| (prefix.clone(), true));
@@ -180,7 +181,7 @@ impl Resolver<'_> {
              {}, opens {:?})",
             &self.container_path[..],
             self.namespace_depth,
-            self.explicit_open_prefixes
+            self.scope.explicit_open_prefixes
         );
     }
 
@@ -200,7 +201,7 @@ impl Resolver<'_> {
                 full.extend_from_slice(rest);
                 out.push((full, false));
             }
-            for prefix in self.open_shortening_prefixes.iter().rev() {
+            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
                 for auto in self.auto_open_shortening_prefixes(prefix) {
                     let mut full = auto;
                     full.extend_from_slice(written);
@@ -304,7 +305,7 @@ impl Resolver<'_> {
                 full.extend_from_slice(rest);
                 return self.is_project_module_path(&full).then_some(full);
             }
-            for prefix in self.open_shortening_prefixes.iter().rev() {
+            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if self.is_project_module_path(&full) {
@@ -353,7 +354,7 @@ impl Resolver<'_> {
         written: &[String],
         rooted: bool,
     ) -> Option<(CrossFileCase, Vec<String>)> {
-        if !rooted && self.unmodelled_open_active {
+        if !rooted && self.scope.opacity.qualified_paths_unmodelled() {
             return None;
         }
         let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
@@ -377,7 +378,7 @@ impl Resolver<'_> {
                 full.extend_from_slice(rest);
                 return hit(full, CaseTier::Alias);
             }
-            for prefix in self.open_shortening_prefixes.iter().rev() {
+            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if let Some(found) = hit(full, CaseTier::Namespace) {
