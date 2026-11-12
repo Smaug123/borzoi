@@ -3,10 +3,10 @@
 > **Status.** **F1** (`%XX` escapes) has landed, as stages E0–E4 of
 > [`msbuild-escaped-value-plan.md`](completed/msbuild-escaped-value-plan.md):
 > item specs are stored `Escaped` and unescaped once at the point of use, on
-> the literal fast path and across the glob-resolver seam alike. The
-> distinctive Compile-item stages are still outstanding: **F0** (generative
-> compile-order harness), **F2** (alias matching), **F3** (batching degrade),
-> **F4** (ratchet).
+> the literal fast path and across the glob-resolver seam alike. **F0** (the
+> generative compile-order harness) has landed too. The other distinctive
+> Compile-item stages are still outstanding: **F2** (alias matching), **F3**
+> (batching degrade), **F4** (ratchet).
 
 > Companion to the package-reference certainty work (PR #905, branch
 > `packageref-out-of-order-update`). That branch closed three MSBuild
@@ -95,9 +95,9 @@ sources (`LazyItemEvaluator.ComputeItems` / `ProcessNonWildCardItemUpdates`,
   `Compile`/`CompileBefore`/`CompileAfter` lists via `-getItem` and the
   effective F# order via `-target:FSharpSourceCodeCompileOrder`, with
   `fs::canonicalize` on both sides; `fsproj_msbuild_corpus_diff.rs` sweeps
-  the corpus. There is still **no generative harness** for the Compile
-  capture (F0) — the package-reference bug that started all this was found
-  precisely by such a harness (`fsproj_packageref_generative_diff.rs`).
+  the corpus. `fsproj_compile_order_generative_diff.rs` (F0) is the generative
+  harness: it runs the SDK's own `FSharpSourceCodeCompileOrder` through the
+  oracle's `targetItems` op and holds every certain compile order to it.
 
 ## Exposure classes and design decisions
 
@@ -123,10 +123,19 @@ stages (the `msbuild-condition-oracle` skill's stub-project method):
 - **Multi-byte escapes.** *Settled from source* by the escaped-value plan:
   `EscapingUtilities.cs:112` decodes each `%XX` pair as a single UTF-16 char
   (`%E2` → U+00E2), *not* byte-wise UTF-8.
-- **Case sensitivity of path matching on unix.** MSBuild's comparison
-  dictionaries are `OrdinalIgnoreCase` even off-Windows; confirm whether
-  `Update="A.fs"` matches include `a.fs` under `dotnet msbuild` on this
-  platform, and mirror exactly (needed by F2).
+- **Case sensitivity of path matching on unix.** *Settled by oracle*
+  (`targetItems`, Linux, 2026-11-12): a compile-order `Update` matches
+  ignoring case. `Update="A.fs"` moves the item `a.fs`, through the lazy
+  evaluator's batched path (an all-literal spec, keyed in an
+  `OrdinalIgnoreCase` dictionary) and through the unbatched one alike (a
+  `%`-bearing fragment, `Update="%41.fs"`). The same probes confirmed fact 2
+  on this platform: `./a.fs`, `sub/../a.fs`, `.\a.fs` and
+  `$(MSBuildProjectDirectory)/A.fs` all move `a.fs`. So F2's match key is the
+  lexically normalised full path compared ordinal-ignore-case. .NET's
+  `OrdinalIgnoreCase` folds beyond ASCII, so a non-ASCII key either mirrors
+  that folding or declines. Today's exact `PathBuf` comparison commits a wrong
+  order for `Update="A.fs"` against `a.fs`, which is why F0's generator keeps
+  case variants out of `Update` targets.
 - **Trailing dots/spaces** in fragments are trimmed only on Windows —
   expected out of scope (unix hosts), but pin one case to document it.
 - **`Exclude` interaction with the glob-resolver seam**: the escaped half
@@ -143,7 +152,18 @@ that a reviewer can review each branch in isolation.
 
 ### Stage F0: generative compile-order differential harness
 
-**Status**: outstanding. **Dependencies**: none.
+**Status**: landed, as `crates/msbuild/tests/fsproj_compile_order_generative_diff.rs`.
+Over the restricted space it found no divergence: 12,000 random cases, and
+every planted evaluator bug tried (a case-sensitive bucket name, a bucketless
+value kept, the first `CompileOrder` child winning, a rooted `Update` target
+ignored) caught with a shrunk witness. Two departures from the sketch below:
+the oracle runs the target in-process (`targetItems`) rather than a
+`dotnet msbuild` per case, and the target's text is lifted from the installed
+`Microsoft.FSharp.Targets` rather than imported with it, since that file
+imports `Microsoft.Common.targets`. Rare *boundary* items (`Remove`, an
+`Update` writing other metadata, `Exclude`, `@(Compile)`, an
+`ItemDefinitionGroup` default) ride along, held to the same property.
+**Dependencies**: none.
 
 **Implements**: the "no generative harness" gap (Current state, last bullet).
 
