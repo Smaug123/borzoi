@@ -27,6 +27,22 @@ fn spec_fragments(spec: &Escaped) -> impl Iterator<Item = &str> {
         .filter(|s| !s.is_empty())
 }
 
+/// An expanded `Include` as MSBuild spells it before splitting it into items
+/// ([`item_spec::include_spelling`]): on Unix, a Windows-authored
+/// `..\X\X.fsproj` becomes `../X/X.fsproj`. Where that spelling turns on
+/// MSBuild's working directory, the expansion is kept as is, and the backslash
+/// it keeps is what tells an identity's consumers that they cannot know which
+/// path MSBuild holds.
+///
+/// The respelling rewrites separators only, in the escaped domain, as MSBuild
+/// does: an escaped `%5c` stays data.
+fn msbuild_spelling(raw: &str, expanded: &Escaped) -> Escaped {
+    match item_spec::include_spelling(raw, expanded.as_escaped()) {
+        Some(std::borrow::Cow::Owned(respelled)) => Escaped::from_xml(respelled),
+        Some(std::borrow::Cow::Borrowed(_)) | None => expanded.clone(),
+    }
+}
+
 /// A fragment at its point of use: unescaped exactly once, giving the identity
 /// MSBuild records (an `Include="a%20b.fs"` names the file `a b.fs`).
 fn fragment_identity(fragment: &str) -> String {
@@ -988,21 +1004,16 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
     // in the real build, so the captured edge may be phantom. Flag rather
     // than drop: the declared-structure walk keeps the element.
     taint_reference_list_on_untrusted_value(kind, include, &expansion, state);
+    let spelled = msbuild_spelling(include, &expansion.value);
     match state.glob_resolver {
         None => {
-            for entry in spec_fragments(&expansion.value) {
+            for entry in spec_fragments(&spelled) {
                 push_include_entry(node, kind, placement, entry, &metadata, state);
             }
         }
         Some(resolver) => {
             route_item_through_resolver(
-                node,
-                kind,
-                placement,
-                &expansion.value,
-                &metadata,
-                resolver,
-                state,
+                node, kind, placement, &spelled, &metadata, resolver, state,
             );
         }
     }
@@ -1117,8 +1128,9 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
         return;
     };
     let metadata = read_generic_item_metadata(node, state);
+    let spelled = msbuild_spelling(include, &expansion.value);
     let mut captured: Vec<EvaluatedItem> = Vec::new();
-    for fragment in spec_fragments(&expansion.value) {
+    for fragment in spec_fragments(&spelled) {
         // `@(Type)` / `@(Type->Exists())` copies the referenced items, metadata
         // and all, with this element's own metadata applied on top.
         if let Some(expression) = parse_item_expression(fragment) {
@@ -1426,8 +1438,9 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
         .project_references
         .iter()
         .map(|ordered| {
-            // MSBuild may respell a backslash (see `item_spec`), so such an
-            // identity is not one we can hand on.
+            // A backslash left in an identity is one whose spelling turns on
+            // MSBuild's working directory (`msbuild_spelling`), or an escaped
+            // one; neither is handed on.
             let identity = ordered.identity.as_ref().filter(|id| !id.contains('\\'))?;
             Some(EvaluatedItem {
                 identity: identity.clone(),
