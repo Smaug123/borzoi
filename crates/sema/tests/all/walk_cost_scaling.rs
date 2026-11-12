@@ -360,6 +360,35 @@ fn every_flat_repetition_walks_in_linear_time() {
 /// its names, not the modules, are most of what the walks look up.
 const NESTED_BODY: usize = 64;
 
+/// A nestable shape's body: [`NESTED_BODY`] repeats, or, for a body that nests
+/// once per repeat and so can reach the bound under the modules, half as many
+/// as often as it takes to parse cleanly under [`MODULE_NEST`] of them.
+fn nested_body(shape: &'static Shape) -> String {
+    let mut repeats = NESTED_BODY;
+    while repeats > SHORT
+        && !parse_kind(
+            shape.kind,
+            &nested_source(shape, &shape.source(repeats), MODULE_NEST),
+        )
+        .errors
+        .is_empty()
+    {
+        repeats /= 2;
+    }
+    shape.source(repeats)
+}
+
+/// `body` under `depth` nested modules, after the prelude where `shape` can
+/// stand.
+fn nested_source(shape: &'static Shape, body: &str, depth: usize) -> String {
+    let case = Case {
+        shape,
+        nested: true,
+        form: Form::Long,
+    };
+    format!("{}{}", case.prelude(), nested_in_modules_at(body, depth))
+}
+
 /// A tall input at two heights: the short one and one [`FACTOR`] times taller.
 struct HeightPair {
     name: String,
@@ -395,29 +424,12 @@ fn height_pairs() -> Vec<HeightPair> {
         });
     }
     for shape in nestable_shapes() {
-        let case = Case {
-            shape,
-            nested: true,
-            form: Form::Long,
-        };
-        let at = |repeats: usize, depth: usize| {
-            format!(
-                "{}{}",
-                case.prelude(),
-                nested_in_modules_at(&shape.source(repeats), depth)
-            )
-        };
-        // A body that nests once per repeat can reach the bound under the
-        // modules at [`NESTED_BODY`]: halve it until it parses cleanly there.
-        let mut repeats = NESTED_BODY;
-        while repeats > SHORT && !clean(shape.kind, &at(repeats, MODULE_NEST)) {
-            repeats /= 2;
-        }
+        let body = nested_body(shape);
         pairs.push(HeightPair {
             name: format!("{} (nested)", shape.name),
             shape,
-            short: at(repeats, MODULE_NEST / FACTOR),
-            long: at(repeats, MODULE_NEST),
+            short: nested_source(shape, &body, MODULE_NEST / FACTOR),
+            long: nested_source(shape, &body, MODULE_NEST),
         });
     }
     for pair in &pairs {
@@ -676,6 +688,165 @@ fn nested_modules_resolve_in_linear_memory_in_their_depth() {
         failures.is_empty(),
         "resolution's working memory grew faster than {MAX_MEMORY_RATIO}x over {FACTOR}x the \
          nesting:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// The most the allocations a nested shape's body costs resolution may grow
+/// from [`MODULE_NEST`]` / `[`FACTOR`] enclosing modules to [`MODULE_NEST`].
+/// Like the bytes a walk holds, how many allocations it makes is the same on
+/// every run, so the bound sits as near linear as [`MAX_MEMORY_RATIO`].
+const MAX_ALLOCATION_RATIO: f64 = 12.0;
+
+/// What each nestable shape's body is measured against: the same modules
+/// around one value that uses nothing.
+const INERT_BODY: &str = "let x = 0\n";
+
+/// The nestable shapes whose bodies' allocations are known to grow faster
+/// than linear in the nesting, each with why. Allocation counts are
+/// deterministic, so an entry is held exactly: a shape listed here that comes
+/// back within [`MAX_ALLOCATION_RATIO`] fails until its entry is removed.
+const ALLOCATION_EXEMPT: &[(&str, &str)] = &[
+    (
+        "open_long_ident",
+        "an `open` lists a candidate at every enclosing container \
+         (`open_tier_candidates`), each that container's path followed by the \
+         written one: d paths of up to d + n segments",
+    ),
+    (
+        "pat_long_ident",
+        "a qualified case pattern looks for an earlier file's case at every \
+         enclosing container (`cross_file_type_case_located`), each that \
+         container's path followed by the written one: d paths of up to d + n \
+         segments",
+    ),
+];
+
+/// The [`allocation_probe_child`] entry's path, for
+/// [`run_case`](stack_probe::run_case).
+const ALLOCATION_CHILD: &str = "walk_cost_scaling::allocation_probe_child";
+
+/// The variable whose presence asks a child to run
+/// [`allocation_probe_child`].
+const ALLOCATION_CASE_VAR: &str = "BORZOI_SEMA_WALK_ALLOCATION_CASE";
+
+/// How many allocations resolving `src` as a one-file implementation project
+/// makes.
+fn resolution_allocations(src: &str) -> usize {
+    let parsed = parse(src);
+    let file =
+        SourceFile::Impl(ImplFile::cast(parsed.root.clone()).expect("an implementation file"));
+    let qnof = qualified_names(
+        std::slice::from_ref(&file),
+        &[PathBuf::from("/probe/Probe.fs")],
+    )
+    .pop()
+    .expect("one name per file");
+    let files = vec![ProjectFile::new(file, qnof, SyntaxRecovery::of(&parsed))];
+    let env = AssemblyEnv::default();
+    let before = alloc_limit::allocations();
+    let resolved = resolve_project_files(&files, &env);
+    let made = alloc_limit::allocations() - before;
+    drop(resolved);
+    made
+}
+
+/// Child entry: for every nestable shape, the allocations its body costs
+/// resolution beyond [`INERT_BODY`]'s under [`MODULE_NEST`]` / `[`FACTOR`]
+/// and under [`MODULE_NEST`] modules, alone in its process so no other
+/// test's allocations reach the counter. Reported as `name short long`
+/// entries joined by `;`.
+#[test]
+#[ignore = "child-process entry for walk_cost_scaling's allocation probe"]
+fn allocation_probe_child() {
+    if stack_probe::requested_case(ALLOCATION_CASE_VAR).is_none() {
+        return;
+    }
+    let facts = stack_probe::on_stack(WALK_STACK_BYTES, || {
+        nestable_shapes()
+            .map(|shape| {
+                let body = nested_body(shape);
+                let [short, long] = [MODULE_NEST / FACTOR, MODULE_NEST].map(|depth| {
+                    resolution_allocations(&nested_source(shape, &body, depth)).saturating_sub(
+                        resolution_allocations(&nested_source(shape, INERT_BODY, depth)),
+                    )
+                });
+                format!("{} {short} {long}", shape.name)
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    });
+    stack_probe::report(&facts);
+}
+
+/// A walk that does work per enclosing container for each use, and work per
+/// segment of that container's path at each, costs one use time quadratic in
+/// the nesting: a dotted head asking whether a module of its name contests
+/// it at every enclosing container's path, copying and hashing that path
+/// each time. The copies are freed at once, so the bytes the walk holds
+/// ([`nested_modules_resolve_in_linear_memory_in_their_depth`]) do not see
+/// them, and at a few dozen uses the timing tests read them as noise; the
+/// allocation count sees them exactly.
+///
+/// The nested modules cost allocations quadratic in their depth themselves:
+/// the result names each one's export by its full qualified path. So what is
+/// held to the bound is what each nestable shape's body costs beyond
+/// [`INERT_BODY`]'s under the same modules, at [`MODULE_NEST`]` / `[`FACTOR`]
+/// modules and at [`MODULE_NEST`]. A use that looks up through every
+/// enclosing container, one probe per level, grows that by [`FACTOR`].
+#[test]
+fn nested_bodies_resolve_in_linear_allocations_in_their_height() {
+    for (name, _) in ALLOCATION_EXEMPT {
+        assert!(
+            nestable_shapes().any(|shape| shape.name == *name),
+            "allocation-exempt shape {name} is not measured"
+        );
+    }
+    let facts = match stack_probe::run_case(ALLOCATION_CHILD, ALLOCATION_CASE_VAR, "all") {
+        stack_probe::Outcome::Survived(facts) => facts,
+        stack_probe::Outcome::Overflowed => panic!("the allocation probe overflowed"),
+    };
+    let mut failures = Vec::new();
+    let mut measured = 0;
+    for entry in facts.split(';') {
+        let mut words = entry.split(' ');
+        let (Some(name), Some(short), Some(long), None) =
+            (words.next(), words.next(), words.next(), words.next())
+        else {
+            panic!("a shape and two counts: {entry:?}");
+        };
+        let short: usize = short.parse().expect("an allocation count");
+        let long: usize = long.parse().expect("an allocation count");
+        measured += 1;
+        let ratio = long as f64 / short.max(1) as f64;
+        println!(
+            "{name:28} {short} allocations under {} modules -> {long} under {MODULE_NEST} \
+             ({ratio:.1}x)",
+            MODULE_NEST / FACTOR
+        );
+        let exempt = ALLOCATION_EXEMPT.iter().any(|&(n, _)| n == name);
+        if exempt && ratio <= MAX_ALLOCATION_RATIO {
+            failures.push(format!(
+                "{name}: exempt, yet its allocations grew only {ratio:.1}x: remove its \
+                 ALLOCATION_EXEMPT entry"
+            ));
+        } else if !exempt && ratio > MAX_ALLOCATION_RATIO {
+            failures.push(format!(
+                "{name}: {short} allocations under {} modules and {long} under {MODULE_NEST} \
+                 ({ratio:.1}x)",
+                MODULE_NEST / FACTOR
+            ));
+        }
+    }
+    assert_eq!(
+        measured,
+        nestable_shapes().count(),
+        "the child reports every nestable shape"
+    );
+    assert!(
+        failures.is_empty(),
+        "a nested body's resolution allocations grew faster than {MAX_ALLOCATION_RATIO}x over \
+         {FACTOR}x the nesting:\n{}",
         failures.join("\n")
     );
 }
