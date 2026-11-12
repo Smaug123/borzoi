@@ -23,6 +23,7 @@
 
 mod callbacks;
 pub mod interp;
+mod kind;
 #[cfg(test)]
 mod tests;
 
@@ -32,6 +33,8 @@ use callbacks::{
 };
 use logos::Logos;
 use std::ops::Range;
+
+pub use kind::TokenKind;
 
 pub type Span = Range<usize>;
 

@@ -73,23 +73,20 @@ fn rebuild_signed_literal<'src>(lit: &Token<'src>, merged: &'src str) -> Option<
 /// the token immediately to the left of the op (in the **raw** stream, which
 /// still carries any LexFilter-swallowed `)`/`}`) is an atomic-expr-end token
 /// glued to the op's start. When `true`, the op is infix and must *not* fold.
-fn glued_to_atomic_end(raw_tokens: &[RawTok<'_>], op_span: &Span) -> bool {
+fn glued_to_atomic_end(raw_tokens: &RawTokens<'_>, op_span: &Span) -> bool {
     // `raw_tokens` is position-sorted and non-overlapping, so binary-search to
     // the first token ending *after* the op rather than scanning from the end —
     // keeping the whole fold pass ~linear even in files dense with signed
     // literals (`[| -1; -2; … |]`). The predecessors are then the short
     // trailing trivia run before `pp`, walked backward to the first
     // significant token.
-    let pp = raw_tokens.partition_point(|(_, s)| s.end <= op_span.start);
-    let prev = raw_tokens[..pp]
-        .iter()
-        .rev()
-        .find_map(|(res, s)| match res {
-            Ok(tt) => raw_significant(tt).map(|t| (t, s.end)),
-            Err(_) => None,
-        });
+    let pp = raw_tokens.count_ending_by(op_span.start);
+    let prev = raw_tokens.items(..pp).rev().find_map(|(res, s)| match res {
+        Ok(tt) => raw_significant(tt).map(|t| (t, s.end)),
+        Err(_) => None,
+    });
     match prev {
-        Some((tok, end)) => end == op_span.start && is_atomic_expr_end(tok),
+        Some((tok, end)) => end == op_span.start && is_atomic_expr_end(&tok),
         None => false,
     }
 }
@@ -98,7 +95,7 @@ fn glued_to_atomic_end(raw_tokens: &[RawTok<'_>], op_span: &Span) -> bool {
 /// Returns the merged filtered token on success.
 fn try_fold<'src>(
     source: &'src str,
-    raw_tokens: &[RawTok<'src>],
+    raw_tokens: &RawTokens<'src>,
     filtered: &[FilteredTok<'src>],
     i: usize,
 ) -> Option<FilteredTok<'src>> {
@@ -142,7 +139,7 @@ fn try_fold<'src>(
 /// prefix/infix/`ADJACENT_PREFIX_OP` handling.
 pub(super) fn fold_adjacent_signs<'src>(
     source: &'src str,
-    raw_tokens: &[RawTok<'src>],
+    raw_tokens: &RawTokens<'src>,
     mut filtered: Vec<FilteredTok<'src>>,
 ) -> Vec<FilteredTok<'src>> {
     // In-place left-compaction: a fold merges two tokens into one, so the
