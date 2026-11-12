@@ -1,7 +1,7 @@
 //! The token tables: the lossless full-trivia token stream of a source as a
 //! struct of arrays, one [`RawKind`] and one `u32` start offset per token
-//! ([`RawTokens`]), and the filtered stream the productions read
-//! ([`FilteredTokens`]).
+//! ([`RawTokens`]), the filtered stream the productions read
+//! ([`FilteredTokens`]), and where each line starts ([`LineStarts`]).
 //!
 //! The full-trivia stream tiles the source (every byte belongs to exactly one
 //! token, trivia, directive line or inactive region, in order), so a token's
@@ -23,6 +23,10 @@ use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia}
 use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{FilteredItem, FilteredToken, Virtual};
 use crate::syntax::SyntaxKind;
+
+mod lines;
+
+pub use lines::{LineCursor, LinePos, LineStarts};
 
 /// One item of the full-trivia stream, as the driver iterator yields it and as
 /// [`RawTokens`] rebuilds it.

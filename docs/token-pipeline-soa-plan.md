@@ -2,8 +2,8 @@
 
 > **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
 > table), Stage 2 (the frozen filter reference), Stage 3 (the filtered
-> token table) and Stage 4 (the filter reads the raw table by index)
-> implemented.
+> token table), Stage 4 (the filter reads the raw table by index) and
+> Stage 5 (the newline table) implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
 > parser's tree builder.
@@ -402,6 +402,50 @@ forward cursor over it, and `Filter::utf16_col` indexes it.
 FS0058 messages say, so the stream and diagnostics comparison covers them),
 plus a direct property: the table equals the naive scan, on every generated
 input.
+
+**Result.** The table is `tokens::LineStarts`, one `u32` per line: line 1
+starts past a file-start BOM, every other line one byte past a `\n`. It is
+built by one scan that compares 32-byte chunks at a time and pushes a start
+per set bit. `filter_collect` and `context_pushes` build it and hand the
+filter a `tokens::LineCursor` over it, which moves only forward (it asserts
+so, and that the offset is in the source), so a token boundary costs one step
+per line crossed; `Filter::byte_offset` and `Filter::utf16_col` index the
+table by line, and the sparse `(line, start)` list and its binary search go.
+The filter's `Pos` is the table's `LinePos`.
+
+`tests/all/line_table_reference.rs` holds the cursor to a rescan of the bytes
+before each offset: at every offset in turn, from every offset straight to the
+end, and at every token boundary of the full-trivia table under symbol sets
+that make the `#if` arms active and inactive. Its sources are the lexical pairs
+plus `NEWLINE_SHAPES` (a `\n`, `\r\n` and lone `\r` inside a block comment,
+each string form and an inactive region, with multi-byte characters beside
+them), every placement of one and two breaks in sources up to 257 bytes (so
+the chunked scan sees a break at every offset of a chunk and in its tail),
+and random character strings and piece walks. `NEWLINE_SHAPES` also joins
+`filter_reference`'s pieces, and the filter's own position test
+(`lexfilter/position_tests.rs`) now runs over the full-trivia table with
+inactive regions, a lone `\r`, multi-byte characters and a BOM, and checks
+`byte_offset` and `utf16_col` at every token start.
+
+Five planted bugs in the table or its cursor each fail the rescan property,
+the filter's position test and `filter_reference`: counting a lone `\r` as a
+break, leaving the cursor on the line before a line start, ignoring the BOM,
+and dropping a `\n` in the scan's chunked part or in its tail. A sixth, reading
+`byte_offset`'s line start one line early, leaves the table alone, and fails
+the position test and `filter_reference` (through the FS0058 columns).
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine:
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 83.0 | 83.6 | 4.06 | 4.06 |
+| lex-filter | 196.8 | 189.8 | 6.26 | 5.76 |
+| parse | 535.7 | 529.3 | 52.95 | 52.45 |
+
+The filter costs 7.0 instructions per byte fewer (4%), and the parse 6.4.
+The lexer is unchanged; its 0.6 is noise. A plain byte loop for the scan
+saved only 1.1: the old rescan counted `\n`s with a vectorised filter, so
+most of the gain is the chunked scan.
 
 ### Stage 6: the lexer writes the raw table
 

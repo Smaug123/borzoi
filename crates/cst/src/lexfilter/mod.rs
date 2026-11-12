@@ -22,7 +22,9 @@ use std::ops::Range;
 
 use crate::language_version::LanguageVersion;
 use crate::lexer::{LexError, Span, Token, TokenKind};
-use crate::tokens::{FilteredKind, FilteredTokens, RawKind, RawTokens};
+use crate::tokens::{
+    FilteredKind, FilteredTokens, LineCursor, LinePos, LineStarts, RawKind, RawTokens,
+};
 
 mod balance;
 mod continuators;
@@ -44,11 +46,7 @@ use typars_close_op::{
 };
 
 /// 1-based line, 0-based byte column. F# offside compares both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct Pos {
-    line: u32,
-    col: u32,
-}
+type Pos = LinePos;
 
 /// FCS's `PositionWithColumn` (LexFilter.fs:582): `undentation_limit`'s
 /// result — the minimum column the new context must start at (`col`),
@@ -812,7 +810,8 @@ where
 /// inactive code by kind, and reads a token's text from the source only for
 /// the rules that inspect it.
 pub fn filter_collect<'src>(tokens: &RawTokens<'src>, lang: LanguageVersion) -> FilterRun<'src> {
-    let mut f = Filter::new(tokens, lang);
+    let lines = LineStarts::new(tokens.source());
+    let mut f = Filter::new(tokens, &lines, lang);
     let mut table = FilteredTokens::new(tokens.source());
     while let Some((kind, span)) = f.next_filtered() {
         table.push_kind(kind, span);
@@ -829,7 +828,8 @@ pub fn filter_collect<'src>(tokens: &RawTokens<'src>, lang: LanguageVersion) -> 
 /// diagnostic view of the filter's layout decisions, for callers that must
 /// know where the filter, rather than a parser, put a block's offside line.
 pub fn context_pushes(tokens: &RawTokens<'_>, lang: LanguageVersion) -> Vec<ContextPush> {
-    let mut f = Filter::new(tokens, lang);
+    let lines = LineStarts::new(tokens.source());
+    let mut f = Filter::new(tokens, &lines, lang);
     f.pushes = Some(Vec::new());
     while f.next_filtered().is_some() {}
     f.pushes.expect("set above")
@@ -954,9 +954,9 @@ struct Filter<'a> {
     raw: &'a RawTokens<'a>,
     /// The index of the next entry of `raw` that [`Self::pull_raw`] reads.
     next_raw: usize,
-    /// Original source the token spans index into; scanned by `pull_raw` to
-    /// count embedded newlines for the line/column cursor, and read for the
-    /// text of a lexed token ([`Self::text`]).
+    /// Original source the token spans index into, read for the text of a
+    /// lexed token ([`Self::text`]) and for UTF-16 columns
+    /// ([`Self::utf16_col`]).
     source: &'a str,
     /// LIFO stack of tokens to consume before pulling from `raw`. FCS's
     /// `delayedStack`.
@@ -973,20 +973,10 @@ struct Filter<'a> {
     undentation_skip: Vec<u32>,
     initialized: bool,
     eof_pulled: bool,
-    /// 1-based current line, updated as Newline tokens pass through.
-    cur_line: u32,
-    /// Byte offset of the current line's first byte.
-    cur_line_start_byte: usize,
-    /// `(line, start_byte)` for every line that has hosted a token start, in
-    /// ascending line order. Line 1 is seeded at construction (past a
-    /// file-start BOM, matching the column baseline below); [`Self::pull_raw`]
-    /// appends as it crosses newlines. Lines interior to a multi-line token
-    /// are absent — no token starts there, so no [`Context`] can anchor
-    /// there. Consulted by [`Self::utf16_col`] to convert a [`Pos`]'s byte
-    /// column into the UTF-16 column FCS embeds in the FS0058 message.
-    line_starts: Vec<(u32, usize)>,
-    /// Last byte we've observed in the raw stream — used as the EOF span.
-    last_byte: usize,
+    /// The line of the last token boundary [`Self::pull_raw`] reached, over
+    /// the source's newline table, which also gives [`Self::byte_offset`]
+    /// and [`Self::utf16_col`] each line's start.
+    lines: LineCursor<'a>,
     /// Depth of all `TokenLExprParen` openers seen so far minus their closers.
     /// Mirrors the depth of `CtxtParen` entries on the stack. Used to gate
     /// the RARROW rule: `Context::Fun { depth }` records the depth at push
@@ -1150,22 +1140,15 @@ fn kind_is_atomic_expr_end(kind: TokenKind) -> bool {
 }
 
 impl<'a> Filter<'a> {
-    fn new(raw: &'a RawTokens<'a>, lang: LanguageVersion) -> Self {
+    /// A filter over `raw`, whose source's newline table is `lines`.
+    ///
+    /// The table starts line 1 past a file-start BOM, as FCS does: we keep the
+    /// BOM as leading trivia (for losslessness), but a BOM-shifted line 1
+    /// would misread a later same-column top-level token as a continuation of
+    /// the first statement. The BOM's own trivia token, which starts before
+    /// line 1 does, gets column 0, and its column is never consulted.
+    fn new(raw: &'a RawTokens<'a>, lines: &'a LineStarts, lang: LanguageVersion) -> Self {
         let source = raw.source();
-        // FCS strips a file-start UTF-8 BOM (`U+FEFF`, 3 bytes) so it never shifts
-        // the offside column of line 1. We keep it as leading trivia (for
-        // losslessness) but start line-1 columns *after* it — otherwise line 1 is
-        // offside-shifted right by the BOM width, and a later same-column
-        // top-level token is misread as a continuation of the first statement.
-        // The `col` subtractions below `saturating_sub` so the BOM whitespace
-        // token itself (which starts *before* this baseline) does not underflow;
-        // its own column is trivia and never consulted. Only the file-start BOM
-        // is special — a `U+FEFF` elsewhere is an ordinary zero-width space.
-        let cur_line_start_byte = if source.starts_with('\u{FEFF}') {
-            '\u{FEFF}'.len_utf8()
-        } else {
-            0
-        };
         Self {
             raw,
             next_raw: 0,
@@ -1175,10 +1158,7 @@ impl<'a> Filter<'a> {
             undentation_skip: Vec::new(),
             initialized: false,
             eof_pulled: false,
-            cur_line: 1,
-            cur_line_start_byte,
-            line_starts: vec![(1, cur_line_start_byte)],
-            last_byte: 0,
+            lines: lines.cursor(),
             paren_depth: 0,
             last_real_end: 0,
             last_real_was_atomic_end: false,
@@ -1204,49 +1184,20 @@ impl<'a> Filter<'a> {
         &self.source[tt.span.range()]
     }
 
-    /// Advance the line/column cursor to absolute byte offset `to`, scanning the
-    /// intervening `source[last_byte..to]` for `\n`, and return the [`Pos`] there.
+    /// Advance the line/column cursor to absolute byte offset `to` and return
+    /// the [`Pos`] there.
     ///
-    /// This spans **both** a token's own bytes and any *gap* preceding it. The
-    /// active stream fed to the filter has directive lines and `#if`-inactive
-    /// regions removed (`parser::parse_inner` keeps only `TriviaToken::Lexed`),
-    /// so consecutive token spans are **not** contiguous. Their newlines never
-    /// arrive as trivia tokens, yet FCS — whose lexbuf scans the whole file,
-    /// inactive regions included — counts them. Scanning from `last_byte`
-    /// recovers exactly those skipped line breaks, so a context anchored after
-    /// an inactive region reports its real source line (which the FS0058
+    /// The cursor crosses **both** a token's own bytes and any *gap*
+    /// preceding it. The filter skips directive lines and `#if`-inactive
+    /// regions, so consecutive token spans are **not** contiguous, yet FCS —
+    /// whose lexbuf scans the whole file, inactive regions included — counts
+    /// their line breaks, as it counts those inside a block comment or a
+    /// string. The newline table holds every one of them, so a context anchored
+    /// after an inactive region reports its real source line (which the FS0058
     /// "started at position" message embeds) and the synthetic EOF lands at the
     /// true end of file rather than before a trailing inactive region.
-    ///
-    /// Line counting mirrors FCS's `incrLine` on its `newline = '\n' | '\r' '\n'`
-    /// pattern (`lex.fsl:315`): a lone `\r` is **not** a break (absent from
-    /// FCS's `newline`), and the next line starts at the byte just past the last
-    /// `\n` (`Position.NextLine`, `prim-lexing.fs:225`). Only the *last* line a
-    /// segment reaches gets a [`Self::line_starts`] entry — interior lines host
-    /// no token start (a gap's are inactive; a multi-line token's are its own
-    /// body), so no [`Context`] anchors there and [`Self::utf16_col`] never
-    /// queries them.
     fn advance_cursor_to(&mut self, to: usize) -> Pos {
-        debug_assert!(
-            to >= self.last_byte,
-            "raw token spans advance monotonically"
-        );
-        let seg = &self.source[self.last_byte..to];
-        let newlines = seg.bytes().filter(|&b| b == b'\n').count() as u32;
-        if newlines > 0 {
-            self.cur_line_start_byte = self.last_byte + seg.rfind('\n').unwrap() + 1;
-            self.cur_line += newlines;
-            self.line_starts
-                .push((self.cur_line, self.cur_line_start_byte));
-        }
-        self.last_byte = to;
-        Pos {
-            line: self.cur_line,
-            // `saturating_sub`: a file-start BOM seeds `cur_line_start_byte` past
-            // byte 0, so the BOM trivia token — and the EOF of a BOM-only /
-            // all-trivia file — would otherwise underflow.
-            col: to.saturating_sub(self.cur_line_start_byte) as u32,
-        }
+        self.lines.advance_to(to)
     }
 
     /// Pull the next token of active code from the table, updating
@@ -1276,9 +1227,7 @@ impl<'a> Filter<'a> {
             };
             let span = self.raw.span(i);
             let tok_span = TokSpan::new(span.clone());
-            // Cross the gap before this token, then its own bytes — the two
-            // are disjoint and partition `last_byte .. span.end`, so newlines
-            // are counted exactly once.
+            // Cross the gap before this token, then its own bytes.
             let start = self.advance_cursor_to(span.start);
             let end = self.advance_cursor_to(span.end);
             return Some(TokenTup {
@@ -2121,22 +2070,17 @@ impl<'a> Filter<'a> {
         if c2 >= limit.col { Ok(()) } else { Err(limit) }
     }
 
-    /// The byte offset of `pos`, a token-start position (see
-    /// [`Self::utf16_col`]).
+    /// The byte offset of `pos`, a position the cursor reached.
     fn byte_offset(&self, pos: Pos) -> usize {
-        let idx = self
-            .line_starts
-            .binary_search_by_key(&pos.line, |&(line, _)| line)
-            .expect("context Pos lines host a token start");
-        self.line_starts[idx].1 + pos.col as usize
+        self.lines.table().line_start(pos.line) + pos.col as usize
     }
 
     /// The FCS-facing column of `pos`: UTF-16 code units from the line start
     /// (FCS's lexbuf column scale), converted from our byte column. The two
     /// diverge whenever a non-ASCII character precedes `pos` on its line
     /// (`é` is 2 UTF-8 bytes / 1 UTF-16 unit). `pos` must be a token-start
-    /// position — contexts anchor only at those — so its line always has a
-    /// [`Self::line_starts`] entry and its column ends on a char boundary.
+    /// position — contexts anchor only at those — so its column ends on a
+    /// char boundary.
     fn utf16_col(&self, pos: Pos) -> u32 {
         let line_start = self.byte_offset(Pos { col: 0, ..pos });
         self.source[line_start..line_start + pos.col as usize]
