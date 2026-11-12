@@ -2373,19 +2373,60 @@ impl<'r> State<'r> {
             self.reserved.insert(lower.clone());
             self.protected.insert(lower);
         }
+        // The overridable names below take a write from any source, so an
+        // empty slot is the toolset's only if nothing that could have written
+        // it is out of sight. Content the walk could not see (an import it
+        // could not follow, or one whose gate it could not decide) may have
+        // written any of them before this SDK resolved, and a hidden write
+        // leaves no trust record. So under opacity none is seeded. The slot is
+        // still not *empty* in the real build — it holds the hidden value, or
+        // the toolset's own when the hidden content wrote nothing — so each
+        // withheld name is recorded as refused: we hold no value, the real
+        // build holds one we cannot name. Without that mark the SDK's
+        // `Condition="'$(Name)' == ''"` default idiom would read the absence
+        // as a fact (`self_default_absence_is_a_fact` deliberately believes
+        // undefined reads behind opacity) and commit its fallback. The
+        // reserved seeds above stand regardless: MSBuild refuses a write to
+        // them (MSB4004), hidden or not.
+        //
+        // `VisualStudioVersion` is overridable too, but a toolset need not
+        // define it (`toolset_visual_studio_version`); where it does not, an
+        // empty slot is what the real build holds unless the hidden content
+        // wrote it, as for any name behind opacity.
+        let toolset_vsv = toolset_visual_studio_version(&version_dir);
+        if self.walk_opaque.is_some() {
+            let withheld = [
+                "MSBuildExtensionsPath",
+                "MSBuildExtensionsPath32",
+                "MSBuildSDKsPath",
+            ]
+            .into_iter()
+            .chain(toolset_vsv.map(|_| "VisualStudioVersion"));
+            for name in withheld {
+                if self.lookup.get(name).is_none() {
+                    self.apply_property_provenance(
+                        name,
+                        PropertyProvenance {
+                            taint: TaintOutcome::Keep,
+                            unpinned: UnpinnedOutcome::Keep,
+                            refused: RefusedOutcome::Set,
+                        },
+                    );
+                }
+            }
+            return;
+        }
         // `VisualStudioVersion` is a toolset constant every name source can
         // displace: the environment (MSBuild honours a spoof on every
         // toolset), a caller global, or a project write. So it is seeded only
         // into a slot none of them claimed — not defined, not in the
         // environment snapshot (promoted or dropped, the real build has *some*
-        // value for it), never the subject of a write we could not decide or
-        // refused, and not behind content the walk could not see (a hidden
-        // write leaves no trust record).
-        if self.walk_opaque.is_none()
-            && self.lookup.get("VisualStudioVersion").is_none()
+        // value for it), and never the subject of a write we could not decide
+        // or refused.
+        if self.lookup.get("VisualStudioVersion").is_none()
             && !self.env_property_names.contains("visualstudioversion")
             && self.trust_of("VisualStudioVersion").is_certain()
-            && let Some(value) = toolset_visual_studio_version(&version_dir)
+            && let Some(value) = toolset_vsv
         {
             self.lookup.insert_computed("VisualStudioVersion", value);
         }
@@ -2394,7 +2435,15 @@ impl<'r> State<'r> {
             ("MSBuildSDKsPath", format!("{dir}/Sdks")),
         ];
         for (name, value) in overridable {
-            if self.lookup.get(name).is_none() {
+            // A name in the environment snapshot that promotion dropped
+            // (spellings that disagree) has *some* value in the real build:
+            // both toolsets probed honour the environment for these two (see
+            // `toolset_honours_env_extensions_path`), so it is one of the
+            // environment's values, not the toolset's path. The slot stays
+            // empty and reads decline.
+            if self.lookup.get(name).is_none()
+                && !self.env_property_names.contains(&name.to_ascii_lowercase())
+            {
                 // Same provenance as the reserved seeds above: our own paths.
                 self.lookup.insert_computed(name, value);
             }
