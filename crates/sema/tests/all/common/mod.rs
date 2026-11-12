@@ -3027,37 +3027,37 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
     let dump: ProjectUsesDump =
         serde_json::from_str(json).expect("fcs-dump uses-project JSON shape");
 
-    let by_name: HashMap<&OsStr, (&Path, &str)> = sources
+    // One line index per source: a use's declaration converts through its
+    // file's, and a project of generated cells has thousands of uses.
+    let by_name: HashMap<&OsStr, (&Path, LineIndex)> = sources
         .iter()
         .map(|(p, src)| {
             (
                 p.file_name().expect("source path has a file name"),
-                (p.as_path(), src.as_str()),
+                (p.as_path(), LineIndex::new(src)),
             )
         })
         .collect();
-    let lookup = |fcs_path: &str| -> Option<(&Path, &str)> {
-        by_name.get(Path::new(fcs_path).file_name()?).copied()
+    let lookup = |fcs_path: &str| -> Option<(&Path, &LineIndex)> {
+        by_name
+            .get(Path::new(fcs_path).file_name()?)
+            .map(|(p, idx)| (*p, idx))
     };
 
     dump.files
         .into_iter()
         .map(|f| {
-            let (path, src) = lookup(&f.path)
+            let (path, idx) = lookup(&f.path)
                 .unwrap_or_else(|| panic!("fcs reported uses for unknown file {:?}", f.path));
-            let idx = LineIndex::new(src);
             let uses = f
                 .uses
                 .into_iter()
                 .map(|u| {
                     let decl = u.decl_range.and_then(|d| {
-                        lookup(&d.file).map(|(dpath, dsrc)| {
-                            let didx = LineIndex::new(dsrc);
-                            DeclSite {
-                                file: dpath.to_path_buf(),
-                                start: didx.offset(d.start.line, d.start.col),
-                                end: didx.offset(d.end.line, d.end.col),
-                            }
+                        lookup(&d.file).map(|(dpath, didx)| DeclSite {
+                            file: dpath.to_path_buf(),
+                            start: didx.offset(d.start.line, d.start.col),
+                            end: didx.offset(d.end.line, d.end.col),
                         })
                     });
                     NormalisedProjectUse {
