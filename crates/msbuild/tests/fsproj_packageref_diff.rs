@@ -563,6 +563,30 @@ fn sdk_style_netcoreapp_fsharp_path_property_default_is_inert() {
 }
 
 #[test]
+fn sdk_style_web_net10_fsharp_implicit_dependencies_match_msbuild() {
+    assert_sdk_captures_match(
+        r#"<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>"#,
+        &[],
+    );
+}
+
+#[test]
+fn sdk_style_worker_net10_fsharp_implicit_dependencies_match_msbuild() {
+    assert_sdk_captures_match(
+        r#"<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>"#,
+        &[],
+    );
+}
+
+#[test]
 fn sdk_style_netstandard20_fsharp_implicit_dependencies_match_msbuild() {
     assert_sdk_captures_match(
         r#"<Project Sdk="Microsoft.NET.Sdk">

@@ -9,6 +9,7 @@
 //! passes in one module made that ordering easy to violate.
 
 use super::*;
+use crate::glob::SpecFragment;
 use crate::properties::escaping;
 
 /// The fragments of an expanded item spec.
@@ -47,26 +48,6 @@ fn msbuild_spelling(raw: &str, expanded: &Escaped) -> Escaped {
 /// MSBuild records (an `Include="a%20b.fs"` names the file `a b.fs`).
 fn fragment_identity(fragment: &str) -> String {
     escaping::unescape(fragment)
-}
-
-/// A fragment handed to the **glob resolver**, which splits on `;` and parses
-/// `*`/`?` itself, downstream of us.
-///
-/// Unescaping a `%3b`/`%2a`/`%3f` before that seam would smuggle a
-/// metacharacter past the classification that has already happened — the
-/// resolver would re-split one item into two, or glob a literal star. Those
-/// fragments decline (`None`), which is what they did before the escaped domain
-/// existed. Stage E4 of `docs/msbuild-escaped-value-plan.md` deletes this guard
-/// by handing the resolver a fragment list it never re-scans; until then the
-/// guard is what keeps the seam sound.
-fn fragment_for_resolver(fragment: &str) -> Option<String> {
-    (!decodes_to_metacharacter(fragment)).then(|| escaping::unescape(fragment))
-}
-
-/// Whether any `%XX` in `fragment` decodes to a character the glob resolver
-/// would re-scan as syntax. See [`fragment_for_resolver`].
-fn decodes_to_metacharacter(fragment: &str) -> bool {
-    escaping::decodes_to_any(fragment, &[';', '*', '?'])
 }
 
 /// A scalar value (item metadata, a `CompileOrder`) at its point of use, as the
@@ -3003,7 +2984,9 @@ fn route_item_through_resolver(
         }
         include_specs.push(entry);
     }
-    let any_glob = include_specs.iter().any(|s| contains_glob(s));
+    let any_glob = include_specs
+        .iter()
+        .any(|s| escaping::filespec_has_wildcards(s));
     let exclude_attr = node.attribute("Exclude");
     // A pure-literal include with no Exclude can't gain anything from the
     // resolver — keep the literal fast path (same items, no IO).
@@ -3013,7 +2996,7 @@ fn route_item_through_resolver(
         }
         return;
     }
-    let mut excludes: Vec<String> = Vec::new();
+    let mut excludes: Vec<SpecFragment> = Vec::new();
     if let Some(raw) = exclude_attr {
         let expansion = state.expand(raw, node.range());
         if expansion.had_issue() {
@@ -3045,31 +3028,23 @@ fn route_item_through_resolver(
                 );
                 return;
             }
-            let Some(exclude) = fragment_for_resolver(entry) else {
-                unsupported_across_resolver_seam(node, entry, state);
-                return;
-            };
-            excludes.push(exclude);
+            excludes.push(SpecFragment::from_split(entry));
         }
     }
-    // Across the seam the resolver re-splits on `;` and parses `*`/`?`, so each
-    // fragment leaves the domain here — declining the ones whose decoded form
-    // would smuggle a metacharacter past the classification above.
-    let mut resolver_specs: Vec<String> = Vec::with_capacity(include_specs.len());
-    for entry in &include_specs {
-        let Some(spec) = fragment_for_resolver(entry) else {
-            unsupported_across_resolver_seam(node, entry, state);
-            return;
-        };
-        resolver_specs.push(spec);
-    }
-    let include_joined = resolver_specs.join(";");
+    // The fragments cross the seam still split and still escaped: the
+    // resolver classifies each on its escaped text and decodes it at its own
+    // point of use, so nothing it does can re-split an escaped `%3b` or turn
+    // an escaped `%2a` into a wildcard.
+    let include: Vec<SpecFragment> = include_specs
+        .iter()
+        .map(|entry| SpecFragment::from_split(entry))
+        .collect();
     // Scope the request so its immutable borrow of `state` ends before we
     // mutably push the results.
     let matched = {
         let request = GlobRequest {
             base_dir: &state.entry_project_dir,
-            include: &include_joined,
+            include: &include,
             excludes: &excludes,
         };
         resolver(&request)
@@ -3086,7 +3061,7 @@ fn route_item_through_resolver(
             }
             state.push(
                 DiagnosticKind::GlobDeclined {
-                    include: include_joined.clone(),
+                    include: include_specs.join(";"),
                     reason,
                 },
                 node.range(),
@@ -3116,27 +3091,12 @@ fn route_item_through_resolver(
     }
 }
 
-/// Decline an item spec whose decoded form cannot cross the glob-resolver seam
-/// (see [`fragment_for_resolver`]).
-///
-/// This is the same diagnostic — and so the same fail-safe consumer behaviour —
-/// that the substitution-level escape withdrawal raised before the escaped
-/// domain existed, so nothing downstream sees a new class of failure. Stage E4
-/// of `docs/msbuild-escaped-value-plan.md` removes it, by giving the resolver a
-/// fragment list it never re-scans.
-fn unsupported_across_resolver_seam(node: Node<'_, '_>, entry: &str, state: &mut State<'_>) {
-    state.push(
-        DiagnosticKind::UnsupportedPropertyExpression {
-            expression: entry.to_string(),
-        },
-        node.range(),
-    );
-}
-
 /// `entry` is an **escaped** fragment: the glob classification below has to run
 /// before decoding (an escaped `%2a` is a literal star in a filename, not a
 /// wildcard — decoding first turns data into syntax), so the decode happens here,
-/// once, after the scan.
+/// once, after the scan. A fragment with an escaped wildcard beside a live one
+/// is literal too ([`escaping::filespec_has_wildcards`]): `a%2a*.fs` is the
+/// one item `a**.fs`.
 fn push_include_entry(
     node: Node<'_, '_>,
     kind: ItemKind,
@@ -3145,7 +3105,7 @@ fn push_include_entry(
     metadata: &ItemMetadata,
     state: &mut State<'_>,
 ) {
-    if contains_glob(entry) {
+    if escaping::filespec_has_wildcards(entry) {
         state.push(
             DiagnosticKind::UnsupportedGlob {
                 pattern: entry.to_string(),

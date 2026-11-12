@@ -48,7 +48,7 @@ This is a Cargo workspace with nine members:
   `fsproj_item_escape_generative_diff.rs` (item specs over an escape-bearing
   alphabet — the harness that guards MSBuild's escaped-value domain, where the
   rule is *scan and split before you decode; trim in the domain; decode at the
-  leaf*; see `docs/msbuild-escaped-value-plan.md`), and
+  leaf*; see `docs/completed/msbuild-escaped-value-plan.md`), and
   `fsproj_global_perturbation_diff.rs`. All assert
   *certain-implies-exact*: when we commit a value, MSBuild must agree exactly;
   a decline makes no claim.
@@ -70,7 +70,12 @@ This is a Cargo workspace with nine members:
   (`OutDir`/`OutputPath`/`DefineConstants` are untrusted under every global set
   on a real SDK project), which makes such a dimension a coverage investment,
   not a soundness fix.
-  The oracle has one op that executes rather than evaluates: `restoreCone`
+  Two ops execute rather than evaluate. `targetItems` runs one target on an
+  evaluation and reads back an item list: `fsproj_compile_order_generative_diff.rs`
+  runs F#'s `FSharpSourceCodeCompileOrder` (its text lifted from the installed
+  SDK into a synthetic SDK) and holds the compile order we commit to
+  certain-implies-exact, since the order the compiler sees is not the evaluated
+  `@(Compile)`. `restoreCone`
   builds `GenerateRestoreGraphFile` in-process and reports every target and
   task that ran, with file hashes and task-assembly identities.
   `restore_cone_census.rs` pins that cone per project and per installed SDK

@@ -2,7 +2,7 @@
 //! ([`unescape`](borzoi_msbuild::test_support::unescape)) vs the real
 //! MSBuild evaluator via the `tools/msbuild-condition-oracle` `expand` op.
 //!
-//! Stage E0 of `docs/msbuild-escaped-value-plan.md`. The decoder is the
+//! Stage E0 of `docs/completed/msbuild-escaped-value-plan.md`. The decoder is the
 //! foundation the whole escaped-value refactor stands on: E1 will store every
 //! property value escaped and unescape exactly once at each point of use, so a
 //! decoder that is subtly wrong becomes a *wrong committed value* everywhere at
@@ -34,7 +34,7 @@
 //!   rewritten. So `<Out>obj\Debug\</Out>` evaluates to `obj/Debug/` when
 //!   `obj/` exists and stays `obj\Debug\` when it does not (oracle-pinned
 //!   2026-07-12). We commit both verbatim. That is a live wrong-value class,
-//!   tracked as its own item in `docs/msbuild-escaped-value-plan.md` — it needs
+//!   tracked as its own item in `docs/completed/msbuild-escaped-value-plan.md` — it needs
 //!   its own branch, because the fixup depends on process state the LSP does
 //!   not share with MSBuild, so the answer is probably to decline rather than
 //!   to model. Keeping `\` out of this alphabet keeps E0 about the decoder.
