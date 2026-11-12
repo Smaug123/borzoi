@@ -31,10 +31,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
-use borzoi_cst::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::lexfilter::filter_collect;
 use borzoi_cst::parser::parse_with_symbols;
+use borzoi_cst::tokens::lex_full_trivia;
 
 /// The system allocator, counting calls and requested bytes.
 struct Counting;
@@ -172,28 +172,21 @@ fn main() {
 
     // The phases below are the production pipeline's (`parser::parse_inner`),
     // each fed the previous phase's output so it measures only itself.
-    let raw = phase("lex", reps, bytes, || {
+    let lexed = phase("lex", reps, bytes, || {
         files
             .iter()
-            .map(|s| lex_with_symbols_full_trivia(s, &symbols).collect::<Vec<_>>())
+            .map(|s| lex_full_trivia(s, &symbols))
             .collect::<Vec<_>>()
     });
-    let tokens = raw.iter().map(Vec::len).sum::<usize>();
+    let tokens = lexed.iter().map(|l| l.tokens.len()).sum::<usize>();
     phase("lex-filter", reps, bytes, || {
         files
             .iter()
-            .zip(&raw)
-            .map(|(s, raw)| {
-                let active = raw.iter().filter_map(|(res, span)| match res {
-                    Ok(TriviaToken::Lexed(t)) => Some((Ok(t.clone()), span.clone())),
-                    Err(PreprocError::Lex(e)) => Some((Err(e.clone()), span.clone())),
-                    _ => None,
-                });
-                filter_collect(s, lang, active)
-            })
+            .zip(&lexed)
+            .map(|(s, lexed)| filter_collect(s, lang, lexed.tokens.active()))
             .collect::<Vec<_>>()
     });
-    drop(raw);
+    drop(lexed);
     phase("parse", reps, bytes, || {
         files
             .iter()

@@ -310,6 +310,7 @@ impl<'src> Parser<'src> {
     /// type-side exponent classifier — the same `INT32`-terminal set.
     fn at_measure_one(&self) -> bool {
         self.measure_lookahead()
+            .as_ref()
             .is_some_and(token_is_int32_exponent)
     }
 
@@ -324,7 +325,7 @@ impl<'src> Parser<'src> {
     /// brackets: an atom adjacent to a `(` (`1<f(f)>`) carries
     /// `HIGH_PRECEDENCE_PAREN_APP`, which FCS rejects there, and so must every
     /// dispatch here.
-    fn measure_lookahead(&self) -> Option<&Token<'src>> {
+    fn measure_lookahead(&self) -> Option<Token<'src>> {
         match self.peek() {
             Some((Ok(FilteredToken::Virtual(_)), _)) => None,
             _ => self.next_non_trivia_raw_at_pos(),
@@ -336,6 +337,8 @@ impl<'src> Parser<'src> {
     /// the value in its radix ([`int32_exponent_is_one`]) so every spelling of
     /// `1` — `1`, `0x1`, `0o1`, `1l` — is the clean `One`.
     fn measure_int_is_one(&self) -> bool {
-        self.measure_lookahead().is_some_and(int32_exponent_is_one)
+        self.measure_lookahead()
+            .as_ref()
+            .is_some_and(int32_exponent_is_one)
     }
 }

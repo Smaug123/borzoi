@@ -789,12 +789,9 @@ impl<'src> Parser<'src> {
     /// it). Returns `true` only for the name shapes [`Self::parse_member_sig`]
     /// parses faithfully, so an unsupported form stays on the error path rather
     /// than committing and misparsing.
-    pub(super) fn member_sig_body_is_supported<'a>(
-        sig: &mut impl Iterator<Item = &'a Token<'src>>,
-    ) -> bool
-    where
-        'src: 'a,
-    {
+    pub(super) fn member_sig_body_is_supported(
+        sig: &mut impl Iterator<Item = Token<'src>>,
+    ) -> bool {
         let mut tok = sig.next();
         // A leading accessibility modifier is valid (FCS's `opt_access`) only
         // before a `new` ctor; before any other introducer it is a malformed
@@ -859,7 +856,7 @@ impl<'src> Parser<'src> {
                 // Active-pattern name (`(|Foo|_|)`): `(` then a bare `|`.
                 Some(Token::Bar) => true,
                 // Operator name (`(+)`, `( * )`): `( op )`.
-                Some(t) if is_paren_operator_name(t) || matches!(t, Token::Op("*")) => {
+                Some(t) if is_paren_operator_name(&t) || matches!(t, Token::Op("*")) => {
                     matches!(sig.next(), Some(Token::RParen))
                 }
                 _ => false,

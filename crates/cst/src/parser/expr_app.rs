@@ -49,6 +49,7 @@ impl<'src> Parser<'src> {
             return false;
         };
         self.next_non_trivia_raw_after(lparen_span.end)
+            .as_ref()
             .is_some_and(raw_after_lparen_starts_expr)
     }
 
@@ -167,8 +168,8 @@ impl<'src> Parser<'src> {
 
     /// The end of the last significant raw token the parser has consumed.
     fn prev_significant_raw_end(&self) -> Option<usize> {
-        self.raw_tokens[..self.raw_pos]
-            .iter()
+        self.raw_tokens
+            .items(..self.raw_pos)
             .rev()
             .find_map(|(res, span)| match res {
                 Ok(tt) => raw_significant(tt).map(|_| span.end),
@@ -219,14 +220,10 @@ impl<'src> Parser<'src> {
     /// requires an ident-character follower. `1(2)` and `1"x"` are
     /// valid applications under FCS and must not trigger this error.
     pub(super) fn check_adjacent_malformed_numeric(&mut self) {
-        let next = self
-            .raw_tokens
-            .iter()
-            .skip(self.raw_pos)
-            .find_map(|(res, span)| match res {
-                Ok(t) if raw_is_trivia(t) => None,
-                Ok(_) | Err(_) => Some(span.clone()),
-            });
+        let raw = &self.raw_tokens;
+        let next = (self.raw_pos..raw.len())
+            .find(|&i| !raw.kind(i).is_trivia())
+            .map(|i| raw.span(i));
         let Some(next_span) = next else { return };
         if !self.prev_raw_is_adjacent_numeric_atom(next_span.start) {
             return;
@@ -234,14 +231,11 @@ impl<'src> Parser<'src> {
         if !self.next_starts_with_ident_char(next_span.start) {
             return;
         }
-        let prev_span = self.raw_tokens[..self.raw_pos]
-            .iter()
+        let raw = &self.raw_tokens;
+        let prev_span = (0..self.raw_pos)
             .rev()
-            .find_map(|(res, span)| match res {
-                Ok(t) if raw_is_trivia(t) => None,
-                Ok(_) => Some(span.clone()),
-                Err(_) => None,
-            })
+            .find(|&i| matches!(raw.kind(i), RawKind::Lexed(_)) && !raw.kind(i).is_trivia())
+            .map(|i| raw.span(i))
             .expect("prev_raw_is_adjacent_numeric_atom returned true so there is a prev");
         self.errors.push(ParseError {
             message: format!(
@@ -306,14 +300,13 @@ impl<'src> Parser<'src> {
         if !self.peek_starts_app_arg() {
             return false;
         }
-        let next_non_trivia = self
-            .raw_tokens
-            .iter()
-            .skip(self.raw_pos)
-            .find_map(|(res, span)| match res {
-                Ok(tt) => raw_significant(tt).map(|t| (Ok(t), span)),
-                Err(e) => Some((Err(e), span)),
-            });
+        let next_non_trivia =
+            self.raw_tokens
+                .items(self.raw_pos..)
+                .find_map(|(res, span)| match res {
+                    Ok(tt) => raw_significant(tt).map(|t| (Ok(t), span)),
+                    Err(e) => Some((Err(e), span)),
+                });
         match next_non_trivia {
             // Swallowed closer: a `)` (paren expr) or `}` (computation expr)
             // stripped from the filtered stream marks the end of the body, so
@@ -368,8 +361,9 @@ impl<'src> Parser<'src> {
     /// sit adjacent in the raw stream (the second only partially consumed when
     /// this runs).
     pub(super) fn prev_raw_is_adjacent_numeric_atom(&self, next_start: usize) -> bool {
-        let prev = self.raw_tokens[..self.raw_pos]
-            .iter()
+        let prev = self
+            .raw_tokens
+            .items(..self.raw_pos)
             .rev()
             .find_map(|(res, span)| match res {
                 Ok(tt) => raw_significant(tt).map(|t| (t, span)),

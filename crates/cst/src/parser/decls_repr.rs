@@ -249,9 +249,8 @@ impl<'src> Parser<'src> {
         // token between), so a direct raw walk suffices.
         let mut sig = self
             .raw_tokens
-            .iter()
-            .skip(self.raw_pos)
-            .map_while(|(res, _)| res.as_ref().ok())
+            .items(self.raw_pos..)
+            .map_while(|(res, _)| res.ok())
             .filter_map(|tt| match tt {
                 TriviaToken::Lexed(t) => Some(t),
                 _ => None,

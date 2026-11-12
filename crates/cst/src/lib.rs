@@ -3,4 +3,7 @@ pub mod language_version;
 pub mod lexer;
 pub mod lexfilter;
 pub mod parser;
+#[cfg(feature = "token-reference")]
+pub mod reference;
 pub mod syntax;
+pub mod tokens;

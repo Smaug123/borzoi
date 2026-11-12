@@ -1,6 +1,6 @@
 # MSBuild's unix path fixup (`MaybeAdjustFilePath`)
 
-> Found by the E0 decoder differential in `docs/msbuild-escaped-value-plan.md`,
+> Found by the E0 decoder differential in `docs/completed/msbuild-escaped-value-plan.md`,
 > on its first run against real MSBuild. It is **not** an escaping bug and does
 > not belong to that stack: it is a separate, host- and cwd-dependent
 > normalisation.

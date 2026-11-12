@@ -1,6 +1,7 @@
 # Token pipeline as struct-of-arrays passes
 
-> **Status (2026-11-12).** Plan written; Stage 0 (count harness) implemented.
+> **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
+> table) and Stage 2 (the frozen filter reference) implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
 > parser's tree builder.
@@ -219,7 +220,31 @@ accessors return the old tuple by value (D5).
 - The tiling precondition holds on every input (asserted in the builder; the
   generated inputs reach the error, directive and inactive-code paths).
 - `size_of::<RawKind>() == 2` at compile time.
+- The kind-level trivia classification the hot paths use
+  (`RawKind::trivia_syntax_kind`) agrees with the parser's classification of
+  the rebuilt entry, on every kind (`parser/tests/token_kinds.rs`).
 - `parse_counts`: lex allocates fewer bytes per byte.
+
+**Result.** The table is `tokens::RawTokens`, built by
+`tokens::lex_full_trivia`. The parser's raw-side scans rebuild the old tuple
+only where a production reads it; the per-token paths (the drain, the bump,
+the significant-token lookaheads, the position searches) read kinds and
+offsets. Over the corpus's `src/` tree, min of 3, on the loaded machine:
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 75.7 | 83.6 | 43.2 | 4.1 |
+| lex-filter | 242.9 | 257.9 | 23.4 | 23.4 |
+| parse | 546.3 | 581.7 | 109.2 | 70.1 |
+
+Bytes allocated fall by 36% over the whole parse, and the lexer's by 90%.
+Instructions rise by 6%, in three places this stage leaves for later ones:
+lexing converts each `Token` to a kind and back (+8, gone when the lexer
+writes kinds, Stage 6); the filter's input rebuilds each active token from
+the table (+15, gone when the filter reads the table, Stage 4; the filter
+itself is unchanged, at 245 from a pre-built vector); and the productions'
+remaining raw-side scans rebuild tuples (+12). Wall time, for orientation
+only, fell from about 35 to 29 ns per byte.
 
 ### Stage 2: freeze the filter reference
 
@@ -234,6 +259,17 @@ change in the live filter makes it fail).
 
 **Oracle**: `diff -r` against the live module shows only module paths; the
 property fails against a planted mutation and passes without it.
+
+**Result.** `crate::reference` (under `token-reference`) holds the copy:
+`reference/lexfilter/` is `lexfilter/` without its two unit-test modules and
+`typars_close_op`'s inline tests, and `reference/sign_fold.rs` is the
+pre-Stage-1 `parser/sign_fold.rs` with its imports replaced and its tests
+dropped. `parser::parse_inner` compares each parse's filtered stream, offside
+diagnostics and language-version flag with `reference::filtered_stream`'s,
+using the two copies' identical derived `Debug` as the currency. Planting a
+change in the live filter (dropping `)` from `is_atomic_expr_end`) fails the
+panic sweep's `CORE` triples at `)-1` but no pair, lexical or `WIDE`, so the
+triples are part of this oracle.
 
 ### Stage 3: the filtered token table
 

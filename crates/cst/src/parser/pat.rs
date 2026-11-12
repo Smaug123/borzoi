@@ -385,12 +385,12 @@ impl<'src> Parser<'src> {
                 // the swallowed `)`, but its raw-after is `)`, not a sign, so `x`
                 // stays a `Named` value rather than being promoted.
                 let raw_after_is_fold_sign =
-                    matches!(raw_after, Some(Token::Op(s)) if *s == "-" || *s == "+");
+                    matches!(raw_after, Some(Token::Op(s)) if s == "-" || s == "+");
                 let after_is_folded = after.is_some_and(
                     |ft| matches!(ft, FilteredToken::Raw(t) if token_is_folded_signed_literal(t)),
                 );
                 after_starts_pat
-                    && (raw_after.is_some_and(raw_starts_atomic_pat)
+                    && (raw_after.as_ref().is_some_and(raw_starts_atomic_pat)
                         || (raw_after_is_fold_sign && after_is_folded))
             });
 
@@ -461,6 +461,7 @@ impl<'src> Parser<'src> {
         let mut prev_permits_hpa = true;
         while self
             .next_non_trivia_raw_at_pos()
+            .as_ref()
             .is_some_and(raw_starts_atomic_pat)
             || self.folded_signed_literal_at_cursor()
         {
@@ -538,6 +539,7 @@ impl<'src> Parser<'src> {
         let has_args = (filtered_starts_arg
             && self
                 .next_non_trivia_raw_at_pos()
+                .as_ref()
                 .is_some_and(raw_starts_atomic_pat))
             || self.folded_signed_literal_at_cursor();
         if has_typar_decls || has_args {
@@ -594,11 +596,9 @@ impl<'src> Parser<'src> {
         // Binary-search to the first raw token at-or-after `byte` (spans are
         // sorted/contiguous) rather than rescanning from index 0 — see
         // [`Self::next_non_trivia_raw_after`].
-        let start = self
-            .raw_tokens
-            .partition_point(|(_, span)| span.start < byte);
-        let mut first: Option<&Token<'src>> = None;
-        for (res, _) in &self.raw_tokens[start..] {
+        let start = self.raw_tokens.count_starting_before(byte);
+        let mut first: Option<Token<'src>> = None;
+        for (res, _) in self.raw_tokens.items(start..) {
             match res {
                 Ok(tt) => {
                     if let Some(t) = raw_significant(tt) {
@@ -1131,6 +1131,7 @@ impl<'src> Parser<'src> {
                     // closes the paren, and `next` survives.
                     if !(self
                         .next_non_trivia_raw_at_pos()
+                        .as_ref()
                         .is_some_and(raw_starts_pat_element)
                         || self.folded_signed_literal_at_cursor())
                         || !self.try_emit_head_binding_pat_element()
@@ -1250,7 +1251,7 @@ impl<'src> Parser<'src> {
         // sides.
         let access_before_element =
             matches!(raw, Some(Token::Private | Token::Internal | Token::Public));
-        if !raw.is_some_and(raw_starts_pat_element)
+        if !raw.as_ref().is_some_and(raw_starts_pat_element)
             && !self.folded_signed_literal_at_cursor()
             && !access_before_element
         {
@@ -1373,6 +1374,7 @@ impl<'src> Parser<'src> {
         let inner_cp = self.builder.checkpoint();
         let inner_starts = self
             .next_non_trivia_raw_at_pos()
+            .as_ref()
             .is_some_and(raw_starts_pat_element)
             || self.folded_signed_literal_at_cursor();
         if inner_starts && self.try_emit_head_binding_pat_element() {
@@ -1709,7 +1711,7 @@ impl<'src> Parser<'src> {
     pub(super) fn operator_head_after(
         &self,
         is_star: bool,
-    ) -> (Option<&FilteredToken<'src>>, Option<&Token<'src>>) {
+    ) -> (Option<&FilteredToken<'src>>, Option<Token<'src>>) {
         if is_star {
             let star_end = self.filtered_tokens.get(self.pos).map(|(_, s)| s.end);
             (
@@ -1744,15 +1746,15 @@ impl<'src> Parser<'src> {
     ///   ((op)) x = …`, surfaced as `Token::RParen`) the filtered stream skips.
     pub(super) fn op_head_args_follow(
         after: Option<&FilteredToken<'src>>,
-        raw_after: Option<&Token<'src>>,
+        raw_after: Option<Token<'src>>,
     ) -> bool {
         let filtered = matches!(after, Some(FilteredToken::Raw(t)) if raw_starts_atomic_pat(t))
             || matches!(
                 after,
                 Some(FilteredToken::Virtual(Virtual::HighPrecedenceParenApp))
             );
-        let raw = raw_after.is_some_and(raw_starts_atomic_pat)
-            || (matches!(raw_after, Some(Token::Op(s)) if *s == "-" || *s == "+")
+        let raw = raw_after.as_ref().is_some_and(raw_starts_atomic_pat)
+            || (matches!(raw_after, Some(Token::Op(s)) if s == "-" || s == "+")
                 && matches!(after, Some(FilteredToken::Raw(t)) if token_is_folded_signed_literal(t)));
         filtered && raw
     }

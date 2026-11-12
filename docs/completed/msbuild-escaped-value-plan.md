@@ -1,12 +1,13 @@
 # MSBuild escaped-value plan (make the type carry the rule)
 
-> **Status:** Stages E0–E3 landed (#927, #932, #938, #941) — every property, item
-> spec and metadatum is now stored *escaped* and unescaped exactly once at its
-> point of use, replacing the old `literal_percents` corollary-enumeration
-> side-channel. **E4 (the item/glob-resolver seam) and E5 (delete the decline
-> machinery) remain** — full detail under "Still to do". AGENTS.md points here
-> for the durable rule (*scan and split before you decode; trim in the domain;
-> decode at the leaf*), restated next.
+> **Status: complete.** Stages E0–E3 (#927, #932, #938, #941) store every
+> property, item spec and metadatum *escaped* and unescape it exactly once at
+> its point of use. E4 carries item fragments across the glob-resolver seam
+> still split and still escaped, and E5 deleted the declines that seam needed,
+> so no escape-motivated decline is left. AGENTS.md points here for the durable
+> rule (*scan and split before you decode; trim in the domain; decode at the
+> leaf*), restated next, and for where an escaped wildcard is data ("Filespec
+> classification").
 
 ## The rule
 
@@ -80,8 +81,8 @@ Every consumer chooses `unescape()` (MSBuild unescapes here) or `as_escaped()`
 | condition operands | `unescape` at the operand leaf | E1 (folded in) |
 | property-function arguments and receivers | `unescape` in, `from_computed` out | E3 |
 | path functions (`eval_exact_path_arg`) | `unescape` args | E3 |
-| item `Include`/`Exclude`/`Update`/`Remove` specs | split on escaped `;`, classify globs and `%(…)`/`@(…)` on escaped text, `unescape` surviving literals into identities | E4 |
-| item metadata values, `Link` | `unescape` | E4 |
+| item `Include`/`Exclude`/`Update`/`Remove` specs | split on escaped `;`, classify globs and `%(…)`/`@(…)` on escaped text, `unescape` surviving literals into identities | E1–E3 |
+| item metadata values, `Link` | `unescape` | E1–E3 |
 | `GlobRequest` (the LSP resolver seam) | escaped fragments, resolver-side unescape | E4 |
 
 ## Landed stages (one line each)
@@ -107,58 +108,89 @@ Every consumer chooses `unescape()` (MSBuild unescapes here) or `as_escaped()`
   indexer `Char` is the one raw splice. `property_expr_diff.rs`'s `%XX` exclusion
   was deleted so the escape dimension is now generated.
 - **item-escape generative differential** (#933) — `fsproj_item_escape_generative_diff.rs`:
-  item specs over an escape-bearing alphabet, run through both item seams; guards
-  the current (pre-E4) decline behaviour and will guard E4's commit.
+  item specs over an escape-bearing alphabet, run through both item seams.
+- **E4** — the glob-resolver seam. `GlobRequest::include`/`excludes` carry
+  `SpecFragment`s: already split, still escaped, each classified on its escaped
+  text and decoded by the resolver at its own point of use, so nothing across
+  the seam can re-split an escaped `%3b` or glob an escaped `%2a`. The resolver
+  applies an `Exclude` as MSBuild does, which differs by the include it meets
+  (see "Filespec classification" below). The generative harness now drives the
+  shipped resolver (`glob_resolver::resolve`) over live globs as well as
+  escapes, and every generated case commits through that seam; the seam property
+  (fragment count and classification preserved end-to-end) is
+  `with_imports_tests/globs.rs`'s `route_splices_resolver_output_verbatim`.
+- **E5** — the decline machinery is gone: `fragment_for_resolver`,
+  `decodes_to_metacharacter`, `unsupported_across_resolver_seam` and
+  `escaping::decodes_to_any`. The last escape-motivated decline, a wildcard
+  `<Import>` mixing a live and an escaped wildcard, imports the literal file
+  MSBuild imports instead.
 
-## Still to do
+## Filespec classification (where an escaped wildcard is data)
 
-### E4: the item/glob-resolver seam
+Whether MSBuild globs an item or import filespec is decided on its **escaped**
+text (`EngineFileUtilities.FilespecHasWildcards`; ported as
+`escaping::filespec_has_wildcards`): a live `*`/`?` and **no** escaped
+`%2a`/`%3f`. A filespec with both kinds is literal, whole — `Include="a%2a*.fs"`
+is the one item `a**.fs`, `Import Project="*.props%2a"` imports the file named
+`*.props*` — because once decoded MSBuild could not tell them apart.
 
-**Dependencies**: E1 (E2/E3 parallel). **Supersedes the decoder half of
-compile-item-fidelity-plan stage F1** — F1's seam analysis stands verbatim and is
-the hard part; it just consumes `Escaped` instead of re-deriving a decoder.
+An `Exclude` is then applied two ways, by the include fragment it meets:
 
-Most of the item pass already moved into the escaped domain with E1–E3:
-`spec_fragments` (item_pass.rs) splits on the escaped `;`, `fragment_identity`
-and `scalar_use` unescape at the leaf, and glob / `@(…)` / `%(…)` classification
-runs on escaped text (so `%2a` is a literal star and `%25(` is not a metadata
-reference).
+| include fragment | exclude classified by | an escaped `%2a` in the exclude |
+| --- | --- | --- |
+| literal (`ItemSpec` `ValueFragment`) | `FileSpecMatcherTester.Parse`: glob iff `FilespecHasWildcards` | a literal star in a name |
+| glob (`GlobFragment` → `GetFileList`) | `IsValidExclude` drops one with both kinds; the rest are decoded and globbed | a **wildcard** |
 
-**What remains is the glob-resolver seam.** `GlobRequest::include`
-(`crates/msbuild/src/lib.rs:186`) is still a `;`-joined string the LSP resolver
-re-splits and re-scans for `*`/`?`. Because the resolver re-scans, item_pass.rs
-must decline any fragment whose *decoded* form would smuggle a metacharacter past
-the classification already done:
+So `Include="*.fs" Exclude="a%2ab.fs"` excludes `axb.fs`, while
+`Include="axb.fs;a%2ab.fs" Exclude="a%2ab.fs"` excludes only `a*b.fs`.
 
-- `fragment_for_resolver` (item_pass.rs:46) → `None` when
-  `decodes_to_metacharacter` (item_pass.rs:52) finds a `%XX` decoding to `; * ?`;
-- the caller raises `unsupported_across_resolver_seam` (item_pass.rs:2665), the
-  same fail-safe the old substitution-level withdrawal produced;
-- the include list is assembled as `resolver_specs.join(";")` (item_pass.rs:2626).
+Admitting escaped excludes put more of the file matcher's pattern language in
+reach, and two rounds of review found it was not all modelled — mostly in
+shapes live wildcards reach too. Fixing each quirk as found was a deny-list
+with no end, so the resolver's gate is an **allow-list**
+(`glob::unmodelled_shape`): it commits only when every spec it matches
+against, and every name a glob would match, is printable ASCII with no
+trailing separator, no segment ending in `.` or a space, and none of `"<>|:`.
+Anything else declines (`GlobDecline::OutsideModelledShape`) — the UTF-16
+width of a `?`, .NET's non-ASCII case folding, Windows trailing-dot rules and
+the rest among it, unmodelled and unreachable. (A non-ASCII name found by a
+glob is admitted where it cannot matter: no `?` in play, and no `ı`/`ſ`,
+the two characters `OrdinalIgnoreCase` folds onto ASCII.) An exclude with a
+wildcard directory part (`**/.*/**`, `bin/**`) has two structural rules of
+its own: it must be anchored as the glob include it filters is (both absolute
+or both relative, `Unmodelled::MixedAnchoring`), and it must not meet an
+include with a `..` segment, whose `..` its `.*` would otherwise take
+(`Unmodelled::ParentSegmentUnderWildcardExclude` — on `main` the SDK's own
+`**/.*/**` swallowed a `../shared/*.fs` glob). A broader rule declining every
+wildcard directory segment was tried and measured: it declined the SDK's
+default excludes in six corpus projects that match MSBuild exactly, and the
+generative differential showed it guarded nothing the two narrow rules miss.
+Inside the allow-list, the resolver follows MSBuild's source, or declines by
+name:
 
-E4 makes `GlobRequest::include` carry a **fragment list in the escaped domain**
-that the resolver never re-splits or re-scans — it unescapes each fragment
-resolver-side, at its own point of use — then deletes the three guards above.
+- **A final `**`** is `**/*.*` (`FileMatcher.SplitFileSpec`): `bin/**` names
+  the files below `bin/`, not a file called `bin`.
 
-**Correctness oracle**: fidelity-plan F1's oracle (differential fixtures
-`a%20b.fs`, `a%3bb.fs`, `a%2ab.fs`) plus the `fsproj_item_escape_generative_diff.rs`
-harness (#933) with its escape dimension on, and the property F1 specifies for
-the seam (fragment count and literal/glob classification preserved end-to-end).
-The certain-fraction of the generative harness should **rise**; a fall is a bug.
+- **Legality** (`FileMatcher.RawFileSpecIsValid`/`IsLegalFileSpec`, ported as
+  `glob::is_legal_filespec`): a `**` that is not a whole segment (`a**b.fs`,
+  live or decoded from `a%2a%2ab.fs`), a `..` after a wildcard, a `...`, a `:`
+  past the second character. MSBuild falls back differently per caller, so the
+  resolver declines (`GlobDecline::IllegalFilespec`).
+- **All files** (`IsAllFilesWildcard`): a filename part of `*.*` matches
+  extensionless files too, as `*` does — except in `FileSpecMatcherTester`'s
+  filename-only branch (`**/*.*` against a literal include), which needs a dot.
+- **Literal names** against a literal include compare as full paths
+  (`./ab.fs` is `ab.fs`), unless either spelling holds a character Windows
+  forbids in a filename (`*?:<>|"`), which compares as written
+  (`FileUtilities.PathIsInvalid`): `./a*b.fs` and `a*b.fs` differ. A wildcard
+  exclude's fixed directory there is a full path too (`sub/../*.fs` is `*.fs`).
+- **Against a glob include** the file matcher relates excludes by spelling: a
+  `..` segment is compared as written (which the resolver does), and a `.`
+  segment too (which `Pattern` would drop, so it declines,
+  `GlobDecline::CurDirSegmentExclude`).
 
-### E5: delete the decline machinery
-
-**Dependencies**: E4.
-
-With E4 done, the only escape-motivated decline left in the tree is the trio E4
-removes (`fragment_for_resolver`, `decodes_to_metacharacter`,
-`unsupported_across_resolver_seam`). E5 is the closing sweep: confirm a grep for
-each returns nothing, state the "no escape hatch left" invariant in the
-`escaping.rs` module doc, and remove any remaining escape-motivated
-`Issue::Unsupported` withdrawal. (The original plan named temporary methods
-`contains_msbuild_escape` / `decline_if_live_escape`; those never materialised
-under those names — the live machinery is the item-seam trio, so E5 may collapse
-into E4's final commit.)
+All of it is pinned against `dotnet msbuild` 10.0.301 by the generative
+harness's hand-picked corners, and its generated sweep reaches every row.
 
 ## Risks (durable invariants)
 

@@ -40,13 +40,14 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia};
+use crate::directives::{PreprocError, TriviaToken};
 use crate::language_version::LanguageVersion;
-use crate::lexer::{LexError, Token};
+use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
 };
 use crate::syntax::{SyntaxKind, SyntaxNode};
+use crate::tokens::{RawKind, RawTokens, lex_full_trivia};
 use dual_keyword::{DualKeyword, KeywordForm};
 use expr::decl_expr_keyword;
 
@@ -242,11 +243,6 @@ pub struct ParseError {
     pub span: Range<usize>,
 }
 
-/// The raw stream the parser walks for losslessness: the byte-complete
-/// full-trivia preprocessor stream, covering *every* source byte as either a
-/// real [`Token`] ([`TriviaToken::Lexed`]) or a directive / inactive-code
-/// trivia marker.
-type RawTok<'src> = (Result<TriviaToken<'src>, PreprocError>, Range<usize>);
 type FilteredTok<'src> = (Result<FilteredToken<'src>, LexError>, Range<usize>);
 
 /// Parse an F# source string with no preprocessor symbols defined — every
@@ -373,18 +369,6 @@ pub fn diagnostics_are_version_invariant(
     lo.errors == hi.errors && lo.warnings == hi.warnings
 }
 
-/// The active-branch real tokens of `raw`: the substream LexFilter and the
-/// productions consume. Directive and inactive-code trivia are not active code.
-fn active_tokens<'a>(
-    raw: &[RawTok<'a>],
-) -> impl Iterator<Item = (Result<Token<'a>, LexError>, Range<usize>)> {
-    raw.iter().filter_map(|(res, span)| match res {
-        Ok(TriviaToken::Lexed(t)) => Some((Ok(t.clone()), span.clone())),
-        Err(PreprocError::Lex(e)) => Some((Err(e.clone()), span.clone())),
-        _ => None,
-    })
-}
-
 /// Every context the lex filter pushes over the token stream a parse of
 /// `source` under `symbols` and `lang` consumes (see
 /// [`crate::lexfilter::context_pushes`]).
@@ -393,8 +377,8 @@ pub fn context_pushes(
     symbols: &HashSet<String>,
     lang: LanguageVersion,
 ) -> Vec<ContextPush> {
-    let raw: Vec<RawTok<'_>> = lex_with_symbols_full_trivia(source, symbols).collect();
-    crate::lexfilter::context_pushes(source, lang, active_tokens(&raw))
+    let lexed = lex_full_trivia(source, symbols);
+    crate::lexfilter::context_pushes(source, lang, lexed.tokens.active())
 }
 
 fn parse_inner(
@@ -430,31 +414,25 @@ fn parse_inner_stopping_at(
     // user still sees one squiggle, not two. Active lex failures
     // (`PreprocError::Lex`) are kept in the raw stream — they are genuine breaks
     // that surface as ERROR nodes.
-    let mut directive_errors: Vec<ParseError> = Vec::new();
-    let mut full_trivia = lex_with_symbols_full_trivia(source, symbols);
-    let raw_tokens: Vec<RawTok<'_>> = full_trivia
-        .by_ref()
-        .filter(|(res, span)| match res {
-            Ok(_) | Err(PreprocError::Lex(_)) => true,
-            Err(e) => {
-                directive_errors.push(ParseError {
-                    message: e.diagnostic_message(),
-                    span: e.reporting_span(span.clone()),
-                });
-                false
-            }
+    let lexed = lex_full_trivia(source, symbols);
+    let directive_errors: Vec<ParseError> = lexed
+        .preproc_errors
+        .iter()
+        .map(|(e, span)| ParseError {
+            message: e.diagnostic_message(),
+            span: e.reporting_span(span.clone()),
         })
         .collect();
-    // The driver, now drained, has recorded every `#elif` directive FCS
-    // feature-checks (all branches/depths, separator required). Snapshot the
-    // spans before `full_trivia` is dropped; `langversion_diagnostics` turns
-    // them into errors when `lang` predates 11.0.
-    let elif_directives: Vec<Range<usize>> = full_trivia.elif_directives().to_vec();
+    // Every `#elif` directive FCS feature-checks (all branches/depths,
+    // separator required); `langversion_diagnostics` turns them into errors
+    // when `lang` predates 11.0.
+    let elif_directives: &[Range<usize>] = &lexed.elif_directives;
+    let raw_tokens = lexed.tokens;
     // The active-branch real tokens are the substream LexFilter and the
     // productions consume. Directive / inactive-code trivia are not active
     // code, so they are dropped here; the parser still emits them from
     // `raw_tokens` for losslessness.
-    let filter_run = filter_collect(source, lang, active_tokens(&raw_tokens));
+    let filter_run = filter_collect(source, lang, raw_tokens.active());
     let filtered_tokens: Vec<FilteredTok<'_>> = filter_run.tokens;
     let offside_diagnostics: Vec<OffsideDiagnostic> = filter_run.diagnostics;
     let shape_depends_on_language_version = filter_run.shape_depends_on_language_version;
@@ -463,6 +441,15 @@ fn parse_inner_stopping_at(
     // parser runs so a signed literal is a single token in both expression
     // and pattern position. See `sign_fold`.
     let filtered_tokens = sign_fold::fold_adjacent_signs(source, &raw_tokens, filtered_tokens);
+    #[cfg(feature = "token-reference")]
+    assert_filtered_stream_matches_reference(
+        source,
+        symbols,
+        lang,
+        &filtered_tokens,
+        &offside_diagnostics,
+        shape_depends_on_language_version,
+    );
 
     // FS1161 tabs: a lexer-level diagnostic, scanned off the active-code
     // whitespace trivia before `raw_tokens` is consumed by the parser. Merged
@@ -484,7 +471,7 @@ fn parse_inner_stopping_at(
     // them into diagnostics here — so the tree shape is identical regardless of
     // `lang`. Mirrors FCS, which gates `#elif` with `CheckLanguageFeatureAndRecover`:
     // it reports the feature error and recovers, leaving the parse unchanged.
-    let langversion_errors = langversion_diagnostics(&elif_directives, lang);
+    let langversion_errors = langversion_diagnostics(elif_directives, lang);
 
     let mut parser = Parser::new(source, raw_tokens, filtered_tokens);
     parser.tree_height_stop = initial_stop;
@@ -586,6 +573,49 @@ fn parse_inner_stopping_at(
     }
 }
 
+/// Under `token-reference`, assert that the filtered stream the productions
+/// are about to read, the lex-filter's offside diagnostics and its
+/// language-version flag are exactly what the frozen reference pipeline
+/// produces for the same source ([`crate::reference::filtered_stream`],
+/// `docs/token-pipeline-soa-plan.md` D7). The two pipelines' token types are
+/// distinct copies with the same derived `Debug`, which is the comparison's
+/// currency.
+#[cfg(feature = "token-reference")]
+fn assert_filtered_stream_matches_reference(
+    source: &str,
+    symbols: &HashSet<String>,
+    lang: LanguageVersion,
+    tokens: &[FilteredTok<'_>],
+    diagnostics: &[OffsideDiagnostic],
+    shape_depends_on_language_version: bool,
+) {
+    let reference = crate::reference::filtered_stream(source, symbols, lang);
+    for i in 0..tokens.len().max(reference.tokens.len()) {
+        let live = tokens.get(i).map(|t| format!("{t:?}"));
+        let want = reference.tokens.get(i).map(|t| format!("{t:?}"));
+        assert!(
+            live == want,
+            "filtered token {i} is {live:?} where the reference pipeline has {want:?}, \
+             at {lang} in {source:?}"
+        );
+    }
+    let live: Vec<String> = diagnostics.iter().map(|d| format!("{d:?}")).collect();
+    let want: Vec<String> = reference
+        .diagnostics
+        .iter()
+        .map(|d| format!("{d:?}"))
+        .collect();
+    assert!(
+        live == want,
+        "offside diagnostics {live:?} differ from the reference pipeline's {want:?}, \
+         at {lang} in {source:?}"
+    );
+    assert!(
+        shape_depends_on_language_version == reference.shape_depends_on_language_version,
+        "the language-version flag differs from the reference pipeline's, at {lang} in {source:?}"
+    );
+}
+
 /// Language-version legality diagnostics: report each construct not available
 /// at `lang`. Never alters the tree (the spans come from a side-channel the
 /// driver records), mirroring FCS's `CheckLanguageFeatureAndRecover`, which
@@ -650,14 +680,15 @@ fn langversion_diagnostics(
 /// The trade is deliberate: false negatives on (pathological) directive-line
 /// tabs, never a false positive. Ordinary code — the case that matters — is
 /// unaffected, since a code line's first non-blank byte isn't `#`.
-fn tab_diagnostics(source: &str, raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
+fn tab_diagnostics(source: &str, raw_tokens: &RawTokens<'_>) -> Vec<ParseError> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
-    for (res, span) in raw_tokens {
+    for i in 0..raw_tokens.len() {
+        let span = raw_tokens.span(i);
         // The directive-line test scans back to the start of the line, so it
         // runs only for whitespace that holds a tab; run for every whitespace
         // token, it would make a long line quadratic.
-        if !matches!(res, Ok(TriviaToken::Lexed(Token::Whitespace)))
+        if raw_tokens.kind(i) != RawKind::Lexed(TokenKind::Whitespace)
             || !bytes[span.clone()].contains(&b'\t')
             || whitespace_on_directive_line(bytes, span.start)
         {
@@ -719,12 +750,13 @@ fn tab_diagnostics(source: &str, raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
 /// `lex.fsl:983`) checks only `$`. That rule applies when the first character
 /// past the leading `ignored_op_char`s is `>`; a `$` among those leading
 /// characters makes the lexeme an error regardless of which rule claims it.
-fn operator_char_diagnostics(raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
+fn operator_char_diagnostics(raw_tokens: &RawTokens<'_>) -> Vec<ParseError> {
     let mut out = Vec::new();
-    for (res, span) in raw_tokens {
-        let Ok(TriviaToken::Lexed(Token::Op(op))) = res else {
+    for i in 0..raw_tokens.len() {
+        if raw_tokens.kind(i) != RawKind::Lexed(TokenKind::Op) {
             continue;
-        };
+        }
+        let (op, span) = (raw_tokens.text(i), raw_tokens.span(i));
         let greater_headed = op.trim_start_matches(['.', '?']).starts_with('>');
         for c in [':', '$'] {
             if op.contains(c) && !(c == ':' && greater_headed) {
@@ -741,10 +773,11 @@ fn operator_char_diagnostics(raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
     out
 }
 
-fn reserved_ident_diagnostics(raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
+fn reserved_ident_diagnostics(raw_tokens: &RawTokens<'_>) -> Vec<ParseError> {
     let mut out = Vec::new();
-    for (i, (res, span)) in raw_tokens.iter().enumerate() {
-        if let Ok(TriviaToken::Lexed(Token::Ident(s))) = res
+    for i in 0..raw_tokens.len() {
+        let (s, span) = (raw_tokens.text(i), raw_tokens.span(i));
+        if raw_tokens.kind(i) == RawKind::Lexed(TokenKind::Ident)
             && crate::lexer::is_reserved_ident(s)
         {
             match glued_ident_suffix(raw_tokens, i, span.end) {
@@ -784,18 +817,18 @@ enum GluedSuffix {
 }
 
 fn glued_ident_suffix(
-    raw_tokens: &[RawTok<'_>],
+    raw_tokens: &RawTokens<'_>,
     i: usize,
     ident_end: usize,
 ) -> Option<GluedSuffix> {
-    let (res, next_span) = raw_tokens.get(i + 1)?;
-    if next_span.start != ident_end {
+    let next = i + 1;
+    if next >= raw_tokens.len() || raw_tokens.span(next).start != ident_end {
         return None;
     }
-    match res {
-        Ok(TriviaToken::Lexed(Token::Hash)) => Some(GluedSuffix::Hash),
-        Ok(TriviaToken::Lexed(Token::Op(op))) if op.starts_with('!') => {
-            Some(GluedSuffix::Bang(next_span.start + 1))
+    match raw_tokens.kind(next) {
+        RawKind::Lexed(TokenKind::Hash) => Some(GluedSuffix::Hash),
+        RawKind::Lexed(TokenKind::Op) if raw_tokens.text(next).starts_with('!') => {
+            Some(GluedSuffix::Bang(ident_end + 1))
         }
         _ => None,
     }
@@ -835,7 +868,7 @@ struct Parser<'src> {
     /// Raw lexer stream — includes trivia. Advanced in lockstep with
     /// `filtered_tokens` so trivia and filter-swallowed tokens reach the
     /// tree.
-    raw_tokens: Vec<RawTok<'src>>,
+    raw_tokens: RawTokens<'src>,
     raw_pos: usize,
     /// Trivia-free token stream as seen by the productions. `pos` is
     /// monotonic — we only index, never pop.

@@ -13,6 +13,7 @@ mod patterns;
 mod reserved_idents;
 mod structure;
 mod tabs;
+mod token_kinds;
 mod types;
 
 use super::*;

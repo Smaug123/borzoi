@@ -1373,6 +1373,7 @@ impl<'src> Parser<'src> {
             // predicate every `(`-after lookahead uses.
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => self
                 .next_non_trivia_raw_after(lparen_span.end)
+                .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
             Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_minus_expr(t) => true,
             // `_.member` — the accessor-function shorthand (FCS's `UNDERSCORE
@@ -1499,6 +1500,7 @@ impl<'src> Parser<'src> {
             // `let`/`use` after `(`.
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => self
                 .next_non_trivia_raw_after(lparen_span.end)
+                .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
             Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_atomic_expr(t) => true,
             // `_.member` — the accessor-function shorthand as a bare application
@@ -1565,6 +1567,7 @@ impl<'src> Parser<'src> {
             // (see [`raw_after_lparen_starts_expr`], incl. a block `let`/`use`).
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => self
                 .next_non_trivia_raw_after(lparen_span.end)
+                .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
             Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_atomic_expr(t) => true,
             // `_.member` — the accessor-function shorthand is an `atomicExpr`,
