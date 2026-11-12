@@ -1,6 +1,6 @@
 # Restore at the dgspec boundary — plan
 
-> **Status:** stages 1–6, 7a (without transitive pinning), 7b, 7c and 8 have
+> **Status:** stages 1–6, 7a, 7b, 7c and 8 have
 > landed, and so have the
 > resolver's handling of dependency asset filters, B₁'s of `<contentFiles>`, and
 > B₁'s reading of the environment restore runs under.
@@ -576,7 +576,7 @@ comes from stage 1's local sweep and the stage-8 fixtures, not from the census.
 - **7b — download dependencies.** Landed; see below.
 - **5 — pruning.** Landed; see below.
 - **6 — project nodes.** Landed; see below.
-- **7a — central package management.** Landed without transitive pinning;
+- **7a — central package management.** Landed, transitive pinning included;
   see below.
 
 The oracle for each is generator-extended, graded the same way.
@@ -945,21 +945,54 @@ the generator writes prune lists, and the `net10.0` fixture in
 commits with exactly the restore's closure. No corpus project targets
 `net10.0`, so the census does not move.
 
-### Stage 7a: central package management, without transitive pinning — landed
+### Stage 7a: central package management — landed
 
-Central package management no longer declines unless it pins transitively.
-Probing restore showed it moves no closure on its own: the SDK writes each
-centrally managed dependency's range into the spec, and restore resolves
-that range, whatever the dependency's central entry says (one that differs,
-or none at all) and whatever its `versionOverride` says. What it adds is
-validation, which fails the restore: a dependency not centrally managed
-(`NU1008`), an implicit reference whether or not it is (`NU1009`; the
-generator found the managed case), and a floating central version
-(`NU1011`). B₁ declines each, and a floating override. Transitive pinning
-raises a transitive package to its central version, which changes the
-closure, and still declines. A hand case grades each shape against B₀, and
-the generator writes central package management. No corpus project uses
-it, so the census does not move.
+Central package management no longer declines. Probing restore showed it
+moves no direct reference's closure on its own: the SDK writes each centrally
+managed dependency's range into the spec, and restore resolves that range,
+whatever the dependency's central entry says (one that differs, or none at
+all) and whatever its `versionOverride` says. What it adds is validation,
+which fails the restore: a dependency not centrally managed (`NU1008`), an
+implicit reference whether or not it is (`NU1009`; the generator found the
+managed case), and a floating central version (`NU1011`). B₁ declines each,
+and a floating override.
+
+**Transitive pinning** does change the closure, and is modelled in the
+resolver's engine (`resolver.rs`, *Transitive pinning*), ported from the 7.9
+`DependencyGraphResolver` and settled shape by shape against the oracle.
+Restore reads it only under central package management and only on the
+restored project: the flag without central package management, and a
+referenced project's flag, are inert. Each transitive package edge whose name
+has a central version for the framework is raised to that version and walked
+with the project's path, as though the project referenced it; a direct
+reference keeps its own range over its central entry, and a package pruned
+from a parent's dependencies is never pinned back in. What follows from that,
+each a hand case in `dgspec_resolve_diff.rs`:
+
+- The pinned version's dependencies are walked, and since its subtree is
+  rooted at the project, eclipsing and eviction below it move: a deeper edge
+  that shared its parent's path, and was downgraded, now evicts.
+- A pinned package's dependencies are walked whatever its parents suppress
+  (a referenced project's `PrivateAssets="All"` dependency comes back in under
+  a pinned package), though a suppressed edge is itself never pinned.
+- Restore records no downgrade of a direct reference at all, so a graph that
+  fails `NU1605` without pinning restores with it.
+- A pin below what an edge demands is `NU1109`, an error whatever the warning
+  policy; B₁ declines it, naming the code.
+- A pin above an edge's upper bound is a version conflict restore records and
+  never reports: the package leaves the graph, without a warning, and restore
+  succeeds. The legacy engine keeps the package and warns `NU1608`, one of
+  the places the two engines part, so pinning shapes are graded against the
+  default engine alone, as pruning is.
+- The lower-bound warnings judge a pinned package on its central range
+  (`NU1602`, `NU1603`).
+
+`resolver_diff.rs` sweeps pinned multi-version graphs (the oracle's `restore`
+op takes central versions), requiring soundness, completeness where restore
+resolves, and enough graphs where pinning moved a closure, rescued a
+downgrade, and caused one; the dgspec generator pins on both sweeps and
+requires the same effects on committed specs. No corpus project uses central
+package management, so the census does not move.
 
 ### The restore environment — landed
 

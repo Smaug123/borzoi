@@ -800,7 +800,7 @@ fn render_structural(structural: &StructuralCompileItemUncertainty) -> String {
             format!("an `<Import Project=\"{project}\">` I couldn't resolve to one definite file")
         }
         StructuralCompileItemUncertainty::UnsupportedChoose => {
-            "a `<Choose>` block, which I don't descend".to_string()
+            "a `<Choose>` block I couldn't evaluate, which may add Compile items".to_string()
         }
     }
 }
