@@ -1135,7 +1135,7 @@ impl<'src> Parser<'src> {
             self.drain_raw_up_to(with_span.start);
             self.emit_text(SyntaxKind::WITH_TOK, with_span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         }
         // One or two comma-separated accessors; `propKind` is recovered from
         // which appear.
@@ -1327,7 +1327,7 @@ impl<'src> Parser<'src> {
             self.drain_raw_up_to(with_span.start);
             self.emit_text(SyntaxKind::WITH_TOK, with_span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         }
         // Accessors. Each may carry leading attributes / accessibility / `inline`
         // (FCS's `opt_attributes opt_access opt_inline` before the `get`/`set`),
@@ -1608,7 +1608,7 @@ impl<'src> Parser<'src> {
                         | FilteredToken::Raw(Token::Less(_))
                 )
             );
-            let has_args = Self::op_head_args_follow(after, raw_after);
+            let has_args = Self::op_head_args_follow(after.as_ref(), raw_after);
             self.emit_operator_head(is_star, has_typars, has_args);
             return false;
         }
@@ -2164,7 +2164,7 @@ impl<'src> Parser<'src> {
         );
         self.emit_text(SyntaxKind::INTERFACE_TOK, kw_span);
         self.raw_pos += 1;
-        self.pos += 1;
+        self.filtered.advance();
 
         // The implemented interface type (`appTypeWithoutNull`). A missing type is
         // FCS's `interfaceMember recover` arm: record an error and leave the node

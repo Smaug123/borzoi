@@ -564,7 +564,7 @@ impl<'src> Parser<'src> {
             );
             self.emit_text(kw_kind, span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         } else {
             self.bump_into(kw_kind);
         }
@@ -944,7 +944,7 @@ impl<'src> Parser<'src> {
             return None;
         }
         // RHS-must-exist gate.
-        if !self.is_expr_start_at(self.pos + 1) {
+        if !self.is_expr_start_at(self.filtered.pos() + 1) {
             return None;
         }
         // ADJACENT_PREFIX_OP gate.
@@ -1083,7 +1083,7 @@ impl<'src> Parser<'src> {
             return None;
         }
         // RHS-must-exist gate.
-        if !self.is_expr_start_at(self.pos + 1) {
+        if !self.is_expr_start_at(self.filtered.pos() + 1) {
             return None;
         }
         Some((45, 45))
@@ -1157,7 +1157,7 @@ impl<'src> Parser<'src> {
         );
         self.emit_text(SyntaxKind::IN_TOK, span);
         self.raw_pos += 1;
-        self.pos += 1;
+        self.filtered.advance();
     }
 
     /// FCS LexFilter rule at `SyntaxTree/LexFilter.fs:2694`: when the
@@ -1265,7 +1265,7 @@ impl<'src> Parser<'src> {
     /// [`Parser::peek_infix_continuation`] to peer past the operator at
     /// the cursor and decide whether an expression atom follows.
     pub(super) fn is_expr_start_at(&self, offset: usize) -> bool {
-        match self.filtered_tokens.get(offset) {
+        match self.filtered.tokens().get(offset) {
             // `LParen` as atom-starter must look past the swallowed
             // `RParen` (same logic as `peek_is_expr_start`). RHS of an
             // infix operator parses through `parse_pratt_expr` →
@@ -1276,7 +1276,7 @@ impl<'src> Parser<'src> {
                 .next_non_trivia_raw_after(lparen_span.end)
                 .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
-            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_minus_expr(t) => true,
+            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_minus_expr(&t) => true,
             // A non-block `let … in` operand surfaces as a raw `Token::Let` in
             // the filtered stream (block-leading lets are `Virtual(Let)` instead).
             // It is deliberately *not* in `raw_starts_minus_expr` (that classifier
@@ -1315,7 +1315,7 @@ impl<'src> Parser<'src> {
             // A lambda head (`fun`/`function`, either spelling) — kept symmetric
             // with the `peek_is_expr_start` arm, and classified by the same
             // [`DualKeyword::lambda_head`] that `parse_minus_expr` dispatches on.
-            Some((Ok(tok), _)) if DualKeyword::lambda_head(tok).is_some() => true,
+            Some((Ok(tok), _)) if DualKeyword::lambda_head(&tok).is_some() => true,
             // `Virtual::Let` — a *block-leading* `let … in` as the infix RHS,
             // `a &&⏎    let y = x⏎    y` (the `&&`-at-end-of-line layout, where
             // LexFilter promotes the next-line `let` to the virtual rather than

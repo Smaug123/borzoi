@@ -47,9 +47,10 @@ use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
 };
 use crate::syntax::{SyntaxKind, SyntaxNode};
-use crate::tokens::{RawKind, RawTokens, lex_full_trivia};
+use crate::tokens::{FilteredKind, FilteredTokens, RawKind, RawTokens, lex_full_trivia};
 use dual_keyword::{DualKeyword, KeywordForm};
 use expr::decl_expr_keyword;
+use filtered_cursor::FilteredCursor;
 
 /// FCS's `parsAugmentationsIllegalOnDelegateType` (`FSComp.txt:545`) — a
 /// delegate type definition (`type T = delegate of …`) admits no augmentation,
@@ -136,6 +137,7 @@ mod expr_atom;
 mod expr_control;
 mod expr_op;
 mod feature_gates;
+mod filtered_cursor;
 mod measure;
 mod numeric;
 mod pat;
@@ -433,14 +435,14 @@ fn parse_inner_stopping_at(
     // code, so they are dropped here; the parser still emits them from
     // `raw_tokens` for losslessness.
     let filter_run = filter_collect(source, lang, raw_tokens.active());
-    let filtered_tokens: Vec<FilteredTok<'_>> = filter_run.tokens;
+    let mut filtered_tokens = filter_run.tokens;
     let offside_diagnostics: Vec<OffsideDiagnostic> = filter_run.diagnostics;
     let shape_depends_on_language_version = filter_run.shape_depends_on_language_version;
     // Fold an adjacent `+`/`-` into the following numeric literal, mirroring
     // FCS's token-layer sign fold (`LexFilter.fs:2694`). Done before the
     // parser runs so a signed literal is a single token in both expression
     // and pattern position. See `sign_fold`.
-    let filtered_tokens = sign_fold::fold_adjacent_signs(source, &raw_tokens, filtered_tokens);
+    sign_fold::fold_adjacent_signs(&raw_tokens, &mut filtered_tokens);
     #[cfg(feature = "token-reference")]
     assert_filtered_stream_matches_reference(
         source,
@@ -585,7 +587,7 @@ fn assert_filtered_stream_matches_reference(
     source: &str,
     symbols: &HashSet<String>,
     lang: LanguageVersion,
-    tokens: &[FilteredTok<'_>],
+    tokens: &FilteredTokens<'_>,
     diagnostics: &[OffsideDiagnostic],
     shape_depends_on_language_version: bool,
 ) {
@@ -866,14 +868,13 @@ enum InterpStyle {
 struct Parser<'src> {
     source: &'src str,
     /// Raw lexer stream — includes trivia. Advanced in lockstep with
-    /// `filtered_tokens` so trivia and filter-swallowed tokens reach the
+    /// `filtered` so trivia and filter-swallowed tokens reach the
     /// tree.
     raw_tokens: RawTokens<'src>,
     raw_pos: usize,
-    /// Trivia-free token stream as seen by the productions. `pos` is
-    /// monotonic — we only index, never pop.
-    filtered_tokens: Vec<FilteredTok<'src>>,
-    pos: usize,
+    /// Trivia-free token stream as seen by the productions, with the cursor
+    /// that walks it. The cursor is monotonic — we only index, never pop.
+    filtered: FilteredCursor<'src>,
     /// High-water mark of source bytes already emitted into the tree.
     /// Used to clamp filtered-token text starts so FCS-faithful *overlapping*
     /// splits — `RQuoteBarRBrace` becomes `RQUOTE=[s,e-2)` + `BAR_RBRACE=

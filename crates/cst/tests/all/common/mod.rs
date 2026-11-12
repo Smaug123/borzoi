@@ -1917,7 +1917,7 @@ fn filtered_streams_match(source: &str, parser: ParserFs0058) {
         let run = filter_collect(source, lang, lex(source));
         let rust_tokens: Vec<NormalisedToken> = run
             .tokens
-            .into_iter()
+            .into_items()
             .map(|(tok, span)| {
                 let tok = tok.unwrap_or_else(|e| panic!("rust lex error {e:?} in {source:?}"));
                 NormalisedToken {

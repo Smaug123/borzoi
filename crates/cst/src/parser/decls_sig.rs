@@ -451,7 +451,7 @@ impl<'src> Parser<'src> {
                 // *non*-`val` (`[<A>] type`/`member`) is not a valid module decl
                 // and falls through to the `false` arm (FCS rejects it).
                 Some((Ok(FilteredToken::Raw(Token::LBrackLess)), _))
-                    if self.attributed_val_follows_from(self.pos) =>
+                    if self.attributed_val_follows_from(self.filtered.pos()) =>
                 {
                     true
                 }
@@ -571,7 +571,7 @@ impl<'src> Parser<'src> {
                 )
             {
                 self.builder.token(SyntaxKind::ERROR, "");
-                self.pos += 1;
+                self.filtered.advance();
             }
         } else if self.peek_is_delegate_repr_start() {
             // A delegate body — `delegate of <topType>` (slice 7). FCS lowers it to
@@ -632,7 +632,7 @@ impl<'src> Parser<'src> {
             && self.sig_member_item_follows_block_sep();
         if at_sep_then_item {
             self.builder.token(SyntaxKind::ERROR, ""); // the OBLOCKSEP
-            self.pos += 1;
+            self.filtered.advance();
         }
         let parsed_bare_members =
             at_sep_then_item || (opened_block && self.peek_is_sig_member_block_start());
@@ -667,7 +667,7 @@ impl<'src> Parser<'src> {
                 // only `pos` (the `parse_type_defn_repr` discipline): a following
                 // swallowed `type`/`and` keyword sharing its byte span survives.
                 self.builder.token(SyntaxKind::ERROR, "");
-                self.pos += 1;
+                self.filtered.advance();
                 closed_block = true;
             } else {
                 // A leftover the bare-member loop did not model (a nested-type sig,
@@ -882,7 +882,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Raw(Token::LBrackLess)), _))
         ) {
-            return self.attributed_member_sig_follows_from(self.pos);
+            return self.attributed_member_sig_follows_from(self.filtered.pos());
         }
         self.peek_is_member_sig_start()
             || matches!(
@@ -910,18 +910,9 @@ impl<'src> Parser<'src> {
     /// return `false` and let the caller flag/contain it rather than swallow the
     /// sibling as a phantom member.
     fn attributed_member_sig_follows_from(&self, from: usize) -> bool {
-        let toks = &self.filtered_tokens;
+        let toks = &self.filtered.tokens();
         let mut i = from;
-        let skip_trivia = |mut i: usize| {
-            while i < toks.len()
-                && matches!(&toks[i].0, Ok(FilteredToken::Raw(t)) if trivia_kind(t).is_some())
-            {
-                i += 1;
-            }
-            i
-        };
         loop {
-            i = skip_trivia(i);
             let Some((Ok(ft), _)) = toks.get(i) else {
                 return false;
             };
@@ -931,7 +922,7 @@ impl<'src> Parser<'src> {
                 FilteredToken::Raw(Token::LBrackLess) => {
                     i += 1;
                     while i < toks.len()
-                        && !matches!(&toks[i].0, Ok(FilteredToken::Raw(Token::GreaterRBrack)))
+                        && toks.kind(i) != FilteredKind::Token(TokenKind::GreaterRBrack)
                     {
                         i += 1;
                     }
@@ -968,8 +959,10 @@ impl<'src> Parser<'src> {
                 // A leading accessibility modifier is valid only before `new`
                 // (`[<A>] private new : …`, FCS's `opt_attributes opt_access NEW`).
                 FilteredToken::Raw(Token::Internal | Token::Private | Token::Public) => {
-                    let j = skip_trivia(i + 1);
-                    return matches!(toks.get(j), Some((Ok(FilteredToken::Raw(Token::New)), _)));
+                    return matches!(
+                        toks.get(i + 1),
+                        Some((Ok(FilteredToken::Raw(Token::New)), _))
+                    );
                 }
                 // A `BlockEnd` (dangling attribute) or anything else: not an
                 // attributed member sig in this scope.
@@ -988,18 +981,9 @@ impl<'src> Parser<'src> {
     /// *filtered* stream so offside boundaries are respected: only another
     /// attribute list or a `BlockSep` may sit between the run and the `val`.
     fn attributed_val_follows_from(&self, from: usize) -> bool {
-        let toks = &self.filtered_tokens;
+        let toks = &self.filtered.tokens();
         let mut i = from;
-        let skip_trivia = |mut i: usize| {
-            while i < toks.len()
-                && matches!(&toks[i].0, Ok(FilteredToken::Raw(t)) if trivia_kind(t).is_some())
-            {
-                i += 1;
-            }
-            i
-        };
         loop {
-            i = skip_trivia(i);
             let Some((Ok(ft), _)) = toks.get(i) else {
                 return false;
             };
@@ -1008,7 +992,7 @@ impl<'src> Parser<'src> {
                 FilteredToken::Raw(Token::LBrackLess) => {
                     i += 1;
                     while i < toks.len()
-                        && !matches!(&toks[i].0, Ok(FilteredToken::Raw(Token::GreaterRBrack)))
+                        && toks.kind(i) != FilteredKind::Token(TokenKind::GreaterRBrack)
                     {
                         i += 1;
                     }
@@ -1171,7 +1155,7 @@ impl<'src> Parser<'src> {
                     if self.sig_member_item_follows_block_sep() =>
                 {
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 // A `;` / `;;` top separator (FCS's `opt_seps`) between member
                 // sigs on one line (`abstract A : int; abstract B : int`).
@@ -1342,7 +1326,7 @@ impl<'src> Parser<'src> {
         // *same* offside scope (not a dangling `[<A>]` whose block closes before a
         // dedented sibling). Reuse the scope-aware lookahead.
         if matches!(next, Some(FilteredToken::Raw(Token::LBrackLess)))
-            && let Some(idx) = self.next_non_trivia_filtered_index_after(self.pos)
+            && let Some(idx) = self.next_non_trivia_filtered_index_after(self.filtered.pos())
         {
             return self.attributed_member_sig_follows_from(idx);
         }
@@ -1351,7 +1335,7 @@ impl<'src> Parser<'src> {
             Some(FilteredToken::Raw(
                 Token::Internal | Token::Private | Token::Public
             ))
-        ) && let Some(idx) = self.next_non_trivia_filtered_index_after(self.pos)
+        ) && let Some(idx) = self.next_non_trivia_filtered_index_after(self.filtered.pos())
         {
             return matches!(
                 self.next_non_trivia_filtered_after_index(idx),

@@ -44,7 +44,7 @@ impl<'src> Parser<'src> {
             return false;
         }
         let Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) =
-            self.filtered_tokens.get(self.pos + 1)
+            self.filtered.tokens().get(self.filtered.pos() + 1)
         else {
             return false;
         };
@@ -82,10 +82,8 @@ impl<'src> Parser<'src> {
                 Ok(FilteredToken::Virtual(Virtual::HighPrecedenceBrackApp)),
                 _
             )),
-        ) && matches!(
-            self.filtered_tokens.get(self.pos + 1),
-            Some((Ok(FilteredToken::Raw(Token::LBrack)), _)),
-        )
+        ) && (self.filtered.tokens().kind_at(self.filtered.pos() + 1)
+            == Some(FilteredKind::Token(TokenKind::LBrack)))
     }
 
     /// `pars.fsy:5197 argExpr` — an application argument. Two forms:
@@ -127,7 +125,6 @@ impl<'src> Parser<'src> {
         let op_span = start.expect("op_is_adjacent_prefix true implies a peeked filtered token");
         let (res, _) = self
             .peek()
-            .cloned()
             .expect("op_is_adjacent_prefix true implies a peeked filtered token");
         let tok = match res {
             Ok(FilteredToken::Raw(t)) => t,

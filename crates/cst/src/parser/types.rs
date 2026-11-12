@@ -527,10 +527,9 @@ impl<'src> Parser<'src> {
         // [pos + 1]` (the bar is at `pos`; `bump_into` advances by exactly
         // one). Confirm it is the `null` itself, not a layout virtual the
         // raw checks above can't see.
-        if !matches!(
-            self.filtered_tokens.get(self.pos + 1),
-            Some((Ok(FilteredToken::Raw(Token::Null)), _)),
-        ) {
+        if self.filtered.tokens().kind_at(self.filtered.pos() + 1)
+            != Some(FilteredKind::Token(TokenKind::Null))
+        {
             return;
         }
 
@@ -614,11 +613,9 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::Quote)), _)) => SyntaxKind::QUOTE_TOK,
             Some((Ok(FilteredToken::Raw(Token::Op("^"))), _)) => SyntaxKind::HAT_TOK,
             Some((Ok(FilteredToken::Raw(Token::Underscore)), underscore_span)) => {
-                let colon_idx = self.next_non_trivia_filtered_index_after(self.pos)?;
-                let filtered_cg = matches!(
-                    self.filtered_tokens.get(colon_idx),
-                    Some((Ok(FilteredToken::Raw(Token::ColonGreater)), _))
-                );
+                let colon_idx = self.next_non_trivia_filtered_index_after(self.filtered.pos())?;
+                let filtered_cg = self.filtered.tokens().kind_at(colon_idx)
+                    == Some(FilteredKind::Token(TokenKind::ColonGreater));
                 let raw_cg = matches!(
                     self.next_non_trivia_raw_after(underscore_span.end),
                     Some(Token::ColonGreater)
@@ -627,16 +624,14 @@ impl<'src> Parser<'src> {
             }
             _ => return None,
         };
-        let ident_idx = self.next_non_trivia_filtered_index_after(self.pos)?;
-        let ident_end = match self.filtered_tokens.get(ident_idx) {
+        let ident_idx = self.next_non_trivia_filtered_index_after(self.filtered.pos())?;
+        let ident_end = match self.filtered.tokens().get(ident_idx) {
             Some((Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))), s)) => s.end,
             _ => return None,
         };
         let colon_idx = self.next_non_trivia_filtered_index_after(ident_idx)?;
-        let filtered_cg = matches!(
-            self.filtered_tokens.get(colon_idx),
-            Some((Ok(FilteredToken::Raw(Token::ColonGreater)), _))
-        );
+        let filtered_cg = self.filtered.tokens().kind_at(colon_idx)
+            == Some(FilteredKind::Token(TokenKind::ColonGreater));
         let raw_cg = matches!(
             self.next_non_trivia_raw_after(ident_end),
             Some(Token::ColonGreater)
