@@ -2051,7 +2051,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn declared_in(
         &self,
         path: &[String],
-    ) -> Option<&std::collections::HashMap<String, super::state::DeclKinds>> {
+    ) -> Option<&crate::hash::HashMap<String, super::state::DeclKinds>> {
         self.container_path.get_at(&self.container_decls, path)
     }
 }

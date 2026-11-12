@@ -6212,7 +6212,7 @@ impl<'a> Resolver<'a> {
     fn module_like_transparent_beside(
         &self,
         prefix: &[String],
-        declared: Option<&std::collections::HashMap<String, super::state::DeclKinds>>,
+        declared: Option<&crate::hash::HashMap<String, super::state::DeclKinds>>,
         name: &str,
         member: &str,
     ) -> bool {
