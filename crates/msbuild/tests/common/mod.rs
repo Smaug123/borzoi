@@ -313,6 +313,14 @@ impl Oracle {
         )
     }
 
+    /// An oracle whose default SDK resolver looks in `sdks_path` for a
+    /// `<Project Sdk="Name">` (`<sdks_path>/Name/Sdk`): the shape a
+    /// differential laying out a synthetic SDK needs, so MSBuild imports it
+    /// through the `Sdk` attribute just as our evaluator does.
+    pub fn spawn_with_sdks_path(sdks_path: &Path) -> Oracle {
+        Oracle::spawn_with(vec!["--sdks-path".into(), sdks_path.as_os_str().to_owned()])
+    }
+
     fn spawn_with(args: Vec<std::ffi::OsString>) -> Oracle {
         Oracle::spawn_in(args, None)
     }
@@ -479,6 +487,44 @@ impl Oracle {
         if resp["ok"].as_bool() != Some(true) {
             return None;
         }
+        Some(
+            resp["items"]
+                .as_array()
+                .expect("oracle ok response carries an items array")
+                .iter()
+                .map(|v| v.as_str().expect("each item is a string").to_string())
+                .collect(),
+        )
+    }
+
+    /// Evaluate the project file at `path` as it stands on disk, execute
+    /// `target` on it in the oracle's process, and read back the `FullPath` of
+    /// every `item_type` item the build leaves, in order (the `targetItems` op).
+    /// `None` when MSBuild rejects the project at evaluation. A build that runs
+    /// but fails panics with MSBuild's errors: a generated fixture is valid by
+    /// construction, so a failing build is a harness bug, not a verdict.
+    pub fn target_items(
+        &mut self,
+        path: &Path,
+        target: &str,
+        item_type: &str,
+    ) -> Option<Vec<String>> {
+        let resp = self.request(&serde_json::json!({
+            "op": "targetItems",
+            "path": path.to_string_lossy().into_owned(),
+            "target": target,
+            "itemType": item_type,
+        }));
+        if resp["ok"].as_bool() != Some(true) {
+            return None;
+        }
+        assert_eq!(
+            resp["succeeded"].as_bool(),
+            Some(true),
+            "target {target} failed on {}: {}",
+            path.display(),
+            resp["errors"]
+        );
         Some(
             resp["items"]
                 .as_array()

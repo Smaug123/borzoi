@@ -70,9 +70,20 @@
 ///     `restoreCone` below. Unlike the evaluation ops this one *executes*
 ///     targets, so it reaches the SDK's task code.
 ///
+///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
+///     -> {"ok":true,"succeeded":b,"errors":[..],"items":[fullPath, ..]}
+///      | {"ok":false}                           // MSBuild rejects the project
+///     Evaluates the project file at `path` as it stands on disk, executes
+///     `target` on that evaluation in-process, and reads back the `FullPath` of
+///     every `itemType` item the build leaves, in order: what a target makes of
+///     the evaluated items (F#'s `FSharpSourceCodeCompileOrder` reorders the
+///     Compile list) without a `dotnet msbuild` per case.
+///
 /// The process takes one optional argument pair, `--msbuild-sdk <dir>`, which
 /// pins it to the MSBuild of the SDK installed at `<dir>` instead of the one
 /// `dotnet` resolves from the working directory (`registerMSBuild`).
+/// A second optional pair, `--sdks-path <dir>`, last on the line, points MSBuild's
+/// default SDK resolver at `<dir>` (`splitSdksPath`).
 ///
 /// `globals` — on `project` and `items` — is MSBuild's **global property** set:
 /// the `-p:` command line, and what an IDE-style consumer injects. It is not a
@@ -645,6 +656,59 @@ let private respondRestoreCone (root: JsonElement) : string =
     | null -> JsonSerializer.Serialize {| error = "restoreCone needs a globals object" |}
     | globals -> JsonSerializer.Serialize(restoreCone project globals)
 
+/// The `targetItems` op: evaluate the project file at `path` as it stands on
+/// disk, execute `target` on that evaluation in-process, and read back the
+/// `FullPath` of every `itemType` item the build leaves, in order. `None` when
+/// MSBuild rejects the project at evaluation.
+///
+/// This is how a differential sees what a target makes of the evaluated items
+/// (F#'s `FSharpSourceCodeCompileOrder` reorders the Compile list) without a
+/// `dotnet msbuild` per case. The target runs in this process on one node, as
+/// `restoreCone`'s does.
+let private targetItems
+    (path: string)
+    (target: string)
+    (itemType: string)
+    (globals: Collections.Generic.IDictionary<string, string>)
+    =
+    use collection = new ProjectCollection()
+
+    let globals =
+        match globals with
+        | null -> Collections.Generic.Dictionary<string, string>() :> Collections.Generic.IDictionary<_, _>
+        | globals -> globals
+
+    try
+        let instance = ProjectInstance(path, globals, null, collection)
+        let logger = ConeLogger()
+
+        let succeeded =
+            instance.Build([| target |], [ logger :> Microsoft.Build.Framework.ILogger ])
+
+        Some(
+            succeeded,
+            logger.Errors,
+            instance.GetItems itemType
+            |> Seq.map (fun item -> item.GetMetadataValue "FullPath")
+            |> List.ofSeq
+        )
+    with :? InvalidProjectFileException ->
+        None
+
+let private respondTargetItems (root: JsonElement) : string =
+    let path = root.GetProperty("path").GetString()
+    let target = root.GetProperty("target").GetString()
+    let itemType = root.GetProperty("itemType").GetString()
+
+    match targetItems path target itemType (readGlobals root) with
+    | Some(succeeded, errors, items) ->
+        JsonSerializer.Serialize
+            {| ok = true
+               succeeded = succeeded
+               errors = errors
+               items = items |}
+    | None -> JsonSerializer.Serialize {| ok = false |}
+
 /// Register the MSBuild the oracle runs. With no arguments, the SDK `dotnet`
 /// resolves from the working directory (`RegisterDefaults`). With
 /// `--msbuild-sdk <dir>`, the SDK installed at `<dir>` (`<root>/sdk/<version>`),
@@ -668,7 +732,22 @@ let private registerMSBuild (argv: string[]) =
         Environment.SetEnvironmentVariable("MSBuildExtensionsPath", dir)
         Environment.SetEnvironmentVariable("MSBuildSDKsPath", Path.Combine(dir, "Sdks"))
         MSBuildLocator.RegisterMSBuildPath dir
-    | _ -> failwith $"usage: msbuild-condition-oracle [--msbuild-sdk <dir>]; got %A{argv}"
+    | _ -> failwith $"usage: msbuild-condition-oracle [--msbuild-sdk <dir>] [--sdks-path <dir>]; got %A{argv}"
+
+/// Split off a trailing `--sdks-path <dir>`: the directory MSBuild's default SDK
+/// resolver looks in for a `<Project Sdk="Name">` (`<dir>/Name/Sdk`), set as
+/// `MSBuildSDKsPath` *after* registration, since registering an MSBuild sets that
+/// variable to the registered SDK's own `Sdks` directory. The resolver reads the
+/// variable at each resolution. This is how a differential that lays out a
+/// synthetic SDK gets MSBuild to import it through the `Sdk` attribute, exactly as
+/// a real project imports its SDK, rather than through a hand-written `<Import>`.
+let private splitSdksPath (argv: string[]) : string[] * string option =
+    let n = argv.Length
+
+    if n >= 2 && argv[n - 2] = "--sdks-path" then
+        argv[.. n - 3], Some argv[n - 1]
+    else
+        argv, None
 
 [<EntryPoint>]
 let main argv =
@@ -676,7 +755,12 @@ let main argv =
     // Microsoft.Build type is touched at runtime. The evaluation logic lives
     // behind `evalCondition`, which is not JIT-compiled until first called
     // (well after this line), so the pinned reference assemblies never load.
+    let argv, sdksPath = splitSdksPath argv
     registerMSBuild argv
+
+    sdksPath
+    |> Option.iter (fun dir -> Environment.SetEnvironmentVariable("MSBuildSDKsPath", Path.GetFullPath dir))
+
     AppDomain.CurrentDomain.add_AssemblyLoad(AssemblyLoadEventHandler(fun _ args -> recordLoad args))
 
     let mutable line = Console.In.ReadLine()
@@ -695,6 +779,7 @@ let main argv =
                     | "items" -> respondItems root
                     | "itemsMeta" -> respondItemsMeta root
                     | "restoreCone" -> respondRestoreCone root
+                    | "targetItems" -> respondTargetItems root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}
