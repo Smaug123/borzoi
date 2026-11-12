@@ -870,10 +870,11 @@ fn body_reached_nested_sdk_honours_directory_build_props_cpm_gate() {
 /// it (probed — see `State::seed_toolset_properties`). So the walker's seed is
 /// the real build's value only when nothing that could have displaced it is
 /// in play.
-const OVERRIDABLE_TOOLSET_NAMES: [&str; 3] = [
+const OVERRIDABLE_TOOLSET_NAMES: [&str; 4] = [
     "MSBuildExtensionsPath",
     "MSBuildExtensionsPath32",
     "MSBuildSDKsPath",
+    "VisualStudioVersion",
 ];
 
 /// `Probe`, the body's read of the name taken after the SDK resolved, when
@@ -929,6 +930,9 @@ fn toolset_value(name: &str, version_dir: &Path) -> String {
         "MSBuildExtensionsPath" => format!("{}/", version_dir.display()),
         "MSBuildExtensionsPath32" => version_dir.display().to_string(),
         "MSBuildSDKsPath" => version_dir.join("Sdks").display().to_string(),
+        // The fixtures' SDK is 10.0.301, a 10.x release (pinned by
+        // `a_release_sdk_seeds_its_toolset_visual_studio_version`).
+        "VisualStudioVersion" => "18.0".to_string(),
         other => panic!("not an overridable toolset name: {other}"),
     }
 }

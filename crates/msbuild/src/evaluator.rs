@@ -2373,22 +2373,6 @@ impl<'r> State<'r> {
             self.reserved.insert(lower.clone());
             self.protected.insert(lower);
         }
-        // `VisualStudioVersion` is a toolset constant every name source can
-        // displace: the environment (MSBuild honours a spoof on every
-        // toolset), a caller global, or a project write. So it is seeded only
-        // into a slot none of them claimed — not defined, not in the
-        // environment snapshot (promoted or dropped, the real build has *some*
-        // value for it), never the subject of a write we could not decide or
-        // refused, and not behind content the walk could not see (a hidden
-        // write leaves no trust record).
-        if self.walk_opaque.is_none()
-            && self.lookup.get("VisualStudioVersion").is_none()
-            && !self.env_property_names.contains("visualstudioversion")
-            && self.trust_of("VisualStudioVersion").is_certain()
-            && let Some(value) = toolset_visual_studio_version(&version_dir)
-        {
-            self.lookup.insert_computed("VisualStudioVersion", value);
-        }
         // The overridable names below take a write from any source, so an
         // empty slot is the toolset's only if nothing that could have written
         // it is out of sight. Content the walk could not see (an import it
@@ -2404,12 +2388,21 @@ impl<'r> State<'r> {
         // undefined reads behind opacity) and commit its fallback. The
         // reserved seeds above stand regardless: MSBuild refuses a write to
         // them (MSB4004), hidden or not.
+        //
+        // `VisualStudioVersion` is overridable too, but a toolset need not
+        // define it (`toolset_visual_studio_version`); where it does not, an
+        // empty slot is what the real build holds unless the hidden content
+        // wrote it, as for any name behind opacity.
+        let toolset_vsv = toolset_visual_studio_version(&version_dir);
         if self.walk_opaque.is_some() {
-            for name in [
+            let withheld = [
                 "MSBuildExtensionsPath",
                 "MSBuildExtensionsPath32",
                 "MSBuildSDKsPath",
-            ] {
+            ]
+            .into_iter()
+            .chain(toolset_vsv.map(|_| "VisualStudioVersion"));
+            for name in withheld {
                 if self.lookup.get(name).is_none() {
                     self.apply_property_provenance(
                         name,
@@ -2422,6 +2415,20 @@ impl<'r> State<'r> {
                 }
             }
             return;
+        }
+        // `VisualStudioVersion` is a toolset constant every name source can
+        // displace: the environment (MSBuild honours a spoof on every
+        // toolset), a caller global, or a project write. So it is seeded only
+        // into a slot none of them claimed — not defined, not in the
+        // environment snapshot (promoted or dropped, the real build has *some*
+        // value for it), and never the subject of a write we could not decide
+        // or refused.
+        if self.lookup.get("VisualStudioVersion").is_none()
+            && !self.env_property_names.contains("visualstudioversion")
+            && self.trust_of("VisualStudioVersion").is_certain()
+            && let Some(value) = toolset_vsv
+        {
+            self.lookup.insert_computed("VisualStudioVersion", value);
         }
         let overridable = [
             ("MSBuildExtensionsPath32", dir.clone()),

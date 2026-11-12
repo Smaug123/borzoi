@@ -156,12 +156,19 @@ fn a_reserved_toolset_seed_discards_a_refused_writes_uncertainty() {
 #[test]
 fn an_overridable_toolset_seed_is_withheld_behind_an_undecided_import() {
     let mut oracle = common::Oracle::spawn();
-    for name in ["MSBuildSDKsPath", "MSBuildExtensionsPath32"] {
+    // `Microsoft.Common.CurrentVersion.targets` compares `VisualStudioVersion`
+    // numerically, so its spoof must be a number or MSBuild rejects the
+    // document (MSB4086).
+    for (name, spoof) in [
+        ("MSBuildSDKsPath", "/SPOOFED"),
+        ("MSBuildExtensionsPath32", "/SPOOFED"),
+        ("VisualStudioVersion", "99.0"),
+    ] {
         for hidden_writes in [true, false] {
             for default_fill in [false, true] {
                 let tmp = TempDir::new().unwrap();
                 let hidden = if hidden_writes {
-                    format!("<PropertyGroup><{name}>/SPOOFED</{name}></PropertyGroup>")
+                    format!("<PropertyGroup><{name}>{spoof}</{name}></PropertyGroup>")
                 } else {
                     String::new()
                 };
@@ -202,7 +209,7 @@ fn an_overridable_toolset_seed_is_withheld_behind_an_undecided_import() {
                 if hidden_writes {
                     assert_eq!(
                         theirs,
-                        Some("/SPOOFED"),
+                        Some(spoof),
                         "{case}: the fixture rests on the real build performing the hidden write",
                     );
                 } else {
