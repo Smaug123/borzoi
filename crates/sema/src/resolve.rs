@@ -450,11 +450,11 @@ pub fn resolve_file(
                 },
             );
         }
-        r.module_path = prefix;
+        r.in_exporting_module = prefix.is_some();
         // The container prefix under which this header's nested modules are
         // qualified for *cross-file* reference — the header's `longId` for both
         // a `module` and a `namespace` (empty for an anonymous module /
-        // `namespace global`). Unlike `module_path` it is set for namespaces.
+        // `namespace global`). Unlike [`Resolver::module_path`] it is set for namespaces.
         r.container_path.set(
             module
                 .long_id()
@@ -902,6 +902,17 @@ fn collect_auto_open_type_containers(
     decls: &[SigDecl],
     out: &mut Vec<Vec<String>>,
 ) {
+    collect_auto_open_type_containers_under(&mut container.to_vec(), decls, out);
+}
+
+/// [`collect_auto_open_type_containers`] with the container path as one
+/// buffer, a nested module's segments pushed for its subtree and popped after:
+/// a path copied per level is quadratic in the nesting depth.
+fn collect_auto_open_type_containers_under(
+    container: &mut Vec<String>,
+    decls: &[SigDecl],
+    out: &mut Vec<Vec<String>>,
+) {
     for decl in decls {
         match decl {
             SigDecl::Types(types) => {
@@ -920,13 +931,14 @@ fn collect_auto_open_type_containers(
             }
             SigDecl::NestedModule(nm) => {
                 let Some(li) = nm.long_id() else { continue };
-                let mut nested = container.to_vec();
-                nested.extend(li.idents().map(|t| id_text(&t).to_string()));
-                collect_auto_open_type_containers(
-                    &nested,
+                let depth = container.len();
+                container.extend(li.idents().map(|t| id_text(&t).to_string()));
+                collect_auto_open_type_containers_under(
+                    container,
                     &nm.sig_decls().collect::<Vec<_>>(),
                     out,
                 );
+                container.truncate(depth);
             }
             _ => {}
         }
@@ -1824,6 +1836,17 @@ fn signature_type_places(
     decls: impl Iterator<Item = SigDecl>,
     places: &mut model::TypePlaces,
 ) {
+    signature_type_places_under(&mut container.to_vec(), decls, places);
+}
+
+/// [`signature_type_places`] with the container path as one buffer, a nested
+/// module's segments pushed for its subtree and popped after: a path copied
+/// per level is quadratic in the nesting depth.
+fn signature_type_places_under(
+    container: &mut Vec<String>,
+    decls: impl Iterator<Item = SigDecl>,
+    places: &mut model::TypePlaces,
+) {
     let mut place = |name: &SyntaxToken, arity: usize| {
         let name = id_text(name).to_string();
         let mut path = container.to_vec();
@@ -1854,9 +1877,10 @@ fn signature_type_places(
     }
     for nm in nested {
         if let Some(li) = nm.long_id() {
-            let mut path = container.to_vec();
-            path.extend(li.idents().map(|t| id_text(&t).to_string()));
-            signature_type_places(&path, nm.sig_decls(), places);
+            let depth = container.len();
+            container.extend(li.idents().map(|t| id_text(&t).to_string()));
+            signature_type_places_under(container, nm.sig_decls(), places);
+            container.truncate(depth);
         }
     }
 }
@@ -2251,7 +2275,7 @@ impl<'a> Resolver<'a> {
             preceding,
             assemblies,
             item_base: preceding.next_base(),
-            module_path: None,
+            in_exporting_module: false,
             container_path: container::ContainerPath::default(),
             namespace_depth: 0,
             module_paths: PathSet::default(),
