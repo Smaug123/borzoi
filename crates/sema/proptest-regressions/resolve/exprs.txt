@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 25092473b7a85547b6eff5760f1eed34157ddc0220fec5b0b5bde6461e57a6a6 # shrinks to body = "(f)f<int>(f)"
+cc d31565c75c0f1c63726f489acf08fdde65b0adbaec6b3d2aa4638a78791e3954 # shrinks to body = "f 1<f(f)>"

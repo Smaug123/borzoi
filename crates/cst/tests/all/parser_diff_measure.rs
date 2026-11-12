@@ -211,3 +211,34 @@ fn diff_ast_measure_product_nested_reciprocal() {
 fn diff_ast_measure_reciprocal_then_product() {
     assert_asts_match("let x = 1.0</s * m>\n");
 }
+
+/// A juxtaposed measure whose second atom is a parenthesised measure with no
+/// space before it (`<m (s)>`): FCS's `measureTypeSeq` of `Named` and `Paren`.
+#[test]
+fn diff_ast_measure_seq_spaced_paren() {
+    assert_asts_match("let x = 1<m (s)>\n");
+}
+
+/// The same with the `(` adjacent to the name (`<f(f)>`). LexFilter marks the
+/// adjacency with `HIGH_PRECEDENCE_PAREN_APP`, which no `measureTypeExpr`
+/// production accepts, so FCS rejects the measure at the `(`. Found by
+/// `borzoi-sema`'s `generated_applications_thread_the_walked_spine`, where the
+/// parser stamped the `(` onto the marker and panicked.
+#[test]
+fn recovery_measure_adjacent_paren_atom() {
+    for src in [
+        "let it = 1<f(f)>\nlet unaffected = 42\n",
+        "let it =\n f 1<f(f)>\nlet unaffected = 42\n",
+    ] {
+        crate::common::recovery::assert_recovered_trees_agree(src, 1);
+        // FCS reports FS0010 at the `(`, and so must we. Our recovery parses
+        // the `(f)` as an argument of the stopped measure literal, so it can
+        // report more errors than FCS's one; this pins only the position.
+        let paren = src.find('(').expect("the source has a `(`");
+        let errors = borzoi_cst::parser::parse(src).errors;
+        assert!(
+            errors.iter().any(|e| e.span == (paren..paren + 1)),
+            "{src:?}: {errors:?}"
+        );
+    }
+}

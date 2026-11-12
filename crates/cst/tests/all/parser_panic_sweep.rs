@@ -513,6 +513,11 @@ fn the_known_virtual_stamp_witnesses_parse() {
         // `parse_trait_call_expr`: a line break before the member signature's
         // `(` put an `OBLOCKSEP` where the `(` was bumped (F# 4.6).
         "let testFunc (a : ^x) =\n    (^x : \n     (static member someFunc : unit -> ^x) ())\n",
+        // The measure-atom dispatch, gated on the raw `(`: the adjacency
+        // marker LexFilter puts before it became the paren measure's
+        // `LPAREN_TOK`. Found by `borzoi-sema`'s
+        // `generated_applications_thread_the_walked_spine`.
+        "let it =\n f 1<f(f)>\n",
     ] {
         probe(src, &mut census);
     }
@@ -543,6 +548,32 @@ fn the_known_raw_claim_witnesses_parse() {
         probe(src, &mut census);
     }
     assert_no_failures("known raw-claim witnesses", &census);
+}
+
+/// The pieces of a unit-of-measure annotation: the atoms, the operators of
+/// `measureTypeExpr`, the brackets whose adjacency LexFilter marks, and the
+/// tokens that end LexFilter's `<`…`>` adjacency walk.
+const MEASURE: &[&str] = &[
+    "f", "(", ")", "[", "]", "<", ">", "^", "-", "*", "/", "'", "1", "_", ".", " ", "\n",
+];
+
+/// Every measure annotation `1<…>` whose body is three pieces of [`MEASURE`],
+/// under every setting.
+///
+/// The measure grammar dispatches on the raw stream, so it is exposed to every
+/// virtual LexFilter can put inside the brackets; three pieces is the shortest
+/// body that puts an adjacency marker after an atom (`f(f`).
+#[test]
+fn every_measure_triple_parses_without_panicking() {
+    let mut census = Census::default();
+    for a in MEASURE {
+        for b in MEASURE {
+            for c in MEASURE {
+                probe(&format!("let x = 1<{a}{b}{c}>\n"), &mut census);
+            }
+        }
+    }
+    assert_no_failures("measure triples", &census);
 }
 
 /// A fresh-seed random walk over [`WIDE`] at lengths the exhaustive halves
