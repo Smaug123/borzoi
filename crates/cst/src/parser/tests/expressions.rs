@@ -2338,6 +2338,58 @@ fn join_in_open_range_rhs_recovers_without_panic() {
     }
 }
 
+/// A join `in` directly after a `let`'s right-hand side belongs to the join,
+/// not to the `let`. In `[|let x = seq { x else⏎in ` the `in` closes the
+/// stray `else`'s block and becomes `JOIN_IN` (the head is then the `x`'s
+/// `CtxtVanilla` over the brace), so the filtered stream reads `OBLOCKEND
+/// JOIN_IN` at the `in`, as FCS's does. The `let`'s RHS ends at that
+/// `OBLOCKEND`, and the binding's close must not take the raw `in` as the
+/// `let … in` keyword: only an `in` the lex filter rewrote to the `let`'s
+/// `ODECLEND` is absent from the filtered stream. The second source reaches
+/// the same shape through a mid-line `#else`, which lexes as `#` and `else`.
+/// In the third the `in` pops a `CtxtDo`, whose `ODECLEND` lands at the `in`'s
+/// span before the `JOIN_IN` (FCS's stream is the same), so an `ODECLEND`
+/// there does not mean the `in` was swallowed either.
+#[test]
+fn join_in_after_a_let_rhs_is_the_joins_in() {
+    for source in [
+        "[|let x = seq { x else\nin ",
+        "[|let x = seq { #else\nin ",
+        "let! x = \n  query { | _ -> do | _ -> in \n",
+    ] {
+        let parse = parse(source);
+        assert_lossless(source, &parse);
+        let join = parse
+            .root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::JOIN_IN_EXPR)
+            .unwrap_or_else(|| panic!("{source:?} should produce a JOIN_IN_EXPR"));
+        let in_tokens: Vec<_> = parse
+            .root
+            .descendants_with_tokens()
+            .filter_map(|e| e.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IN_TOK)
+            .collect();
+        let in_at = source.rfind("in").unwrap();
+        assert_eq!(
+            in_tokens.len(),
+            1,
+            "{source:?}: the one `in` should be one IN_TOK ({in_tokens:?})"
+        );
+        let in_tok = &in_tokens[0];
+        assert_eq!(
+            (usize::from(in_tok.text_range().start()), in_tok.text()),
+            (in_at, "in"),
+            "{source:?}: the IN_TOK should carry the `in`"
+        );
+        assert_eq!(
+            in_tok.parent().as_ref(),
+            Some(&join),
+            "{source:?}: the `in` should be the join's operator"
+        );
+    }
+}
+
 /// A trait-call member signature missing its `static`/`abstract`/`member`/`new`
 /// introducer (`(^a : (M : …) x)`) is an FCS error — so the trait-call gate must
 /// *not* commit. The parser recovers (errors, no panic, lossless) and crucially

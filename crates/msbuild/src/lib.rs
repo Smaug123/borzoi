@@ -586,9 +586,9 @@ pub struct ParsedProject {
     /// ([`Self::compile_condition_uncertainties`]), an ignored source-set item
     /// operation (`Remove`/`Exclude`; metadata-only `Update` is harmless unless
     /// it changes `CompileOrder`), an
-    /// unexpanded glob or item/metadata reference in an `Include`, a skipped
-    /// `<Choose>` (which can carry items), or a failed import / unresolved SDK
-    /// that could contribute items.
+    /// unexpanded glob or item/metadata reference in an `Include`, a
+    /// `<Choose>` we could not decide with a Compile item in a still-possible
+    /// branch, or a failed import / unresolved SDK that could contribute items.
     ///
     /// Unlike [`Self::is_partial`], it stays `false` for divergences that
     /// cannot change the Compile set — the common case for real SDK projects,

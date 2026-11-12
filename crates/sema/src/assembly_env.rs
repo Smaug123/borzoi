@@ -16,7 +16,6 @@
 //! them in. Until the qualified-path / import slices consume it, it is unused by
 //! the resolver — built and tested ahead of its consumer.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use borzoi_assembly::doc_id::DocIdDialect;
@@ -26,6 +25,7 @@ use borzoi_assembly::{
 };
 
 use crate::def::SemanticClass;
+use crate::hash::{HashMap, HashSet};
 use crate::resolve::{ActivePatternShape, DeclineCause};
 
 mod il_types;
@@ -436,7 +436,7 @@ impl OpenFoldSurface {
 #[derive(Debug, Clone, Default)]
 struct BareValueIndex {
     uncertain: bool,
-    names: std::collections::HashSet<String>,
+    names: crate::hash::HashSet<String>,
 }
 
 /// A container's bare-visible **value** surface, paired with the uncertainty its
@@ -480,7 +480,7 @@ impl ValueSurface {
 
     /// Add every value name this container definitely contributes to `out`.
     /// Meaningful only when [`Self::is_uncertain`] is `false`.
-    pub fn collect_value_names(&self, out: &mut std::collections::HashSet<String>) {
+    pub fn collect_value_names(&self, out: &mut crate::hash::HashSet<String>) {
         for surface in &self.surfaces {
             for e in &surface.entries {
                 if matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both) {
@@ -806,12 +806,18 @@ fn presence(kind: ExtensionKind, channel: Channel) -> Presence {
 }
 
 /// The top-level entities declared directly in one exact namespace, indexed by
-/// the name F# source writes. Both vectors keep interning order and every
-/// cross-assembly/arity collision.
+/// the name F# source writes and by either name [`seg_name_matches`] reads.
+/// Every vector keeps interning order and every cross-assembly/arity
+/// collision.
 #[derive(Debug, Default, Clone)]
 struct NamespaceTypes {
     all: Vec<EntityHandle>,
     by_source_name: HashMap<String, NamedTypes>,
+    /// Each handle in `all` under its IL `name` and, when it differs, under its
+    /// `source_name`: the two names [`seg_name_matches`] compares a segment, or
+    /// a mangled segment's base, against. The candidate index behind
+    /// [`AssemblyEnv::types_at_logical_segment`].
+    by_il_or_source_name: HashMap<String, Vec<EntityHandle>>,
 }
 
 /// Every top-level entity at one exact `(namespace, source name)`. `all` is the
@@ -921,10 +927,9 @@ pub struct AssemblyEnv {
     /// Memo for [`Self::resolve_abbreviation_target`] /
     /// [`Self::resolve_abbreviation_tycon`], keyed by `(marker, allow_args)`.
     /// The chase is a pure function of the env's immutable entity data, but
-    /// each uncached hop scans `top_level_types` per path split — and with
-    /// FSharp.Core's markers live, *every* `int`/`string` annotation head
-    /// chases (codex round 6: O(annotations × loaded types × hops) without
-    /// this). Shared across clones via `Arc` (same data ⇒ same results);
+    /// each uncached hop looks up every split of its path and descends from
+    /// each match — and with FSharp.Core's markers live, *every*
+    /// `int`/`string` annotation head chases. Shared across clones via `Arc` (same data ⇒ same results);
     /// `RwLock` because the env is queried from multiple threads.
     abbreviation_chase_cache: AbbreviationChaseCache,
     /// Memo for [`Self::member_types_keep_their_measures`], per entity. Each
@@ -934,8 +939,8 @@ pub struct AssemblyEnv {
     measure_verdict_cache: MeasureVerdictCache,
     /// Memo for [`Self::head_hides_no_measure`], keyed by the entity whose
     /// assembly mentions the head and the head itself. Each verdict chases the
-    /// head through every abbreviation it names, each hop a scan of
-    /// `top_level_types`, and the heads (`int`, `string`, …) recur across
+    /// head through every abbreviation it names, each hop a lookup per path
+    /// split, and the heads (`int`, `string`, …) recur across
     /// every function read. Reset with the chase cache, on whose inputs it
     /// depends.
     measure_head_cache: MeasureHeadCache,
@@ -1067,7 +1072,7 @@ pub struct AssemblyEnv {
     /// the top-level types would run for every dotted head that is not a direct
     /// member — `System.String` included — making resolution scale as
     /// `dotted uses × referenced entities` (codex review).
-    contested_child_namespace_heads: std::sync::OnceLock<std::collections::HashSet<String>>,
+    contested_child_namespace_heads: std::sync::OnceLock<crate::hash::HashSet<String>>,
     /// Lazily-built companion to [`Self::contested_child_namespace_heads`] for
     /// the *member* half of [`Self::contested_auto_open_surface_declares`]: the
     /// contributor-owned top-level entities of every contested auto-open's
@@ -1082,6 +1087,9 @@ pub struct AssemblyEnv {
     /// [`Self::extension_surface_unknowable`]). Populated by
     /// [`Self::mark_namespace_dropped_type`] (the LSP host).
     namespaces_with_dropped_types: HashSet<Vec<String>>,
+    /// Every prefix of each of [`Self::namespaces_with_dropped_types`], each
+    /// namespace itself included.
+    dropped_type_namespace_prefixes: HashSet<Vec<String>>,
 }
 
 /// The top-level type index key: namespace segments, simple name, and generic
@@ -1189,6 +1197,48 @@ pub struct AssemblyProjectionInput {
     /// [`borzoi_assembly::EcmaView::qualified_names`]; `None` when
     /// not read.
     pub qualified_names: Option<Vec<String>>,
+}
+
+/// How [`AssemblyEnv::abbreviation_target_at_path_splits`] finds the top-level
+/// types a path segment can name.
+#[derive(Debug, Clone, Copy)]
+enum TopLevelLookup {
+    /// [`AssemblyEnv::types_at_logical_segment`], the name index.
+    Index,
+    /// `AssemblyEnv::types_at_logical_segment_by_scan`, the reference the
+    /// index is held to.
+    #[cfg(test)]
+    Scan,
+}
+
+/// The union of two strictly ascending handle slices, ascending, each handle
+/// once.
+fn merge_ascending<'a>(
+    a: &'a [EntityHandle],
+    b: &'a [EntityHandle],
+) -> impl Iterator<Item = EntityHandle> + 'a {
+    debug_assert!(a.is_sorted_by(|x, y| x.0 < y.0) && b.is_sorted_by(|x, y| x.0 < y.0));
+    let (mut i, mut j) = (0, 0);
+    std::iter::from_fn(move || match (a.get(i), b.get(j)) {
+        (Some(&x), Some(&y)) => {
+            if x.0 <= y.0 {
+                i += 1;
+            }
+            if y.0 <= x.0 {
+                j += 1;
+            }
+            Some(if x.0 <= y.0 { x } else { y })
+        }
+        (Some(&x), None) => {
+            i += 1;
+            Some(x)
+        }
+        (None, Some(&y)) => {
+            j += 1;
+            Some(y)
+        }
+        (None, None) => None,
+    })
 }
 
 /// Whether entity `e`'s **logical name** — its IL `name` or its `source_name` —
@@ -1578,6 +1628,8 @@ impl AssemblyEnv {
             let extensions_unknowable = abbreviation_visibility
                 == AbbreviationVisibility::Unknowable
                 || extension_index_unknowable;
+            let il_name = root.name.clone();
+            let distinct_source_name = root.source_name.clone().filter(|source| *source != il_name);
             let handle = self.intern(
                 root,
                 None,
@@ -1591,6 +1643,13 @@ impl AssemblyEnv {
                 .entry(namespace.clone())
                 .or_default();
             namespace_types.all.push(handle);
+            for name in std::iter::once(il_name).chain(distinct_source_name) {
+                namespace_types
+                    .by_il_or_source_name
+                    .entry(name)
+                    .or_default()
+                    .push(handle);
+            }
             namespace_types
                 .by_source_name
                 .entry(key.1.clone())
@@ -2101,7 +2160,57 @@ impl AssemblyEnv {
         path: &[String],
         assembly_matches: impl Fn(EntityHandle) -> bool,
     ) -> Option<EntityHandle> {
-        self.abbreviation_target_at_path_splits(path, None, assembly_matches)
+        self.abbreviation_target_at_path_splits(path, None, assembly_matches, TopLevelLookup::Index)
+    }
+
+    /// The top-level types declared in exactly `namespace` whose logical name
+    /// matches `segment` ([`seg_name_matches`]), in interning order: what the
+    /// test-only `types_at_logical_segment_by_scan` reference finds, read off
+    /// [`NamespaceTypes::by_il_or_source_name`] rather than a scan of every
+    /// top-level type.
+    ///
+    /// A segment matches through its own spelling or, when it is
+    /// backtick-mangled, through its base, so the two buckets under those
+    /// names hold every match. Their handles ascend (interning order), so the
+    /// merge keeps interning order and drops a handle filed under both; the
+    /// predicate itself then decides, as the scan's does.
+    fn types_at_logical_segment<'a>(
+        &'a self,
+        namespace: &[String],
+        segment: &'a str,
+    ) -> impl Iterator<Item = EntityHandle> + 'a {
+        let buckets = self
+            .types_by_namespace
+            .get(namespace)
+            .map(|types| &types.by_il_or_source_name);
+        let bucket = |name: &str| {
+            buckets
+                .and_then(|b| b.get(name))
+                .map_or(&[][..], Vec::as_slice)
+        };
+        let spelled = bucket(segment);
+        let mangled_base = match segment.rsplit_once('`') {
+            Some((base, digits)) if !base.is_empty() && digits.parse::<usize>().is_ok() => {
+                bucket(base)
+            }
+            _ => &[],
+        };
+        merge_ascending(spelled, mangled_base)
+            .filter(move |&h| seg_name_matches(self.entity(h), segment))
+    }
+
+    /// [`Self::types_at_logical_segment`]'s reference: every top-level type,
+    /// filtered.
+    #[cfg(test)]
+    fn types_at_logical_segment_by_scan<'a>(
+        &'a self,
+        namespace: &'a [String],
+        segment: &'a str,
+    ) -> impl Iterator<Item = EntityHandle> + 'a {
+        self.top_level_types.iter().copied().filter(move |&h| {
+            let e = self.entity(h);
+            e.namespace.as_slice() == namespace && seg_name_matches(e, segment)
+        })
     }
 
     /// [`Self::abbreviation_target_at_path`] with the namespace/type split
@@ -2115,6 +2224,7 @@ impl AssemblyEnv {
         path: &[String],
         pinned_split: Option<usize>,
         assembly_matches: impl Fn(EntityHandle) -> bool,
+        lookup: TopLevelLookup,
     ) -> Option<EntityHandle> {
         let last = path.len().checked_sub(1)?; // an empty path names nothing
         // Collect every terminal the path can reach, then commit only a *uniquely*
@@ -2138,15 +2248,30 @@ impl AssemblyEnv {
             None => (0..path.len()).collect(),
         };
         for split in splits {
-            for top in self.top_level_types.iter().copied().filter(|&h| {
-                let e = self.entity(h);
+            let (namespace, segment) = (&path[..split], path[split].as_str());
+            let qualifies = |h: EntityHandle| {
                 self.is_public(h)
                     && assembly_matches(h)
-                    && e.namespace.as_slice() == &path[..split]
-                    && seg_name_matches(e, &path[split])
-                    && (split != last || e.kind != EntityKind::Module)
-            }) {
-                self.collect_abbreviation_descent(top, &path[split + 1..], &mut terminals);
+                    && (split != last || self.entity(h).kind != EntityKind::Module)
+            };
+            match lookup {
+                TopLevelLookup::Index => {
+                    for top in self
+                        .types_at_logical_segment(namespace, segment)
+                        .filter(|&h| qualifies(h))
+                    {
+                        self.collect_abbreviation_descent(top, &path[split + 1..], &mut terminals);
+                    }
+                }
+                #[cfg(test)]
+                TopLevelLookup::Scan => {
+                    for top in self
+                        .types_at_logical_segment_by_scan(namespace, segment)
+                        .filter(|&h| qualifies(h))
+                    {
+                        self.collect_abbreviation_descent(top, &path[split + 1..], &mut terminals);
+                    }
+                }
             }
         }
         let mut terminals = terminals.into_iter();
@@ -3100,8 +3225,8 @@ impl AssemblyEnv {
     /// the *contributor* declares into. Only the contributor's content enters
     /// scope through a contested open, so a sibling's child namespace of the
     /// same path contributes nothing.
-    fn build_contested_child_namespace_heads(&self) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
+    fn build_contested_child_namespace_heads(&self) -> crate::hash::HashSet<String> {
+        let mut out = crate::hash::HashSet::default();
         for (contributor, ns) in &self.contested_auto_opens {
             for &h in &self.top_level_types {
                 if self.assembly_provenance(h) != Some(*contributor) || !self.is_public(h) {
@@ -3179,14 +3304,14 @@ impl AssemblyEnv {
     fn build_bare_value_index(&self) -> BareValueIndex {
         let uncertain = || BareValueIndex {
             uncertain: true,
-            names: std::collections::HashSet::new(),
+            names: crate::hash::HashSet::default(),
         };
         // An assembly whose auto-open list could not be read, or whose projection
         // was skipped, may auto-open a container supplying any name at all.
         if self.extension_surface_unknowable {
             return uncertain();
         }
-        let mut names = std::collections::HashSet::new();
+        let mut names = crate::hash::HashSet::default();
         // Namespace-shaped implicit auto-opens, the contested ones FCS still
         // applies per contributor, and the root namespace (no `open` at all).
         let namespaces = self
@@ -3861,7 +3986,7 @@ impl AssemblyEnv {
             let core_namespace = ["Microsoft", "FSharp", "Core"];
             let mut aliases = CoreAttributeAliases {
                 certain: self.abbreviations_may_be_unread(),
-                possible: HashSet::new(),
+                possible: HashSet::default(),
             };
             for node in &self.nodes {
                 let e = &node.entity;
@@ -4665,7 +4790,7 @@ impl AssemblyEnv {
     /// declaring a type of that name would be in it.
     pub(crate) fn type_custom_operations(&self, handle: EntityHandle) -> CustomOperationNames {
         let mut out = CustomOperationNames::default();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut current = handle;
         loop {
             if !seen.insert(current) {
@@ -4808,6 +4933,10 @@ impl AssemblyEnv {
     /// (the LSP), which observes the drop. `namespace` is the dropped type's
     /// enclosing namespace (empty for a root-namespace type).
     pub fn mark_namespace_dropped_type(&mut self, namespace: Vec<String>) {
+        for len in 0..=namespace.len() {
+            self.dropped_type_namespace_prefixes
+                .insert(namespace[..len].to_vec());
+        }
         self.namespaces_with_dropped_types.insert(namespace);
         // The core library is named only over a `System` with no drop.
         self.core_library = Default::default();
@@ -4849,6 +4978,12 @@ impl AssemblyEnv {
         self.namespaces_with_dropped_types.contains(namespace)
     }
 
+    /// Whether `path` is a prefix of (or is) a namespace a referenced assembly
+    /// dropped a type in ([`Self::namespace_has_dropped_type`]).
+    pub(crate) fn prefixes_a_dropped_type_namespace(&self, path: &[String]) -> bool {
+        self.dropped_type_namespace_prefixes.contains(path)
+    }
+
     /// Whether any referenced assembly dropped an undecodable type, anywhere.
     /// A consumer matching types by a spelling that does not tell nesting from
     /// namespace (a documentation-comment ID: `T:A.B.C` is a `C` in `A.B`, a
@@ -4868,7 +5003,7 @@ impl AssemblyEnv {
         if self.assembly_identities_incomplete || self.assembly_identities.is_empty() {
             return false;
         }
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         self.assembly_identities.iter().all(|a| {
             a.as_ref()
                 .is_some_and(|a| seen.insert(a.name.to_lowercase()))
@@ -5745,6 +5880,18 @@ impl AssemblyEnv {
         path: &[String],
         fuel: u32,
     ) -> Option<EntityHandle> {
+        self.forwarded_target_at_path_by(ccu_name, path, fuel, TopLevelLookup::Index)
+    }
+
+    /// [`Self::forwarded_target_at_path`], finding top-level candidates by
+    /// `lookup`.
+    fn forwarded_target_at_path_by(
+        &self,
+        ccu_name: &str,
+        path: &[String],
+        fuel: u32,
+        lookup: TopLevelLookup,
+    ) -> Option<EntityHandle> {
         // Breadth-first over `(DLL simple name, split constraint)` states,
         // following **every** matching forwarder split: the logical path does
         // not encode its namespace/nested split, so one facade can redirect
@@ -5771,7 +5918,7 @@ impl AssemblyEnv {
         // binds). Cross-identity collisions are already handled by
         // unique-or-decline: two same-named DLLs decline the hop.
         let mut queue: Vec<(String, Option<usize>)> = vec![(ccu_name.to_string(), None)];
-        let mut visited: HashSet<(String, Option<usize>)> = HashSet::new();
+        let mut visited: HashSet<(String, Option<usize>)> = HashSet::default();
         let mut found: Option<EntityHandle> = None;
         while let Some((name, pinned)) = queue.pop() {
             if !visited.insert((name.clone(), pinned)) {
@@ -5781,9 +5928,12 @@ impl AssemblyEnv {
                 return None;
             }
             let key = self.unique_assembly_key_for_name(&name)?;
-            if let Some(target) = self
-                .abbreviation_target_at_path_splits(path, pinned, |h| self.assembly_key(h) == key)
-            {
+            if let Some(target) = self.abbreviation_target_at_path_splits(
+                path,
+                pinned,
+                |h| self.assembly_key(h) == key,
+                lookup,
+            ) {
                 match found {
                     None => found = Some(target),
                     Some(prev) if prev != target => return None,
@@ -6110,7 +6260,7 @@ impl AssemblyEnv {
             .map(|(i, m)| (i, m, self.presence_of(handle, m, Channel::Bare)))
             .filter(|(_, _, p)| *p != Presence::Absent)
             .collect();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         openable
             .iter()
             .map(|(_, m, _)| member_name(m))
@@ -6952,7 +7102,7 @@ impl AssemblyEnv {
         // group stays ≥ 2 and defers — never collapsed into one wrong candidate. A
         // member whose signature cannot be keyed ([`method_partial_key`] returns
         // `None`) gets a unique synthetic key, so it never collapses either.
-        let mut claimed: HashMap<String, EntityHandle> = HashMap::new();
+        let mut claimed: HashMap<String, EntityHandle> = HashMap::default();
         let mut deduped: Vec<(EntityHandle, MemberIndex, &MethodLike)> = Vec::new();
         for (i, &(level, idx, mm)) in group.iter().enumerate() {
             let key = match method_partial_key(mm, &self.entity(level).assembly.name) {
@@ -7127,7 +7277,7 @@ impl AssemblyEnv {
     fn interface_member_chain(&self, handle: EntityHandle) -> InterfaceChain {
         debug_assert_eq!(self.entity(handle).kind, EntityKind::Interface);
         let mut levels: Vec<EntityHandle> = vec![handle];
-        let mut seen: HashSet<EntityHandle> = HashSet::from([handle]);
+        let mut seen: HashSet<EntityHandle> = HashSet::from_iter([handle]);
         let mut i = 0;
         while i < levels.len() {
             let level = levels[i];
@@ -7259,7 +7409,7 @@ impl AssemblyEnv {
     /// never a wrong affirmation. Bounded against metadata cycles by the visited
     /// set.
     pub(crate) fn super_types(&self, start: EntityHandle) -> HashSet<EntityHandle> {
-        let mut out = HashSet::new();
+        let mut out = HashSet::default();
         let mut stack = vec![start];
         while let Some(handle) = stack.pop() {
             if !out.insert(handle) {
@@ -7300,7 +7450,7 @@ impl AssemblyEnv {
     /// not readably completable from another assembly), reusing the same
     /// getter-accessibility rule as [`Self::instance_data_member`].
     pub fn public_instance_member_names(&self, handle: EntityHandle) -> Vec<&str> {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         self.entity(handle)
             .members
             .iter()
@@ -10743,6 +10893,299 @@ pub(crate) mod from_views_tests {
             !env.extension_named_in_scope(&[], "FromSibling", false),
             "the same-named sibling view's module is a different DLL's: FCS never opens it"
         );
+    }
+
+    /// The names an entity in [`segment_index_env`] is spelled with: a nested
+    /// type's name doubling as a namespace segment (`N`), an IL name that
+    /// carries a backtick (a quoted F# identifier), and a ModuleSuffix module.
+    const INDEX_NAMES: [&str; 5] = ["X", "Y", "N", "X`1", "XModule"];
+    /// The source names: a renamed type, one equal to its IL name (filed once),
+    /// and one no IL name uses.
+    const INDEX_SOURCE_NAMES: [Option<&str>; 5] = [None, None, Some("X"), Some("Z"), Some("Y")];
+    const INDEX_NAMESPACES: [&[&str]; 4] = [&[], &["N"], &["N", "X"], &["M"]];
+    /// Assembly names, so that two loaded DLLs can share one (`unique_assembly_key_for_name`
+    /// declines it) and a facade can forward to a name nothing declares.
+    const INDEX_DLLS: [&str; 3] = ["A", "B", "Facade"];
+
+    /// One entity of [`segment_index_env`], `depth` levels of nesting below.
+    fn index_entity(dll: &'static str, depth: u32) -> BoxedStrategy<Entity> {
+        let nested = if depth == 0 {
+            Just(Vec::new()).boxed()
+        } else {
+            prop::collection::vec(index_entity(dll, depth - 1), 0..3).boxed()
+        };
+        (
+            prop::sample::select(&INDEX_NAMES[..]),
+            prop::sample::select(&INDEX_SOURCE_NAMES[..]),
+            prop::sample::select(&INDEX_NAMESPACES[..]),
+            0..3usize,
+            prop::sample::select(
+                &[
+                    EntityKind::Class,
+                    EntityKind::Module,
+                    EntityKind::Abbreviation,
+                    EntityKind::Struct,
+                ][..],
+            ),
+            prop::bool::weighted(0.8),
+            nested,
+        )
+            .prop_map(
+                move |(name, source_name, namespace, arity, kind, public, nested_types)| Entity {
+                    kind,
+                    access: if public {
+                        Access::Public
+                    } else {
+                        Access::Internal
+                    },
+                    generic_parameters: (0..arity).map(type_parameter).collect(),
+                    source_name: source_name.map(str::to_string),
+                    nested_types,
+                    ..module_entity(dll, namespace, name)
+                },
+            )
+            .boxed()
+    }
+
+    /// An environment of one to four DLLs drawn from [`INDEX_DLLS`] (names may
+    /// repeat), each with top-level types colliding by namespace, name and
+    /// arity, nested types, and forwarders; built either per DLL (provenance
+    /// keys, forwarders live) or as one entity group (identity keys).
+    fn segment_index_env() -> impl Strategy<Value = AssemblyEnv> {
+        let dll = prop::sample::select(&INDEX_DLLS[..]).prop_flat_map(|dll| {
+            let forwarder = (
+                prop::sample::select(&INDEX_NAMESPACES[..]),
+                prop::sample::select(&["X", "Y", "N", "X`1", "Z"][..]),
+                prop::sample::select(&INDEX_DLLS[..]),
+            )
+                .prop_map(|(ns, name, to)| forwarder(&ns.join("."), name, to));
+            (
+                Just(dll),
+                prop::collection::vec(index_entity(dll, 2), 0..6),
+                prop::collection::vec(forwarder, 0..8),
+            )
+        });
+        (
+            prop::collection::vec(dll, 1..5),
+            any::<bool>(),
+            prop::collection::vec(any::<bool>(), 0..24),
+        )
+            .prop_map(|(dlls, per_dll, facade_forwards)| {
+                if per_dll {
+                    // A facade forwarding a chosen subset of the declared top-level
+                    // types to their declarers, keyed by metadata name as a
+                    // forwarder row is, so that chases through a hop are reached.
+                    let facade_rows: Vec<borzoi_assembly::TypeForwarder> = dlls
+                        .iter()
+                        .flat_map(|(dll, roots, _)| roots.iter().map(move |root| (*dll, root)))
+                        .zip(
+                            facade_forwards
+                                .iter()
+                                .copied()
+                                .chain(std::iter::repeat(false)),
+                        )
+                        .filter(|&(_, chosen)| chosen)
+                        .map(|((dll, root), _)| {
+                            let arity = root.generic_parameters.len();
+                            let name = if arity == 0 {
+                                root.name.clone()
+                            } else {
+                                format!("{}`{arity}", root.name)
+                            };
+                            forwarder(&root.namespace.join("."), &name, dll)
+                        })
+                        .collect();
+                    let mut inputs: Vec<super::AssemblyProjectionInput> = dlls
+                        .into_iter()
+                        .map(|(dll, roots, forwarders)| forwarder_input(dll, roots, forwarders))
+                        .collect();
+                    if !facade_rows.is_empty() {
+                        inputs.push(forwarder_input("Fwd", Vec::new(), facade_rows));
+                    }
+                    AssemblyEnv::from_assemblies_with_projection_knowability(inputs)
+                } else {
+                    AssemblyEnv::from_entities(
+                        dlls.into_iter().flat_map(|(_, roots, _)| roots).collect(),
+                    )
+                }
+            })
+    }
+
+    /// How often [`top_level_segment_index_agrees_with_the_scan`] reached each
+    /// kind of hit, so a generator that stops reaching one fails rather than
+    /// agreeing vacuously.
+    #[derive(Debug, Default)]
+    struct SegmentIndexHits {
+        segments_matched: usize,
+        segments_matched_only_by_mangled_base: usize,
+        segments_matched_more_than_once: usize,
+        paths_resolved: usize,
+        paths_resolved_pinned: usize,
+        paths_resolved_nested: usize,
+        forwarded_resolved: usize,
+        forwarded_resolved_through_a_hop: usize,
+    }
+
+    /// The name index behind [`AssemblyEnv::types_at_logical_segment`] answers
+    /// exactly what a scan of every top-level type does — the same handles in
+    /// the same order — for every namespace and segment, matching or not; and
+    /// so the abbreviation-target and forwarder chases built on it commit
+    /// exactly the targets the scan-backed chase does, under every split pin and
+    /// assembly selector.
+    #[test]
+    fn top_level_segment_index_agrees_with_the_scan() {
+        use super::TopLevelLookup::{Index, Scan};
+        use proptest::test_runner::{Config, TestCaseError, TestRunner};
+        use std::cell::RefCell;
+
+        let segments: Vec<String> = ["X", "Y", "Z", "N", "M", "XModule", "X`1", ""]
+            .iter()
+            .flat_map(|base| {
+                ["", "`0", "`1", "`2", "`01", "`+1", "`", "`x", "`1`1"]
+                    .iter()
+                    .map(move |suffix| format!("{base}{suffix}"))
+            })
+            .collect();
+        let namespaces: Vec<Vec<String>> = INDEX_NAMESPACES
+            .iter()
+            .map(|ns| ns.iter().map(|s| (*s).to_string()).collect())
+            .chain([
+                vec!["X".to_string()],
+                vec!["N".to_string(), "Y".to_string()],
+            ])
+            .collect();
+        let tails = ["X", "Y", "Z", "N", "X`1", "XModule", "X`2", "Y`1"];
+        let mut paths: Vec<Vec<String>> = vec![Vec::new()];
+        for ns in &namespaces {
+            for a in tails {
+                let mut one = ns.clone();
+                one.push(a.to_string());
+                for b in tails {
+                    let mut two = one.clone();
+                    two.push(b.to_string());
+                    paths.push(two);
+                }
+                paths.push(one);
+            }
+        }
+
+        let hits = RefCell::new(SegmentIndexHits::default());
+        let mut runner = TestRunner::new(Config {
+            cases: 128,
+            failure_persistence: None,
+            ..Config::default()
+        });
+        let outcome = runner.run(&segment_index_env(), |env| {
+            let mut hits = hits.borrow_mut();
+            for ns in &namespaces {
+                for segment in &segments {
+                    let indexed: Vec<EntityHandle> =
+                        env.types_at_logical_segment(ns, segment).collect();
+                    let scanned: Vec<EntityHandle> =
+                        env.types_at_logical_segment_by_scan(ns, segment).collect();
+                    prop_assert_eq!(
+                        &indexed,
+                        &scanned,
+                        "namespace {:?}, segment {:?}",
+                        ns,
+                        segment
+                    );
+                    if !indexed.is_empty() {
+                        hits.segments_matched += 1;
+                    }
+                    if indexed.len() > 1 {
+                        hits.segments_matched_more_than_once += 1;
+                    }
+                    if indexed.iter().any(|&h| {
+                        let e = env.entity(h);
+                        e.name != *segment && e.source_name.as_deref() != Some(segment.as_str())
+                    }) {
+                        hits.segments_matched_only_by_mangled_base += 1;
+                    }
+                }
+            }
+            let ids: Vec<super::AssemblyId> = (0..env.assemblies.len())
+                .map(|i| super::AssemblyId(u32::try_from(i).expect("few assemblies")))
+                .collect();
+            let identities: Vec<&AssemblyIdentity> = env
+                .top_level_types
+                .iter()
+                .map(|&h| &env.entity(h).assembly)
+                .collect();
+            for path in &paths {
+                let pins = std::iter::once(None).chain((0..=path.len()).map(Some));
+                for pinned in pins {
+                    let mut agree = |selector: &dyn Fn(EntityHandle) -> bool| {
+                        let indexed =
+                            env.abbreviation_target_at_path_splits(path, pinned, selector, Index);
+                        let scanned =
+                            env.abbreviation_target_at_path_splits(path, pinned, selector, Scan);
+                        prop_assert_eq!(indexed, scanned, "path {:?}, pinned {:?}", path, pinned);
+                        if let Some(target) = indexed {
+                            hits.paths_resolved += 1;
+                            if pinned.is_some() {
+                                hits.paths_resolved_pinned += 1;
+                            }
+                            if !env.top_level_types.contains(&target) {
+                                hits.paths_resolved_nested += 1;
+                            }
+                        }
+                        Ok::<(), TestCaseError>(())
+                    };
+                    agree(&|_| true)?;
+                    for &id in &ids {
+                        agree(&|h| env.assembly_provenance(h) == Some(id))?;
+                    }
+                    for &identity in &identities {
+                        agree(&|h| env.entity(h).assembly == *identity)?;
+                    }
+                }
+                for ccu in INDEX_DLLS.iter().chain(&["Fwd", "Missing"]) {
+                    let indexed = env.forwarded_target_at_path_by(ccu, path, 8, Index);
+                    let scanned = env.forwarded_target_at_path_by(ccu, path, 8, Scan);
+                    prop_assert_eq!(indexed, scanned, "ccu {:?}, path {:?}", ccu, path);
+                    if let Some(target) = indexed {
+                        hits.forwarded_resolved += 1;
+                        if env.entity(target).assembly.name != *ccu {
+                            hits.forwarded_resolved_through_a_hop += 1;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        });
+        if let Err(failure) = outcome {
+            panic!("{failure}");
+        }
+        let hits = hits.into_inner();
+        eprintln!("{hits:?}");
+        for (what, count) in [
+            ("a segment matched", hits.segments_matched),
+            (
+                "a segment matched through its mangled base",
+                hits.segments_matched_only_by_mangled_base,
+            ),
+            (
+                "a segment matched two entities",
+                hits.segments_matched_more_than_once,
+            ),
+            ("a path resolved", hits.paths_resolved),
+            ("a pinned path resolved", hits.paths_resolved_pinned),
+            (
+                "a path resolved to a nested type",
+                hits.paths_resolved_nested,
+            ),
+            ("a forwarded chase resolved", hits.forwarded_resolved),
+            (
+                "a forwarded chase resolved through a hop",
+                hits.forwarded_resolved_through_a_hop,
+            ),
+        ] {
+            assert!(
+                count > 0,
+                "the generator never reached a case where {what}: {hits:?}"
+            );
+        }
     }
 }
 
