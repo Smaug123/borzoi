@@ -396,6 +396,50 @@ fn compile_update_compile_order_declines_an_unnormalised_spelling() {
     assert!(p.items_uncertain, "{:?}", p.diagnostics);
 }
 
+/// MSBuild's lazy evaluator abandons batching an `Update` spec at a fragment
+/// that repeats an earlier one's path or holds an escape, and strands the
+/// fragments before it, which then reach later `Include`s (an upstream bug;
+/// `fsproj_compile_order_generative_diff` pins it). The evaluator declines
+/// exactly where something is stranded.
+#[test]
+fn compile_update_compile_order_declines_a_stranded_prefix() {
+    let stranded = |spec: &str| {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+    <Compile Update="{spec}" CompileOrder="CompileLast" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        let flagged = p.diagnostics.iter().any(|d| {
+            matches!(
+                &d.kind,
+                DiagnosticKind::StrandedUpdatePrefix { fragment, .. } if !fragment.is_empty()
+            )
+        });
+        assert_eq!(flagged, p.items_uncertain, "{spec}: {:?}", p.diagnostics);
+        flagged
+    };
+    // A repeat, under any spelling, after the first fragment.
+    assert!(stranded("A.fs;A.fs"));
+    assert!(stranded("A.fs;./a.fs"));
+    assert!(stranded("B.fs;A.fs;sub/../A.fs"));
+    // An escape after a literal fragment.
+    assert!(stranded("B.fs;%41.fs"));
+    // Nothing before the stopping fragment: nothing stranded.
+    assert!(!stranded("%41.fs;B.fs"));
+    assert!(!stranded("A.fs;B.fs"));
+    // A fragment written as its own full path is removed by that text.
+    assert!(!stranded("/repo/proj/A.fs;/repo/proj/A.fs"));
+    // Batching stops at the second fragment, stranding nothing, so the later
+    // repeat is never batched at all.
+    assert!(!stranded("/repo/proj/A.fs;/repo/proj/./A.fs;B.fs;B.fs"));
+    assert!(stranded("/repo/proj/./A.fs;/repo/proj/A.fs"));
+}
+
 #[test]
 fn compile_update_compile_order_keeps_original_order_within_bucket() {
     let src = r#"<Project>
