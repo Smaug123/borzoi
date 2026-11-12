@@ -30,7 +30,6 @@ use std::time::Duration;
 
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::{parse, parse_sig};
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_oracle_harness::BoundedCommand;
 use borzoi_sema::{
@@ -38,6 +37,7 @@ use borzoi_sema::{
     qualified_names, resolve_project_files, resolve_project_files_incremental,
     resolve_project_files_prefix,
 };
+use rowan::TextRange;
 
 use crate::common::{invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree};
 

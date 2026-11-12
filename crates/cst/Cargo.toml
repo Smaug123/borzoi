@@ -6,8 +6,7 @@ license.workspace = true
 
 [dependencies]
 logos.workspace = true
-rowan = { workspace = true, optional = true }
-text-size.workspace = true
+rowan.workspace = true
 
 [features]
 # Records which typed-AST accessors a computation reads
@@ -20,7 +19,7 @@ accessor-trace = []
 # every parse that the two trees are the same, and keeps the green tree for
 # the rowan reference differential (`tests/all/flat_tree_reference.rs`).
 # Test-only, on for this crate's own tests through the self-reference below.
-rowan-reference = ["dep:rowan"]
+rowan-reference = []
 
 [dev-dependencies]
 borzoi-cst = { path = ".", features = ["accessor-trace", "rowan-reference"] }

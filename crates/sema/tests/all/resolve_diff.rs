@@ -26,9 +26,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::common::generator::{RefKind, generate, seed_tape};
 use crate::common::{invoke_fcs_dump, parse_fcs_uses};
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// Snippets within the parser subset whose every in-file name resolves.
 const CORPUS: &[&str] = &[
@@ -452,7 +452,7 @@ fn a_byte_order_mark_moves_no_verdict_over_the_corpus() {
     for source in CORPUS {
         let plain = assert_matches_fcs_under(source, corpus_env(source));
         let marked = assert_matches_fcs_under(&format!("{BOM}{source}"), corpus_env(source));
-        let shift = borzoi_cst::syntax::TextSize::of(BOM);
+        let shift = rowan::TextSize::of(BOM);
         let mut expected: Vec<_> = plain.iter().map(|r| *r + shift).collect();
         let mut marked: Vec<_> = marked.into_iter().collect();
         expected.sort_by_key(|r| (r.start(), r.end()));

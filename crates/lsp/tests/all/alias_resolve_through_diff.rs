@@ -74,7 +74,6 @@ use borzoi::handlers::served_resolution_with_range;
 use borzoi::semantic::build_env_from_dll_paths;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_oracle_harness::BoundedCommand;
 use borzoi_oracle_harness::manifest::{Manifest, UPDATE_ENV, check};
 use borzoi_sema::test_support::{assembly_full_name_agrees, certified_expected};
@@ -82,6 +81,7 @@ use borzoi_sema::{
     AssemblyEnv, InferredFile, ProjectFile, Resolution, ResolvedFile, SourceFile, SyntaxRecovery,
     infer_project, qualified_names, resolve_project_files,
 };
+use rowan::{TextRange, TextSize};
 use tempfile::TempDir;
 
 use crate::common::{

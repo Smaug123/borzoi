@@ -19,8 +19,8 @@
 //! concern this layer intentionally does not predict).
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
-use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_sema::{DeferredReason, InferredFile, Resolution, ResolvedFile};
+use rowan::{TextRange, TextSize};
 
 use super::served_resolution_with_range;
 

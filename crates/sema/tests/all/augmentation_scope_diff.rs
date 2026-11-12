@@ -40,10 +40,10 @@ use crate::common::{
     parse_census_jsonl, temp_fs_file, unmodelled_binder_failures,
 };
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::test_support::binder_completeness::{BinderVerdict, binder_verdict};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// A type kind: its declaration, the module values shadowing the names its
 /// members may see from it, and the member using them.

@@ -60,9 +60,9 @@ use crate::common::{
 };
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// Which span of the probe a case is about.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

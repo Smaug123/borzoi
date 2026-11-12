@@ -35,11 +35,11 @@
 use borzoi_cst::parser::parse;
 use std::path::{Path, PathBuf};
 
-use borzoi_cst::syntax::TextRange;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, SyntaxRecovery,
     qualified_names, resolve_project_files,
 };
+use rowan::TextRange;
 
 use crate::common::{invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree};
 use crate::resolve_signatures::source_file;

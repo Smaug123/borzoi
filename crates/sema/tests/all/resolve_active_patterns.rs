@@ -17,11 +17,11 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_sema::{
     ActivePatternShape, AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile,
     SemanticClass, SyntaxRecovery, resolve_file,
 };
+use rowan::{TextRange, TextSize};
 
 /// Parse `src` (asserting it is in the parser subset) and resolve it as a lone
 /// single file.

@@ -31,8 +31,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
-use borzoi_cst::syntax::TextRange;
 use proptest::prelude::*;
+use rowan::TextRange;
 
 use crate::common::scope_gen::{Expected, Form, Generated, RefKind, generate, generate_seed};
 use crate::common::{

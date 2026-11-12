@@ -313,7 +313,10 @@ impl Trust {
 
     /// Whether the name's write was *refused* — the value carried an
     /// expression, item reference, or metadata reference we can't evaluate, so
-    /// the binding was removed rather than stored.
+    /// the binding was removed rather than stored. An overridable toolset seed
+    /// withheld behind opacity is recorded the same way: the real build holds
+    /// a value there (the toolset's, or whatever hidden content wrote) and we
+    /// hold none.
     ///
     /// The real build stores that value, so a later undefined read of the name
     /// is not exact, and neither is a splice decision resting on it. The mark

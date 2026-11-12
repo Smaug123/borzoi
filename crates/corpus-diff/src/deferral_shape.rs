@@ -25,8 +25,8 @@
 //! true when the oracle's vocabulary changes, and moves when the resolver does.
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
-use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_sema::{DeclineSite, Resolution, ResolvedFile};
+use rowan::{TextRange, TextSize};
 
 /// What a deferral is attributed to: a guard that declined, a model the
 /// resolver lacks, or neither.

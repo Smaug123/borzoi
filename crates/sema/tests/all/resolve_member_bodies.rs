@@ -15,10 +15,10 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_cst::syntax::{TextRange, TextSize};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
+use rowan::{TextRange, TextSize};
 
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);

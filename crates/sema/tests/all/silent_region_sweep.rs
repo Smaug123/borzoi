@@ -25,11 +25,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::{Parse, parse};
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode, TypeDefn, TypeDefnRepr};
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_oracle_harness::stack_probe;
 use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, WALK_STACK_BYTES, resolve_file};
+use rowan::TextRange;
 
 use crate::common::corpus_manifest::{
     Positions, check_manifest, corpus_relative, regenerate_ignored, sort_by_corpus_key,
@@ -112,7 +112,7 @@ fn is_argument_label(expr: &SyntaxNode) -> bool {
 
 /// Whether some recorded range contains `r`. `starts` is sorted, and
 /// `max_end[i]` is the largest end among the first `i + 1` records.
-fn covered(starts: &[TextRange], max_end: &[borzoi_cst::syntax::TextSize], r: TextRange) -> bool {
+fn covered(starts: &[TextRange], max_end: &[rowan::TextSize], r: TextRange) -> bool {
     let i = starts.partition_point(|s| s.start() <= r.start());
     i > 0 && max_end[i - 1] >= r.end()
 }
@@ -145,7 +145,7 @@ fn silent_heads(src: &str, parsed: &Parse) -> Vec<SilentHead> {
     recorded.sort_by_key(|r| r.start());
     let max_end: Vec<_> = recorded
         .iter()
-        .scan(borzoi_cst::syntax::TextSize::from(0), |m, r| {
+        .scan(rowan::TextSize::from(0), |m, r| {
             *m = (*m).max(r.end());
             Some(*m)
         })

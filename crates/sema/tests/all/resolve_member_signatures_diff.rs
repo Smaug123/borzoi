@@ -43,9 +43,9 @@ use crate::common::{
     parse_census_jsonl, temp_fs_file, unmodelled_binder_failures,
 };
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// The declarations every row's leaves may name.
 const PRELUDE: &str = "\

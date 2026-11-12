@@ -200,7 +200,7 @@ struct CachedParse {
     /// The exact source text that produced `file`.
     text: Arc<str>,
     /// The reusable parsed file — impl or signature, per the path's extension
-    /// (a syntax handle; a hit clones it — an `Arc` bump, not a re-parse).
+    /// (a rowan handle; a hit clones it — an `Arc` bump, not a re-parse).
     file: SourceFile,
     /// What the parser had to recover from in `file`. Cached beside the tree
     /// because the `Parse` that produced both is dropped here, and a hit that
@@ -216,7 +216,7 @@ struct CachedParse {
 ///
 /// Holds the project's **full** Compile list of [`ProjectFile`]s at fold time
 /// (so the incremental fold can compare each new file against the tree that
-/// produced its previous resolution, by handle identity, and re-derive the
+/// produced its previous resolution, by rowan identity, and re-derive the
 /// sig ↔ impl pairing over the whole list — `resolved` covers only its
 /// folded prefix), the result, and the assembly env [`Arc`] the fold ran
 /// against. The env Arc is the reuse *precondition witness*: reusing a
@@ -273,7 +273,7 @@ pub struct SemanticState {
     observed_fold_refusals: HashMap<ProjectId, FoldRefusal>,
     /// Per-**file** parse cache — the parsed [`ImplFile`]s for each Compile item,
     /// keyed by path. Lets [`build_parses`] re-parse only the file that changed on
-    /// a single-file edit and reuse every other file's tree (a syntax handle
+    /// a single-file edit and reuse every other file's tree (a rowan handle
     /// clone), so a keystroke no longer re-parses the whole Compile order.
     /// Distinct from `project_parses`, which caches the assembled per-project
     /// [`ProjectParses`] and is dropped in full on any text-sync; this survives,
@@ -365,7 +365,7 @@ pub struct SemanticState {
     /// Arc anyway, so a stale entry could never be reused — clearing is for memory,
     /// not correctness. `PrevFold::resolved` shares the same `Arc` as the matching
     /// `resolved_projects` entry, so the extra state is one `Vec<ImplFile>` of
-    /// syntax handles per project.
+    /// rowan handles per project.
     prev_resolved: HashMap<ProjectId, PrevFold>,
     /// Running tally of folds that took the *incremental* path (a reusable
     /// [`PrevFold`] whose env matched). A silently-cold fold — a fold that
@@ -1059,7 +1059,7 @@ impl SemanticState {
         let target_framework = workspace.served_tfm_for_project(project);
 
         // Parses — None if the Compile set is untrustworthy or it failed to
-        // evaluate. Cloning a `ProjectParses` is cheap (the `ImplFile`s are syntax
+        // evaluate. Cloning a `ProjectParses` is cheap (the `ImplFile`s are rowan
         // handles, `texts` is `Arc<str>` per file). The file count clamps the slice.
         let parses = self.parses_for_project(project, workspace, docs)?.clone();
         // Resolve `0..want_len`; `up_to_index` is a valid Compile index (or
@@ -1197,7 +1197,7 @@ impl SemanticState {
             // whose tree changed (`same_tree`) and reuses the rest. A different
             // env drops the old base (its handles wouldn't match); a shorter
             // existing base is replaced. Shares the `resolved`/`env` Arcs; the
-            // only added state is the folded prefix's parsed files (syntax handles).
+            // only added state is the folded prefix's parsed files (rowan handles).
             let keep_deeper = self
                 .prev_resolved
                 .get(&key)
@@ -1206,7 +1206,7 @@ impl SemanticState {
                 self.prev_resolved.insert(
                     key,
                     PrevFold {
-                        // The FULL Compile list (syntax handles — cheap), not
+                        // The FULL Compile list (rowan handles — cheap), not
                         // just the folded prefix: the incremental fold
                         // re-derives the sig ↔ impl pairing from it, and a
                         // pairing computed over a slice could differ.
@@ -1494,7 +1494,7 @@ fn build_parses(
         };
         // Per-file parse cache: reuse a variant whose every deciding input — the
         // source text, the `#if` symbols, the language version, and the project's
-        // `LangVersion`-provenance trust — matches. A hit is a handle clone
+        // `LangVersion`-provenance trust — matches. A hit is a rowan handle clone
         // that also *skips* the version-boundary gate below, which is why
         // `lang_version_untrusted` is part of the match (it is that gate's one
         // non-parse input). A miss falls through to parse (and, for a
@@ -6658,8 +6658,8 @@ mod tests {
         // Two-file project: `Other` references `Shared.foo`. The fold should
         // make the cross-file qualified reference resolve to an `Item` whose
         // `item_def` points back at file 0's `foo` binder.
-        use borzoi_cst::syntax::TextRange;
         use borzoi_sema::Resolution;
+        use rowan::TextRange;
 
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");
@@ -6867,8 +6867,8 @@ mod tests {
     /// (now-nonexistent) `Item` — proving the suffix was recomputed, not reused.
     #[test]
     fn incremental_fold_drops_stale_cross_file_reference() {
-        use borzoi_cst::syntax::TextRange;
         use borzoi_sema::Resolution;
+        use rowan::TextRange;
 
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");

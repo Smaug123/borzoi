@@ -62,9 +62,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 use crate::common::{CensusUse, LineIndex, invoke_fcs_dump_census, parse_census_jsonl};
 

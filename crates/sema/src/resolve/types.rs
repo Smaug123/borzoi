@@ -8,7 +8,7 @@ use borzoi_cst::syntax::{
 
 use super::state::Frame;
 
-use borzoi_cst::syntax::TextRange;
+use rowan::TextRange;
 
 use crate::assembly_env::{EntityHandle, ManifestSurfacePosition};
 use crate::hash::HashSet;
@@ -4104,7 +4104,7 @@ impl<'a> Resolver<'a> {
         container: &[String],
         type_key: &str,
         members: &[MemberDefn],
-        visible_from: borzoi_cst::syntax::TextSize,
+        visible_from: rowan::TextSize,
     ) {
         for m in members {
             match m {
@@ -4222,7 +4222,7 @@ impl<'a> Resolver<'a> {
         type_key: &str,
         name_tok: &SyntaxToken,
         emit_eligible: bool,
-        visible_from: borzoi_cst::syntax::TextSize,
+        visible_from: rowan::TextSize,
     ) {
         let name = id_text(name_tok).to_string();
         if let Some(entry) = self

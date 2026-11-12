@@ -39,10 +39,10 @@ use crate::common::{
 };
 use crate::resolve_signatures::project;
 use borzoi_assembly::Ecma335Assembly;
-use borzoi_cst::syntax::TextRange;
 use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_sema::test_support::{DeclaringEntity, StructuralName, certified_expected};
 use borzoi_sema::{AssemblyEnv, Resolution, ResolvedProject, resolve_project_files};
+use rowan::TextRange;
 
 /// What the probed name would bind if no contributor stood in front of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

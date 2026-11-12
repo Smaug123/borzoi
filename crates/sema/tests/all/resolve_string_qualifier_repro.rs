@@ -36,9 +36,9 @@ use crate::common::{ensure_fsharp_core_dll, ensure_system_runtime_dll};
 
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// An [`AssemblyEnv`] over the real, shipped `FSharp.Core.dll` **and** a real BCL
 /// `System.Runtime.dll`, so both `String` candidates — the FSharp.Core `String`

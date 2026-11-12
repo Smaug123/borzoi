@@ -446,13 +446,13 @@ fn inference_types_nothing_in_a_dropped_declaration() {
     let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(&file, &resolved, env, &PrecedingTypes::default());
     let block = file.modules().next().expect("the namespace block");
-    let dropped: Vec<borzoi_cst::syntax::TextRange> = block
+    let dropped: Vec<rowan::TextRange> = block
         .decls()
         .filter(|d| !matches!(d, ModuleDecl::NestedModule(_)))
         .map(|d| d.syntax().text_range())
         .collect();
     assert_eq!(dropped.len(), 8, "eight dropped declarations");
-    let inside: Vec<(borzoi_cst::syntax::TextRange, String)> = inferred
+    let inside: Vec<(rowan::TextRange, String)> = inferred
         .types()
         .iter()
         .filter(|(r, _)| dropped.iter().any(|d| d.contains_range(**r)))

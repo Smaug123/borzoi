@@ -23,9 +23,9 @@ use crate::common::{
 };
 use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
+use rowan::TextRange;
 
 /// The fixture's assembly simple name (its `<AssemblyName>`).
 const FIXTURE_ASM: &str = "SemaAssemblyEnvFixture";

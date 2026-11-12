@@ -30,9 +30,9 @@ use crate::common::{
 };
 use borzoi_assembly::{Access, Ecma335Assembly, Entity, EntityKind, Member, UnionCases};
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use rowan::TextRange;
 
 /// The fixture's `<AssemblyName>`, as FCS reports declaring assemblies.
 const FIXTURE_ASM: &str = "SemaAutoOpenFixture";

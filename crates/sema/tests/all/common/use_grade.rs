@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 
 use super::{LineIndex, invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_tree};
 use borzoi_cst::parser::{parse, parse_sig};
-use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, SourceFile, SyntaxRecovery, qualified_names,
     resolve_project_files,
 };
+use rowan::TextRange;
 
 /// A probed reference: which generated file, the byte range FCS reports the
 /// use at (the whole dotted path for a qualified reference, the identifier
