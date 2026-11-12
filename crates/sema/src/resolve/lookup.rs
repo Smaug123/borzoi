@@ -4052,9 +4052,8 @@ impl<'a> Resolver<'a> {
     /// reference (`List.fold` inside `namespace N` / `module List`) is
     /// [`Self::self_qualified_member_path`].
     pub(super) fn rooted_at_current_module(&self, names: &[String]) -> bool {
-        self.module_path.as_ref().is_some_and(|mp| {
-            !mp.is_empty() && mp.len() <= names.len() && names.starts_with(mp.as_slice())
-        })
+        self.module_path()
+            .is_some_and(|mp| !mp.is_empty() && mp.len() <= names.len() && names.starts_with(mp))
     }
 
     /// If `names` is an enclosing-module **self-qualifier**, the full
@@ -4512,7 +4511,11 @@ impl<'a> Resolver<'a> {
         let root_tier: &[usize] = &[0];
         for k in relative.chain(root_tier.iter().copied()) {
             let parent = &self.container_path[..k];
-            let Some(&kinds) = self.container_decls.get(parent).and_then(|d| d.get(head)) else {
+            let Some(&kinds) = self
+                .container_decls
+                .get(&self.container_path.prefix_id(k))
+                .and_then(|d| d.get(head))
+            else {
                 continue; // nothing named `Pal` here — next container outward
             };
             if !kinds.stops_dotted_head(in_pattern) {
@@ -4715,7 +4718,7 @@ impl<'a> Resolver<'a> {
             // target is declared): the target is not a clean module head there,
             // so decline to emit through it — defer, never fall through (the
             // open still outranks whatever ranks below).
-            if let Some(&kinds) = self.container_decls.get(prefix).and_then(|d| d.get(head))
+            if let Some(&kinds) = self.declared_in(prefix).and_then(|d| d.get(head))
                 && !kinds.is_clean_module_head(in_pattern)
             {
                 return Some(SameFileQualified::DeferStop);
@@ -4738,7 +4741,7 @@ impl<'a> Resolver<'a> {
             && !self.preceding.is_namespace(&full)
             && !self.assemblies.has_namespace(&full)
         {
-            if let Some(&kinds) = self.container_decls.get(prefix).and_then(|d| d.get(head))
+            if let Some(&kinds) = self.declared_in(prefix).and_then(|d| d.get(head))
                 && !kinds.is_clean_module_head(in_pattern)
                 && kinds.stops_dotted_head(in_pattern)
             {
@@ -4804,11 +4807,7 @@ impl<'a> Resolver<'a> {
             // merged multi-file view is not modeled. Probe CF9 (a same-file
             // `type Color` without the member) shows FCS can still backtrack
             // past it, so this only over-defers, never mis-targets.
-            if self
-                .container_decls
-                .get(&full)
-                .is_some_and(|d| d.contains_key(seg))
-            {
+            if self.declared_in(&full).is_some_and(|d| d.contains_key(seg)) {
                 return Some(SameFileQualified::DeferStop);
             }
             let mut ty_path = full.clone();
@@ -4944,11 +4943,7 @@ impl<'a> Resolver<'a> {
             return self
                 .classify_module_qualified_segment(path, res.ty, res.case, in_pattern, use_pos);
         };
-        let kinds = self
-            .container_decls
-            .get(&path)
-            .and_then(|d| d.get(seg))
-            .copied();
+        let kinds = self.declared_in(&path).and_then(|d| d.get(seg)).copied();
         let private_reachable = self.container_path.starts_with(&path);
         let mut next = path;
         next.push(seg.clone());
@@ -5015,8 +5010,7 @@ impl<'a> Resolver<'a> {
         qualifier.extend(res.mids.iter().cloned());
         let block_header = &self.container_path[..self.block_container_len];
         let root_module = self
-            .container_decls
-            .get(&[][..])
+            .declared_in(&[][..])
             .and_then(|d| d.get(head))
             .is_some_and(|k| k.module || k.alias);
         let incomplete = root_module
@@ -5130,8 +5124,7 @@ impl<'a> Resolver<'a> {
             !p.is_empty()
                 && reaches(p)
                 && self
-                    .container_decls
-                    .get(p)
+                    .declared_in(p)
                     .and_then(|d| d.get(head))
                     .is_some_and(|k| k.module || k.alias)
         })
@@ -5176,8 +5169,7 @@ impl<'a> Resolver<'a> {
         use_pos: TextSize,
     ) -> Option<SameFileQualified> {
         let seg = self
-            .container_decls
-            .get(&module_path)
+            .declared_in(&module_path)
             .and_then(|d| d.get(ty))
             .copied()
             .unwrap_or_default();
@@ -5279,11 +5271,7 @@ impl<'a> Resolver<'a> {
         }
         let mut companion_path = module_path;
         companion_path.push(ty.to_string());
-        match self
-            .container_decls
-            .get(&companion_path)
-            .and_then(|d| d.get(case))
-        {
+        match self.declared_in(&companion_path).and_then(|d| d.get(case)) {
             Some(k) if !in_pattern && k.value => {
                 // An expression-position companion `let` value is what the
                 // qualified-value branch resolves — delegate via `Miss`. But a
@@ -6194,7 +6182,7 @@ impl<'a> Resolver<'a> {
         if self.recursive_module_active {
             return false;
         }
-        let Some(&kinds) = self.container_decls.get(prefix).and_then(|d| d.get(name)) else {
+        let Some(&kinds) = self.declared_in(prefix).and_then(|d| d.get(name)) else {
             return false;
         };
         if !kinds.module || kinds.alias {
@@ -6209,8 +6197,7 @@ impl<'a> Resolver<'a> {
             return false;
         }
         !self
-            .container_decls
-            .get(&mp)
+            .declared_in(&mp)
             .is_some_and(|d| d.contains_key(member))
     }
 
