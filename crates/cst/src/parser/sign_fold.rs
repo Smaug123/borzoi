@@ -43,11 +43,12 @@ use crate::lexer::Span;
 // pass share the one definition.
 use crate::lexfilter::is_atomic_expr_end;
 
-/// Whether a sign folds into a literal of kind `lit` whose text is `text`:
-/// FCS's fold set. Unsigned suffixed ints (suffix contains `u`/`U`) and every
-/// non-numeric kind do not fold.
-fn folds_into(lit: FilteredKind, text: &str) -> bool {
-    match lit {
+/// Whether a sign folds into filtered token `i`: FCS's fold set. Unsigned
+/// suffixed ints (suffix contains `u`/`U`) and every non-numeric kind do not
+/// fold. Only a numeric literal's text is read, since a virtual token's span
+/// need not lie on character boundaries.
+fn folds_into(filtered: &FilteredTokens<'_>, i: usize) -> bool {
+    match filtered.kind(i) {
         FilteredKind::Token(
             TokenKind::Int
             | TokenKind::XInt
@@ -64,7 +65,7 @@ fn folds_into(lit: FilteredKind, text: &str) -> bool {
         // prefixes (`0x`/`0o`/`0b`) and digits never contain `u`/`U`, so a
         // whole-text check is unambiguous.
         FilteredKind::Token(TokenKind::IntSuffixed | TokenKind::XIntSuffixed) => {
-            !text.contains(['u', 'U'])
+            !filtered.text(i).contains(['u', 'U'])
         }
         _ => false,
     }
@@ -112,7 +113,7 @@ fn folds_at(raw_tokens: &RawTokens<'_>, filtered: &FilteredTokens<'_>, i: usize)
     if lit_span.start != op_span.end {
         return false;
     }
-    if !folds_into(filtered.kind(i + 1), filtered.text(i + 1)) {
+    if !folds_into(filtered, i + 1) {
         return false;
     }
     // Non-adjacent-left, against the raw stream.

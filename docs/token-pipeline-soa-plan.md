@@ -292,7 +292,10 @@ differential and manifests unchanged.
 is 4 bytes and a token 12, not 10; the lexer errors are unit variants of their
 own, as in `RawKind`. `FilteredTokens::push` asserts that the filter emits no
 trivia and, in a debug build, that each token's payload is its source text, so
-the table can rebuild it. `filter_collect` writes the table, `sign_fold`
+the table can rebuild it. Only a lexed token's span is a slice of the
+source: a virtual token placed after a line's last token takes its span from
+that token's end plus one, which can start inside a multi-byte character, so
+the table reads the text of lexed tokens alone. `filter_collect` writes the table, `sign_fold`
 compacts it in place, and `lexfilter::filter` is a view over it, so the FCS
 lex-filter differential grades the representation the parser reads.
 
@@ -309,7 +312,8 @@ past the cursor rebuild by value; the ones that test a single unit kind compare
 before the sign fold (the parse's lockstep assertion holds it after), over the
 lexical pairs plus `FILTER_SHAPES` (type applications, the fused-token splits,
 the sign fold, and the keywords whose contexts close with virtuals), over the
-`CORE` triples, and over a random walk, and checks the pairs reach every kind
+`CORE` triples, and over a random walk, each source also with a multi-byte
+character before every line break, and checks the pairs reach every kind
 rebuilt by a rule of its own. Two planted bugs: dropping the end offset when
 the fold compacts the table fails the lexical pairs (through `FILTER_SHAPES`),
 the random walk, and the panic sweep's `CORE` triples; rebuilding a promoted `>`
@@ -322,12 +326,12 @@ Over the corpus's `src/` tree, min of 3, on the loaded machine:
 | phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
 |---|---|---|---|---|
 | lex | 83.6 | 83.6 | 4.06 | 4.06 |
-| lex-filter | 257.9 | 264.0 | 23.40 | 10.76 |
-| parse | 581.8 | 608.8 | 70.09 | 57.45 |
+| lex-filter | 257.9 | 263.3 | 23.40 | 10.76 |
+| parse | 581.8 | 606.1 | 70.09 | 57.45 |
 
 Bytes allocated by the filter fall by 54%, and by the whole parse by 18%.
-Instructions rise by 5%: the filter converts each token it emits to a kind
-(+6, gone when the filter emits kinds, Stage 4), the cursor rebuilds each
+Instructions rise by 4%: the filter converts each token it emits to a kind
+(+5, gone when the filter emits kinds, Stage 4), the cursor rebuilds each
 token once, and the lookaheads past the cursor rebuild what they read.
 
 ### Stage 4: the filter reads the raw table by index

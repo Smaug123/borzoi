@@ -96,20 +96,35 @@ fn check_table(
 /// Parse `src` under every language-version band and `#if` symbol set; each
 /// parse runs the reference comparison. Also hold the table to the reference
 /// filter directly ([`check_table`]).
+///
+/// Each source is checked again with a multi-byte character before every line
+/// break: a virtual token the filter places after a line's last token takes a
+/// span from that token's end, which then starts inside the character, so the
+/// table must never slice a virtual token's span.
 fn check(src: &str, seen: &mut BTreeSet<FilteredKind>) {
-    for symbols in [HashSet::new(), HashSet::from(["X".to_string()])] {
-        for lang in LanguageVersion::SHAPE_REPRESENTATIVES {
-            parse_with_options(
-                src,
-                ParseOptions {
-                    file_kind: FileKind::Impl,
-                    symbols: &symbols,
-                    lang,
-                },
-            );
-            check_table(src, &symbols, lang, seen);
+    let perturbed = src.replace('\n', "😃\n");
+    for src in [src, perturbed.as_str()] {
+        for symbols in [HashSet::new(), HashSet::from(["X".to_string()])] {
+            for lang in LanguageVersion::SHAPE_REPRESENTATIVES {
+                parse_with_options(
+                    src,
+                    ParseOptions {
+                        file_kind: FileKind::Impl,
+                        symbols: &symbols,
+                        lang,
+                    },
+                );
+                check_table(src, &symbols, lang, seen);
+            }
         }
     }
+}
+
+/// A virtual token whose span starts inside a multi-byte character (the
+/// `OBLOCKSEP` after `1😃`) is rebuilt without slicing it.
+#[test]
+fn a_virtual_span_inside_a_character_is_not_sliced() {
+    check("let x = 1😃\nlet y = 2\n", &mut BTreeSet::new());
 }
 
 /// The filtered kinds rebuilt by a rule of their own, or that only a

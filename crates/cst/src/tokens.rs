@@ -407,10 +407,21 @@ impl FilteredKind {
     }
 
     /// The filtered-stream entry of this kind whose text is `text`.
-    #[inline]
     pub fn rebuild(self, text: &str) -> Result<FilteredToken<'_>, LexError> {
+        self.rebuild_with(|| text)
+    }
+
+    /// [`FilteredKind::rebuild`], asking for the text only for a lexed token.
+    /// Only a lexed token's span is a slice of the source: a virtual token's
+    /// may start inside a multi-byte character (an `OBLOCKSEP` placed after a
+    /// line's last token takes its span from that token's end).
+    #[inline]
+    pub fn rebuild_with<'a>(
+        self,
+        text: impl FnOnce() -> &'a str,
+    ) -> Result<FilteredToken<'a>, LexError> {
         match self {
-            FilteredKind::Token(kind) => Ok(FilteredToken::Raw(Token::from_kind(kind, text))),
+            FilteredKind::Token(kind) => Ok(FilteredToken::Raw(Token::from_kind(kind, text()))),
             FilteredKind::TyparLess => Ok(FilteredToken::Raw(Token::Less(true))),
             FilteredKind::TyparGreater => Ok(FilteredToken::Raw(Token::Greater(true))),
             FilteredKind::Virtual(v) => Ok(FilteredToken::Virtual(v)),
@@ -481,7 +492,7 @@ impl<'src> FilteredTokens<'src> {
     pub fn push(&mut self, (res, span): FilteredItem<'src>) {
         let kind = FilteredKind::of(&res);
         debug_assert!(
-            kind.rebuild(&self.source[span.clone()]) == res,
+            kind.rebuild_with(|| &self.source[span.clone()]) == res,
             "{res:?} at {span:?} is not rebuilt from its kind and text"
         );
         self.push_kind(kind, span);
@@ -520,7 +531,12 @@ impl<'src> FilteredTokens<'src> {
         self.starts[i] as usize..self.ends[i] as usize
     }
 
-    /// Token `i`'s text.
+    /// Token `i`'s text, for a lexed token ([`FilteredKind::Token`]).
+    ///
+    /// # Panics
+    ///
+    /// On another kind whose span does not lie on character boundaries (see
+    /// [`FilteredKind::rebuild_with`]).
     pub fn text(&self, i: usize) -> &'src str {
         &self.source[self.span(i)]
     }
@@ -545,7 +561,10 @@ impl<'src> FilteredTokens<'src> {
     #[inline]
     fn item(&self, i: usize) -> FilteredItem<'src> {
         let span = self.span(i);
-        (self.kinds[i].rebuild(&self.source[span.clone()]), span)
+        (
+            self.kinds[i].rebuild_with(|| &self.source[span.clone()]),
+            span,
+        )
     }
 
     /// The tokens from index `from` on, as the filter emitted them.
