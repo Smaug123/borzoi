@@ -18,6 +18,7 @@
 //! - **Modelled.** Direct dependencies; project references, and the
 //!   referenced projects' frameworks, dependencies and references; each
 //!   framework's asset-target fallback list and packages to prune; the
+//!   restored project's transitive pinning and central versions; the
 //!   packages folder the resolver reads.
 //! - **Inert.** Fields that cannot move the closure, or turn a success into a
 //!   failure, of a restore the resolver commits to. Each one's reason is
@@ -152,9 +153,9 @@ pub enum UnmodelledField {
     Audit,
     /// `usingMicrosoftNETSdk` is false.
     NotMicrosoftNetSdk,
-    /// Central package management in a shape B₁ does not admit: transitive
-    /// pinning; under it, a dependency not centrally managed, an implicit one,
-    /// or a floating central version or override (restore fails on each); without it, a
+    /// Central package management in a shape B₁ does not admit: under it, a
+    /// dependency not centrally managed, an implicit one, or a floating
+    /// central version or override (restore fails on each); without it, a
     /// centrally managed dependency, an override or a central entry.
     CentralPackageManagement,
     /// A framework's `packagesToPrune` entry without an upper bound, or a
@@ -844,8 +845,11 @@ fn check_sources(
     graph: &ProjectGraph,
     closure: &ResolvedPackageClosure,
 ) -> Result<(), DgSpecResolveDecline> {
+    // Transitive pinning looks a pinned edge up at its central version; every
+    // central version is taken, which may decline more than restore reads.
     let mut edges: Vec<(PackageId, VersionRange)> = graph
         .package_edges()
+        .chain(graph.transitive_pinning.iter().flatten())
         .map(|(id, range)| (id.clone(), range.clone()))
         .collect();
     for identity in &closure.examined {
@@ -995,7 +999,9 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
         warning_properties: _,
         restore_lock_properties,
         central_package_versions_enabled,
-        central_package_transitive_pinning_enabled,
+        // Modelled on the restored project (`project_graph`); a referenced
+        // project's is never read.
+        central_package_transitive_pinning_enabled: _,
         restore_audit_properties,
         // Graded by the differential, whose generator varies it.
         sdk_analysis_level: _,
@@ -1102,17 +1108,15 @@ fn unmodelled_fields(spec: &PackageSpec) -> BTreeSet<UnmodelledField> {
     if !lock_file_is_off(restore_lock_properties) {
         decline(UnmodelledField::LockFile);
     }
-    // Central package management without transitive pinning moves no closure:
-    // the SDK writes each centrally managed dependency's range into the spec,
-    // and restore resolves that range, whatever the central entry or a
+    // Central package management moves no direct reference's closure: the
+    // SDK writes each centrally managed dependency's range into the spec, and
+    // restore resolves that range, whatever the central entry or a
     // `versionOverride` says. It does fail the restore on a dependency not
     // centrally managed (`NU1008`), on an implicit reference, managed or not
-    // (`NU1009`), and on a floating central version (`NU1011`). Transitive pinning raises
-    // transitive packages to their central versions, which changes the
-    // closure, and is not modelled.
-    if *central_package_transitive_pinning_enabled {
-        decline(UnmodelledField::CentralPackageManagement);
-    }
+    // (`NU1009`), and on a floating central version (`NU1011`). Transitive
+    // pinning, which restore reads only under central package management and
+    // only on the restored project, raises transitive packages to their
+    // central versions; `project_graph` hands those to the resolver.
     if !audit_is_off(restore_audit_properties.as_ref()) {
         decline(UnmodelledField::Audit);
     }
@@ -1684,12 +1688,24 @@ fn project_graph(
         .filter_map(project_id)
         .filter(|name| !projects.iter().any(|node| &node.name == name))
         .collect();
+    // Restore pins only under central package management, by the restored
+    // project's central versions for this framework.
+    let transitive_pinning = (root.restore.central_package_versions_enabled
+        && root.restore.central_package_transitive_pinning_enabled)
+        .then(|| {
+            framework
+                .central_package_versions
+                .iter()
+                .map(|entry| (entry.id.clone(), entry.range.clone()))
+                .collect()
+        });
     Ok(FrameworkGraph {
         graph: ProjectGraph {
             root: project_id(root),
             direct,
             projects,
             other_projects,
+            transitive_pinning,
         },
         warnings_predictable,
     })

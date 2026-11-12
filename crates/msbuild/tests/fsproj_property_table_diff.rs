@@ -664,3 +664,63 @@ fn choose_nesting_around_msbuilds_ceiling_is_exact() {
         );
     }
 }
+
+/// An undecided `<Choose>` — one whose `<When>` sits outside the condition
+/// grammar — hides exactly the property writes its still-possible branches
+/// hold, name by name. Items are pass-3 content and write no property, so a
+/// branch holding only items hides nothing: later reads of never-written names
+/// stay exact. Each row is diffed with MSBuild taking the branch and with it
+/// skipping the branch, and pinned to the number of properties we commit, since
+/// a model that declined after every undecided `<Choose>` would pass the
+/// differential alone.
+#[test]
+fn an_undecided_choose_hides_only_the_names_its_branches_write() {
+    let mut oracle = Oracle::spawn();
+    // (branch body, whether it writes `Gamma`).
+    let rows: &[(&str, bool)] = &[
+        (r#"<ItemGroup><None Include="x.txt" /></ItemGroup>"#, false),
+        (
+            r#"<ItemGroup><Compile Include="A.fs" /></ItemGroup>"#,
+            false,
+        ),
+        (
+            r#"<ItemGroup><PackageReference Include="P" Version="1.0.0" /></ItemGroup>"#,
+            false,
+        ),
+        (
+            r#"<ItemGroup><ProjectReference Include="../A/A.fsproj" /><ProjectReference Remove="../B/B.fsproj" /></ItemGroup>"#,
+            false,
+        ),
+        (
+            r#"<Choose><When Condition="'a' == 'a'"><ItemGroup><Helper Include="h" /></ItemGroup></When></Choose>"#,
+            false,
+        ),
+        (
+            r#"<PropertyGroup><Gamma>g</Gamma></PropertyGroup><ItemGroup><None Include="x.txt" /></ItemGroup>"#,
+            true,
+        ),
+        (
+            r#"<ItemGroup><None Include="x.txt" /></ItemGroup><Choose><When Condition="'a' == 'b'"><PropertyGroup><Gamma>g</Gamma></PropertyGroup></When></Choose>"#,
+            true,
+        ),
+    ];
+    for (branch, writes_gamma) in rows {
+        for gate in ["==", "!="] {
+            let xml = format!(
+                "<Project>\n  <Choose>\n    <When Condition=\"'$([System.Guid]::NewGuid())' {gate} ''\">\n      \
+                 {branch}\n    </When>\n  </Choose>\n  <PropertyGroup>\n    \
+                 <Alpha Condition=\"'$(Gamma)' == ''\">a</Alpha>\n    \
+                 <Beta Condition=\"'$(Delta)' == ''\">b</Beta>\n  </PropertyGroup>\n</Project>\n"
+            );
+            let committed = check_property_table_certain_implies_exact(&mut oracle, &xml);
+            // `Beta` reads a name nothing writes; `Alpha` reads one only some
+            // branches write. `Gamma` itself is never committed (unset, or
+            // written under the undecided gate), nor is the unwritten `Delta`.
+            let expected = if *writes_gamma { 1 } else { 2 };
+            assert_eq!(
+                committed, expected,
+                "undecided branch {branch} (gate {gate}): committed {committed}\n{xml}"
+            );
+        }
+    }
+}

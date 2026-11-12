@@ -385,7 +385,7 @@ pub struct ProjectItems {
     /// and member access then needs its type (Phase 3). Pure *namespace*
     /// prefixes (the segments above a module — `Demo` in `module Demo.Other`)
     /// are not recorded at all: namespaces merge wholesale.
-    pub(super) module_headers: HashSet<Vec<String>>,
+    pub(super) module_headers: PathSet,
     /// Qualified paths of *nested* `module X = …` declarations
     /// (`["Demo", "Calc"]`), accumulated across earlier files. Unlike
     /// [`Self::module_headers`], these defer on a **proper prefix** too
@@ -452,7 +452,7 @@ pub struct ProjectItems {
     /// submodule's own member, probe CF11), where a type's shadow must not
     /// answer (a type at an open-supplied head is transparent, probes
     /// CF12/CF13).
-    pub(super) real_nested_modules: HashSet<Vec<String>>,
+    pub(super) real_nested_modules: PathSet,
     /// Qualified paths of declared project **namespaces** (`["Outer", "Inner"]`
     /// for `namespace Outer.Inner`), accumulated across files. Lets
     /// [`Resolver::open_interpretations`](super::state::Resolver::open_interpretations) resolve an `open <namespace>`
@@ -950,6 +950,23 @@ impl ProjectItems {
     /// `extern` name does not answer).
     pub(super) fn is_real_nested_module(&self, names: &[String]) -> bool {
         self.real_nested_modules.contains(names)
+    }
+
+    /// The lengths `k` for which `names[..k]` followed by `last` is
+    /// [an earlier file's module header](Self::is_exact_project_module) or
+    /// [real nested module](Self::is_real_nested_module), reading each
+    /// segment of `names` once per set.
+    pub(super) fn module_child_prefix_lens<'a>(
+        &'a self,
+        names: &'a [String],
+        last: &'a str,
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.module_headers
+            .child_member_prefix_lens(names, last)
+            .chain(
+                self.real_nested_modules
+                    .child_member_prefix_lens(names, last),
+            )
     }
 
     /// The latest export at `path` the reference site `site` can **access**,
