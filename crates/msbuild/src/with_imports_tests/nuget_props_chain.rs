@@ -864,3 +864,233 @@ fn body_reached_nested_sdk_honours_directory_build_props_cpm_gate() {
     assert_eq!(result.package_references[0].version, None);
     assert!(has_directory_packages_props_cause(&result));
 }
+
+/// The overridable toolset names: MSBuild defines each before evaluation
+/// starts, and the environment, a caller global or a project write displaces
+/// it (probed — see `State::seed_toolset_properties`). So the walker's seed is
+/// the real build's value only when nothing that could have displaced it is
+/// in play.
+const OVERRIDABLE_TOOLSET_NAMES: [&str; 4] = [
+    "MSBuildExtensionsPath",
+    "MSBuildExtensionsPath32",
+    "MSBuildSDKsPath",
+    "VisualStudioVersion",
+];
+
+/// `Probe`, the body's read of the name taken after the SDK resolved, when
+/// the walk committed it.
+fn committed_probe(result: &ParsedProject) -> Option<&str> {
+    let value = result.properties.get("Probe")?;
+    (!result.property_provenance_untrusted("Probe")).then_some(value.as_str())
+}
+
+/// The ways a body reads a toolset name, each a different route through the
+/// walk's handling of a name it holds no value for: the plain undefined-read
+/// guard, the SDK's self-default idiom (whose exemption believes undefined
+/// reads behind opacity), and another property's gate.
+#[derive(Debug, Clone, Copy)]
+enum ToolsetReader {
+    Direct,
+    SelfDefault,
+    OtherGate,
+}
+
+impl ToolsetReader {
+    const ALL: [ToolsetReader; 3] = [Self::Direct, Self::SelfDefault, Self::OtherGate];
+
+    /// The body fragment that leaves this reader's answer in `Probe`.
+    fn body(self, name: &str) -> String {
+        match self {
+            Self::Direct => format!("<PropertyGroup><Probe>$({name})</Probe></PropertyGroup>"),
+            Self::SelfDefault => format!(
+                "<PropertyGroup><{name} Condition=\"'$({name})' == ''\">/FALLBACK/</{name}>\
+                 <Probe>$({name})</Probe></PropertyGroup>"
+            ),
+            Self::OtherGate => format!(
+                "<PropertyGroup><Probe Condition=\"'$({name})' == ''\">empty</Probe>\
+                 <Probe Condition=\"'$({name})' != ''\">nonempty</Probe></PropertyGroup>"
+            ),
+        }
+    }
+
+    /// What the real build leaves in `Probe` when the name holds one of
+    /// `values` (each non-empty, so no default fires).
+    fn real_answers(self, values: &[String]) -> Vec<String> {
+        match self {
+            Self::Direct | Self::SelfDefault => values.to_vec(),
+            Self::OtherGate => vec!["nonempty".to_string()],
+        }
+    }
+}
+
+/// The value the toolset seeds for `name` from `version_dir` (pinned by
+/// `toolset_properties_are_seeded_for_canonical_sdk_layout`).
+fn toolset_value(name: &str, version_dir: &Path) -> String {
+    match name {
+        "MSBuildExtensionsPath" => format!("{}/", version_dir.display()),
+        "MSBuildExtensionsPath32" => version_dir.display().to_string(),
+        "MSBuildSDKsPath" => version_dir.join("Sdks").display().to_string(),
+        // The fixtures' SDK is 10.0.301, a 10.x release (pinned by
+        // `a_release_sdk_seeds_its_toolset_visual_studio_version`).
+        "VisualStudioVersion" => "18.0".to_string(),
+        other => panic!("not an overridable toolset name: {other}"),
+    }
+}
+
+/// Certain-implies-exact for one case: a committed `Probe` must be one of the
+/// real build's possible answers.
+fn assert_probe_exact_or_declined(result: &ParsedProject, real: &[String], case: &str) {
+    if let Some(ours) = committed_probe(result) {
+        assert!(
+            real.iter().any(|r| r == ours),
+            "{case}: committed {ours:?}, but the real build reads one of {real:?}; \
+             diagnostics: {:?}",
+            result.diagnostics
+        );
+    }
+}
+
+/// The positive control for the cases below: with nothing in play that could
+/// displace it, every overridable seed commits — under every reader — so a
+/// decline there is a refusal the fix bought rather than an exactness it kept.
+#[test]
+fn an_undisplaced_overridable_toolset_seed_commits() {
+    for name in OVERRIDABLE_TOOLSET_NAMES {
+        for reader in ToolsetReader::ALL {
+            let case = format!("{name}, {reader:?}");
+            let tmp = TempDir::new().unwrap();
+            let sdk = write_canonical_sdk_at(tmp.path(), "10.0.301");
+            let version_dir = canon(&tmp.path().join("dotnet/sdk/10.0.301"));
+            let project_path = write_at(
+                tmp.path(),
+                "repo/Demo.fsproj",
+                &format!(
+                    r#"<Project>
+  <Import Sdk="Fake.Sdk" Project="Sdk.props" />
+  {}
+</Project>"#,
+                    reader.body(name)
+                ),
+            );
+            let result = parse_file_with_sdk_resolution(&project_path, canonical_sdk_resolver(sdk));
+            let real = reader.real_answers(&[toolset_value(name, &version_dir)]);
+            assert_eq!(
+                committed_probe(&result).map(str::to_string),
+                Some(real[0].clone()),
+                "{case}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+}
+
+/// An import whose gate the walk cannot decide may have written the name
+/// before the first SDK resolved. MSBuild decides the gate (`'a' == 'a'`) and
+/// performs the write, so the real build reads the hidden value; the hidden
+/// write leaves no trust record, so only the walk's opacity says the slot may
+/// be taken, and the seed must not fill it.
+///
+/// Nor may the absence the withheld seed leaves behind settle a read of the
+/// name, the SDK's `Condition="'$(Name)' == ''"` default idiom included:
+/// whether or not the hidden import wrote anything, the real build holds a
+/// non-empty value there.
+#[test]
+fn an_undecided_import_before_the_sdk_withholds_the_overridable_seeds() {
+    for name in OVERRIDABLE_TOOLSET_NAMES {
+        for hidden_writes in [true, false] {
+            for reader in ToolsetReader::ALL {
+                let case = format!("{name}, hidden write {hidden_writes}, {reader:?}");
+                let tmp = TempDir::new().unwrap();
+                let sdk = write_canonical_sdk_at(tmp.path(), "10.0.301");
+                let version_dir = canon(&tmp.path().join("dotnet/sdk/10.0.301"));
+                // For `MSBuildExtensionsPath` a decoy toolset tree, so the real
+                // build's `Sdk.props` import resolves — to a different file.
+                let decoy = write_decoy_extensions_path(tmp.path());
+                let hidden_value = format!("{}/", decoy.display());
+                let hidden = if hidden_writes {
+                    format!("<PropertyGroup><{name}>{hidden_value}</{name}></PropertyGroup>")
+                } else {
+                    String::new()
+                };
+                write_at(
+                    tmp.path(),
+                    "repo/hidden.props",
+                    &format!("<Project>{hidden}</Project>"),
+                );
+                let project_path = write_at(
+                    tmp.path(),
+                    "repo/Demo.fsproj",
+                    &format!(
+                        r#"<Project>
+  <PropertyGroup><X>abc</X></PropertyGroup>
+  <Import Project="hidden.props" Condition="'$(X.Substring(0,1))' == 'a'" />
+  <Import Sdk="Fake.Sdk" Project="Sdk.props" />
+  {}
+  <PropertyGroup><ProbeCommonPropsFrom>$(CommonPropsFrom)</ProbeCommonPropsFrom></PropertyGroup>
+</Project>"#,
+                        reader.body(name)
+                    ),
+                );
+                let result =
+                    parse_file_with_sdk_resolution(&project_path, canonical_sdk_resolver(sdk));
+                let value = if hidden_writes {
+                    hidden_value
+                } else {
+                    toolset_value(name, &version_dir)
+                };
+                assert_probe_exact_or_declined(&result, &reader.real_answers(&[value]), &case);
+                // The import the seed steers: the walk must not commit that the
+                // decoy's `Microsoft.Common.props` was skipped.
+                if hidden_writes && name == "MSBuildExtensionsPath" {
+                    assert!(
+                        result.property_provenance_untrusted("ProbeCommonPropsFrom")
+                            || result
+                                .properties
+                                .get("ProbeCommonPropsFrom")
+                                .map(String::as_str)
+                                == Some("decoy"),
+                        "{case}: {:?}",
+                        result.properties.get("ProbeCommonPropsFrom")
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Two environment spellings of the name with different values: MSBuild
+/// promotes one of them (which one is unspecified — probed, see
+/// `State::new`) and, on an MSBuild 18 toolset, every overridable name keeps
+/// the promoted value. The walk drops the name from its table because it
+/// cannot say which spelling won; the seed must not then fill the slot with
+/// the toolset's own path, which is neither, and no reader may take the
+/// dropped name for an unset one.
+#[test]
+fn colliding_environment_spellings_withhold_the_overridable_seeds() {
+    for name in OVERRIDABLE_TOOLSET_NAMES {
+        for reader in ToolsetReader::ALL {
+            let case = format!("{name}, {reader:?}");
+            let tmp = TempDir::new().unwrap();
+            let sdk = write_canonical_sdk_at(tmp.path(), "10.0.301");
+            let project_path = write_at(
+                tmp.path(),
+                "repo/Demo.fsproj",
+                &format!(
+                    r#"<Project Sdk="Fake.Sdk">
+  {}
+</Project>"#,
+                    reader.body(name)
+                ),
+            );
+            let lower = name.to_ascii_lowercase();
+            let result = parse_file_with_sdk_env(
+                &project_path,
+                canonical_sdk_resolver(sdk),
+                HashMap::new(),
+                env_of(&[(name, "/one/"), (&lower, "/two/")]),
+            );
+            let real = reader.real_answers(&["/one/".to_string(), "/two/".to_string()]);
+            assert_probe_exact_or_declined(&result, &real, &case);
+        }
+    }
+}
