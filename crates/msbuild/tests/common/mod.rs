@@ -888,7 +888,7 @@ fn gen_operand(rng: &mut SplitMix64) -> String {
         "x$(P1)y",
         "0x10",
         // Escape-bearing quoted operands (stage E2 of
-        // `docs/msbuild-escaped-value-plan.md`): MSBuild unescapes `%XX` at the
+        // `docs/completed/msbuild-escaped-value-plan.md`): MSBuild unescapes `%XX` at the
         // operand leaf, so `'%74rue'` compares as `true` and `'a%20b'` as `a b`.
         // These used to degrade the whole condition; they are modelled now, and
         // this dimension is what holds that line. A bare `%` stays literal, and
@@ -1104,7 +1104,7 @@ pub fn gen_expand_props(rng: &mut SplitMix64) -> Vec<(String, String)> {
         "o\u{17f}x",
         "\u{1d11e}x",
         // `%XX` escapes, and a bare `%`, in property values — now that the
-        // escaped-value domain models them (E1–E3, `docs/msbuild-escaped-value-plan.md`).
+        // escaped-value domain models them (E1–E3, `docs/completed/msbuild-escaped-value-plan.md`).
         // A bare `$(P)` splice unescapes at the leaf; a splice into a function
         // receiver/argument unescapes once at the call; a trailing bare `%`
         // composes with a hex-leading following segment (`$(P)abc` with `P=100%`
@@ -1120,7 +1120,7 @@ pub fn gen_expand_props(rng: &mut SplitMix64) -> Vec<(String, String)> {
         // comparison), NUL (`GetFullPath` throws). These must land the reducing
         // expressions in `Partial` (a decline), never a wrong commit; the sweep
         // is what proves that class stays closed, rather than a reviewer finding
-        // one consumer at a time. See `docs/msbuild-escaped-value-plan.md` (E3).
+        // one consumer at a time. See `docs/completed/msbuild-escaped-value-plan.md` (E3).
         "a%5cb",
         "%5cabc",
         "%01a",

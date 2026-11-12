@@ -2,7 +2,7 @@
 //!
 //! MSBuild stores every property, item spec and metadatum value *escaped*, and
 //! unescapes it exactly once, at the point of use. That single rule is the
-//! whole model; `docs/msbuild-escaped-value-plan.md` derives the consequences
+//! whole model; `docs/completed/msbuild-escaped-value-plan.md` derives the consequences
 //! (and the review findings that were, before this module, each modelled as a
 //! rule of its own).
 //!
@@ -21,6 +21,14 @@
 //! law that makes the domain sound, property-tested below. Note the reverse does
 //! **not** hold (`escape(unescape(s)) != s` in general), so no caller may
 //! unescape and re-store.
+//!
+//! No consumer declines a value *because* it carries an escape. Each leaf
+//! either scans escaped text or decodes at its point of use, and text that
+//! leaves the domain is never scanned again as syntax: the glob resolver
+//! takes item fragments already split and still escaped
+//! ([`crate::SpecFragment`]), and whether a filespec globs is asked of its
+//! escaped text ([`filespec_has_wildcards`]). A new consumer that needs to
+//! decline on an escape has decoded too early.
 
 /// `EscapingUtilities.cs:310` — `s_charsToEscape`. Nine characters, not one:
 /// a `;` or `*` reaching an item spec unescaped splits a list or globs a
@@ -109,23 +117,39 @@ pub fn unescape(escaped: &str) -> String {
     out
 }
 
-/// Whether any `%XX` in `escaped` decodes to one of `targets`.
-///
-/// A downstream scanner that re-reads decoded text — the glob resolver splitting
-/// on `;` and parsing `*`/`?`, the wildcard-import matcher — would take such a
-/// character as *syntax*, when MSBuild classified it as data before decoding.
-/// Callers that cannot express "literal, despite looking like syntax" decline
-/// instead of guessing.
-pub fn decodes_to_any(escaped: &str, targets: &[char]) -> bool {
+/// Whether escaped text carries a **live** wildcard: a `*` or `?` that is
+/// syntax, not data (`FileMatcher.HasWildcards`). An escaped `%2a` is a literal
+/// star and is not live, which is why the question is asked of escaped text.
+pub fn has_live_wildcard(escaped: &str) -> bool {
+    escaped.contains(['*', '?'])
+}
+
+/// Whether escaped text carries an **escaped** wildcard: `%2a`/`%2A` or
+/// `%3f`/`%3F`. A port of `EscapingUtilities.ContainsEscapedWildcards`
+/// (`src/Framework/EscapingUtilities.cs`), which searches for those substrings
+/// at every `%`. A `%` is not a hex digit, so no such substring can sit inside
+/// another escape, and the search agrees with what [`unescape`] decodes
+/// (property-tested below).
+pub fn contains_escaped_wildcards(escaped: &str) -> bool {
     escaped.as_bytes().windows(3).any(|w| {
         w[0] == b'%'
-            && w[1].is_ascii_hexdigit()
-            && w[2].is_ascii_hexdigit()
-            && unescape(std::str::from_utf8(w).expect("ASCII escape"))
-                .chars()
-                .next()
-                .is_some_and(|c| targets.contains(&c))
+            && ((w[1] == b'2' && w[2].eq_ignore_ascii_case(&b'a'))
+                || (w[1] == b'3' && w[2].eq_ignore_ascii_case(&b'f')))
     })
+}
+
+/// Whether MSBuild expands an item or import filespec as a **glob**:
+/// `EngineFileUtilities.FilespecHasWildcards`, asked of escaped text.
+///
+/// A live wildcard alone is not enough. A filespec that *also* carries an
+/// escaped wildcard is taken literally, whole, because once decoded MSBuild
+/// could not tell the two kinds apart: `Include="a%2a*.fs"` is the one item
+/// `a**.fs`, and `Import Project="*.props%2a"` imports the file named
+/// `*.props*` (both pinned against `dotnet msbuild` 10.0.301). So a filespec
+/// this calls a glob decodes to a pattern whose every `*`/`?` is a wildcard, and
+/// one it does not call a glob decodes to a literal path.
+pub fn filespec_has_wildcards(escaped: &str) -> bool {
+    has_live_wildcard(escaped) && !contains_escaped_wildcards(escaped)
 }
 
 /// A value in MSBuild's escaped domain.
@@ -218,12 +242,11 @@ impl Escaped {
         unescape(self.0.trim())
     }
 
-    /// Whether the escaped text carries a **live** glob metacharacter — one
-    /// MSBuild would treat as syntax. An escaped `%2a` is a literal star and is
-    /// *not* live, which is why this question must be asked before decoding:
-    /// classify first, unescape second.
-    pub fn has_live_wildcard(&self) -> bool {
-        self.0.contains(['*', '?'])
+    /// Whether MSBuild expands this value, as a filespec, as a glob
+    /// ([`filespec_has_wildcards`]). The question is asked of escaped text,
+    /// before decoding: classify first, unescape second.
+    pub fn is_filespec_wildcard(&self) -> bool {
+        filespec_has_wildcards(&self.0)
     }
 
     /// Append text **raw**, bypassing escaping.
@@ -339,14 +362,45 @@ mod tests {
     /// an escaped `%2a` is a literal star in a filename, not a wildcard.
     #[test]
     fn a_wildcard_is_classified_before_decoding() {
-        assert!(Escaped::from_xml("a*.props").has_live_wildcard());
-        assert!(!Escaped::from_xml("star%2afile.props").has_live_wildcard());
+        assert!(Escaped::from_xml("a*.props").is_filespec_wildcard());
+        assert!(!Escaped::from_xml("star%2afile.props").is_filespec_wildcard());
         assert_eq!(
             Escaped::from_xml("star%2afile.props").unescape(),
             "star*file.props"
         );
-        assert!(decodes_to_any("star%2afile.props", &['*', '?']));
-        assert!(!decodes_to_any("a*.props", &['*', '?']));
+        // A live wildcard beside an escaped one: MSBuild takes the whole
+        // filespec literally.
+        assert!(!Escaped::from_xml("*.props%2a").is_filespec_wildcard());
+        assert!(!Escaped::from_xml("a%3F?.fs").is_filespec_wildcard());
+        // An escaped `;` is data, not a wildcard of either kind.
+        assert!(Escaped::from_xml("a%3b*.fs").is_filespec_wildcard());
+    }
+
+    proptest! {
+        /// `contains_escaped_wildcards` is MSBuild's substring search; it must
+        /// agree with whether [`unescape`] decodes some escape to a wildcard, or
+        /// the classification and the decode would disagree about which stars
+        /// are data.
+        #[test]
+        fn escaped_wildcard_search_agrees_with_the_decoder(s in "[%2aAfF35*x]{0,10}") {
+            let bytes = s.as_bytes();
+            let mut at = 0;
+            let mut decodes_a_wildcard = false;
+            while at < bytes.len() {
+                if bytes[at] == b'%'
+                    && at + 2 < bytes.len()
+                    && bytes[at + 1].is_ascii_hexdigit()
+                    && bytes[at + 2].is_ascii_hexdigit()
+                {
+                    let c = unescape(&s[at..at + 3]);
+                    decodes_a_wildcard |= c == "*" || c == "?";
+                    at += 3;
+                } else {
+                    at += 1;
+                }
+            }
+            prop_assert_eq!(contains_escaped_wildcards(&s), decodes_a_wildcard);
+        }
     }
 
     /// Padding is trimmed *before* decoding, because an escaped `%20` is a

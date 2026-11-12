@@ -138,7 +138,13 @@ fn glob_include_expands_property_defined_later_in_document() {
     let requests = std::cell::RefCell::new(Vec::new());
     let resolved = vec![canon(tmp.path()).join("src/A.fs")];
     let resolver = |req: &GlobRequest<'_>| {
-        requests.borrow_mut().push(req.include.to_string());
+        requests.borrow_mut().push(
+            req.include
+                .iter()
+                .map(SpecFragment::as_escaped)
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
         Ok(resolved.clone())
     };
     let result = parse_fsproj_with_imports(

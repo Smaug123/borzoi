@@ -14,8 +14,14 @@
 //!
 //! ## Semantics (pinned against real `dotnet msbuild`)
 //!
-//! For each `;`-separated `Include` fragment, in document order:
+//! For each `Include` fragment, in document order:
 //!
+//! - Fragments arrive split and still escaped ([`SpecFragment`]). Whether
+//!   one is a glob is MSBuild's classification of its escaped text
+//!   ([`SpecFragment::is_wildcard`]), so an escaped `%2a` is a star in a
+//!   filename and `a%2a*.fs` is the literal `a**.fs`; each is decoded here,
+//!   after that, and never split again, so an escaped `%3b` is a `;` in a
+//!   filename.
 //! - A **literal** fragment is emitted regardless of whether the file
 //!   exists (MSBuild passes literal includes through unconditionally); an
 //!   `Exclude` that matches it still removes it.
@@ -28,7 +34,10 @@
 //!   a relative exclude is anchored at the project directory, an absolute
 //!   one kept as-is. So a relative include with an absolute exclude (e.g.
 //!   `$(MSBuildProjectDirectory)/Gen.fs`) — or the mirror — filters
-//!   correctly rather than silently missing.
+//!   correctly rather than silently missing. An exclude carrying an escaped
+//!   wildcard applies differently to the two kinds of include, as MSBuild's
+//!   does: a name against a literal, a decoded pattern against a glob
+//!   ([`SpecFragment::excludes_from_globs`]).
 //!
 //! Fragments are concatenated in document order and **not** deduplicated:
 //! MSBuild keeps duplicates from overlapping fragments (e.g. `a.fs;*.fs`
@@ -39,6 +48,16 @@
 //! The resolver commits a list only when it is MSBuild's list; otherwise it
 //! returns a [`GlobDecline`] and the evaluator marks the item set uncertain.
 //!
+//! - **An allow-list, not a deny-list.** MSBuild's matchers carry Windows
+//!   filename rules, UTF-16 widths and .NET case folding that the plain
+//!   matching here does not model. Rather than chase each, the resolver
+//!   commits only when every spec it matches against, and every name a glob
+//!   would match, is inside the shape the MSBuild differentials verify
+//!   (`glob::unmodelled_shape`); anything else declines
+//!   ([`GlobDecline::OutsideModelledShape`]), so a shape nobody has checked
+//!   cannot commit a wrong list. Within it, the pattern rules MSBuild's
+//!   source states are ported: legality ([`GlobDecline::IllegalFilespec`]),
+//!   the all-files `*.*`, and how a literal include meets an exclude.
 //! - Recursive (`**`) globs descend at most `MAX_GLOB_DEPTH` components
 //!   to bound runaway enumeration; meeting a directory at that depth
 //!   declines ([`GlobDecline::DepthLimit`]).
@@ -51,10 +70,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::GlobRequest;
+use crate::{GlobRequest, SpecFragment, Unmodelled};
 
 use crate::glob::{
-    GlobDecline, Pattern, select, split_glob_root, split_segments, survives_excludes,
+    GlobDecline, Pattern, compares_unnormalised, has_wildcard_directory_part, is_legal_filespec,
+    is_recursive_filename_pattern, select, split_filespec, split_glob_root, split_segments,
+    unmodelled_shape,
 };
 
 /// Maximum number of path components a recursive (`**`) glob descends.
@@ -77,37 +98,108 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
     let base_norm = req.base_dir.to_string_lossy().replace('\\', "/");
     let base_segs = split_segments(&base_norm);
 
-    // Anchor every exclude into that frame: an absolute exclude keeps its
-    // path (its own wildcards remain wildcards), a relative one is rooted at
-    // the project directory with the base kept literal.
-    let excludes: Vec<Pattern> = req
+    // The allow-list: every spec the resolver matches anything against, and
+    // every name a glob would match, must be in the shape it models
+    // (`glob::unmodelled_shape`); anything else declines. A literal include
+    // with no excludes is matched against nothing, so only it goes unchecked.
+    for exclude in req.excludes {
+        within_modelled_shape(&exclude.unescape(), &base_norm)?;
+    }
+
+    // A glob include is matched by MSBuild's file matcher, which is handed
+    // the excludes `SpecFragment::excludes_from_globs` keeps, each decoded and
+    // then read as a pattern (every decoded `*`/`?` a wildcard) with the
+    // all-files reading of `*.*`. An absolute exclude keeps its path; a
+    // relative one is rooted at the project directory with the base kept
+    // literal. The list is consulted only by a glob include, so what it
+    // cannot model declines only there: a filespec the matcher refuses, and
+    // an exclude with a `.` segment, which the matcher compares by spelling
+    // and `Pattern` would drop (`GlobDecline::CurDirSegmentExclude`).
+    let glob_excludes: Result<Vec<Pattern>, GlobDecline> = req
         .excludes
         .iter()
+        .filter(|e| e.excludes_from_globs())
         .map(|e| {
-            let norm = e.replace('\\', "/");
-            if norm.starts_with('/') {
-                Pattern::parse(&norm)
-            } else {
-                Pattern::with_literal_prefix(&base_segs, &norm)
+            let norm = e.unescape().replace('\\', "/");
+            if !is_legal_filespec(&norm) {
+                return Err(GlobDecline::IllegalFilespec { pattern: norm });
             }
+            if has_cur_dir_segment(&norm) {
+                return Err(GlobDecline::CurDirSegmentExclude { pattern: norm });
+            }
+            Ok(
+                Pattern::with_literal_prefix(anchor_prefix(&base_segs, &norm), &norm)
+                    .with_all_files_rule(),
+            )
+        })
+        .collect();
+    // The glob excludes with a wildcard directory part, each with whether it
+    // is absolute. Such an exclude must be anchored as the glob include it
+    // filters is (`Unmodelled::MixedAnchoring`), and must not meet an include
+    // with a `..` segment (`Unmodelled::ParentSegmentUnderWildcardExclude`).
+    let glob_exclude_anchoring: Vec<(String, bool)> = req
+        .excludes
+        .iter()
+        .filter(|e| e.excludes_from_globs())
+        .map(|e| e.unescape().replace('\\', "/"))
+        .filter(|norm| has_wildcard_directory_part(norm))
+        .map(|norm| {
+            let absolute = norm.starts_with('/');
+            (norm, absolute)
         })
         .collect();
 
     let mut out: Vec<PathBuf> = Vec::new();
-    // The evaluator already trimmed/$()-expanded each fragment and stripped
-    // `@()`/`%()` references, so each is a literal or wildcard path.
-    for frag in req
-        .include
-        .split(';')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let norm = frag.replace('\\', "/");
+    // The evaluator already split, trimmed and $()-expanded each fragment
+    // and stripped `@()`/`%()` references, so each is a literal or wildcard
+    // path, classified on its escaped text and decoded here.
+    for frag in req.include {
+        let raw = frag.unescape();
+        let norm = raw.replace('\\', "/");
         let absolute = norm.starts_with('/');
-        // Split only the *fragment* at its first wildcard, then prepend the
-        // literal base (for relative specs) to get the walk root and key
-        // prefix. The base is never fed to `split_glob_root`, so its `*`/`?`
-        // never act as a wildcard boundary.
+        if !frag.is_wildcard() {
+            // Literal passthrough: MSBuild emits a literal include whether
+            // or not the file exists; only a matching Exclude removes it. The
+            // emitted path is `base_dir.join` (an absolute `norm` replaces the
+            // base, a relative one extends it). Every character of `norm` is
+            // data, a decoded `%2a` star included.
+            if !req.excludes.is_empty() {
+                within_modelled_shape(&raw, &base_norm)?;
+            }
+            if literal_survives_excludes(&raw, req.excludes, &base_segs)? {
+                out.push(req.base_dir.join(&norm));
+            }
+            continue;
+        }
+        within_modelled_shape(&raw, &base_norm)?;
+        if !is_legal_filespec(&norm) {
+            return Err(GlobDecline::IllegalFilespec { pattern: norm });
+        }
+        let glob_excludes = glob_excludes.as_ref().map_err(Clone::clone)?;
+        if has_parent_segment(&norm) && !glob_exclude_anchoring.is_empty() {
+            return Err(GlobDecline::OutsideModelledShape {
+                spec: norm,
+                shape: Unmodelled::ParentSegmentUnderWildcardExclude,
+            });
+        }
+        if let Some((exclude, _)) = glob_exclude_anchoring
+            .iter()
+            .find(|(_, exclude_absolute)| *exclude_absolute != absolute)
+        {
+            return Err(GlobDecline::OutsideModelledShape {
+                spec: exclude.clone(),
+                shape: Unmodelled::MixedAnchoring,
+            });
+        }
+        if !glob_excludes.is_empty() && has_cur_dir_segment(&norm) {
+            return Err(GlobDecline::CurDirSegmentExclude { pattern: norm });
+        }
+        // A glob: no escaped wildcard (that would have made it literal), so
+        // every `*`/`?` in the decoded `norm` is a wildcard, while a decoded
+        // `%3b` is a `;` in a filename. Split only the *fragment* at its first
+        // wildcard, then prepend the literal base (for relative specs) to get
+        // the walk root and key prefix. The base is never fed to
+        // `split_glob_root`, so its `*`/`?` never act as a wildcard boundary.
         let frag_root = split_glob_root(&norm);
         let anchor_segs: Vec<String> = if absolute {
             frag_root.prefix.clone()
@@ -119,55 +211,194 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
                 .collect()
         };
         // The pattern keeps the base literal for relative specs; an absolute
-        // fragment is parsed on its own (its own wildcards are wildcards).
-        let pat = if absolute {
-            Pattern::parse(&norm)
-        } else {
-            Pattern::with_literal_prefix(&base_segs, &norm)
-        };
-        if pat.is_glob() {
-            // Root the walk at the literal anchor so `../shared/*.fs`
-            // enumerates the sibling directory and `/opt/lib/*.fs` the
-            // absolute one. `anchor_segs` is absolute (or empty → `/`).
-            let walk_root = abs_from_segments(&anchor_segs);
-            // A `**`-free tail matches files at one fixed depth below the
-            // walk root, so there is no point descending further.
-            let depth = frag_root.tail_depth.unwrap_or(MAX_GLOB_DEPTH);
-            let recursive = frag_root.tail_depth.is_none();
-            // Re-attach the literal prefix to each enumerated path so keys,
-            // include pattern, and excludes all live in one frame. `select`
-            // matches/orders them and returns leading-`/`-stripped absolute
-            // strings (its `split_segments` drops the empty root segment),
-            // which we re-root at `/`.
-            let prefix = anchor_segs.join("/");
-            let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive)?
-                .into_iter()
-                .map(|rel| {
-                    if prefix.is_empty() {
-                        rel
-                    } else {
-                        format!("{prefix}/{rel}")
+        // fragment is parsed on its own (its own wildcards are wildcards). A
+        // filename part of `*.*` matches every file, as MSBuild's does.
+        let pat = Pattern::with_literal_prefix(anchor_prefix(&base_segs, &norm), &norm)
+            .with_all_files_rule();
+        // Root the walk at the literal anchor so `../shared/*.fs` enumerates
+        // the sibling directory and `/opt/lib/*.fs` the absolute one.
+        // `anchor_segs` is absolute (or empty → `/`).
+        let walk_root = abs_from_segments(&anchor_segs);
+        // A `**`-free tail matches files at one fixed depth below the walk
+        // root, so there is no point descending further.
+        let depth = frag_root.tail_depth.unwrap_or(MAX_GLOB_DEPTH);
+        let recursive = frag_root.tail_depth.is_none();
+        // Re-attach the literal prefix to each enumerated path so keys,
+        // include pattern, and excludes all live in one frame. `select`
+        // matches/orders them and returns leading-`/`-stripped absolute
+        // strings (its `split_segments` drops the empty root segment), which
+        // we re-root at `/`.
+        let prefix = anchor_segs.join("/");
+        // Every name the walk finds is held to the allow-list too, matched or
+        // not: a name outside it could match where the plain reading says it
+        // does not. A non-ASCII name is the exception, being common and
+        // harmless to an ASCII pattern (which the specs are) except in two
+        // ways: a `?` meeting a character two UTF-16 units wide, and
+        // `OrdinalIgnoreCase` folding `ı` or `ſ` onto ASCII. So it is held
+        // only where a `?` is in play, or it has one of those two.
+        let question = norm.contains('?')
+            || req
+                .excludes
+                .iter()
+                .filter(|e| e.excludes_from_globs())
+                .any(|e| e.unescape().contains('?'));
+        let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive)?
+            .into_iter()
+            .map(|rel| {
+                let shape = match unmodelled_shape(&rel) {
+                    Some(Unmodelled::NonAscii)
+                        if !question && !rel.contains(['\u{131}', '\u{17f}']) =>
+                    {
+                        unmodelled_shape(&rel.replace(|c: char| !c.is_ascii(), "x"))
                     }
+                    shape => shape,
+                };
+                if let Some(shape) = shape {
+                    return Err(GlobDecline::OutsideModelledShape { spec: rel, shape });
+                }
+                Ok(if prefix.is_empty() {
+                    rel
+                } else {
+                    format!("{prefix}/{rel}")
                 })
-                .collect();
-            let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-            for key in select(&key_refs, std::slice::from_ref(&pat), &excludes)? {
-                out.push(Path::new("/").join(&key));
-            }
-        } else {
-            // Literal passthrough: MSBuild emits a literal include whether
-            // or not the file exists; only a matching Exclude removes it. The
-            // exclude check runs against the same absolute-frame string
-            // (`anchor_segs` joined); the emitted path reproduces it as a
-            // `PathBuf` via `base_dir.join` (an absolute `norm` replaces the
-            // base, a relative one extends it).
-            let key = anchor_segs.join("/");
-            if survives_excludes(&excludes, &key)? {
-                out.push(req.base_dir.join(&norm));
-            }
+            })
+            .collect::<Result<_, _>>()?;
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        for key in select(&key_refs, std::slice::from_ref(&pat), glob_excludes)? {
+            out.push(Path::new("/").join(&key));
         }
     }
     Ok(out)
+}
+
+/// The literal segments a decoded spec is anchored under: none for an
+/// absolute spec, the project directory's for a relative one.
+fn anchor_prefix<'b>(base_segs: &'b [&'b str], norm: &str) -> &'b [&'b str] {
+    if norm.starts_with('/') {
+        &[]
+    } else {
+        base_segs
+    }
+}
+
+/// The allow-list gate for one decoded spec (`glob::unmodelled_shape`). An
+/// absolute spec is checked below the project directory, so spelling a file
+/// as `$(MSBuildProjectDirectory)/a.fs` in a checkout under a non-ASCII path
+/// is still modelled: that prefix is a literal the two sides share.
+fn within_modelled_shape(spec: &str, base_norm: &str) -> Result<(), GlobDecline> {
+    let norm = spec.replace('\\', "/");
+    let base = base_norm.trim_end_matches('/');
+    let checked = norm
+        .strip_prefix(base)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(&norm);
+    match unmodelled_shape(checked) {
+        Some(shape) => Err(GlobDecline::OutsideModelledShape {
+            spec: spec.to_string(),
+            shape,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Whether a decoded spec has a `..` (parent-directory) path segment.
+fn has_parent_segment(norm: &str) -> bool {
+    norm.split(['/', '\\']).any(|seg| seg == "..")
+}
+
+/// Whether a decoded spec has a `.` (current-directory) path segment.
+fn has_cur_dir_segment(norm: &str) -> bool {
+    norm.split(['/', '\\']).any(|seg| seg == ".")
+}
+
+/// A spelling as `Path.GetFullPath(Path.Combine(base, spelling))` writes it,
+/// for comparison: rooted at the project directory unless already absolute,
+/// `.` segments dropped and `..` segments resolved lexically (at the root, a
+/// `..` stays at the root), with `/` separators and no leading `/`.
+fn lexical_full_path(base_segs: &[&str], spelling: &str) -> String {
+    let norm = spelling.replace('\\', "/");
+    let mut segs: Vec<&str> = anchor_prefix(base_segs, &norm).to_vec();
+    for seg in split_segments(&norm) {
+        if seg == ".." {
+            segs.pop();
+        } else {
+            segs.push(seg);
+        }
+    }
+    segs.join("/")
+}
+
+/// Whether a **literal** include survives the `Exclude` fragments, as
+/// MSBuild's `FileSpecMatcherTester` decides it against an include it does
+/// not glob — the reading that differs from a glob include's
+/// ([`SpecFragment::excludes_from_globs`]). `item` is the include's decoded
+/// spelling.
+///
+/// - An exclude MSBuild classifies as a glob ([`SpecFragment::is_wildcard`])
+///   is a pattern over the item's full path, with the all-files reading of
+///   `*.*` except in the filename-only branch
+///   ([`is_recursive_filename_pattern`]). One the file matcher would refuse
+///   declines.
+/// - Any other exclude is a name. Two names are compared as full paths
+///   (`./a.fs` is `a.fs`), unless either is a spelling MSBuild does not
+///   normalise ([`compares_unnormalised`]), which is compared as written.
+///
+/// Comparison ignores case in MSBuild. Where folding ASCII case would change
+/// the verdict, the host decides, so it declines
+/// ([`GlobDecline::CaseAmbiguous`]).
+fn literal_survives_excludes(
+    item: &str,
+    excludes: &[SpecFragment],
+    base_segs: &[&str],
+) -> Result<bool, GlobDecline> {
+    let item_full = lexical_full_path(base_segs, item);
+    for exclude in excludes {
+        let spelling = exclude.unescape();
+        let (exact, folded) = if exclude.is_wildcard() {
+            let norm = spelling.replace('\\', "/");
+            if !is_legal_filespec(&norm) {
+                return Err(GlobDecline::IllegalFilespec { pattern: norm });
+            }
+            // `CreateGlobOrFilenamePattern` takes the fixed directory through
+            // `GetFullPath`, so against a literal include `sub/../*.fs` is
+            // `*.fs` (unlike the file matcher, which compares by spelling).
+            // The wildcard part cannot hold a `..`: that is illegal.
+            let (fixed, wildcard_dir, filename) = split_filespec(&norm);
+            let fixed_full =
+                lexical_full_path(base_segs, if fixed.is_empty() { "." } else { fixed });
+            let fixed_segs = split_segments(&fixed_full);
+            let mut pattern =
+                Pattern::with_literal_prefix(&fixed_segs, &format!("{wildcard_dir}{filename}"));
+            if !is_recursive_filename_pattern(&norm) {
+                pattern = pattern.with_all_files_rule();
+            }
+            (
+                pattern.matches(&item_full),
+                pattern.matches_ignoring_ascii_case(&item_full),
+            )
+        } else {
+            // Each operand is normalised, or not, on its own spelling
+            // (`NormalizePathForComparisonNoThrow` is applied to each side).
+            let operand = |spelling: &str| {
+                if compares_unnormalised(spelling) {
+                    spelling.to_string()
+                } else {
+                    format!("/{}", lexical_full_path(base_segs, spelling))
+                }
+            };
+            let (ours, theirs) = (operand(item), operand(&spelling));
+            (ours == theirs, ours.eq_ignore_ascii_case(&theirs))
+        };
+        if exact != folded {
+            return Err(GlobDecline::CaseAmbiguous {
+                path: item.to_string(),
+            });
+        }
+        if exact {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Build an absolute path from a glob root's leading wildcard-free segments
@@ -303,10 +534,14 @@ mod tests {
     /// excludes, returning paths relative to `base` as `/`-joined strings
     /// for compact assertions.
     fn run_rel(base: &Path, include: &str, excludes: &[&str]) -> Vec<String> {
-        let excludes: Vec<String> = excludes.iter().map(|s| s.to_string()).collect();
+        let include = SpecFragment::split_escaped(include);
+        let excludes: Vec<SpecFragment> = excludes
+            .iter()
+            .flat_map(|s| SpecFragment::split_escaped(s))
+            .collect();
         let req = GlobRequest {
             base_dir: base,
-            include,
+            include: &include,
             excludes: &excludes,
         };
         resolve(&req)
@@ -380,6 +615,86 @@ mod tests {
         );
     }
 
+    /// Resolve with `include`/`excludes` split as escaped specs, returning the
+    /// result rather than asserting it is decidable.
+    fn try_resolve(base: &Path, include: &str, excludes: &[&str]) -> Result<usize, GlobDecline> {
+        let include = SpecFragment::split_escaped(include);
+        let excludes: Vec<SpecFragment> = excludes
+            .iter()
+            .flat_map(|s| SpecFragment::split_escaped(s))
+            .collect();
+        resolve(&GlobRequest {
+            base_dir: base,
+            include: &include,
+            excludes: &excludes,
+        })
+        .map(|paths| paths.len())
+    }
+
+    /// A literal include survives an exclude regardless of case, unless case
+    /// is the only difference — then the host decides, and it declines.
+    #[test]
+    fn a_literal_exclude_differing_only_in_case_declines() {
+        let tmp = fixture();
+        assert_eq!(try_resolve(tmp.path(), "a.fs", &["b.fs"]), Ok(1));
+        assert!(matches!(
+            try_resolve(tmp.path(), "a.fs", &["A.fs"]),
+            Err(GlobDecline::CaseAmbiguous { .. })
+        ));
+    }
+
+    /// Against a literal include, ordinary names compare as full paths and a
+    /// name holding a `*` compares as written (`FileSpecMatcherTester`).
+    #[test]
+    fn literal_names_compare_as_msbuild_compares_them() {
+        let tmp = fixture();
+        assert_eq!(
+            run_rel(tmp.path(), "./a.fs;sub/../b.fs", &["a.fs", "b.fs"]),
+            Vec::<String>::new()
+        );
+        let abs = format!("{}/a%2ab.fs", tmp.path().display());
+        assert_eq!(run_rel(tmp.path(), "a%2ab.fs", &[&abs]), ["a*b.fs"]);
+        assert_eq!(try_resolve(tmp.path(), "./a%2ab.fs", &["a%2ab.fs"]), Ok(1));
+        assert_eq!(
+            run_rel(tmp.path(), "a%2ab.fs", &["a%2ab.fs"]),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The shapes MSBuild's file matcher does not read the plain way decline
+    /// by name; `*.*` is every file.
+    #[test]
+    fn file_matcher_shapes_decline_or_read_as_msbuild() {
+        let tmp = fixture();
+        fs::write(tmp.path().join("noext"), b"").unwrap();
+        assert!(matches!(
+            try_resolve(tmp.path(), "a**b.fs", &[]),
+            Err(GlobDecline::IllegalFilespec { .. })
+        ));
+        assert!(matches!(
+            try_resolve(tmp.path(), "*.fs", &["a%2a%2ab.fs"]),
+            Err(GlobDecline::IllegalFilespec { .. })
+        ));
+        // A live illegal exclude declines against a literal include too; one
+        // whose stars are decoded is not a glob there, only a name.
+        assert!(matches!(
+            try_resolve(tmp.path(), "a.fs", &["a**b.fs"]),
+            Err(GlobDecline::IllegalFilespec { .. })
+        ));
+        assert_eq!(try_resolve(tmp.path(), "a.fs;z.fs", &["x%2a%2a.fs"]), Ok(2));
+        assert!(matches!(
+            try_resolve(tmp.path(), "*.fs", &["./a.fs"]),
+            Err(GlobDecline::CurDirSegmentExclude { .. })
+        ));
+        assert!(matches!(
+            try_resolve(tmp.path(), "./*.fs", &["a.fs"]),
+            Err(GlobDecline::CurDirSegmentExclude { .. })
+        ));
+        assert_eq!(try_resolve(tmp.path(), "./*.fs", &[]), Ok(4));
+        assert_eq!(run_rel(tmp.path(), "*.*", &["*.fs"]), ["noext"]);
+        assert_eq!(run_rel(tmp.path(), "*", &["%2a.%2a"]), Vec::<String>::new());
+    }
+
     #[test]
     fn literal_passthrough_does_not_check_existence() {
         let tmp = fixture();
@@ -416,10 +731,10 @@ mod tests {
     #[test]
     fn paths_are_joined_onto_base_dir() {
         let tmp = fixture();
-        let excludes: Vec<String> = Vec::new();
+        let excludes: Vec<SpecFragment> = Vec::new();
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "a.fs",
+            include: &SpecFragment::split_escaped("a.fs"),
             excludes: &excludes,
         };
         assert_eq!(
@@ -438,10 +753,14 @@ mod tests {
     /// Resolve and canonicalise the results, so `..`/`/private` differences
     /// don't defeat equality when the glob root is outside `base`.
     fn resolve_canon(base: &Path, include: &str, excludes: &[&str]) -> Vec<PathBuf> {
-        let excludes: Vec<String> = excludes.iter().map(|s| s.to_string()).collect();
+        let include = SpecFragment::split_escaped(include);
+        let excludes: Vec<SpecFragment> = excludes
+            .iter()
+            .flat_map(|s| SpecFragment::split_escaped(s))
+            .collect();
         let req = GlobRequest {
             base_dir: base,
-            include,
+            include: &include,
             excludes: &excludes,
         };
         resolve(&req)
@@ -772,8 +1091,12 @@ mod tests {
             let tmp = materialise(&sc.files);
             let req = GlobRequest {
                 base_dir: tmp.path(),
-                include: &sc.include,
-                excludes: &sc.excludes,
+                include: &SpecFragment::split_escaped(&sc.include),
+                excludes: &sc
+                    .excludes
+                    .iter()
+                    .flat_map(|e| SpecFragment::split_escaped(e))
+                    .collect::<Vec<_>>(),
             };
             let got = resolve(&req).expect("the fixture is decidable");
             let want = reference(tmp.path(), &sc.files, &sc.include, &sc.excludes);
@@ -838,10 +1161,10 @@ mod tests {
     fn a_symlink_cycle_declines() {
         let tmp = fixture();
         std::os::unix::fs::symlink(tmp.path(), tmp.path().join("sub/back")).unwrap();
-        let excludes: Vec<String> = Vec::new();
+        let excludes: Vec<SpecFragment> = Vec::new();
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "**/*.fs",
+            include: &SpecFragment::split_escaped("**/*.fs"),
             excludes: &excludes,
         };
         assert!(matches!(
@@ -851,7 +1174,7 @@ mod tests {
         // A single-level glob never descends, so the cycle decides nothing.
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "*.fs",
+            include: &SpecFragment::split_escaped("*.fs"),
             excludes: &excludes,
         };
         assert_eq!(resolve(&req).unwrap().len(), 4);
@@ -866,10 +1189,10 @@ mod tests {
         }
         fs::create_dir_all(&deep).unwrap();
         fs::write(deep.join("x.fs"), b"// f\n").unwrap();
-        let excludes: Vec<String> = Vec::new();
+        let excludes: Vec<SpecFragment> = Vec::new();
         let req = GlobRequest {
             base_dir: tmp.path(),
-            include: "**/*.fs",
+            include: &SpecFragment::split_escaped("**/*.fs"),
             excludes: &excludes,
         };
         assert!(matches!(resolve(&req), Err(GlobDecline::DepthLimit { .. })));

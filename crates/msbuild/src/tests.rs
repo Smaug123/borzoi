@@ -7712,7 +7712,7 @@ fn framework_reference_captured() {
 fn package_reference_with_escaped_condition_is_gated_in() {
     // MSBuild unescapes `%XX` inside conditions, so `'%74rue' == 'true'` gates
     // the item IN (oracle-verified). We model that now (stage E2 of
-    // `docs/msbuild-escaped-value-plan.md`); it used to degrade to unsupported —
+    // `docs/completed/msbuild-escaped-value-plan.md`); it used to degrade to unsupported —
     // fail-safe, but it cost a package MSBuild really does resolve.
     let src = r#"<Project>
   <ItemGroup>
