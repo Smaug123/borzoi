@@ -453,7 +453,7 @@ pub fn module_function_schemes(
 pub fn module_function_constrained(
     env: &AssemblyEnv,
     module: EntityHandle,
-) -> std::collections::HashSet<String> {
+) -> crate::hash::HashSet<String> {
     env.member_indices(module)
         .filter_map(|idx| {
             let borzoi_assembly::Member::Method(m) = env.member_at(module, idx) else {

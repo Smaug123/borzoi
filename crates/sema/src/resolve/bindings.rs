@@ -1,12 +1,11 @@
 //! `let`-binding processing: interning, scheduling, and RHS resolution.
 
-use std::collections::HashSet;
-
 use borzoi_cst::syntax::{AstNode, Binding, Expr, LetDecl, LetOrUseExpr, SyntaxKind};
 
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefId, DefKind};
 use crate::diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
+use crate::hash::HashSet;
 
 use super::model::{ExportedItem, ItemId, Resolution};
 use super::state::{AliasTargets, Frame, Resolver, ScopeEntry};
