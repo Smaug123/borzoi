@@ -69,6 +69,8 @@ const FILES: &[&str] = &[
     "ab",
     // Below the project, so recursive globs and `..` spellings reach it.
     "sub/c.fs",
+    // A directory a glob include can be rooted inside, below an exclude's base.
+    "sub/Deep/d.fs",
     // A name a wildcard directory segment (`*/a%3bb.fs`) would reach.
     "sub/a;b.fs",
     // A hidden directory, which the SDK's `**/.*/**` exclude skips.
@@ -160,6 +162,9 @@ const FRAGMENTS: &[&str] = &[
     "$(MSBuildProjectDirectory)/sub/*.fs",
     "$(MSBuildProjectDirectory)/**/*.fs",
     "ab",
+    // A glob rooted inside a directory a `**` exclude names (#615).
+    "sub/Deep/*.fs",
+    "**/Deep/**",
     // Case variants. MSBuild ignores ASCII case against a literal include,
     // directories included, on every host. Against a glob include the resolver
     // declines where case would decide the answer (#607).
@@ -497,6 +502,16 @@ fn hand_picked_corners() {
             "*.fs",
             Some("$(MSBuildProjectDirectory)/a*b.fs"),
         ),
+        // A directory an exclude names after `**` is taken only where the
+        // include's walk enters it (#615): `sub/Deep/*.fs` starts inside
+        // `Deep`, so MSBuild keeps its files and the resolver declines.
+        corner("plain.fs", "sub/Deep/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "sub/**/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "**/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "*/Deep/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("**/d.fs")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("sub/D*/d.fs")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("*/Deep/d.fs")),
     ];
     // Each corner must commit through the resolver seam, which globs and
     // applies `Exclude`; a decline there would leave unexercised exactly the
