@@ -2,7 +2,8 @@
 
 > **Status (2026-11-12).** Plan written; Stages 0 (count harness), 1 (the
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
-> namespace fold surfaces) and 3 (the name table) implemented.
+> namespace fold surfaces), 3 (the name table) and 9 (`OpenScope`)
+> implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -458,8 +459,9 @@ two. The LSP drops an env once a fold leaves its table above
 paths as well as names: an edit that rearranges names the table already
 holds interns new paths and no new name.
 
-**Measured**: resolve 1584.9 → 1586.4 instructions per byte (+0.1%),
-allocations 1.736 per byte before and after; infer 173.4 → 172.7.
+**Measured** (on Stage 9, which it is stacked on): resolve 1584.1 → 1586.2
+instructions per byte (+0.1%), allocations 1.736 per byte before and after;
+infer 173.5 → 173.0.
 
 ### Stage 4: the open-prefix × head product on ids
 
