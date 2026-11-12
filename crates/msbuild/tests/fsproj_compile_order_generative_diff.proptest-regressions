@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d5b81d1e1974a4c8f28c1ae80b2c7ebee6a77991912d098f8c9890f87dde5460 # shrinks to Fixture { sdk_props: [], project: [Props { cond: None, writes: [PropWrite { name: 0, value: File(0), cond: None }] }], sdk_targets: [Items { cond: None, items: [Include { item_type: Compile, spec: File(4, Bare), order: OrderMeta { attr: None, children: [(Lit(4), None)] }, cond: None }] }, Items { cond: None, items: [Include { item_type: CompileAfter, spec: File(0, Bare), order: OrderMeta { attr: None, children: [] }, cond: None }, OrderUpdate { spec: Files([(4, Lower)]), order: OrderMeta { attr: None, children: [(Lit(0), None)] }, cond: None }] }] }

@@ -5,8 +5,8 @@
 > item specs are stored `Escaped` and unescaped once at the point of use, on
 > the literal fast path and across the glob-resolver seam alike. **F0** (the
 > generative compile-order harness) has landed too. The other distinctive
-> Compile-item stages are still outstanding: **F2** (alias matching), **F3**
-> (batching degrade), **F4** (ratchet).
+> Compile-item stages: **F2** (alias matching) has landed; **F3** (batching
+> degrade) and **F4** (ratchet) are outstanding.
 
 > Companion to the package-reference certainty work (PR #905, branch
 > `packageref-out-of-order-update`). That branch closed three MSBuild
@@ -84,10 +84,9 @@ sources (`LazyItemEvaluator.ComputeItems` / `ProcessNonWildCardItemUpdates`,
 - Include paths are captured as `project_dir.join(entry)` after `$(…)`
   expansion, `%XX` decode (`fragment_identity`, F1), and `\`→`/`
   normalisation, with `.`/`..` segments left intact. Compile-order Update
-  matching (`take_matching_compile_items`) compares those `PathBuf`s with
-  **exact equality** — no lexical `.`/`..` normalisation (F2's remaining
-  gap; an alias-spelled `./a.fs` still silently fails to match include
-  `a.fs`).
+  matching (`update_target_matches`, F2) compares them as MSBuild does: the
+  lexically normalised full paths, ignoring ASCII case, declining where .NET's
+  non-ASCII folding or an unnormalised spelling would decide.
 - Globs, item references, and metadata references in includes and
   compile-order update targets already degrade (diagnostics under
   `compile_context`).
@@ -106,7 +105,7 @@ sources (`LazyItemEvaluator.ComputeItems` / `ProcessNonWildCardItemUpdates`,
 | Escaped path character | `Include="a%20b.fs"` | **modelled** (F1 decoder landed) | Unescape after split |
 | Escaped semicolon | `Include="a%3Bb.fs"` | **modelled** (F1, both seams) | Split raw, then unescape fragments |
 | Escaped wildcard | `Include="a%2Ab.fs"` | **modelled** (F1, both seams) | Glob-detect raw, store unescaped |
-| Alias in order-Update target | `Update="./a.fs"` vs include `a.fs` | silently fails to match, certain-wrong order | **F2**: lexically normalised match keys |
+| Alias in order-Update target | `Update="./a.fs"` or `Update="A.fs"` vs include `a.fs` | **modelled** (F2) | Normalised full path, compared ignoring case |
 | Stranded-prefix batching | `Update="a.fs;a.fs" CompileOrder=…` before the Include | applied to prior items only, certain-wrong order | **F3**: degrade (upstream bug, not worth mirroring) |
 
 Why model where the package side degraded: a package id is an opaque
@@ -132,18 +131,18 @@ stages (the `msbuild-condition-oracle` skill's stub-project method):
   on this platform: `./a.fs`, `sub/../a.fs`, `.\a.fs` and
   `$(MSBuildProjectDirectory)/A.fs` all move `a.fs`. So F2's match key is the
   lexically normalised full path compared ordinal-ignore-case. .NET's
-  `OrdinalIgnoreCase` folds beyond ASCII, so a non-ASCII key either mirrors
-  that folding or declines. Today's exact `PathBuf` comparison commits a wrong
-  order for `Update="A.fs"` against `a.fs`, which is why F0's generator keeps
-  case variants out of `Update` targets.
+  `OrdinalIgnoreCase` folds beyond ASCII, but not uniformly (`é` matches `É`;
+  `ı` does not match `I`, nor `ſ` `S`), so F2 declines a non-ASCII match.
 - **Trailing dots/spaces** in fragments are trimmed only on Windows —
   expected out of scope (unix hosts), but pin one case to document it.
 - **`Exclude` interaction with the glob-resolver seam**: the escaped half
   is settled. Excludes cross the seam as escaped `SpecFragment`s, and the
   resolver applies one as MSBuild does, which depends on whether the include
   it meets is a literal or a glob (the escaped-value plan's "Filespec
-  classification", pinned by oracle). Alias-spelled excludes (`./a.fs`) are
-  still open and belong with F2.
+  classification", pinned by oracle). Alias-spelled literal excludes
+  (`./a.fs`) compare as full paths there too. A case-differing exclude
+  declines; MSBuild's Linux rule for it (filenames ignore case, directories
+  do not) is pinned in #607.
 
 ## Staged implementation
 
@@ -215,7 +214,19 @@ two ways an `Exclude` applies, is `fsproj_item_escape_generative_diff.rs`.
 
 ### Stage F2: path-normalised matching for compile-order Updates
 
-**Status**: outstanding. **Dependencies**: F0.
+**Status**: landed. `update_target_matches` in
+`crates/msbuild/src/evaluator/item_pass.rs` is the match key: both sides
+normalised as `GetFullPath` writes them (`.` dropped, `..` resolved, at the
+root a `..` stays there), compared `OrdinalIgnoreCase` with ASCII folding
+mirrored. A non-ASCII character never matches an ASCII one (`ı`, `ſ`, `İ`
+and the Kelvin sign match no ASCII letter). A match that would rest on
+folding two non-ASCII characters (`é`/`É` fold; the Angstrom sign and `å` do
+not) or on a spelling MSBuild compares as written
+(`compares_unnormalised`, e.g. `a:b.fs`) declines. The F0 generator's
+spellings dimension (bare, rooted, `./`, `sub/../`, `.\`, lower case) is on
+for includes and `Update` targets, and its oracle-graded corners pin the
+rest. The literal-exclude half of the seam was already normalised by E4.
+**Dependencies**: F0.
 
 **Implements**: alias row of the decision table.
 
