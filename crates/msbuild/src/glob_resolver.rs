@@ -75,7 +75,7 @@ use crate::{GlobRequest, SpecFragment, Unmodelled};
 use crate::glob::{
     GlobDecline, Pattern, compares_unnormalised, has_wildcard_directory_part, is_legal_filespec,
     is_recursive_filename_pattern, select, split_filespec, split_glob_root, split_segments,
-    unmodelled_glob_structure, unmodelled_shape,
+    unmodelled_shape,
 };
 
 /// Maximum number of path components a recursive (`**`) glob descends.
@@ -127,7 +127,6 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
             if has_cur_dir_segment(&norm) {
                 return Err(GlobDecline::CurDirSegmentExclude { pattern: norm });
             }
-            within_modelled_glob_structure(&norm)?;
             Ok(
                 Pattern::with_literal_prefix(anchor_prefix(&base_segs, &norm), &norm)
                     .with_all_files_rule(),
@@ -135,8 +134,9 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
         })
         .collect();
     // The glob excludes with a wildcard directory part, each with whether it
-    // is absolute. Such an exclude must be anchored as the glob include
-    // it filters is (`Unmodelled::MixedAnchoring`).
+    // is absolute. Such an exclude must be anchored as the glob include it
+    // filters is (`Unmodelled::MixedAnchoring`), and must not meet an include
+    // with a `..` segment (`Unmodelled::ParentSegmentUnderWildcardExclude`).
     let glob_exclude_anchoring: Vec<(String, bool)> = req
         .excludes
         .iter()
@@ -176,10 +176,11 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
             return Err(GlobDecline::IllegalFilespec { pattern: norm });
         }
         let glob_excludes = glob_excludes.as_ref().map_err(Clone::clone)?;
-        // A wildcard directory segment is verified on an include alone
-        // (`*/*.fs`), not where it meets excludes.
-        if !glob_excludes.is_empty() {
-            within_modelled_glob_structure(&norm)?;
+        if has_parent_segment(&norm) && !glob_exclude_anchoring.is_empty() {
+            return Err(GlobDecline::OutsideModelledShape {
+                spec: norm,
+                shape: Unmodelled::ParentSegmentUnderWildcardExclude,
+            });
         }
         if let Some((exclude, _)) = glob_exclude_anchoring
             .iter()
@@ -300,16 +301,9 @@ fn within_modelled_shape(spec: &str, base_norm: &str) -> Result<(), GlobDecline>
     }
 }
 
-/// The allow-list's structural gate for a decoded spec read as a glob
-/// (`glob::unmodelled_glob_structure`).
-fn within_modelled_glob_structure(norm: &str) -> Result<(), GlobDecline> {
-    match unmodelled_glob_structure(norm) {
-        Some(shape) => Err(GlobDecline::OutsideModelledShape {
-            spec: norm.to_string(),
-            shape,
-        }),
-        None => Ok(()),
-    }
+/// Whether a decoded spec has a `..` (parent-directory) path segment.
+fn has_parent_segment(norm: &str) -> bool {
+    norm.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 /// Whether a decoded spec has a `.` (current-directory) path segment.
@@ -362,7 +356,6 @@ fn literal_survives_excludes(
         let spelling = exclude.unescape();
         let (exact, folded) = if exclude.is_wildcard() {
             let norm = spelling.replace('\\', "/");
-            within_modelled_glob_structure(&norm)?;
             if !is_legal_filespec(&norm) {
                 return Err(GlobDecline::IllegalFilespec { pattern: norm });
             }

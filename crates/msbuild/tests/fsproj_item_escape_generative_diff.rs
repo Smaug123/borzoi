@@ -71,6 +71,10 @@ const FILES: &[&str] = &[
     "sub/c.fs",
     // A name a wildcard directory segment (`*/a%3bb.fs`) would reach.
     "sub/a;b.fs",
+    // A hidden directory, which the SDK's `**/.*/**` exclude skips.
+    ".hidden/h.fs",
+    // An output file, which the SDK's `bin\/**` exclude skips.
+    "bin/x.fs",
     // Names outside the resolver's allow-list, kept in a sibling of the
     // project directory so only the fragments that name it meet them (two
     // non-ASCII matches leave .NET's order between them, which would decline
@@ -142,6 +146,13 @@ const FRAGMENTS: &[&str] = &[
     // A wildcard directory segment: modelled on an include alone, refused
     // where it meets excludes.
     "*/c.fs",
+    "*/a%3bb.fs",
+    "a%3b*/**",
+    // The SDK's default excludes, which every SDK project with default items
+    // routes through the resolver: hidden directories, and the output
+    // directory as the SDK spells it.
+    "**/.*/**",
+    "bin\\/**",
     // Absolute spellings of globs, which an exclude with a wildcard directory
     // part must match in anchoring.
     "$(MSBuildProjectDirectory)/sub/*.fs",
@@ -154,9 +165,6 @@ const FRAGMENTS: &[&str] = &[
 /// ([`gen_spec`]), so the modelled space still dominates the sweep and its
 /// commit floor stays meaningful.
 const OUTSIDE_ALLOW_LIST: &[&str] = &[
-    // A wildcard in a directory segment other than `**`.
-    "*/a%3bb.fs",
-    "a%3b*/**",
     // Patterns MSBuild's file matcher refuses: an embedded `**`, live or
     // decoded from escapes.
     "a**b.fs",
@@ -461,6 +469,11 @@ fn hand_picked_corners() {
             Some("*/a%3bb.fs"),
         ),
         corner("plain.fs", "a%3b*/**", None),
+        // The SDK's `**/.*/**` exclude: modelled against a glob under the
+        // project (the corpus holds such projects), declined by name against
+        // one whose `..` it would otherwise take.
+        corner("plain.fs", "**/*.fs", Some("**/.*/**;bin\\/**")),
+        corner("plain.fs", "sub/../*.fs", Some("**/.*/**")),
         corner("plain.fs", "sub/**", None),
         corner("plain.fs", "**", Some("sub/**")),
         corner(
