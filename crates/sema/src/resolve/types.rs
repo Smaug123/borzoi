@@ -11,7 +11,7 @@ use super::state::Frame;
 use rowan::TextRange;
 
 use crate::assembly_env::{EntityHandle, ManifestSurfacePosition};
-use std::collections::HashSet;
+use crate::hash::HashSet;
 
 use crate::binders::{BinderRole, pattern_names};
 use crate::def::{Def, DefId, DefKind};
@@ -3743,7 +3743,7 @@ impl<'a> Resolver<'a> {
         // No argument-expression set to give: this *is* the walk that computes
         // one, and it reads only the occurrence ranges, which or-pattern pairing
         // never changes.
-        for name in pattern_names(arg, BinderRole::Pattern, &HashSet::new()) {
+        for name in pattern_names(arg, BinderRole::Pattern, &HashSet::default()) {
             self.excluded_param_ranges.insert(name.range());
         }
     }
