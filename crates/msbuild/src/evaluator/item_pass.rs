@@ -1634,17 +1634,28 @@ fn apply_compile_order_update(node: Node<'_, '_>, state: &mut State<'_>) {
         return;
     }
     let effect = compile_order_effect_from_value(&order);
-    let mut moved = take_matching_compile_items(state, &targets);
+    let Some(mut moved) = take_matching_compile_items(state, &targets, node.range()) else {
+        return;
+    };
     moved.sort_by_key(|item| item.order);
     for item in moved {
         insert_ordered_compile_item(state, effect, item);
     }
 }
 
+/// One fragment of a compile-order `Update` spec: the file it names (decoded,
+/// joined onto the project directory), and whether MSBuild compares its
+/// spelling as written rather than as a full path
+/// ([`crate::glob::compares_unnormalised`]).
+struct UpdateTarget {
+    path: PathBuf,
+    unnormalised: bool,
+}
+
 fn resolve_compile_update_targets(
     node: Node<'_, '_>,
     state: &mut State<'_>,
-) -> Option<Vec<PathBuf>> {
+) -> Option<Vec<UpdateTarget>> {
     if diagnose_item_op(node, "Exclude", state) {
         return None;
     }
@@ -1686,16 +1697,144 @@ fn resolve_compile_update_targets(
         // it, so the target decodes too — an `Update="a%20b.fs"` names the same
         // file as `Include="a%20b.fs"`, and comparing escaped against decoded
         // would silently match nothing.
-        let normalised = fragment_identity(entry).replace('\\', "/");
-        targets.push(state.entry_project_dir.join(normalised));
+        let decoded = fragment_identity(entry);
+        let unnormalised = crate::glob::compares_unnormalised(&decoded);
+        let normalised = decoded.replace('\\', "/");
+        targets.push(UpdateTarget {
+            path: state.entry_project_dir.join(normalised),
+            unnormalised,
+        });
     }
     Some(targets)
 }
 
+/// Whether an `Update` fragment names a Compile item, as MSBuild decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateMatch {
+    Match,
+    NoMatch,
+    /// MSBuild's verdict rests on something not modelled here (see
+    /// [`update_target_matches`]).
+    Undecided(&'static str),
+}
+
+/// Whether the `Update` fragment `target` names the Compile item captured as
+/// `item`, as MSBuild's lazy evaluator decides it: both sides go through
+/// `NormalizePathForComparisonNoThrow` (the full path, so `./a.fs`,
+/// `sub/../a.fs`, `.\a.fs` and the rooted spelling all name `a.fs`), and the
+/// two are compared `OrdinalIgnoreCase` — on every host, unlike file
+/// existence, since the batched path keys an `OrdinalIgnoreCase` dictionary
+/// and the unbatched one compares the same way (both oracle-pinned on Linux,
+/// `docs/compile-item-fidelity-plan.md`).
+///
+/// ASCII case folding is mirrored exactly. Two things are not, and decline:
+///
+/// - a pair differing only where one side has a non-ASCII character, since
+///   .NET folds beyond ASCII by tables not reproduced here (`é` matches `É`,
+///   `ı` does not match `I`);
+/// - a pair that would match where either spelling is one MSBuild compares
+///   as written, not normalised ([`crate::glob::compares_unnormalised`]): the
+///   item is captured joined onto the project directory, so its spelling as
+///   written is gone.
+fn update_target_matches(item: &Path, target: &UpdateTarget) -> UpdateMatch {
+    let item_text = item.to_string_lossy();
+    let item_key = comparison_key(&item_text);
+    let target_key = comparison_key(&target.path.to_string_lossy());
+    let (a, b): (Vec<u16>, Vec<u16>) = (
+        item_key.encode_utf16().collect(),
+        target_key.encode_utf16().collect(),
+    );
+    // `OrdinalIgnoreCase` maps one UTF-16 unit to one, so differing lengths
+    // never match.
+    if a.len() != b.len() {
+        return UpdateMatch::NoMatch;
+    }
+    let mut needs_unicode_folding = false;
+    for (&x, &y) in a.iter().zip(&b) {
+        if x == y {
+            continue;
+        }
+        match (u8::try_from(x), u8::try_from(y)) {
+            (Ok(x), Ok(y)) if x.is_ascii() && y.is_ascii() => {
+                if !x.eq_ignore_ascii_case(&y) {
+                    return UpdateMatch::NoMatch;
+                }
+            }
+            _ => needs_unicode_folding = true,
+        }
+    }
+    if needs_unicode_folding {
+        return UpdateMatch::Undecided("non-ASCII case folding");
+    }
+    if target.unnormalised || crate::glob::compares_unnormalised(&item_text) {
+        return UpdateMatch::Undecided("a spelling MSBuild compares as written");
+    }
+    UpdateMatch::Match
+}
+
+/// A path as `Path.GetFullPath` writes it, for comparison: `.` and empty
+/// segments dropped, `..` resolved lexically (at the root, a `..` stays at the
+/// root, as `GetFullPath` keeps it). No filesystem access: a symlinked
+/// directory is not resolved, and neither side resolves one in MSBuild.
+fn comparison_key(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut segs: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if segs.last().is_some_and(|last| *last != "..") {
+                    segs.pop();
+                } else if !absolute {
+                    segs.push("..");
+                }
+            }
+            seg => segs.push(seg),
+        }
+    }
+    let joined = segs.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// Take every Compile item the `Update` targets name out of its bucket, in
+/// bucket order. `None`, with a diagnostic, when a match is
+/// [`UpdateMatch::Undecided`]: the move would rest on a comparison not
+/// modelled, so the order is not claimed.
 fn take_matching_compile_items(
     state: &mut State<'_>,
-    targets: &[PathBuf],
-) -> Vec<OrderedResolvedItem> {
+    targets: &[UpdateTarget],
+    span: Range<usize>,
+) -> Option<Vec<OrderedResolvedItem>> {
+    let undecided = compile_buckets(state)
+        .flat_map(|bucket| bucket.iter())
+        .filter(|ordered| ordered.item.kind == ItemKind::Compile)
+        .find_map(|ordered| {
+            targets.iter().find_map(|target| {
+                match update_target_matches(&ordered.item.include, target) {
+                    UpdateMatch::Undecided(reason) => {
+                        Some((ordered.item.include.clone(), target.path.clone(), reason))
+                    }
+                    UpdateMatch::Match | UpdateMatch::NoMatch => None,
+                }
+            })
+        });
+    if let Some((item, target, reason)) = undecided {
+        state.push(
+            DiagnosticKind::UnsupportedItemOperation {
+                operation: format!(
+                    "CompileOrder Update of {} whose match against {} rests on {reason}",
+                    target.display(),
+                    item.display()
+                ),
+            },
+            span,
+        );
+        return None;
+    }
     let mut moved = Vec::new();
     take_matching_compile_items_from_bucket(&mut state.compile_first, targets, &mut moved);
     take_matching_compile_items_from_bucket(
@@ -1709,20 +1848,36 @@ fn take_matching_compile_items(
     take_matching_compile_items_from_bucket(&mut state.explicit_compile_after, targets, &mut moved);
     take_matching_compile_items_from_bucket(&mut state.compile_last, targets, &mut moved);
     take_matching_compile_items_from_bucket(&mut state.compile_excluded, targets, &mut moved);
-    moved
+    Some(moved)
+}
+
+/// Every Compile-order bucket, in the order [`take_matching_compile_items`]
+/// walks them.
+fn compile_buckets<'s>(state: &'s State<'_>) -> impl Iterator<Item = &'s Vec<OrderedResolvedItem>> {
+    [
+        &state.compile_first,
+        &state.explicit_compile_before,
+        &state.compile_before,
+        &state.compile_main,
+        &state.compile_after,
+        &state.explicit_compile_after,
+        &state.compile_last,
+        &state.compile_excluded,
+    ]
+    .into_iter()
 }
 
 fn take_matching_compile_items_from_bucket(
     bucket: &mut Vec<OrderedResolvedItem>,
-    targets: &[PathBuf],
+    targets: &[UpdateTarget],
     moved: &mut Vec<OrderedResolvedItem>,
 ) {
     let mut index = 0;
     while index < bucket.len() {
         let matches = bucket[index].item.kind == ItemKind::Compile
-            && targets
-                .iter()
-                .any(|target| bucket[index].item.include == *target);
+            && targets.iter().any(|target| {
+                update_target_matches(&bucket[index].item.include, target) == UpdateMatch::Match
+            });
         if matches {
             moved.push(bucket.remove(index));
         } else {

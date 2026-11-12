@@ -27,20 +27,26 @@
 //!
 //! ## The generated space
 //!
-//! It starts inside the domain the evaluator models today (stage F0 of
-//! `docs/compile-item-fidelity-plan.md`): literal, `$(…)`-valued and
-//! `$(MSBuildProjectDirectory)`-rooted includes across `Compile`,
-//! `CompileBefore` and `CompileAfter`; `CompileOrder` metadata on includes and
-//! on metadata-only `<Compile Update>`s, as an attribute, as conditioned child
-//! elements, and through a property, including a value in another case and a
-//! value naming no bucket; defined- and undefined-property conditions; property
-//! and item groups interleaved across `Sdk.props`, the project and
-//! `Sdk.targets`.
+//! Stages F0 and F2 of `docs/compile-item-fidelity-plan.md`:
 //!
-//! It stays out of three things the later stages turn on, each a known way for
-//! the evaluator to commit a wrong order today:
+//! - literal and `$(…)`-valued includes across `Compile`, `CompileBefore` and
+//!   `CompileAfter`;
+//! - each file in one of several spellings — bare,
+//!   `$(MSBuildProjectDirectory)`-rooted, `./`, `sub/../`, `.\`, lower case —
+//!   in includes and `Update` targets alike. An `Update` matches the full path
+//!   ignoring case, so `Update="a.fs"` moves an item `A.fs`, though on this
+//!   host the two spellings name different files;
+//! - `CompileOrder` metadata on includes and on metadata-only
+//!   `<Compile Update>`s, as an attribute, as conditioned child elements, and
+//!   through a property, including a value in another case and a value naming
+//!   no bucket;
+//! - defined- and undefined-property conditions;
+//! - property and item groups interleaved across `Sdk.props`, the project and
+//!   `Sdk.targets`.
 //!
-//! - **alias spellings** (`./A.fs`, `sub/../A.fs`, a case variant): stage F2;
+//! It stays out of two things, each a known way for the evaluator to commit a
+//! wrong order today:
+//!
 //! - **escapes** in a spec (the escape generative differential covers those);
 //! - **an `Update` spec that names one file twice**, or names a file after a
 //!   fragment MSBuild cannot batch: the lazy evaluator's stranded-prefix bug
@@ -161,35 +167,63 @@ impl ItemType {
     }
 }
 
+/// How a fragment spells one of [`FILES`]. Every spelling but `Lower` names
+/// the same item as the bare name; `Lower` names a different file on this
+/// host, which an `Update` nonetheless matches, ignoring case.
+#[derive(Debug, Clone, Copy)]
+enum Spelling {
+    Bare,
+    /// `$(MSBuildProjectDirectory)/A.fs`.
+    Rooted,
+    /// `./A.fs`.
+    DotSlash,
+    /// `sub/../A.fs`, through a directory that need not exist.
+    ParentHop,
+    /// `.\A.fs`.
+    Backslash,
+    /// `a.fs`.
+    Lower,
+}
+
+impl Spelling {
+    fn of(self, file: usize) -> String {
+        let name = FILES[file];
+        match self {
+            Spelling::Bare => name.to_string(),
+            Spelling::Rooted => format!("$(MSBuildProjectDirectory)/{name}"),
+            Spelling::DotSlash => format!("./{name}"),
+            Spelling::ParentHop => format!("sub/../{name}"),
+            Spelling::Backslash => format!(".\\{name}"),
+            Spelling::Lower => name.to_ascii_lowercase(),
+        }
+    }
+}
+
 /// An `Include` spec.
 #[derive(Debug, Clone, Copy)]
 enum IncludeSpec {
-    File(usize),
+    File(usize, Spelling),
     /// `a;b` — possibly the same file twice, which makes two items.
     Two(usize, usize),
     Prop(usize),
-    /// `$(MSBuildProjectDirectory)/A.fs`: an absolute spelling of the same
-    /// identity a bare `A.fs` gets.
-    Rooted(usize),
 }
 
 impl IncludeSpec {
     fn render(self) -> String {
         match self {
-            IncludeSpec::File(i) => FILES[i].to_string(),
+            IncludeSpec::File(i, spelling) => spelling.of(i),
             IncludeSpec::Two(a, b) => format!("{};{}", FILES[a], FILES[b]),
             IncludeSpec::Prop(i) => format!("$({})", PROP_NAMES[i]),
-            IncludeSpec::Rooted(i) => format!("$(MSBuildProjectDirectory)/{}", FILES[i]),
         }
     }
 }
 
-/// An `Update` spec: distinct files (each bare or rooted), or one property.
-/// Neither names a file twice or follows a literal with a fragment MSBuild
-/// cannot batch (see the module doc).
+/// An `Update` spec: distinct files, each in some [`Spelling`], or one
+/// property. Neither names a file twice, under any spelling, or follows a
+/// literal with a fragment MSBuild cannot batch (see the module doc).
 #[derive(Debug, Clone)]
 enum UpdateSpec {
-    Files(Vec<(usize, bool)>),
+    Files(Vec<(usize, Spelling)>),
     Prop(usize),
 }
 
@@ -198,13 +232,7 @@ impl UpdateSpec {
         match self {
             UpdateSpec::Files(files) => files
                 .iter()
-                .map(|&(i, rooted)| {
-                    if rooted {
-                        IncludeSpec::Rooted(i).render()
-                    } else {
-                        FILES[i].to_string()
-                    }
-                })
+                .map(|&(i, spelling)| spelling.of(i))
                 .collect::<Vec<_>>()
                 .join(";"),
             UpdateSpec::Prop(i) => format!("$({})", PROP_NAMES[*i]),
@@ -346,11 +374,16 @@ enum Group {
     },
     /// `<ItemDefinitionGroup>` with a default `CompileOrder` for `Compile`.
     CompileOrderDefault(OrderValue),
+    /// An `<ItemGroup>` body written out verbatim: the hand-picked corners.
+    Raw(&'static str),
 }
 
 impl Group {
     fn render(&self, out: &mut String) {
         match self {
+            Group::Raw(body) => {
+                let _ = writeln!(out, "  <ItemGroup>\n{body}\n  </ItemGroup>");
+            }
             Group::CompileOrderDefault(value) => {
                 let _ = writeln!(
                     out,
@@ -472,16 +505,26 @@ fn prop_write_strategy() -> impl Strategy<Value = PropWrite> {
 
 fn include_spec_strategy() -> impl Strategy<Value = IncludeSpec> {
     prop_oneof![
-        6 => file().prop_map(IncludeSpec::File),
+        8 => (file(), spelling_strategy()).prop_map(|(i, s)| IncludeSpec::File(i, s)),
         2 => (file(), file()).prop_map(|(a, b)| IncludeSpec::Two(a, b)),
         2 => (0..PROP_NAMES.len()).prop_map(IncludeSpec::Prop),
-        2 => file().prop_map(IncludeSpec::Rooted),
+    ]
+}
+
+fn spelling_strategy() -> impl Strategy<Value = Spelling> {
+    prop_oneof![
+        6 => Just(Spelling::Bare),
+        1 => Just(Spelling::Rooted),
+        1 => Just(Spelling::DotSlash),
+        1 => Just(Spelling::ParentHop),
+        1 => Just(Spelling::Backslash),
+        1 => Just(Spelling::Lower),
     ]
 }
 
 fn update_spec_strategy() -> impl Strategy<Value = UpdateSpec> {
     prop_oneof![
-        5 => proptest::collection::btree_map(file(), proptest::bool::weighted(0.25), 1..3)
+        5 => proptest::collection::btree_map(file(), spelling_strategy(), 1..3)
             .prop_map(|files| UpdateSpec::Files(files.into_iter().collect())),
         1 => (0..PROP_NAMES.len()).prop_map(UpdateSpec::Prop),
     ]
@@ -729,7 +772,7 @@ fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError>
     let ours: Vec<String> = parsed
         .items
         .iter()
-        .map(|item| item.include.to_string_lossy().into_owned())
+        .map(|item| full_path(&item.include))
         .collect();
     prop_assert_eq!(
         &ours,
@@ -824,7 +867,7 @@ fn known_certain_fixture_reaches_oracle_and_matches() {
             cond: Cond::None,
             items: vec![ItemDecl::Include {
                 item_type: ItemType::CompileBefore,
-                spec: IncludeSpec::File(4),
+                spec: IncludeSpec::File(4, Spelling::Bare),
                 order: OrderMeta::default(),
                 cond: Cond::None,
             }],
@@ -832,22 +875,25 @@ fn known_certain_fixture_reaches_oracle_and_matches() {
         project: vec![
             Group::Items {
                 cond: Cond::SwitchEq(false),
-                items: vec![include(IncludeSpec::File(0), OrderMeta::default())],
+                items: vec![include(
+                    IncludeSpec::File(0, Spelling::Bare),
+                    OrderMeta::default(),
+                )],
             },
             Group::Items {
                 cond: Cond::None,
                 items: vec![
-                    include(IncludeSpec::File(0), order(4)),
-                    include(IncludeSpec::File(1), OrderMeta::default()),
-                    include(IncludeSpec::Rooted(2), order(7)),
-                    include(IncludeSpec::File(3), order(1)),
+                    include(IncludeSpec::File(0, Spelling::Bare), order(4)),
+                    include(IncludeSpec::File(1, Spelling::Bare), OrderMeta::default()),
+                    include(IncludeSpec::File(2, Spelling::Rooted), order(7)),
+                    include(IncludeSpec::File(3, Spelling::Bare), order(1)),
                 ],
             },
         ],
         sdk_targets: vec![Group::Items {
             cond: Cond::None,
             items: vec![ItemDecl::OrderUpdate {
-                spec: UpdateSpec::Files(vec![(1, true)]),
+                spec: UpdateSpec::Files(vec![(1, Spelling::Lower)]),
                 order: OrderMeta {
                     attr: Some(OrderValue::Lit(3)),
                     children: vec![(OrderValue::Lit(0), Cond::None)],
@@ -885,7 +931,113 @@ fn known_certain_fixture_reaches_oracle_and_matches() {
     let ours: Vec<String> = parsed
         .items
         .iter()
-        .map(|item| item.include.to_string_lossy().into_owned())
+        .map(|item| full_path(&item.include))
         .collect();
     assert_eq!(names(&ours), expected);
+}
+
+/// Our captured identity as MSBuild's `FullPath` spells it: a captured
+/// include keeps its authored `.` and `..` segments (`/p/sub/../A.fs`), while
+/// `FullPath` resolves them (`/p/A.fs`). Both name the same file; the order is
+/// what is compared.
+fn full_path(include: &Path) -> String {
+    let mut out = PathBuf::new();
+    for component in include.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
+
+/// Spellings the generator does not reach, held to the same property: each
+/// corner either declines or matches MSBuild exactly. `certain` records which
+/// way it goes today, so a corner that starts declining is seen rather than
+/// skipped. The project directory is `case<n>/proj`.
+const CORNERS: &[(&str, bool)] = &[
+    // Every case variant of the folded name moves.
+    (
+        r#"    <Compile Include="a.fs" />
+    <Compile Include="B.fs" />
+    <Compile Include="A.fs" />
+    <Compile Update="A.FS" CompileOrder="CompileLast" />"#,
+        true,
+    ),
+    // Up out of the project directory and back in.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+    <Compile Update="../proj/B.fs" CompileOrder="CompileFirst" />"#,
+        true,
+    ),
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="./B.fs" />
+    <Compile Update="$(MSBuildProjectDirectory)/../proj/./b.fs" CompileOrder="CompileFirst" />"#,
+        true,
+    ),
+    // `..` at the root stays at the root.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+    <Compile Update="/../../$(MSBuildProjectDirectory)/B.fs" CompileOrder="CompileFirst" />"#,
+        true,
+    ),
+    // .NET folds `é` and `É`, but not `ı` and `I`: the evaluator declines both.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="é.fs" />
+    <Compile Update="É.fs" CompileOrder="CompileFirst" />"#,
+        false,
+    ),
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="I.fs" />
+    <Compile Update="ı.fs" CompileOrder="CompileFirst" />"#,
+        false,
+    ),
+    // Non-ASCII names that differ by an ASCII character need no folding.
+    (
+        r#"    <Compile Include="é.fs" />
+    <Compile Include="é1.fs" />
+    <Compile Update="É2.fs" CompileOrder="CompileFirst" />
+    <Compile Update="é.fs" CompileOrder="CompileLast" />"#,
+        true,
+    ),
+    // `a:b.fs` is compared as written: its rooted spelling is another item to
+    // an `Update`, and the evaluator, which keeps only the joined path,
+    // declines.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="a:b.fs" />
+    <Compile Update="$(MSBuildProjectDirectory)/a:b.fs" CompileOrder="CompileFirst" />"#,
+        false,
+    ),
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Include="a:b.fs" />
+    <Compile Update="./a:b.fs" CompileOrder="CompileFirst" />"#,
+        false,
+    ),
+];
+
+#[test]
+fn corners_decline_or_match_msbuild() {
+    for (index, &(body, certain)) in CORNERS.iter().enumerate() {
+        let fixture = Fixture {
+            sdk_props: Vec::new(),
+            project: vec![Group::Raw(body)],
+            sdk_targets: Vec::new(),
+        };
+        let reached =
+            check_certain_implies_exact(&fixture).unwrap_or_else(|e| panic!("corner {index}: {e}"));
+        assert_eq!(
+            reached, certain,
+            "corner {index} certain={reached}, recorded {certain}:\n{body}"
+        );
+    }
 }

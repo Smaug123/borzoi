@@ -226,6 +226,108 @@ fn compile_update_compile_order_metadata_moves_existing_item() {
     assert!(!p.items_uncertain);
 }
 
+/// A compile-order `Update` matches an item by full path, ignoring case, on
+/// every host (oracle-pinned on Linux; `docs/compile-item-fidelity-plan.md`).
+/// Each spelling here names `B.fs`, and each moves it.
+#[test]
+fn compile_update_compile_order_matches_alias_and_case_spellings() {
+    for target in [
+        "./B.fs",
+        "sub/../B.fs",
+        ".\\B.fs",
+        "b.fs",
+        "/repo/proj/B.fs",
+        "/repo/x/../proj/./b.fs",
+        "../proj/B.fs",
+    ] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="./B.fs" />
+    <Compile Update="{target}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert_eq!(file_names(&p.items), ["B.fs", "A.fs"], "Update={target}");
+        assert!(
+            p.diagnostics.is_empty(),
+            "Update={target}: {:?}",
+            p.diagnostics
+        );
+        assert!(!p.items_uncertain, "Update={target}");
+    }
+}
+
+/// Case-insensitive matching moves every item the folded name covers: on a
+/// case-sensitive host `a.fs` and `A.fs` are two files, and one `Update`
+/// moves both.
+#[test]
+fn compile_update_compile_order_moves_every_case_variant() {
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Include="a.fs" />
+    <Compile Include="B.fs" />
+    <Compile Include="A.fs" />
+    <Compile Update="A.FS" CompileOrder="CompileLast" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(file_names(&p.items), ["B.fs", "a.fs", "A.fs"]);
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+}
+
+/// .NET's `OrdinalIgnoreCase` folds beyond ASCII, by tables the evaluator does
+/// not reproduce: `é.fs` matches `É.fs`, but `ı.fs` does not match `I.fs`, nor
+/// `ſ.fs` `S.fs` (oracle, Linux). So a match that would rest on folding a
+/// non-ASCII character declines rather than guessing either way. Names that
+/// differ by an ASCII character still differ, so they need no decline.
+#[test]
+fn compile_update_compile_order_declines_non_ascii_case_folding() {
+    for (include, target) in [("é.fs", "É.fs"), ("I.fs", "ı.fs"), ("S.fs", "ſ.fs")] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="{include}" />
+    <Compile Update="{target}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert!(p.items_uncertain, "{include} vs Update={target}");
+    }
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Include="é.fs" />
+    <Compile Include="é1.fs" />
+    <Compile Update="É2.fs" CompileOrder="CompileFirst" />
+    <Compile Update="é.fs" CompileOrder="CompileLast" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(file_names(&p.items), ["é1.fs", "é.fs"]);
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+}
+
+/// MSBuild compares a spelling it cannot normalise (`a:b.fs` — `:` is invalid
+/// in a Windows filename) *as written*, so `a:b.fs` and its rooted spelling
+/// are different items to an `Update`, though they name one file. The
+/// captured item has lost its written spelling, so a match there declines.
+#[test]
+fn compile_update_compile_order_declines_an_unnormalised_spelling() {
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="a:b.fs" />
+    <Compile Update="$(MSBuildProjectDirectory)/a:b.fs" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(p.items_uncertain, "{:?}", p.diagnostics);
+}
+
 #[test]
 fn compile_update_compile_order_keeps_original_order_within_bucket() {
     let src = r#"<Project>
