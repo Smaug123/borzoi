@@ -59,9 +59,20 @@ const REFERENCES: &[&str] = &[
     // Symlinks at the leaf: one to `A/A.fsproj`, one to nothing.
     "../Linked.fsproj",
     "../Dangling.fsproj",
-    // Backslashes, whose evaluated spelling depends on MSBuild's working
-    // directory.
+    // Windows spellings. MSBuild respells an `Include`'s backslashes when its
+    // first segment is a directory under MSBuild's working directory, which
+    // `.` and `..` always are; `->Exists()` then probes the respelled path.
+    // The whole spec is respelled by its first segment, so `Sub\M.fsproj`
+    // follows `..`.
     "..\\B\\B.fsproj",
+    "..\\M\\M.fsproj",
+    ".\\..\\A\\.\\A.fsproj",
+    "..\\\\B\\B.fsproj",
+    "..\\A\\A.fsproj;Sub\\M.fsproj",
+    // ... and two it does not settle: a first segment only MSBuild's working
+    // directory decides, and an escaped backslash, which is data.
+    "A\\..\\..\\B\\B.fsproj",
+    "..\\B\\B%5cx.fsproj",
     // An escaped space, naming a missing file.
     "../M/M%20x.fsproj",
     // A two-item list.
@@ -143,10 +154,13 @@ impl Space {
     fn reference(self, rng: &mut SplitMix64) -> &'static str {
         loop {
             let spec = *rng.pick(REFERENCES);
-            // Outside the domain: a respelled backslash, a wildcard (hidden
-            // without a resolver, identity-less with one), and a dangling
-            // symlink `->Exists()` cannot read.
-            let clean = !spec.contains(['\\', '*']) && !spec.contains("Dangling");
+            // Outside the domain: a backslash MSBuild's working directory or
+            // an escape decides, a wildcard (hidden without a resolver,
+            // identity-less with one), and a dangling symlink `->Exists()`
+            // cannot read.
+            let settled_spelling =
+                !spec.contains('\\') || (spec.starts_with('.') && !spec.contains("%5c"));
+            let clean = settled_spelling && !spec.contains('*') && !spec.contains("Dangling");
             if self == Space::Any || clean {
                 return spec;
             }
@@ -541,6 +555,17 @@ fn hand_picked_corners_commit_and_agree() {
             include("../M/M.fsproj"),
             remove("@(ProjectReference->Exists())"),
         ],
+        // Windows spellings, which `->Exists()` sees respelled: `..\B\B.fsproj`
+        // exists, and so `Sub\M.fsproj` is probed under the project.
+        [
+            vec![
+                include("..\\B\\B.fsproj"),
+                include("..\\M\\M.fsproj"),
+                include("..\\A\\A.fsproj;Sub\\M.fsproj"),
+            ],
+            idiom.to_vec(),
+        ]
+        .concat(),
     ];
     for ops in cases {
         let blocks = [Block::Group { gate: "", ops }];
