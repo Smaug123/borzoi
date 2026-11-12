@@ -289,11 +289,13 @@ impl Op {
 }
 
 /// A run of operations: an `<ItemGroup>` under a gate, or the `<ItemGroup>` of
-/// a `<Choose>` branch whose `<When>` we cannot decide.
+/// a `<Choose>` branch whose `<When>` we cannot decide. `runs` says whether
+/// MSBuild takes that branch: only a branch it takes puts items in its lists,
+/// so only that one can show an undecided branch's items missing from ours.
 #[derive(Debug, Clone)]
 enum Block {
     Group { gate: &'static str, ops: Vec<Op> },
-    UndecidedChoose { ops: Vec<Op> },
+    UndecidedChoose { runs: bool, ops: Vec<Op> },
 }
 
 impl Block {
@@ -302,7 +304,10 @@ impl Block {
             .map(|_| Op::generate(rng, space))
             .collect();
         match (rng.below(8), space) {
-            (0, Space::Any) => Block::UndecidedChoose { ops },
+            (0, Space::Any) => Block::UndecidedChoose {
+                runs: rng.below(2) == 0,
+                ops,
+            },
             (1, _) => Block::Group {
                 gate: space.gate(rng),
                 ops,
@@ -313,7 +318,7 @@ impl Block {
 
     fn ops(&self) -> &[Op] {
         match self {
-            Block::Group { ops, .. } | Block::UndecidedChoose { ops } => ops,
+            Block::Group { ops, .. } | Block::UndecidedChoose { ops, .. } => ops,
         }
     }
 
@@ -329,7 +334,10 @@ impl Block {
                 gate,
                 ops: keep(ops),
             },
-            Block::UndecidedChoose { ops } => Block::UndecidedChoose { ops: keep(ops) },
+            Block::UndecidedChoose { runs, ops } => Block::UndecidedChoose {
+                runs: *runs,
+                ops: keep(ops),
+            },
         }
     }
 
@@ -345,8 +353,15 @@ impl Block {
                 body(out, "    ", ops);
                 out.push_str("  </ItemGroup>\n");
             }
-            Block::UndecidedChoose { ops } => {
-                out.push_str("  <Choose>\n    <When Condition=\"'$([System.Guid]::NewGuid())' == ''\">\n      <ItemGroup>\n");
+            Block::UndecidedChoose { runs, ops } => {
+                let gate = if *runs {
+                    UNSUPPORTED_TRUE
+                } else {
+                    UNSUPPORTED_FALSE
+                };
+                out.push_str(&format!(
+                    "  <Choose>\n    <When{gate}>\n      <ItemGroup>\n"
+                ));
                 body(out, "        ", ops);
                 out.push_str("      </ItemGroup>\n    </When>\n  </Choose>\n");
             }
@@ -553,32 +568,109 @@ fn hand_picked_corners_commit_and_agree() {
 /// also compares ignoring case, so a missing reference that matches an existing
 /// one never reaches the helper, and the `Remove` never takes an existing
 /// reference.)
+///
+/// The hidden include arrives two ways: under an element gate we cannot
+/// evaluate, and in a `<Choose>` branch MSBuild takes but we cannot decide.
 #[test]
 fn a_hidden_include_cannot_hide_a_removal() {
     let mut oracle = Oracle::spawn();
-    let blocks = [Block::Group {
+    let visible_then_remove = [
+        Op::Include {
+            spec: "../a/a.fsproj",
+            gate: "",
+        },
+        Op::ExistentHelper {
+            helper: "H1",
+            gate: "",
+        },
+        Op::Remove {
+            spec: "@(H1)",
+            gate: "",
+        },
+    ];
+    let hidden = Op::Include {
+        spec: "../A/A.fsproj",
         gate: "",
-        ops: vec![
-            Op::Include {
-                spec: "../A/A.fsproj",
-                gate: UNSUPPORTED_TRUE,
+    };
+    let shapes = [
+        vec![Block::Group {
+            gate: "",
+            ops: [
+                vec![Op::Include {
+                    spec: "../A/A.fsproj",
+                    gate: UNSUPPORTED_TRUE,
+                }],
+                visible_then_remove.to_vec(),
+            ]
+            .concat(),
+        }],
+        vec![
+            Block::UndecidedChoose {
+                runs: true,
+                ops: vec![hidden],
             },
-            Op::Include {
-                spec: "../a/a.fsproj",
+            Block::Group {
                 gate: "",
-            },
-            Op::ExistentHelper {
-                helper: "H1",
-                gate: "",
-            },
-            Op::Remove {
-                spec: "@(H1)",
-                gate: "",
+                ops: visible_then_remove.to_vec(),
             },
         ],
-    }];
-    for with_resolver in [false, true] {
-        check(&mut oracle, &blocks, with_resolver);
+    ];
+    for blocks in shapes {
+        for with_resolver in [false, true] {
+            check(&mut oracle, &blocks, with_resolver);
+        }
+    }
+}
+
+/// An undecided `<Choose>` whose branch holds only items the idiom never reads
+/// — a helper of another type, whichever way MSBuild decides the branch — must
+/// leave the idiom committing: such a branch can change neither the reference
+/// list nor the helper derived from it.
+#[test]
+fn an_undecided_choose_over_unrelated_items_commits() {
+    let mut oracle = Oracle::spawn();
+    for runs in [false, true] {
+        let blocks = [
+            Block::UndecidedChoose {
+                runs,
+                ops: vec![Op::LiteralHelper {
+                    helper: "H2",
+                    spec: "../M/M.fsproj",
+                    exclude: None,
+                    tag: None,
+                }],
+            },
+            Block::Group {
+                gate: "",
+                ops: vec![
+                    Op::Include {
+                        spec: "../A/A.fsproj",
+                        gate: "",
+                    },
+                    Op::Include {
+                        spec: "../M/M.fsproj",
+                        gate: "",
+                    },
+                    Op::NonExistentHelper {
+                        helper: "H1",
+                        gate: "",
+                    },
+                    Op::Remove {
+                        spec: "@(H1)",
+                        gate: "",
+                    },
+                ],
+            },
+        ];
+        for with_resolver in [false, true] {
+            let outcome = check(&mut oracle, &blocks, with_resolver);
+            assert!(
+                outcome.committed && outcome.committed_through_a_remove,
+                "an unrelated undecided branch (runs: {runs}) declined the idiom \
+                 (resolver: {with_resolver}):\n{}",
+                project_xml(&blocks)
+            );
+        }
     }
 }
 
