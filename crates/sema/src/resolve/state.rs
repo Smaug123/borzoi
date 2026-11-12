@@ -5,8 +5,9 @@
 //! parent [`resolve`](super) module; the fields here are `pub(super)` so those
 //! impl blocks (anywhere in the `resolve` module subtree) can reach them.
 
+use crate::hash::{HashMap, HashSet};
 use crate::recovery::SyntaxRecovery;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use borzoi_cst::syntax::TextRange;
 
@@ -389,7 +390,7 @@ impl Frame {
     pub(super) fn new(entries: Vec<ScopeEntry>) -> Frame {
         let mut frame = Frame {
             entries,
-            by_name: HashMap::new(),
+            by_name: HashMap::default(),
         };
         frame.reindex();
         frame
