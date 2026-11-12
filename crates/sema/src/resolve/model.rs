@@ -603,6 +603,11 @@ pub struct ProjectItems {
     /// cross-file `Lib.Color.Red` / `open Lib; Color.Red` to the case. A latest-wins
     /// map: a later file shadows an earlier same path.
     pub(super) type_qualified_cases: HashMap<Vec<String>, (ItemId, Option<usize>)>,
+    /// The keys of [`Self::type_qualified_cases`], as a trie, so a walk can ask
+    /// about every way of completing a written path at once
+    /// ([`Self::type_qualified_case_prefix_lens`]). Written only beside the
+    /// map, by [`Self::extend_with`].
+    pub(super) type_qualified_case_paths: PathSet,
     /// Every earlier-file **type definition**'s qualified path (`["A", "Pal",
     /// "Color"]` = container + type name) → whether its **case set is fully
     /// indexed** in [`Self::type_qualified_cases`] (`false` for an abbreviation —
@@ -716,6 +721,18 @@ impl ProjectItems {
             .get(path)
             .filter(|(_, access_root_len)| accessible_from(*access_root_len, path, site))
             .map(|(id, _)| *id)
+    }
+
+    /// The lengths `k`, ascending, for which `names[..k]` followed by `written`
+    /// is a path [`Self::type_qualified_case`] holds a case at, whatever the
+    /// reference site: one walk along `names`, building no path.
+    pub(super) fn type_qualified_case_prefix_lens<'a>(
+        &'a self,
+        names: &'a [String],
+        written: &'a [String],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.type_qualified_case_paths
+            .suffix_member_prefix_lens(names, written)
     }
 
     /// Whether an earlier file exports a **type** at exactly `path`, and if so
@@ -952,20 +969,37 @@ impl ProjectItems {
         self.real_nested_modules.contains(names)
     }
 
-    /// The lengths `k` for which `names[..k]` followed by `last` is
+    /// The lengths `k` for which `names[..k]` followed by `suffix` is
+    /// [an earlier file's module header](Self::is_exact_project_module) or
+    /// [nested module](Self::is_exact_nested_module), reading each
+    /// segment of `names` once per set.
+    pub(super) fn module_suffix_prefix_lens<'a, S: AsRef<str>>(
+        &'a self,
+        names: &'a [String],
+        suffix: &'a [S],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.module_headers
+            .suffix_member_prefix_lens(names, suffix)
+            .chain(
+                self.nested_module_paths
+                    .suffix_member_prefix_lens(names, suffix),
+            )
+    }
+
+    /// The lengths `k` for which `names[..k]` followed by `suffix` is
     /// [an earlier file's module header](Self::is_exact_project_module) or
     /// [real nested module](Self::is_real_nested_module), reading each
     /// segment of `names` once per set.
-    pub(super) fn module_child_prefix_lens<'a>(
+    pub(super) fn real_module_suffix_prefix_lens<'a, S: AsRef<str>>(
         &'a self,
         names: &'a [String],
-        last: &'a str,
+        suffix: &'a [S],
     ) -> impl Iterator<Item = usize> + 'a {
         self.module_headers
-            .child_member_prefix_lens(names, last)
+            .suffix_member_prefix_lens(names, suffix)
             .chain(
                 self.real_nested_modules
-                    .child_member_prefix_lens(names, last),
+                    .suffix_member_prefix_lens(names, suffix),
             )
     }
 
@@ -1453,7 +1487,13 @@ impl ProjectItems {
             self.real_nested_modules.insert(nested);
         }
         for (path, entry) in idx.type_qualified_cases {
-            self.type_qualified_cases.insert(path, entry);
+            if self
+                .type_qualified_cases
+                .insert(path.clone(), entry)
+                .is_none()
+            {
+                self.type_qualified_case_paths.insert(path);
+            }
         }
         for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
             self.type_paths.insert(

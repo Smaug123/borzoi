@@ -1087,6 +1087,9 @@ pub struct AssemblyEnv {
     /// [`Self::extension_surface_unknowable`]). Populated by
     /// [`Self::mark_namespace_dropped_type`] (the LSP host).
     namespaces_with_dropped_types: HashSet<Vec<String>>,
+    /// Every prefix of each of [`Self::namespaces_with_dropped_types`], each
+    /// namespace itself included.
+    dropped_type_namespace_prefixes: HashSet<Vec<String>>,
 }
 
 /// The top-level type index key: namespace segments, simple name, and generic
@@ -4930,6 +4933,10 @@ impl AssemblyEnv {
     /// (the LSP), which observes the drop. `namespace` is the dropped type's
     /// enclosing namespace (empty for a root-namespace type).
     pub fn mark_namespace_dropped_type(&mut self, namespace: Vec<String>) {
+        for len in 0..=namespace.len() {
+            self.dropped_type_namespace_prefixes
+                .insert(namespace[..len].to_vec());
+        }
         self.namespaces_with_dropped_types.insert(namespace);
         // The core library is named only over a `System` with no drop.
         self.core_library = Default::default();
@@ -4969,6 +4976,12 @@ impl AssemblyEnv {
     /// unreliable. The applicability matcher's named-argument affirmation reads this.
     pub(crate) fn namespace_has_dropped_type(&self, namespace: &[String]) -> bool {
         self.namespaces_with_dropped_types.contains(namespace)
+    }
+
+    /// Whether `path` is a prefix of (or is) a namespace a referenced assembly
+    /// dropped a type in ([`Self::namespace_has_dropped_type`]).
+    pub(crate) fn prefixes_a_dropped_type_namespace(&self, path: &[String]) -> bool {
+        self.dropped_type_namespace_prefixes.contains(path)
     }
 
     /// Whether any referenced assembly dropped an undecodable type, anywhere.

@@ -92,20 +92,25 @@ impl PathSet {
         self.member_prefix_lens(path).any(|len| len == path.len())
     }
 
-    /// The lengths `k`, ascending, for which `names[..k]` followed by `child`
+    /// The lengths `k`, ascending, for which `names[..k]` followed by `suffix`
     /// is a member: a question about every prefix of `names` that reads each
-    /// of its segments once.
-    pub(super) fn child_member_prefix_lens<'a>(
+    /// of its segments once, and from each prefix the trie holds, reads
+    /// `suffix` only as far as the trie holds it. Nothing is built: no prefix
+    /// of `names` is copied or joined to `suffix`.
+    pub(super) fn suffix_member_prefix_lens<'a, S: AsRef<str>>(
         &'a self,
         names: &'a [String],
-        child: &'a str,
+        suffix: &'a [S],
     ) -> impl Iterator<Item = usize> + 'a {
         self.prefix_nodes(names)
             .enumerate()
             .filter(move |&(_, node)| {
-                self.nodes[node]
-                    .get(child)
-                    .is_some_and(|&c| self.members[c] > 0)
+                suffix
+                    .iter()
+                    .try_fold(node, |node, seg| {
+                        self.nodes[node].get(seg.as_ref()).copied()
+                    })
+                    .is_some_and(|end| self.members[end] > 0)
             })
             .map(|(len, _)| len)
     }
@@ -231,13 +236,14 @@ mod tests {
                 for q in &queries {
                     let under = |p: &&Vec<String>| q.starts_with(p.as_slice());
                     prop_assert_eq!(set.contains(q), model.iter().any(|p| p == q));
-                    for child in ["A", "B"] {
+                    for suffix in &queries {
                         prop_assert_eq!(
-                            set.child_member_prefix_lens(q, child).collect::<Vec<_>>(),
+                            set.suffix_member_prefix_lens(q, suffix).collect::<Vec<_>>(),
                             (0..=q.len())
                                 .filter(|&k| model.iter().any(|p| {
-                                    p.split_last()
-                                        .is_some_and(|(l, init)| l == child && init == &q[..k])
+                                    p.len() == k + suffix.len()
+                                        && p[..k] == q[..k]
+                                        && p[k..] == suffix[..]
                                 }))
                                 .collect::<Vec<_>>()
                         );
