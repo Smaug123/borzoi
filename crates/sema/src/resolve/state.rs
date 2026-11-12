@@ -1094,9 +1094,10 @@ pub(super) struct Resolver<'a> {
     /// because an anonymous-root file's cases have no export, and still reach a
     /// sibling module through `A.U.X`.
     pub(super) case_repr_roots: HashMap<DefId, Vec<String>>,
-    /// The **complete declared-name view of each container** — keyed like
-    /// [`Self::type_defs`], mapping each declared name to the namespaces it occupies
-    /// ([`DeclKinds`]). Populated from the same declaration walk that fills
+    /// The **complete declared-name view of each container** — keyed by the
+    /// container's [`ContainerId`], like [`Self::type_defs`], mapping each
+    /// declared name to the namespaces it occupies ([`DeclKinds`]); read by
+    /// path through [`declared_in`](Self::declared_in). Populated from the same declaration walk that fills
     /// `type_defs` / `type_cases` / `module_like_names` / the value frames, one mark
     /// per declaration ([`mark_decl`](Self::mark_decl)). Unlike those partial indices
     /// (and unlike `by_qualified_path`, which omits anonymous-root nested members),
@@ -1105,7 +1106,7 @@ pub(super) struct Resolver<'a> {
     /// ([`classify_same_file_module_qualified_case`](Self::classify_same_file_module_qualified_case))
     /// can decide a head/segment with *certainty* — emit only when unambiguous, defer
     /// on any contention (Gap A of `docs/type-qualified-case-prefix-plan.md`).
-    pub(super) container_decls: HashMap<Vec<String>, HashMap<String, DeclKinds>>,
+    pub(super) container_decls: HashMap<ContainerId, HashMap<String, DeclKinds>>,
     /// In-file **type-qualified cases**, keyed by enclosing container path then by
     /// *type* name then by case name → the case's defining binder. Holds every
     /// `enum` case **and** every union case (`[<RequireQualifiedAccess>]` or not),
@@ -1194,9 +1195,12 @@ pub(super) struct Resolver<'a> {
     pub(super) assemblies: &'a AssemblyEnv,
     /// Project-global id of this file's first item (the `preceding` count).
     pub(super) item_base: u32,
-    /// Dotted path of the module currently being walked (`["Shared"]`), used to
-    /// qualify exports. `None` inside an anonymous module.
-    pub(super) module_path: Option<Vec<String>>,
+    /// Whether the container being walked is a module whose path qualifies
+    /// its exports: a `module` header, or a nested module under a real root.
+    /// That path is then [`Self::container_path`], read through
+    /// [`module_path`](Self::module_path); a flag rather than a copy, since a
+    /// copy per nested module is quadratic in the nesting depth.
+    pub(super) in_exporting_module: bool,
     /// Dotted path of the enclosing *container* — the `module`/`namespace`
     /// header's `longId` (`["Demo"]` for `namespace Demo` as well as for
     /// `module Demo`; empty for an anonymous module or `namespace global`).

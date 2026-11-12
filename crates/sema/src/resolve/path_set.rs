@@ -92,6 +92,24 @@ impl PathSet {
         self.member_prefix_lens(path).any(|len| len == path.len())
     }
 
+    /// The lengths `k`, ascending, for which `names[..k]` followed by `child`
+    /// is a member: a question about every prefix of `names` that reads each
+    /// of its segments once.
+    pub(super) fn child_member_prefix_lens<'a>(
+        &'a self,
+        names: &'a [String],
+        child: &'a str,
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.prefix_nodes(names)
+            .enumerate()
+            .filter(move |&(_, node)| {
+                self.nodes[node]
+                    .get(child)
+                    .is_some_and(|&c| self.members[c] > 0)
+            })
+            .map(|(len, _)| len)
+    }
+
     /// Whether some member is a prefix of `names` (`names` itself and the empty
     /// path included).
     pub(super) fn has_prefix_of(&self, names: &[String]) -> bool {
@@ -213,6 +231,17 @@ mod tests {
                 for q in &queries {
                     let under = |p: &&Vec<String>| q.starts_with(p.as_slice());
                     prop_assert_eq!(set.contains(q), model.iter().any(|p| p == q));
+                    for child in ["A", "B"] {
+                        prop_assert_eq!(
+                            set.child_member_prefix_lens(q, child).collect::<Vec<_>>(),
+                            (0..=q.len())
+                                .filter(|&k| model.iter().any(|p| {
+                                    p.split_last()
+                                        .is_some_and(|(l, init)| l == child && init == &q[..k])
+                                }))
+                                .collect::<Vec<_>>()
+                        );
+                    }
                     prop_assert_eq!(set.has_prefix_of(q), model.iter().any(|p| under(&p)));
                     prop_assert_eq!(
                         set.has_nonempty_prefix_of(q),

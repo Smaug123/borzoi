@@ -21,6 +21,9 @@ use super::state::{
     TieredResolution,
 };
 
+#[cfg(test)]
+mod head_contest_reference;
+
 /// The part of a qualified case path after its head — `B….Color.Red` of
 /// `Alpha.B….Color.Red` — as the same-file candidate walk reads it
 /// ([`Resolver::classify_module_qualified_residual`]).
@@ -4051,9 +4054,8 @@ impl<'a> Resolver<'a> {
     /// reference (`List.fold` inside `namespace N` / `module List`) is
     /// [`Self::self_qualified_member_path`].
     pub(super) fn rooted_at_current_module(&self, names: &[String]) -> bool {
-        self.module_path.as_ref().is_some_and(|mp| {
-            !mp.is_empty() && mp.len() <= names.len() && names.starts_with(mp.as_slice())
-        })
+        self.module_path()
+            .is_some_and(|mp| !mp.is_empty() && mp.len() <= names.len() && names.starts_with(mp))
     }
 
     /// If `names` is an enclosing-module **self-qualifier**, the full
@@ -4511,7 +4513,11 @@ impl<'a> Resolver<'a> {
         let root_tier: &[usize] = &[0];
         for k in relative.chain(root_tier.iter().copied()) {
             let parent = &self.container_path[..k];
-            let Some(&kinds) = self.container_decls.get(parent).and_then(|d| d.get(head)) else {
+            let Some(&kinds) = self
+                .container_decls
+                .get(&self.container_path.prefix_id(k))
+                .and_then(|d| d.get(head))
+            else {
                 continue; // nothing named `Pal` here — next container outward
             };
             if !kinds.stops_dotted_head(in_pattern) {
@@ -4714,7 +4720,7 @@ impl<'a> Resolver<'a> {
             // target is declared): the target is not a clean module head there,
             // so decline to emit through it — defer, never fall through (the
             // open still outranks whatever ranks below).
-            if let Some(&kinds) = self.container_decls.get(prefix).and_then(|d| d.get(head))
+            if let Some(&kinds) = self.declared_in(prefix).and_then(|d| d.get(head))
                 && !kinds.is_clean_module_head(in_pattern)
             {
                 return Some(SameFileQualified::DeferStop);
@@ -4737,7 +4743,7 @@ impl<'a> Resolver<'a> {
             && !self.preceding.is_namespace(&full)
             && !self.assemblies.has_namespace(&full)
         {
-            if let Some(&kinds) = self.container_decls.get(prefix).and_then(|d| d.get(head))
+            if let Some(&kinds) = self.declared_in(prefix).and_then(|d| d.get(head))
                 && !kinds.is_clean_module_head(in_pattern)
                 && kinds.stops_dotted_head(in_pattern)
             {
@@ -4803,11 +4809,7 @@ impl<'a> Resolver<'a> {
             // merged multi-file view is not modeled. Probe CF9 (a same-file
             // `type Color` without the member) shows FCS can still backtrack
             // past it, so this only over-defers, never mis-targets.
-            if self
-                .container_decls
-                .get(&full)
-                .is_some_and(|d| d.contains_key(seg))
-            {
+            if self.declared_in(&full).is_some_and(|d| d.contains_key(seg)) {
                 return Some(SameFileQualified::DeferStop);
             }
             let mut ty_path = full.clone();
@@ -4943,11 +4945,7 @@ impl<'a> Resolver<'a> {
             return self
                 .classify_module_qualified_segment(path, res.ty, res.case, in_pattern, use_pos);
         };
-        let kinds = self
-            .container_decls
-            .get(&path)
-            .and_then(|d| d.get(seg))
-            .copied();
+        let kinds = self.declared_in(&path).and_then(|d| d.get(seg)).copied();
         let private_reachable = self.container_path.starts_with(&path);
         let mut next = path;
         next.push(seg.clone());
@@ -5014,8 +5012,7 @@ impl<'a> Resolver<'a> {
         qualifier.extend(res.mids.iter().cloned());
         let block_header = &self.container_path[..self.block_container_len];
         let root_module = self
-            .container_decls
-            .get(&[][..])
+            .declared_in(&[][..])
             .and_then(|d| d.get(head))
             .is_some_and(|k| k.module || k.alias);
         let incomplete = root_module
@@ -5129,8 +5126,7 @@ impl<'a> Resolver<'a> {
             !p.is_empty()
                 && reaches(p)
                 && self
-                    .container_decls
-                    .get(p)
+                    .declared_in(p)
                     .and_then(|d| d.get(head))
                     .is_some_and(|k| k.module || k.alias)
         })
@@ -5175,8 +5171,7 @@ impl<'a> Resolver<'a> {
         use_pos: TextSize,
     ) -> Option<SameFileQualified> {
         let seg = self
-            .container_decls
-            .get(&module_path)
+            .declared_in(&module_path)
             .and_then(|d| d.get(ty))
             .copied()
             .unwrap_or_default();
@@ -5278,11 +5273,7 @@ impl<'a> Resolver<'a> {
         }
         let mut companion_path = module_path;
         companion_path.push(ty.to_string());
-        match self
-            .container_decls
-            .get(&companion_path)
-            .and_then(|d| d.get(case))
-        {
+        match self.declared_in(&companion_path).and_then(|d| d.get(case)) {
             Some(k) if !in_pattern && k.value => {
                 // An expression-position companion `let` value is what the
                 // qualified-value branch resolves — delegate via `Miss`. But a
@@ -6185,20 +6176,57 @@ impl<'a> Resolver<'a> {
     /// Conservative in the safe direction throughout: `false` keeps the caller's
     /// pre-existing defer.
     fn module_like_transparent_for(&self, prefix: &[String], name: &str, member: &str) -> bool {
-        let mut mp = prefix.to_vec();
-        mp.push(name.to_string());
-        if self.container_path.starts_with(&mp) {
-            return true;
-        }
+        let encloses = self.container_path.starts_with(prefix)
+            && self
+                .container_path
+                .get(prefix.len())
+                .is_some_and(|s| s == name);
+        let transparent = encloses
+            || self.module_like_transparent_beside(prefix, self.declared_in(prefix), name, member);
+        #[cfg(test)]
+        assert_eq!(
+            transparent,
+            self.reference_module_like_transparent_for(prefix, name, member),
+            "module_like_transparent_for({prefix:?}, {name}, {member})"
+        );
+        transparent
+    }
+
+    /// [`Self::module_like_transparent_for`] at the enclosing container
+    /// `self.container_path[..k]`, whose declarations are found by its
+    /// interned id rather than a walk of its path. Only a container that
+    /// declares a module `name` beside the walk's own path has that module's
+    /// path built.
+    fn enclosing_module_like_transparent_for(&self, k: usize, name: &str, member: &str) -> bool {
+        self.container_path.get(k).is_some_and(|s| s == name)
+            || self.module_like_transparent_beside(
+                &self.container_path[..k],
+                self.container_decls.get(&self.container_path.prefix_id(k)),
+                name,
+                member,
+            )
+    }
+
+    /// [`Self::module_like_transparent_for`] for a `name` that is not the
+    /// current container or one enclosing it, given what `prefix` declares.
+    fn module_like_transparent_beside(
+        &self,
+        prefix: &[String],
+        declared: Option<&std::collections::HashMap<String, super::state::DeclKinds>>,
+        name: &str,
+        member: &str,
+    ) -> bool {
         if self.recursive_module_active {
             return false;
         }
-        let Some(&kinds) = self.container_decls.get(prefix).and_then(|d| d.get(name)) else {
+        let Some(&kinds) = declared.and_then(|d| d.get(name)) else {
             return false;
         };
         if !kinds.module || kinds.alias {
             return false;
         }
+        let mut mp = prefix.to_vec();
+        mp.push(name.to_string());
         if self.preceding.is_exact_project_module(&mp)
             || self.preceding.is_exact_nested_module(&mp)
             || self.is_project_namespace_path(&mp)
@@ -6208,8 +6236,7 @@ impl<'a> Resolver<'a> {
             return false;
         }
         !self
-            .container_decls
-            .get(&mp)
+            .declared_in(&mp)
             .is_some_and(|d| d.contains_key(member))
     }
 
@@ -6740,61 +6767,69 @@ impl<'a> Resolver<'a> {
     fn head_contested_by_project_module(&self, head: &SyntaxToken, residual: &SyntaxToken) -> bool {
         let head = &*id_text(head);
         let residual = &*id_text(residual);
-        let relative = (self.namespace_depth.max(1)..=self.container_path.len()).rev();
-        let root_tier: &[usize] = &[0];
-        let written = relative
-            .chain(root_tier.iter().copied())
-            .map(|k| self.container_path[..k].to_vec());
-        let opened = self
-            .explicit_open_prefixes
-            .iter()
-            .map(|(_, prefix)| prefix.clone());
-        for prefix in written.chain(opened) {
-            // A *same-file* module that provably cannot own `residual` does not
-            // contest either: F# backtracks past it to the lexical type, so
-            // standing down would hand the residual to a cross-file case
-            // (FCS-probed, `companion_module_case_matrix` — the `type Kind` +
-            // companion `module Kind` shape).
-            if self.module_like_transparent_for(&prefix, head, residual) {
-                continue;
-            }
-            let mut path = prefix;
-            path.push(head.to_string());
-            // The current container (or an ancestor) does not contest: a
-            // module's own name is not in scope as a head within itself — the
-            // FS0039 own-name rule the candidate walk applies (`module Color;
-            // type Color = Red = 0 …; Color.Red` binds the enum case, probe
-            // M17, codex round 3).
-            if self.container_path.starts_with(&path) {
-                continue;
-            }
-            // ONLY real modules contest — same-file headers +
-            // `real_nested_module_exports`, cross-file module headers + real
-            // nested modules. Everything else a completion could hold is
-            // deliberately absent, because standing down is not a defer here
-            // (the fall-through can EMIT through the cross-file machinery), so
-            // over-inclusion produces wrong targets or lost resolutions:
-            // - NAMESPACES cannot own a 2-segment *expression* residual at all
-            //   (values never live directly under one) — FCS backtracks to the
-            //   lexical type (probe M18, codex round 4).
-            // - The conflated name-shadow set holds cross-file TYPES (via
-            //   `namespace global` even at root completions) — a cross-file
-            //   type never outranks the lexical type (the CF12/CF13 principle;
-            //   probe M19, codex round 5: vetoing here handed the residual to
-            //   an earlier file's same-written-path case, a wrong target),
-            //   cross-file module ALIASES (file-private to FCS, probe CF10 —
-            //   they must not contest), and `extern`s (a value cannot own the
-            //   residual: member access on it commits and errors, probe M9's
-            //   principle — no legal contest exists).
-            if self.module_paths.contains(&path)
-                || self.real_nested_module_exports.contains(&path)
-                || self.preceding.is_exact_project_module(&path)
-                || self.preceding.is_real_nested_module(&path)
-            {
-                return true;
-            }
-        }
-        false
+        // ONLY real modules contest — same-file headers +
+        // `real_nested_module_exports`, cross-file module headers + real
+        // nested modules. Everything else a completion could hold is
+        // deliberately absent, because standing down is not a defer here
+        // (the fall-through can EMIT through the cross-file machinery), so
+        // over-inclusion produces wrong targets or lost resolutions:
+        // - NAMESPACES cannot own a 2-segment *expression* residual at all
+        //   (values never live directly under one) — FCS backtracks to the
+        //   lexical type (probe M18, codex round 4).
+        // - The conflated name-shadow set holds cross-file TYPES (via
+        //   `namespace global` even at root completions) — a cross-file
+        //   type never outranks the lexical type (the CF12/CF13 principle;
+        //   probe M19, codex round 5: vetoing here handed the residual to
+        //   an earlier file's same-written-path case, a wrong target),
+        //   cross-file module ALIASES (file-private to FCS, probe CF10 —
+        //   they must not contest), and `extern`s (a value cannot own the
+        //   residual: member access on it commits and errors, probe M9's
+        //   principle — no legal contest exists).
+        //
+        // And a module that is transparent for `residual`
+        // ([`Self::module_like_transparent_for`]) does not contest: the
+        // current container or an ancestor, since a module's own name is not
+        // in scope as a head within itself — the FS0039 own-name rule the
+        // candidate walk applies (`module Color; type Color = Red = 0 …;
+        // Color.Red` binds the enum case, probe M17, codex round 3) — or a
+        // *same-file* module that provably cannot own `residual`, since F#
+        // backtracks past it to the lexical type, and standing down would
+        // hand the residual to a cross-file case (FCS-probed,
+        // `companion_module_case_matrix` — the `type Kind` + companion
+        // `module Kind` shape).
+        //
+        // The written completions are the enclosing containers
+        // `container_path[..k]` (`k >= namespace_depth`, and the root). The
+        // module sets' tries are asked about all of them in one walk along
+        // the container path, so a head under `d` nested modules costs `d`
+        // probes, not `d` copies and hashes of paths up to `d` long.
+        let path = &self.container_path[..];
+        let written = |k: usize| k == 0 || (self.namespace_depth.max(1)..=path.len()).contains(&k);
+        let contests_written = self
+            .module_paths
+            .child_member_prefix_lens(path, head)
+            .chain(
+                self.real_nested_module_exports
+                    .child_member_prefix_lens(path, head),
+            )
+            .chain(self.preceding.module_child_prefix_lens(path, head))
+            .filter(|&k| written(k))
+            .any(|k| !self.enclosing_module_like_transparent_for(k, head, residual));
+        let contested = contests_written
+            || self.explicit_open_prefixes.iter().any(|(_, prefix)| {
+                if self.module_like_transparent_for(prefix, head, residual) {
+                    return false;
+                }
+                let mut path = prefix.clone();
+                path.push(head.to_string());
+                self.module_paths.contains(&path)
+                    || self.real_nested_module_exports.contains(&path)
+                    || self.preceding.is_exact_project_module(&path)
+                    || self.preceding.is_real_nested_module(&path)
+            });
+        #[cfg(test)]
+        self.check_head_contested(head, residual, contested);
+        contested
     }
 
     /// The emit target for member `name` of the type `ty` declared in
