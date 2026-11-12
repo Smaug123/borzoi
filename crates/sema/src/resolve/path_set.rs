@@ -8,7 +8,7 @@
 //! question afresh costs time quadratic in the path's length (its
 //! `type_long_ident`). A trie reads each segment of the question once.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 /// A trie node's index in [`PathSet::nodes`]. The root is [`ROOT`].
 type NodeId = usize;
@@ -38,7 +38,7 @@ impl Default for PathSet {
     fn default() -> Self {
         PathSet {
             log: Vec::new(),
-            nodes: vec![HashMap::new()],
+            nodes: vec![HashMap::default()],
             members: vec![0],
         }
     }
@@ -58,7 +58,7 @@ impl PathSet {
                 Some(&child) => child,
                 None => {
                     let child = self.nodes.len();
-                    self.nodes.push(HashMap::new());
+                    self.nodes.push(HashMap::default());
                     self.members.push(0);
                     self.nodes[node].insert(seg.clone(), child);
                     child
@@ -90,6 +90,29 @@ impl PathSet {
     /// Whether `path` itself is a member.
     pub(super) fn contains(&self, path: &[String]) -> bool {
         self.member_prefix_lens(path).any(|len| len == path.len())
+    }
+
+    /// The lengths `k`, ascending, for which `names[..k]` followed by `suffix`
+    /// is a member: a question about every prefix of `names` that reads each
+    /// of its segments once, and from each prefix the trie holds, reads
+    /// `suffix` only as far as the trie holds it. Nothing is built: no prefix
+    /// of `names` is copied or joined to `suffix`.
+    pub(super) fn suffix_member_prefix_lens<'a, S: AsRef<str>>(
+        &'a self,
+        names: &'a [String],
+        suffix: &'a [S],
+    ) -> impl Iterator<Item = usize> + 'a {
+        self.prefix_nodes(names)
+            .enumerate()
+            .filter(move |&(_, node)| {
+                suffix
+                    .iter()
+                    .try_fold(node, |node, seg| {
+                        self.nodes[node].get(seg.as_ref()).copied()
+                    })
+                    .is_some_and(|end| self.members[end] > 0)
+            })
+            .map(|(len, _)| len)
     }
 
     /// Whether some member is a prefix of `names` (`names` itself and the empty
@@ -213,6 +236,18 @@ mod tests {
                 for q in &queries {
                     let under = |p: &&Vec<String>| q.starts_with(p.as_slice());
                     prop_assert_eq!(set.contains(q), model.iter().any(|p| p == q));
+                    for suffix in &queries {
+                        prop_assert_eq!(
+                            set.suffix_member_prefix_lens(q, suffix).collect::<Vec<_>>(),
+                            (0..=q.len())
+                                .filter(|&k| model.iter().any(|p| {
+                                    p.len() == k + suffix.len()
+                                        && p[..k] == q[..k]
+                                        && p[k..] == suffix[..]
+                                }))
+                                .collect::<Vec<_>>()
+                        );
+                    }
                     prop_assert_eq!(set.has_prefix_of(q), model.iter().any(|p| under(&p)));
                     prop_assert_eq!(
                         set.has_nonempty_prefix_of(q),

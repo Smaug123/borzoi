@@ -178,13 +178,28 @@ fn a_hidden_include_makes_the_derived_helper_inexact() {
 }
 
 #[test]
-fn a_backslash_spelling_declines_the_exists_probe() {
-    // MSBuild rewrites backslashes in an evaluated value only when the first
-    // path segment exists relative to its working directory, so which path
-    // `->Exists()` probes is environment-dependent. We decline.
-    let (_tmp, _root, parsed) = layout(&format!(
+fn a_windows_spelling_under_a_parent_segment_is_probed_as_msbuild_respells_it() {
+    // MSBuild respells `..\A\A.fsproj` to `../A/A.fsproj` whatever its
+    // working directory, since `..` is a directory under any of them.
+    let (_tmp, root, parsed) = layout(&format!(
         r#"  <ItemGroup>
     <ProjectReference Include="..\A\A.fsproj" />
+    <ProjectReference Include=".\..\M\M.fsproj" />
+  </ItemGroup>
+{NON_EXISTENT_IDIOM}"#
+    ));
+    assert!(!parsed.project_references_uncertain, "{parsed:#?}");
+    assert_eq!(references(&parsed), vec![root.join("A/A.fsproj")]);
+}
+
+#[test]
+fn a_backslash_spelling_that_turns_on_the_working_directory_declines() {
+    // `A\..\..\A\A.fsproj` is respelled only when `A/` exists under
+    // MSBuild's working directory, so which path `->Exists()` probes is not
+    // the project's to say.
+    let (_tmp, _root, parsed) = layout(&format!(
+        r#"  <ItemGroup>
+    <ProjectReference Include="A\..\..\A\A.fsproj" />
   </ItemGroup>
 {NON_EXISTENT_IDIOM}"#
     ));
@@ -208,6 +223,65 @@ fn a_helper_in_an_undecided_choose_branch_cannot_be_read_as_empty() {
     <ProjectReference Remove="@(Dropped)" />
   </ItemGroup>"#,
     );
+    assert!(parsed.project_references_uncertain);
+}
+
+#[test]
+fn an_undecided_choose_holding_other_items_leaves_the_idiom_exact() {
+    // Neither branch can touch `ProjectReference` or the helper the idiom
+    // derives from it, so the Remove reads a list we know exactly.
+    for branch in [
+        r#"<None Include="../A/A.fsproj" />"#,
+        r#"<Compile Include="A.fs" />"#,
+        r#"<Unrelated Include="../M/M.fsproj" />"#,
+    ] {
+        let (_tmp, root, parsed) = layout(&format!(
+            r#"  <Choose>
+    <When Condition="'$([System.Guid]::NewGuid())' != ''">
+      <ItemGroup>
+        {branch}
+      </ItemGroup>
+    </When>
+  </Choose>
+  <ItemGroup>
+    <ProjectReference Include="../A/A.fsproj" />
+    <ProjectReference Include="../M/M.fsproj" />
+  </ItemGroup>
+{NON_EXISTENT_IDIOM}"#
+        ));
+        assert!(
+            !parsed.project_references_uncertain,
+            "{branch}: diags {:?}",
+            parsed.diagnostics
+        );
+        assert_eq!(references(&parsed), vec![root.join("A/A.fsproj")]);
+    }
+}
+
+#[test]
+fn a_reference_include_in_an_undecided_choose_makes_a_derived_remove_decline() {
+    // MSBuild runs this branch (the GUID is never empty). Alone it is a missed
+    // reference. Read through the idiom it leaves the derived helper
+    // incomplete: on a case-sensitive filesystem `../a/A.fsproj` is missing,
+    // and its removal — by path, ignoring case — takes the captured
+    // `../A/A.fsproj` with it. The guard is held here on any filesystem.
+    let branch = r#"  <Choose>
+    <When Condition="'$([System.Guid]::NewGuid())' != ''">
+      <ItemGroup>
+        <ProjectReference Include="../a/A.fsproj" />
+      </ItemGroup>
+    </When>
+  </Choose>"#;
+    let captured = r#"  <ItemGroup>
+    <ProjectReference Include="../A/A.fsproj" />
+  </ItemGroup>"#;
+    let alone = layout(&format!("{captured}\n{branch}")).2;
+    assert!(
+        !alone.project_references_uncertain,
+        "diags: {:?}",
+        alone.diagnostics
+    );
+    let (_tmp, _root, parsed) = layout(&format!("{captured}\n{branch}\n{NON_EXISTENT_IDIOM}"));
     assert!(parsed.project_references_uncertain);
 }
 

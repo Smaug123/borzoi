@@ -1,7 +1,5 @@
 //! Expression and pattern name resolution.
 
-use std::collections::HashSet;
-
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{
     AppExpr, AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken, TypeAppExpr,
@@ -9,6 +7,7 @@ use borzoi_cst::syntax::{
 
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
+use crate::hash::HashSet;
 
 use super::id_text;
 use super::model::{DeclineCause, DeclineSite, DeferredReason, Resolution};
@@ -788,7 +787,7 @@ impl<'a> Resolver<'a> {
         }
         let mut entries = Vec::new();
         for element in &elements {
-            for pat_name in pattern_names(element, BinderRole::Param, &HashSet::new()) {
+            for pat_name in pattern_names(element, BinderRole::Param, &HashSet::default()) {
                 let PatternName::Binder(def) = pat_name else {
                     continue;
                 };

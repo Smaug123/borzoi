@@ -27,6 +27,22 @@ fn spec_fragments(spec: &Escaped) -> impl Iterator<Item = &str> {
         .filter(|s| !s.is_empty())
 }
 
+/// An expanded `Include` as MSBuild spells it before splitting it into items
+/// ([`item_spec::include_spelling`]): on Unix, a Windows-authored
+/// `..\X\X.fsproj` becomes `../X/X.fsproj`. Where that spelling turns on
+/// MSBuild's working directory, the expansion is kept as is, and the backslash
+/// it keeps is what tells an identity's consumers that they cannot know which
+/// path MSBuild holds.
+///
+/// The respelling rewrites separators only, in the escaped domain, as MSBuild
+/// does: an escaped `%5c` stays data.
+fn msbuild_spelling(raw: &str, expanded: &Escaped) -> Escaped {
+    match item_spec::include_spelling(raw, expanded.as_escaped()) {
+        Some(std::borrow::Cow::Owned(respelled)) => Escaped::from_xml(respelled),
+        Some(std::borrow::Cow::Borrowed(_)) | None => expanded.clone(),
+    }
+}
+
 /// A fragment at its point of use: unescaped exactly once, giving the identity
 /// MSBuild records (an `Include="a%20b.fs"` names the file `a b.fs`).
 fn fragment_identity(fragment: &str) -> String {
@@ -647,15 +663,103 @@ fn reference_gate_may_run(node: Node<'_, '_>, state: &State<'_>) -> bool {
     }
 }
 
-/// Whether an `<ItemGroup>` (e.g. an undecided `<Choose>` branch's) contains
-/// a `<ProjectReference Update/Remove>` child. Purely structural — inside an
-/// undecided branch the property table the child's own `Condition` would
-/// read is itself unsettled, so no gate there is trustworthy.
-pub(super) fn item_group_contains_project_reference_mutation(node: Node<'_, '_>) -> bool {
-    node.children().filter(Node::is_element).any(|child| {
-        modelled_item_kind_for_element(child) == Some(ItemKind::ProjectReference)
-            && (child.attribute("Update").is_some() || child.attribute("Remove").is_some())
-    })
+/// What the `<ItemGroup>`s of an undecided `<Choose>`'s still-possible
+/// branches could do to the item table, by item type.
+///
+/// Items are pass-3 content: they write no property, so the only lists such a
+/// branch can disturb are those of the item types it names, and each is
+/// answered on its own axis by [`Self::apply`]. Purely structural — the
+/// children's own `Condition`s are not consulted, since a branch that may or
+/// may not run gives no gate inside it a settled meaning, and an operation
+/// that cannot change its list (a metadata-only `Update`) is counted all the
+/// same.
+#[derive(Debug, Default)]
+pub(super) struct UndecidedChooseItems {
+    /// A `Compile`/`CompileBefore`/`CompileAfter` operation.
+    compile: bool,
+    /// A package-affecting item ([`package_item_kind_for_name`]).
+    package: bool,
+    /// A `<ProjectReference Include>`: at worst a missed reference, but the
+    /// list is then incomplete for anything derived from it.
+    project_reference_include: bool,
+    /// Any other `<ProjectReference>` operation, which may falsify references
+    /// already captured.
+    project_reference_mutation: bool,
+    /// Every other item type named, as spelled.
+    helper_item_types: Vec<String>,
+}
+
+impl UndecidedChooseItems {
+    /// Record each item operation in `group`.
+    pub(super) fn note_item_group(&mut self, group: Node<'_, '_>) {
+        for child in group.children().filter(Node::is_element) {
+            match modelled_item_kind_for_element(child) {
+                Some(ItemKind::ProjectReference) => {
+                    let plain_include = child.attribute("Include").is_some()
+                        && child.attribute("Update").is_none()
+                        && child.attribute("Remove").is_none();
+                    if plain_include {
+                        self.project_reference_include = true;
+                    } else {
+                        self.project_reference_mutation = true;
+                    }
+                }
+                Some(ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter) => {
+                    self.compile = true;
+                }
+                None if package_item_kind_for_element(child).is_some() => self.package = true,
+                None => self
+                    .helper_item_types
+                    .push(child.tag_name().name().to_string()),
+            }
+        }
+    }
+
+    /// Mark every item list a recorded operation could reach as untrustworthy,
+    /// and nothing else. `span` is the `<Choose>`'s.
+    ///
+    /// The Compile axis keeps the SDK tolerance of
+    /// [`State::mark_structural_skip_respecting_sdk_compile_tolerance`]; the
+    /// package axis has none, as everywhere.
+    pub(super) fn apply(self, span: Range<usize>, state: &mut State<'_>) {
+        if self.compile {
+            for kind in [
+                ItemKind::Compile,
+                ItemKind::CompileBefore,
+                ItemKind::CompileAfter,
+            ] {
+                state.mark_untracked_item_list(modelled_item_type(kind));
+            }
+            if !state.in_sdk_subtree {
+                state.items_uncertain = true;
+                state.record_compile_item_uncertainty(
+                    CompileItemUncertaintyCauseKind::Structural(
+                        StructuralCompileItemUncertainty::UnsupportedChoose,
+                    ),
+                    span.clone(),
+                );
+            }
+        }
+        if self.package {
+            state.package_references_uncertain = true;
+            state.record_package_reference_uncertainty(
+                PackageReferenceUncertaintyCauseKind::Structural(
+                    StructuralPackageReferenceUncertainty::UnsupportedChoose,
+                ),
+                span,
+            );
+        }
+        if self.project_reference_include || self.project_reference_mutation {
+            state.mark_untracked_item_list(modelled_item_type(ItemKind::ProjectReference));
+            state.project_reference_includes_hidden = true;
+        }
+        if self.project_reference_mutation {
+            state.project_references_uncertain = true;
+        }
+        for item_type in &self.helper_item_types {
+            state.taint_item_list(item_type);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -900,21 +1004,16 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
     // in the real build, so the captured edge may be phantom. Flag rather
     // than drop: the declared-structure walk keeps the element.
     taint_reference_list_on_untrusted_value(kind, include, &expansion, state);
+    let spelled = msbuild_spelling(include, &expansion.value);
     match state.glob_resolver {
         None => {
-            for entry in spec_fragments(&expansion.value) {
+            for entry in spec_fragments(&spelled) {
                 push_include_entry(node, kind, placement, entry, &metadata, state);
             }
         }
         Some(resolver) => {
             route_item_through_resolver(
-                node,
-                kind,
-                placement,
-                &expansion.value,
-                &metadata,
-                resolver,
-                state,
+                node, kind, placement, &spelled, &metadata, resolver, state,
             );
         }
     }
@@ -1029,8 +1128,9 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
         return;
     };
     let metadata = read_generic_item_metadata(node, state);
+    let spelled = msbuild_spelling(include, &expansion.value);
     let mut captured: Vec<EvaluatedItem> = Vec::new();
-    for fragment in spec_fragments(&expansion.value) {
+    for fragment in spec_fragments(&spelled) {
         // `@(Type)` / `@(Type->Exists())` copies the referenced items, metadata
         // and all, with this element's own metadata applied on top.
         if let Some(expression) = parse_item_expression(fragment) {
@@ -1288,10 +1388,10 @@ fn evaluate_item_expression(
 /// pass, when we know them exactly — every item, each under MSBuild's
 /// identity. `None` otherwise.
 ///
-/// Nothing is exact once the walk is opaque: a file we never entered, or a
-/// `<Choose>` branch we could not decide, could hold items of any type. Beyond
-/// that, a helper list is exact unless something tainted it or left it
-/// untracked, and `<ProjectReference>` is exact when its list is trusted, no
+/// Nothing is exact once the walk is opaque: a file we never entered could
+/// hold items of any type. Beyond that, a helper list is exact unless
+/// something tainted it (a `<Choose>` branch we could not decide, say) or left
+/// it untracked, and `<ProjectReference>` is exact when its list is trusted, no
 /// `Include` went uncaptured, and every item carries an identity MSBuild spells
 /// the same way. The other modelled types are not offered.
 fn item_list_view(item_type: &str, state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
@@ -1338,8 +1438,9 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
         .project_references
         .iter()
         .map(|ordered| {
-            // MSBuild may respell a backslash (see `item_spec`), so such an
-            // identity is not one we can hand on.
+            // A backslash left in an identity is one whose spelling turns on
+            // MSBuild's working directory (`msbuild_spelling`), or an escaped
+            // one; neither is handed on.
             let identity = ordered.identity.as_ref().filter(|id| !id.contains('\\'))?;
             Some(EvaluatedItem {
                 identity: identity.clone(),

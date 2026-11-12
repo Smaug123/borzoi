@@ -2612,9 +2612,9 @@ impl<'r> State<'r> {
         self.package_references_uncertain = true;
         // Every structural skip funnels through here, and each one hides
         // content that could carry property writes — an unfollowable SDK
-        // or import, an un-descended Choose. (The Choose case is
-        // over-conservative for properties — its branch writes are also
-        // enumerated per-name — but a sound over-taint.)
+        // or import, a malformed Choose (which fails MSBuild's evaluation
+        // outright). An undecided Choose does not come here: its branch
+        // writes are enumerated per name instead.
         self.latch_walk_opaque(OpacityCause::Unentered(format!("{kind:?}")));
         self.record_package_reference_uncertainty(
             PackageReferenceUncertaintyCauseKind::Structural(kind),
@@ -2643,7 +2643,7 @@ impl<'r> State<'r> {
 
     /// Mark *both* captured item sets untrustworthy because a structural
     /// construct that can carry them was skipped — a dropped/unfollowable
-    /// `<Import>` or SDK, or an un-descended `<Choose>`. Such a construct can
+    /// `<Import>` or SDK, or a malformed `<Choose>`. Such a construct can
     /// hold `<Compile>` items *and* `<PackageReference>`/`<FrameworkReference>`
     /// items, so leaving one flag set without the other would let a resolver
     /// trust an incomplete package set. (Build-time-only containers like
@@ -3659,13 +3659,15 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
 /// undefined or tainted property) makes the decision itself
 /// untrustworthy: nothing from that point on is descended. Every
 /// still-possible branch's property writes are tainted/unpinned (any of
-/// them may run in a real build), and the structural
-/// [`StructuralCompileItemUncertainty::UnsupportedChoose`] skip applies
-/// only when a still-possible branch could carry items — a
+/// them may run in a real build), and each item list a still-possible
+/// branch names is marked on its own axis
+/// ([`item_pass::UndecidedChooseItems`]): a Compile item makes the Compile
+/// set uncertain, a package item the package set, a `<ProjectReference>`
+/// the reference list, and any other type taints that helper list. That is
+/// all such a branch can do, so the walk does not go opaque: a
 /// properties-only `<Choose>` (the SDK's pervasive `DefineConstants`
-/// default-fill in `Microsoft.FSharp.NetSdk.props`) leaves item and
-/// package certainty to the taint machinery instead of poisoning both
-/// sets structurally.
+/// default-fill in `Microsoft.FSharp.NetSdk.props`), or one holding only
+/// `<None>` items, leaves every other value exactly as trusted as before.
 fn handle_choose(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<'_>) {
     // Full-tree shape validation up front: MSBuild rejects a malformed
     // `<Choose>` at *load* time — before any evaluation, and regardless
@@ -3771,30 +3773,11 @@ fn handle_choose(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
         // Branches from the first unpinnable gate on may or may not run in
         // a real build. (Branches before it were cleanly false — MSBuild
         // skips those too, so leaving them untouched is exact.)
-        let mut any_items = false;
-        let mut reference_mutation = false;
+        let mut items = item_pass::UndecidedChooseItems::default();
         for branch in whens[from..].iter().copied().chain(otherwise) {
-            scan_undecided_choose_branch(
-                branch,
-                unpinned_root.as_ref(),
-                state,
-                &mut any_items,
-                &mut reference_mutation,
-            );
+            scan_undecided_choose_branch(branch, unpinned_root.as_ref(), state, &mut items);
         }
-        if any_items {
-            state.mark_structural_skip_respecting_sdk_compile_tolerance(
-                StructuralCompileItemUncertainty::UnsupportedChoose,
-                node.range(),
-            );
-        }
-        // A still-possible branch mutating `<ProjectReference>` may run in
-        // the real build, leaving earlier Includes captured un-mutated —
-        // the list can't be trusted. (An Include-only branch we skip is at
-        // worst a missed reference, so it does not poison the list.)
-        if reference_mutation {
-            state.project_references_uncertain = true;
-        }
+        items.apply(node.range(), state);
         return;
     }
 
@@ -3924,45 +3907,34 @@ fn choose_branch_writes(branch: Node<'_, '_>, pred: &dyn Fn(Node<'_, '_>) -> boo
 
 /// Taint every property write in an undecided `<Choose>` branch (the
 /// write may or may not land in a real build, so its stored value — and
-/// its absence — are both untrustworthy) and record whether the branch
-/// could contribute items, and whether it could *mutate* the
-/// `<ProjectReference>` list (Update/Remove — an Include is at worst a
-/// missed reference, a mutation falsifies what's already captured).
+/// its absence — are both untrustworthy) and record in `items` what its
+/// item operations could reach.
+///
+/// Between them these are everything the branch can do, which is why an
+/// undecided `<Choose>` does not make the walk opaque: a property write is
+/// enumerated by name here, and an item writes no property.
 fn scan_undecided_choose_branch(
     branch: Node<'_, '_>,
     unpinned_root: Option<&UnpinnedRoot>,
     state: &mut State<'_>,
-    any_items: &mut bool,
-    reference_mutation: &mut bool,
+    items: &mut item_pass::UndecidedChooseItems,
 ) {
     for child in branch.children().filter(Node::is_element) {
         match child.tag_name().name() {
             "PropertyGroup" => {
                 mark_property_group_children_provenance(child, unpinned_root, state);
             }
-            "ItemGroup" => {
-                *any_items = true;
-                if item_pass::item_group_contains_project_reference_mutation(child) {
-                    *reference_mutation = true;
-                }
-            }
+            "ItemGroup" => items.note_item_group(child),
             "Choose" => {
                 // A nested Choose's branches are all undecided too.
                 for nested in child.children().filter(Node::is_element) {
-                    scan_undecided_choose_branch(
-                        nested,
-                        unpinned_root,
-                        state,
-                        any_items,
-                        reference_mutation,
-                    );
+                    scan_undecided_choose_branch(nested, unpinned_root, state, items);
                 }
             }
-            // Not schema-legal here; treat as full-risk conservatively.
-            _ => {
-                *any_items = true;
-                *reference_mutation = true;
-            }
+            other => unreachable!(
+                "choose_shape_is_valid admits only PropertyGroup, ItemGroup and Choose \
+                 in a branch, not {other}"
+            ),
         }
     }
 }
