@@ -54,6 +54,7 @@
 //! same [`State`] as the project body, so properties they define
 //! become visible to substitutions further down the project file.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -194,6 +195,23 @@ fn deferred_pass_can_change_result(entry_has_sdk: bool, has_sdk_resolver: bool) 
 /// (the faithful model), keeping the eager first pass only as the
 /// fallback for the *dangle* case where no such nested `Sdk.props` runs at
 /// all (see the in-function comment).
+///
+/// **`TargetFramework` reads (two-pass).** An undefined `$(TargetFramework)`
+/// read is exactly `""` under the caller's globals whenever every other C.2b
+/// condition holds (see [`State::undefined_read_is_exact`]), but whether that
+/// fact serves the consumer depends on what kind of build the evaluation is.
+/// In a cross-targeting project (`TargetFrameworks` set, `TargetFramework`
+/// left to the inner builds) the outer evaluation is the dispatch build, and
+/// every `$(TargetFramework)`-reading decision in it differs from the inner
+/// builds a consumer actually cares about; there the read stays inexact, which
+/// is the conservative signal [`TargetFrameworkReads::CarvedOut`] keeps. A
+/// project that writes its own `TargetFramework` *is* the build, and the reads
+/// the SDK's props make before the body runs (the Web SDK's
+/// `GetTargetPlatformIdentifier($(TargetFramework))` gate) are exactly the
+/// `""` MSBuild reads there. So the walk runs with the reads exact first, and
+/// keeps that result when it never leaned on one or when it ends with a
+/// trusted, non-empty, body-written `TargetFramework`; otherwise it walks again
+/// with the carve-out.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_with_imports<'r>(
     doc: &Document<'_>,
@@ -206,6 +224,54 @@ pub fn walk_with_imports<'r>(
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
 ) -> ParsedProject {
+    let walk = |target_framework_reads| {
+        walk_in_msbuild_order(
+            doc,
+            project_path,
+            extra_properties,
+            environment,
+            implicit_props,
+            implicit_targets,
+            detected_packages_props,
+            sdk_resolver,
+            glob_resolver,
+            target_framework_reads,
+        )
+    };
+    let (exact, observations) = walk(TargetFrameworkReads::Exact);
+    if !observations.target_framework_read_exempted || observations.builds_its_own_target_framework
+    {
+        return exact;
+    }
+    walk(TargetFrameworkReads::CarvedOut).0
+}
+
+/// How [`State::undefined_read_is_exact`] treats an undefined
+/// `$(TargetFramework)` read; [`walk_with_imports`] says when each applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetFrameworkReads {
+    /// Under the same C.2b conditions as any other name.
+    Exact,
+    /// Never exact: the evaluation may be a cross-targeting dispatch build.
+    CarvedOut,
+}
+
+/// [`walk_with_imports`]'s `Directory.Build.props` placement under one
+/// [`TargetFrameworkReads`] mode: the walk whose result stands, with its
+/// observations.
+#[allow(clippy::too_many_arguments)]
+fn walk_in_msbuild_order<'r>(
+    doc: &Document<'_>,
+    project_path: &Path,
+    extra_properties: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    implicit_props: Option<&Path>,
+    implicit_targets: Option<&Path>,
+    detected_packages_props: Option<&Path>,
+    sdk_resolver: Option<&'r SdkResolver<'r>>,
+    glob_resolver: Option<&'r GlobResolver<'r>>,
+    target_framework_reads: TargetFrameworkReads,
+) -> (ParsedProject, WalkObservations) {
     // Pass 1: the eager before-body `Directory.Build.props` splice
     // (historical behaviour). This is *only* a fallback result for the
     // dangle case below — we deliberately read no detection signal off it
@@ -227,6 +293,7 @@ pub fn walk_with_imports<'r>(
         sdk_resolver,
         glob_resolver,
         false,
+        target_framework_reads,
     );
     // Skip the deferred second pass whenever it could not possibly change
     // the result — when the entry already has its own SDK (pass 1 is
@@ -239,7 +306,7 @@ pub fn walk_with_imports<'r>(
     // the import that leads there. Only the deferred walk evaluates body
     // import conditions in MSBuild's real order, so only it can answer.
     if !deferred_pass_can_change_result(obs1.entry_has_sdk, sdk_resolver.is_some()) {
-        return pass1;
+        return (pass1, obs1);
     }
     // Pass 2: defer the `Directory.Build.props` splice to the first
     // body-reached nested `Sdk.props`.
@@ -254,6 +321,7 @@ pub fn walk_with_imports<'r>(
         sdk_resolver,
         glob_resolver,
         true,
+        target_framework_reads,
     );
     // Pass 2 is the faithful single-pass model: it fires
     // `Directory.Build.props` at exactly the first body-reached nested
@@ -272,9 +340,9 @@ pub fn walk_with_imports<'r>(
     // `pending_directory_build_props` is still `Some`, i.e. never
     // `take()`n.
     if obs2.directory_build_props_pending_unconsumed {
-        pass1
+        (pass1, obs1)
     } else {
-        pass2
+        (pass2, obs2)
     }
 }
 
@@ -292,6 +360,14 @@ struct WalkObservations {
     /// emit a project with no `Directory.Build.props`. Always `false` on
     /// pass 1 (nothing is ever deferred there).
     directory_build_props_pending_unconsumed: bool,
+    /// Some undefined `$(TargetFramework)` read was exact only because the
+    /// walk ran under [`TargetFrameworkReads::Exact`].
+    target_framework_read_exempted: bool,
+    /// The evaluation is a build of the `TargetFramework` its own walk wrote:
+    /// not a caller global, non-empty, written under no undecided, refused or
+    /// tainted input, and never followed by content the walk could not see.
+    /// MSBuild's `IsCrossTargetingBuild` is false for it.
+    builds_its_own_target_framework: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +403,7 @@ fn walk_once<'r>(
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
     defer_directory_build_props: bool,
+    target_framework_reads: TargetFrameworkReads,
 ) -> (ParsedProject, WalkObservations) {
     let root = doc.root_element();
     let local_overrides = collect_local_overrides(root);
@@ -339,6 +416,7 @@ fn walk_once<'r>(
         sdk_resolver,
         glob_resolver,
     );
+    state.target_framework_reads = target_framework_reads;
     // Seed `imports_seen` with the entry project so an import that names
     // the entry — directly or through a chain — is skipped the way
     // MSBuild skips it (warning MSB4210, "attempting to import itself";
@@ -642,9 +720,20 @@ fn walk_once<'r>(
             });
     }
 
+    let builds_its_own_target_framework = state.walk_opaque.is_none()
+        && !extra_properties
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("TargetFramework"))
+        && state.trust_of("TargetFramework").is_certain()
+        && state
+            .lookup
+            .get_unescaped("TargetFramework")
+            .is_some_and(|value| !value.trim().is_empty());
     let observations = WalkObservations {
         entry_has_sdk: sdk_props_to_splice.is_some(),
         directory_build_props_pending_unconsumed: state.pending_directory_build_props.is_some(),
+        target_framework_read_exempted: state.target_framework_read_exempted.get(),
+        builds_its_own_target_framework,
     };
     (state.into_project(), observations)
 }
@@ -1584,6 +1673,13 @@ struct State<'r> {
     /// `Some` carries what made it so (the first such construct), which is
     /// how a user learns why a name that reads as unset might not be.
     walk_opaque: Option<OpacityCause>,
+    /// Whether an undefined `$(TargetFramework)` read may be exact; see
+    /// [`walk_with_imports`].
+    target_framework_reads: TargetFrameworkReads,
+    /// Set when [`Self::undefined_read_is_exact_but_for_opacity`] answered
+    /// `true` for `TargetFramework` — an answer
+    /// [`TargetFrameworkReads::CarvedOut`] would have withheld.
+    target_framework_read_exempted: Cell<bool>,
     /// The root each root-surfacing diagnostic stood for, by its index in
     /// `diagnostics`, captured when it was pushed. A diagnostic carries only a
     /// name, and that name's root may change later in the walk;
@@ -1941,6 +2037,8 @@ impl<'r> State<'r> {
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: None,
+            target_framework_reads: TargetFrameworkReads::CarvedOut,
+            target_framework_read_exempted: Cell::new(false),
             diagnostic_roots: HashMap::new(),
         }
     }
@@ -1971,13 +2069,24 @@ impl<'r> State<'r> {
         // `#if` handling), and an undefined `$(TargetFramework)` is the
         // multi-TFM shape whose truth is per-inner-build — the LSP
         // re-evaluates with an entry-TFM global, and the crate keeps the
-        // conservative signal for callers that don't.
-        if matches!(lower.as_str(), "defineconstants" | "targetframework") {
+        // conservative signal for callers that don't, unless the walk
+        // turns out to build its own TFM ([`walk_with_imports`]).
+        if lower == "defineconstants" {
             return false;
         }
-        !self.env_property_names.contains(&lower)
+        let exact = !self.env_property_names.contains(&lower)
             && self.trust_of(name).is_certain()
-            && !is_toolset_initial_property_name(&lower)
+            && !is_toolset_initial_property_name(&lower);
+        if lower == "targetframework" {
+            match self.target_framework_reads {
+                TargetFrameworkReads::CarvedOut => return false,
+                TargetFrameworkReads::Exact if exact => {
+                    self.target_framework_read_exempted.set(true);
+                }
+                TargetFrameworkReads::Exact => {}
+            }
+        }
+        exact
     }
 
     /// Is `name` reading as undefined because it *is* undefined in the real
@@ -1999,6 +2108,11 @@ impl<'r> State<'r> {
     ///   (a case collision, a toolset overwrite). We dropped it from the lookup
     ///   precisely because we cannot model its value, and "cannot model" is not
     ///   "unset": the real build defines *something* non-empty.
+    /// * [`is_toolset_predefined_name`] — a name MSBuild's toolset defines
+    ///   before evaluation starts. The walk holds no value for one only when it
+    ///   has not seeded it (no canonical SDK resolved, the seed was withheld,
+    ///   or the toolset is one whose value we do not know), and the real build
+    ///   holds its own value all the same.
     ///
     /// The other two [`Trust`] channels are deliberately *not* consulted: both
     /// describe a value we hold and may have wrong, whereas this asks about a
@@ -2007,7 +2121,9 @@ impl<'r> State<'r> {
     /// the wholesale decline the over-commitment above exists to avoid.
     fn self_default_absence_is_a_fact(&self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
-        !self.trust_of(name).refused() && !self.env_property_names.contains(&lower)
+        !self.trust_of(name).refused()
+            && !self.env_property_names.contains(&lower)
+            && !is_toolset_predefined_name(&lower)
     }
 
     /// Is the *current* value of `name` exactly what MSBuild holds at this
@@ -2264,12 +2380,48 @@ impl<'r> State<'r> {
             self.reserved.insert(lower.clone());
             self.protected.insert(lower);
         }
+        // The overridable names below take a write from any source, so an
+        // empty slot is the toolset's only if nothing that could have written
+        // it is out of sight. Content the walk could not see (an import it
+        // could not follow, or one whose gate it could not decide) may have
+        // written any of them before this SDK resolved, and a hidden write
+        // leaves no trust record. So under opacity none is seeded, and every
+        // read of one declines: an undefined read behind opacity is never
+        // exact, and a self-default write never takes the absence of a
+        // toolset-predefined name for a fact (`is_toolset_predefined_name`).
+        // The reserved seeds above stand regardless: MSBuild refuses a write
+        // to them (MSB4004), hidden or not.
+        if self.walk_opaque.is_some() {
+            return;
+        }
+        // `VisualStudioVersion` is a toolset constant every name source can
+        // displace: the environment (MSBuild honours a spoof on every
+        // toolset), a caller global, or a project write. So it is seeded only
+        // into a slot none of them claimed — not defined, not in the
+        // environment snapshot (promoted or dropped, the real build has *some*
+        // value for it), and never the subject of a write we could not decide
+        // or refused.
+        if self.lookup.get("VisualStudioVersion").is_none()
+            && !self.env_property_names.contains("visualstudioversion")
+            && self.trust_of("VisualStudioVersion").is_certain()
+            && let Some(value) = toolset_visual_studio_version(&version_dir)
+        {
+            self.lookup.insert_computed("VisualStudioVersion", value);
+        }
         let overridable = [
             ("MSBuildExtensionsPath32", dir.clone()),
             ("MSBuildSDKsPath", format!("{dir}/Sdks")),
         ];
         for (name, value) in overridable {
-            if self.lookup.get(name).is_none() {
+            // A name in the environment snapshot that promotion dropped
+            // (spellings that disagree) has *some* value in the real build:
+            // both toolsets probed honour the environment for these two (see
+            // `toolset_honours_env_extensions_path`), so it is one of the
+            // environment's values, not the toolset's path. The slot stays
+            // empty and reads decline.
+            if self.lookup.get(name).is_none()
+                && !self.env_property_names.contains(&name.to_ascii_lowercase())
+            {
                 // Same provenance as the reserved seeds above: our own paths.
                 self.lookup.insert_computed(name, value);
             }
@@ -2419,6 +2571,8 @@ impl<'r> State<'r> {
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
+            target_framework_reads: _,
+            target_framework_read_exempted: _,
             diagnostic_roots: _,
         } = self;
         // Central Package Management opt-in: a versionless
@@ -4647,6 +4801,61 @@ fn toolset_honours_env_extensions_path(version_dir: &Path) -> Option<bool> {
     Some(major >= 10)
 }
 
+/// The `VisualStudioVersion` a canonical .NET SDK version directory's toolset
+/// defines: MSBuild's compiled-in `CurrentVisualStudioVersion`, which tracks
+/// the MSBuild major version. `None` — the read stays undefined and declines —
+/// for a directory that does not name a release SDK of a major probed here.
+///
+/// Probed with `dotnet msbuild` and no `VisualStudioVersion` in the
+/// environment: `17.0` under 6.0.418, 8.0.425, 9.0.200 and 9.0.315; `18.0` under
+/// 10.0.109, 10.0.300, 10.0.400 and 10.0.401. Prereleases decline: a preview SDK
+/// can ship the previous MSBuild major (the early .NET 10 previews carried
+/// MSBuild 17), and an unprobed major may have moved on.
+fn toolset_visual_studio_version(version_dir: &Path) -> Option<&'static str> {
+    let name = version_dir.file_name()?.to_str()?;
+    let parts: Vec<&str> = name.split('.').collect();
+    let is_release = parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    if !is_release {
+        return None;
+    }
+    match parts[0].parse::<u32>().ok()? {
+        6 | 8 | 9 => Some("17.0"),
+        10 => Some("18.0"),
+        _ => None,
+    }
+}
+
+/// The property names MSBuild's toolset defines, non-empty, before any
+/// project text is evaluated: the toolset seeds of
+/// [`State::seed_toolset_properties`], and `VisualStudioVersion` (seeded only
+/// where the SDK's version says what the toolset defines). Lowercase.
+///
+/// Whenever the walk holds no value for one of these, the real build still
+/// does, so the absence is never a fact (see
+/// [`State::self_default_absence_is_a_fact`]): the SDK's
+/// `<VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</…>`
+/// in `Microsoft.Common.CurrentVersion.targets` would otherwise commit `10.0`
+/// where MSBuild 18 reads `18.0`. `toolset_predefined_names_diff` holds the
+/// list to MSBuild both ways: every name here is defined in an empty project,
+/// and every name the SDK self-defaults that MSBuild predefines is here.
+pub(crate) const TOOLSET_PREDEFINED_NAMES: &[&str] = &[
+    "msbuildtoolspath",
+    "msbuildbinpath",
+    "msbuildtoolsversion",
+    "msbuildruntimetype",
+    "msbuildextensionspath",
+    "msbuildextensionspath32",
+    "msbuildsdkspath",
+    "visualstudioversion",
+];
+
+fn is_toolset_predefined_name(lower: &str) -> bool {
+    TOOLSET_PREDEFINED_NAMES.contains(&lower)
+}
+
 fn is_env_ignored_toolset_name(lower: &str) -> bool {
     matches!(
         lower,
@@ -6293,5 +6502,38 @@ mod orchestrator_tests {
         assert!(!deferred_pass_can_change_result(true, true));
         assert!(!deferred_pass_can_change_result(false, false));
         assert!(!deferred_pass_can_change_result(true, false));
+    }
+}
+
+#[cfg(test)]
+mod toolset_tests {
+    use super::toolset_visual_studio_version;
+    use std::path::Path;
+
+    #[test]
+    fn visual_studio_version_commits_only_for_probed_release_majors() {
+        for (dir, expected) in [
+            ("/dotnet/sdk/6.0.418", Some("17.0")),
+            ("/dotnet/sdk/8.0.425", Some("17.0")),
+            ("/dotnet/sdk/9.0.315", Some("17.0")),
+            ("/dotnet/sdk/10.0.109", Some("18.0")),
+            ("/dotnet/sdk/10.0.401", Some("18.0")),
+            // A preview can carry the previous MSBuild major.
+            ("/dotnet/sdk/10.0.100-preview.3.25201.16", None),
+            ("/dotnet/sdk/11.0.100-rc.1.26425.128", None),
+            // Unprobed majors.
+            ("/dotnet/sdk/7.0.410", None),
+            ("/dotnet/sdk/11.0.100", None),
+            // Not a version directory.
+            ("/dotnet/sdk/current", None),
+            ("/dotnet/sdk/10.0", None),
+            ("/dotnet/sdk/10.0.x", None),
+        ] {
+            assert_eq!(
+                toolset_visual_studio_version(Path::new(dir)),
+                expected,
+                "{dir}"
+            );
+        }
     }
 }

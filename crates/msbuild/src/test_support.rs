@@ -61,6 +61,11 @@ pub fn is_toolset_initial_property_name(name: &str) -> bool {
     crate::evaluator::is_toolset_initial_property_name(&name.to_ascii_lowercase())
 }
 
+/// The names the walker takes MSBuild's toolset to define before evaluation
+/// starts, lowercase. Exposed so `tests/toolset_predefined_names_diff.rs` can
+/// hold the list to MSBuild in both directions.
+pub const TOOLSET_PREDEFINED_NAMES: &[&str] = crate::evaluator::TOOLSET_PREDEFINED_NAMES;
+
 /// Every property name `raw` references — the input to every trust scan in the
 /// crate, exposed so `tests/property_reference_scan.rs` can hold it to the one
 /// obligation that matters: it must never under-report relative to what

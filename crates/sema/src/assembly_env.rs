@@ -374,7 +374,7 @@ pub(crate) enum AheadOfType {
 /// shadow every earlier open (the generation barrier) and demote this open's
 /// own entries to opaque — an unlisted name can outrank them and fold order
 /// within the container is no longer decidable.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpenFoldSurface {
     /// Every enumerated bare name, in FCS fold order.
     pub entries: Vec<OpenFoldName>,
@@ -428,6 +428,16 @@ impl OpenFoldSurface {
     }
 }
 
+/// The one surface of a namespace that declares no top-level type directly but
+/// may hold an abbreviation nobody can see (see
+/// [`AssemblyEnv::open_namespace_fold_surfaces`]).
+static RESIDUE_ONLY_SURFACE: OpenFoldSurface = OpenFoldSurface {
+    entries: Vec::new(),
+    residue: true,
+    residue_below_vals: false,
+    contestant_names: Vec::new(),
+};
+
 /// The precomputed answer for the closure-fixed arms of
 /// [`AssemblyEnv::assembly_bare_value_surface_could_supply`].
 ///
@@ -453,13 +463,16 @@ struct BareValueIndex {
 /// is unavailable rather than merely documented. Construct with
 /// [`AssemblyEnv::namespace_value_surface`] or
 /// [`AssemblyEnv::module_value_surface`].
+///
+/// A namespace's surfaces are borrowed from the env's memo; a module's are
+/// built for the query.
 #[derive(Debug, Clone)]
-pub struct ValueSurface {
-    surfaces: Vec<OpenFoldSurface>,
+pub struct ValueSurface<'a> {
+    surfaces: std::borrow::Cow<'a, [OpenFoldSurface]>,
     uncertain: bool,
 }
 
-impl ValueSurface {
+impl ValueSurface<'_> {
     /// Whether this container could put a **value** named `name` into bare
     /// expression scope. `true` when the container is uncertain at all — a
     /// deferral, never a resolution, so over-approximating is sound.
@@ -481,7 +494,7 @@ impl ValueSurface {
     /// Add every value name this container definitely contributes to `out`.
     /// Meaningful only when [`Self::is_uncertain`] is `false`.
     pub fn collect_value_names(&self, out: &mut crate::hash::HashSet<String>) {
-        for surface in &self.surfaces {
+        for surface in self.surfaces.iter() {
             for e in &surface.entries {
                 if matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both) {
                     out.insert(e.name.clone());
@@ -818,6 +831,10 @@ struct NamespaceTypes {
     /// a mangled segment's base, against. The candidate index behind
     /// [`AssemblyEnv::types_at_logical_segment`].
     by_il_or_source_name: HashMap<String, Vec<EntityHandle>>,
+    /// Memo for [`AssemblyEnv::open_namespace_fold_surfaces`] of this
+    /// namespace. Every `mark_*` mutator resets it
+    /// (`AssemblyEnv::invalidate_fold_surfaces`).
+    fold_surfaces: std::sync::OnceLock<Vec<OpenFoldSurface>>,
 }
 
 /// Every top-level entity at one exact `(namespace, source name)`. `all` is the
@@ -3382,7 +3399,7 @@ impl AssemblyEnv {
             let uncertain = self.namespace_uncertain(&ns);
             uncertain_namespace |= uncertain;
             for s in self.open_namespace_fold_surfaces(&ns) {
-                surfaces.push((s, true, uncertain));
+                surfaces.push((s.clone(), true, uncertain));
             }
         }
         let others = self
@@ -3394,7 +3411,7 @@ impl AssemblyEnv {
             let uncertain = self.namespace_uncertain(&ns);
             uncertain_namespace |= uncertain;
             for s in self.open_namespace_fold_surfaces(&ns) {
-                surfaces.push((s, false, uncertain));
+                surfaces.push((s.clone(), false, uncertain));
             }
         }
         for &(h, effectively_public) in &self.auto_open_module_handles {
@@ -3504,9 +3521,9 @@ impl AssemblyEnv {
     /// The bare-visible **value** surface of `namespace`: its fold surfaces plus
     /// the namespace-scoped uncertainty they cannot encode. The only sanctioned
     /// way to ask whether a namespace could supply a value.
-    pub fn namespace_value_surface(&self, namespace: &[String]) -> ValueSurface {
+    pub fn namespace_value_surface(&self, namespace: &[String]) -> ValueSurface<'_> {
         ValueSurface {
-            surfaces: self.open_namespace_fold_surfaces(namespace),
+            surfaces: std::borrow::Cow::Borrowed(self.open_namespace_fold_surfaces(namespace)),
             uncertain: self.namespace_uncertain(namespace),
         }
     }
@@ -3514,9 +3531,9 @@ impl AssemblyEnv {
     /// The same, for a module opened by a module-shaped manifest `AutoOpen`. Its
     /// uncertainty is that of the namespace that *owns* it — the marker is
     /// namespace-keyed, and forgetting it here was the audit's finding.
-    pub fn module_value_surface(&self, handle: EntityHandle) -> ValueSurface {
+    pub fn module_value_surface(&self, handle: EntityHandle) -> ValueSurface<'static> {
         ValueSurface {
-            surfaces: vec![self.open_fold_surface(handle)],
+            surfaces: std::borrow::Cow::Owned(vec![self.open_fold_surface(handle)]),
             uncertain: self.namespace_uncertain(&self.nodes[handle.index()].owning_namespace),
         }
     }
@@ -4357,22 +4374,56 @@ impl AssemblyEnv {
     /// abbreviations from the namespace entirely (they live only in the pickle),
     /// so a residue-only surface is appended: an unseen constructible abbreviation
     /// could contest the module half, which must therefore defer.
-    pub fn open_namespace_fold_surfaces(&self, namespace: &[String]) -> Vec<OpenFoldSurface> {
-        // The public top-level entities declared *directly* in the namespace. The
-        // direct `[<AutoOpen>]` modules are a subset of this; we fold them
-        // recursively below (`fold_container_into` descends into their nested
-        // auto-opens). We deliberately do NOT iterate
-        // `auto_open_modules_in_namespace`, which is the transitive *closure* — the
-        // recursion would then fold every nested module a second time.
+    ///
+    /// Memoised per namespace: the surfaces are built once per env (and again
+    /// after a `mark_*` mutator) and borrowed from then on.
+    pub fn open_namespace_fold_surfaces(&self, namespace: &[String]) -> &[OpenFoldSurface] {
+        match self.types_by_namespace.get(namespace) {
+            Some(types) => types.fold_surfaces.get_or_init(|| {
+                let direct: Vec<EntityHandle> = types
+                    .all
+                    .iter()
+                    .copied()
+                    .filter(|&h| self.is_public(h))
+                    .collect();
+                self.build_namespace_fold_surfaces(namespace, &direct)
+            }),
+            // No top-level type is declared directly in `namespace`, so the only
+            // surface it can have is the residue of abbreviations nobody can see.
+            None if self.unknowable_abbreviations_in_namespace(namespace) => {
+                std::slice::from_ref(&RESIDUE_ONLY_SURFACE)
+            }
+            None => &[],
+        }
+    }
+
+    /// [`Self::open_namespace_fold_surfaces`] without the memo or the namespace
+    /// index: the scan of every top-level type the memo is held to.
+    #[cfg(test)]
+    fn open_namespace_fold_surfaces_by_scan(&self, namespace: &[String]) -> Vec<OpenFoldSurface> {
         let direct: Vec<EntityHandle> = self
             .top_level_types
             .iter()
             .copied()
             .filter(|&h| self.is_public(h) && self.entity(h).namespace.as_slice() == namespace)
             .collect();
+        self.build_namespace_fold_surfaces(namespace, &direct)
+    }
+
+    /// Build [`Self::open_namespace_fold_surfaces`] from `direct`, the public
+    /// top-level entities declared *directly* in `namespace`, in interning order.
+    /// The direct `[<AutoOpen>]` modules are a subset of these, folded
+    /// recursively (`fold_container_into` descends into their nested
+    /// auto-opens). `auto_open_modules_in_namespace` is the transitive
+    /// *closure*, so iterating it here would fold every nested module twice.
+    fn build_namespace_fold_surfaces(
+        &self,
+        namespace: &[String],
+        direct: &[EntityHandle],
+    ) -> Vec<OpenFoldSurface> {
         // The distinct contributing assemblies, in first-seen order.
         let mut assemblies: Vec<AssemblyIdentity> = Vec::new();
-        for &h in &direct {
+        for &h in direct {
             let a = &self.entity(h).assembly;
             if !assemblies.iter().any(|x| x == a) {
                 assemblies.push(a.clone());
@@ -4890,6 +4941,7 @@ impl AssemblyEnv {
     pub fn mark_extension_surface_unknowable(&mut self) {
         self.extension_surface_unknowable = true;
         self.invalidate_bare_value_index();
+        self.invalidate_fold_surfaces();
     }
 
     /// Whether the env's loaded-DLL **identity set is incomplete**: some DLL is
@@ -4923,6 +4975,7 @@ impl AssemblyEnv {
         // The core library is named only over a complete identity set.
         self.core_library = Default::default();
         self.invalidate_attribute_aliases();
+        self.invalidate_fold_surfaces();
     }
 
     /// Record that a referenced assembly **dropped an undecodable type** in
@@ -4942,6 +4995,7 @@ impl AssemblyEnv {
         self.core_library = Default::default();
         self.invalidate_bare_value_index();
         self.invalidate_attribute_aliases();
+        self.invalidate_fold_surfaces();
     }
 
     /// Drop the memoised [`Self::core_attribute_aliases`],
@@ -4953,6 +5007,18 @@ impl AssemblyEnv {
         self.core_attribute_alias = std::sync::OnceLock::new();
         self.custom_operation_alias = std::sync::OnceLock::new();
         self.slot_attribute_alias = std::sync::OnceLock::new();
+    }
+
+    /// Drop every namespace's memoised [`Self::open_namespace_fold_surfaces`].
+    ///
+    /// Called by every `mark_*` mutator. The fold reads none of what they mark
+    /// today, but it is built from helpers shared with code that does, and a
+    /// stale surface would be a wrong answer where a rebuild costs one fold per
+    /// namespace queried again.
+    fn invalidate_fold_surfaces(&mut self) {
+        for types in self.types_by_namespace.values_mut() {
+            types.fold_surfaces = std::sync::OnceLock::new();
+        }
     }
 
     /// Drop the memoised [`Self::bare_value_index`],
@@ -11180,6 +11246,235 @@ pub(crate) mod from_views_tests {
                 "a forwarded chase resolved through a hop",
                 hits.forwarded_resolved_through_a_hop,
             ),
+        ] {
+            assert!(
+                count > 0,
+                "the generator never reached a case where {what}: {hits:?}"
+            );
+        }
+    }
+
+    /// The names an entity in [`fold_surface_env`] is spelled with, and the
+    /// names of its union cases and module values: one shared spelling (`X`)
+    /// so that cases, values and type names collide across surfaces.
+    const FOLD_NAMES: [&str; 4] = ["X", "Y", "N", "Ex"];
+    /// [`INDEX_NAMESPACES`] plus a namespace below a type-free prefix.
+    const FOLD_NAMESPACES: [&[&str]; 5] = [&[], &["N"], &["N", "X"], &["M"], &["P", "Q"]];
+
+    /// One entity of [`fold_surface_env`], `depth` levels of nesting below:
+    /// every kind the namespace fold treats differently, public or not,
+    /// auto-open or `[<RequireQualifiedAccess>]` or neither, with known or
+    /// unknowable union cases and static values.
+    fn fold_entity(dll: &'static str, depth: u32) -> BoxedStrategy<Entity> {
+        let nested = if depth == 0 {
+            Just(Vec::new()).boxed()
+        } else {
+            prop::collection::vec(fold_entity(dll, depth - 1), 0..3).boxed()
+        };
+        let cases = prop_oneof![
+            Just(None),
+            prop::collection::vec(prop::sample::select(&FOLD_NAMES[..]), 0..3).prop_map(Some),
+        ];
+        (
+            (
+                prop::sample::select(&FOLD_NAMES[..]),
+                prop::sample::select(&FOLD_NAMESPACES[..]),
+                prop::sample::select(
+                    &[
+                        EntityKind::Class,
+                        EntityKind::Module,
+                        EntityKind::Union,
+                        EntityKind::Exception,
+                        EntityKind::Abbreviation,
+                        EntityKind::Struct,
+                    ][..],
+                ),
+                prop::bool::weighted(0.8),
+                any::<bool>(),
+                prop::bool::weighted(0.2),
+            ),
+            cases,
+            prop::collection::vec(prop::sample::select(&FOLD_NAMES[..]), 0..3),
+            nested,
+        )
+            .prop_map(
+                move |(
+                    (name, namespace, kind, public, auto_open, rqa),
+                    cases,
+                    values,
+                    nested_types,
+                )| Entity {
+                    kind,
+                    access: if public {
+                        Access::Public
+                    } else {
+                        Access::Internal
+                    },
+                    is_auto_open: auto_open,
+                    is_require_qualified_access: rqa,
+                    union_cases: match cases {
+                        None => UnionCases::Unknowable,
+                        Some(names) => UnionCases::Known(
+                            names
+                                .iter()
+                                .zip(0..)
+                                .map(|(n, i)| borzoi_assembly::UnionCase::unread(*n, i))
+                                .collect(),
+                        ),
+                    },
+                    members: values.iter().map(|v| static_int_prop(v)).collect(),
+                    nested_types,
+                    ..module_entity(dll, namespace, name)
+                },
+            )
+            .boxed()
+    }
+
+    /// A mutator applied to a [`fold_surface_env`] after its memo has filled.
+    #[derive(Debug, Clone)]
+    enum FoldMark {
+        DroppedType(Vec<String>),
+        ExtensionSurfaceUnknowable,
+        ReferencedAssembliesIncomplete,
+    }
+
+    /// One to four DLLs drawn from [`INDEX_DLLS`] (names may repeat), each
+    /// with top-level entities from [`fold_entity`] and either knowable or
+    /// unknowable abbreviations and extension index, plus the marks applied
+    /// once the memo is full.
+    fn fold_surface_env() -> impl Strategy<Value = (AssemblyEnv, Vec<FoldMark>)> {
+        let dll = (
+            prop::sample::select(&INDEX_DLLS[..]),
+            any::<bool>(),
+            prop::bool::weighted(0.2),
+        )
+            .prop_flat_map(|(dll, abbreviations_unknowable, extensions_unknowable)| {
+                (
+                    Just((dll, abbreviations_unknowable, extensions_unknowable)),
+                    prop::collection::vec(fold_entity(dll, 2), 0..6),
+                )
+            });
+        let mark = prop_oneof![
+            prop::sample::select(&FOLD_NAMESPACES[..])
+                .prop_map(|ns| FoldMark::DroppedType(ns.iter().map(|s| s.to_string()).collect())),
+            Just(FoldMark::ExtensionSurfaceUnknowable),
+            Just(FoldMark::ReferencedAssembliesIncomplete),
+        ];
+        (
+            prop::collection::vec(dll, 1..5),
+            prop::collection::vec(mark, 0..4),
+        )
+            .prop_map(|(dlls, marks)| {
+                let inputs = dlls
+                    .into_iter()
+                    .map(
+                        |((dll, abbreviations_unknowable, extensions_unknowable), roots)| {
+                            super::AssemblyProjectionInput {
+                                abbreviation_visibility: if abbreviations_unknowable {
+                                    super::AbbreviationVisibility::Unknowable
+                                } else {
+                                    super::AbbreviationVisibility::Modelled
+                                },
+                                extension_index_unknowable: extensions_unknowable,
+                                ..forwarder_input(dll, roots, Vec::new())
+                            }
+                        },
+                    )
+                    .collect();
+                (
+                    AssemblyEnv::from_assemblies_with_projection_knowability(inputs),
+                    marks,
+                )
+            })
+    }
+
+    /// How often [`namespace_fold_surface_memo_agrees_with_the_scan`] reached
+    /// each case it exists to cover.
+    #[derive(Debug, Default)]
+    struct FoldMemoHits {
+        surfaces_with_entries: usize,
+        two_surfaces: usize,
+        residue_only: usize,
+        contestants: usize,
+        marked_after_fill: usize,
+    }
+
+    /// [`AssemblyEnv::open_namespace_fold_surfaces`], memoised and read from
+    /// the namespace index, answers exactly what the scan of every top-level
+    /// type does, for every namespace and every prefix of one, before and after
+    /// each `mark_*` mutator lands on a filled memo, and in a clone taken before
+    /// the marks.
+    #[test]
+    fn namespace_fold_surface_memo_agrees_with_the_scan() {
+        use proptest::test_runner::{Config, TestRunner};
+        use std::cell::RefCell;
+
+        let namespaces: Vec<Vec<String>> = FOLD_NAMESPACES
+            .iter()
+            .map(|ns| ns.iter().map(|s| (*s).to_string()).collect())
+            .chain([
+                vec!["P".to_string()],
+                vec!["N".to_string(), "Z".to_string()],
+            ])
+            .collect();
+        let hits = RefCell::new(FoldMemoHits::default());
+        let agree = |env: &AssemblyEnv, when: &str| -> Result<(), TestCaseError> {
+            let mut hits = hits.borrow_mut();
+            for ns in &namespaces {
+                // Twice: the first fills the memo, the second reads it.
+                for _ in 0..2 {
+                    let memo = env.open_namespace_fold_surfaces(ns);
+                    let scan = env.open_namespace_fold_surfaces_by_scan(ns);
+                    prop_assert_eq!(memo, scan.as_slice(), "namespace {:?}, {}", ns, when);
+                }
+                let surfaces = env.open_namespace_fold_surfaces(ns);
+                hits.surfaces_with_entries +=
+                    usize::from(surfaces.iter().any(|s| !s.entries.is_empty()));
+                hits.two_surfaces += usize::from(surfaces.len() >= 2);
+                hits.contestants +=
+                    usize::from(surfaces.iter().any(|s| !s.contestant_names.is_empty()));
+                hits.residue_only += usize::from(
+                    !env.types_by_namespace.contains_key(ns.as_slice()) && !surfaces.is_empty(),
+                );
+            }
+            Ok(())
+        };
+        let mut runner = TestRunner::new(Config {
+            cases: 256,
+            failure_persistence: None,
+            ..Config::default()
+        });
+        let outcome = runner.run(&fold_surface_env(), |(mut env, marks)| {
+            agree(&env, "before any mark")?;
+            let before_marks = env.clone();
+            for mark in &marks {
+                match mark {
+                    FoldMark::DroppedType(ns) => env.mark_namespace_dropped_type(ns.clone()),
+                    FoldMark::ExtensionSurfaceUnknowable => env.mark_extension_surface_unknowable(),
+                    FoldMark::ReferencedAssembliesIncomplete => {
+                        env.mark_referenced_assemblies_incomplete()
+                    }
+                }
+                hits.borrow_mut().marked_after_fill += 1;
+                agree(&env, &format!("after {mark:?}"))?;
+            }
+            agree(&before_marks, "in a clone taken before the marks")?;
+            Ok(())
+        });
+        if let Err(failure) = outcome {
+            panic!("{failure}");
+        }
+        let hits = hits.into_inner();
+        eprintln!("{hits:?}");
+        for (what, count) in [
+            ("a surface listed a name", hits.surfaces_with_entries),
+            ("two assemblies contributed surfaces", hits.two_surfaces),
+            (
+                "a type-free namespace had a residue surface",
+                hits.residue_only,
+            ),
+            ("a surface named a contestant", hits.contestants),
+            ("a mark landed on a filled memo", hits.marked_after_fill),
         ] {
             assert!(
                 count > 0,
