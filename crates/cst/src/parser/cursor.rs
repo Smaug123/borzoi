@@ -888,6 +888,27 @@ impl Parser<'_> {
         matches!(self.peek(), Some((Ok(FilteredToken::Virtual(v)), _)) if is_layout_virtual(v))
     }
 
+    /// Whether a filtered token at or after the cursor stands for the raw token
+    /// starting at byte `start`: the raw token itself (or the first piece of a
+    /// split), or a relabelling virtual ([`VirtualClass::Relabel`]) backed by
+    /// it. The consumer of that filtered token advances the raw cursor past the
+    /// raw one, so a production must not claim such a raw token from the raw
+    /// stream. A layout virtual at the same span stands for nothing: LexFilter
+    /// places one at the span of the token it precedes.
+    pub(super) fn filtered_stream_carries(&self, start: usize) -> bool {
+        self.filtered_tokens[self.pos..]
+            .iter()
+            .take_while(|(_, span)| span.start <= start)
+            .any(|(res, span)| {
+                span.start == start
+                    && match res {
+                        Ok(FilteredToken::Raw(_)) => true,
+                        Ok(FilteredToken::Virtual(v)) => virtual_class(v) == VirtualClass::Relabel,
+                        Err(_) => false,
+                    }
+            })
+    }
+
     /// Whether the filtered cursor meets the next `n` raw tokens with no layout
     /// virtual ([`VirtualClass::Layout`]) before any of them. A production that
     /// approves `n` tokens through a raw-stream lookahead and then bumps them
