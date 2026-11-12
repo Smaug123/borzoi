@@ -33,7 +33,9 @@ mod resolved_sdk_root;
 mod sdk_custom_entry;
 mod sdk_resolution;
 mod spans;
+mod target_framework_reads;
 mod this_file_directory;
+mod toolset_seed;
 mod treat_as_local;
 
 /// Canonicalise `path` (must exist). Paths returned by the walker are
