@@ -1368,3 +1368,146 @@ fn duplicate_sdk_keys_pin_if_any_occurrence_pins() {
     .unwrap();
     assert!(parsed.pins_workload_set);
 }
+
+// ============================================================
+// `parse_json_string_map` — never more lenient than the reference
+// ============================================================
+
+/// Fragments whose concatenations sit near the edge of JSON: the shapes a
+/// lenient parser gets wrong (comments and their terminators, whitespace
+/// outside JSON's four, BOMs, escapes, raw control bytes in strings,
+/// trailing commas, non-string values).
+const JSON_EDGE_FRAGMENTS: &[&str] = &[
+    "{",
+    "}",
+    "[",
+    "]",
+    ":",
+    ",",
+    "\"w\"",
+    "\"W\"",
+    "\"1.0.0\"",
+    "\"1.0.0/10.0.400\"",
+    "\"\"",
+    " ",
+    "\t",
+    "\n",
+    "\r",
+    "\r\n",
+    "\u{c}",
+    "\u{b}",
+    "\u{a0}",
+    "\u{2028}",
+    "\u{feff}",
+    "/",
+    "*",
+    "//",
+    "/*",
+    "*/",
+    "#",
+    "null",
+    "true",
+    "1",
+    "-0",
+    "1e5",
+    "\"\\u0041\"",
+    "\"\\ud800\"",
+    "\"\\udc00\"",
+    "\"\\ud83d\\ude00\"",
+    "\"\\x41\"",
+    "\"\\/\"",
+    "\"a\tb\"",
+    "\"a\u{7f}b\"",
+    "'w'",
+    "w",
+];
+
+/// Documents built from [`JSON_EDGE_FRAGMENTS`], plus well-formed objects
+/// with edge fragments spliced in, so a fair share is accepted and the
+/// property is not vacuous.
+fn json_edge_document() -> impl Strategy<Value = String> {
+    let fragment = proptest::sample::select(JSON_EDGE_FRAGMENTS);
+    let soup = proptest::collection::vec(fragment.clone(), 0..12).prop_map(|parts| parts.concat());
+    let entry = (
+        proptest::sample::select(&["\"w\"", "\"W\"", "\"x.y\"", "\"\\u0041\""][..]),
+        proptest::sample::select(&["\"1.0.0\"", "\"1.0.0/10.0.400\"", "\"\"", "null", "1"][..]),
+    );
+    let ws = proptest::sample::select(&["", " ", "\n", "\r\n", "\t", "\r"][..]);
+    let object = (
+        proptest::collection::vec((entry, ws.clone(), ws.clone()), 0..4),
+        ws.clone(),
+        proptest::option::of(fragment),
+        0usize..64,
+    )
+        .prop_map(|(entries, tail, splice, at)| {
+            let body: Vec<String> = entries
+                .into_iter()
+                .map(|((key, value), before, after)| format!("{before}{key}{after}:{value}"))
+                .collect();
+            let mut doc = format!("{{{}{tail}}}", body.join(","));
+            if let Some(splice) = splice {
+                let mut at = at.min(doc.len());
+                while !doc.is_char_boundary(at) {
+                    at -= 1;
+                }
+                doc.insert_str(at, splice);
+            }
+            doc
+        });
+    prop_oneof![soup, object]
+}
+
+/// Whatever `parse_json_string_map` certifies, a strict RFC 8259 parser
+/// (`serde_json`) reads identically. `System.Text.Json` with comments
+/// skipped and trailing commas allowed accepts a superset of RFC 8259, so
+/// this holds the certified set inside what the reference loads — the
+/// direction a workload-set check relies on, since a certified file the
+/// reference rejects is a resolution MSBuild fails. `File.ReadAllText`
+/// consumes a leading BOM before the JSON reader sees the text, so the
+/// strict side does too.
+#[test]
+fn proptest_json_string_map_is_never_more_lenient_than_strict_json() {
+    let accepted = Cell::new(0u32);
+    let mut runner = TestRunner::new(PtConfig {
+        cases: 4096,
+        ..PtConfig::default()
+    });
+    runner
+        .run(&json_edge_document(), |doc| {
+            let Some(ours) = parse_json_string_map(&doc) else {
+                return Ok(());
+            };
+            accepted.set(accepted.get() + 1);
+            let text = doc.strip_prefix('\u{feff}').unwrap_or(&doc);
+            let strict: serde_json::Value = serde_json::from_str(text).map_err(|err| {
+                TestCaseError::fail(format!("certified {doc:?}, strict JSON rejects: {err}"))
+            })?;
+            let object = strict
+                .as_object()
+                .ok_or_else(|| TestCaseError::fail(format!("certified non-object {doc:?}")))?;
+            for (key, value) in &ours {
+                let last = ours.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v);
+                prop_assert_eq!(
+                    object.get(key).and_then(|v| v.as_str()),
+                    last.map(String::as_str),
+                    "{:?}: entry {:?} = {:?}",
+                    doc,
+                    key,
+                    value
+                );
+            }
+            prop_assert_eq!(object.len(), {
+                let mut keys: Vec<&String> = ours.iter().map(|(k, _)| k).collect();
+                keys.sort();
+                keys.dedup();
+                keys.len()
+            });
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        accepted.get() >= 200,
+        "only {} of 4096 documents were certified; the property is near-vacuous",
+        accepted.get()
+    );
+}
