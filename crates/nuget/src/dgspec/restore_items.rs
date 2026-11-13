@@ -94,6 +94,8 @@ pub enum RestoreItemsDecline {
     /// NuGet's answer would depend on the host: its file system's case
     /// sensitivity, its operating system, or its culture.
     HostDependent { detail: String },
+    /// There are no items, for which the task writes no file.
+    NoItems,
     /// The file the task would write is one [`parse_dgspec`] declines.
     Unreadable { decline: DgSpecDecline },
 }
@@ -119,6 +121,7 @@ impl fmt::Display for RestoreItemsDecline {
             RestoreItemsDecline::HostDependent { detail } => {
                 write!(f, "host-dependent: {detail}")
             }
+            RestoreItemsDecline::NoItems => write!(f, "no items, so no file is written"),
             RestoreItemsDecline::Unreadable { decline } => {
                 write!(f, "the written spec is not readable: {decline}")
             }
@@ -152,6 +155,10 @@ pub fn write_restore_graph(
         return Err(RestoreItemsDecline::Environment {
             variable: MACROS_VARIABLE.to_owned(),
         });
+    }
+    // With no items the task warns and writes no file at all.
+    if items.is_empty() {
+        return Err(RestoreItemsDecline::NoItems);
     }
     let items = items
         .iter()
@@ -968,7 +975,7 @@ impl<'a> Project<'a> {
         spec.refuse_true("ValidateRuntimeAssets")?;
         let skip_content_file_write = spec.is_true("SkipContentFileWrite");
 
-        let audit = audit_properties(spec, &tfis, of(Kind::NuGetAuditSuppress))?;
+        let audit = audit_properties(spec, items, of(Kind::NuGetAuditSuppress))?;
 
         let using_microsoft_net_sdk = match spec.get("UsingMicrosoftNETSdk") {
             None => false,
@@ -978,6 +985,11 @@ impl<'a> Project<'a> {
         let sdk_analysis_level = spec
             .get("SdkAnalysisLevel")
             .map(|level| {
+                // `NuGetVersion.TryParse` accepts whitespace inside a version,
+                // which `ToString` then drops; that spelling is not modelled.
+                if level.contains(char::is_whitespace) {
+                    return Err(spec.decline("SdkAnalysisLevel", "whitespace inside a version"));
+                }
                 NuGetVersion::parse(level)
                     .map(|version| version_to_string(level, &version))
                     .map_err(|_| {
@@ -1617,7 +1629,7 @@ where
 /// `GetRestoreAuditProperties`.
 fn audit_properties<'a, 'i>(
     spec: &Item<'a>,
-    tfis: &[&Item<'a>],
+    group: &[&Item<'a>],
     suppressions: impl Iterator<Item = &'i Item<'a>>,
 ) -> Result<Option<Audit<'a>>>
 where
@@ -1625,18 +1637,15 @@ where
 {
     let enable = spec.get("NuGetAudit");
     let level = spec.get("NuGetAuditLevel");
-    // The project's mode, unless a framework's is `all` (ignoring case) and the
-    // project's is not: then the first such framework's, as it spells it.
-    // (Pinned against the oracle; NuGet's public source reads the frameworks
-    // first.)
-    let project_mode = spec.get("NuGetAuditMode");
-    let is_all = |mode: &&str| mode.eq_ignore_ascii_case("all");
-    let mode = project_mode.filter(is_all).or_else(|| {
-        tfis.iter()
-            .filter_map(|tfi| tfi.get("NuGetAuditMode"))
-            .find(is_all)
-            .or(project_mode)
-    });
+    // The first item of the project's whose mode is `all` (ignoring case), as it
+    // spells it, whatever its type; else the project spec's. (Pinned against the
+    // oracle; NuGet's public source reads only the frameworks.)
+    let mode = group
+        .iter()
+        .filter(|item| item.kind.vocabulary().contains(&"NuGetAuditMode"))
+        .filter_map(|item| item.get("NuGetAuditMode"))
+        .find(|mode| mode.eq_ignore_ascii_case("all"))
+        .or_else(|| spec.get("NuGetAuditMode"));
     let mut suppressed: Vec<&str> = Vec::new();
     for item in suppressions {
         let id = item.required("Id")?;

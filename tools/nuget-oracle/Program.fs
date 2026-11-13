@@ -1090,6 +1090,11 @@ let private respondRestoreGraphItems (sdkDir: string) (root: JsonElement) : stri
     let restoreRecursive = root.GetProperty("restoreRecursive").GetBoolean()
 
     let converted =
+        // The task's own guard: with no items it warns and writes nothing.
+        if items.Length < 1 then
+            Error(InvalidOperationException "Unable to find a project to restore!" :> exn)
+        else
+
         try
             let spec = MSBuildRestoreUtility.GetDependencySpec items
 

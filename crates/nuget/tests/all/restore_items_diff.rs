@@ -63,6 +63,12 @@ impl Oracles {
     /// One oracle per `dgspec_diff` environment and per culture. Each comes
     /// with the environment its process sees, which is what our function is
     /// given: the test's own, with the changes applied.
+    /// One oracle, under the environment the test inherits.
+    fn default_only() -> Oracles {
+        let map = std::env::vars_os().collect();
+        Oracles(vec![("inherited".to_owned(), map, Oracle::spawn())])
+    }
+
     fn spawn() -> Oracles {
         let inherited = || std::env::vars_os().collect::<BTreeMap<OsString, OsString>>();
         let mut oracles = Vec::new();
@@ -692,6 +698,7 @@ const SOURCES: &[&str] = &[
     "",
 ];
 const VERSIONS: &[&str] = &[
+    "1 .0.0",
     "1.0-preview.1",
     "1.0.0-beta.2+x",
     "1.0.0",
@@ -715,6 +722,8 @@ const LEVELS: &[&str] = &[
     "01.0-beta.2",
     "1.0-Beta",
     "1.0.0.0+m",
+    "9 .0.100",
+    "10.0. 400",
 ];
 const AUDIT: &[&str] = &[
     "direct", "all", "ALL", "low", "moderate", "", "true", "false",
@@ -787,6 +796,11 @@ fn pool_for(rng: &mut SplitMix64, name: &str) -> Vec<String> {
                 "1.0.0+meta",
                 "1.0",
                 "1.*",
+                "1 .0",
+                "[1.0.0 , 2.0.0)",
+                "[1.0.0,2.0.0)",
+                "( , 2.0.0]",
+                "1.0.0 - beta",
             ]);
             values.extend((0..4).map(|_| gen_range_string(rng)));
             values
@@ -1101,7 +1115,10 @@ fn mutated_entry_lists_are_written_as_nuget_writes_them() {
 /// in thousands of cases; this reaches each of them.
 #[test]
 fn every_single_value_is_written_as_nuget_writes_it() {
-    let mut oracles = Oracles::spawn();
+    // Under the default environment only: the environments move nothing a
+    // single value reaches but the macros (declined) and the culture, which
+    // the culture and random sweeps grade.
+    let mut oracles = Oracles::default_only();
     let mut rng = SplitMix64(0x000a_15ea_0002);
     let mut agreed = 0;
     let mut graded = 0;
@@ -1137,20 +1154,30 @@ fn every_single_value_is_written_as_nuget_writes_it() {
             }
             for name in names {
                 for value in pool_for(&mut rng, &name) {
-                    let mut items = base.clone();
-                    match items[i].metadata.iter_mut().find(|(n, _)| *n == name) {
+                    let mut changed = base[i].clone();
+                    match changed.metadata.iter_mut().find(|(n, _)| *n == name) {
                         Some(entry) => entry.1 = value.clone(),
-                        None => items[i].metadata.push((name.clone(), value.clone())),
+                        None => changed.metadata.push((name.clone(), value.clone())),
                     }
-                    let (outcome, _) = assert_sound(
-                        &mut oracles,
-                        &format!("{label}: {kind}.{name} = {value:?}"),
-                        &items,
-                        true,
-                    );
-                    graded += 1;
-                    if outcome == Outcome::Agree {
-                        agreed += 1;
+                    // The item changed in place, and a changed copy added after
+                    // the original (NuGet reads some values from the first
+                    // item of a kind and some from the whole group).
+                    let mut in_place = base.clone();
+                    in_place[i] = changed.clone();
+                    let mut copied = base.clone();
+                    changed.identity = format!("eeeeeeee-0000-0000-0000-{i:012}");
+                    copied.push(changed);
+                    for (shape, items) in [("in place", in_place), ("copied", copied)] {
+                        let (outcome, _) = assert_sound(
+                            &mut oracles,
+                            &format!("{label}: {kind}.{name} = {value:?} ({shape})"),
+                            &items,
+                            true,
+                        );
+                        graded += 1;
+                        if outcome == Outcome::Agree {
+                            agreed += 1;
+                        }
                     }
                 }
             }
@@ -1197,4 +1224,12 @@ fn culture_ordered_downloads_are_sound() {
             true,
         );
     }
+}
+
+/// With no items the task warns and writes no file, so nothing is committed.
+#[test]
+fn no_items_write_no_file() {
+    let mut oracles = Oracles::spawn();
+    let (outcome, _) = assert_sound(&mut oracles, "no items", &[], true);
+    assert_eq!(outcome, Outcome::DeclinedFailed);
 }

@@ -1436,11 +1436,13 @@ byte for byte, under each of `dgspec_diff`'s environments. The cases are:
   Each kind must produce at least one agreement. A 30,000-case soak found no
   violation, and between 55% and 70% of the value and item mutations agree.
 - **Every single-value mutation.** Each metadata name of the first item of
-  each kind in each base is set to every value in its pool: 3,690 cases, of
-  which 2,205 commit. The random sweep reaches any one name and value only
-  once in thousands of cases. Review found two violations it had missed, an
-  `SdkAnalysisLevel` with build metadata and Czech download order, and this
-  sweep is what reaches the first kind.
+  each kind in each base is set to every value in its pool, both in place and
+  in a changed copy added after the original: 7,812 cases, of which 4,740
+  commit. It runs under the default environment only. The random sweep reaches any one name and value only
+  once in thousands of cases. Review found violations it had missed: an
+  `SdkAnalysisLevel` with build metadata, an audit mode set on a second
+  `ProjectSpec`, and Czech download order. This sweep reaches the first two
+  kinds, and the culture oracles the third.
 
 The oracles run under `dgspec_diff`'s environments and under six process
 environments that move the culture: Czech, Swedish, English, `C`, no locale,
