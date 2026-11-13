@@ -1,6 +1,6 @@
 //! Versioned typed-AST **gate** — the language-version surface check
 //! ([`docs/ast-versioning-plan.md`] D3/P2), the runtime-grounded companion to the
-//! generated per-version facades ([`v8`](super::v8) / [`v9`](super::v9)).
+//! generated per-version facades (`v8` / `v9`).
 //!
 //! The frozen `vN` *facades* (the distinct, exhaustive dispatch enums, e.g.
 //! `v8::Type` = the union [`Type`](super::Type) minus the F# 9.0 `WithNull`) are

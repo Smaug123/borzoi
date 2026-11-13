@@ -8,7 +8,7 @@ build = "build.rs"
 [dependencies]
 borzoi-spawn.workspace = true
 borzoi-assembly = { workspace = true, features = ["serde"] }
-borzoi-cst.workspace = true
+borzoi-cst = { workspace = true, features = ["unstable-union"] }
 borzoi-msbuild.workspace = true
 borzoi-nuget.workspace = true
 borzoi-sema.workspace = true
