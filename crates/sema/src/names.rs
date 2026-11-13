@@ -325,6 +325,51 @@ impl NameTable {
         ids
     }
 
+    /// The names of `segments`, and the ids of `base` extended by each prefix
+    /// of `segments` (`base` itself first), each `None` where the table never
+    /// interned it. Probes under one lock and interns nothing.
+    pub(crate) fn lookup_extension<S: AsRef<str>>(
+        &self,
+        base: Option<PathId>,
+        segments: &[S],
+    ) -> Extension {
+        let names = self.lookup_names(segments);
+        let ids = self.extend_ids(base, &names);
+        Extension { names, ids }
+    }
+
+    /// The names of `segments`, each `None` where the table never interned
+    /// it. Probes under one lock and interns nothing.
+    pub(crate) fn lookup_names<S: AsRef<str>>(&self, segments: &[S]) -> Vec<Option<Name>> {
+        let reader = self.reader();
+        segments
+            .iter()
+            .map(|segment| reader.lookup(segment.as_ref()))
+            .collect()
+    }
+
+    /// The ids of `base` extended by each prefix of the path whose names are
+    /// `names` (`base` itself first), each `None` where the table never
+    /// interned it. Probes under one lock and interns nothing.
+    pub(crate) fn extend_ids(
+        &self,
+        base: Option<PathId>,
+        names: &[Option<Name>],
+    ) -> Vec<Option<PathId>> {
+        let reader = self.reader();
+        let mut ids = Vec::with_capacity(names.len() + 1);
+        ids.push(base);
+        for name in names {
+            let parent = *ids.last().expect("the base is always present");
+            ids.push(
+                parent
+                    .zip(*name)
+                    .and_then(|(parent, name)| reader.child(parent, name)),
+            );
+        }
+        ids
+    }
+
     /// The path whose segments are `segments`, interned if it is new.
     pub(crate) fn intern_path<S: AsRef<str>>(&self, segments: &[S]) -> PathId {
         segments.iter().fold(self.root(), |parent, segment| {
@@ -397,6 +442,35 @@ impl NameTable {
     }
 }
 
+/// A dotted path's segments, each with its name in the table, looked up once
+/// for every reading a tiered walk tries the path under.
+#[derive(Debug)]
+pub(crate) struct Segments {
+    pub(crate) texts: Vec<String>,
+    pub(crate) names: Vec<Option<Name>>,
+}
+
+impl Segments {
+    /// `texts`, looked up in `names`. Interns nothing.
+    pub(crate) fn new(names: &NameTable, texts: Vec<String>) -> Self {
+        Segments {
+            names: names.lookup_names(&texts),
+            texts,
+        }
+    }
+}
+
+/// [`NameTable::lookup_extension`]'s answer: a base path extended by some
+/// segments.
+#[derive(Debug)]
+pub(crate) struct Extension {
+    /// Each segment's name.
+    pub(crate) names: Vec<Option<Name>>,
+    /// The base extended by the first `i` segments, at `i`: one more than
+    /// there are segments.
+    pub(crate) ids: Vec<Option<PathId>>,
+}
+
 /// A table's identity ([`NameTable::tag`]).
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -425,6 +499,188 @@ impl NameReader<'_> {
             .children
             .get(&(parent.index, name.index))
             .map(|&index| self.table.path(index))
+    }
+}
+
+/// A path as a query spells it: its id in the table, `None` when the table
+/// never interned it, beside its segments.
+///
+/// The id answers the query. The segments are what the query's caller holds
+/// independently of the table, and under `interning-reference` a debug build
+/// asserts on every query that the two spell the same path and that the
+/// string-keyed reference answers alike, so a key built against the wrong
+/// parent or from the wrong text fails where it is used.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PathKey<'a> {
+    pub(crate) id: Option<PathId>,
+    pub(crate) text: &'a [String],
+}
+
+impl<'a> PathKey<'a> {
+    /// The key of `text`, looked up in `names`. Interns nothing.
+    pub(crate) fn of(names: &NameTable, text: &'a [String]) -> Self {
+        PathKey {
+            id: names.lookup_path(text),
+            text,
+        }
+    }
+
+    /// The key of `text`, whose id the caller already holds.
+    pub(crate) fn new(id: Option<PathId>, text: &'a [String]) -> Self {
+        PathKey { id, text }
+    }
+
+    /// Assert, under `interning-reference` in a debug build, that the id
+    /// spells the segments.
+    pub(crate) fn check(&self, names: &NameTable) {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            self.id,
+            names.lookup_path(self.text),
+            "a PathKey's id does not spell {:?}",
+            self.text
+        );
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = names;
+    }
+}
+
+/// A name as a query spells it: its id in the table, `None` when the table
+/// never interned it, beside its text. Checked like a [`PathKey`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NameKey<'a> {
+    pub(crate) id: Option<Name>,
+    pub(crate) text: &'a str,
+}
+
+impl<'a> NameKey<'a> {
+    /// The key of `text`, looked up in `names`. Interns nothing.
+    pub(crate) fn of(names: &NameTable, text: &'a str) -> Self {
+        NameKey {
+            id: names.lookup(text),
+            text,
+        }
+    }
+
+    /// The key of `text`, whose id the caller already holds.
+    pub(crate) fn new(id: Option<Name>, text: &'a str) -> Self {
+        NameKey { id, text }
+    }
+
+    /// Assert, under `interning-reference` in a debug build, that the id
+    /// spells the text.
+    pub(crate) fn check(&self, names: &NameTable) {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            self.id,
+            names.lookup(self.text),
+            "a NameKey's id does not spell {:?}",
+            self.text
+        );
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = names;
+    }
+}
+
+/// `path`'s id in `to`, given its id in `from`: the same segments, interned
+/// in `to`. What re-keying an index onto another table maps each key by.
+pub(crate) fn rekey_path(from: &NameTable, to: &NameTable, path: PathId) -> PathId {
+    to.intern_path(&from.segments(path))
+}
+
+/// `name`'s id in `to`, given its id in `from`.
+pub(crate) fn rekey_name(from: &NameTable, to: &NameTable, name: Name) -> Name {
+    to.logical(from.text(name))
+}
+
+/// A set of interned paths. Under `interning-reference` in a debug build it
+/// keeps the string-keyed set it replaced beside it and asserts on every
+/// query that the two agree; in every debug build it asserts that it is only
+/// ever used with one table's ids.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PathIdSet {
+    ids: crate::hash::HashSet<PathId>,
+    #[cfg(debug_assertions)]
+    table: Option<TableTag>,
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    by_text: crate::hash::HashSet<Vec<String>>,
+}
+
+impl PathIdSet {
+    #[cfg(debug_assertions)]
+    fn check_table(&self, names: &NameTable) {
+        if let Some(table) = self.table {
+            assert_eq!(
+                table,
+                names.tag(),
+                "a PathIdSet probed with another table's ids"
+            );
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn check_table(&self, _: &NameTable) {}
+
+    /// Add `path`, interning it.
+    pub(crate) fn insert(&mut self, names: &NameTable, path: &[String]) {
+        self.check_table(names);
+        #[cfg(debug_assertions)]
+        {
+            self.table = Some(names.tag());
+        }
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.by_text.insert(path.to_vec());
+        self.ids.insert(names.intern_path(path));
+    }
+
+    /// Whether `path` is a member.
+    pub(crate) fn contains(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        self.check_table(names);
+        path.check(names);
+        let found = path.id.is_some_and(|id| self.ids.contains(&id));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            found,
+            self.by_text.contains(path.text),
+            "an interned path set disagrees with its reference at {:?}",
+            path.text
+        );
+        found
+    }
+
+    /// Whether `path` is a member, looked up only when the set has one.
+    pub(crate) fn contains_path(&self, names: &NameTable, path: &[String]) -> bool {
+        !self.is_empty() && self.contains(names, PathKey::of(names, path))
+    }
+
+    /// Whether the path whose id is `id` is a member, `false` when the table
+    /// never interned it. Unlike [`Self::contains`], the caller holds no
+    /// spelling to check against, so the reference is the caller's to assert.
+    pub(crate) fn contains_id(&self, names: &NameTable, id: Option<PathId>) -> bool {
+        self.check_table(names);
+        id.is_some_and(|id| self.ids.contains(&id))
+    }
+
+    /// Whether the set has no member.
+    pub(crate) fn is_empty(&self) -> bool {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(self.ids.is_empty(), self.by_text.is_empty());
+        self.ids.is_empty()
+    }
+
+    /// The same set, keyed by `to`'s ids.
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
+        let mut ids = crate::hash::HashSet::default();
+        for &id in &self.ids {
+            ids.insert(rekey_path(from, to, id));
+        }
+        PathIdSet {
+            ids,
+            #[cfg(debug_assertions)]
+            table: self.table.map(|_| to.tag()),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            by_text: self.by_text.clone(),
+        }
     }
 }
 
@@ -481,9 +737,36 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
         self.by_id.insert(names.intern_path(path), value);
     }
 
-    /// The value at `path`.
+    /// Apply `update` to the value at `path`, interning it, starting from the
+    /// default.
+    pub(crate) fn update(&mut self, names: &NameTable, path: &[String], update: impl Fn(&mut V))
+    where
+        V: Default,
+    {
+        self.check_table(names);
+        #[cfg(debug_assertions)]
+        {
+            self.table = Some(names.tag());
+        }
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        update(self.by_text.entry(path.to_vec()).or_default());
+        update(self.by_id.entry(names.intern_path(path)).or_default());
+    }
+
+    /// The value at `path`, looked up only when the map has an entry.
     pub(crate) fn get(&self, names: &NameTable, path: &[String]) -> Option<&V> {
+        if self.by_id.is_empty() {
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            assert!(self.by_text.is_empty(), "a PathMap lost an entry");
+            return None;
+        }
         self.get_id(names, names.lookup_path(path), || path.to_vec())
+    }
+
+    /// The value at `path`, by a key the caller already holds.
+    pub(crate) fn get_key(&self, names: &NameTable, path: PathKey<'_>) -> Option<&V> {
+        path.check(names);
+        self.get_id(names, path.id, || path.text.to_vec())
     }
 
     /// The value at the path whose id is `id`, `None` when the table never
@@ -508,6 +791,21 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
         #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
         drop(text);
         found
+    }
+
+    /// The same map, keyed by `to`'s ids.
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
+        let mut by_id = HashMap::default();
+        for (&id, v) in &self.by_id {
+            by_id.insert(rekey_path(from, to, id), v.clone());
+        }
+        PathMap {
+            by_id,
+            #[cfg(debug_assertions)]
+            table: self.table.map(|_| to.tag()),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            by_text: self.by_text.clone(),
+        }
     }
 
     /// Every entry, as its path's id and value, in no particular order.
@@ -708,6 +1006,58 @@ mod tests {
             for p in &probed {
                 let id = intern_path(&table, p);
                 prop_assert_eq!(table.lookup_path(p), Some(id));
+            }
+        }
+    }
+
+    proptest! {
+        /// `extend_ids` from an interned base agrees, prefix by prefix, with a
+        /// whole-path lookup of the base's segments followed by that prefix,
+        /// and interns nothing.
+        #[test]
+        fn extensions_agree_with_whole_path_lookups(
+            interned in prop::collection::vec(path(), 0..12),
+            base in path(),
+            tail in path(),
+        ) {
+            let table = NameTable::default();
+            for p in &interned {
+                intern_path(&table, p);
+            }
+            let base_id = intern_path(&table, &base);
+            let before = table.entry_count();
+            let ext = table.lookup_extension(Some(base_id), &tail);
+            prop_assert_eq!(ext.ids.len(), tail.len() + 1);
+            for (k, id) in ext.ids.iter().enumerate() {
+                let whole: Vec<String> = base.iter().chain(&tail[..k]).cloned().collect();
+                prop_assert_eq!(*id, table.lookup_path(&whole), "{:?}", whole);
+            }
+            for (segment, name) in tail.iter().zip(&ext.names) {
+                prop_assert_eq!(*name, table.lookup(segment));
+            }
+            prop_assert_eq!(table.entry_count(), before, "lookups intern nothing");
+        }
+
+        /// A `PathIdSet` answers as the string set it replaced, whether
+        /// asked by key or by path, and re-keyed onto another table.
+        #[test]
+        fn path_id_sets_agree_with_string_sets(
+            members in prop::collection::vec(path(), 0..12),
+            probes in prop::collection::vec(path(), 0..12),
+        ) {
+            let table = NameTable::default();
+            let mut set = PathIdSet::default();
+            for p in &members {
+                set.insert(&table, p);
+            }
+            let other = NameTable::default();
+            other.logical("decoy");
+            let rekeyed = set.rekey(&table, &other);
+            for p in members.iter().chain(&probes) {
+                let expected = members.contains(p);
+                prop_assert_eq!(set.contains(&table, PathKey::of(&table, p)), expected);
+                prop_assert_eq!(set.contains_path(&table, p), expected);
+                prop_assert_eq!(rekeyed.contains_path(&other, p), expected);
             }
         }
     }

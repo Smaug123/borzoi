@@ -18,7 +18,7 @@
 use std::rc::Rc;
 
 use crate::hash::{HashMap, HashSet};
-use crate::names::{NameTable, PathId};
+use crate::names::{NameTable, PathId, PathKey};
 
 use super::model::{ItemId, OpenOpacity};
 use super::state::{AutoOpenTypeShadow, DottedOpacity, OpenGroup, ShorteningPrefix};
@@ -107,7 +107,7 @@ pub(super) struct OpenScope {
     /// check only (`docs/head-slot-assembly-eviction-plan.md`); the *project*
     /// slot checks keep using `explicit`/`module` prefixes. Same block-scoped
     /// lifecycle as [`Self::explicit_open_prefixes`].
-    pub(super) assembly_open_prefixes: Vec<(u32, Vec<String>)>,
+    pub(super) assembly_open_prefixes: Vec<OpenedPrefix>,
     /// Monotonic generation, bumped each time an `open M` of a project module with
     /// **unmodelled value-namespace members** is processed. Each opened
     /// [`ScopeEntry`] is tagged with the generation at its creation
@@ -222,6 +222,47 @@ impl OpenedPrefix {
             id: names.intern_path(&path),
             path,
         }
+    }
+}
+
+/// A prefix the open state holds, with its id in the env's name table: one
+/// reading of an [`OpenGroup`]. Interned when the open is processed, so a
+/// query under it asks the env by id rather than by a path built from it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct InternedPrefix {
+    pub(super) id: PathId,
+    pub(super) path: Vec<String>,
+}
+
+impl InternedPrefix {
+    /// `path`, interned in `names`.
+    pub(super) fn new(names: &NameTable, path: Vec<String>) -> Self {
+        InternedPrefix {
+            id: names.intern_path(&path),
+            path,
+        }
+    }
+
+    pub(super) fn as_ref(&self) -> PrefixRef<'_> {
+        PrefixRef {
+            id: self.id,
+            path: &self.path,
+        }
+    }
+}
+
+/// A borrowed prefix and its id: what the walks over the open state's
+/// readings ([`Resolver::assembly_prefixes_by_priority`]) yield.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PrefixRef<'a> {
+    pub(super) id: PathId,
+    pub(super) path: &'a [String],
+}
+
+impl<'a> PrefixRef<'a> {
+    /// The prefix as a query key.
+    pub(super) fn key(self) -> PathKey<'a> {
+        PathKey::new(Some(self.id), self.path)
     }
 }
 

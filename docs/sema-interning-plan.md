@@ -561,6 +561,68 @@ cannot forget to remove them.
 is 9.8% inclusive) and path allocations: an estimated −10 to −15% across the
 three parts, and allocations toward one per source byte.
 
+**Order.** A profile at Stage 4's head put the env's share first: the
+dropped-type gate (`dropped_type_could_root_this_path`, 5.2% of resolve's
+samples, all of it building `prefix ++ path` for every reading to ask an
+empty set), `AssemblyEnv::types_named` (4.4%, hashing a `Vec<String>`
+namespace per probe), and `lookup_type`. 5c also needs nothing from 5a or 5b,
+while those two share `PathSet`, so 5c lands first.
+
+**5c, implemented** (`assembly_env/type_index.rs`, `names.rs`):
+
+- **The seed.** `types_by_namespace` is a `TypeIndex` keyed by the
+  namespace's `PathId` and then by `Name` (F# source name; the
+  logical-segment index by IL or source name). Inserting interns the key, so
+  the env's table holds every namespace and type name the index does, and a
+  query whose namespace or name has no id answers empty without hashing.
+  `public_namespace_paths`, `namespaces_with_dropped_types` and
+  `dropped_type_namespace_prefixes` are `PathIdSet`s; `auto_open_modules` and
+  `auto_open_module_paths` are `PathMap`s. Each interns as it is filled, which
+  is the rest of the seed. `interned_count` leaves the seed out (the env
+  records the table's size once its indexes are built and again after
+  `mark_namespace_dropped_type`), so the LSP's cap bounds what folds add, as
+  D2 intends.
+- **Keys at the query.** A query takes a `PathKey { id, text }` and a
+  `NameKey { id, text }`: the id answers it, and the text is what the caller
+  holds independently of the table. The string-taking public API stays and
+  builds its keys with a lookup.
+- **The resolver passes ids.** Every `open`'s readings (`OpenGroup`) and
+  `assembly_open_prefixes` are interned when the `open` is processed; the
+  prefix walks (`assembly_prefixes_by_priority` and its siblings) yield a
+  `PrefixRef { id, path }`, the enclosing namespace's id coming from
+  `ContainerPath`. The tiered walk's per-reading closures take a `PathKey`.
+  `assembly_path_records`, `assembly_type_path_core` and
+  `opened_assembly_modules` look the source segments up once per walk
+  (`Segments`) and extend the reading's id by them (`extend_ids`), so each
+  rooting position's namespace is probed by id. `value_slot`'s assembly probe,
+  `namespace_could_supply_slot_type`, the auto-open shadow and
+  `declares_type_at_any_arity` go by id the same way.
+- **The dropped-type gate** asks `any_split_under_has_a_dropped_type(prefix,
+  tail)`: the splits are the prefix's ancestors (by `NameTable::split`) and
+  its extensions by the tail (by `child`), each probed by id, and an empty set
+  answers at once. A string-keyed `PathIdSet` or `PathMap` probe likewise
+  skips the lookup when the set is empty.
+- **Lockstep.** Under `interning-reference` in a debug build, `TypeIndex`
+  keeps the string-keyed index it replaced and asserts on every query (the
+  namespace's population, the name bucket, the first-wins slot, the
+  logical-segment bucket); `PathIdSet` and `PathMap` keep their string twins;
+  every `PathKey` and `NameKey` asserts that its id spells its text, which is
+  what catches a key built against the wrong parent at the call site; and the
+  dropped-type walk asserts its answer against the path-building original.
+- **`with_fresh_names`** (the interning-order test's copy of an env) now
+  re-keys the env's indexes onto the fresh table after interning the test's
+  shuffled paths, so the seed takes ids after them.
+
+Not converted, and why:
+
+- The abbreviation caches (`abbreviation_chase_cache`, the measure caches)
+  are keyed by `EntityHandle` already; there is no string key to replace.
+- `unknowable_abbreviation_namespaces` is asked "is any member under this
+  path" by a scan, off every hot path (0.0% of resolve's samples).
+- Callers that build a full path to ask the env *and* a project index in the
+  same breath (`assembly_path_records`'s `project_shadow_cause`, the
+  `open type` target walk) still build it: the project side is 5a/5b's.
+
 ### Stage 6 (optional): published names
 
 **Dependencies**: Stage 5. **Implements**: D3 at the public API.

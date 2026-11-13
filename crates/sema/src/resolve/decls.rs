@@ -12,7 +12,7 @@ use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
     TypeSlot,
 };
-use super::open_scope::{AutoOpenExit, ModuleExit, OpenedPrefix};
+use super::open_scope::{AutoOpenExit, InternedPrefix, ModuleExit, OpenedPrefix};
 use super::state::{Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix};
 use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path};
 
@@ -1246,13 +1246,13 @@ impl<'a> Resolver<'a> {
                         }
                     }
                     let project_readings_only = raw_project_module || unmodelled;
-                    let readings: Vec<Vec<String>> = interps
+                    let readings: Vec<InternedPrefix> = interps
                         .iter()
                         .filter_map(|i| match i {
                             OpenInterpretation::Reading(r)
                                 if !project_readings_only || self.is_project_namespace_path(r) =>
                             {
-                                Some(r.clone())
+                                Some(InternedPrefix::new(self.assemblies.names(), r.clone()))
                             }
                             _ => None,
                         })
@@ -1467,7 +1467,11 @@ impl<'a> Resolver<'a> {
                         // module alias produces no reading, so it stays out (codex
                         // round 1).
                         if has_reading {
-                            self.scope.assembly_open_prefixes.push((pos, gp.clone()));
+                            self.scope.assembly_open_prefixes.push(OpenedPrefix::new(
+                                self.assemblies.names(),
+                                pos,
+                                gp.clone(),
+                            ));
                             if !(project_readings_only && !project_ns) {
                                 self.scope.open_shortening_prefixes.push(ShorteningPrefix {
                                     path: gp.clone(),
