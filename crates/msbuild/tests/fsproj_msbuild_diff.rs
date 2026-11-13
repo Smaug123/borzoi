@@ -877,3 +877,84 @@ impl MsbuildOutput {
         }
     }
 }
+
+/// The path-derivable reserved properties (`docs/msbuild-reserved-seeding-plan.md`,
+/// part (a)), read from the project body and from an import in a subdirectory,
+/// against the real CLI (the in-process oracle is not authoritative for
+/// reserved names). The `MSBuildThisFile*` family must follow the file being
+/// walked and come back after the import; the directory names carry a space
+/// and a `;`, which a seed escapes.
+#[test]
+fn path_derivable_reserved_properties_match_msbuild() {
+    const NAMES: [&str; 7] = [
+        "MSBuildThisFileFullPath",
+        "MSBuildThisFileName",
+        "MSBuildThisFileExtension",
+        "MSBuildThisFileDirectoryNoRoot",
+        "MSBuildProjectDirectoryNoRoot",
+        "MSBuildThisFile",
+        "MSBuildThisFileDirectory",
+    ];
+    let tmp = TempDir::new().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let dir = root.join("p r;oj");
+    std::fs::create_dir_all(dir.join("sub dir")).unwrap();
+    let body: String = NAMES
+        .iter()
+        .map(|n| format!("<B_{n}>$({n})</B_{n}>"))
+        .collect();
+    let imported: String = NAMES
+        .iter()
+        .map(|n| format!("<I_{n}>$({n})</I_{n}>"))
+        .collect();
+    let source = format!(
+        "<Project><PropertyGroup>{body}</PropertyGroup>\
+         <Import Project=\"sub dir/Imp.x.props\" />\
+         <PropertyGroup><After>$(MSBuildThisFileName)$(MSBuildThisFileExtension)</After></PropertyGroup>\
+         </Project>"
+    );
+    std::fs::write(
+        dir.join("sub dir/Imp.x.props"),
+        format!("<Project><PropertyGroup>{imported}</PropertyGroup></Project>"),
+    )
+    .unwrap();
+    let fsproj = dir.join("Demo.fsproj");
+    std::fs::write(&fsproj, &source).unwrap();
+
+    let props: Vec<String> = NAMES
+        .iter()
+        .flat_map(|n| [format!("B_{n}"), format!("I_{n}")])
+        .chain(["After".to_string()])
+        .collect();
+    let mut cmd = Command::new("dotnet");
+    cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
+    scrub_msbuild_env(&mut cmd);
+    cmd.args(["msbuild", "-nologo"]);
+    cmd.arg(format!("-getProperty:{}", props.join(",")));
+    cmd.arg(&fsproj);
+    let out = BoundedCommand::new(cmd)
+        .timeout(MSBUILD_TIMEOUT)
+        .run_ok(format_args!("dotnet msbuild for {}", fsproj.display()));
+    let theirs: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+
+    let project = parse_fsproj_with_imports(
+        &source,
+        &fsproj,
+        &HashMap::new(),
+        &common::oracle_environment(),
+        None,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("parse {}: {e}", fsproj.display()));
+    for name in &props {
+        let theirs = theirs["Properties"][name.as_str()]
+            .as_str()
+            .expect("each property is reported");
+        assert_ne!(theirs, "", "MSBuild left {name} empty");
+        assert_eq!(
+            project.properties.get(name.as_str()).map(String::as_str),
+            Some(theirs),
+            "{name}"
+        );
+    }
+}

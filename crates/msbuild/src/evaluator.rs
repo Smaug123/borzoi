@@ -3415,60 +3415,33 @@ impl<'r> State<'r> {
         }
     }
 
-    /// Rebind `MSBuildThisFile` and `MSBuildThisFileDirectory` to the
-    /// imported file. MSBuild rebinds these for the duration of the
-    /// import; references like `$(MSBuildThisFileDirectory)foo.props`
-    /// in a `Directory.Build.props` should resolve against *that*
-    /// file's directory, not the entry project's.
+    /// Rebind the `MSBuildThisFile*` family to the imported file. MSBuild
+    /// rebinds these for the duration of the import; references like
+    /// `$(MSBuildThisFileDirectory)foo.props` in a `Directory.Build.props`
+    /// should resolve against *that* file's directory, not the entry
+    /// project's.
     ///
-    /// Both names are seeded by [`properties::well_known`], so the
-    /// saved values are always present; the [`ThisFileFrame`] just
-    /// records them verbatim for [`Self::exit_this_file`] to restore.
+    /// Every name is seeded by [`properties::well_known`], so the saved
+    /// values are always present; the [`ThisFileFrame`] just records them
+    /// verbatim for [`Self::exit_this_file`] to restore.
     fn enter_this_file(&mut self, file_path: &Path) -> ThisFileFrame {
-        let saved_this_file = self
-            .lookup
-            .get("MSBuildThisFile")
-            .cloned()
-            .unwrap_or_default();
-        let saved_this_file_directory = self
-            .lookup
-            .get("MSBuildThisFileDirectory")
-            .cloned()
-            .unwrap_or_default();
-        let file = file_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        // `MSBuildThisFileDirectory` carries a trailing separator (per
-        // MSBuild docs). Match the convention from
-        // `properties::well_known` so substitutions like
-        // `$(MSBuildThisFileDirectory)foo.props` work identically here.
-        let dir = file_path
-            .parent()
-            .map(|p| {
-                let s = p.to_string_lossy().into_owned();
-                if s.is_empty() {
-                    String::new()
-                } else {
-                    format!("{s}/")
-                }
-            })
-            .unwrap_or_default();
+        let seeds = properties::this_file_seeds(file_path);
+        let saved = seeds
+            .iter()
+            .map(|(name, _)| (*name, self.lookup.get(name).cloned().unwrap_or_default()))
+            .collect();
         // Evaluator-computed reserved values, not project XML: a `%` in an
         // imported file's path is literal, exactly as for `well_known`'s seeds.
-        self.lookup.insert_computed("MSBuildThisFile", file);
-        self.lookup.insert_computed("MSBuildThisFileDirectory", dir);
-        ThisFileFrame {
-            saved_this_file,
-            saved_this_file_directory,
+        for (name, value) in seeds {
+            self.lookup.insert_computed(name, value);
         }
+        ThisFileFrame { saved }
     }
 
     fn exit_this_file(&mut self, frame: ThisFileFrame) {
-        self.lookup
-            .insert_escaped("MSBuildThisFile", frame.saved_this_file);
-        self.lookup
-            .insert_escaped("MSBuildThisFileDirectory", frame.saved_this_file_directory);
+        for (name, value) in frame.saved {
+            self.lookup.insert_escaped(name, value);
+        }
     }
 }
 
@@ -3556,12 +3529,11 @@ fn is_discharged_inline_cpm_uncertainty(kind: &PackageReferenceUncertaintyCauseK
 /// Saved values for [`State::exit_this_file`] to restore after an
 /// imported file's body has been walked. See [`State::enter_this_file`].
 struct ThisFileFrame {
-    /// Saved **escaped**, and restored escaped: the pair never leaves the
+    /// Saved **escaped**, and restored escaped: the values never leave the
     /// domain, because `escape(unescape(s))` is not `s` in general — a
     /// round-trip through the unescaped form would corrupt a path containing
     /// any reserved character.
-    saved_this_file: Escaped,
-    saved_this_file_directory: Escaped,
+    saved: Vec<(&'static str, Escaped)>,
 }
 fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<'_>) {
     match node.tag_name().name() {

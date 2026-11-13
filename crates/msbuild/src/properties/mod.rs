@@ -159,10 +159,11 @@ impl PropertyMap {
 /// of the box without the caller having to supply them.
 ///
 /// MSBuild's authoritative list is larger (`MSBuildBinPath`,
-/// `MSBuildExtensionsPath`, the `MSBuildThisFile*` family for the
-/// currently-importing file, etc.). We only seed the path-derivable
-/// subset; SDK-dependent paths are left out because we don't model
-/// SDKs in phase 2.
+/// `MSBuildExtensionsPath`, …); toolset-derived names are left to the walker
+/// and the toolset seeding, and `MSBuildStartupDirectory` (the working
+/// directory of a build process that does not exist) is never seeded. The
+/// `MSBuildThisFile*` family starts out naming the project and is rebound for
+/// each imported file ([`this_file_seeds`]).
 pub fn well_known(project_path: &Path) -> PropertyMap {
     let mut map = PropertyMap::new();
     let full_path = project_path.to_string_lossy().into_owned();
@@ -182,27 +183,93 @@ pub fn well_known(project_path: &Path) -> PropertyMap {
         .extension()
         .map(|n| format!(".{}", n.to_string_lossy()))
         .unwrap_or_default();
-    // MSBuild docs: `MSBuildProjectDirectory` has no trailing separator;
-    // `MSBuildThisFileDirectory` does. Replicate that distinction.
-    let dir_with_sep = if dir.is_empty() {
-        String::new()
-    } else {
-        format!("{dir}/")
-    };
+    // `MSBuildProjectDirectoryNoRoot` has no trailing separator, like
+    // `MSBuildProjectDirectory` (probed against `dotnet msbuild`).
+    let dir_no_root = project_path.parent().map(no_root).unwrap_or_default();
     map.insert_computed("MSBuildProjectFullPath", full_path);
     map.insert_computed("MSBuildProjectDirectory", dir);
-    map.insert_computed("MSBuildThisFileDirectory", dir_with_sep);
+    map.insert_computed("MSBuildProjectDirectoryNoRoot", dir_no_root);
     map.insert_computed("MSBuildProjectName", stem);
-    // MSBuild seeds both names with the project's filename:
-    // `MSBuildThisFile` (relative to whichever file is currently
-    // importing — for us, always the project) and `MSBuildProjectFile`
-    // (the project-scoped alias). Real projects reach for either, and
-    // omitting the alias makes `$(MSBuildProjectFile)` resolve to empty,
-    // which truncates Include paths without a useful diagnostic.
-    map.insert_computed("MSBuildProjectFile", file.clone());
-    map.insert_computed("MSBuildThisFile", file);
+    // MSBuild seeds `MSBuildProjectFile` with the project's filename, and
+    // `MSBuildThisFile` too while the project's own body is walked. Real
+    // projects reach for either, and omitting the alias makes
+    // `$(MSBuildProjectFile)` resolve to empty, which truncates Include paths
+    // without a useful diagnostic.
+    map.insert_computed("MSBuildProjectFile", file);
     map.insert_computed("MSBuildProjectExtension", extension);
+    for (name, value) in this_file_seeds(project_path) {
+        map.insert_computed(name, value);
+    }
     map
+}
+
+/// The `MSBuildThisFile*` reserved properties for the file at `path`, which
+/// MSBuild binds to whichever file is being walked: the project's own body,
+/// then each imported file for the duration of its import. Probed against
+/// `dotnet msbuild` from a project body and from an import in a subdirectory:
+/// the directory names carry a trailing separator, the `NoRoot` one drops the
+/// filesystem root, and the name and extension split at the last `.`
+/// (`Imp.x.props` is `Imp.x` and `.props`).
+pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
+    let with_separator = |dir: String| {
+        if dir.is_empty() {
+            dir
+        } else {
+            format!("{dir}/")
+        }
+    };
+    let parent = path.parent();
+    [
+        (
+            "MSBuildThisFile",
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ),
+        (
+            "MSBuildThisFileDirectory",
+            with_separator(
+                parent
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+        ),
+        (
+            "MSBuildThisFileDirectoryNoRoot",
+            with_separator(parent.map(no_root).unwrap_or_default()),
+        ),
+        (
+            "MSBuildThisFileFullPath",
+            path.to_string_lossy().into_owned(),
+        ),
+        (
+            "MSBuildThisFileName",
+            path.file_stem()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ),
+        (
+            "MSBuildThisFileExtension",
+            path.extension()
+                .map(|n| format!(".{}", n.to_string_lossy()))
+                .unwrap_or_default(),
+        ),
+    ]
+}
+
+/// `dir` without its filesystem root (`/a/b` → `a/b`), as MSBuild's `NoRoot`
+/// reserved properties spell it.
+fn no_root(dir: &Path) -> String {
+    dir.components()
+        .filter(|c| {
+            !matches!(
+                c,
+                std::path::Component::RootDir | std::path::Component::Prefix(_)
+            )
+        })
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Expand `$(Name)` occurrences in `input` — **project XML text**, hence
@@ -1646,6 +1713,20 @@ mod tests {
             Some("/repo/proj/")
         );
         assert_eq!(get("MSBuildThisFile").as_deref(), Some("Demo.fsproj"));
+        assert_eq!(
+            get("MSBuildThisFileFullPath").as_deref(),
+            Some("/repo/proj/Demo.fsproj")
+        );
+        assert_eq!(get("MSBuildThisFileName").as_deref(), Some("Demo"));
+        assert_eq!(get("MSBuildThisFileExtension").as_deref(), Some(".fsproj"));
+        assert_eq!(
+            get("MSBuildThisFileDirectoryNoRoot").as_deref(),
+            Some("repo/proj/")
+        );
+        assert_eq!(
+            get("MSBuildProjectDirectoryNoRoot").as_deref(),
+            Some("repo/proj")
+        );
         // MSBuildProjectFile is the project-scoped alias for the same
         // value — both names must resolve to the project filename.
         assert_eq!(get("MSBuildProjectFile").as_deref(), Some("Demo.fsproj"));
