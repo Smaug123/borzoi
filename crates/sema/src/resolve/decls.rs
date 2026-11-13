@@ -12,9 +12,8 @@ use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
     TypeSlot,
 };
-use super::state::{
-    AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
-};
+use super::open_scope::{AutoOpenExit, ModuleExit};
+use super::state::{Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix};
 use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path};
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
@@ -67,26 +66,6 @@ pub(super) fn union_repr_is_private(defn: &TypeDefn) -> bool {
         defn.repr(),
         Some(TypeDefnRepr::Union(u)) if u.access().is_some_and(|t| t.text() == "private")
     )
-}
-
-/// Merge one auto-open type-shadow contribution into the scope's set.
-/// Same-name contributions merge **monotonically soundly** (codex round 3: a
-/// later `module private` sibling's depth-pinned entry must not evict an
-/// earlier public one): the minimum visible depth keeps the name shadowing
-/// wherever ANY contribution is visible, and the maximum import position
-/// makes the positional contest against in-file types as conservative as the
-/// latest introduction — either can only widen the defer, never mis-bind.
-fn merge_auto_open_shadow(
-    map: &mut crate::hash::HashMap<String, AutoOpenTypeShadow>,
-    name: String,
-    new: AutoOpenTypeShadow,
-) {
-    map.entry(name)
-        .and_modify(|e| {
-            e.min_depth = e.min_depth.min(new.min_depth);
-            e.import_pos = e.import_pos.max(new.import_pos);
-        })
-        .or_insert(new);
 }
 
 impl Resolver<'_> {
@@ -193,10 +172,12 @@ impl<'a> Resolver<'a> {
 
     /// Dotted path of the module currently being walked (`["Shared"]`), used to
     /// qualify exports: the container path while
-    /// [`in_exporting_module`](Self::in_exporting_module) holds, `None` in a
+    /// [`in_exporting_module`](crate::resolve::open_scope::OpenScope::in_exporting_module) holds, `None` in a
     /// namespace or under an anonymous root.
     pub(super) fn module_path(&self) -> Option<&[String]> {
-        self.in_exporting_module.then_some(&*self.container_path)
+        self.scope
+            .in_exporting_module
+            .then_some(&*self.container_path)
     }
 
     /// Export a value-namespace **constructor case** (a non-qualified union case
@@ -223,20 +204,21 @@ impl<'a> Resolver<'a> {
     /// current walk position, given whether it (a value) or its type (a case /
     /// exception) carries its own `private` modifier. An own `private` restricts
     /// the export to its container `self.container_path` (length
-    /// `container_path.len()`); otherwise it inherits [`Self::access_floor`] (a
+    /// `container_path.len()`); otherwise it inherits [`OpenScope::access_floor`](crate::resolve::open_scope::OpenScope::access_floor) (a
     /// `private` enclosing module). The own container is always the deeper
     /// boundary when present (`access_floor` is an ancestor prefix), so it wins
     /// whenever `own_private`; `None` (public) when neither restricts.
     pub(super) fn export_access_root_len(&self, own_private: bool) -> Option<usize> {
         debug_assert!(
-            self.access_floor
+            self.scope
+                .access_floor
                 .is_none_or(|f| f <= self.container_path.len()),
             "access_floor must be a prefix length of the current container_path"
         );
         if own_private {
             Some(self.container_path.len())
         } else {
-            self.access_floor
+            self.scope.access_floor
         }
     }
 
@@ -992,7 +974,8 @@ impl<'a> Resolver<'a> {
                 // priority; see `attribute_candidate`, `decide_type_path`). An
                 // open is scoped to its module, so leaving a nested module
                 // restores the position.
-                self.latest_open_pos = self
+                self.scope.latest_open_pos = self
+                    .scope
                     .latest_open_pos
                     .max(open.syntax().text_range().start().into());
                 if open.is_type() {
@@ -1046,11 +1029,11 @@ impl<'a> Resolver<'a> {
                         // filtered above): nothing is modelled, so bare-name
                         // resolution stays conservative.
                         None => {
-                            self.opaque_value_open = true;
-                            self.open_generation += 1;
+                            self.scope.opacity.raise_value();
+                            self.scope.open_generation += 1;
                         }
                     }
-                    self.unmodelled_open_active = true;
+                    self.scope.opacity.raise_unmodelled();
                     // EX-2: `open type T` brings T's static content into unqualified
                     // scope, not an instance/static extension into any *method group*
                     // — but a name-keyed claim about that surface would have to
@@ -1107,12 +1090,13 @@ impl<'a> Resolver<'a> {
                     // there, because FCS merges same-path entities across assemblies and
                     // would bind the hidden one's values at this higher priority (round
                     // 10). We cannot prove absence, so we decline to name a target.
-                    let vetoed_by_incomplete_prefix =
-                        !rooted && !path.is_empty() && !self.incomplete_open_prefixes.is_empty();
+                    let vetoed_by_incomplete_prefix = !rooted
+                        && !path.is_empty()
+                        && !self.scope.incomplete_open_prefixes.is_empty();
                     if vetoed_by_incomplete_prefix {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
-                        self.unmodelled_open_active = true;
+                        self.scope.opacity.raise_value();
+                        self.scope.open_generation += 1;
+                        self.scope.opacity.raise_unmodelled();
                     }
                     // **A dropped TypeDef can BE the module this open names**
                     // (codex round 23). When projection dropped the only entity
@@ -1128,9 +1112,9 @@ impl<'a> Resolver<'a> {
                     let names_uncovered_dropped_path = !path.is_empty()
                         && self.open_names_an_uncovered_dropped_path(&path, rooted, &interps);
                     if names_uncovered_dropped_path {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
-                        self.unmodelled_open_active = true;
+                        self.scope.opacity.raise_value();
+                        self.scope.open_generation += 1;
+                        self.scope.opacity.raise_unmodelled();
                     }
                     // A module nested in a project `[<AutoOpen>]` module answers
                     // to its short name, which the walk cannot follow: what
@@ -1138,9 +1122,9 @@ impl<'a> Resolver<'a> {
                     let names_unlent_module =
                         !rooted && self.may_name_unlent_module(&path, &interps);
                     if names_unlent_module {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
-                        self.unmodelled_open_active = true;
+                        self.scope.opacity.raise_value();
+                        self.scope.open_generation += 1;
+                        self.scope.opacity.raise_unmodelled();
                     }
                     let project_resolved = interps.iter().any(|i| match i {
                         OpenInterpretation::Module(_) => true,
@@ -1165,7 +1149,7 @@ impl<'a> Resolver<'a> {
                         .any(|i| matches!(i, OpenInterpretation::Module(_)));
 
                     // Which readings apply — all of which feed
-                    // [`Resolver::imports`] (the assembly precedence walk —
+                    // [`OpenScope::imports`](crate::resolve::open_scope::OpenScope::imports) (the assembly precedence walk —
                     // [`Self::resolve_assembly_path_tiered`] tries the relative
                     // before the root within this open and prefers this whole open
                     // over earlier ones, latest-open-wins):
@@ -1247,13 +1231,13 @@ impl<'a> Resolver<'a> {
                                 || self.assemblies.is_abbreviation(handle)
                             {
                                 if project_resolved {
-                                    self.open_generation += 1;
+                                    self.scope.open_generation += 1;
                                 } else {
-                                    self.opaque_value_open = true;
-                                    self.open_generation += 1;
+                                    self.scope.opacity.raise_value();
+                                    self.scope.open_generation += 1;
                                 }
                             }
-                            self.unmodelled_open_active = true;
+                            self.scope.opacity.raise_unmodelled();
                             unmodelled = true;
                         }
                     }
@@ -1270,7 +1254,7 @@ impl<'a> Resolver<'a> {
                         })
                         .collect();
                     if !readings.is_empty() {
-                        self.imports.push(OpenGroup { readings });
+                        self.scope.imports.push(OpenGroup { readings });
                     }
 
                     // **Project-opaque** fallback: an anonymous-root project module
@@ -1284,8 +1268,8 @@ impl<'a> Resolver<'a> {
                     // `open`'s value resolves — wrong; deferring is correct).
                     if !path.is_empty() && !module_opened && self.open_imports_project_values(&path)
                     {
-                        self.opaque_value_open = true;
-                        self.open_generation += 1;
+                        self.scope.opacity.raise_value();
+                        self.scope.open_generation += 1;
                     }
 
                     // EX-2 (`docs/extension-scope-enumeration-plan.md`): classify this
@@ -1405,7 +1389,7 @@ impl<'a> Resolver<'a> {
                             && !(project_readings_only && !project_ns);
                         let group = self.assembly_fold_group(gp, &handles, assembly_ns_applies);
                         if group.barrier() {
-                            self.open_generation += 1;
+                            self.scope.open_generation += 1;
                         }
                         // The project-module half's OWN hidden-values barrier
                         // (Q14's "may bring names we cannot enumerate" bump).
@@ -1455,7 +1439,7 @@ impl<'a> Resolver<'a> {
                                 .any(|path| path.starts_with(gp.as_slice()))
                             && !self.preceding.opaque_hidden_value_module(gp);
                         if bump_covered_by_screen {
-                            self.open_generation += 1;
+                            self.scope.open_generation += 1;
                         }
                         // A group that hides names we cannot LIST needs more than the
                         // per-head staleness veto: the hidden name could itself be a
@@ -1468,25 +1452,25 @@ impl<'a> Resolver<'a> {
                         // its namespace half's types included — keep their dotted
                         // resolution.
                         if group.hides_names() {
-                            self.dotted_opacity.set_opaque();
+                            self.scope.opacity.raise_dotted();
                         }
 
                         // -- The namespace reading's prefixes (the reading is a chain
                         // base for later opens — the shortening prefix — and a head
                         // candidate for the same-file module-qualified classifier,
-                        // [`Resolver::explicit_open_prefixes`]). Its *contents* are
+                        // [`OpenScope::explicit_open_prefixes`](crate::resolve::open_scope::OpenScope::explicit_open_prefixes)). Its *contents* are
                         // folded above (assembly half) and below (project cases). A
                         // module alias produces no reading, so it stays out (codex
                         // round 1).
                         if has_reading {
-                            self.assembly_open_prefixes.push((pos, gp.clone()));
+                            self.scope.assembly_open_prefixes.push((pos, gp.clone()));
                             if !(project_readings_only && !project_ns) {
-                                self.open_shortening_prefixes.push(ShorteningPrefix {
+                                self.scope.open_shortening_prefixes.push(ShorteningPrefix {
                                     path: gp.clone(),
                                     namespace_reading: true,
                                     module_reading: false,
                                 });
-                                self.explicit_open_prefixes.push((pos, gp.clone()));
+                                self.scope.explicit_open_prefixes.push((pos, gp.clone()));
                             }
                         }
 
@@ -1506,7 +1490,7 @@ impl<'a> Resolver<'a> {
                         // -- The assembly *module* half's dotted-head bookkeeping —
                         // keyed on the module handles, not the namespace surface.
                         if !handles.is_empty() {
-                            self.open_shortening_prefixes.push(ShorteningPrefix {
+                            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
                                 path: gp.clone(),
                                 namespace_reading: false,
                                 module_reading: true,
@@ -1524,7 +1508,7 @@ impl<'a> Resolver<'a> {
                                     .assemblies
                                     .any_split_of_a_module_path_has_a_dropped_type(gp)
                             {
-                                self.incomplete_open_prefixes.push(gp.clone());
+                                self.scope.incomplete_open_prefixes.push(gp.clone());
                             }
                             // A *dotted head* through this module (`open M` then
                             // `Sub.f`) is not modelled yet (Slice B of the plan
@@ -1559,7 +1543,7 @@ impl<'a> Resolver<'a> {
                                     .iter()
                                     .any(|&c| self.assemblies.is_public(c))
                             }) {
-                                self.dotted_opacity.set_opaque();
+                                self.scope.opacity.raise_dotted();
                             }
                         }
 
@@ -1610,7 +1594,7 @@ impl<'a> Resolver<'a> {
                             // above: hidden names no screen bounds must stale
                             // this open's own assembly entries too.
                             if project_module_bump && !bump_covered_by_screen {
-                                self.open_generation += 1;
+                                self.scope.open_generation += 1;
                             }
                             // An explicit `open M` brings M's own members, then
                             // its `[<AutoOpen>]` children's, as the namespace
@@ -1621,12 +1605,12 @@ impl<'a> Resolver<'a> {
                                 self.open_project_namespace_values(gp, pos);
                             }
                             self.module_open_contributions(gp, pos);
-                            self.module_open_prefixes.push((pos, gp.clone()));
+                            self.scope.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
                             // assembly module shares the FQN, the module-half push
                             // above covers it.
-                            self.open_shortening_prefixes.push(ShorteningPrefix {
+                            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
                                 path: gp.clone(),
                                 namespace_reading: false,
                                 module_reading: false,
@@ -1636,9 +1620,9 @@ impl<'a> Resolver<'a> {
                                 && !assembly_ns_applies
                                 && self.project_module_names_enumerable(gp)
                             {
-                                self.dotted_opacity.add_project_module(gp.clone());
+                                self.scope.opacity.add_dotted_project_module(gp.clone());
                             } else {
-                                self.dotted_opacity.set_opaque();
+                                self.scope.opacity.raise_dotted();
                             }
                         }
                     }
@@ -1764,39 +1748,23 @@ impl<'a> Resolver<'a> {
             },
         );
 
-        // Save every piece of module-scoped resolver *state* the body may mutate,
-        // so an `open`, a nested type/module, or an `open type` inside the body
-        // does not leak into the enclosing scope (F# scopes all of these to the
-        // module). `imports`, `open_shortening_prefixes`, `open_generation`,
-        // `unmodelled_open_active`, `opaque_value_open`, and `dotted_opacity`
-        // steer name resolution directly — a leaked `open Demo` would
-        // *mis-resolve* a later enclosing sibling through an import not in scope —
-        // so restoring them is a soundness requirement, not just hygiene;
-        // `nested_module_locals` restoration keeps an inner nested name from
-        // over-deferring an outer reference. The *opened* scope entries an
-        // `open type` pushes need no save/restore: they live in the body frame,
+        // Every piece of open-scoped state the body may change comes back when
+        // it ends ([`OpenScope::leave`]), so an `open`, a nested type/module, or
+        // an `open type` inside the body does not leak into the enclosing
+        // scope (F# scopes all of these to the module). A leaked `open Demo`
+        // would *mis-resolve* a later enclosing sibling through an import not
+        // in scope, so this is a soundness requirement, not just hygiene. The
+        // container path and the local shadow sets come back through their own
+        // marks; restoring `nested_module_locals` keeps an inner nested name
+        // from over-deferring an outer reference. The *opened* scope entries
+        // an `open type` pushes need no restore: they live in the body frame,
         // which is popped and discarded below, so they vanish with it.
         // (File-level accumulators — `items`, `defs`, `resolutions`,
         // `nested_module_exports` — are the file's contribution and persist.)
-        let saved_in_exporting_module = self.in_exporting_module;
+        let outer = self.scope.clone();
         let saved_container = self.container_path.mark();
-        let saved_imports = self.imports.clone();
-        let saved_open_shortening_prefixes = self.open_shortening_prefixes.clone();
-        let saved_incomplete_open_prefixes = self.incomplete_open_prefixes.clone();
-        let saved_explicit_open_prefixes = self.explicit_open_prefixes.clone();
-        let saved_module_open_prefixes = self.module_open_prefixes.clone();
-        let saved_assembly_open_prefixes = self.assembly_open_prefixes.clone();
-        let saved_open_generation = self.open_generation;
-        let saved_pattern_suppressed_case_ids = self.pattern_suppressed_case_ids.clone();
-        let saved_unmodelled_open = self.unmodelled_open_active;
-        let saved_opaque_value_open = self.opaque_value_open;
-        let saved_dotted_opacity = self.dotted_opacity.clone();
-        let saved_latest_open_pos = self.latest_open_pos;
-        let saved_recursive_module = self.recursive_module_active;
-        let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
         let saved_nested_locals = self.nested_module_locals.mark();
         let saved_augmentation_locals = self.augmentation_head_locals.mark();
-        let saved_access_floor = self.access_floor;
 
         // The nested module's full path = enclosing container + its own name(s)
         // (`module A.B = …` contributes both), the container for the body's own
@@ -1812,27 +1780,26 @@ impl<'a> Resolver<'a> {
         for segment in segs {
             self.container_path.push(segment);
         }
-        self.in_exporting_module = !self.anonymous_root;
+        self.scope.in_exporting_module = !self.anonymous_root;
         // A `module private Sub` scopes its contents to its parent (this module's
         // container); stacked private modules take the deepest floor (see
-        // [`Resolver::access_floor`]). A non-private module inherits the enclosing
-        // floor unchanged.
+        // [`OpenScope::access_floor`]). A non-private module inherits the
+        // enclosing floor unchanged.
         if header_is_private(nm.syntax()) {
             let parent_len = self.container_path.len().saturating_sub(1);
-            self.access_floor = Some(saved_access_floor.map_or(parent_len, |f| f.max(parent_len)));
+            self.scope.access_floor =
+                Some(outer.access_floor.map_or(parent_len, |f| f.max(parent_len)));
         }
-        self.recursive_module_active = saved_recursive_module || nm.is_rec();
+        self.scope.recursive_module_active = outer.recursive_module_active || nm.is_rec();
         // Entering a nested `module rec` from a non-rec scope starts a fresh
         // rec block: pre-scan ITS nested-module names. An enclosing rec block
         // already scanned this subtree (the outer collection recurses), so
         // its superset stays in place.
-        let saved_rec_module_names = if !saved_recursive_module && nm.is_rec() {
+        if !outer.recursive_module_active && nm.is_rec() {
             let mut names = crate::hash::HashSet::default();
             super::collect_nested_module_names(nm.decls(), &mut names);
-            Some(std::mem::replace(&mut self.rec_module_names, names))
-        } else {
-            None
-        };
+            self.scope.rec_module_names = std::rc::Rc::new(names);
+        }
 
         // A fresh frame for the body: bindings live here (visible to the body,
         // and qualified to later cross-file references) and are dropped from
@@ -1844,7 +1811,7 @@ impl<'a> Resolver<'a> {
         // Inside a `rec` block every binder the module declares is in scope
         // from its start, ahead of the walk reaching it.
         let saved_rec_contribution = self.rec_contribution.clone();
-        if self.recursive_module_active {
+        if self.scope.recursive_module_active {
             self.enter_rec_block(nm.decls(), u32::from(nm.syntax().text_range().start()));
         }
         for decl in nm.decls() {
@@ -1854,71 +1821,13 @@ impl<'a> Resolver<'a> {
         self.module_frames.pop();
         self.rec_contribution = saved_rec_contribution;
 
-        self.in_exporting_module = saved_in_exporting_module;
         self.container_path.leave_to(saved_container);
-        self.access_floor = saved_access_floor;
-        self.imports = saved_imports;
-        self.explicit_open_prefixes = saved_explicit_open_prefixes;
-        self.module_open_prefixes = saved_module_open_prefixes;
-        self.assembly_open_prefixes = saved_assembly_open_prefixes;
-        self.open_shortening_prefixes = saved_open_shortening_prefixes;
-        self.incomplete_open_prefixes = saved_incomplete_open_prefixes;
-        self.open_generation = saved_open_generation;
-        self.pattern_suppressed_case_ids = saved_pattern_suppressed_case_ids;
-        self.unmodelled_open_active = saved_unmodelled_open;
-        self.opaque_value_open = saved_opaque_value_open;
-        self.dotted_opacity = saved_dotted_opacity;
-        self.latest_open_pos = saved_latest_open_pos;
-        self.recursive_module_active = saved_recursive_module;
-        if let Some(saved) = saved_rec_module_names {
-            self.rec_module_names = saved;
-        }
         // An `[<AutoOpen>]` nested module opens into the remainder of its
-        // container's scope: propagate the names grown inside the body (an
-        // auto-open descendant's names flow outward through exactly this
-        // branch — the FCS-recursive chain) plus this module's own direct
-        // **public** type names (`type private T` is visible within the
-        // module only — codex round 2). Accessibility is depth-bounded, not
-        // boolean: a name contributed through a `module private` auto-open
-        // module is visible no shallower than that module's container, so
-        // each entry carries its minimum visible depth, filtered here on
-        // every hop outward. A plain module's imports stay inside it.
-        if attrs_auto_open(nm.attributes()) {
-            let parent_depth = self.container_path.len();
-            let own_private = header_is_private(nm.syntax());
-            let import_pos = u32::from(nm.syntax().text_range().start());
-            let grown = std::mem::replace(
-                &mut self.auto_open_type_shadow_names,
-                saved_auto_open_type_shadow_names,
-            );
-            for (name, entry) in grown {
-                // Entries the parent scope already had pass through untouched;
-                // this subtree's contributions are depth-filtered (invisible
-                // at the parent → dropped) and — through a private module —
-                // pinned to the parent's depth.
-                let inherited = self.auto_open_type_shadow_names.get(&name) == Some(&entry);
-                if inherited {
-                    continue;
-                }
-                if entry.min_depth > parent_depth {
-                    continue;
-                }
-                let min_depth = if own_private {
-                    entry.min_depth.max(parent_depth)
-                } else {
-                    entry.min_depth
-                };
-                merge_auto_open_shadow(
-                    &mut self.auto_open_type_shadow_names,
-                    name,
-                    AutoOpenTypeShadow {
-                        import_pos: entry.import_pos,
-                        min_depth,
-                    },
-                );
-            }
+        // container's scope; a plain module's imports stay inside it.
+        let exit = if attrs_auto_open(nm.attributes()) {
             // The module's own direct public types, read from its syntax (the
             // same header scan `define_type` fed from).
+            let mut own_types = Vec::new();
             for decl in nm.decls() {
                 if let ModuleDecl::Types(types) = decl {
                     for defn in types.defns() {
@@ -1926,21 +1835,21 @@ impl<'a> Resolver<'a> {
                             continue;
                         }
                         if let Some(name) = defn.long_id().and_then(single_ident) {
-                            merge_auto_open_shadow(
-                                &mut self.auto_open_type_shadow_names,
-                                id_text(&name).to_string(),
-                                AutoOpenTypeShadow {
-                                    import_pos,
-                                    min_depth: if own_private { parent_depth } else { 0 },
-                                },
-                            );
+                            own_types.push(id_text(&name).to_string());
                         }
                     }
                 }
             }
+            ModuleExit::AutoOpen(AutoOpenExit {
+                parent_depth: self.container_path.len(),
+                private: header_is_private(nm.syntax()),
+                import_pos: u32::from(nm.syntax().text_range().start()),
+                own_types,
+            })
         } else {
-            self.auto_open_type_shadow_names = saved_auto_open_type_shadow_names;
-        }
+            ModuleExit::Plain
+        };
+        self.scope = outer.leave(&mut self.scope, exit);
         self.nested_module_locals.rollback(saved_nested_locals);
         self.augmentation_head_locals
             .rollback(saved_augmentation_locals);

@@ -1667,7 +1667,7 @@ impl ProjectItems {
     /// (`AddModuleOrNamespaceContentsToNameEnv`: exceptions → tycons → vals),
     /// so such a value beats the module's own same-named case in bare pattern
     /// position **regardless of their source order** — the case must defer
-    /// ([`Resolver::pattern_suppressed_case_ids`](super::state::Resolver)).
+    /// ([`OpenScope::pattern_suppressed_case_ids`](crate::resolve::open_scope::OpenScope::pattern_suppressed_case_ids)(super::state::Resolver)).
     /// An inaccessible value is filtered exactly as FCS filters it from the
     /// opened environment, leaving the case committed.
     pub(super) fn module_value_may_be_constant_pattern(

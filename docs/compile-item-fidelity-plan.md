@@ -1,16 +1,12 @@
 # Compile-item fidelity plan (escapes, path aliasing, Update batching)
 
-> **Status.** The distinctive Compile-item stages of this plan are still
-> outstanding: **F0** (generative compile-order harness), **F2** (alias
-> matching), **F3** (batching degrade), **F4** (ratchet). **F1**'s *decoder*
-> half landed under
-> [`msbuild-escaped-value-plan.md`](msbuild-escaped-value-plan.md) (E0–E3):
-> item specs are stored `Escaped` and unescaped once at the point of use, so
-> `%XX` in captured Compile/ProjectReference identities and compile-order
-> `Update` targets is now modelled (`push_include_entry` /
-> `resolve_compile_update_targets` decode via `fragment_identity`). F1's
-> resolver-seam work is that plan's outstanding **E4**; its seam analysis
-> (below) is what E4 consumes verbatim, so the analysis is kept in full.
+> **Status.** **F1** (`%XX` escapes) has landed, as stages E0–E4 of
+> [`msbuild-escaped-value-plan.md`](completed/msbuild-escaped-value-plan.md):
+> item specs are stored `Escaped` and unescaped once at the point of use, on
+> the literal fast path and across the glob-resolver seam alike. **F0** (the
+> generative compile-order harness) has landed too. The other distinctive
+> Compile-item stages: **F2** (alias matching) has landed; **F3** (batching
+> degrade) and **F4** (ratchet) are outstanding.
 
 > Companion to the package-reference certainty work (PR #905, branch
 > `packageref-out-of-order-update`). That branch closed three MSBuild
@@ -53,7 +49,7 @@ sources (`LazyItemEvaluator.ComputeItems` / `ProcessNonWildCardItemUpdates`,
 4. **Escapes apply inside `Condition` attributes too.**
    `Condition="'%74rue' == 'true'"` evaluates *true* (oracle-verified for
    both property-element and item gates). *Landed* as E2 of
-   `docs/msbuild-escaped-value-plan.md` — the condition evaluator now models
+   `docs/completed/msbuild-escaped-value-plan.md` — the condition evaluator now models
    escape-bearing condition text rather than committing a wrong `False`.
    Escapes arriving in condition operands via *property values*
    (`<P>%74rue</P>`, `'$(P)' == 'true'`) fall out of the same escaped-domain
@@ -88,10 +84,9 @@ sources (`LazyItemEvaluator.ComputeItems` / `ProcessNonWildCardItemUpdates`,
 - Include paths are captured as `project_dir.join(entry)` after `$(…)`
   expansion, `%XX` decode (`fragment_identity`, F1), and `\`→`/`
   normalisation, with `.`/`..` segments left intact. Compile-order Update
-  matching (`take_matching_compile_items`) compares those `PathBuf`s with
-  **exact equality** — no lexical `.`/`..` normalisation (F2's remaining
-  gap; an alias-spelled `./a.fs` still silently fails to match include
-  `a.fs`).
+  matching (`update_target_matches`, F2) compares them as MSBuild does: the
+  lexically normalised full paths, ignoring ASCII case, declining where .NET's
+  non-ASCII folding or an unnormalised spelling would decide.
 - Globs, item references, and metadata references in includes and
   compile-order update targets already degrade (diagnostics under
   `compile_context`).
@@ -99,18 +94,18 @@ sources (`LazyItemEvaluator.ComputeItems` / `ProcessNonWildCardItemUpdates`,
   `Compile`/`CompileBefore`/`CompileAfter` lists via `-getItem` and the
   effective F# order via `-target:FSharpSourceCodeCompileOrder`, with
   `fs::canonicalize` on both sides; `fsproj_msbuild_corpus_diff.rs` sweeps
-  the corpus. There is still **no generative harness** for the Compile
-  capture (F0) — the package-reference bug that started all this was found
-  precisely by such a harness (`fsproj_packageref_generative_diff.rs`).
+  the corpus. `fsproj_compile_order_generative_diff.rs` (F0) is the generative
+  harness: it runs the SDK's own `FSharpSourceCodeCompileOrder` through the
+  oracle's `targetItems` op and holds every certain compile order to it.
 
 ## Exposure classes and design decisions
 
 | Class | Example | Status | Decision |
 | --- | --- | --- | --- |
 | Escaped path character | `Include="a%20b.fs"` | **modelled** (F1 decoder landed) | Unescape after split |
-| Escaped semicolon | `Include="a%3Bb.fs"` | literal path modelled; resolver seam still declines (E4) | Split raw, then unescape fragments |
-| Escaped wildcard | `Include="a%2Ab.fs"` | literal path modelled; resolver seam still declines (E4) | Glob-detect raw, store unescaped |
-| Alias in order-Update target | `Update="./a.fs"` vs include `a.fs` | silently fails to match, certain-wrong order | **F2**: lexically normalised match keys |
+| Escaped semicolon | `Include="a%3Bb.fs"` | **modelled** (F1, both seams) | Split raw, then unescape fragments |
+| Escaped wildcard | `Include="a%2Ab.fs"` | **modelled** (F1, both seams) | Glob-detect raw, store unescaped |
+| Alias in order-Update target | `Update="./a.fs"` or `Update="A.fs"` vs include `a.fs` | **modelled** (F2) | Normalised full path, compared ignoring case |
 | Stranded-prefix batching | `Update="a.fs;a.fs" CompileOrder=…` before the Include | applied to prior items only, certain-wrong order | **F3**: degrade (upstream bug, not worth mirroring) |
 
 Why model where the package side degraded: a package id is an opaque
@@ -127,16 +122,27 @@ stages (the `msbuild-condition-oracle` skill's stub-project method):
 - **Multi-byte escapes.** *Settled from source* by the escaped-value plan:
   `EscapingUtilities.cs:112` decodes each `%XX` pair as a single UTF-16 char
   (`%E2` → U+00E2), *not* byte-wise UTF-8.
-- **Case sensitivity of path matching on unix.** MSBuild's comparison
-  dictionaries are `OrdinalIgnoreCase` even off-Windows; confirm whether
-  `Update="A.fs"` matches include `a.fs` under `dotnet msbuild` on this
-  platform, and mirror exactly (needed by F2).
+- **Case sensitivity of path matching on unix.** *Settled by oracle*
+  (`targetItems`, Linux, 2026-11-12): a compile-order `Update` matches
+  ignoring case. `Update="A.fs"` moves the item `a.fs`, through the lazy
+  evaluator's batched path (an all-literal spec, keyed in an
+  `OrdinalIgnoreCase` dictionary) and through the unbatched one alike (a
+  `%`-bearing fragment, `Update="%41.fs"`). The same probes confirmed fact 2
+  on this platform: `./a.fs`, `sub/../a.fs`, `.\a.fs` and
+  `$(MSBuildProjectDirectory)/A.fs` all move `a.fs`. So F2's match key is the
+  lexically normalised full path compared ordinal-ignore-case. .NET's
+  `OrdinalIgnoreCase` folds beyond ASCII, but not uniformly (`é` matches `É`;
+  `ı` does not match `I`, nor `ſ` `S`), so F2 declines a non-ASCII match.
 - **Trailing dots/spaces** in fragments are trimmed only on Windows —
   expected out of scope (unix hosts), but pin one case to document it.
-- **`Exclude` interaction with the glob-resolver seam**: excludes are
-  handed to the `GlobResolver` verbatim; establish whether escaped or
-  alias-spelled excludes need pre-normalisation before the resolver sees
-  them, or a degrade (overlaps E4).
+- **`Exclude` interaction with the glob-resolver seam**: the escaped half
+  is settled. Excludes cross the seam as escaped `SpecFragment`s, and the
+  resolver applies one as MSBuild does, which depends on whether the include
+  it meets is a literal or a glob (the escaped-value plan's "Filespec
+  classification", pinned by oracle). Alias-spelled literal excludes
+  (`./a.fs`) compare as full paths there too. A case-differing exclude
+  declines; MSBuild's Linux rule for it (filenames ignore case, directories
+  do not) is pinned in #607.
 
 ## Staged implementation
 
@@ -145,7 +151,18 @@ that a reviewer can review each branch in isolation.
 
 ### Stage F0: generative compile-order differential harness
 
-**Status**: outstanding. **Dependencies**: none.
+**Status**: landed, as `crates/msbuild/tests/fsproj_compile_order_generative_diff.rs`.
+Over the restricted space it found no divergence: 12,000 random cases, and
+every planted evaluator bug tried (a case-sensitive bucket name, a bucketless
+value kept, the first `CompileOrder` child winning, a rooted `Update` target
+ignored) caught with a shrunk witness. Two departures from the sketch below:
+the oracle runs the target in-process (`targetItems`) rather than a
+`dotnet msbuild` per case, and the target's text is lifted from the installed
+`Microsoft.FSharp.Targets` rather than imported with it, since that file
+imports `Microsoft.Common.targets`. Rare *boundary* items (`Remove`, an
+`Update` writing other metadata, `Exclude`, `@(Compile)`, an
+`ItemDefinitionGroup` default) ride along, held to the same property.
+**Dependencies**: none.
 
 **Implements**: the "no generative harness" gap (Current state, last bullet).
 
@@ -177,49 +194,39 @@ analogue bounds silent skipping; the canary pins the plumbing.
 
 ---
 
-### Stage F1: model `%XX` unescaping for item paths — decoder landed (E0–E3); seam is E4
+### Stage F1: model `%XX` unescaping for item paths — landed
 
-**Status**: decoder half landed via
-[`msbuild-escaped-value-plan.md`](msbuild-escaped-value-plan.md) (E0–E3).
+**Status**: landed, as stages E0–E4 of
+[`msbuild-escaped-value-plan.md`](completed/msbuild-escaped-value-plan.md).
 Item specs are stored `Escaped`; `push_include_entry`,
 `route_item_through_resolver`, and `resolve_compile_update_targets` decode
 identities and match targets via `fragment_identity` / `scalar_use`; `Link`
-metadata takes the same decode. The **resolver seam remains outstanding**:
-`fragment_for_resolver` still *declines* any fragment whose `%XX` decodes to
-a `;`/`*`/`?` (`decodes_to_metacharacter`), because `GlobRequest::include`
-is still a `;`-joined string the LSP-side resolver re-splits and re-globs.
-Deleting that decline by handing the resolver a fragment list it never
-re-scans is the escaped-value plan's **E4** — which consumes the seam
-analysis below verbatim.
-
-**The seam analysis (consumed verbatim by E4).** Decode order at the
-glob-resolver seam is load-bearing. `route_item_through_resolver` re-joins
-the surviving fragments with `;` into `GlobRequest::include`, and the
-LSP-side resolver splits and glob-parses that string again. Decoding
-*before* that seam corrupts the round-trip: an unescaped `a%3Bb.fs`
-re-splits into two items, and an unescaped `a%2Ab.fs` turns a literal star
-into a wildcard. The fix must keep the resolver interface in raw
-(still-escaped) fragment terms — either change `GlobRequest` to carry a
-fragment *list* the resolver never re-splits, with decoding applied after
-the resolver's glob classification, or move the decode inside the resolver
-after its own split/parse. Add a property test for the seam: for all
-generated fragment lists containing escaped `;`/`*`/`?`, fragment count and
-literal/glob classification are preserved end-to-end. (Until E4, the
-interim guard keeps the seam *sound* by declining those fragments — the
-literal-path fast case in `route_item_through_resolver` already models
-plain escaped identities correctly.)
-
-**Correctness oracle**: differential fixtures in `fsproj_msbuild_diff.rs`
-for `a%20b.fs`, `a%3Bb.fs`, `a%2Ab.fs` (comparing against MSBuild's
-evaluated identities); the F0 harness's "escaped filename" dimension; the
-seam property test above.
+metadata takes the same decode. At the glob-resolver seam,
+`GlobRequest` carries `SpecFragment`s — split, still escaped, classified on
+their escaped text — and the resolver decodes each at its own point of use,
+so an escaped `%3b` never re-splits and an escaped `%2a` never globs. The
+seam property (fragment count and literal/glob classification preserved
+end-to-end) is `with_imports_tests/globs.rs`'s
+`route_splices_resolver_output_verbatim`; MSBuild-faithfulness, including the
+two ways an `Exclude` applies, is `fsproj_item_escape_generative_diff.rs`.
 
 ---
 
 ### Stage F2: path-normalised matching for compile-order Updates
 
-**Status**: outstanding. **Dependencies**: F0 (parallel with the E4 seam
-work; rebase whichever lands second).
+**Status**: landed. `update_target_matches` in
+`crates/msbuild/src/evaluator/item_pass.rs` is the match key: both sides
+normalised as `GetFullPath` writes them (`.` dropped, `..` resolved, at the
+root a `..` stays there), compared `OrdinalIgnoreCase` with ASCII folding
+mirrored. A non-ASCII character never matches an ASCII one (`ı`, `ſ`, `İ`
+and the Kelvin sign match no ASCII letter). A match that would rest on
+folding two non-ASCII characters (`é`/`É` fold; the Angstrom sign and `å` do
+not) or on a spelling MSBuild compares as written
+(`compares_unnormalised`, e.g. `a:b.fs`) declines. The F0 generator's
+spellings dimension (bare, rooted, `./`, `sub/../`, `.\`, lower case) is on
+for includes and `Update` targets, and its oracle-graded corners pin the
+rest. The literal-exclude half of the seam was already normalised by E4.
+**Dependencies**: F0.
 
 **Implements**: alias row of the decision table.
 

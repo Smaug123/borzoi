@@ -486,7 +486,7 @@ impl<'a> Resolver<'a> {
                 self.mark_decl(&name).qualified_case = true;
             }
             if !require_qualified {
-                let generation = self.open_generation;
+                let generation = self.scope.open_generation;
                 self.module_frame()
                     .push(ScopeEntry::binding(name, res, generation));
             }
@@ -543,7 +543,7 @@ impl<'a> Resolver<'a> {
             ));
         }
         if !require_qualified {
-            let generation = self.open_generation;
+            let generation = self.scope.open_generation;
             self.module_frame()
                 .push(ScopeEntry::undecided_case(case, generation));
         }
@@ -646,7 +646,7 @@ impl<'a> Resolver<'a> {
         // access on it) — but distinct from a `let` value, because at a dotted
         // *head* it does not commit member access (see [`DeclKinds::exception_ctor`]).
         self.mark_decl(&entry_name).exception_ctor = true;
-        let generation = self.open_generation;
+        let generation = self.scope.open_generation;
         self.module_frame()
             .push(ScopeEntry::binding(entry_name, res, generation));
     }
@@ -843,7 +843,7 @@ impl<'a> Resolver<'a> {
             // root / a local recognizer); `case_reference` (pattern position) still
             // finds it. Without this an `Item`-backed case would leak into
             // expression lookup and shadow a same-named ordinary value.
-            let mut entry = ScopeEntry::binding(case_name, case_res, self.open_generation);
+            let mut entry = ScopeEntry::binding(case_name, case_res, self.scope.open_generation);
             entry.pattern_only = true;
             entries.push(entry);
         }
@@ -982,9 +982,9 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .map(|(name, res)| match res {
                         Resolution::Deferred(_) => {
-                            ScopeEntry::undecided_case(name.clone(), self.open_generation)
+                            ScopeEntry::undecided_case(name.clone(), self.scope.open_generation)
                         }
-                        _ => ScopeEntry::binding(name.clone(), *res, self.open_generation),
+                        _ => ScopeEntry::binding(name.clone(), *res, self.scope.open_generation),
                     })
                     .collect()
             })
@@ -1003,7 +1003,7 @@ impl<'a> Resolver<'a> {
                 cases.push(ScopeEntry::binding(
                     name,
                     Resolution::Deferred(DeferredReason::UnboundName),
-                    self.open_generation,
+                    self.scope.open_generation,
                 ));
             }
         }
@@ -1087,7 +1087,7 @@ impl<'a> Resolver<'a> {
         let clean = matches!(&self.recovery, SyntaxRecovery::Reported(spans) if spans.is_empty());
         // A source-ordered, named container: not a `rec` block, and not
         // `namespace global` or an anonymous module.
-        let ordered = !self.recursive_module_active && !self.container_path.is_empty();
+        let ordered = !self.scope.recursive_module_active && !self.container_path.is_empty();
         if !(clean && ordered) {
             return None;
         }
@@ -1614,11 +1614,11 @@ impl<'a> Resolver<'a> {
         };
         let mut entries = Vec::new();
         if has_base {
-            entries.push(unmodelled("base", self.open_generation));
+            entries.push(unmodelled("base", self.scope.open_generation));
         }
         match self_tok {
             Some(tok) if tok.text() != "_" => entries.extend(self.bind_self_ident(tok)),
-            Some(_) | None => entries.push(unmodelled("_", self.open_generation)),
+            Some(_) | None => entries.push(unmodelled("_", self.scope.open_generation)),
         }
         entries
     }
@@ -1641,7 +1641,7 @@ impl<'a> Resolver<'a> {
         });
         let res = Resolution::Local(id);
         self.record(range, res);
-        Some(ScopeEntry::binding(name, res, self.open_generation))
+        Some(ScopeEntry::binding(name, res, self.scope.open_generation))
     }
 
     /// Resolve the type-name uses inside a [`Type`], recursing structurally
@@ -1837,8 +1837,8 @@ impl<'a> Resolver<'a> {
     ///
     /// It is sound but deliberately incomplete (records nothing, a sound deferral
     /// D5) when an `open` could bring an *unmodelled type* into scope that might
-    /// shadow the name ([`Self::unmodelled_open_active`] — an opened assembly module
-    /// / `open type`; [`Self::dotted_opacity`] — an opened project module), or
+    /// shadow the name ([`OpenOpacityState::unmodelled`](crate::resolve::open_scope::OpenOpacityState::unmodelled) — an opened assembly module
+    /// / `open type`; [`OpenOpacityState::dotted`](crate::resolve::open_scope::OpenOpacityState::dotted) — an opened project module), or
     /// the path is project-shadowed. The `resolve_assembly_diff.rs` completeness
     /// property measures the remaining gap.
     pub(super) fn resolve_type_path(&mut self, segs: &[SyntaxToken], arity: usize) {
@@ -1903,7 +1903,7 @@ impl<'a> Resolver<'a> {
     /// shell as exactly the old `defer_shadowable_type` behaviour.
     pub(super) fn decide_type_path(&self, names: &[String], arity: usize) -> TypePathResolution {
         // A same-file `[<AutoOpen>]` module has opened a type of this name
-        // into the current scope ([`Self::auto_open_type_shadow_names`]).
+        // into the current scope ([`OpenScope::auto_open_type_shadow_names`](crate::resolve::open_scope::OpenScope::auto_open_type_shadow_names)).
         // F#'s in-scope introductions contest positionally (latest wins), and
         // we model the in-file half of that contest exactly: a same-container
         // `type` declared AFTER the import outranks it and resolves below as
@@ -1914,7 +1914,7 @@ impl<'a> Resolver<'a> {
         // tiered walk) — defers as shadowable. Name-keyed: only the names the
         // module actually declares pay this.
         if let [only] = names
-            && let Some(shadow) = self.auto_open_type_shadow_names.get(only.as_str())
+            && let Some(shadow) = self.scope.auto_open_type_shadow_names.get(only.as_str())
         {
             let import_pos = shadow.import_pos;
             let later_in_file_type = self
@@ -1948,7 +1948,7 @@ impl<'a> Resolver<'a> {
         // match here could be the *wrong* target, not just a missed one, so
         // this must defer unconditionally rather than participate in the
         // tiered walk's priority ordering.
-        if names.len() == 1 && self.recursive_module_active {
+        if names.len() == 1 && self.scope.recursive_module_active {
             return TypePathResolution::Deferred(DeclineSite::pre_walk(
                 DeclineCause::RecursiveModuleActive,
             ));
@@ -1961,8 +1961,8 @@ impl<'a> Resolver<'a> {
         // to it here because the source-ordered walk has not reached the
         // module yet.
         if names.len() > 1
-            && self.recursive_module_active
-            && self.rec_module_names.contains(&names[0])
+            && self.scope.recursive_module_active
+            && self.scope.rec_module_names.contains(&names[0])
         {
             return TypePathResolution::Deferred(DeclineSite::pre_walk(
                 DeclineCause::RecursiveModuleHead,
@@ -1978,7 +1978,7 @@ impl<'a> Resolver<'a> {
         // `dotted_opacity` (the `open_imports_project_values` fallback sets only
         // the former), yet an opened project module with unenumerable contents can
         // still supply a shadowing type.
-        if self.unmodelled_open_active || self.dotted_opacity.any() || self.opaque_value_open {
+        if self.scope.opacity.any() {
             return TypePathResolution::Deferred(DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
         }
 
@@ -2412,7 +2412,7 @@ impl<'a> Resolver<'a> {
         // defer through the file-global, position-blind
         // [`Resolver::own_auto_open_type_names`](super::state::Resolver) set
         // in the in-file arm (the block-scoped
-        // [`Self::auto_open_type_shadow_names`] guard alone misses the
+        // [`OpenScope::auto_open_type_shadow_names`](crate::resolve::open_scope::OpenScope::auto_open_type_shadow_names) guard alone misses the
         // three-block straddle — codex on AO-2), an auto-open `exception`
         // through the file-global exception guard there, and a preceding
         // *file's* import position is always earlier than any current-file
@@ -2456,8 +2456,8 @@ impl<'a> Resolver<'a> {
                     self.own_generic_type_simple_names.contains(last)
                         || self.own_exception_simple_names.contains(last)
                         || self.own_auto_open_type_names.contains(last)
-                }) || self.recursive_module_active
-                    || self.latest_open_pos > u32::from(self.defs[id.index()].range.start());
+                }) || self.scope.recursive_module_active
+                    || self.scope.latest_open_pos > u32::from(self.defs[id.index()].range.start());
                 if unreliable {
                     AttrCandidate::Deferred(DeclineSite::pre_walk(
                         DeclineCause::AttributeInFileUnreliable,
@@ -2976,10 +2976,10 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether an `open` follows the definition of in-file type `id`
-    /// ([`Self::latest_open_pos`](super::state::Resolver)), so it could
+    /// ([`OpenScope::latest_open_pos`](crate::resolve::open_scope::OpenScope::latest_open_pos)(super::state::Resolver)), so it could
     /// supply a same-named type that wins.
     pub(super) fn opened_after(&self, id: DefId) -> bool {
-        self.latest_open_pos > u32::from(self.defs[id.index()].range.start())
+        self.scope.latest_open_pos > u32::from(self.defs[id.index()].range.start())
     }
 
     /// What a single-segment type name `name` at `arity` binds when an
@@ -3172,7 +3172,7 @@ impl<'a> Resolver<'a> {
             }
             let mut path = container.to_vec();
             path.push(name.clone());
-            if (self.recursive_module_active && self.own_type_simple_names.contains(name))
+            if (self.scope.recursive_module_active && self.own_type_simple_names.contains(name))
                 || self.dropped_type_could_root_this_path(&path)
             {
                 return true;
@@ -3308,7 +3308,7 @@ impl<'a> Resolver<'a> {
             });
         let declared = self.own_type_decl_counts.get(name).copied().unwrap_or(0);
         if at_arity > 1
-            || (self.recursive_module_active && declared > any_arity)
+            || (self.scope.recursive_module_active && declared > any_arity)
             || self.own_exception_simple_names.contains(name)
         {
             return Some(Err(DeclineCause::InFileTypeNameReused));
