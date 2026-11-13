@@ -15,6 +15,7 @@
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets	sha256:ffd9fabffb90c1a1
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.targets	sha256:7958c0c5010ec8d9
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets	sha256:6c0f262cf3a0d3ba
+10.0.112 forced TypeEquality/TypeEquality/TypeEquality.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced TypeEquality/TypeEquality/TypeEquality.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
 10.0.112 forced TypeEquality/TypeEquality/TypeEquality.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced TypeEquality/TypeEquality/TypeEquality.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
@@ -81,6 +82,7 @@
 10.0.112 forced TypeEquality/TypeEquality/TypeEquality.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
 10.0.112 forced TypeEquality/TypeEquality/TypeEquality.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.112 forced TypeEquality/TypeEquality/TypeEquality.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -142,6 +144,7 @@
 10.0.112 forced WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
 10.0.112 forced WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.112 forced WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -209,6 +212,7 @@
 10.0.112 forced WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
 10.0.112 forced WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.112 forced WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -270,6 +274,7 @@
 10.0.112 forced WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
 10.0.112 forced WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.112 forced WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -337,6 +342,7 @@
 10.0.112 forced WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
 10.0.112 forced WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.112 forced WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -450,6 +456,7 @@
 10.0.401 loaded sdk:NuGet.Versioning.dll	NuGet.Versioning 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
 10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
 10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj seam	agree
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
@@ -516,6 +523,7 @@
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj seam	agree
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -577,6 +585,7 @@
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj seam	agree
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -644,6 +653,7 @@
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj seam	agree
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -705,6 +715,7 @@
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj task RemoveDuplicates	sdk:Microsoft.Build.Tasks.Core.dll in GenerateRestoreGraphFile	sdk:Microsoft.Build.Tasks.Core.dll in _FilterRestoreGraphProjectInputItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathItems	sdk:Microsoft.Build.Tasks.Core.dll in _GenerateRestoreProjectPathWalk	sdk:Microsoft.Build.Tasks.Core.dll in _GetAllRestoreProjectPathItems
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj seam	agree
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -772,6 +783,7 @@
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj seam	agree
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets

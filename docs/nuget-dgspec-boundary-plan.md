@@ -6,7 +6,7 @@
 > B₁'s reading of the environment restore runs under.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions);
 > *A₁: the restore cone, staged* splits it into five stages, of which A₁.1
-> (the item seam) has landed.
+> (the item seam) and A₁.2 (the seam on real projects) have landed.
 > B₁ runs in production in shadow: every on-demand restore hands it the spec
 > it read and logs whether B₁ agreed (see *B₁ in shadow*).
 > The resolver is NuGet's default dependency resolver reimplemented, and
@@ -1489,17 +1489,53 @@ What it does not cover:
 - **Synthetic entries.** Everything graded here was generated. Real entry
   lists arrive at A₁.2.
 
-#### A₁.2: the seam on real projects
+#### A₁.2: the seam on real projects — landed
 
-`tools/msbuild-condition-oracle` gains an op that runs `_GenerateRestoreGraph`
-in-process under `restore_globals` and returns its target outputs with every
-custom metadata value, after `RemoveDuplicates`. Two things are checked on
-every corpus project and fixture:
-- feeding those entries to A₁.1 reproduces A₀'s spec exactly;
-- A₁.1 commits on each of them.
+`tools/msbuild-condition-oracle`'s `restoreCone` op runs the census build
+with `LogTaskInputs` set. It records the inputs of every `WriteRestoreGraphTask`
+invocation, grouped by invocation, and returns those of the one that wrote
+the requested `RestoreGraphOutputPath`:
+- its `RestoreGraphItems`, each with its spec and custom metadata read as the
+  task reads them (unescaped);
+- its `RestoreRecursive`, as it was handed.
+
+These are the writer's own inputs, after `RemoveDuplicates`.
+
+`restore_cone_census.rs` grades the seam only on a cone whose every target
+comes from the SDK. It puts that cone's entries through `write_restore_graph`
+with two further inputs:
+- the identity of the `NuGet.Commands` the census build loaded;
+- the oracle's scrubbed environment.
+
+A commit must equal the spec the cone wrote, byte for byte, or the census
+panics. A cone with a user target declines with the verdict "a user target
+ran in the cone".
+
+That gate came out of review. A first cut built `_GenerateRestoreGraph`
+separately, and the next four rounds each found another way a user target
+could hand the writer inputs the census did not see:
+- editing the entries before the writer;
+- running the writer again for another file, under a qualified or
+  differently cased task name, or from a child project;
+- changing `RestoreRecursive` after the writer.
+
+A user target can run anything around the writer. A₁ declines any cone with
+one anyway, since A₁.5 keys trust on the cone's identity. So such a cone is
+not graded, rather than chased hook by hook.
+
+Each cone's verdict is pinned as a `seam` line in the census manifests:
+
+| | SDK 10.0.401 (resolved) | SDK 10.0.112 (forced) |
+|---|---|---|
+| the six corpus projects | all six agree | all six decline: its NuGet is not verified |
+| `cpm` (central package management, a project reference) and `net10` (pruning, an escaped `;` in metadata) | both agree | both decline: its NuGet is not verified |
+| `hooked` | declines: a user target ran | declines: a user target ran |
+
+So the seam commits on every real entry list of SDK targets the census sees
+under a verified NuGet.
 
 From here on, the entries are what the stages before the seam are graded
-against.
+against: a stage that produces entries can be held to this op's output.
 
 #### A₁.3: target execution
 
