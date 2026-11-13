@@ -9,7 +9,7 @@
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item DotnetCliToolReference	MSBuild 0; ours none, not exact
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours none, not exact; the cone writes it
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours none, not exact; the cone writes it
-10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item FrameworkReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item FrameworkReference	MSBuild 0; ours 0, identities agree, tainted
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, not exact
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours none, not exact; the cone writes it
 10.0.401 resolved TypeEquality/TypeEquality/TypeEquality.fsproj reads item PackageDownload	MSBuild 0; ours none, tainted; the cone writes it
@@ -193,7 +193,7 @@
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item DotnetCliToolReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item FrameworkReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item FrameworkReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata agrees on 3 names
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.Expect/WoofWare.Expect/WoofWare.Expect.fsproj reads item PackageDownload	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
@@ -367,7 +367,7 @@
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item DotnetCliToolReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item FrameworkReference	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
+10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item FrameworkReference	MSBuild 1; ours 1, identities agree, metadata agrees on 3 names; the cone writes it
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata agrees on 3 names
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item KnownAppHostPack	MSBuild 8; ours 8, identities agree, metadata agrees on 5 names
 10.0.401 resolved WoofWare.Incremental/WoofWare.Incremental/WoofWare.Incremental.fsproj reads item KnownAspNetCorePack	MSBuild 1; ours 1, identities agree, metadata agrees on 2 names
@@ -589,7 +589,7 @@
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item DotnetCliToolReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item FrameworkReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item FrameworkReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata agrees on 3 names
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.LiangHyphenation/WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj reads item PackageDownload	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
@@ -763,7 +763,7 @@
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item DotnetCliToolReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item FrameworkReference	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
+10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item FrameworkReference	MSBuild 1; ours 1, identities agree, metadata agrees on 3 names; the cone writes it
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata agrees on 3 names
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item KnownAppHostPack	MSBuild 8; ours 8, identities agree, metadata agrees on 5 names
 10.0.401 resolved WoofWare.PawPrint/WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj reads item KnownAspNetCorePack	MSBuild 1; ours 1, identities agree, metadata agrees on 2 names
@@ -985,7 +985,7 @@
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item DotnetCliToolReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item FrameworkReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item FrameworkReference	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata agrees on 3 names
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved WoofWare.WeakHashTable/WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj reads item PackageDownload	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
