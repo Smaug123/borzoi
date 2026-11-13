@@ -522,23 +522,23 @@ fn check(source: &str, cells: &[(u32, String, bool, String)], tally: &mut Tally)
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
                  there\n{source}",
-                def.spelling(&env)
+                def.spelling(env)
             )
         });
         assert_eq!(
             &ours,
             theirs,
             "binder type mismatch for `{}` at {key:?} (line {})\n{source}",
-            def.spelling(&env),
+            def.spelling(env),
             line_of(key.0)
         );
         assert!(
             !dumps.hides_constraint(key, &ours),
             "binder `{}` typed `{ours}`, which FCS constrains\n{source}",
-            def.spelling(&env)
+            def.spelling(env)
         );
         tally.binders += 1;
-        ours_by_name.insert((def.spelling(&env).into_owned(), line_of(key.0)), ours);
+        ours_by_name.insert((def.spelling(env).into_owned(), line_of(key.0)), ours);
     }
     let warned: Vec<(u32, u32)> = serde_json::from_str::<serde_json::Value>(&types_json)
         .expect("types JSON")["Warnings"]

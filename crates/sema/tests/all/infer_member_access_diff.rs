@@ -1151,7 +1151,7 @@ fn unproven_object_base_edge_sinks_the_chain_rather_than_capping() {
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).spelling(&env) == "f")
+            .find(|(id, _)| resolved.def(**id).spelling(env) == "f")
             .map(|(_, ty)| ty.render())
     };
 
@@ -1746,7 +1746,7 @@ fn dropped_type_uncertainty_is_namespace_scoped() {
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).spelling(&env) == "n")
+            .find(|(id, _)| resolved.def(**id).spelling(env) == "n")
             .map(|(_, ty)| ty.render())
     };
 
@@ -1904,7 +1904,7 @@ fn annotated_receiver_door_is_sealed_by_the_resolver() {
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).spelling(&env) == "n")
+            .find(|(id, _)| resolved.def(**id).spelling(env) == "n")
             .map(|(_, ty)| ty.render())
     };
 

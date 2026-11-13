@@ -430,7 +430,7 @@ impl<'a> Resolver<'a> {
                 // type-qualified index (no value-namespace export) and use that
                 // `Item` everywhere — one identity, like a non-RQA case.
                 match self.export_require_qualified_case(
-                    &name,
+                    name,
                     id,
                     &type_key,
                     type_is_private,
@@ -444,7 +444,7 @@ impl<'a> Resolver<'a> {
                 }
             } else {
                 match self.export_case(
-                    &name,
+                    name,
                     id,
                     type_is_private,
                     repr_access_root.clone(),
@@ -455,7 +455,7 @@ impl<'a> Resolver<'a> {
                     Some(item_id) => {
                         // Reuse the value-namespace handle for the type-qualified
                         // path too — one identity for both `Mod.Case` and `T.Case`.
-                        self.export_type_qualified_case(&type_key, &name);
+                        self.export_type_qualified_case(&type_key, name);
                         Resolution::Item(item_id)
                     }
                     None => {
@@ -488,12 +488,12 @@ impl<'a> Resolver<'a> {
                 // A non-RQA union case is a bare-reachable constructor (value
                 // namespace) → record it in the container's declared-name view, so a
                 // same-named type elsewhere in the container is seen as contention.
-                self.mark_decl(&name).union_case = true;
+                self.mark_decl(name).union_case = true;
             }
             if rqa != RequireQualifiedAccess::CertainlyNot {
                 // A require-qualified case is reachable as `Mod.Case` in a pattern
                 // only ([`DeclKinds::qualified_case`](super::state::DeclKinds)).
-                self.mark_decl(&name).qualified_case = true;
+                self.mark_decl(name).qualified_case = true;
             }
             if !require_qualified {
                 let generation = self.scope.open_generation;
@@ -601,7 +601,7 @@ impl<'a> Resolver<'a> {
             // (declaration and same-file `Color.Red`) — one identity. An
             // anonymous-root enum case has no handle and stays a `Local`.
             let res = match self.export_require_qualified_case(
-                &case_name,
+                case_name,
                 id,
                 &type_key,
                 type_is_private,
@@ -813,7 +813,7 @@ impl<'a> Resolver<'a> {
             // anonymous-root or *local* case has no cross-file handle: it stays a
             // file-local `Resolution::Local(use_id)`.
             let case_res = if at_module_level {
-                self.mark_decl(&case_name).active_pattern = true;
+                self.mark_decl(case_name).active_pattern = true;
                 let item = if self.anonymous_root {
                     None
                 } else {

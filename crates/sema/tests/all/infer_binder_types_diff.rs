@@ -366,7 +366,7 @@ fn binder_render_under(source: &str, name: &str, recovery: &SyntaxRecovery) -> O
     inferred
         .def_types()
         .iter()
-        .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
+        .find(|(id, _)| resolved.def(**id).spelling(env) == name)
         .map(|(_, ty)| ty.render())
 }
 
@@ -950,7 +950,7 @@ fn a_constrained_head_defers_but_its_twin_does_not() {
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
+            .find(|(id, _)| resolved.def(**id).spelling(env) == name)
             .map(|(_, ty)| ty.render())
     };
 
@@ -1013,7 +1013,7 @@ fn an_error_obsolete_head_or_argument_defers_but_a_warning_one_does_not() {
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
+            .find(|(id, _)| resolved.def(**id).spelling(env) == name)
             .map(|(_, ty)| ty.render())
     };
 
@@ -1088,7 +1088,7 @@ fn a_rejecting_attribute_on_an_abbreviation_defers_but_a_warning_one_does_not() 
         inferred
             .def_types()
             .iter()
-            .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
+            .find(|(id, _)| resolved.def(**id).spelling(env) == name)
             .map(|(_, ty)| ty.render())
     };
 

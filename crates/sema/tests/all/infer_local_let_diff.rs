@@ -245,19 +245,19 @@ fn check_parsed(
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
                  there\n{source}",
-                def.spelling(&env)
+                def.spelling(env)
             )
         });
         assert_eq!(
             &ours,
             theirs,
             "binder type mismatch for `{}` at {key:?}\n{source}",
-            def.spelling(&env)
+            def.spelling(env)
         );
         assert!(
             !dumps.hides_constraint(key, &ours),
             "binder `{}` typed `{ours}`, which FCS constrains\n{source}",
-            def.spelling(&env)
+            def.spelling(env)
         );
         c.binders += 1;
         if let Some(&in_pattern) = local_binder_ranges.get(&key) {

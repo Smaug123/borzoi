@@ -160,7 +160,7 @@ fn published(env: &AssemblyEnv, src: &str) -> HashMap<String, String> {
     }
     for (def, ty) in inferred.def_types() {
         out.insert(
-            format!("def:{}", resolved.def(*def).spelling(&env)),
+            format!("def:{}", resolved.def(*def).spelling(env)),
             ty.render(),
         );
     }

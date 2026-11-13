@@ -13,10 +13,10 @@ use crate::names::{Name, NameTable};
 /// A name introduced by F# source — a `let`-bound value or function, a
 /// parameter, a type, a case, a member, a type parameter.
 ///
-/// It holds its name twice over, as ids into its env's [`NameTable`]: the
+/// It holds its name twice over, against its env's name table: the
 /// *logical* name the walk keys it by (backticks stripped, a bare operator
-/// compiled — [`id_text`]), and how the source spelled that name, which is
-/// what a consumer shows ([`Def::spelling`]). Like every id, both mean
+/// compiled, as FCS's `idText`), and how the source spelled that name, which
+/// is what a consumer shows ([`Def::spelling`]). Like every id, both mean
 /// something only beside the env the file was resolved against.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Def {
@@ -192,7 +192,7 @@ pub enum DefKind {
 /// the referenced-assembly variants (`Module`, `Method`, `Property`, `Event`)
 /// come from classifying a [`Resolution::Entity`](crate::Resolution) /
 /// [`Resolution::Member`](crate::Resolution) against the
-/// [`AssemblyEnv`](crate::AssemblyEnv) (see
+/// [`AssemblyEnv`] (see
 /// [`AssemblyEnv::entity_class`](crate::AssemblyEnv::entity_class) /
 /// [`AssemblyEnv::member_class`](crate::AssemblyEnv::member_class)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
