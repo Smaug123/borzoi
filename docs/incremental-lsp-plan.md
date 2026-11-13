@@ -845,11 +845,16 @@ here, with the allow worklist of D3. Behaviour is unchanged.
   disk read counts one open, whether or not it succeeds.
 - The dispatch loop begins a generation before each message, and before each
   step of a `workspace/diagnostic` sweep, and ends it afterwards.
-  `Sources::end_generation` emits the generation's number and counts as the
-  `observed.generation` `tracing` event, which is how a test, or
-  `edit_counts`, reads them from a loop it does not own. The counts sit in a
-  `Cell`, because the fold borrows the buffers shared beside the rest of the
-  state.
+  `Sources::end_generation` sends the generation's number and counts to the
+  channel a caller attached with `Sources::log_generations`, which is how a
+  test reads them from a loop it does not own, and emits them as the
+  `observed.generation` `tracing` event, which is how `edit_counts` reads
+  them. A test does not read the event: `tracing` caches a callsite's
+  interest process-wide, and with one dispatcher registered it asks only the
+  default of the thread that first reaches the callsite. A loop running in
+  another test of the same binary would cache "never" for the test's
+  scoped subscriber too. The counts sit in a `Cell`, because the fold borrows
+  the buffers shared beside the rest of the state.
 - The crate's `clippy.toml` repeats the workspace's (Clippy reads only the
   nearest one; `clippy_config_repeats_the_workspace_bans` holds it to the
   workspace's lines) and bans the calls that observe the file system: the
@@ -982,6 +987,9 @@ toward the cost of parsing and resolving `E` alone.
   of the generation's time) are re-read in every generation, and a re-read
   whose text is unchanged keeps the old allocation, so pointer identity
   survives the racy window.
+- The generation log (`log_generations`, and `end_generation` returning the
+  `Generation`) moves from `Sources` to the `Vfs` unchanged, with `stats`
+  beside `opens` in its counts and in the `observed.generation` event.
 - Outside a generation the `Vfs` remembers nothing and reads every time. That
   keeps the semantic layer's unit tests, which call it directly with no loop,
   on today's semantics.

@@ -430,7 +430,7 @@ fn a_same_size_write_within_the_window_of_the_stamp_is_not_missed() {
         model.borrow_mut().clock = at;
         vfs.begin_generation(Nanos(at));
         let text = vfs.text_of(&a);
-        let counts = vfs.end_generation();
+        let counts = vfs.end_generation().counts;
         (
             text.as_deref().map(str::to_string),
             counts.opens,
@@ -475,7 +475,7 @@ fn a_re_read_of_unchanged_text_keeps_its_allocation() {
     vfs.end_generation();
     vfs.begin_generation(Nanos(model.borrow().clock));
     let second = vfs.text_of(&a).unwrap();
-    assert_eq!(vfs.end_generation().opens, 1, "the stamp is racy");
+    assert_eq!(vfs.end_generation().counts.opens, 1, "the stamp is racy");
     assert!(Arc::ptr_eq(&first, &second));
 }
 

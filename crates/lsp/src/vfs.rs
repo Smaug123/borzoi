@@ -44,8 +44,9 @@
 //! drops the entry ([`Vfs::hint`]), still covers a write.
 //!
 //! Every disk call is counted per generation ([`ReadCounts`]), and
-//! [`Vfs::end_generation`] emits the counts as the [`GENERATION_EVENT`]
-//! `tracing` event. The disk itself is a [`Disk`]: [`HostDisk`] in the server,
+//! [`Vfs::end_generation`] sends the ended [`Generation`] to the log a caller
+//! attached ([`Vfs::log_generations`]) and emits it as the
+//! [`GENERATION_EVENT`] `tracing` event. The disk itself is a [`Disk`]: [`HostDisk`] in the server,
 //! and a model with a generated clock in the tests.
 
 use std::cell::{Cell, RefCell};
@@ -54,11 +55,12 @@ use std::collections::hash_map;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use std::time::{Duration, SystemTime};
 
 use lsp_types::Uri;
 
-use crate::observed::{GENERATION_EVENT, HostDisk, ReadCounts};
+use crate::observed::{GENERATION_EVENT, Generation, HostDisk, ReadCounts};
 use crate::paths::{lexically_normalize, path_dedup_key};
 use crate::uri::UriExt as _;
 
@@ -192,6 +194,9 @@ pub struct Vfs<D: Disk = HostDisk> {
     open: Option<Nanos>,
     /// What the current generation has observed so far.
     counts: Cell<ReadCounts>,
+    /// Where each ended generation is sent, if a caller asked for them
+    /// ([`Self::log_generations`]).
+    log: Option<Sender<Generation>>,
 }
 
 impl FromIterator<(Uri, String)> for Vfs {
@@ -222,6 +227,7 @@ impl<D: Disk> Vfs<D> {
             generation: 0,
             open: None,
             counts: Cell::new(ReadCounts::default()),
+            log: None,
         }
     }
 
@@ -420,18 +426,37 @@ impl<D: Disk> Vfs<D> {
         self.counts.set(ReadCounts::default());
     }
 
-    /// End the current generation: emit its counts as [`GENERATION_EVENT`]
-    /// and return them.
-    pub fn end_generation(&mut self) -> ReadCounts {
+    /// Send every generation that ends from now on to `log`, replacing any
+    /// log attached before.
+    ///
+    /// The channel is unbounded, and the dispatch loop never waits on it: the
+    /// caller drains it, at one entry per message handled (and per sweep
+    /// step). A receiver that hangs up stops the logging.
+    pub fn log_generations(&mut self, log: Sender<Generation>) {
+        self.log = Some(log);
+    }
+
+    /// End the current generation: send it to the log, if one is attached,
+    /// emit its counts as [`GENERATION_EVENT`], and return it.
+    pub fn end_generation(&mut self) -> Generation {
         self.open = None;
-        let counts = self.counts.get();
+        let generation = Generation {
+            number: self.generation,
+            counts: self.counts.get(),
+        };
+        if let Some(log) = &self.log
+            && log.send(generation).is_err()
+        {
+            // The receiver hung up: nobody reads the log any more.
+            self.log = None;
+        }
         tracing::debug!(
             name: GENERATION_EVENT,
-            generation = self.generation,
-            opens = counts.opens,
-            stats = counts.stats,
+            generation = generation.number,
+            opens = generation.counts.opens,
+            stats = generation.counts.stats,
         );
-        counts
+        generation
     }
 
     /// The open generation's number, or `None` between generations.

@@ -4,10 +4,12 @@
 //! - **Source reads** go through [`crate::vfs::Vfs`], whose disk is a
 //!   [`HostDisk`]: the `stat`s and reads here, which the `Vfs` counts per
 //!   **generation**, the unit of work the dispatch loop does for one message
-//!   (or one step of a `workspace/diagnostic` sweep). The `Vfs` emits each
-//!   generation's [`ReadCounts`] as the [`GENERATION_EVENT`] `tracing` event,
-//!   so "a comment keystroke opens no file" can be asserted by a test on any
-//!   platform, and `edit_counts` reports the same counts.
+//!   (or one step of a `workspace/diagnostic` sweep). The `Vfs` sends each
+//!   ended [`Generation`] to the log a caller attached
+//!   ([`crate::vfs::Vfs::log_generations`]) and emits it as the
+//!   [`GENERATION_EVENT`] `tracing` event. So "a comment keystroke opens no
+//!   file" can be asserted by a test on any platform, reading the log as
+//!   data, and `edit_counts` reports the same counts from the event.
 //! - **Every other observation** is a method of [`Unobserved`], whose variant
 //!   names the reader it belongs to and the plan stage that will route it.
 //!   Those are not counted.
@@ -25,6 +27,13 @@ use crate::vfs::{Disk, Nanos, Stamp};
 /// The name of the event [`crate::vfs::Vfs::end_generation`] emits, whose
 /// fields are the generation's number (`generation`) and its [`ReadCounts`]
 /// (`opens`, `stats`).
+///
+/// A test reads [`crate::vfs::Vfs::log_generations`] instead. `tracing`
+/// caches each callsite's interest for the whole process, and while one
+/// dispatcher is registered it computes that interest from the default of
+/// whichever thread reaches the callsite first. So a subscriber scoped to one
+/// test's server thread misses every event if a loop in another test of the
+/// same binary reaches this callsite first.
 pub const GENERATION_EVENT: &str = "observed.generation";
 
 /// What one generation observed.
@@ -35,6 +44,13 @@ pub struct ReadCounts {
     pub opens: u64,
     /// Paths `stat`ed to validate what an earlier generation read.
     pub stats: u64,
+}
+
+/// One ended generation: its number and what it observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Generation {
+    pub number: u64,
+    pub counts: ReadCounts,
 }
 
 /// The host's file system, as the [`crate::vfs::Vfs`] reads it.
