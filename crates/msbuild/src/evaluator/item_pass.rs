@@ -2124,6 +2124,20 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     // `Update="@(PackageReference)"` would otherwise be flagged unevaluable
     // even though it only stamps an uncaptured `AllowExplicitVersion`.
     if op == PackageRefOp::Update && !update_writes_captured_metadata(node, state) {
+        // Inert for the dependency set, but not for an item table: whichever
+        // references it matches carry what it writes. Without resolving the
+        // match, every name it may write is unknown on every reference.
+        let written = node
+            .attributes()
+            .map(|attr| attr.name())
+            .filter(|name| is_item_metadata_attribute(name))
+            .chain(
+                node.children()
+                    .filter(Node::is_element)
+                    .map(|child| child.tag_name().name()),
+            )
+            .map(item_key);
+        state.package_reference_unknown_names.extend(written);
         return;
     }
     state.note_package_uncertain_from_sdk_property_taint(target);
@@ -2185,6 +2199,12 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
         }
     }
     let local_metadata = read_package_metadata(node, state);
+    // Every metadatum, as an item table reads it. Quietly: the dependency
+    // capture has read the package names already, and nothing else may steer
+    // the walk.
+    let previous = state.quiet_target_framework_reads.replace(true);
+    let exact = read_generic_item_metadata(node, state);
+    state.quiet_target_framework_reads.set(previous);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let origin = state.current_origin();
@@ -2234,6 +2254,10 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
             .captured_package_references
             .push(CapturedPackageReference {
                 op,
+                row: match op {
+                    PackageRefOp::Include => source.row.clone().with_metadata_applied(&exact),
+                    PackageRefOp::Update => EvaluatedItem::bare(&id).with_metadata_applied(&exact),
+                },
                 id,
                 metadata,
                 span: span.clone(),
@@ -2323,6 +2347,9 @@ pub(super) struct CapturedPackageReference {
     op: PackageRefOp,
     id: String,
     metadata: PackageMetadata,
+    /// The item as an item table reads it, every metadatum exact; see
+    /// [`State::package_reference_rows`].
+    row: EvaluatedItem,
     span: Range<usize>,
     origin: DiagnosticOrigin,
 }
@@ -2350,6 +2377,7 @@ pub(super) fn finalize_package_references(state: &mut State<'_>) {
                     .filter(|include| include.id.eq_ignore_ascii_case(&item.id))
                 {
                     include.metadata = include.metadata.with_overrides(&item.metadata);
+                    include.row.updated_by(&item.row);
                 }
                 // A lone Update matching no prior Include is dropped here. Any
                 // uncertainty its own metadata/identity evaluation recorded
@@ -2373,6 +2401,7 @@ pub(super) fn finalize_package_references(state: &mut State<'_>) {
                 });
         }
     }
+    state.package_reference_rows = effective.iter().map(|r| r.row.clone()).collect();
     state.package_references = effective
         .into_iter()
         .map(|reference| PackageReference {
@@ -2878,6 +2907,9 @@ struct DependencyIdentitySource {
     identity: String,
     metadata: PackageMetadata,
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
+    /// The item as an item table reads it: a helper item copied whole, or a
+    /// bare literal identity.
+    row: EvaluatedItem,
 }
 
 fn read_package_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> PackageMetadata {
@@ -2926,10 +2958,13 @@ fn resolve_dependency_identity_sources(
                 metadata_uncertainties.extend(helper_item_definition_default_uncertainties(
                     &key, &item, state,
                 ));
+                let mut row = item.clone();
+                row.metadata_uncertainties = metadata_uncertainties.clone();
                 resolved.push(DependencyIdentitySource {
                     identity: item.identity,
                     metadata,
                     metadata_uncertainties,
+                    row,
                 });
             }
             continue;
@@ -2966,8 +3001,10 @@ fn resolve_dependency_identity_sources(
         // is a point of use, so it decodes here. `Include="Foo%2eBar"` is the
         // package `Foo.Bar`, which is also what an `Update`/`Remove` naming it
         // either way must compare against.
+        let identity = fragment_identity(entry);
         resolved.push(DependencyIdentitySource {
-            identity: fragment_identity(entry),
+            row: EvaluatedItem::bare(&identity),
+            identity,
             metadata: PackageMetadata::default(),
             metadata_uncertainties: Vec::new(),
         });
@@ -3011,6 +3048,44 @@ struct GenericItemMetadata {
 }
 
 impl EvaluatedItem {
+    /// An item of `identity` and no metadata, all of it known.
+    fn bare(identity: &str) -> EvaluatedItem {
+        EvaluatedItem {
+            identity: identity.to_owned(),
+            metadata: HashMap::new(),
+            exact_metadata: HashMap::new(),
+            metadata_uncertainties: Vec::new(),
+            metadata_complete: true,
+        }
+    }
+
+    /// This item as an `Update` matching it leaves it: each metadatum the
+    /// `Update` sets or leaves uncertain replaces this item's. (Identity and
+    /// every other metadatum stay.)
+    fn updated_by(&mut self, update: &EvaluatedItem) {
+        let written: HashSet<String> = update
+            .exact_metadata
+            .keys()
+            .cloned()
+            .chain(
+                update
+                    .metadata_uncertainties
+                    .iter()
+                    .map(|u| item_key(&u.name)),
+            )
+            .collect();
+        self.metadata_uncertainties
+            .retain(|u| !written.contains(&item_key(&u.name)));
+        self.metadata_uncertainties
+            .extend(update.metadata_uncertainties.iter().cloned());
+        for (name, value) in &update.exact_metadata {
+            self.exact_metadata.insert(name.clone(), value.clone());
+        }
+        for uncertainty in &update.metadata_uncertainties {
+            self.exact_metadata.remove(&item_key(&uncertainty.name));
+        }
+    }
+
     /// This item copied by an `Include="@(…)"` whose element declares
     /// `metadata`: the element's values win, and a metadatum the element sets
     /// or leaves uncertain replaces whatever the source carried for it.
@@ -3848,13 +3923,25 @@ fn record_helper_item_definition_defaults(node: Node<'_, '_>, state: &mut State<
         return;
     }
     for child in node.children().filter(Node::is_element) {
-        if !item_child_condition_may_run(child, state) {
-            continue;
-        }
-        let Some(item_type) = generic_helper_item_type(child) else {
+        // A dependency item type's defaults are recorded too, for the item
+        // table's rows ([`State::package_reference_rows`]). Quietly: the
+        // dependency capture judges its own defaults elsewhere.
+        let dependency = package_item_kind_for_element(child).is_some();
+        let item_type = match generic_helper_item_type(child) {
+            Some(item_type) => item_type,
+            None if dependency => child.tag_name().name().to_string(),
+            None => continue,
+        };
+        let previous = state
+            .quiet_target_framework_reads
+            .replace(state.quiet_target_framework_reads.get() || dependency);
+        let names = item_child_condition_may_run(child, state)
+            .then(|| item_definition_child_metadata_names(child, state));
+        state.quiet_target_framework_reads.set(previous);
+        let Some(names) = names else {
             continue;
         };
-        for metadata in item_definition_child_metadata_names(child, state) {
+        for metadata in names {
             state.record_helper_item_definition_default(&item_type, &metadata.name);
         }
     }

@@ -1383,6 +1383,15 @@ struct State<'r> {
     /// effective (post-merge) `PackageReference` set; populated by the item
     /// pass's `finalize_package_references`.
     package_references: Vec<PackageReference>,
+    /// The effective `PackageReference` items as an item table reads them:
+    /// each with every metadatum, exactly ([`EvaluatedItem::exact_metadata`]),
+    /// collapsed through `Update` as MSBuild collapses it. Only the probe reads
+    /// these ([`reads`]); the dependency capture reads `package_references`.
+    package_reference_rows: Vec<EvaluatedItem>,
+    /// Metadata names an `Update` the dependency capture skipped (it writes no
+    /// package metadatum) may have written on any `PackageReference`: unknown
+    /// on every row.
+    package_reference_unknown_names: HashSet<String>,
     package_versions: Vec<PackageVersion>,
     package_versions_untracked: bool,
     global_package_references: Vec<GlobalPackageReference>,
@@ -2071,6 +2080,8 @@ impl<'r> State<'r> {
             project_references: Vec::new(),
             captured_package_references: Vec::new(),
             package_references: Vec::new(),
+            package_reference_rows: Vec::new(),
+            package_reference_unknown_names: HashSet::new(),
             package_versions: Vec::new(),
             package_versions_untracked: false,
             global_package_references: Vec::new(),
@@ -2609,6 +2620,8 @@ impl<'r> State<'r> {
             // `finalize_package_references`.
             captured_package_references: _,
             package_references,
+            package_reference_rows: _,
+            package_reference_unknown_names: _,
             package_versions,
             package_versions_untracked,
             global_package_references,

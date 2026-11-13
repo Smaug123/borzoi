@@ -16,8 +16,8 @@
 
 use std::collections::BTreeMap;
 
-use super::EvaluatedItem;
 use super::item_pass::{helper_item_definition_default_uncertainties, item_list_view};
+use super::{EvaluatedItem, HelperMetadataUncertainty};
 use super::{State, is_toolset_initial_property_name, item_key};
 use crate::UntrustedCause;
 
@@ -173,6 +173,33 @@ impl State<'_> {
                 .collect(),
             metadata_complete: item.metadata_complete,
         };
+        // `PackageReference` lives in the dependency capture, whose certainty
+        // covers its identities: exact when that set is certain and nothing
+        // was hidden from the walk.
+        if key == item_key("PackageReference") {
+            let rows = self
+                .package_reference_rows
+                .iter()
+                .map(|item| {
+                    let mut item = item.clone();
+                    item.metadata_uncertainties.extend(
+                        helper_item_definition_default_uncertainties(&key, &item, self),
+                    );
+                    for name in &self.package_reference_unknown_names {
+                        item.exact_metadata.remove(name);
+                        item.metadata_uncertainties
+                            .push(HelperMetadataUncertainty::new(name, "an Update"));
+                    }
+                    row(&item)
+                })
+                .collect();
+            return ItemRead {
+                items: Some(rows),
+                exact: self.walk_opaque.is_none() && !self.package_references_uncertain,
+                tainted: self.package_references_uncertain,
+                untracked: false,
+            };
+        }
         // The list an `@(…)` reference in the walk itself would take as exact,
         // by the same predicate; else the table as captured, for reporting.
         let view = item_list_view(item_type, self);
@@ -208,7 +235,7 @@ mod tests {
 
     /// Read `properties` and `item_types` at the end of a walk of `body`, with
     /// imports followed but no SDK or glob resolver, in a directory of its own.
-    fn read(body: &str, properties: &[&str], item_types: &[&str]) -> EvaluationReads {
+    pub(super) fn read(body: &str, properties: &[&str], item_types: &[&str]) -> EvaluationReads {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.fsproj");
         let source = format!("<Project>{body}</Project>");
@@ -302,5 +329,25 @@ mod tests {
         );
         assert!(!reads.items["T"].exact);
         assert!(reads.items["h"].exact);
+    }
+}
+
+#[cfg(test)]
+mod package_reference_tests {
+    use super::tests::read;
+
+    #[test]
+    fn an_update_collapses_onto_the_rows() {
+        let reads = read(
+            "<ItemGroup><PackageReference Include=\"a\" Version=\"1\" Pack=\"x\" />\
+             <PackageReference Update=\"a\" Version=\"2\" Pack=\"y\" /></ItemGroup>",
+            &[],
+            &["PackageReference"],
+        );
+        let read = &reads.items["PackageReference"];
+        assert!(read.exact);
+        let row = &read.items.as_ref().unwrap()[0];
+        assert_eq!(row.metadata.get("pack").map(String::as_str), Some("y"));
+        assert_eq!(row.metadata.get("version").map(String::as_str), Some("2"));
     }
 }

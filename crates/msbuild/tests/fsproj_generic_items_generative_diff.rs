@@ -31,7 +31,11 @@ use borzoi_msbuild::observed::host_fs;
 use borzoi_msbuild::test_support::{ReadProbe, parse_fsproj_reads};
 use common::{Oracle, SplitMix64};
 
-const ITEM_TYPES: [&str; 2] = ["Helper", "Known"];
+/// `PackageReference` is captured by the dependency capture, not the generic
+/// tables, and collapses `Update` onto prior `Include`s.
+const ITEM_TYPES: [&str; 3] = ["Helper", "Known", "PackageReference"];
+/// What an `Update` names.
+const UPDATES: [&str; 4] = ["a", "A", "b", "@(Helper)"];
 const METADATA: [&str; 3] = ["Version", "Pack", "Flavor"];
 const INCLUDES: [&str; 9] = [
     "a",
@@ -130,6 +134,15 @@ fn project(rng: &mut SplitMix64) -> (String, bool) {
         ));
     }
     out.push_str("  <ItemGroup>\n");
+    if rng.below(2) == 0 {
+        item(
+            rng,
+            &mut out,
+            "PackageReference",
+            "Include=\"a\" Version=\"1.0\"",
+            "",
+        );
+    }
     for _ in 0..1 + rng.below(4) {
         let item_type = rng.pick(&ITEM_TYPES);
         let condition = if rng.below(5) == 0 {
@@ -141,43 +154,63 @@ fn project(rng: &mut SplitMix64) -> (String, bool) {
             out.push_str(&format!("    <{item_type} Remove=\"a\"{condition} />\n"));
             continue;
         }
-        let include = rng.pick(&INCLUDES);
-        let mut attributes = String::new();
-        if rng.below(8) == 0 {
-            attributes.push_str(" Label=\"group\"");
-        }
-        let mut children = String::new();
-        for name in METADATA {
-            match rng.below(4) {
-                0 => attributes.push_str(&format!(" {name}=\"{}\"", rng.pick(&VALUES))),
-                1 => {
-                    let condition = if rng.below(2) == 0 {
-                        format!(" Condition=\"{}\"", rng.pick(&CONDITIONS))
-                    } else {
-                        String::new()
-                    };
-                    let body = if rng.below(3) == 0 {
-                        rng.pick(&BODIES)
-                    } else {
-                        rng.pick(&VALUES)
-                    };
-                    children.push_str(&format!("      <{name}{condition}>{body}</{name}>\n"));
-                }
-                _ => {}
-            }
-        }
-        if children.is_empty() {
-            out.push_str(&format!(
-                "    <{item_type} Include=\"{include}\"{attributes}{condition} />\n"
-            ));
+        let operation = if rng.below(5) == 0 {
+            format!("Update=\"{}\"", rng.pick(&UPDATES))
         } else {
-            out.push_str(&format!(
-                "    <{item_type} Include=\"{include}\"{attributes}{condition}>\n{children}    </{item_type}>\n"
-            ));
-        }
+            format!("Include=\"{}\"", rng.pick(&INCLUDES))
+        };
+        item(rng, &mut out, item_type, &operation, &condition);
+    }
+    // A versioned reference and an `Update` after everything else, the shape
+    // whose collapse a reader of the item table sees.
+    if rng.below(2) == 0 {
+        let operation = format!("Update=\"{}\"", rng.pick(&UPDATES));
+        item(rng, &mut out, "PackageReference", &operation, "");
     }
     out.push_str("  </ItemGroup>\n</Project>\n");
     (out, gated)
+}
+
+/// One item element: `operation` (`Include=…` or `Update=…`), random metadata as
+/// attributes and child elements, and `condition`.
+fn item(rng: &mut SplitMix64, out: &mut String, item_type: &str, operation: &str, condition: &str) {
+    let mut attributes = String::new();
+    if rng.below(8) == 0 {
+        attributes.push_str(" Label=\"group\"");
+    }
+    let mut children = String::new();
+    for name in METADATA {
+        // A `Version` attribute already in `operation` is not repeated.
+        if operation.contains(&format!(" {name}=")) {
+            continue;
+        }
+        match rng.below(4) {
+            0 => attributes.push_str(&format!(" {name}=\"{}\"", rng.pick(&VALUES))),
+            1 => {
+                let condition = if rng.below(2) == 0 {
+                    format!(" Condition=\"{}\"", rng.pick(&CONDITIONS))
+                } else {
+                    String::new()
+                };
+                let body = if rng.below(3) == 0 {
+                    rng.pick(&BODIES)
+                } else {
+                    rng.pick(&VALUES)
+                };
+                children.push_str(&format!("      <{name}{condition}>{body}</{name}>\n"));
+            }
+            _ => {}
+        }
+    }
+    if children.is_empty() {
+        out.push_str(&format!(
+            "    <{item_type} {operation}{attributes}{condition} />\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "    <{item_type} {operation}{attributes}{condition}>\n{children}    </{item_type}>\n"
+        ));
+    }
 }
 
 /// What a sweep reached: how many projects MSBuild rejected (and so tested
@@ -190,6 +223,7 @@ struct Tally {
     lists: usize,
     clean: usize,
     clean_with_gated: usize,
+    clean_package_references: usize,
 }
 
 /// Evaluate `xml` both ways and hold every clean list to MSBuild's.
@@ -237,6 +271,7 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
         }
         tally.clean += 1;
         tally.clean_with_gated += usize::from(gated);
+        tally.clean_package_references += usize::from(item_type == "PackageReference");
         let rows = read.items.as_deref().unwrap_or_default();
         let ours: Vec<&str> = rows.iter().map(|r| r.identity.as_str()).collect();
         let msbuild: Vec<&str> = theirs.iter().map(|(id, _)| id.as_str()).collect();
@@ -296,6 +331,12 @@ fn most_lists_are_clean() {
         tally.rejected * 10 < tally.cases,
         "MSBuild rejected {} of {} generated projects",
         tally.rejected,
+        tally.cases
+    );
+    assert!(
+        tally.clean_package_references * 10 > tally.cases,
+        "only {} of {} cases had an exact PackageReference list",
+        tally.clean_package_references,
         tally.cases
     );
     assert!(
