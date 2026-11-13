@@ -1492,44 +1492,47 @@ What it does not cover:
 #### A₁.2: the seam on real projects — landed
 
 `tools/msbuild-condition-oracle`'s `restoreCone` op runs the census build
-with `LogTaskInputs` set, and records the `RestoreGraphItems` that
-`WriteRestoreGraphTask` is handed, grouped by invocation. The census takes
-the one invocation that wrote the requested `RestoreGraphOutputPath`: its
-items, with their spec and custom metadata read as the task reads them, and
-its `RestoreRecursive` as it was handed. Because these are that writer's own
-inputs, they arrive after `RemoveDuplicates`, after any target hooked in
-before the writer, apart from any other writer a hook runs, and unaffected by
-a hook that changes a property afterwards.
+with `LogTaskInputs` set. It records the inputs of every `WriteRestoreGraphTask`
+invocation, grouped by invocation, and returns those of the one that wrote
+the requested `RestoreGraphOutputPath`:
+- its `RestoreGraphItems`, each with its spec and custom metadata read as the
+  task reads them (unescaped);
+- its `RestoreRecursive`, as it was handed.
 
-Review of a first cut found that this is the only sound source. That cut
-built `_GenerateRestoreGraph` separately and modelled `RemoveDuplicates`, so
-it missed hooks and .NET's case folding. Review then found two more ways to hand the census the wrong inputs: a
-second writer that a hook runs for another file, and a hook that changes
-`RestoreRecursive` after the writer. The fixtures now reproduce all of these:
-- the `hooked` fixture edits the entries before the writer, runs a side
-  writer first, and carries an escaped `;` in its metadata;
-- the central-package-management fixture sets the `RestoreRecursive` global
-  (false) to true for the writer and back to false after it, through
-  `TreatAsLocalProperty`;
-- the side writer names the task qualified with its namespace, as a hook may.
+These are the writer's own inputs, after `RemoveDuplicates`.
 
-`restore_cone_census.rs` puts every cone's entries through
-`write_restore_graph` with two further inputs:
+`restore_cone_census.rs` grades the seam only on a cone whose every target
+comes from the SDK. It puts that cone's entries through `write_restore_graph`
+with two further inputs:
 - the identity of the `NuGet.Commands` the census build loaded;
 - the oracle's scrubbed environment.
 
 A commit must equal the spec the cone wrote, byte for byte, or the census
-panics. Each cone's verdict is pinned as a `seam` line in the census
-manifests:
+panics. A cone with a user target declines with the verdict "a user target
+ran in the cone".
+
+That gate came out of review. A first cut built `_GenerateRestoreGraph`
+separately, and the next four rounds each found another way a user target
+could hand the writer inputs the census did not see:
+- editing the entries before the writer;
+- running the writer again for another file, under a qualified or
+  differently cased task name, or from a child project;
+- changing `RestoreRecursive` after the writer.
+
+A user target can run anything around the writer. A₁ declines any cone with
+one anyway, since A₁.5 keys trust on the cone's identity. So such a cone is
+not graded, rather than chased hook by hook.
+
+Each cone's verdict is pinned as a `seam` line in the census manifests:
 
 | | SDK 10.0.401 (resolved) | SDK 10.0.112 (forced) |
 |---|---|---|
 | the six corpus projects | all six agree | all six decline: its NuGet is not verified |
-| the three fixtures | all three agree | all three decline: its NuGet is not verified |
+| `cpm` (central package management, a project reference) and `net10` (pruning, an escaped `;` in metadata) | both agree | both decline: its NuGet is not verified |
+| `hooked` | declines: a user target ran | declines: a user target ran |
 
-The fixtures cover central package management with a project reference,
-`net10.0` with pruning, and a user target hooked into the cone. So the seam
-commits on every real entry list the census sees under a verified NuGet.
+So the seam commits on every real entry list of SDK targets the census sees
+under a verified NuGet.
 
 From here on, the entries are what the stages before the seam are graded
 against: a stage that produces entries can be held to this op's output.

@@ -45,7 +45,8 @@
 //! `_RestoreGraphEntry` items the build hands `WriteRestoreGraphTask`, put
 //! through `borzoi_nuget`'s `write_restore_graph`, must give the cone's own
 //! spec byte for byte, or decline. The verdict is pinned as the cone's `seam`
-//! line.
+//! line. Only a cone of the SDK's targets alone is graded: a user target can
+//! run anything around the writer.
 //!
 //! File spellings are host-independent: `sdk:` relative to the SDK directory,
 //! `dotnet:` relative to the dotnet root, and `project:`/`fixture:` relative to
@@ -326,8 +327,8 @@ struct Cone {
     spec: Value,
     /// The executed targets and tasks, for comparison with the CLI's.
     executed: Executed,
-    /// The item seam's verdict on this cone ([`seam`]).
-    seam: String,
+    /// The `restoreCone` answer, which [`seam`] grades the item seam on.
+    answer: Value,
 }
 
 fn string(value: &Value, field: &str) -> String {
@@ -420,7 +421,6 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         .collect();
     let spec = scratch.normalised(&string(&answer, "dgspec"));
     let executed = executed(&answer);
-    let seam = seam(project, &answer, &loaded);
     Cone {
         sdk_dir: sdk_dir.to_path_buf(),
         targets,
@@ -430,7 +430,7 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         loaded,
         spec,
         executed,
-        seam,
+        answer,
     }
 }
 
@@ -442,8 +442,9 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
 /// decline's shape (without the item index or value, which are not
 /// host-independent).
 ///
-/// The entries are the task's own input, as the census build logged it: after
-/// `RemoveDuplicates` and after any target hooked in before the task. The
+/// Graded only on a cone of the SDK's targets alone (the census checks), so
+/// the one writer invocation is `GenerateRestoreGraphFile`'s. The entries are
+/// its own input, as the census build logged it, after `RemoveDuplicates`. The
 /// NuGet identity is that of the `NuGet.Commands` the census build loaded,
 /// and the environment is the oracle's scrubbed one.
 fn seam(project: &Path, answer: &Value, loaded: &BTreeMap<PathBuf, String>) -> String {
@@ -453,9 +454,10 @@ fn seam(project: &Path, answer: &Value, loaded: &BTreeMap<PathBuf, String>) -> S
 
     let writer = &answer["writer"];
     if writer.is_null() {
-        // Either a hook ran the writer again for the same file, or nothing
-        // wrote it: which inputs made the spec is not knowable from here.
-        return "decline: no single writer invocation wrote the spec".to_owned();
+        panic!(
+            "{}: no single writer invocation wrote the spec in a cone of SDK targets",
+            project.display()
+        );
     }
     let items: Vec<RestoreGraphItem> = writer["entries"]
         .as_array()
@@ -704,7 +706,19 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
                 subject.key
             );
             let prefix = format!("{sdk} {how} {}", subject.key);
-            items.push((format!("{prefix} seam"), cone.seam.clone()));
+            // The seam is graded only on a cone of the SDK's targets alone: a user
+            // target can run anything around the writer (edit its entries, run it
+            // again, change its flags afterwards), and A₁ declines such a cone.
+            let user_target = cone
+                .targets
+                .iter()
+                .any(|t| !shipped(&subject.spell(&cone, &t.file)));
+            let verdict = if user_target {
+                "decline: a user target ran in the cone".to_owned()
+            } else {
+                seam(&subject.project, &cone.answer, &cone.loaded)
+            };
+            items.push((format!("{prefix} seam"), verdict));
             for target in &cone.targets {
                 let file = subject.spell(&cone, &target.file);
                 per_sdk
@@ -806,6 +820,9 @@ const NET10: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="App.fs" />
+    <!-- An escaped `;` in metadata the writer writes: the item seam must see it
+         as the task does, unescaped. -->
+    <PackageReference Include="Fake.Package" Version="1.0.0" Aliases="x%3By" />
   </ItemGroup>
 </Project>
 "#;
@@ -821,7 +838,7 @@ const CPM_PACKAGES: &str = r#"<Project>
 </Project>
 "#;
 
-const CPM_APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="RestoreRecursive">
+const CPM_APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -831,20 +848,6 @@ const CPM_APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="
     <PackageReference Include="System.Text.Json" />
     <ProjectReference Include="../lib/Lib.fsproj" />
   </ItemGroup>
-  <!-- Sets RestoreRecursive (a restore global, false) to true for the writer,
-       and back to false after it: the item seam must take the flag the writer
-       was handed, which decides whether the referenced project is restored too,
-       not the property's final value. -->
-  <Target Name="UserHookBeforeRestoreGraphFile" BeforeTargets="GenerateRestoreGraphFile">
-    <PropertyGroup>
-      <RestoreRecursive>true</RestoreRecursive>
-    </PropertyGroup>
-  </Target>
-  <Target Name="UserHookAfterRestoreGraphFile" AfterTargets="GenerateRestoreGraphFile">
-    <PropertyGroup>
-      <RestoreRecursive>false</RestoreRecursive>
-    </PropertyGroup>
-  </Target>
 </Project>
 "#;
 
@@ -870,28 +873,9 @@ const HOOKED: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <Compile Include="App.fs" />
   </ItemGroup>
-  <ItemGroup>
-    <!-- An escaped `;` in metadata the writer writes: the item seam must see it
-         as the task does, unescaped. -->
-    <PackageReference Include="Fake.Package" Version="1.0.0" Aliases="x%3By" />
-  </ItemGroup>
   <Target Name="UserHookBeforeRestoreGraphEntry" BeforeTargets="_GenerateRestoreGraphProjectEntry"
           Condition="'$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)'">
     <Message Text="a user target in the restore cone" />
-  </Target>
-  <!-- Edits the entries after `_GenerateRestoreGraph` and before the writer runs:
-       the item seam must be graded on what the writer is handed. -->
-  <Target Name="UserHookEditsRestoreGraphEntries" BeforeTargets="GenerateRestoreGraphFile">
-    <!-- A second writer, for another file, handed the entries before the edit
-         below: the item seam must take the inputs of the writer that wrote the
-         spec. -->
-    <NuGet.Build.Tasks.WriteRestoreGraphTask RestoreGraphItems="@(_RestoreGraphEntry)"
-                           RestoreGraphOutputPath="$(MSBuildProjectDirectory)/side.dg.json" />
-    <ItemGroup>
-      <_RestoreGraphEntry Condition="'%(_RestoreGraphEntry.Type)' == 'ProjectSpec'">
-        <Version>9.9.9</Version>
-      </_RestoreGraphEntry>
-    </ItemGroup>
   </Target>
 </Project>
 "#;

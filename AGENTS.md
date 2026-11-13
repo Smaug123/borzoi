@@ -85,8 +85,8 @@ This is a Cargo workspace with nine members:
   `restoreCone` also returns the `_RestoreGraphEntry` items
   `WriteRestoreGraphTask` was handed, logged as its input. The census
   puts each cone's entries through `borzoi_nuget`'s `write_restore_graph`
-  and pins the item seam's verdict, which must be the cone's own spec, byte
-  for byte, or a decline.
+  and pins the item seam's verdict on each cone of SDK targets alone: the
+  cone's own spec, byte for byte, or a decline.
 - `crates/assembly/` — `borzoi-assembly`. F#-flavoured reader for
   ECMA-335 assemblies: owned `Entity`/`Member`/`TypeRef` model, the
   `EcmaView` trait, and a projector over an *in-crate* ECMA-335 reader

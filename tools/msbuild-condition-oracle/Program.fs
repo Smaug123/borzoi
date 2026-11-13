@@ -554,11 +554,11 @@ type ConeLogger() =
                     let key = struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)
 
                     match taskNames.TryGetValue key with
-                    // By name, bare or qualified with its namespace, as a hook may
-                    // spell it.
+                    // By name, bare or qualified with its namespace, in any case, as
+                    // MSBuild looks tasks up.
                     | true, name when
-                        name = "WriteRestoreGraphTask"
-                        || name.EndsWith(".WriteRestoreGraphTask", StringComparison.Ordinal)
+                        name.Equals("WriteRestoreGraphTask", StringComparison.OrdinalIgnoreCase)
+                        || name.EndsWith(".WriteRestoreGraphTask", StringComparison.OrdinalIgnoreCase)
                         ->
                         if not (writers.ContainsKey key) then
                             writers[key] <- Collections.Generic.Dictionary<string, obj list>()
