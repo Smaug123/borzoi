@@ -96,8 +96,8 @@ type Observed = (
     LanguageVersion,
     Option<(
         Structure,
-        Vec<borzoi_cst::parser::ParseError>,
-        Vec<borzoi_cst::parser::ParseError>,
+        Vec<borzoi_cst::parser::ParseDiagnostic>,
+        Vec<borzoi_cst::parser::ParseDiagnostic>,
         LanguageVersion,
         bool,
         Preprocessed,

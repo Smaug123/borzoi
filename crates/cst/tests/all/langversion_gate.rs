@@ -184,8 +184,8 @@ proptest! {
     }
 }
 
-/// Whether the *diagnostics* this parse reports could differ at another
-/// language version — the counterpart to
+/// Whether the tree or the *recovery diagnostics* this parse reports could
+/// differ at another language version — the counterpart to
 /// [`Parse::shape_depends_on_language_version`](borzoi_cst::parser::Parse::shape_depends_on_language_version),
 /// which answers the same question about the tree.
 ///
@@ -195,10 +195,11 @@ proptest! {
 /// the evaluator cannot pin), and a guess that
 /// lands on the wrong side of a feature threshold turns a rejected file into a
 /// clean-looking one **without changing the tree at all** — so the shape flag
-/// cannot see it.
+/// cannot see it. A legality diagnostic moves the same way, but it says the
+/// tree is FCS's, so it is not part of the verdict.
 mod diagnostics_version_dependence {
-    use borzoi_cst::language_version::LanguageVersion;
-    use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
+    use borzoi_cst::language_version::{LanguageFeature, LanguageVersion};
+    use borzoi_cst::parser::{DiagnosticClass, FileKind, ParseOptions, parse_with_options};
     use std::collections::HashSet;
 
     /// The verdict for a source, under the harness's fixed symbols/file kind.
@@ -221,10 +222,13 @@ mod diagnostics_version_dependence {
         )
     }
 
-    /// The motivating case: `#elif` needs F# 11, so it errors at 10 and is clean
-    /// at preview — with a byte-identical tree, and the shape flag `false`.
+    /// `#elif` needs F# 11, so it errors at 10 and is clean at preview — with a
+    /// byte-identical tree, and the shape flag `false`. The error is a legality
+    /// one (FCS builds the same tree at every version), so the source is
+    /// invariant: a guess on either side of F# 11 reads the same tree and the
+    /// same recovery diagnostics.
     #[test]
-    fn an_elif_makes_the_diagnostics_version_dependent() {
+    fn an_elif_is_a_legality_error_and_leaves_the_source_invariant() {
         let source = "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n";
         let old = parse_at(source, LanguageVersion::V10_0);
         let new = parse_at(source, LanguageVersion::Preview);
@@ -239,12 +243,20 @@ mod diagnostics_version_dependence {
             "so the shape flag cannot be the signal"
         );
         assert!(!old.errors.is_empty() && new.errors.is_empty());
-        assert!(version_dependent(source));
+        assert!(
+            old.errors.iter().all(|e| e.class
+                == DiagnosticClass::Legality {
+                    feature: LanguageFeature::PreprocessorElif
+                }),
+            "{:?}",
+            old.errors
+        );
+        assert!(!version_dependent(source));
     }
 
-    /// A nullness annotation is gated the same way, through the *node-surface*
-    /// producer rather than the directive side-channel — so the flag must not be
-    /// spelled "contains an `#elif`".
+    /// A nullness annotation is gated through the *node-surface* producer, and
+    /// below F# 9 FCS parses it differently, so its error is a recovery one and
+    /// the source depends on the version.
     #[test]
     fn a_nullness_annotation_makes_the_diagnostics_version_dependent() {
         let source = "module M\nlet f (x : System.String | null) = 1\n";
@@ -254,6 +266,27 @@ mod diagnostics_version_dependence {
             old.errors.is_empty(),
             new.errors.is_empty(),
             "the nullness surface gate must actually fire across this boundary"
+        );
+        assert!(version_dependent(source));
+    }
+
+    /// A tree that moves with the version while the diagnostics do not: a
+    /// closer dedented to its `let`'s column ends the `let` at the closer below
+    /// F# 6 and at the next token from F# 6, silently on both sides. Comparing
+    /// diagnostics alone would call it invariant.
+    #[test]
+    fn a_tree_that_moves_silently_is_version_dependent() {
+        let source = "let x = (\n    1\n)\nlet y = 2\n";
+        let lo = parse_at(source, LanguageVersion::MIN);
+        let hi = parse_at(source, LanguageVersion::MAX);
+        assert!(
+            !lo.root.structurally_eq(&hi.root),
+            "the tree must actually move across F# 6"
+        );
+        assert_eq!(
+            (&lo.errors, &lo.warnings),
+            (&hi.errors, &hi.warnings),
+            "and the diagnostics must not"
         );
         assert!(version_dependent(source));
     }

@@ -41,7 +41,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::directives::{PreprocError, Preprocessed, TriviaToken};
-use crate::language_version::{LanguageFeature, LanguageVersion};
+use crate::language_version::{FcsEffect, LanguageFeature, LanguageVersion};
 use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
@@ -175,9 +175,17 @@ use tree_builder::TreeBuilder;
 /// `errors` and `warnings` mirror FCS's two parse-time severities (an `errors`
 /// entry corresponds to FCS's `ParseHadErrors`; `warnings` are diagnostics FCS
 /// emits via `warning(...)` that leave `hadErrors` false). They are kept as
-/// separate vectors rather than a `severity` field on [`ParseError`] so the
-/// ~200 existing error-construction sites — and the `errors.is_empty()`
-/// error-parity checks in the differential test harness — stay unchanged.
+/// separate vectors rather than a severity field on [`ParseDiagnostic`] so the
+/// `errors.is_empty()` error-parity checks in the differential test harness
+/// read FCS's `ParseHadErrors` directly.
+///
+/// Each diagnostic carries a [`DiagnosticClass`]. The
+/// [`Legality`](DiagnosticClass::Legality) ones are the language-version gates
+/// that never move the tree: each is a feature error FCS reports at
+/// [`Parse::lang`] over the tree it builds at every version. The rest, the
+/// [`Recovery`](DiagnosticClass::Recovery) diagnostics, are held to FCS's
+/// parse at that version like any other diagnostic, and
+/// [`Parse::recovery_errors`] reads them alone.
 ///
 /// Not yet honoured: `#nowarn` / `#warnon` suppression. FCS drops a warning
 /// whose number is disabled at its position; `warnings` here are unfiltered, so
@@ -187,8 +195,8 @@ use tree_builder::TreeBuilder;
 #[derive(Debug, Clone)]
 pub struct Parse {
     pub root: SyntaxNode,
-    pub errors: Vec<ParseError>,
-    pub warnings: Vec<ParseError>,
+    pub errors: Vec<ParseDiagnostic>,
+    pub warnings: Vec<ParseDiagnostic>,
     /// The language version this tree was parsed against. The convenience
     /// entry points ([`parse`], [`parse_with_symbols`], …) default to
     /// [`LanguageVersion::Preview`] — every implemented feature on, i.e. the
@@ -226,6 +234,19 @@ pub struct Parse {
     pub preprocessor: Preprocessed,
 }
 
+impl Parse {
+    /// The [`DiagnosticClass::Recovery`] entries of [`Parse::errors`]: every
+    /// error but the legality gates, which leave the tree as FCS builds it.
+    pub fn recovery_errors(&self) -> impl Iterator<Item = &ParseDiagnostic> {
+        self.errors.iter().filter(|e| e.is_recovery())
+    }
+
+    /// The [`DiagnosticClass::Recovery`] entries of [`Parse::warnings`].
+    pub fn recovery_warnings(&self) -> impl Iterator<Item = &ParseDiagnostic> {
+        self.warnings.iter().filter(|e| e.is_recovery())
+    }
+}
+
 /// The message of FCS's FS0597, reported on an application argument that
 /// ends in an adjacent application (`g f(x)`). It is a parse error that keeps
 /// the tree.
@@ -245,11 +266,99 @@ enum EndsInAdjacentApp {
     No,
 }
 
-/// A parse-time problem. `span` is a byte range into the input source.
+/// A problem the productions, the lexical scans, the directive driver or the
+/// lex-filter found. `span` is a byte range into the input source. None of
+/// them is a language-version gate, so each reaches [`Parse`] as a
+/// [`DiagnosticClass::Recovery`] [`ParseDiagnostic`] ([`ParseError::recovery`]);
+/// only the gates build any other ([`ParseDiagnostic::gate`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
+pub(crate) struct ParseError {
+    pub(crate) message: String,
+    pub(crate) span: Range<usize>,
+}
+
+impl ParseError {
+    /// This problem as a [`DiagnosticClass::Recovery`] diagnostic.
+    fn recovery(self) -> ParseDiagnostic {
+        ParseDiagnostic {
+            message: self.message,
+            span: self.span,
+            class: DiagnosticClass::Recovery,
+        }
+    }
+}
+
+/// A diagnostic a parse reports: an entry of [`Parse::errors`] or
+/// [`Parse::warnings`]. `span` is a byte range into the input source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseDiagnostic {
     pub message: String,
     pub span: Range<usize>,
+    /// What the diagnostic says about the tree it sits on.
+    pub class: DiagnosticClass,
+}
+
+impl ParseDiagnostic {
+    /// The diagnostic a gate on `feature` reports at `span`, classed from the
+    /// feature table by [`DiagnosticClass::of_gate`].
+    pub(crate) fn gate(feature: LanguageFeature, message: String, span: Range<usize>) -> Self {
+        ParseDiagnostic {
+            message,
+            span,
+            class: DiagnosticClass::of_gate(feature),
+        }
+    }
+
+    /// Whether this is a [`DiagnosticClass::Recovery`] diagnostic.
+    pub fn is_recovery(&self) -> bool {
+        self.class == DiagnosticClass::Recovery
+    }
+}
+
+/// What a parse diagnostic says about the tree it sits on
+/// (`docs/ast-versioning-plan.md`, D9).
+///
+/// The split lets a consumer tell "this is the tree FCS builds, but the pinned
+/// language version forbids a construct in it" from "this tree is a
+/// recovery". [`Parse::errors`] less its `Legality` entries is what FCS's
+/// parse reports at the same version, and no `Legality` diagnostic moves the
+/// tree, so a reading that asks only whether the tree can be trusted reads the
+/// [`Recovery`](Self::Recovery) diagnostics alone ([`Parse::recovery_errors`]),
+/// and a version guess on the wrong side of a `Legality` gate cannot change
+/// its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiagnosticClass {
+    /// `feature` is newer than the parse's language version, and FCS builds
+    /// the same tree at every version: below the feature's version it
+    /// reports the feature error over that tree
+    /// (`CheckLanguageFeatureAndRecover`), or it checks the feature only after
+    /// parsing. The tree is the one a newer pin gives; only this diagnostic
+    /// moves.
+    Legality { feature: LanguageFeature },
+    /// Everything else: a syntax error the parse recovered from, an offside
+    /// diagnostic, and a gate on a feature FCS handles by reshaping its tree or
+    /// by moving another diagnostic, so that its tree or its other diagnostics
+    /// depend on the version.
+    Recovery,
+}
+
+impl DiagnosticClass {
+    /// The class of the diagnostic a gate on `feature` reports, read off the
+    /// feature table's `fcs_effect` column: [`Legality`](Self::Legality)
+    /// when every effect is [`FcsEffect::Diagnose`] (vacuously so for a feature
+    /// only the type checker consults), and [`Recovery`](Self::Recovery) when
+    /// any is [`FcsEffect::Reshape`] or [`FcsEffect::Severity`].
+    pub fn of_gate(feature: LanguageFeature) -> Self {
+        if feature
+            .fcs_effects()
+            .iter()
+            .all(|&effect| effect == FcsEffect::Diagnose)
+        {
+            DiagnosticClass::Legality { feature }
+        } else {
+            DiagnosticClass::Recovery
+        }
+    }
 }
 
 type FilteredTok<'src> = (Result<FilteredToken<'src>, LexError>, Range<usize>);
@@ -323,16 +432,25 @@ pub fn parse_with_options(source: &str, opts: ParseOptions<'_>) -> Parse {
     parse_inner(source, opts.symbols, opts.file_kind, opts.lang)
 }
 
-/// Whether `source`'s reported diagnostics are the same at every
-/// [`LanguageVersion`].
+/// Whether `source`'s tree and its [`DiagnosticClass::Recovery`] diagnostics
+/// are the same at every [`LanguageVersion`]: whether a parse at a guessed
+/// version reads, legality gates aside, as a parse at the real one would.
+///
+/// The [`Legality`](DiagnosticClass::Legality) diagnostics are left out
+/// because they are the one version-dependent output that cannot change what a
+/// tree means: FCS builds the same tree on either side of such a gate. A
+/// consumer that trusts a tree on the strength of its diagnostics reads only
+/// the `Recovery` ones (`borzoi_sema::SyntaxRecovery`), so a guess on the
+/// wrong side of a legality gate changes nothing it reads, and a file using a
+/// newer construct faithfully gated at an older version stays invariant.
 ///
 /// Deliberately a *function of the source* rather than a field on [`Parse`]:
-/// answering it costs two extra parses, and a field would charge every parse in
+/// answering it costs extra parses, and a field would charge every parse in
 /// the workspace for a verdict almost none of them read.
 ///
-/// Decided by **re-parsing at both ends of the ladder and comparing the whole
-/// diagnostic output**, deliberately rather than by asking each version-gated
-/// producer whether it fired. Two review rounds each found a producer such an
+/// Decided by **re-parsing at both ends of the ladder and comparing the
+/// output**, deliberately rather than by asking each version-gated producer
+/// whether it fired. Two review rounds each found a producer such an
 /// enumeration had missed — a gate whose diagnostic is *suppressed* at the
 /// parsed version emits nothing for the run to notice, and a depth-limited
 /// parse collapses its errors to one whose span still moves — and an
@@ -340,23 +458,30 @@ pub fn parse_with_options(source: &str, opts: ParseOptions<'_>) -> Parse {
 /// claim consumers read as proof. Comparing outputs cannot miss a producer,
 /// because it never names one.
 ///
-/// Two points suffice because every version gate is a monotone threshold: a
-/// feature becomes available at some version and stays available. That is an
-/// argument rather than a mechanism, so it is checked by a property over *all*
-/// versions (`shape_sensitivity::unset_diagnostics_flag_proves_version_invariance`).
+/// Two points suffice for the diagnostics because every version gate is a
+/// monotone threshold: a feature becomes available at some version and stays
+/// available. That is an argument rather than a mechanism, so it is checked by
+/// a property over *all* versions
+/// (`shape_sensitivity::unset_diagnostics_flag_proves_version_invariance`).
+/// The tree needs no such argument: an unflagged
+/// [`Parse::shape_depends_on_language_version`] proves it the same at every
+/// version, and a flagged one is compared at the two ends and at every
+/// [`LanguageVersion::SHAPE_REPRESENTATIVES`] band between them, whose
+/// diagnostics are compared too.
 ///
-/// Costs two extra parses, so a caller that does not need the verdict should
-/// not ask: it is worth paying only where a commitment rests on the diagnostics
-/// being the real build's, and the version is a guess.
+/// Costs two extra parses (three for a flagged source), so a caller that does
+/// not need the verdict should not ask: it is worth paying only where a
+/// commitment rests on the diagnostics being the real build's, and the version
+/// is a guess.
 ///
-/// Both endpoint parses run under [`catch_unwind`](std::panic::catch_unwind),
-/// and a panic reads as version-*dependent*. The parser is not expected to
-/// panic — `parser_panic_sweep` enumerates adversarial token soup at every
-/// version and asserts it does not — but this function parses at versions the
-/// caller never asked for, so a *future* invariant guard that fires only at an
-/// endpoint would cost the caller a verdict it never requested. Containing it
-/// here rather than at the call site is what makes the containment hold for
-/// every caller: the LSP wraps its own parses (`borzoi::cst_panic_safe`), but
+/// Every parse runs under [`catch_unwind`](std::panic::catch_unwind), and a
+/// panic reads as version-*dependent*. The parser is not expected to panic —
+/// `parser_panic_sweep` enumerates adversarial token soup at every version and
+/// asserts it does not — but this function parses at versions the caller
+/// never asked for, so a *future* invariant guard that fires only at one of
+/// them would cost the caller a verdict it never requested. Containing it here
+/// rather than at the call site is what makes the containment hold for every
+/// caller: the LSP wraps its own parses (`borzoi::cst_panic_safe`), but
 /// `borzoi_sema::SyntaxRecovery::of_guessed_version` calls straight in. A panic
 /// is also exactly the reading this returns `false` for on its merits — it
 /// proves nothing about the other versions, so the caller must retain no
@@ -375,7 +500,28 @@ pub fn diagnostics_are_version_invariant(
     let (Some(lo), Some(hi)) = (at(LanguageVersion::MIN), at(LanguageVersion::MAX)) else {
         return false;
     };
-    lo.errors == hi.errors && lo.warnings == hi.warnings
+    if !same_recovery_diagnostics(&lo, &hi) {
+        return false;
+    }
+    if !lo.shape_depends_on_language_version && !hi.shape_depends_on_language_version {
+        return true;
+    }
+    let ends = [lo.lang, hi.lang].map(LanguageVersion::shape_representative);
+    lo.root.structurally_eq(&hi.root)
+        && LanguageVersion::SHAPE_REPRESENTATIVES
+            .into_iter()
+            .filter(|lang| !ends.contains(lang))
+            .all(|lang| {
+                at(lang).is_some_and(|mid| {
+                    same_recovery_diagnostics(&mid, &hi) && mid.root.structurally_eq(&hi.root)
+                })
+            })
+}
+
+/// Whether two parses report the same [`DiagnosticClass::Recovery`] errors and
+/// warnings.
+fn same_recovery_diagnostics(a: &Parse, b: &Parse) -> bool {
+    a.recovery_errors().eq(b.recovery_errors()) && a.recovery_warnings().eq(b.recovery_warnings())
 }
 
 /// Every context the lex filter pushes over the token stream a parse of
@@ -512,10 +658,13 @@ fn parse_inner_stopping_at(
         let span = parser.depth_limit_span.clone().unwrap_or(0..source.len());
         return Parse {
             root: parser.builder.finish(),
-            errors: vec![ParseError {
-                message: "nesting is too deep; parsing stopped here".to_string(),
-                span,
-            }],
+            errors: vec![
+                ParseError {
+                    message: "nesting is too deep; parsing stopped here".to_string(),
+                    span,
+                }
+                .recovery(),
+            ],
             warnings: Vec::new(),
             lang,
             shape_depends_on_language_version,
@@ -530,16 +679,25 @@ fn parse_inner_stopping_at(
     // tab errors (scanned off the whitespace trivia), the `#elif` trivia gate,
     // and the feature gates with the productions' errors (emitted in
     // parse order), then re-sort by span start so the final list reads in source
-    // order regardless of which producer found each problem.
-    let mut errors = parser.errors;
-    errors.extend(directive_errors);
+    // order regardless of which producer found each problem. Every producer
+    // but the two gates finds recovery diagnostics; the gates class theirs.
+    let mut errors: Vec<ParseDiagnostic> = parser
+        .errors
+        .into_iter()
+        .chain(directive_errors)
+        .map(ParseError::recovery)
+        .collect();
     errors.extend(tab_errors);
     errors.extend(operator_char_errors);
     errors.extend(langversion_errors);
     errors.extend(gates);
     // Warnings come from the productions and the lex-filter's offside
     // diagnostics; directive/tab/langversion problems are all errors.
-    let mut warnings = parser.warnings;
+    let mut warnings: Vec<ParseDiagnostic> = parser
+        .warnings
+        .into_iter()
+        .map(ParseError::recovery)
+        .collect();
     warnings.extend(reserved_warnings);
     // The lex-filter's offside / indentation diagnostics (FS0058), split by the
     // severity it resolved from `lang`.
@@ -547,13 +705,14 @@ fn parse_inner_stopping_at(
         let err = ParseError {
             message: diag.message,
             span: diag.span,
-        };
+        }
+        .recovery();
         match diag.severity {
             OffsideSeverity::Error => errors.push(err),
             OffsideSeverity::Warning => warnings.push(err),
         }
     }
-    let span_order = |a: &ParseError, b: &ParseError| {
+    let span_order = |a: &ParseDiagnostic, b: &ParseDiagnostic| {
         a.span
             .start
             .cmp(&b.span.start)
@@ -584,15 +743,15 @@ fn parse_inner_stopping_at(
 fn langversion_diagnostics(
     elif_directives: &[Range<usize>],
     lang: LanguageVersion,
-) -> Vec<ParseError> {
-    if lang.supports(LanguageFeature::PreprocessorElif) {
+) -> Vec<ParseDiagnostic> {
+    let feature = LanguageFeature::PreprocessorElif;
+    if lang.supports(feature) {
         return Vec::new();
     }
     elif_directives
         .iter()
-        .map(|span| ParseError {
-            message: LanguageFeature::PreprocessorElif.not_available_message(lang),
-            span: span.clone(),
+        .map(|span| {
+            ParseDiagnostic::gate(feature, feature.not_available_message(lang), span.clone())
         })
         .collect()
 }
@@ -600,13 +759,15 @@ fn langversion_diagnostics(
 /// The lexer-level diagnostics a parse reports beside its tree, scanned off
 /// the raw table: the FS1161 tab errors (`tab_diagnostics`), the FS0046
 /// reserved-identifier warnings (`reserved_ident_diagnostics`) and the
-/// operator-character errors (`operator_char_diagnostics`), in that order.
-pub fn lexical_diagnostics(source: &str, raw_tokens: &RawTokens<'_>) -> [Vec<ParseError>; 3] {
+/// operator-character errors (`operator_char_diagnostics`), in that order. All
+/// are [`DiagnosticClass::Recovery`] diagnostics.
+pub fn lexical_diagnostics(source: &str, raw_tokens: &RawTokens<'_>) -> [Vec<ParseDiagnostic>; 3] {
     [
         tab_diagnostics(source, raw_tokens),
         reserved_ident_diagnostics(raw_tokens),
         operator_char_diagnostics(raw_tokens),
     ]
+    .map(|found| found.into_iter().map(ParseError::recovery).collect())
 }
 
 /// FS1161 "TABs are not allowed in F# code". FCS's lexer splits whitespace
