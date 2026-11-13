@@ -19,7 +19,7 @@ fn every_public_accessor_is_traced() {
     let universe = accessor_universe();
     assert!(
         universe.len() > 300,
-        "the accessor scan found only {} accessors; is it still reading syntax/mod.rs?",
+        "the accessor scan found only {} accessors; is it still reading syntax/union.rs?",
         universe.len()
     );
 }

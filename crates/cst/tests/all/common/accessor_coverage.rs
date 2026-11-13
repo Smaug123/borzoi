@@ -7,7 +7,7 @@
 //! grades against FCS. This module computes both sides of that question.
 //!
 //! * **The accessors.** Every public `&self` method of an inherent `impl` in
-//!   `crates/cst/src/syntax/mod.rs`, read with `syn`. Each must open with
+//!   `crates/cst/src/syntax/union.rs`, read with `syn`. Each must open with
 //!   `accessor!("Type::method")` (checked by [`accessor_universe`]), which under
 //!   the crate's `accessor-trace` feature logs the call.
 //! * **What the consumers read.** Every method call, path expression and
@@ -173,7 +173,7 @@ pub fn facade() -> Facade {
         let text = std::fs::read_to_string(&path).expect("read a syntax source");
         let file = syn::parse_file(&text)
             .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display()));
-        let accessor_file = path.ends_with("syntax/mod.rs");
+        let accessor_file = path.ends_with("syntax/union.rs");
         for item in &file.items {
             match item {
                 syn::Item::Enum(e) => {
