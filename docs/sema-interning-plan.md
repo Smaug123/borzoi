@@ -2,8 +2,8 @@
 
 > **Status (2026-11-12).** Plan written; Stages 0 (count harness), 1 (the
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
-> namespace fold surfaces), 3 (the name table) and 9 (`OpenScope`)
-> implemented.
+> namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
+> product on ids) and 9 (`OpenScope`) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -483,6 +483,60 @@ is unchanged; the interning-order test.
 **Expected**: most of `value_slot`'s remaining share, an estimated −8 to −12%,
 with allocations down 10–20%. `value_slot` is 15.2% inclusive, and it builds
 `1 + segments` strings for every open prefix at every use.
+
+**Implemented** for the explicit namespace and project module opens, which
+are the prefixes `value_slot` and its siblings (`lexical_type_is_latest`,
+`value_fold_order`) probe project maps under:
+
+- `OpenScope::explicit_open_prefixes` and `module_open_prefixes` hold an
+  `OpenedPrefix { pos, id, path }`: the prefix's `PathId`, interned when the
+  `open` is processed, beside its segments, which the consumers that ask the
+  env or the string-keyed project indexes still read.
+- `ProjectItems::type_paths` is a `PathMap` keyed by `PathId`, interned in
+  `extend_with`, which now takes the env's table.
+  `exported_type_slot`/`exported_type_order` become
+  `exported_type_by_id(names, id, …)`, returning the entry, and
+  `ExportedTypePath::order`. The scans over it (`direct_type_contestants`,
+  `binds_along_path`) go by the table too.
+- `type_path_export_ids` indexes `type_path_exports` by `PathId`, the latest
+  entry per path, replacing the `rfind` scans.
+- `type_slot_history` is a `ChildMap` keyed by `(PathId, Name)`.
+- `value_slot` looks the head up once (`names.lookup`), probes
+  `names.child(open.id, head)` per open, and reads the in-file `type_defs`
+  by the open's id rather than by building and hashing its path. A head the
+  table never interned skips every project probe.
+
+Each converted map carries its predecessor under `interning-reference` and
+asserts on every query: `PathMap` a string-keyed twin, `ChildMap` a twin
+keyed by the container's id and the name's text (the predecessor's own
+keying; a twin keyed by the container's segments would cost the reference a
+path per level, which `walk_cost_scaling` rejects as quadratic in the
+nesting), and the export index the `rfind` it replaced. A `PathMap` also
+asserts, in every debug build, that it is probed only with its own table's
+ids. Planting a wrong parent in `value_slot`'s child probe fails the lockstep
+in `interning_order`, `resolve_project_diff` and `resolve_type_members`.
+
+Not converted, and why:
+
+- `imports`, `assembly_open_prefixes`, `incomplete_open_prefixes` and
+  `open_shortening_prefixes`: every consumer of theirs asks the env, whose
+  indexes are string-keyed until 5c. Their ids would be read by nothing.
+  What is left of `value_slot` (3.9% of resolve's samples, from 20.3%) is
+  mostly its assembly probe, `public_types_named` per assembly open, which 5c
+  takes once the env's types are keyed by `PathId`.
+- No seed (Stage 3's deviation) is needed yet: no map this stage converts is
+  an env index.
+
+**Measured**: resolve 1585.6 → 1245.8 instructions per byte (−21.4%),
+allocations 1.736 → 1.267 per byte (−27%). More than the estimate: on
+main at Stage 3, `value_slot` was 20.3% of resolve's samples, not 15.2%
+(the stages that landed since made everything around it cheaper), and it
+falls to 3.9%. Infer reads 172.8 → 174.9 (+1.2%) with its allocations
+unchanged, though its input is not: a throwaway dump of every corpus
+file's resolutions, decline sites, definitions, diagnostics and inferred
+types, each file alone and each directory as a project, is byte-identical
+before and after. `sema_counts` infers right after resolving, on the heap
+resolve leaves behind, which this stage changes.
 
 ### Stage 5: the remaining path and name keys
 

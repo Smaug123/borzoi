@@ -8,6 +8,7 @@
 //! [`resolve`](super) module.
 
 use crate::hash::{HashMap, HashSet};
+use crate::names::{NameTable, PathId, PathMap};
 use crate::recovery::SyntaxRecovery;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -624,7 +625,11 @@ pub struct ProjectItems {
     /// [`SlotClass`], so a later
     /// file can decide whether `open`ing this type's container EVICTS a
     /// same-named local value from FCS's unqualified slot (probes M20h–M20o).
-    pub(super) type_paths: HashMap<Vec<String>, ExportedTypePath>,
+    ///
+    /// Keyed by the env's interned paths, so a probe for an `open`'s prefix
+    /// and a head reaches it without building the path
+    /// ([`Self::exported_type_by_id`]).
+    pub(super) type_paths: PathMap<ExportedTypePath>,
     /// The **signature screens** of earlier `.fsi` files, in Compile order
     /// (`docs/fsi-signature-restriction-plan.md` Stage 1). Each records the
     /// module roots a signature constrains and an over-approximation of every
@@ -738,30 +743,25 @@ impl ProjectItems {
 
     /// Whether an earlier file exports a **type** at exactly `path`, and if so
     /// whether its case set is fully indexed (see [`Self::type_paths`]).
-    pub(super) fn exported_type_at(&self, path: &[String]) -> Option<bool> {
-        self.type_paths.get(path).map(|t| t.cases_enumerable)
+    pub(super) fn exported_type_at(&self, names: &NameTable, path: &[String]) -> Option<bool> {
+        self.type_paths.get(names, path).map(|t| t.cases_enumerable)
     }
 
-    /// The [`TypeSlot`] of the earlier-file type exported at exactly `path`,
-    /// if any — whether its name enters FCS's unqualified slot when an `open`
-    /// brings it into scope (probes M20h–M20o).
-    pub(super) fn exported_type_slot(&self, path: &[String]) -> Option<TypeSlot> {
-        self.type_paths.get(path).map(|t| t.slot)
+    /// The earlier-file type exported at the path whose id is `id` (`None`
+    /// when the env's table never interned it), spelled `text` for the
+    /// interning reference: its [`TypeSlot`] — whether its name enters FCS's
+    /// unqualified slot when an `open` brings it into scope (probes
+    /// M20h–M20o) — and its [`ExportedTypePath::order`].
+    pub(super) fn exported_type_by_id(
+        &self,
+        names: &NameTable,
+        id: Option<PathId>,
+        text: impl FnOnce() -> Vec<String>,
+    ) -> Option<ExportedTypePath> {
+        self.type_paths.get_id(names, id, text).copied()
     }
 
-    /// Where an `open` of its container adds the earlier-file type exported
-    /// at exactly `path`, relative to the container's other types: its
-    /// `(file, offset)`. FCS's `open` adds a module's or namespace's types,
-    /// each with its union cases, in declaration order, fragment by fragment
-    /// in Compile order (`AddModuleOrNamespaceContentsToNameEnv`), so this
-    /// orders it against [`Self::union_case_order`]. `None` when a signature
-    /// screens the type, whose order is then the signature's.
-    pub(super) fn exported_type_order(&self, path: &[String]) -> Option<DeclOrder> {
-        let t = self.type_paths.get(path)?;
-        Some((t.file, t.ordinal?))
-    }
-
-    /// [`Self::exported_type_order`]'s counterpart for the earlier-file union
+    /// [`ExportedTypePath::order`]'s counterpart for the earlier-file union
     /// case `id` exported at exactly `path`: where the `open` of its container
     /// adds it among the container's types. `None` when `id` is no such case:
     /// a value, an exception, an active-pattern case, a signature-derived
@@ -790,17 +790,20 @@ impl ProjectItems {
     /// so it must join the fold's `contestant_names`, not be left uncounted.
     pub(super) fn direct_type_contestants(
         &self,
+        names: &NameTable,
         container: &[String],
         site: &[String],
     ) -> Vec<(String, usize)> {
+        let Some(container_id) = names.lookup_path(container) else {
+            return Vec::new();
+        };
         self.type_paths
-            .iter()
-            .filter(|(p, t)| {
-                p.len() == container.len() + 1
-                    && p.starts_with(container)
-                    && t.slot.class_at(p, site) != SlotClass::Keeps
+            .iter_checked(names)
+            .filter_map(|(p, t)| {
+                let (parent, last) = names.split(p)?;
+                (parent == container_id && t.slot.class_in(container, site) != SlotClass::Keeps)
+                    .then(|| (names.text(last).to_string(), t.file))
             })
-            .map(|(p, t)| (p.last().expect("non-empty qualified path").clone(), t.file))
             .collect()
     }
 
@@ -942,7 +945,13 @@ impl ProjectItems {
     /// reaches FSharp.Core). Ungated by accessibility on purpose: this only ever
     /// *withholds* the relaxation (a conservative deferral, never a wrong commit),
     /// so an inaccessible earlier binding is safe to honour.
-    pub(super) fn binds_along_path(&self, path: &[String]) -> bool {
+    pub(super) fn binds_along_path(&self, names: &NameTable, path: &[String]) -> bool {
+        let prefix_ids = names.lookup_path_prefixes(path);
+        let type_at = |k: usize| {
+            self.type_paths
+                .get_id(names, prefix_ids.get(k).copied(), || path[..k].to_vec())
+                .is_some()
+        };
         let value_at = |p: &[String]| {
             self.value_exports
                 .get(p)
@@ -955,11 +964,9 @@ impl ProjectItems {
             // declares no type, and this predicate only ever withholds the
             // self-qualifier relaxation, so it counts here.
             || self.augmentation_head_paths.contains(path)
-            || self.type_paths.contains_key(path)
+            || type_at(path.len())
             || self.type_qualified_cases.contains_key(path);
-        exact
-            || (1..path.len())
-                .any(|k| value_at(&path[..k]) || self.type_paths.contains_key(&path[..k]))
+        exact || (1..path.len()).any(|k| value_at(&path[..k]) || type_at(k))
     }
 
     /// Whether an earlier file defines a **real** nested `module X = …` at exactly
@@ -1433,6 +1440,7 @@ impl ProjectItems {
     pub(super) fn extend_with(
         &mut self,
         file: &ResolvedFile,
+        names: &NameTable,
         paired_screen: Option<&SigScreen>,
         partner: Option<usize>,
     ) {
@@ -1498,7 +1506,8 @@ impl ProjectItems {
         }
         for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
             self.type_paths.insert(
-                path,
+                names,
+                &path,
                 ExportedTypePath {
                     cases_enumerable,
                     slot,
@@ -2320,22 +2329,29 @@ impl TypeSlot {
         access_root_len: None,
     };
 
-    /// Whether an `open` written in `site` brings the type exported at `path`
-    /// into scope.
-    pub(super) fn accessible_from(self, path: &[String], site: &[String]) -> bool {
+    /// Whether an `open` written in `site` brings the type declared directly
+    /// in `container` into scope. An access root is a prefix of the type's
+    /// path short of the type itself, so of its container.
+    fn accessible_in(self, container: &[String], site: &[String]) -> bool {
         self.access_root_len.is_none_or(|k| {
             debug_assert!(
-                k < path.len(),
+                k <= container.len(),
                 "an access root is a proper prefix of the type's path"
             );
-            site.starts_with(&path[..k])
+            site.starts_with(&container[..k])
         })
     }
 
     /// The class an `open` written in `site` sees: [`SlotClass::Keeps`] when
     /// that `open` does not bring the type at all.
     pub(super) fn class_at(self, path: &[String], site: &[String]) -> SlotClass {
-        if self.accessible_from(path, site) {
+        let (_, container) = path.split_last().expect("a type's path names the type");
+        self.class_in(container, site)
+    }
+
+    /// [`Self::class_at`] for the type declared directly in `container`.
+    pub(super) fn class_in(self, container: &[String], site: &[String]) -> SlotClass {
+        if self.accessible_in(container, site) {
             self.class
         } else {
             SlotClass::Keeps
@@ -2347,10 +2363,11 @@ impl TypeSlot {
     /// ancestors no shallower than `namespace` (the enclosing namespace), so a
     /// type accessible from `namespace` is seen by any of them and one
     /// inaccessible from `site` by none; in between it depends on the `open`,
-    /// and a contest against it is undecidable.
-    pub(super) fn class_through_scoped_open(
+    /// and a contest against it is undecidable. The type is declared directly
+    /// in `container`.
+    pub(super) fn class_through_scoped_open_in(
         self,
-        path: &[String],
+        container: &[String],
         namespace: &[String],
         site: &[String],
     ) -> SlotClass {
@@ -2358,9 +2375,9 @@ impl TypeSlot {
             site.starts_with(namespace),
             "a site lies in its enclosing namespace"
         );
-        if self.class == SlotClass::Keeps || self.accessible_from(path, namespace) {
+        if self.class == SlotClass::Keeps || self.accessible_in(container, namespace) {
             self.class
-        } else if !self.accessible_from(path, site) {
+        } else if !self.accessible_in(container, site) {
             SlotClass::Keeps
         } else {
             SlotClass::Unknown
@@ -2379,8 +2396,21 @@ pub(super) struct ExportedTypePath {
     pub(super) file: usize,
     /// Where the declaration sits among its file's declarations, when the
     /// implementation is what an `open` reads (no signature screens it): see
-    /// [`ProjectItems::exported_type_order`].
+    /// [`Self::order`].
     pub(super) ordinal: Option<u32>,
+}
+
+impl ExportedTypePath {
+    /// Where an `open` of its container adds the type, relative to the
+    /// container's other types: its `(file, offset)`. FCS's `open` adds a
+    /// module's or namespace's types, each with its union cases, in
+    /// declaration order, fragment by fragment in Compile order
+    /// (`AddModuleOrNamespaceContentsToNameEnv`), so this orders it against
+    /// [`ProjectItems::union_case_order`]. `None` when a signature screens
+    /// the type, whose order is then the signature's.
+    pub(super) fn order(&self) -> Option<DeclOrder> {
+        Some((self.file, self.ordinal?))
+    }
 }
 
 /// What a file's index records of one exported type: whether its cases are

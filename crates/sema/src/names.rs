@@ -248,7 +248,6 @@ impl NameTable {
 
     /// The name whose text is `text`, if one was ever interned. Interns
     /// nothing.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn lookup(&self, text: &str) -> Option<Name> {
         self.read().names.get(text).map(|&index| self.name(index))
     }
@@ -269,7 +268,6 @@ impl NameTable {
     /// `parent` extended by `name`, if that path was ever interned. Interns
     /// nothing, so a `None` proves that no map keyed by [`PathId`]s from this
     /// table holds the path.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn child(&self, parent: PathId, name: Name) -> Option<PathId> {
         self.check_path(parent);
         self.check_name(name);
@@ -306,6 +304,49 @@ impl NameTable {
                 .get(&(parent.index, name))
                 .map(|&child| self.path(child))
         })
+    }
+
+    /// The ids of `segments`' prefixes, the empty one first, as far as the
+    /// table holds them: `segments[..k]` is interned exactly when `k` is less
+    /// than the result's length. Probes under one lock.
+    pub(crate) fn lookup_path_prefixes<S: AsRef<str>>(&self, segments: &[S]) -> Vec<PathId> {
+        let reader = self.reader();
+        let mut ids = vec![self.root()];
+        for segment in segments {
+            let parent = *ids.last().expect("the root is always present");
+            match reader
+                .lookup(segment.as_ref())
+                .and_then(|name| reader.child(parent, name))
+            {
+                Some(child) => ids.push(child),
+                None => break,
+            }
+        }
+        ids
+    }
+
+    /// The path whose segments are `segments`, interned if it is new.
+    pub(crate) fn intern_path<S: AsRef<str>>(&self, segments: &[S]) -> PathId {
+        segments.iter().fold(self.root(), |parent, segment| {
+            self.intern_child(parent, self.logical(segment.as_ref()))
+        })
+    }
+
+    /// A view of the table that probes without taking its lock again, for a
+    /// run of probes. It holds the lock for reading, so nothing may intern
+    /// into the table while it lives.
+    pub(crate) fn reader(&self) -> NameReader<'_> {
+        NameReader {
+            table: self,
+            index: self.read(),
+        }
+    }
+
+    /// This table's identity, for a structure keyed by its ids to check, in
+    /// a debug build, that it is probed with ids of the same table.
+    #[cfg(debug_assertions)]
+    pub(crate) fn tag(&self) -> TableTag {
+        TableTag(self.tag)
     }
 
     /// `path`'s parent and last name; `None` for the root.
@@ -353,6 +394,213 @@ impl NameTable {
     pub(crate) fn entry_count(&self) -> usize {
         let index = self.read();
         index.name_count as usize + index.path_count as usize
+    }
+}
+
+/// A table's identity ([`NameTable::tag`]).
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TableTag(u32);
+
+/// [`NameTable`]'s probes under one read lock ([`NameTable::reader`]).
+pub(crate) struct NameReader<'t> {
+    table: &'t NameTable,
+    index: std::sync::RwLockReadGuard<'t, Index>,
+}
+
+impl NameReader<'_> {
+    /// [`NameTable::lookup`].
+    pub(crate) fn lookup(&self, text: &str) -> Option<Name> {
+        self.index
+            .names
+            .get(text)
+            .map(|&index| self.table.name(index))
+    }
+
+    /// [`NameTable::child`].
+    pub(crate) fn child(&self, parent: PathId, name: Name) -> Option<PathId> {
+        self.table.check_path(parent);
+        self.table.check_name(name);
+        self.index
+            .children
+            .get(&(parent.index, name.index))
+            .map(|&index| self.table.path(index))
+    }
+}
+
+/// A map keyed by interned paths, which a lookup by a path's segments or by
+/// its id reaches. Under `interning-reference` in a debug build it keeps the
+/// string-keyed map it replaced beside it and asserts on every query that the
+/// two agree; in every debug build it asserts that it is only ever used with
+/// one table's ids.
+#[derive(Clone, Debug)]
+pub(crate) struct PathMap<V> {
+    by_id: HashMap<PathId, V>,
+    #[cfg(debug_assertions)]
+    table: Option<TableTag>,
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    by_text: HashMap<Vec<String>, V>,
+}
+
+impl<V> Default for PathMap<V> {
+    fn default() -> Self {
+        PathMap {
+            by_id: HashMap::default(),
+            #[cfg(debug_assertions)]
+            table: None,
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            by_text: HashMap::default(),
+        }
+    }
+}
+
+impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
+    #[cfg(debug_assertions)]
+    fn check_table(&self, names: &NameTable) {
+        if let Some(table) = self.table {
+            assert_eq!(
+                table,
+                names.tag(),
+                "a PathMap probed with another table's ids"
+            );
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn check_table(&self, _: &NameTable) {}
+
+    /// Map `path`, interning it, to `value`; the previous value goes.
+    pub(crate) fn insert(&mut self, names: &NameTable, path: &[String], value: V) {
+        self.check_table(names);
+        #[cfg(debug_assertions)]
+        {
+            self.table = Some(names.tag());
+        }
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.by_text.insert(path.to_vec(), value.clone());
+        self.by_id.insert(names.intern_path(path), value);
+    }
+
+    /// The value at `path`.
+    pub(crate) fn get(&self, names: &NameTable, path: &[String]) -> Option<&V> {
+        self.get_id(names, names.lookup_path(path), || path.to_vec())
+    }
+
+    /// The value at the path whose id is `id`, `None` when the table never
+    /// interned it; `text` spells the path, for the reference.
+    pub(crate) fn get_id(
+        &self,
+        names: &NameTable,
+        id: Option<PathId>,
+        text: impl FnOnce() -> Vec<String>,
+    ) -> Option<&V> {
+        self.check_table(names);
+        let found = id.and_then(|id| self.by_id.get(&id));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            let text = text();
+            assert_eq!(
+                found,
+                self.by_text.get(&text),
+                "an interned path map disagrees with its reference at {text:?}"
+            );
+        }
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        drop(text);
+        found
+    }
+
+    /// Every entry, as its path's id and value, in no particular order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (PathId, &V)> {
+        self.by_id.iter().map(|(&id, v)| (id, v))
+    }
+
+    /// Every entry, as its path's id and value, held to the reference: each
+    /// is spelled as the reference spells one, and they are as many. Costs a
+    /// spelling per entry under the reference, so only a scan pays it.
+    pub(crate) fn iter_checked<'m>(
+        &'m self,
+        names: &'m NameTable,
+    ) -> impl Iterator<Item = (PathId, &'m V)> + 'm {
+        self.check_table(names);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            assert_eq!(
+                self.by_id.len(),
+                self.by_text.len(),
+                "a PathMap lost an entry"
+            );
+            for (&id, v) in &self.by_id {
+                let text: Vec<String> =
+                    names.segments(id).into_iter().map(str::to_string).collect();
+                assert_eq!(self.by_text.get(&text), Some(v), "{text:?}");
+            }
+        }
+        self.iter()
+    }
+}
+
+/// A map keyed by a container's interned path and a name in it. Under
+/// `interning-reference` in a debug build it keeps the map it replaced,
+/// keyed by the container's path and the name's text, beside it and asserts
+/// on every query that the two agree.
+#[derive(Clone, Debug)]
+pub(crate) struct ChildMap<V> {
+    by_id: HashMap<(PathId, Name), V>,
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    by_text: HashMap<PathId, HashMap<String, V>>,
+}
+
+impl<V> Default for ChildMap<V> {
+    fn default() -> Self {
+        ChildMap {
+            by_id: HashMap::default(),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            by_text: HashMap::default(),
+        }
+    }
+}
+
+impl<V: Default + PartialEq + std::fmt::Debug> ChildMap<V> {
+    /// Apply `update` to the value at `name` in `container`, starting from
+    /// the default.
+    pub(crate) fn update(
+        &mut self,
+        names: &NameTable,
+        container: PathId,
+        name: &str,
+        update: impl Fn(&mut V),
+    ) {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        update(
+            self.by_text
+                .entry(container)
+                .or_default()
+                .entry(name.to_string())
+                .or_default(),
+        );
+        update(
+            self.by_id
+                .entry((container, names.logical(name)))
+                .or_default(),
+        );
+    }
+
+    /// The value at `name` in `container`. `name` is `None` when the table
+    /// never interned it, and its text is `name_text`.
+    pub(crate) fn get(&self, container: PathId, name: Option<Name>, name_text: &str) -> Option<&V> {
+        let found = name.and_then(|name| self.by_id.get(&(container, name)));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            found,
+            self.by_text
+                .get(&container)
+                .and_then(|by_name| by_name.get(name_text)),
+            "an interned child map disagrees with its reference at {name_text:?}"
+        );
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = name_text;
+        found
     }
 }
 

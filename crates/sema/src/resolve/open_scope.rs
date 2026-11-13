@@ -18,6 +18,7 @@
 use std::rc::Rc;
 
 use crate::hash::{HashMap, HashSet};
+use crate::names::{NameTable, PathId};
 
 use super::model::{ItemId, OpenOpacity};
 use super::state::{AutoOpenTypeShadow, DottedOpacity, OpenGroup, ShorteningPrefix};
@@ -79,7 +80,7 @@ pub(super) struct OpenScope {
     /// declaration and so can never contest — they are not recorded. Block-scoped
     /// (reset per top-level block, saved/restored across nested modules) like
     /// [`Self::imports`].
-    pub(super) explicit_open_prefixes: Vec<(u32, Vec<String>)>,
+    pub(super) explicit_open_prefixes: Vec<OpenedPrefix>,
     /// Every in-scope **project module `open`** (the [`OpenInterpretation::Module`]
     /// arm), as `(source position, canonical module path)`. A module open
     /// imports the module's TYPES into FCS's unqualified slot too (probe
@@ -89,7 +90,7 @@ pub(super) struct OpenScope {
     /// alongside [`Self::explicit_open_prefixes`]. Same block-scoped
     /// lifecycle (reset per top-level block, saved/restored across nested
     /// modules).
-    pub(super) module_open_prefixes: Vec<(u32, Vec<String>)>,
+    pub(super) module_open_prefixes: Vec<OpenedPrefix>,
     /// Every open through which an **assembly namespace's types are reachable**,
     /// as `(source position, canonical namespace path)` — every
     /// [`OpenInterpretation::Reading`] the open produced, captured *before* the
@@ -200,6 +201,28 @@ pub(super) struct OpenScope {
     /// declarations are in scope for earlier type annotations there, so a bare
     /// single-segment type name must defer unless already resolved in-file.
     pub(super) recursive_module_active: bool,
+}
+
+/// An `open`'s prefix in [`OpenScope::explicit_open_prefixes`] or
+/// [`OpenScope::module_open_prefixes`]: where the `open` is written, and the
+/// prefix, with its id in the env's name table so that a probe for a name
+/// under it is a child lookup rather than a path built and hashed.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct OpenedPrefix {
+    pub(super) pos: u32,
+    pub(super) id: PathId,
+    pub(super) path: Vec<String>,
+}
+
+impl OpenedPrefix {
+    /// The prefix `path` of an `open` written at `pos`, interned in `names`.
+    pub(super) fn new(names: &NameTable, pos: u32, path: Vec<String>) -> Self {
+        OpenedPrefix {
+            pos,
+            id: names.intern_path(&path),
+            path,
+        }
+    }
 }
 
 impl OpenScope {
