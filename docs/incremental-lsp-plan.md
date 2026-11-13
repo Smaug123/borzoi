@@ -972,7 +972,10 @@ toward the cost of parsing and resolving `E` alone.
   on the descriptor, then read), and a model with a generated clock in the
   tests. Generic over the disk, with `HostDisk` as the default parameter, so
   no server signature names it. The stamp is `(dev, ino, size, mtime, ctime)`
-  from `MetadataExt`; on a non-unix host it is the size and mtime only.
+  from `MetadataExt`. On a non-unix host `std` exposes no change time, so the
+  stamp is the size and mtime with no ctime, and a stamp without one is
+  always racy: such a host re-reads every unbuffered item in every
+  fold-reading generation, as Stage 2a did.
 - A disk entry is `Present` (stamp, the generation time it was taken, and the
   text, `None` when not UTF-8), `Absent`, or `Failed` (any other error,
   re-read in every generation). Racy stamps (mtime or ctime within `G` = 2 s

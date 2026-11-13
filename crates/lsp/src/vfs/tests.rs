@@ -56,7 +56,7 @@ impl Model {
             ino: file.ino,
             size: file.bytes.len() as u64,
             mtime: Nanos(file.mtime),
-            ctime: Nanos(file.ctime),
+            ctime: Some(Nanos(file.ctime)),
         }
     }
 
@@ -480,6 +480,27 @@ fn a_re_read_of_unchanged_text_keeps_its_allocation() {
 }
 
 /// A leading byte-order mark is dropped from disk text, and kept in a buffer.
+/// A stamp with no change time cannot rule a rewrite out, so it is racy
+/// however old its mtime.
+#[test]
+fn a_stamp_without_a_change_time_is_always_racy() {
+    let stamp = Stamp {
+        dev: 0,
+        ino: 0,
+        size: 10,
+        mtime: Nanos(0),
+        ctime: None,
+    };
+    assert!(stamp.is_racy(Nanos(1_000 * SECOND)));
+    assert!(
+        !Stamp {
+            ctime: Some(Nanos(0)),
+            ..stamp
+        }
+        .is_racy(Nanos(1_000 * SECOND))
+    );
+}
+
 #[test]
 fn a_disk_read_drops_a_leading_mark() {
     let model = Rc::new(RefCell::new(Model::new(1)));

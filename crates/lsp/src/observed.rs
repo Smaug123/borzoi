@@ -51,13 +51,14 @@ fn stamp_of(meta: &std::fs::Metadata) -> Stamp {
         ino: meta.ino(),
         size: meta.size(),
         mtime: nanos(meta.mtime(), meta.mtime_nsec()),
-        ctime: nanos(meta.ctime(), meta.ctime_nsec()),
+        ctime: Some(nanos(meta.ctime(), meta.ctime_nsec())),
     }
 }
 
 /// The stamp of a file whose metadata is `meta`. `std` exposes no inode or
-/// change time here, so the stamp is the size and the mtime, which is weaker
-/// than the unix stamp the racy rule is argued for.
+/// change time here, so the stamp is the size and the mtime, and having no
+/// ctime it is always racy: a timestamp-preserving rewrite of the same size
+/// would leave it unchanged, so every generation re-reads the file.
 #[cfg(not(unix))]
 fn stamp_of(meta: &std::fs::Metadata) -> Stamp {
     let mtime = meta.modified().map_or(Nanos(0), Nanos::of);
@@ -66,7 +67,7 @@ fn stamp_of(meta: &std::fs::Metadata) -> Stamp {
         ino: 0,
         size: meta.len(),
         mtime,
-        ctime: mtime,
+        ctime: None,
     }
 }
 

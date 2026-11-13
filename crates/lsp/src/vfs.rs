@@ -90,17 +90,20 @@ pub struct Stamp {
     pub size: u64,
     pub mtime: Nanos,
     /// The inode change time, which user space cannot set, so a rewrite that
-    /// keeps the size and resets the mtime still moves it.
-    pub ctime: Nanos,
+    /// keeps the size and resets the mtime still moves it. `None` where the
+    /// host does not expose one: such a stamp can never rule a rewrite out,
+    /// so it is always racy, and the file is re-read in every generation.
+    pub ctime: Option<Nanos>,
 }
 
 impl Stamp {
     /// Whether this stamp, taken at `taken`, could still be shared by a later
     /// write: its mtime or ctime is within [`RACY_WINDOW`] of `taken`, or
-    /// after it.
+    /// after it, or it has no ctime.
     pub fn is_racy(&self, taken: Nanos) -> bool {
         let window = RACY_WINDOW.as_nanos() as i128;
-        self.mtime.0 + window >= taken.0 || self.ctime.0 + window >= taken.0
+        let recent = |time: Nanos| time.0 + window >= taken.0;
+        recent(self.mtime) || self.ctime.is_none_or(recent)
     }
 }
 
