@@ -3083,6 +3083,22 @@ fn read_generic_item_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> Gene
     metadata.finish()
 }
 
+/// Whether `element`'s body is nothing but comments and text that is its
+/// source verbatim. Text that line-ending normalisation or entity decoding
+/// touched (a CRLF, which MSBuild keeps; a `&amp;`) is not the text roxmltree
+/// hands back, and an element or processing instruction makes MSBuild take the
+/// inner XML.
+fn body_is_plain(element: Node<'_, '_>) -> bool {
+    let source = element.document().input_text();
+    element.children().all(|c| {
+        c.is_comment()
+            || (c.is_text()
+                && source
+                    .get(c.range())
+                    .is_some_and(|raw| Some(raw) == c.text()))
+    })
+}
+
 /// Whether `attr`'s value is its source text verbatim, free of what XML
 /// attribute-value normalisation and entity decoding touch (a tab, a line
 /// break, a `&`). Only then is the value roxmltree hands back the one MSBuild
@@ -3116,7 +3132,7 @@ fn read_generic_metadata_child(
             // processing instruction) is one MSBuild takes as its inner XML: the
             // dependency capture reads its text as it always has, and the exact
             // table holds no value for it.
-            let body_exact = child.children().all(|c| c.is_text() || c.is_comment());
+            let body_exact = body_is_plain(child);
             match collect_element_text(child) {
                 Some(raw) => set_generic_metadata_value(
                     name,

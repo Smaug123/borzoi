@@ -1719,8 +1719,9 @@ The generic item tables keep every metadatum an item declaration gives,
 not just NuGet's five package metadata names. Each value is kept as MSBuild
 holds it, untrimmed, beside the trimmed value the dependency capture reads.
 Three kinds of value are uncertain in the table:
-- an attribute whose source text XML normalisation or entity decoding
-  touches (a tab, a line break, a `&`), which MSBuild reads its own way;
+- an attribute or body text whose source XML normalisation or entity
+  decoding touches (a tab or line break in an attribute, a CRLF, a `&`),
+  which MSBuild reads its own way;
 - a body holding more than text and comments, which MSBuild takes as inner
   XML;
 - a value MSBuild's Unix path fixup may rewrite.
@@ -1751,7 +1752,7 @@ Two checks hold it:
   `$(…)` and escaped identities, `@(…)` copies and transforms, `Remove`,
   attribute and child metadata, conditions on either, `%(…)` and `@(…)` in
   metadata, padded, backslash-bearing and escaped path values, attributes
-  with tabs, line breaks and entities, bodies
+  with tabs, line breaks and entities, CRLF and entity bodies, bodies
   holding elements, processing instructions, comments or CDATA, the
   structural `Label` attribute, item definitions, an untrusted property, an
   imported item file (plain, or under a condition that turns the walk

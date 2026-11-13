@@ -69,13 +69,15 @@ const VALUES: [&str; 17] = [
 ];
 /// Bodies for a metadata child element: the attribute values, and what only
 /// element content can hold.
-const BODIES: [&str; 6] = [
+const BODIES: [&str; 8] = [
     "<nested>hello</nested>",
     "<!-- c -->x",
     "<![CDATA[ c ]]>",
     "a<!-- c -->b",
     "\n      spread\n    ",
     "a<?thing b?>c",
+    "a\r\nb",
+    "a&amp;b&#9;c",
 ];
 const CONDITIONS: [&str; 5] = [
     "'$(Name)' == 'n'",
