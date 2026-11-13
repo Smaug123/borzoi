@@ -69,6 +69,8 @@ const FILES: &[&str] = &[
     "ab",
     // Below the project, so recursive globs and `..` spellings reach it.
     "sub/c.fs",
+    // A directory a glob include can be rooted inside, below an exclude's base.
+    "sub/Deep/d.fs",
     // A name a wildcard directory segment (`*/a%3bb.fs`) would reach.
     "sub/a;b.fs",
     // A hidden directory, which the SDK's `**/.*/**` exclude skips.
@@ -160,6 +162,9 @@ const FRAGMENTS: &[&str] = &[
     "$(MSBuildProjectDirectory)/sub/*.fs",
     "$(MSBuildProjectDirectory)/**/*.fs",
     "ab",
+    // A glob rooted inside a directory a `**` exclude names (#615).
+    "sub/Deep/*.fs",
+    "**/Deep/**",
     // Case variants. MSBuild ignores ASCII case against a literal include,
     // directories included, on every host. Against a glob include the resolver
     // declines where case would decide the answer (#607).
@@ -195,14 +200,47 @@ const PROP_VALUES: &[&str] = &[
     "a%20b.fs", "a%3bb.fs", "a%2ab.fs", "plain.fs", "pct%", "a%2a*.fs",
 ];
 
+/// A fragment built from a small grammar of path shapes — a fixed directory,
+/// a wildcard directory, a filename, each optional but the last — rather than
+/// picked from [`FRAGMENTS`]. The hand-written list holds the shapes someone
+/// thought of; this crosses fixed include roots with wildcard exclude
+/// directories, which is where #615's wrong commit lived and which no listed
+/// pair reached.
+fn structural(rng: &mut SplitMix64) -> String {
+    const FIXED: &[&str] = &[
+        "sub",
+        "sub/Deep",
+        ".hidden",
+        "bin",
+        "sub/..",
+        "$(MSBuildProjectDirectory)",
+        "$(MSBuildProjectDirectory)/sub",
+    ];
+    const WILD: &[&str] = &[
+        "**", "*", "D*", ".*", "s*", "**/Deep", "*/Deep", "**/*", "Deep/**",
+    ];
+    const NAME: &[&str] = &["*.fs", "*.*", "*", "d.fs", "c.fs", "x.fs", "?.fs", "**"];
+    let mut parts: Vec<&str> = Vec::new();
+    if rng.below(2) == 0 {
+        parts.push(rng.pick(FIXED));
+    }
+    if rng.below(2) == 0 {
+        parts.push(rng.pick(WILD));
+    }
+    parts.push(rng.pick(NAME));
+    parts.join("/")
+}
+
 fn gen_spec(rng: &mut SplitMix64) -> String {
     let n = 1 + rng.below(2);
     (0..n)
         .map(|_| {
             if rng.below(12) == 0 {
-                *rng.pick(OUTSIDE_ALLOW_LIST)
+                rng.pick(OUTSIDE_ALLOW_LIST).to_string()
+            } else if rng.below(4) == 0 {
+                structural(rng)
             } else {
-                *rng.pick(FRAGMENTS)
+                rng.pick(FRAGMENTS).to_string()
             }
         })
         .collect::<Vec<_>>()
@@ -497,6 +535,16 @@ fn hand_picked_corners() {
             "*.fs",
             Some("$(MSBuildProjectDirectory)/a*b.fs"),
         ),
+        // A directory an exclude names after `**` is taken only where the
+        // include's walk enters it (#615): `sub/Deep/*.fs` starts inside
+        // `Deep`, so MSBuild keeps its files and the resolver declines.
+        corner("plain.fs", "sub/Deep/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "sub/**/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "**/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "*/Deep/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("**/d.fs")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("sub/D*/d.fs")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("*/Deep/d.fs")),
     ];
     // Each corner must commit through the resolver seam, which globs and
     // applies `Exclude`; a decline there would leave unexercised exactly the
@@ -584,7 +632,10 @@ fn generated_item_specs_are_certain_implies_exact() {
     let mut fast_committed = 0usize;
     let mut resolver_committed = 0usize;
     let mut declined_through_resolver = Vec::new();
-    const CASES: usize = 300;
+    // The oracle answers in well under a millisecond a case, so the sweep runs
+    // thousands: a rare pairing (an include rooted inside a directory a `**`
+    // exclude names, #615) needs that many to turn up.
+    const CASES: usize = 2000;
     for _ in 0..CASES {
         let fixture = Fixture::generate(&mut rng);
         if check_with(&mut oracle, &fixture, false) == Outcome::Committed {

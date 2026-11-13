@@ -153,6 +153,36 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
         })
         .collect();
 
+    // The same excludes, each with its fixed directory as absolute segments
+    // and the directory segments its wildcard part names after its first
+    // `**`. MSBuild applies those only to directories its walk enters, which
+    // start below the include's own fixed directory
+    // (`Unmodelled::GlobstarExcludeAboveIncludeRoot`).
+    let globstar_excludes: Vec<(String, Vec<String>, Vec<String>)> = glob_exclude_anchoring
+        .iter()
+        .filter_map(|(norm, absolute)| {
+            let (_, wildcard_dir, _) = split_filespec(norm);
+            let dirs = split_segments(&wildcard_dir);
+            let globstar = dirs.iter().position(|seg| *seg == "**")?;
+            let after: Vec<String> = dirs[globstar + 1..]
+                .iter()
+                .filter(|seg| **seg != "**")
+                .map(|seg| seg.to_string())
+                .collect();
+            let prefix = split_glob_root(norm).prefix;
+            let base: Vec<String> = if *absolute {
+                prefix
+            } else {
+                base_segs
+                    .iter()
+                    .map(|s| s.to_string())
+                    .chain(prefix)
+                    .collect()
+            };
+            Some((norm.clone(), base, after))
+        })
+        .collect();
+
     let mut out: Vec<PathBuf> = Vec::new();
     // The evaluator already split, trimmed and $()-expanded each fragment
     // and stripped `@()`/`%()` references, so each is a literal or wildcard
@@ -214,6 +244,29 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
                 .chain(frag_root.prefix.iter().cloned())
                 .collect()
         };
+        // Where the include's walk starts below an exclude's base, the
+        // directories between are never walked, so a segment the exclude names
+        // after a `**` cannot take one of them; matched by full path, it
+        // would (`**/Deep/**` against `sub/Deep/*.fs`). Decline where it
+        // could, ignoring case, the conservative direction.
+        if let Some((exclude, _, _)) = globstar_excludes.iter().find(|(_, base, after)| {
+            anchor_segs.len() > base.len()
+                && anchor_segs
+                    .iter()
+                    .zip(base)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+                && after.iter().any(|named| {
+                    let named = Pattern::parse(named);
+                    anchor_segs[base.len()..]
+                        .iter()
+                        .any(|walked_past| named.matches_ignoring_ascii_case(walked_past))
+                })
+        }) {
+            return Err(GlobDecline::OutsideModelledShape {
+                spec: exclude.clone(),
+                shape: Unmodelled::GlobstarExcludeAboveIncludeRoot,
+            });
+        }
         // The pattern keeps the base literal for relative specs; an absolute
         // fragment is parsed on its own (its own wildcards are wildcards). A
         // filename part of `*.*` matches every file, as MSBuild's does.
@@ -626,6 +679,31 @@ mod tests {
             excludes: &excludes,
         })
         .map(|paths| paths.len())
+    }
+
+    /// A directory an exclude names after `**` is taken only where the
+    /// include's walk enters it; an include rooted inside such a directory
+    /// declines rather than lose its files (#615). The SDK's `**/.*/**` still
+    /// meets `sub/*.fs`, whose root `.*` cannot match.
+    #[test]
+    fn a_globstar_exclude_above_the_include_root_declines() {
+        let tmp = fixture();
+        assert!(matches!(
+            try_resolve(tmp.path(), "sub/deep/*.fs", &["**/deep/**"]),
+            Err(GlobDecline::OutsideModelledShape {
+                shape: Unmodelled::GlobstarExcludeAboveIncludeRoot,
+                ..
+            })
+        ));
+        assert_eq!(
+            try_resolve(tmp.path(), "sub/**/*.fs", &["**/deep/**"]),
+            Ok(1)
+        );
+        assert_eq!(
+            try_resolve(tmp.path(), "sub/deep/*.fs", &["**/d.fs"]),
+            Ok(0)
+        );
+        assert_eq!(try_resolve(tmp.path(), "sub/*.fs", &["**/.*/**"]), Ok(1));
     }
 
     /// Against a literal include, every exclude ignores ASCII case, directories

@@ -251,6 +251,12 @@ pub enum Unmodelled {
     /// A glob exclude with a wildcard directory part, anchored differently
     /// from the glob include it filters (one absolute, the other relative).
     MixedAnchoring,
+    /// A glob exclude names a directory after a `**` in its wildcard part, and
+    /// the glob include it filters starts its walk below the exclude's base,
+    /// inside a directory that name could match. MSBuild applies that part
+    /// only to directories its walk enters, so `**/Deep/**` leaves
+    /// `sub/Deep/*.fs` alone; matched by full path, it takes the file (#615).
+    GlobstarExcludeAboveIncludeRoot,
 }
 
 impl std::fmt::Display for Unmodelled {
@@ -265,6 +271,9 @@ impl std::fmt::Display for Unmodelled {
             }
             Unmodelled::MixedAnchoring => {
                 "has a wildcard directory part and is anchored unlike the include it filters"
+            }
+            Unmodelled::GlobstarExcludeAboveIncludeRoot => {
+                "names a directory after `**` that the include's walk root lies inside"
             }
         })
     }
