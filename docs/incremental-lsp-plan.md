@@ -1589,53 +1589,53 @@ tests named against them were added, and each then failed.
 **Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
 minimum over three runs of each binary: #643's head (d4d935f4), `main` at
 8353c41f (Stage 3a squash-merged, with sema's Stages 6c and 7 and #649),
-and this stage. Every row's runs agreed to within 0.6%, except the cold
-`didOpen L`, `diagnostic E` and `didChange E`, which are small and noisy.
+and this stage after its last Codex round. Every keystroke row's runs
+agreed to within 0.3%; the cold `diagnostic E` is small and noisy.
 
 | message | instructions d4d935f4 | `main` | 3b | allocs `main` | 3b | v.open | v.stat |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `didOpen E` (cold, evaluates) | 329.9 M | 341.7 M | 386.8 M | 108,684 | 119,572 | 0 | 0 |
-| `didOpen L` (cold, first confirmation) | 1.9 M | 1.8 M | 33.4 M | 798 | 4,478 | 8 | 801 |
-| `semanticTokens E` (cold) | 3,103.7 M | 3,126.5 M | **2,778.8 M** | 3,521,178 | 3,413,780 | 0 | 139 |
-| `semanticTokens L` (cold) | 595.6 M | 592.2 M | 595.8 M | 360,670 | 360,767 | 0 | 139 |
-| `hover L` (cold) | 122.6 M | 94.1 M | 97.7 M | 80,962 | 81,059 | 0 | 139 |
-| `didChange E` | 0.17 M | 0.17 M | 0.15 M | 99 | 99 | 0 | 0 |
-| `diagnostic E` | 4.86 M | 4.90 M | 8.25 M | 1,525 | 1,622 | 0 | 139 |
-| `diagnostic L` (`unchanged`) | 3.34 M | 3.36 M | 6.70 M | 1,521 | 1,618 | 0 | 139 |
-| `semanticTokens E` | 7.88 M | 7.97 M | 11.32 M | 5,355 | 5,452 | 0 | 139 |
-| `semanticTokens L` | 12.44 M | 12.53 M | 15.92 M | 12,183 | 12,280 | 0 | 139 |
-| `hover L` | 8.35 M | 7.34 M | 10.69 M | 5,066 | 5,163 | 0 | 139 |
-| **keystroke total** | **37.1 M** | **36.3 M** | **53.3 M** | 25,749 | 26,234 | **0** | **695** |
+| `didOpen E` (cold, evaluates) | 329.9 M | 341.7 M | 378.8 M | 108,684 | 122,639 | 0 | 0 |
+| `didOpen L` (cold, first confirmation) | 1.9 M | 1.8 M | 77.7 M | 798 | 15,571 | 24 | 2,793 |
+| `semanticTokens E` (cold) | 3,103.7 M | 3,126.5 M | **2,772.5 M** | 3,521,178 | 3,413,686 | 0 | 159 |
+| `semanticTokens L` (cold) | 595.6 M | 592.2 M | 594.6 M | 360,670 | 360,676 | 0 | 159 |
+| `hover L` (cold) | 122.6 M | 94.1 M | 97.0 M | 80,962 | 80,968 | 0 | 159 |
+| `didChange E` | 0.17 M | 0.17 M | 0.18 M | 99 | 99 | 0 | 0 |
+| `diagnostic E` | 4.86 M | 4.90 M | 8.09 M | 1,525 | 1,531 | 0 | 159 |
+| `diagnostic L` (`unchanged`) | 3.34 M | 3.36 M | 6.56 M | 1,521 | 1,527 | 0 | 159 |
+| `semanticTokens E` | 7.88 M | 7.97 M | 11.17 M | 5,355 | 5,361 | 0 | 159 |
+| `semanticTokens L` | 12.44 M | 12.53 M | 15.74 M | 12,183 | 12,189 | 0 | 159 |
+| `hover L` | 8.35 M | 7.34 M | 10.54 M | 5,066 | 5,072 | 0 | 159 |
+| **keystroke total** | **37.1 M** | **36.3 M** | **52.4 M** | 25,749 | 25,779 | **0** | **795** |
 
 No keystroke runs an evaluation, and every source-read column is unchanged
 (80 `stat`s on each of the three fold-reading rows, no opens). Each message
-that reads the evaluation confirms it once: 139 `stat`s, no opens, no
-listings, no canonicalisations, about 3.4 M instructions and 97
+that reads the evaluation confirms it once: 159 `stat`s and nothing else
+(no opens, listings or canonicalisations), about 3.2 M instructions and 6
 allocations. Five of a keystroke's six messages read it (`didChange` from a
-pull client does not), so a keystroke costs **17.0 M instructions (+47%)**
-and 485 allocations more than on `main`, and 695 `stat`s. The plan expected
-a few dozen `stat`s per message; the read set's non-immutable part is
-larger than that, mostly the SDK chain's workload and pack enumeration (a
-`stat` of each pack and manifest directory, which an install can change)
-and the absence probes up eleven ancestors. The devshell's .NET is a Nix
-symlink farm, which doubles some of them: each manifest version is reached
-under two spellings.
+pull client does not), so a keystroke costs **16.1 M instructions (+44%)**
+and 30 allocations more than on `main`, and 795 `stat`s. The plan expected
+a few dozen `stat`s per message. The read set's part outside installed
+versions is larger than that: mostly the SDK chain's workload and pack
+enumeration (the directories holding versions, which an install changes)
+and the absence probes up eleven ancestors, and each witness reaches every
+directory its path's resolution looks an entry up in. The devshell's .NET
+is a Nix symlink farm, which doubles some of them.
 
-What the witnesses bought: asking every non-immutable read again cost
-16.6 M instructions per message (138 `stat`s, 37 listings and 31
-`realpath`s); with the witnesses, 3.4 M. Without the immutable-content
-exemption it was about 60 M.
+What the witnesses bought, measured on the way: asking every read outside
+the installed versions again cost 16.6 M instructions per message (138
+`stat`s, 37 listings and 31 `realpath`s); confirming them by stamps, 3.2 M.
+Without the immutable-content exemption it was about 60 M.
 
 The cold rows: the first confirmation (`didOpen L`, here) reads each
-confirmed file once and takes every witness, about 33 M once per evaluation.
-The cold `semanticTokens E` falls by 348 M: the env's graph walk reads the
-confirmed evaluation instead of evaluating the entry a second time. The
-evaluation itself (`didOpen E`) costs 45 M and 10,900 allocations more,
-recording the preparation reads and building each entry's checks from the
-union of its read sets.
+confirmed file once and takes every witness (an `lstat` per component of
+each path), about 76 M once per evaluation. The cold `semanticTokens E`
+falls by 354 M: the env's graph walk reads the confirmed evaluation instead
+of evaluating the entry a second time. The evaluation itself (`didOpen E`)
+costs 37 M and 14,000 allocations more, recording the preparation reads
+and building each entry's checks from the union of its read sets.
 
-If the 17 M matters, the remedy D3 names, confirming once per revision and
-once per bounded time window, would take the keystroke to one confirmation;
+If the 16 M matters, the remedy D3 names, confirming once per revision and
+once per bounded time window, would take a keystroke to one confirmation;
 it is a staleness bound the guarantee would have to state, and is not
 adopted here.
 
