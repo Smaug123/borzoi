@@ -156,6 +156,14 @@ This is a Cargo workspace with nine members:
   (`crates/lsp/src/restore/shadow.rs`): it serves the restore's answer and
   logs a B₁ commit that differs from it as an error, so a B₁ bug on a real
   project shows up in the server's log.
+  The other side of the spec, the start of A₁, is
+  `dgspec::write_restore_graph`. It takes the `_RestoreGraphEntry` items the
+  restore targets produce and returns the file `WriteRestoreGraphTask` would
+  save, as text. `restore_items_diff` holds it byte for byte to the task's
+  own code, through the oracle's `restoreGraphItems` op. Its text is NuGet's
+  writer output, which `parse_dgspec` then reads, so the writer's sorting,
+  dropping and grouping are modelled once, as text, and never re-derived as
+  values. It shares B₁'s verified list.
   Self-contained: depends only
   on `roxmltree` and `serde`/`serde_json`.
   Differentially tested against the real NuGet client libraries via

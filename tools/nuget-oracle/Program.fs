@@ -123,6 +123,16 @@
 ///     -> {"ok":true,"spec":{"restore":[..],"projects":[..]},"nugetCommands":identity}
 ///      | {"ok":false,"exceptionType":s,"message":s,"nugetCommands":identity}
 ///          (the reader refused the document)
+///   {"op":"restoreGraphItems","items":[{"identity":s,"metadata":{name:s}}],
+///    "restoreRecursive":bool}
+///     What `WriteRestoreGraphTask` writes for these `_RestoreGraphEntry`
+///     items (metadata as `GetMetadata` returns it, i.e. unescaped):
+///     `MSBuildRestoreUtility.GetDependencySpec`, saved, then read back and
+///     projected as `normaliseDgSpec` projects.
+///     -> {"ok":true,"text":s,"spec":{"restore":[..],"projects":[..]},
+///         "nugetCommands":identity}
+///      | {"ok":false,"stage":"convert"|"save"|"load","exceptionType":s,"message":s,
+///         "nugetCommands":identity}
 ///   {"op":"nuGetLogCodes"}
 ///     -> {"ok":true,"names":[..],"nugetCommands":identity}
 ///          (`NuGetLogCode`'s names, `Undefined` included)
@@ -504,7 +514,9 @@ let private restoreErrorCodes (lockFile: NuGet.ProjectModel.LockFile) : string a
 ///
 /// Fails if any loaded `NuGet.*` assembly came from anywhere but `sdkDir`: the
 /// identity names one SDK's build, so it is only true of a run that used that
-/// build throughout.
+/// build throughout. A satellite resource assembly (`NuGet.X.resources`, which
+/// the runtime loads for a culture other than English when a message is
+/// formatted) comes from that culture's subdirectory of `sdkDir`.
 let private nugetCommandsIdentity (sdkDir: string) =
     for asm in AppDomain.CurrentDomain.GetAssemblies() do
         let name = asm.GetName().Name
@@ -512,7 +524,13 @@ let private nugetCommandsIdentity (sdkDir: string) =
         if name.StartsWith("NuGet.", StringComparison.Ordinal) then
             let dir = Path.GetDirectoryName asm.Location
 
-            if not (String.Equals(dir, sdkDir, StringComparison.Ordinal)) then
+            let expected =
+                if name.EndsWith(".resources", StringComparison.Ordinal) then
+                    Path.GetDirectoryName dir
+                else
+                    dir
+
+            if not (String.Equals(expected, sdkDir, StringComparison.Ordinal)) then
                 failwithf "%s was loaded from %s, not the SDK directory %s" name asm.Location sdkDir
 
     let commands = typeof<RestoreRunner>.Assembly
@@ -1029,6 +1047,124 @@ let private respondNormaliseDgSpec (sdkDir: string) (root: JsonElement) : string
         with _ ->
             ()
 
+/// One `_RestoreGraphEntry` as `WriteRestoreGraphTask` hands it to NuGet: the
+/// task wraps each `ITaskItem` in `MSBuildTaskItem`, whose `GetProperty` reads
+/// `GetMetadata` (already unescaped), trims it unless asked not to, and turns
+/// an empty value into null. Metadata names are case-insensitive, as
+/// MSBuild's are; a name the item lacks reads as empty.
+type private RestoreGraphEntry(identity: string, metadata: Dictionary<string, string>) =
+    member private _.Read (property: string) (trim: bool) : string =
+        let value =
+            match metadata.TryGetValue property with
+            | true, v -> v
+            | false, _ -> ""
+
+        let value = if trim then value.Trim() else value
+        if String.IsNullOrEmpty value then null else value
+
+    interface IMSBuildItem with
+        member _.Identity = identity
+        member this.GetProperty(property: string) = this.Read property true
+        member this.GetProperty(property: string, trim: bool) = this.Read property trim
+        member _.Properties = List<string>(metadata.Keys) :> IReadOnlyList<string>
+
+/// What `WriteRestoreGraphTask` writes for `items`: the spec
+/// `MSBuildRestoreUtility.GetDependencySpec` makes of them (with every
+/// restorable project added to `restore` when `restoreRecursive`, as the task
+/// does), saved to a file, and NuGet's reading of that file in
+/// `respondNormaliseDgSpec`'s projection. The saved text comes back too.
+let private respondRestoreGraphItems (sdkDir: string) (root: JsonElement) : string =
+    checkProjectionCoverage ()
+
+    let items =
+        root.GetProperty("items").EnumerateArray()
+        |> Seq.map (fun item ->
+            let metadata = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+
+            for p in item.GetProperty("metadata").EnumerateObject() do
+                metadata[p.Name] <- p.Value.GetString()
+
+            RestoreGraphEntry(item.GetProperty("identity").GetString(), metadata) :> IMSBuildItem)
+        |> Seq.toArray
+
+    let restoreRecursive = root.GetProperty("restoreRecursive").GetBoolean()
+
+    let converted =
+        // The task's own guard: with no items it warns and writes nothing.
+        if items.Length < 1 then
+            Error(InvalidOperationException "Unable to find a project to restore!" :> exn)
+        else
+
+        try
+            let spec = MSBuildRestoreUtility.GetDependencySpec items
+
+            if restoreRecursive then
+                // The task's own call. `NuGet.Build.Tasks` is not a compile-time
+                // reference (it would drag MSBuild in), so it is reached by
+                // reflection, from the SDK directory like the rest of NuGet.
+                Assembly
+                    .Load("NuGet.Build.Tasks")
+                    .GetType("NuGet.Build.Tasks.BuildTasksUtility", true)
+                    .GetMethod("AddAllProjectsForRestore", [| typeof<NuGet.ProjectModel.DependencyGraphSpec> |])
+                    .Invoke(null, [| box spec |])
+                |> ignore
+
+            Ok spec
+        with ex ->
+            Error ex
+
+    match converted with
+    | Error ex ->
+        JsonSerializer.Serialize
+            {| ok = false
+               stage = "convert"
+               exceptionType = ex.GetType().FullName
+               message = ex.Message
+               nugetCommands = nugetCommandsIdentity sdkDir |}
+    | Ok spec ->
+        let path =
+            Path.Combine(Path.GetTempPath(), "nuget-oracle-items-" + Guid.NewGuid().ToString("N") + ".json")
+
+        try
+            let saved =
+                try
+                    spec.Save path
+                    Ok(File.ReadAllText path)
+                with ex ->
+                    Error ex
+
+            let loaded =
+                match saved with
+                | Error ex -> Error("save", ex)
+                | Ok _ ->
+                    try
+                        Ok(NuGet.ProjectModel.DependencyGraphSpec.Load path)
+                    with ex ->
+                        Error("load", ex)
+
+            match loaded with
+            | Ok loaded ->
+                let text = Result.defaultValue "" saved
+                JsonSerializer.Serialize
+                    {| ok = true
+                       text = text
+                       spec =
+                        {| restore = Seq.toArray loaded.Restore
+                           projects = loaded.Projects |> Seq.map packageSpecCanonical |> Seq.toArray |}
+                       nugetCommands = nugetCommandsIdentity sdkDir |}
+            | Error(stage, ex) ->
+                JsonSerializer.Serialize
+                    {| ok = false
+                       stage = stage
+                       exceptionType = ex.GetType().FullName
+                       message = ex.Message
+                       nugetCommands = nugetCommandsIdentity sdkDir |}
+        finally
+            try
+                File.Delete path
+            with _ ->
+                ()
+
 /// `NuGetLogCode`'s names, which decide which warning codes a dgspec's lists
 /// keep (the reader drops any `Enum.TryParse` refuses).
 let private respondNuGetLogCodes (sdkDir: string) : string =
@@ -1194,6 +1330,7 @@ let private serve (sdkDir: string) =
                     | "selectCompileAssets" -> respondSelectCompileAssets root
                     | "restore" -> respondRestore sdkDir root
                     | "normaliseDgSpec" -> respondNormaliseDgSpec sdkDir root
+                    | "restoreGraphItems" -> respondRestoreGraphItems sdkDir root
                     | "nuGetLogCodes" -> respondNuGetLogCodes sdkDir
                     | "restoreDgSpec" -> respondRestoreDgSpec sdkDir root
                     | "globalPackagesFolder" -> respondGlobalPackagesFolder root

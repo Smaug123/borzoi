@@ -266,7 +266,7 @@ enum Outcome {
 /// environment agrees with an oracle sharing that environment, so only
 /// varying it makes the dependence visible. (`NUGET_ENABLE_EXPERIMENTAL_MACROS`
 /// is the live one: it makes the reader expand `$(User)` in paths.)
-const ENVIRONMENTS: &[&[(&str, &str)]] = &[
+pub(super) const ENVIRONMENTS: &[&[(&str, &str)]] = &[
     &[],
     &[("NUGET_ENABLE_EXPERIMENTAL_MACROS", "true")],
     &[(

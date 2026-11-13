@@ -2445,8 +2445,9 @@ fn a_package_named_like_the_project_is_a_cycle() {
 // ============================================================================
 
 /// The verified list is exactly the identity of the NuGet this suite grades
-/// B₁ against: an identity reaches the list only by being graded, and one
-/// stops being graded only by leaving it.
+/// B₁ against, and `restore_items_diff` grades the item seam
+/// (`write_restore_graph`) against: an identity reaches the list only by being
+/// graded, and one stops being graded only by leaving it.
 #[test]
 fn the_verified_list_is_the_graded_nuget() {
     let mut oracle = spawn_oracle();

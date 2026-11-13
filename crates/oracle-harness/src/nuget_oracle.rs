@@ -206,6 +206,27 @@ impl Oracle {
         Oracle::spawn_on_with_changes(sdk, &changes)
     }
 
+    /// Spawn the oracle on the NuGet of [`sdk_dir`] as a process whose own
+    /// environment has `process` applied (`Some` sets, `None` removes). This
+    /// is the only way to change what the runtime reads at startup, such as the
+    /// locale ICU takes the culture from: [`Self::spawn_with_changes`] makes its
+    /// changes from inside the oracle, through
+    /// `Environment.SetEnvironmentVariable`, which on Unix never reaches the C
+    /// library's environment.
+    pub fn spawn_with_process_environment(process: &[(String, Option<String>)]) -> Oracle {
+        let sdk = sdk_dir()
+            .to_str()
+            .expect("SDK directory is UTF-8")
+            .to_owned();
+        Oracle {
+            child: BatchChild::spawn_with_environment(
+                ensure_oracle_built(),
+                &["--nuget-from", &sdk],
+                process,
+            ),
+        }
+    }
+
     /// Spawn the oracle on the NuGet of [`sdk_dir`], with `changes` made to
     /// the environment it inherits, in order, before NuGet loads.
     pub fn spawn_with_changes(changes: &[EnvironmentChange<'_>]) -> Oracle {
