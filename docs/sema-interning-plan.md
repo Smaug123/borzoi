@@ -799,10 +799,13 @@ domain across sema's API, not speed.
   module's parent in `extend_with`'s path sets (the `PathSet` lockstep, in
   `interning_order`); and an `is_prefix` that looks one level up only (the
   property test).
-- **The interning-order test** now compares the two runs in the second
-  table's ids (`test_support::names::rekeyed`), since a `ResolvedFile` holds
-  ids of the table it was resolved against. Comparing ids of two tables
-  panics in a debug build, which is how the test found it.
+- **Comparisons across envs.** A `ResolvedFile` now holds ids of the table
+  it was resolved against, so a test that compares two results computed
+  against two envs re-keys one onto the other's table first
+  (`test_support::names::rekeyed`): the interning-order test, and the LSP's
+  three incremental-against-cold fold tests, whose cold fold builds a fresh
+  env. Comparing ids of two tables panics in a debug build, which is how
+  each of them was found.
 - **`MEMORY_EXEMPT` is empty.** From an eighth of its tallest clean depth
   (63 modules) to that depth (504), `named_nested_modules`' working memory
   grows 7.0× in a debug build and 7.5× in a release one (before: 37.2× and
