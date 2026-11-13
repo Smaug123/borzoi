@@ -2,8 +2,9 @@
 
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness),
 > Stage 1 (the inference cutoff), Stage 2a (counted source reads), Stage 2b
-> (the `Vfs` owns source text) and Stage 3a (the MSBuild evaluation records
-> its read set) implemented. Tracks
+> (the `Vfs` owns source text), Stage 3a (the MSBuild evaluation records
+> its read set) and Stage 3b (evaluations are validated, not trusted)
+> implemented. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -1379,6 +1380,272 @@ event still clears everything (D3's immutable-roots fallback).
 the user-owned read set plus the listed directories under the immutable
 roots, per generation that reads an evaluation. That is expected to be a few
 dozen, and the counts report it.
+
+**Implemented** (`crates/lsp/src/workspace.rs`, `crates/lsp/src/read_checks.rs`,
+`crates/lsp/src/vfs.rs`, `crates/lsp/src/server.rs`):
+
+- **What an entry depends on.** `evaluate_project` returns the evaluation with
+  its `Evaluation::reads`: the `.fsproj` read and SDK discovery's reads, which
+  now record into an observer of their own (`SdkDiscovery::for_project` takes
+  one, and so does `resolve_dotnet_root`), unioned (`ReadSet::union`) with the
+  read set of every pass it ran: pass 1 and the seeded pass 2, whether or
+  not pass 2 is served (a pass discarded for a `TreatAsLocalProperty`
+  opt-out decided that it was; found by Codex). A failed pass fails on the source text and the caller's arguments
+  alone (`ParseError`), so its reads are not needed. `Unobserved::Evaluation`
+  is gone: the `.fsproj` buffer diagnostics' probes, which nothing caches,
+  became `Unobserved::FsprojDiagnostics`, and the env's fallback probe for a
+  dotnet root `Unobserved::EnvResolution`.
+- **Validated per generation, lazily.** `Workspace::begin_generation` and
+  `end_generation` run beside the `Vfs`'s (`State::begin_generation`), and the
+  first lookup of a cached evaluation in a generation confirms its reads
+  (`Workspace::validate`); later lookups in the generation trust it. An entry
+  any of whose answers moved is dropped and evaluated afresh, and the drop
+  ends the `projects_generation`. Outside a generation a cached evaluation is
+  served as it is, which keeps unit tests that drive the workspace directly on
+  their old semantics. The deferral refresh after every message reads without
+  validating (`project_evaluation_as_last_confirmed`), as Stage 2b's
+  `fold_outcome` does, so a `didChange` or a refresh reply pays nothing.
+- **Downstream caches.** A dropped evaluation moves the
+  `projects_generation`; `SemanticState` records the one its caches were
+  computed in and drops them all, as a structural watch event does, when it
+  moves (`sync_with_evaluations`, at the top of `validate_cached_fold`, which
+  first validates the project at hand, and of `cached_assembly_env`). The
+  dispatch loop then does what a structural event does for the client
+  (`respond_to_moved_evaluations`): republishes every open buffer to a push
+  client, owes a pull client a diagnostic refresh and the semantic-token
+  refresh, and recomputes the deferral scope. The sweep's existing restart on
+  a new `projects_generation` covers it too.
+- **Immutable contents** (D3). Reads strictly inside a version directory are
+  not confirmed: `<dotnet>/sdk/<v>/`, `<dotnet>/packs/<pack>/<v>/`,
+  `<dotnet>/sdk-manifests/<band>/<manifest>/<v>/`, and `<id>/<v>/` under the
+  NuGet folder, for every dotnet root SDK discovery consulted or the SDK
+  resolved from, and the folder discovery names. A version directory reached
+  through a symlink (Nix's combined installs are symlink farms) is matched in
+  its canonical spelling too, taken from a canonicalisation of the version
+  directory itself in the read set, which is confirmed. (A canonicalisation
+  of a path below a version says nothing about the version: a symlink there
+  can lead into the user's tree. Found by Codex.) Only a version some read showed to exist (a
+  read inside it got an answer) is trusted, and the entry then confirms that
+  it still does; a read inside a version no read showed to exist (an
+  `Exists` probe of one not installed) is confirmed like any other
+  (`Evaluation::checks`, found by Codex). A NuGet package is extracted in
+  place, and is complete only once NuGet writes its `.nupkg.metadata`, so a
+  package version is trusted only when that file was written before the
+  evaluation began, outside the racy window (`nuget_committed_before`;
+  Codex: an evaluation racing an extraction would otherwise keep a half
+  package). An SDK, pack or workload manifest installed *while* an
+  evaluation reads it has no such marker; that race is the axiom's
+  boundary, as an in-place rewrite of a version is, and a watch event or a
+  restart covers it.
+- **Confirming a read costs a `stat`** (`read_checks`). A whole-file read is
+  confirmed through a `vfs::DiskCache` (factored out of the `Vfs`, which keeps
+  one for sources), by the file's stamp. Any other read, the first time it is
+  confirmed, is asked again behind a *witness*: the stamps of the directories
+  whose entries decide its answer, taken before the question. While they hold
+  (and none is racy), so does the answer, and each directory is `stat`ed once
+  per generation however many reads share it. A listing's witness is the
+  directory listed; what a path names (following symlinks or not), whether
+  it is there, and its canonical spelling are witnessed by every directory
+  its resolution looks an entry up in, walked as the kernel walks it: one
+  resolver, which takes a link's target component by component and each
+  `..` from the directory reached, splitting a path on separators as the
+  kernel does: a `.` is looked up too, and with each `.` and `..` the
+  directory it is looked up in is witnessed (its search permission decides
+  the lookup, and a `chmod` moves its stamp). An `lstat` of a path ending
+  in a separator follows a final symlink, so such a spelling has no
+  `LinkKind` witness. Only a *fact* (an answer, or an absence;
+  `read_checks::a_fact`) has a witness or is trusted inside an installed
+  version: a read that failed otherwise (a permission, an I/O error, a
+  listing that failed at an entry) can recover with nothing on disk
+  changing, and is asked in every generation. (Codex found it twice, for a
+  partial listing's witness and for a failure inside a version; the two
+  became one predicate.) Codex found two spellings a narrower witness missed
+  (`Exists('link/')`, and a link whose target ends with a separator, to
+  another link); the narrower witnesses went, and a property on the host's
+  file system now generates trees with symlinks of every such spelling.
+  Codex's next two findings, a `..` and a trailing `.` whose directory lost
+  its search permission, were in the same walk: it split paths with
+  `Path::components`, which drops a `.`. It now splits on separators, and
+  the host property takes search permissions away and gives them back.
+- **The graph walk reads the confirmed entry.** The env's project-graph walk
+  evaluated the entry project afresh, a second evaluation on every cold env
+  build. It now reads the cached evaluation when this generation has
+  confirmed it (`project_graph_impl`), which is the same computation.
+- `Generation` gains `EvaluationCounts`: evaluations run, and the
+  validation's opens, `stat`s, listings and canonicalisations, which
+  `edit_counts` prints as `v.open`, `v.stat`, `v.list` and `v.canon`.
+
+**Deviations.**
+
+- **The plan validated "against the `Vfs`".** The witnesses and the file
+  stamps live in a `ReadChecks` the `Workspace` owns, which reuses the `Vfs`'s
+  stamping (`DiskCache`, `Stamp`, the racy rule) and begins and ends with it,
+  logging into the same `Generation`. Reaching the `State`'s `Vfs` from every
+  `Workspace` lookup would have meant threading it through about 200 call
+  sites.
+- **Immutable contents exempt every read strictly inside a version**, not
+  only texts and stamps as D3 wrote: a listing or an absence inside an
+  installed version is a fact about that version, which never changes in
+  place. The reads D3's argument is about (the listing of the directory
+  holding the versions, and a version directory's own existence) do not lie
+  strictly inside one, and are confirmed. So are a `sdk-manifests` band and
+  manifest directory, which a workload update writes into.
+- **D3 confirms listings by the directory's stamp; this stage extends the
+  witness** to every query, because asking the evaluation's `realpath`s and
+  listings again cost 16 M instructions per generation on
+  WoofWare.Incremental.
+- **Split off: a `.fsproj` buffer's diagnostics.** They evaluate the buffer,
+  not the cached evaluation, and nothing confirms what they read, so an
+  unwatched write to an input of an open `.fsproj` buffer leaves the
+  diagnostics the client shows for it stale (found by the generated
+  property). The state machine names it `InputClass::FsprojBufferInputs`,
+  unwitnessed, as `CSharpSources` is; closing it means recording the buffer
+  evaluation's reads (and its graph walk's) per open buffer and confirming
+  them in every generation.
+- **`DirectoryMembership` stays unwitnessed** until Stage 4b. The state
+  machine now separates it from `GlobMembership` (a source created or deleted
+  where a project's `*.fs` glob reads, which the evaluation's listing
+  witnesses): a `.fsproj` created or deleted moves ownership, which every
+  request recomputes, but nothing owes the client a refresh of what it shows.
+- **A gap left open: NuGet settings.** SDK discovery chooses the global
+  packages folder through `borzoi_nuget::settings`, which reads
+  `nuget.config` files directly; those reads are not in the read set, so a
+  `nuget.config` edit that moves the folder reaches a cached evaluation only
+  through a watch event. Closing it needs `borzoi-nuget` to report what it
+  read.
+
+The oracle:
+
+- `incremental_state_machine`: `WITNESSED` gains `ProjectFiles` and
+  `GlobMembership`. `unwatched_project_writes_agree_with_a_fresh_session`
+  generates scripts that write and delete `.fsproj` files, `common.props`
+  and sources and never flush, opening only sources, and asserts that
+  comparisons with a project write pending happened
+  (`unflushed_project_checks`: 96 at 96 cases). Pinned no-flush scripts: the
+  two existing define changes (pull and push), now compared before their
+  final flush; an SDK version installed beside the one a project resolves; a
+  `global.json` rewritten to select another installed SDK; a source created
+  where a project globs; an import created that a project recorded absent.
+  All six fail on `main` (435ccaec), as does the generated property, and
+  pass here. A stub SDK (`ProjectSpec::sdk`, `Cmd::Install`) is new to the
+  world for them.
+- `workspace::tests::validation`: the read-set soundness sweep through the
+  LSP (`the_workspace_read_set_is_sound`): `soundness::sweep` over a world with
+  a stub SDK found through `$DOTNET_ROOT` and, separately, through `$PATH`, a
+  `Directory.Build.props`, a conditional import and a glob, whose read set is
+  the workspace's (preparation reads and every pass); a newer SDK installed
+  and a `global.json` pin each move the evaluation, as the non-vacuity
+  check. A second sweep holds what a cached evaluation *confirms*, its checks
+  after the immutable-content exemption, to the same property, over a
+  project tree outside the installs (where the axiom holds): the SDK
+  project, and a multi-targeted one whose seeded pass is discarded and which
+  probes an absent import (`the_workspace_checks_are_sound_outside_the_installs`). Beside it: the immutable-content table, a moved project file noticed
+  in the next generation and trusted outside one, an SDK version trusted
+  while its listing is confirmed, a version installed after the evaluation,
+  a file only the seeded pass reads, a discarded pass's reads, and the graph
+  walk reading only a confirmed entry.
+- `read_checks::tests`: a model file system (files, directories, absolute
+  symlinks, renames, a directory moved and linked from where it was) whose
+  timestamps tick at 1 ns, 1 ms, 1 s or 2 s, and a generated clock. For all
+  generated changes, a check that holds is right: its query gets the
+  recorded answer as of its generation (a change made during a generation
+  may be seen or not within it, never after it). Its non-vacuity check counts
+  generations confirmed by witnesses alone and checks that found the disk
+  moved; a step-by-step test walks a same-tick change past a racy stamp.
+  Beside the model, `a_check_that_holds_is_right_on_the_host` generates
+  trees on the host's file system with symlinks whose targets are relative,
+  absolute, end with a separator or hold a `..`, and asks every query at
+  plain and irregular spellings, pausing after each change for longer than a
+  coarse filesystem tick (it runs ahead of the files' clock, so that the
+  witnesses are used).
+- `observed_counts` gains evaluation counts: no request after the project
+  opens evaluates it (the cold env build reads the confirmed evaluation),
+  confirming it opens nothing and `stat`s something, and on a racy clock it
+  re-reads the project file.
+
+Planted, each caught, then removed:
+
+| plant | caught by |
+|---|---|
+| no validation (the cache trusted, as on `main`) | six pinned scripts, two `validation` tests, both `observed_counts` properties |
+| the semantic caches not dropped on a moved generation | the glob pinned script |
+| no response to the client (republish, refreshes) | five pinned scripts |
+| everything under a dotnet root immutable | the SDK-install pinned script, two `validation` tests |
+| SDK discovery's reads not recorded | the `global.json` pinned script, the LSP soundness sweep |
+| the seeded pass's reads dropped | `a_file_only_the_seeded_pass_reads_is_confirmed` |
+| the graph walk reading an unconfirmed entry | `the_graph_walk_reads_only_a_confirmed_entry` |
+| witnesses trusted while racy | all three `read_checks` tests |
+| a `Kind` witness that does not follow a symlink chain | the model property and its non-vacuity check |
+| a canonical spelling witnessed by its link chain only | the model property, once the model could move a directory and link it back |
+| the version directory itself immutable, not only its contents | the immutable-content table only: the holder's listing still sees an install |
+| a discarded seeded pass's reads dropped (Codex) | `a_discarded_pass_reads_are_confirmed`, the checks sweep |
+| reads inside a version trusted before any showed it exists (Codex) | `a_version_installed_after_the_evaluation_is_seen` |
+| a version's alias inferred from a canonicalisation below it (Codex) | `only_a_version_directory_canonicalised_gives_an_alias` |
+| a witness for a trailing-separator spelling (Codex) | `a_spelling_the_stamps_cannot_follow_is_asked_every_time` |
+| a `Kind` witnessed by its link chain's parents, not its resolution (Codex) | the spelling test, the model property and its non-vacuity check |
+| the directory a `..` leaves not stamped (Codex) | `a_directory_a_dot_is_looked_up_in_is_witnessed` |
+| a `.` dropped from the walk (Codex) | `a_directory_a_dot_is_looked_up_in_is_witnessed` |
+| a package version trusted without its commit marker (Codex) | `a_package_is_trusted_only_once_committed_before_the_evaluation` |
+| a listing that failed at an entry witnessed by its directory (Codex) | `a_listing_with_a_failed_entry_is_asked_every_time` |
+| a failed read inside an installed version trusted as immutable (Codex) | `a_failed_read_inside_a_version_is_confirmed` |
+
+Three plants first passed every test: the canonical-spelling witness (the
+model could not move a directory), the seeded pass's reads and the graph walk
+(nothing evaluated a multi-targeted project or walked before confirming). The
+tests named against them were added, and each then failed.
+
+**Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
+minimum over three runs of each binary: #643's head (d4d935f4), `main` at
+8353c41f (Stage 3a squash-merged, with sema's Stages 6c and 7 and #649),
+and this stage at its final head (7ef02432). Every keystroke row's runs
+agreed to within 0.3%; the cold `diagnostic E` is small and noisy.
+
+| message | instructions d4d935f4 | `main` | 3b | allocs `main` | 3b | v.open | v.stat |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `didOpen E` (cold, evaluates) | 329.9 M | 341.7 M | 371.3 M | 108,684 | 122,900 | 0 | 0 |
+| `didOpen L` (cold, first confirmation) | 1.9 M | 1.8 M | 76.5 M | 798 | 15,571 | 24 | 2,793 |
+| `semanticTokens E` (cold) | 3,103.7 M | 3,126.5 M | **2,777.8 M** | 3,521,178 | 3,413,688 | 0 | 159 |
+| `semanticTokens L` (cold) | 595.6 M | 592.2 M | 595.8 M | 360,670 | 360,676 | 0 | 159 |
+| `hover L` (cold) | 122.6 M | 94.1 M | 96.7 M | 80,962 | 80,968 | 0 | 159 |
+| `didChange E` | 0.17 M | 0.17 M | 0.16 M | 99 | 99 | 0 | 0 |
+| `diagnostic E` | 4.86 M | 4.90 M | 8.10 M | 1,525 | 1,531 | 0 | 159 |
+| `diagnostic L` (`unchanged`) | 3.34 M | 3.36 M | 6.56 M | 1,521 | 1,527 | 0 | 159 |
+| `semanticTokens E` | 7.88 M | 7.97 M | 11.15 M | 5,355 | 5,361 | 0 | 159 |
+| `semanticTokens L` | 12.44 M | 12.53 M | 15.75 M | 12,183 | 12,189 | 0 | 159 |
+| `hover L` | 8.35 M | 7.34 M | 10.52 M | 5,066 | 5,072 | 0 | 159 |
+| **keystroke total** | **37.1 M** | **36.3 M** | **52.3 M** | 25,749 | 25,779 | **0** | **795** |
+
+No keystroke runs an evaluation, and every source-read column is unchanged
+(80 `stat`s on each of the three fold-reading rows, no opens). Each message
+that reads the evaluation confirms it once: 159 `stat`s and nothing else
+(no opens, listings or canonicalisations), about 3.2 M instructions and 6
+allocations. Five of a keystroke's six messages read it (`didChange` from a
+pull client does not), so a keystroke costs **16.0 M instructions (+44%)**
+and 30 allocations more than on `main`, and 795 `stat`s. The plan expected
+a few dozen `stat`s per message. The read set's part outside installed
+versions is larger than that: mostly the SDK chain's workload and pack
+enumeration (the directories holding versions, which an install changes)
+and the absence probes up eleven ancestors, and each witness reaches every
+directory its path's resolution looks an entry up in. The devshell's .NET
+is a Nix symlink farm, which doubles some of them.
+
+What the witnesses bought, measured on the way: asking every read outside
+the installed versions again cost 16.6 M instructions per message (138
+`stat`s, 37 listings and 31 `realpath`s); confirming them by stamps, 3.2 M.
+Without the immutable-content exemption it was about 60 M.
+
+The cold rows: the first confirmation (`didOpen L`, here) reads each
+confirmed file once and takes every witness (an `lstat` per component of
+each path), about 75 M once per evaluation. The cold `semanticTokens E`
+falls by 349 M: the env's graph walk reads the confirmed evaluation instead
+of evaluating the entry a second time. The evaluation itself (`didOpen E`)
+costs 30 M and 14,200 allocations more, recording the preparation reads
+and building each entry's checks from the union of its read sets.
+
+If the 16 M matters, the remedy D3 names, confirming once per revision and
+once per bounded time window, would take a keystroke to one confirmation;
+it is a staleness bound the guarantee would have to state, and is not
+adopted here.
 
 ### Stage 4a: ownership listings are observed and counted
 

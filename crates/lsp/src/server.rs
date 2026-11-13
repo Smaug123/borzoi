@@ -51,7 +51,7 @@ use crate::project_deferral;
 use crate::publish::PublishState;
 use crate::semantic::{ProjectId, SemanticState};
 use crate::vfs::{Clock, Vfs};
-use crate::workspace::Workspace;
+use crate::workspace::{ProjectsGeneration, Workspace};
 use crate::{diagnostics, fsproj_diagnostics};
 
 /// Worker threads servicing deferred SourceLink fetches, and the depth of the
@@ -222,14 +222,22 @@ pub struct State {
     /// coalesce; invalidations after it produce another refresh. Clients remain
     /// free to delay and coalesce the pulls themselves.
     pending_refresh_id: Option<RequestId>,
+    /// The [`Workspace::projects_generation`] whose consequences the client
+    /// has been told of: when a generation drops a cached evaluation (its
+    /// project files moved, with or without a watch event), every open
+    /// buffer's diagnostics and tokens may be stale, as after a structural
+    /// watch event ([`respond_to_moved_evaluations`]).
+    evaluations_reported: ProjectsGeneration,
 }
 
 impl State {
     pub fn new() -> Self {
+        let workspace = Workspace::new();
+        let evaluations_reported = workspace.projects_generation();
         Self {
             docs: Vfs::new(),
             clock: Clock::Host,
-            workspace: Workspace::new(),
+            workspace,
             publish: PublishState::new(),
             semantic: SemanticState::new(),
             client_capabilities: None,
@@ -239,7 +247,24 @@ impl State {
             server_request_seq: 0,
             wants_diagnostic_refresh: false,
             pending_refresh_id: None,
+            evaluations_reported,
         }
+    }
+
+    /// Begin a dispatch-loop generation ([`crate::vfs`]): one time, read
+    /// before any stamp, for the source reads and the project evaluations'
+    /// reads alike.
+    pub fn begin_generation(&mut self) {
+        let now = self.clock.now();
+        self.docs.begin_generation(now);
+        self.workspace.begin_generation(now);
+    }
+
+    /// End the generation, logging what both its source reads and its
+    /// project evaluations cost.
+    pub fn end_generation(&mut self) -> crate::observed::Generation {
+        let evaluations = self.workspace.end_generation();
+        self.docs.end_generation_with(evaluations)
     }
 
     /// Record the capabilities the client advertised at `initialize`. Called
@@ -406,6 +431,7 @@ impl State {
             .filter_map(|change| change.uri.to_file_path().ok())
             .collect();
         self.docs.hint(hinted.iter().map(PathBuf::as_path));
+        self.workspace.hint(hinted.iter().map(PathBuf::as_path));
         for change in changes {
             match classify_change(&change.uri, change.typ) {
                 ChangeClass::Structural => structural = true,
@@ -424,6 +450,11 @@ impl State {
             // clears the assembly state too.
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
+            self.semantic
+                .sync_with_evaluations(self.workspace.projects_generation());
+            // This is the response to the dropped evaluations, so none is
+            // owed for them after the message.
+            self.evaluations_reported = self.workspace.projects_generation();
             self.wants_diagnostic_refresh = true;
             WatchedChangeEffect {
                 structural: true,
@@ -664,9 +695,10 @@ pub fn run_with_fetcher(
                 Err(_) => {
                     // A sweep step is a unit of work of its own, so it is a
                     // generation of its own.
-                    state.docs.begin_generation(state.clock.now());
+                    state.begin_generation();
                     let stepped = advance_sweep(&mut state, &connection, in_flight);
-                    state.docs.end_generation();
+                    respond_to_moved_evaluations(&mut state, &connection);
+                    state.end_generation();
                     sweep = stepped?;
                     continue;
                 }
@@ -675,7 +707,7 @@ pub fn run_with_fetcher(
         // Each message is handled in a generation of its own: what its
         // handling reads from disk is counted against it
         // ([`crate::observed`]).
-        state.docs.begin_generation(state.clock.now());
+        state.begin_generation();
         match msg {
             Message::Request(req) => {
                 if req.method == Shutdown::METHOD {
@@ -704,6 +736,7 @@ pub fn run_with_fetcher(
                             tracing::info_span!("lsp.request", method = %method).entered();
                         handle_request(&mut state, req)
                     };
+                    respond_to_moved_evaluations(&mut state, &connection);
                     // Before the reply, not after: a fold refusal is *why* this
                     // reply is degraded, and an explanation that arrives after
                     // the disappointing answer reads as unrelated. The fold
@@ -751,6 +784,7 @@ pub fn run_with_fetcher(
                         }
                     } else {
                         handle_notification(&mut state, &connection, not);
+                        respond_to_moved_evaluations(&mut state, &connection);
                     }
                     // A notification can invalidate pull diagnostics or stale
                     // an open buffer's semantic tokens without any fold, so
@@ -775,10 +809,36 @@ pub fn run_with_fetcher(
                 );
             }
         }
-        state.docs.end_generation();
+        state.end_generation();
     }
 
     Ok(())
+}
+
+/// Tell the client what a dropped project evaluation may have staled, as a
+/// structural watch event does ([`State::apply_watched_changes`]): every open
+/// buffer is republished to a push client, a pull client is owed a diagnostic
+/// refresh, every cache derived from an evaluation is dropped (which owes a
+/// semantic-token refresh), and the deferral scope, which a Compile list
+/// decides, is recomputed.
+///
+/// The workspace drops an evaluation when a generation that reads it finds
+/// its files moved ([`Workspace::validate`]), which needs no watch event; the
+/// message that found it has already answered from the fresh evaluation, so
+/// what is left is what the client is showing.
+fn respond_to_moved_evaluations(state: &mut State, conn: &Connection) {
+    let current = state.workspace.projects_generation();
+    if current == state.evaluations_reported {
+        return;
+    }
+    state.evaluations_reported = current;
+    state.semantic.sync_with_evaluations(current);
+    state.wants_diagnostic_refresh = true;
+    let open: Vec<Uri> = state.docs.keys().cloned().collect();
+    for uri in &open {
+        publish_diagnostics(conn, state, uri);
+    }
+    recompute_deferral_scope(state);
 }
 
 /// A `workspace/diagnostic` sweep the dispatch loop is stepping, with the id
@@ -1382,7 +1442,9 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
             // outcome wherever it does run, which is whenever a request
             // actually needs the Compile order.
             let fold = state.semantic.fold_outcome(&project);
-            let evaluation = state.workspace.project_evaluation_of(&project);
+            let evaluation = state
+                .workspace
+                .project_evaluation_as_last_confirmed(&project);
             // Per capability, not per project: the evaluation always settles the
             // reference-edge verdict, while an unfolded project's *fold* verdict
             // is genuinely unknown and its last one stands.
@@ -1650,7 +1712,7 @@ pub(crate) fn grouped_for_uri_linked(
             // contents do, and its spans are in the content's coordinates: a
             // buffer that keeps a mark has every line-0 column one further on.
             let content = crate::disk_text::content(text);
-            if Unobserved::Evaluation
+            if Unobserved::FsprojDiagnostics
                 .read_to_string(&path)
                 .map(crate::disk_text::without_bom)
                 .is_ok_and(|disk| disk == content)

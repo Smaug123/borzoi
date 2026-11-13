@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bd7685d0f9038005973220b8fb317f17b3d6b5fed72a2b2ed66ca658617527c8 # shrinks to granularity = 1, setup = [Dir(0), Dir(1), Dir(2), Dir(3), File(4), File(6), Link(9, 1), Advance(10000)], ops = [Generation, Interleave(File(7)), Generation]
+cc 865502351aa51e73ffe0b0876319f41893939d66bee7a3834e01cbe2d04edb6a # shrinks to granularity = 1, setup = [Dir(0), Dir(1), Dir(2), Dir(3), File(4), File(6), Link(9, 1), Advance(10000)], ops = [Generation, Unreadable(true), Generation]
