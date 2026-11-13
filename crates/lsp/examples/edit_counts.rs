@@ -49,6 +49,9 @@
 //!   once (`borzoi::workspace::Workspace::validate`): files read again,
 //!   paths `stat`ed, directories listed and paths canonicalised, from each
 //!   [`GENERATION_EVENT`].
+//! - **o.list** and **o.stat**: what finding the projects that own files
+//!   observed (`borzoi::workspace::Workspace::owning_project`): directories
+//!   listed and paths `stat`ed, from each [`GENERATION_EVENT`].
 //!
 //! The counts describe the project fold only if the requests take it, and a
 //! handler that falls back to single-file analysis still answers. So the run
@@ -239,10 +242,18 @@ static EVALUATION: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 const EVALUATION_FIELDS: [&str; 5] = ["opens", "stats", "listings", "canonicalizations", "reads"];
 
 /// What confirming cached evaluations cost every generation that has ended,
-/// from each [`GENERATION_EVENT`]: opens, stats, listings and
-/// canonicalisations.
-static VALIDATION: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-const VALIDATION_FIELDS: [&str; 4] = ["v_opens", "v_stats", "v_listings", "v_canonicalizations"];
+/// from each [`GENERATION_EVENT`] (opens, stats, listings and
+/// canonicalisations), and what finding the projects that own files cost it
+/// (listings and stats).
+static VALIDATION: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+const VALIDATION_FIELDS: [&str; 6] = [
+    "v_opens",
+    "v_stats",
+    "v_listings",
+    "v_canonicalizations",
+    "o_listings",
+    "o_stats",
+];
 
 /// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
 /// [`ENV_BUILD_SPAN`], [`GENERATION_EVENT`] and [`EVALUATION_EVENT`] alone. Every
@@ -290,7 +301,7 @@ impl tracing::field::Visit for ProjectField {
 struct ReadFields {
     opens: Option<u64>,
     stats: Option<u64>,
-    validation: [Option<u64>; 4],
+    validation: [Option<u64>; 6],
 }
 
 impl tracing::field::Visit for ReadFields {
@@ -428,8 +439,9 @@ struct Cost {
     stats: u64,
     /// The MSBuild evaluations' counts, in [`EVALUATION_FIELDS`] order.
     evaluation: [u64; 5],
-    /// The validations' counts, in [`VALIDATION_FIELDS`] order.
-    validation: [u64; 4],
+    /// The validations' and the ownership walks' counts, in
+    /// [`VALIDATION_FIELDS`] order.
+    validation: [u64; 6],
 }
 
 impl Cost {
@@ -462,7 +474,7 @@ struct Reading {
     opens: u64,
     stats: u64,
     evaluation: [u64; 5],
-    validation: [u64; 4],
+    validation: [u64; 6],
 }
 
 impl Reading {
@@ -860,16 +872,16 @@ fn columns(cost: &Cost) -> String {
         .instructions
         .map_or_else(|| "n/a".to_string(), |i| i.to_string());
     let [e_opens, e_stats, e_listings, e_canon, e_reads] = cost.evaluation;
-    let [v_opens, v_stats, v_listings, v_canon] = cost.validation;
+    let [v_opens, v_stats, v_listings, v_canon, o_listings, o_stats] = cost.validation;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7}",
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7} {o_listings:>7} {o_stats:>7}",
         cost.allocations, cost.allocated_bytes, cost.opens, cost.stats,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "message",
         "instructions",
         "allocs",
@@ -884,7 +896,9 @@ fn header() -> String {
         "v.open",
         "v.stat",
         "v.list",
-        "v.canon"
+        "v.canon",
+        "o.list",
+        "o.stat"
     )
 }
 

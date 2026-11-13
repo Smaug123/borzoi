@@ -18,6 +18,10 @@
 //!   own, and the [`crate::workspace::Workspace`] keeps all of them beside
 //!   the evaluation and confirms them once per generation that reads it,
 //!   counted in the generation's [`EvaluationCounts`].
+//! - **The ownership walk** ([`crate::workspace::Workspace::owning_project`])
+//!   lists the directories above a file through `borzoi_msbuild::observed`
+//!   too, and the [`crate::workspace::Workspace`] counts its listings in the
+//!   generation's [`Generation::ownership`].
 //! - **Every other observation** is a method of [`Unobserved`], whose variant
 //!   names the reader it belongs to and the plan stage that will route it.
 //!   Those are not counted.
@@ -34,9 +38,10 @@ use crate::vfs::{Disk, Nanos, Stamp};
 
 /// The name of the event [`crate::vfs::Vfs::end_generation_with`] emits, whose
 /// fields are the generation's number (`generation`), its source reads'
-/// [`ReadCounts`] (`opens`, `stats`), and its [`EvaluationCounts`]
+/// [`ReadCounts`] (`opens`, `stats`), its [`EvaluationCounts`]
 /// (`evaluated`, and the validation's `v_opens`, `v_stats`, `v_listings` and
-/// `v_canonicalizations`).
+/// `v_canonicalizations`), and its [`Generation::ownership`] (`o_listings`,
+/// `o_stats`).
 ///
 /// A test reads [`crate::vfs::Vfs::log_generations`] instead. `tracing`
 /// caches each callsite's interest for the whole process, and while one
@@ -101,6 +106,9 @@ pub struct Generation {
     pub counts: ReadCounts,
     /// The project evaluations read.
     pub evaluations: EvaluationCounts,
+    /// What finding the projects that own files observed: the directories
+    /// the ownership walk listed.
+    pub ownership: borzoi_msbuild::observed::ReadCounts,
 }
 
 /// The host's file system, as the [`crate::vfs::Vfs`] reads it.
@@ -195,8 +203,6 @@ pub enum Unobserved {
     /// reads). No stage routes them: the diagnostics are computed afresh for
     /// every request, so nothing they read is cached.
     FsprojDiagnostics,
-    /// The ownership walk's directory listings. Stage 4a.
-    Ownership,
     /// The assembly env's reference resolution: the assets file, the project
     /// graph, the output-DLL search, the packs, the DLL reads, the on-disk
     /// assembly cache and the C# sidecar's binaries. Stage 6a.
