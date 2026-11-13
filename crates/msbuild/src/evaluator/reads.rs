@@ -16,7 +16,9 @@
 
 use std::collections::BTreeMap;
 
-use super::item_pass::{helper_item_definition_default_uncertainties, item_list_view};
+use super::item_pass::{
+    helper_item_definition_default_uncertainties, is_package_id_shape, item_list_view,
+};
 use super::{EvaluatedItem, HelperMetadataUncertainty};
 use super::{State, is_toolset_initial_property_name, item_key};
 use crate::UntrustedCause;
@@ -193,17 +195,30 @@ impl State<'_> {
                     row(&item)
                 })
                 .collect();
+            // An identity outside the package-id shape is one MSBuild may spell
+            // otherwise (the Unix path fixup rewrites `\a\b`).
+            let spelled_as_written = self
+                .package_reference_rows
+                .iter()
+                .all(|item| is_package_id_shape(&item.identity));
             return ItemRead {
                 items: Some(rows),
-                exact: self.walk_opaque.is_none() && !self.package_references_uncertain,
+                exact: self.walk_opaque.is_none()
+                    && !self.package_references_uncertain
+                    && spelled_as_written,
                 tainted: self.package_references_uncertain,
                 untracked: false,
             };
         }
         // The list an `@(…)` reference in the walk itself would take as exact,
         // by the same predicate; else the table as captured, for reporting.
+        // An identity that keeps a backslash is one whose spelling turns on
+        // MSBuild's working directory (`msbuild_spelling`): the walk knows the
+        // list, not how MSBuild spells it.
         let view = item_list_view(item_type, self);
-        let exact = view.is_some();
+        let exact = view
+            .as_ref()
+            .is_some_and(|items| items.iter().all(|item| !item.identity.contains('\\')));
         let items = match view {
             Some(items) => Some(items.iter().map(row).collect()),
             None => self.evaluated_items.get(&key).map(|list| {

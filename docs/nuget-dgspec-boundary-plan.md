@@ -1778,6 +1778,10 @@ capture now also carries each reference's row as an item table would read it:
 - collapsed through `Update` onto prior `Include`s as MSBuild collapses it
   (`EvaluatedItem::updated_by`).
 
+A generic list likewise counts as exact only when no identity keeps a
+backslash, the evaluator's mark of a spelling that turns on MSBuild's working
+directory.
+
 An `Update` that writes no package metadatum is inert for the dependency
 set and skipped there. But it may write other metadata on whichever
 references it matches. So every name it may write is marked unknown on every
@@ -1785,7 +1789,8 @@ row, without resolving the match. Item-definition defaults for dependency
 item types are recorded too, and mark their names uncertain.
 
 The probe calls the list exact when the dependency set is certain and the
-walk is not opaque, which is the certainty `fsproj_packageref_generative_diff`
+walk is not opaque, and every identity has NuGet's package-id shape (which
+no path normalisation or Unix path fixup respells), which is the certainty `fsproj_packageref_generative_diff`
 already grades for identities. `fsproj_generic_items_generative_diff` now
 generates `PackageReference` items and `Update`s for every type, including a
 versioned `Include` followed by an `Update`. It fails if the collapse or the

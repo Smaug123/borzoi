@@ -2163,14 +2163,7 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
         // `Update` side *or* a captured `Include` it might match — declines,
         // since a false-inert proof or a mis-dropped merge are both
         // certain-but-wrong.
-        let match_is_faithful = |id: &str| {
-            !id.is_empty()
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-                && !id.starts_with('.')
-                && !id.ends_with('.')
-        };
+        let match_is_faithful = is_package_id_shape;
         let has_hazard = sources
             .iter()
             .any(|source| !match_is_faithful(&source.identity))
@@ -2268,6 +2261,20 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     {
         state.mark_untracked_item_list("PackageReference");
     }
+}
+
+/// Whether `id` has NuGet's package-id shape: ASCII `[A-Za-z0-9._-]`, non-empty,
+/// no leading or trailing `.`. MSBuild spells such an identity as written on
+/// every platform (no separator for path normalisation or the Unix path fixup
+/// to touch, no trimmable boundary), and two of them compare as MSBuild
+/// compares identities under `eq_ignore_ascii_case`.
+pub(super) fn is_package_id_shape(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && !id.starts_with('.')
+        && !id.ends_with('.')
 }
 
 /// Whether a `<PackageReference>` `Update` writes any metadatum we *capture*

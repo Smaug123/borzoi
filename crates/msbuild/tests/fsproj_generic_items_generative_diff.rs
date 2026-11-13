@@ -37,7 +37,7 @@ const ITEM_TYPES: [&str; 3] = ["Helper", "Known", "PackageReference"];
 /// What an `Update` names.
 const UPDATES: [&str; 4] = ["a", "A", "b", "@(Helper)"];
 const METADATA: [&str; 3] = ["Version", "Pack", "Flavor"];
-const INCLUDES: [&str; 9] = [
+const INCLUDES: [&str; 10] = [
     "a",
     "a;b",
     "$(Name)",
@@ -47,6 +47,8 @@ const INCLUDES: [&str; 9] = [
     "  b  ",
     "@(Helper->'%(Flavor)')",
     "@(ProjectReference)",
+    // Path-shaped: MSBuild's Unix path fixup may respell it.
+    "\\tmp\\foo",
 ];
 /// Values for a metadata attribute.
 const VALUES: [&str; 17] = [
