@@ -69,6 +69,7 @@ pub use infer::{
 };
 pub use infer_project::{
     InferredProject, PrecedingGap, PrecedingTypes, infer_project, infer_project_reusing,
+    infer_project_reusing_with_reuse,
 };
 pub use overload::{ArityWindow, arity_window};
 pub use qnof::{QualifiedNameOfFile, qualified_names};
