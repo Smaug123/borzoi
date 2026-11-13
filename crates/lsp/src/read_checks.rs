@@ -29,9 +29,9 @@
 //!   component, and taking each `..` from the directory reached), and a
 //!   listing that found its directory absent is witnessed the same way.
 //!
-//! A read whose path is not spelt as its components (a trailing separator,
-//! a `.` or `..`, a doubled separator, a relative path) is resolved by the
-//! kernel in ways these rules do not follow, and has no witness.
+//! A relative path has no witness, and neither has an `lstat` of a path not
+//! spelt as its components: a trailing separator makes it follow a final
+//! symlink.
 //!
 //! Whole-file reads are confirmed by the file's own stamp
 //! ([`DiskCache::text_answer`]). A read that failed for any reason but
@@ -110,8 +110,19 @@ impl Check {
 /// of the generation that took them, before the query was asked.
 #[derive(Clone, Debug)]
 struct Witness {
-    dirs: Vec<(PathBuf, Stamp)>,
+    /// Each directory as its index in [`ReadChecks::dirs`], and its stamp.
+    dirs: Vec<(usize, Stamp)>,
     taken: Nanos,
+}
+
+/// One directory a witness names: its path, and its stamp (or `None` where
+/// it has none: it is absent, or cannot be `stat`ed) as the generation that
+/// last `stat`ed it saw it.
+#[derive(Debug)]
+struct Dir {
+    path: PathBuf,
+    stamp: Option<Stamp>,
+    checked: u64,
 }
 
 /// Confirms [`Check`]s for the open generation.
@@ -119,10 +130,12 @@ struct Witness {
 pub struct ReadChecks<D: Probe = HostDisk> {
     /// Whole-file reads, confirmed by the file's stamp.
     files: DiskCache<D>,
-    /// Each directory's stamp, or `None` where it has none (it is absent, or
-    /// cannot be `stat`ed), and the generation that took it: one `stat` per
-    /// directory per generation.
-    dirs: RefCell<HashMap<PathBuf, (Option<Stamp>, u64)>>,
+    /// Every directory a witness has named, `stat`ed at most once per
+    /// generation; witnesses name them by index, so confirming one looks
+    /// nothing up by path.
+    dirs: RefCell<Vec<Dir>>,
+    /// The index of each directory in `dirs`.
+    dir_ids: RefCell<HashMap<PathBuf, usize>>,
     /// The queries asked this generation beyond `files`' reads.
     counts: Cell<ReadCounts>,
 }
@@ -137,7 +150,8 @@ impl<D: Probe> ReadChecks<D> {
     pub fn with_disk(disk: D) -> Self {
         ReadChecks {
             files: DiskCache::with_disk(disk),
-            dirs: RefCell::new(HashMap::new()),
+            dirs: RefCell::new(Vec::new()),
+            dir_ids: RefCell::new(HashMap::new()),
             counts: Cell::new(ReadCounts::default()),
         }
     }
@@ -187,7 +201,10 @@ impl<D: Probe> ReadChecks<D> {
         // generation asks again.
         let witness = self.deciders(read).and_then(|dirs| {
             dirs.into_iter()
-                .map(|dir| self.dir_stamp(&dir, generation).map(|stamp| (dir, stamp)))
+                .map(|dir| {
+                    let id = self.dir_id(dir);
+                    self.dir_stamp(id, generation).map(|stamp| (id, stamp))
+                })
                 .collect::<Option<Vec<_>>>()
                 .map(|dirs| Witness { dirs, taken: now })
         });
@@ -210,7 +227,7 @@ impl<D: Probe> ReadChecks<D> {
             && witness
                 .dirs
                 .iter()
-                .all(|(dir, stamp)| self.dir_stamp(dir, generation) == Some(*stamp))
+                .all(|(id, stamp)| self.dir_stamp(*id, generation) == Some(*stamp))
     }
 
     /// The directories whose stamps decide `read`'s answer (see the module
@@ -222,11 +239,15 @@ impl<D: Probe> ReadChecks<D> {
             Err(failure) => failure.is_absent(),
         };
         let path = &read.path;
-        // A spelling the kernel resolves otherwise than component by
-        // component (a trailing separator follows a final symlink, `..` is
-        // taken from the directory reached, a relative path from the working
-        // directory) has no witness.
-        if !path.is_absolute() || lexically_normalize(path).as_os_str() != path.as_os_str() {
+        // A relative path is resolved from the working directory, and has
+        // no witness. `lstat` follows a final symlink when the path ends
+        // with a separator, so a path not spelt as its components has no
+        // `LinkKind` witness; every other query resolves its whole path as
+        // the walk does (a `..` from the directory reached).
+        let spelt_as_components = lexically_normalize(path).as_os_str() == path.as_os_str();
+        if !path.is_absolute()
+            || (matches!(read.observation, Observation::LinkKind(_)) && !spelt_as_components)
+        {
             return None;
         }
         match &read.observation {
@@ -323,26 +344,36 @@ impl<D: Probe> ReadChecks<D> {
         self.files.disk().answer(&read.path, &read.observation)
     }
 
-    /// `dir`'s stamp in `generation`, `stat`ed once per generation; `None`
-    /// when it has none.
-    fn dir_stamp(&self, dir: &Path, generation: u64) -> Option<Stamp> {
-        if let Some((stamp, checked)) = self.dirs.borrow().get(dir)
-            && *checked == generation
-        {
-            return *stamp;
+    /// The index of `dir` in [`Self::dirs`], added unstamped if new.
+    fn dir_id(&self, dir: PathBuf) -> usize {
+        let mut ids = self.dir_ids.borrow_mut();
+        if let Some(&id) = ids.get(&dir) {
+            return id;
         }
-        let mut counts = self.counts.get();
-        counts.stats += 1;
-        self.counts.set(counts);
-        let stamp = self.files.disk().stat(dir).ok();
         let mut dirs = self.dirs.borrow_mut();
-        match dirs.get_mut(dir) {
-            Some(entry) => *entry = (stamp, generation),
-            None => {
-                dirs.insert(dir.to_path_buf(), (stamp, generation));
-            }
+        let id = dirs.len();
+        ids.insert(dir.clone(), id);
+        dirs.push(Dir {
+            path: dir,
+            stamp: None,
+            checked: 0,
+        });
+        id
+    }
+
+    /// The stamp in `generation` of the directory `id` names, `stat`ed once
+    /// per generation; `None` when it has none.
+    fn dir_stamp(&self, id: usize, generation: u64) -> Option<Stamp> {
+        let mut dirs = self.dirs.borrow_mut();
+        let dir = &mut dirs[id];
+        if dir.checked != generation {
+            let mut counts = self.counts.get();
+            counts.stats += 1;
+            self.counts.set(counts);
+            dir.stamp = self.files.disk().stat(&dir.path).ok();
+            dir.checked = generation;
         }
-        stamp
+        dir.stamp
     }
 }
 
