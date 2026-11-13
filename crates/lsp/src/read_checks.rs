@@ -555,15 +555,15 @@ mod host_tests {
                 apply(&root, change);
             }
             let mut paths = vec![root.clone()];
-            for a in 0..NAMES.len() {
-                paths.push(root.join(NAMES[a]));
+            for a in NAMES {
+                paths.push(root.join(a));
                 // Spellings the kernel resolves otherwise than by components.
-                paths.push(PathBuf::from(format!("{}/{}/", root.display(), NAMES[a])));
-                paths.push(root.join("l/..").join(NAMES[a]));
-                paths.push(root.join("a/..").join(NAMES[a]));
-                paths.push(PathBuf::from(format!("{}/{}/.", root.display(), NAMES[a])));
-                for b in 0..NAMES.len() {
-                    paths.push(root.join(NAMES[a]).join(NAMES[b]));
+                paths.push(PathBuf::from(format!("{}/{a}/", root.display())));
+                paths.push(root.join("l/..").join(a));
+                paths.push(root.join("a/..").join(a));
+                paths.push(PathBuf::from(format!("{}/{a}/.", root.display())));
+                for b in NAMES {
+                    paths.push(root.join(a).join(b));
                 }
             }
             let queries = [
