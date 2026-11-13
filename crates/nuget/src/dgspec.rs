@@ -37,6 +37,7 @@ mod json;
 mod log_code;
 pub(crate) mod nuspec;
 mod resolve;
+mod restore_items;
 #[cfg(test)]
 mod xml_nesting_pump;
 
@@ -49,6 +50,9 @@ pub use nuspec::{DESCRIPTIVE_ELEMENTS, NuspecDecline, nuspec_is_admitted};
 pub use resolve::{
     DgSpecResolveDecline, NuGetIdentity, PackageMetadataDecline, ResolvedFramework,
     UnmodelledField, resolve_dgspec, verified_nuget_identities,
+};
+pub use restore_items::{
+    RestoreGraphFile, RestoreGraphItem, RestoreItemsDecline, write_restore_graph,
 };
 
 use json::Json;

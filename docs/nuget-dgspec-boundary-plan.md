@@ -5,7 +5,8 @@
 > resolver's handling of dependency asset filters, B₁'s of `<contentFiles>`, and
 > B₁'s reading of the environment restore runs under.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions);
-> *A₁: the restore cone, staged* splits it into five stages, none landed yet.
+> *A₁: the restore cone, staged* splits it into five stages, of which A₁.1
+> (the item seam) has landed.
 > B₁ runs in production in shadow: every on-demand restore hands it the spec
 > it read and logs whether B₁ agreed (see *B₁ in shadow*).
 > The resolver is NuGet's default dependency resolver reimplemented, and
@@ -1386,38 +1387,88 @@ and the items at the seam are the currency between them: a stage before the
 seam is graded by the entries it produces, and the stage after it by the spec
 it makes of them.
 
-#### A₁.1: the item seam
+#### A₁.1: the item seam — landed
 
-`borzoi_nuget::dgspec::from_restore_graph_items` takes the entries as the task
-reads them, together with the task's `RestoreRecursive` flag (true by
-default, which puts every `PackageReference` project in `restore`), and
-returns the `DependencyGraphSpec` that NuGet would write, or declines. The entries are a type plus metadata, after `ITaskItem.GetMetadata`
-has unescaped it. The function declines anything it does not model, in the
-same way `parse_dgspec` does: a project style other than `PackageReference`,
-runtime identifiers, `PackageTargetFallback`, C++/CLI, and any value the typed
-model cannot hold.
+`borzoi_nuget::dgspec::write_restore_graph` takes three inputs:
+- the entries as the task reads them: a type plus metadata, after
+  `ITaskItem.GetMetadata` has unescaped it;
+- the task's `RestoreRecursive` flag, true by default, which puts every
+  `PackageReference` project in `restore`;
+- the restoring NuGet's identity and the process environment.
 
-**Oracle:** `tools/nuget-oracle`'s `restoreGraphItems` op builds the items,
-runs `GetDependencySpec` over them, saves the spec as the task does, and
-returns NuGet's reading of that file in `dgspec_diff`'s canonical projection.
-The op runs under each of `dgspec_diff`'s environments.
+It returns the *text* of the file `WriteRestoreGraphTask` would save, along
+with the spec `parse_dgspec` reads from it, or it declines.
 
-**Differential** (`restore_items_diff`): certain-implies-exact against that op.
-The cases are:
-- hand cases that must commit;
-- a generator over entry lists that varies:
-  - metadata spellings, casing, whitespace and emptiness;
-  - duplicate and conflicting entries;
-  - cross-targeting, which decides whether `TargetFrameworks` metadata is split
-    on `;`;
-  - every item type the function reads.
+The text, not a spec, is the output because NuGet's writer reshapes what it
+saves:
+- it sorts most lists, by four different comparers;
+- it drops a warning policy that has only `WarningsNotAsErrors`;
+- it folds two downloads of one package into a single `;`-joined entry;
+- it writes a central version's range as the item spelt it.
 
-A commit must also be a spec `parse_dgspec` commits on, so the seam never
-produces what B₁'s input reader would refuse.
+What NuGet's reader then makes of that file is already modelled and graded by
+`parse_dgspec`. Emitting the text keeps the writer's effects in one model, the
+text, rather than re-deriving them as values.
 
-The function models NuGet code, so it is keyed on the restoring NuGet's
-identity, like B₁. It shares B₁'s verified list, and regenerating that list
-claims that both differentials have graded the new NuGet.
+**Oracle:** `tools/nuget-oracle`'s `restoreGraphItems` op wraps the items as
+`MSBuildTaskItem` wraps them and runs `GetDependencySpec`. It then runs the
+task's own `BuildTasksUtility.AddAllProjectsForRestore`, loaded by reflection
+from the SDK, saves, and returns the text.
+
+**Differential** (`restore_items_diff`): every commit's text equals NuGet's
+byte for byte, under each of `dgspec_diff`'s environments. The cases are:
+- **Base entry lists.** These are modelled on `dotnet msbuild
+  -getTargetResult:_GenerateRestoreGraph` output from SDK 10.0.401, and every
+  one must commit. They cover:
+  - a single-target project;
+  - a cross-targeting `net8.0;netstandard2.0` project;
+  - a central-package-management project with transitive pinning and
+    `TreatWarningsAsErrors`, referencing a second project;
+  - a `net10.0` project with pruning on.
+- **Mutated lists.** 1,500 a run, made by eleven mutation kinds:
+  - values drawn from per-name pools of spellings;
+  - padded values;
+  - dropped, re-cased and foreign metadata;
+  - re-cased types;
+  - dropped, duplicated, swapped and added items;
+  - retargeted `TargetFrameworks`.
+
+  Each kind must produce at least one agreement. A 30,000-case soak found no
+  violation, and between 55% and 70% of the value and item mutations agree.
+
+Most of the work was declining where NuGet's result is not a function of the
+items:
+- **Host-dependent comparisons.** Project paths are compared and sorted
+  case-insensitively on a case-insensitive file system and ordinally elsewhere.
+- **OS-dependent output.** A `file:/` source is completed with a number of
+  slashes that depends on the OS.
+- **Culture-dependent order.** Downloads are ordered by the culture's
+  collation.
+- **Unmodelled .NET behaviour.** This covers `Enum.TryParse`'s numeric forms
+  and .NET's case folding beyond ASCII.
+
+The function also declines what the typed model cannot hold:
+- runtime identifiers;
+- `PackageTargetFallback`;
+- profiles;
+- platform-qualified `net5.0`-era frameworks;
+- every project style but `PackageReference`.
+
+A `netstandard2.0` project's `TargetPlatformMoniker` of `Windows,Version=7.0`
+is not declined, because `NuGetFramework.ParseComponents` ignores a platform
+on any framework before `net5.0`.
+
+The function models NuGet code, so like B₁ it is keyed on the restoring
+NuGet's identity. It shares B₁'s verified list, which
+`dgspec_resolve_diff::the_verified_list_is_the_graded_nuget` holds to the
+oracle's NuGet, the one both differentials grade.
+
+What it does not cover:
+- **Multi-version downloads.** The writer joins two exact versions of one
+  download with `;`, and `parse_dgspec` declines that spelling, so such lists
+  decline.
+- **Synthetic entries.** Everything graded here was generated. Real entry
+  lists arrive at A₁.2.
 
 #### A₁.2: the seam on real projects
 
