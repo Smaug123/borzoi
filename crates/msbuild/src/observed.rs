@@ -26,14 +26,13 @@
 //! a test module would also lift the child-process spawn bans it carries.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-/// Where an evaluation's observations go: the reads it made, in the order it
-/// first made them, and how many calls of each kind it made.
+/// Where an evaluation's observations go: the reads it made, and how many
+/// calls of each kind it made.
 ///
 /// It is shared by reference through the walk, and handed to the caller's
 /// [`crate::SdkResolver`] and (inside [`crate::GlobRequest`]) its
@@ -54,14 +53,15 @@ impl Observer {
     /// The read set and the counts. A query asked twice with the same answer
     /// is one read. Asked twice with different answers (the file moved during
     /// the evaluation), it is two, and the read set can never validate again.
+    ///
+    /// The reads are sorted, so the read set is a set: the order an
+    /// evaluation happened to ask its queries in (a walk over a `HashMap`, a
+    /// directory listed in the host's order) does not tell two equal read
+    /// sets apart.
     pub fn finish(self) -> (ReadSet, ReadCounts) {
-        let mut seen = HashSet::new();
-        let reads = self
-            .reads
-            .into_inner()
-            .into_iter()
-            .filter(|read| seen.insert(read.clone()))
-            .collect();
+        let mut reads = self.reads.into_inner();
+        reads.sort();
+        reads.dedup();
         (ReadSet { reads }, self.counts.get())
     }
 
@@ -109,8 +109,8 @@ impl std::ops::Add for ReadCounts {
     }
 }
 
-/// The distinct queries an evaluation made, each with the answer it got, in
-/// the order it first asked them.
+/// The distinct queries an evaluation made, each with the answer it got,
+/// sorted by path and then by query.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReadSet {
     reads: Vec<Read>,
@@ -140,14 +140,14 @@ impl ReadSet {
 }
 
 /// One query and its answer.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Read {
     pub path: PathBuf,
     pub observation: Observation,
 }
 
 /// A query, with everything its asker could learn from the answer.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Observation {
     /// The file read whole as UTF-8 (`std::fs::read_to_string`).
     Text(Result<TextDigest, Failure>),
@@ -189,7 +189,7 @@ impl Observation {
 /// let a stale read validate; over accidental edits, at 128 bits, that is not
 /// worth the memory of the texts. The hash is `std`'s, which is stable within
 /// a process, and a read set is never persisted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TextDigest {
     pub len: u64,
     pub hash: u128,
@@ -211,7 +211,7 @@ impl TextDigest {
 }
 
 /// What a path names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EntryKind {
     File,
     Dir,
@@ -238,7 +238,7 @@ impl EntryKind {
 /// A failed query: everything its asker can learn from the `std::io::Error`,
 /// which is its kind and its message (an OS error's message carries its
 /// code). A path that is not there fails with [`ErrorKind::NotFound`].
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Failure {
     kind: ErrorKind,
     message: String,
@@ -272,7 +272,7 @@ impl std::fmt::Display for Failure {
 impl std::error::Error for Failure {}
 
 /// One entry of a recorded directory listing.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Listed {
     Entry {
         name: OsString,
@@ -285,7 +285,7 @@ pub enum Listed {
 
 /// One entry of a directory that [`read_dir`] listed.
 #[derive(Clone, Debug)]
-pub(crate) struct DirEntry {
+pub struct DirEntry {
     pub path: PathBuf,
     pub name: OsString,
     /// The directory entry's own type, which does not follow a symlink.
@@ -293,11 +293,12 @@ pub(crate) struct DirEntry {
 }
 
 // The functions below make the observations the crate's `clippy.toml` bans
-// everywhere else.
+// everywhere else. They are public so that a caller's own `SdkResolver` or
+// `GlobResolver` can query through the observer it is handed.
 
 /// [`std::fs::read_to_string`].
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn read_to_string(observer: &Observer, path: &Path) -> Result<String, Failure> {
+pub fn read_to_string(observer: &Observer, path: &Path) -> Result<String, Failure> {
     let result = std::fs::read_to_string(path).map_err(|e| Failure::of(&e));
     let digest = result.as_deref().map(TextDigest::of).map_err(Clone::clone);
     observer.record(path, Observation::Text(digest));
@@ -306,7 +307,7 @@ pub(crate) fn read_to_string(observer: &Observer, path: &Path) -> Result<String,
 
 /// What `path` names, following symlinks: [`std::fs::metadata`].
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
+pub fn kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
     let result = std::fs::metadata(path)
         .map(|meta| EntryKind::of(meta.file_type()))
         .map_err(|e| Failure::of(&e));
@@ -316,7 +317,7 @@ pub(crate) fn kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failur
 
 /// What `path` itself is: [`std::fs::symlink_metadata`].
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn link_kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
+pub fn link_kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
     let result = std::fs::symlink_metadata(path)
         .map(|meta| EntryKind::of(meta.file_type()))
         .map_err(|e| Failure::of(&e));
@@ -325,24 +326,24 @@ pub(crate) fn link_kind(observer: &Observer, path: &Path) -> Result<EntryKind, F
 }
 
 /// [`Path::is_file`].
-pub(crate) fn is_file(observer: &Observer, path: &Path) -> bool {
+pub fn is_file(observer: &Observer, path: &Path) -> bool {
     kind(observer, path) == Ok(EntryKind::File)
 }
 
 /// [`Path::is_dir`].
-pub(crate) fn is_dir(observer: &Observer, path: &Path) -> bool {
+pub fn is_dir(observer: &Observer, path: &Path) -> bool {
     kind(observer, path) == Ok(EntryKind::Dir)
 }
 
 /// [`Path::exists`].
-pub(crate) fn exists(observer: &Observer, path: &Path) -> bool {
+pub fn exists(observer: &Observer, path: &Path) -> bool {
     kind(observer, path).is_ok()
 }
 
 /// [`std::fs::read_dir`], read to the end. An entry the listing could not
 /// read is an `Err` in its place.
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn read_dir(
+pub fn read_dir(
     observer: &Observer,
     path: &Path,
 ) -> Result<Vec<Result<DirEntry, Failure>>, Failure> {
@@ -381,7 +382,7 @@ pub(crate) fn read_dir(
 
 /// [`std::fs::canonicalize`].
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn canonicalize(observer: &Observer, path: &Path) -> Result<PathBuf, Failure> {
+pub fn canonicalize(observer: &Observer, path: &Path) -> Result<PathBuf, Failure> {
     let result = std::fs::canonicalize(path).map_err(|e| Failure::of(&e));
     observer.record(path, Observation::Canonical(result.clone()));
     result
@@ -452,6 +453,8 @@ pub mod host_fs {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::host_fs::HostPath as _;
     use super::*;
 
@@ -526,9 +529,37 @@ mod tests {
         assert_eq!(read_set.len(), 6);
         assert_eq!(read_set.first_stale(), None);
         std::fs::write(dir.join("b.props"), "").unwrap();
+        // The reads are sorted by path, so the first to go stale is the
+        // listing of `dir`, which gained an entry.
         assert_eq!(
             read_set.first_stale().map(|read| read.path.clone()),
-            Some(dir.join("b.props"))
+            Some(dir.clone())
         );
+    }
+
+    /// Two evaluations that ask the same queries in different orders (a walk
+    /// over a `HashMap`, say) have equal read sets.
+    #[test]
+    fn the_read_set_does_not_depend_on_the_order_of_its_queries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let paths: Vec<PathBuf> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|name| dir.join(name))
+            .collect();
+        std::fs::write(&paths[1], "x").unwrap();
+        std::fs::create_dir(&paths[2]).unwrap();
+        let ask = |order: &[usize]| {
+            let observer = Observer::new();
+            for &i in order {
+                let _ = kind(&observer, &paths[i]);
+                let _ = read_to_string(&observer, &paths[i]);
+            }
+            observer.finish()
+        };
+        let forwards = ask(&[0, 1, 2, 3]);
+        for order in [[3, 2, 1, 0], [1, 3, 0, 2], [2, 0, 3, 1]] {
+            assert_eq!(ask(&order), forwards, "asked in the order {order:?}");
+        }
     }
 }

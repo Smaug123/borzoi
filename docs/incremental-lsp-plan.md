@@ -1161,6 +1161,12 @@ corpus project is reported, so Stage 3b's validation cost is known in advance.
   oracle uses, and Stage 3b replaces "the host" with the `Vfs`. A query
   asked twice with one answer is one read; with two answers (the file
   moved during the evaluation) it is two, and the set never validates.
+  The reads are sorted, so the read set is a set: workload manifest
+  resolution probes in a `HashMap`'s order, and two equal evaluations
+  otherwise compared unequal (found by Codex;
+  `the_read_set_does_not_depend_on_the_order_of_its_queries`).
+- The query functions are public, so a caller's own resolver can query
+  through the observer it is handed.
 - **One `Observer` per evaluation, shared by reference.** It lives in the
   walker's `State` and records through `Cell`/`RefCell`: the evaluator is
   single-threaded, and the observer is hidden from everything but the one
