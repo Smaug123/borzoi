@@ -3,8 +3,8 @@
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness),
 > Stage 1 (the inference cutoff), Stage 2a (counted source reads), Stage 2b
 > (the `Vfs` owns source text), Stage 3a (the MSBuild evaluation records
-> its read set) and Stage 3b (evaluations are validated, not trusted)
-> implemented. Tracks
+> its read set), Stage 3b (evaluations are validated, not trusted) and
+> Stage 4a (ownership listings are observed and counted) implemented. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -1724,7 +1724,30 @@ Planted, each caught, then removed:
 | a direct `std::fs::read_dir` in `all_fsproj_in` | `cargo clippy` (`disallowed_methods`) |
 | the fallback walk listing through an observer of its own | `the_ownership_walks_fallback_lists_through_the_observer_too` |
 
-MEASURED_4A
+**Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
+minimum over three runs of each binary: #660's head (2eb1b108, Stage 3b
+before its squash; `main` at 3d1e038a adds #657's change to the MSBuild
+evaluator, which no keystroke runs) and this stage. Every
+other column is unchanged (80 `stat`s on each fold-reading row, 137
+validation `stat`s on each row that reads the evaluation).
+
+| message, per keystroke | instructions 3b | 4a | allocs 3b | 4a | o.list |
+|---|---:|---:|---:|---:|---:|
+| `didChange E` | 0.14 M | 0.17 M | 99 | 99 | 0 |
+| `diagnostic E` | 7.08 M | 7.62 M | 1,531 | 2,227 | 4 |
+| `diagnostic L` (`unchanged`) | 5.58 M | 5.89 M | 1,519 | 1,891 | 4 |
+| `semanticTokens E` | 9.88 M | 10.01 M | 5,357 | 5,531 | 1 |
+| `semanticTokens L` | 13.87 M | 13.96 M | 12,177 | 12,363 | 2 |
+| `hover L` | 9.23 M | 9.40 M | 5,060 | 5,246 | 2 |
+| **keystroke total** | **45.81 M** | **47.32 M** | 25,743 | 27,357 | **13** |
+
+The 13 listings cost 1.5 M instructions (+3.3%) and 1,614 allocations per
+keystroke more than the uncounted ones did. Nine of them list the project's
+directory, which holds 82 entries, and four `Skeleton/`, which holds four.
+An observed listing records every entry's name and kind and sorts them,
+where the walk read only each entry's path. Stage 4b removes the
+listings from the keystroke. The `didChange E` row reads no file and moves
+within its runs' spread (0.14–0.19 M across both binaries).
 
 ### Stage 4b: ownership is memoised
 
