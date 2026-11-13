@@ -1001,6 +1001,49 @@ mod tests {
         }
     }
 
+    /// An abbreviation of `CustomOperationAttribute` the file declares itself
+    /// makes its own augmentations' attributes possible custom operations,
+    /// wherever it stands: the file's augmentation of every builder may then
+    /// declare `foo`, which takes it from the file's own `foo` inside the
+    /// expression. With no such abbreviation the augmentation declares none.
+    #[test]
+    fn an_abbreviation_the_file_declares_may_name_its_augmentations_operations() {
+        use crate::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+        use borzoi_cst::syntax::{AstNode, ImplFile};
+
+        let body = "type B() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\ntype System.Object with\n    [<GridCO(\"foo\")>]\n    member _.Op(s: int, v: int) = s + v\nlet b = B()\nlet foo (x: int) = x\nlet probe = b { return foo 1 }\n";
+        for (alias, declines) in [
+            ("type GridCO = CustomOperationAttribute\n", true),
+            ("type GridCO = System.ObsoleteAttribute\n", false),
+        ] {
+            let src = format!("module M\n{body}{alias}");
+            let parsed = parse(&src);
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let recovery = SyntaxRecovery::of(&parsed);
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let rf = resolve_file(
+                &file,
+                &ProjectItems::default(),
+                &AssemblyEnv::default(),
+                &recovery,
+            );
+            let at = src.rfind("foo 1").expect("the use");
+            let range = borzoi_cst::syntax::TextRange::new(
+                u32::try_from(at).unwrap().into(),
+                u32::try_from(at + 3).unwrap().into(),
+            );
+            let committed = rf
+                .resolution_at(range)
+                .is_some_and(|r| matches!(r, Resolution::Local(_) | Resolution::Item(_)));
+            assert_eq!(
+                !committed,
+                declines,
+                "{alias}: {:?}",
+                rf.resolution_at(range)
+            );
+        }
+    }
+
     /// The same in an earlier file's signature, whose attributes are the ones
     /// later files see: its augmentation's operation extends the later
     /// file's builder.

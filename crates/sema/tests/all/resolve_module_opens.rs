@@ -712,6 +712,66 @@ fn a_self_open_in_a_later_file_re_adds_an_earlier_files_auto_open_value() {
     );
 }
 
+/// The re-add above after an `open` that raised a generation barrier (`H`'s
+/// `extern`): the replayed fold is written at the explicit `open N`'s
+/// generation, so `A.x` stands over the barrier as it would had `open N`
+/// folded the namespace afresh. Replayed at the generation the block recorded
+/// it at, it would be stale behind the barrier and the use would decline.
+#[test]
+fn a_self_open_after_a_barrier_re_adds_at_its_own_generation() {
+    let src0 = "namespace N\n\n[<AutoOpen>]\nmodule A =\n    let x = 1\n\nmodule H =\n    extern int z(int a)\n";
+    let src1 =
+        "namespace N\n\nmodule Client =\n    let x = 2\n    open H\n    open N\n    let y = x\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+
+    let i = src1.rfind('x').expect("`x` use");
+    let use_range = TextRange::new(
+        u32::try_from(i).unwrap().into(),
+        u32::try_from(i + 1).unwrap().into(),
+    );
+    let res = proj
+        .file(1)
+        .resolution_at(use_range)
+        .expect("a resolution at bare `x`");
+    let (file_idx, def) = proj
+        .item_def(res)
+        .unwrap_or_else(|| panic!("`x` names no cross-file item, got {res:?}"));
+    let di = src0.find("x =").expect("A's `x`");
+    assert_eq!(
+        (file_idx, def.range),
+        (
+            0,
+            TextRange::new(
+                u32::try_from(di).unwrap().into(),
+                u32::try_from(di + 1).unwrap().into(),
+            )
+        ),
+        "`open N` re-adds the earlier file's `A.x` past the barrier `open H` raised"
+    );
+}
+
+/// The re-add above when the earlier file's `[<AutoOpen>]` module declares
+/// `x` as an `extern`, a value the walk does not model: the replayed fold
+/// marks the name, so the use must not commit to `Client`'s local `x`. FCS
+/// binds the `extern`.
+#[test]
+fn a_self_open_re_adds_an_earlier_files_extern_over_a_local() {
+    let src0 = "namespace N\n\n[<AutoOpen>]\nmodule B =\n    extern int x(int a)\n";
+    let src1 = "namespace N\n\nmodule Client =\n    let x = 2\n    open N\n    let y = x\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+
+    let i = src1.rfind('x').expect("`x` use");
+    let use_range = TextRange::new(
+        u32::try_from(i).unwrap().into(),
+        u32::try_from(i + 1).unwrap().into(),
+    );
+    let res = proj.file(1).resolution_at(use_range);
+    assert!(
+        !matches!(res, Some(Resolution::Local(_) | Resolution::Item(_))),
+        "the replayed fold's `extern x` must hide Client's earlier `x`, got {res:?}"
+    );
+}
+
 /// An `open` of an alias of an earlier file's `module N`, inside `namespace
 /// N` (an FS0247 module/namespace clash, live mid-edit): the alias is no
 /// namespace reading, so nothing replays the namespace, and the module's own
