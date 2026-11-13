@@ -16,12 +16,25 @@
 //! ([`Ty::is_ground`]) — the D5 "say nothing when unsure" contract, enforced at
 //! read-off by code rather than convention.
 //!
+//! A named type's path is a [`TyPath`]: an id in the env's name table
+//! (`docs/sema-interning-plan.md`, Stage 7), so cloning a nullary type
+//! allocates nothing and comparing two paths compares integers. A `Ty` means
+//! something only next to the env it was built against, as an
+//! [`EntityHandle`](crate::EntityHandle) does, and rendering one takes that
+//! env.
+//!
 //! The canonical rendering ([`Ty::render`]) is the **differential currency**: it
 //! emits the abbreviation-resolved BCL FQN convention (`System.Int32`,
 //! `System.Byte[]`) that the FCS oracle's `TypeCanon` field also emits
 //! (`tools/fcs-dump` `renderTypeCanonical`), so the two sides compare by string
 //! equality — the same projection-to-a-shared-form discipline the parser
 //! differential uses.
+
+#[cfg(all(feature = "interning-reference", debug_assertions))]
+use std::sync::Arc;
+
+use crate::AssemblyEnv;
+use crate::names::{NameTable, PathId};
 
 #[cfg(any(test, all(feature = "interning-reference", debug_assertions)))]
 pub(crate) mod reference;
@@ -108,6 +121,160 @@ impl TyVid {
     }
 }
 
+/// The path of a named type ([`Ty::Named`], [`Ty::Project`]): its segments,
+/// held by their id in the env's name table, so a clone copies an integer and
+/// equality compares one.
+///
+/// A path names a type only next to the env whose table issued it; read it
+/// back with [`Self::segments`]. Like the table's ids it has no `Ord`, since
+/// ids are handed out in interning order: ordered output sorts by text.
+///
+/// Under `interning-reference` in a debug build it also carries the segments
+/// it was built from, the string form it replaced, and reading it, comparing
+/// two, and rendering a type assert that the id agrees with them. The segments
+/// are shared (an `Arc`), so a clone copies none.
+#[derive(Clone)]
+pub struct TyPath {
+    id: PathId,
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    text: Arc<[String]>,
+}
+
+impl PartialEq for TyPath {
+    fn eq(&self, other: &Self) -> bool {
+        let same = self.id == other.id;
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            same,
+            self.text == other.text,
+            "two type paths' ids disagree with their segments, {:?} and {:?}",
+            self.text,
+            other.text
+        );
+        same
+    }
+}
+
+impl Eq for TyPath {}
+
+impl std::hash::Hash for TyPath {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl std::fmt::Debug for TyPath {
+    /// The segments where the reference carries them, and the id otherwise:
+    /// with no table at hand, the id is all a path can show.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        return self.text.fmt(f);
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        return f.debug_tuple("TyPath").field(&self.id).finish();
+    }
+}
+
+impl TyPath {
+    /// `path`, interned in `names`.
+    pub(crate) fn new<S: AsRef<str>>(names: &NameTable, path: &[S]) -> TyPath {
+        let ty_path = TyPath {
+            id: names.intern_path(path),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: path.iter().map(|s| s.as_ref().to_owned()).collect(),
+        };
+        ty_path.check(names);
+        ty_path
+    }
+
+    /// The path `dotted` spells, segments split at each `.`, interned in
+    /// `names`.
+    pub(crate) fn dotted(names: &NameTable, dotted: &str) -> TyPath {
+        TyPath::new(names, &dotted.split('.').collect::<Vec<_>>())
+    }
+
+    /// `path`, interned in `env`'s table.
+    pub fn of<S: AsRef<str>>(env: &AssemblyEnv, path: &[S]) -> TyPath {
+        TyPath::new(env.names(), path)
+    }
+
+    /// The path's segments, outermost first, as `env` spells them; `env` is
+    /// the one the path was built against.
+    pub fn segments<'e>(&self, env: &'e AssemblyEnv) -> Vec<&'e str> {
+        self.segments_in(env.names())
+    }
+
+    /// [`Self::segments`], by the table.
+    pub(crate) fn segments_in<'n>(&self, names: &'n NameTable) -> Vec<&'n str> {
+        let segments = names.segments(self.id);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert!(
+            segments
+                .iter()
+                .copied()
+                .eq(self.text.iter().map(String::as_str)),
+            "a type path's id spells {segments:?}, not {:?}",
+            self.text
+        );
+        segments
+    }
+
+    /// The path's segments as owned strings, for a query that takes them so.
+    pub(crate) fn spelled(&self, names: &NameTable) -> Vec<String> {
+        self.segments_in(names)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Whether the path's segments are exactly `path`.
+    pub(crate) fn is(&self, names: &NameTable, path: &[&str]) -> bool {
+        let found = names.lookup_path(path) == Some(self.id);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            found,
+            self.text
+                .iter()
+                .map(String::as_str)
+                .eq(path.iter().copied()),
+            "a type path compared with {path:?} at {:?}",
+            self.text
+        );
+        found
+    }
+
+    /// The same path, as an id of `to`'s; `self` is `from`'s.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> TyPath {
+        let ty_path = TyPath {
+            id: crate::names::rekey_path(from, to, self.id),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: Arc::clone(&self.text),
+        };
+        ty_path.check(to);
+        ty_path
+    }
+
+    /// The segments the path was built from: the reference's spelling.
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    pub(crate) fn text(&self) -> &[String] {
+        &self.text
+    }
+
+    /// Assert, under `interning-reference` in a debug build, that the id
+    /// spells the segments the path was built from.
+    fn check(&self, names: &NameTable) {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            names.lookup_path(&self.text),
+            Some(self.id),
+            "a type path's id does not spell {:?}",
+            self.text
+        );
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = names;
+    }
+}
+
 /// A best-effort F# type, as far as the current inference phase models it.
 ///
 /// Closed DU: every variant corresponds to an actual type shape, so illegal
@@ -116,9 +283,9 @@ impl TyVid {
 /// for the unification substrate (never emitted from [`crate::infer_file`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
-    /// A named type by its canonical, abbreviation-resolved dotted path —
-    /// `["System", "Int32"]` for `int`, `["System", "String"]` for `string` —
-    /// applied to `args`.
+    /// A named type by its canonical, abbreviation-resolved path (a
+    /// [`TyPath`]) — the segments `System`, `Int32` for `int`, `System`,
+    /// `String` for `string` — applied to `args`.
     ///
     /// `args` is empty for a nullary type, and a *generic application* carries
     /// its arguments in source order: `int option` is
@@ -130,7 +297,7 @@ pub enum Ty {
     /// A nullary type is `args: []` and never a separate variant, so a type has
     /// exactly one representation and structural equality is the type equality
     /// the unifier needs. Build one with [`Ty::named`].
-    Named { path: Vec<String>, args: Vec<Ty> },
+    Named { path: TyPath, args: Vec<Ty> },
     /// A type the **project** declares, by the path FCS names it with —
     /// namespace, each enclosing module's compiled name, the type's own
     /// (`["N", "Inner", "G"]`) — applied to `args`.
@@ -141,7 +308,7 @@ pub enum Ty {
     /// project-wide, from its own file or any other, and a signature and its
     /// implementation agree on it. Never a referenced assembly's type, even
     /// one at the same path: that is a [`Ty::Named`], and the two never unify.
-    Project { path: Vec<String>, args: Vec<Ty> },
+    Project { path: TyPath, args: Vec<Ty> },
     /// An array type. `elem` is the element type, `rank` the dimensionality
     /// (1 for `T[]`, 2 for `T[,]`, …). Stage 3.1 produces only `byte[]`.
     Array { elem: Box<Ty>, rank: u32 },
@@ -179,17 +346,31 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// A nullary [`Ty::Named`] from a dotted canonical path (`"System.Int32"`).
-    pub fn named(path: &str) -> Ty {
-        Ty::named_path(path.split('.').map(str::to_owned).collect())
+    /// A nullary [`Ty::Named`] from a dotted canonical path (`"System.Int32"`),
+    /// interned in `env`'s table.
+    pub fn named(env: &AssemblyEnv, path: &str) -> Ty {
+        Ty::named_in(env.names(), path)
+    }
+
+    /// [`Self::named`], by the table.
+    pub(crate) fn named_in(names: &NameTable, path: &str) -> Ty {
+        Ty::Named {
+            path: TyPath::dotted(names, path),
+            args: Vec::new(),
+        }
     }
 
     /// A nullary [`Ty::Named`] from an already-split canonical path.
-    pub fn named_path(path: Vec<String>) -> Ty {
+    pub(crate) fn named_path<S: AsRef<str>>(names: &NameTable, path: &[S]) -> Ty {
         Ty::Named {
-            path,
+            path: TyPath::new(names, path),
             args: Vec::new(),
         }
+    }
+
+    /// Whether this is the nullary [`Ty::Named`] at `path`.
+    pub(crate) fn is_named(&self, names: &NameTable, path: &[&str]) -> bool {
+        matches!(self, Ty::Named { path: p, args } if args.is_empty() && p.is(names, path))
     }
 
     /// This type's node count and depth, as the type budget counts them
@@ -238,20 +419,38 @@ impl Ty {
     /// `.`-joined segments for a named type and `Elem[,…]` for an array (rank
     /// commas, as ECMA-335 / FCS render them). The currency the inference
     /// differential (`crates/sema/tests/all/infer_literals_diff.rs`) compares.
-    pub fn render(&self) -> String {
+    /// `env` is the one the type was built against.
+    pub fn render(&self, env: &AssemblyEnv) -> String {
+        self.render_in(env.names())
+    }
+
+    /// [`Self::render`], by the table.
+    pub(crate) fn render_in(&self, names: &NameTable) -> String {
+        let rendered = self.render_canonical(names);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            rendered,
+            reference::render(&reference::SpelledTy::carried(self)),
+            "a type renders apart from its segments"
+        );
+        rendered
+    }
+
+    fn render_canonical(&self, names: &NameTable) -> String {
+        let render = |t: &Ty| t.render_canonical(names);
         match self {
             Ty::Named { path, args } | Ty::Project { path, args } => {
-                render_named(&path.join("."), args, Ty::render)
+                render_named(&path.segments_in(names).join("."), args, render)
             }
-            Ty::Array { elem, rank } => render_array(elem, *rank, Ty::render),
+            Ty::Array { elem, rank } => render_array(elem, *rank, render),
             // `a * b * …` with FQN elements, matching the oracle's canonical
             // tuple rendering (`fcs-dump`'s `renderTypeInScope`). A nested tuple
             // element is parenthesised so the flat ` * ` join stays unambiguous.
-            Ty::Tuple(elems) => render_tuple(elems, Ty::render),
+            Ty::Tuple(elems) => render_tuple(elems, render),
             // `arg -> ret` with FQN operands, matching the oracle's canonical
             // function rendering (`fcs-dump`'s `renderTypeCanonical`). Right-
             // associative, so only a *function* domain is parenthesised.
-            Ty::Fun { arg, ret } => render_fun(arg, ret, Ty::render),
+            Ty::Fun { arg, ret } => render_fun(arg, ret, render),
             // A quantified type parameter renders `'a`, `'b`, … by index — the
             // same convention the oracle's canonicaliser
             // (`tools/fcs-dump`'s `renderTypeCanonical`) renames FCS's arbitrary
@@ -268,17 +467,36 @@ impl Ty {
     /// Render to the **F# display form** an editor shows — `int`, `float`,
     /// `byte[]` — rather than the canonical BCL FQN [`Self::render`] emits. The
     /// hover/completion currency; the canonical form stays the oracle currency.
+    /// `env` is the one the type was built against.
     ///
     /// The BCL-primitive ↔ F#-alias map is **not** restated here: it defers to
     /// [`borzoi_assembly::fsharp_alias`], the single source of truth this
     /// crate already uses to render referenced-assembly members — so a hovered
     /// literal and a hovered member agree (`uint`, not `uint32`). A named type
     /// with no alias falls back to its canonical dotted string, so this is total.
-    pub fn render_fsharp(&self) -> String {
+    pub fn render_fsharp(&self, env: &AssemblyEnv) -> String {
+        self.render_fsharp_in(env.names())
+    }
+
+    /// [`Self::render_fsharp`], by the table.
+    pub(crate) fn render_fsharp_in(&self, names: &NameTable) -> String {
+        let rendered = self.render_display(names);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            rendered,
+            reference::render_fsharp(&reference::SpelledTy::carried(self)),
+            "a type renders for display apart from its segments"
+        );
+        rendered
+    }
+
+    fn render_display(&self, names: &NameTable) -> String {
+        let render = |t: &Ty| t.render_display(names);
         match self {
             Ty::Named { path, args } => {
+                let path = path.segments_in(names);
                 let (namespace, name) = match path.split_last() {
-                    Some((name, ns)) => (ns.join("."), name.as_str()),
+                    Some((name, ns)) => (ns.join("."), *name),
                     None => return String::new(),
                 };
                 // No alias: the path is raw metadata, so each segment is spelled
@@ -300,24 +518,22 @@ impl Ty {
                     .or(renamed)
                     .or_else(|| borzoi_assembly::fsharp_alias(&namespace, name))
                     .map(str::to_owned)
-                    .unwrap_or_else(|| {
-                        borzoi_assembly::join_quoted(path.iter().map(String::as_str))
-                    });
-                render_named(&head, args, Ty::render_fsharp)
+                    .unwrap_or_else(|| borzoi_assembly::join_quoted(path.iter().copied()));
+                render_named(&head, args, render)
             }
             // Spelled as F# identifiers, qualified, as the canonical form is.
             Ty::Project { path, args } => render_named(
-                &borzoi_assembly::join_quoted(path.iter().map(String::as_str)),
+                &borzoi_assembly::join_quoted(path.segments_in(names).into_iter()),
                 args,
-                Ty::render_fsharp,
+                render,
             ),
-            Ty::Array { elem, rank } => render_array(elem, *rank, Ty::render_fsharp),
+            Ty::Array { elem, rank } => render_array(elem, *rank, render),
             // The F# display form is the same `a * b` shape, with aliased
             // elements (`int * string`).
-            Ty::Tuple(elems) => render_tuple(elems, Ty::render_fsharp),
+            Ty::Tuple(elems) => render_tuple(elems, render),
             // The F# display form is the same `a -> b` shape, with aliased
             // operands (`bool -> int`).
-            Ty::Fun { arg, ret } => render_fun(arg, ret, Ty::render_fsharp),
+            Ty::Fun { arg, ret } => render_fun(arg, ret, render),
             // A quantified parameter renders identically in the display form —
             // `'a`, `'b`, … — so hover shows `f : 'a -> 'a` for a generalised
             // binder (Stage 3.2c-2c).
@@ -325,6 +541,33 @@ impl Ty {
             // Not emitted from `infer_file` (only ground types are); see
             // [`Self::render`].
             Ty::Var(_) => "'_".to_owned(),
+        }
+    }
+
+    /// The same type, its paths as ids of `to`'s; `self` is `from`'s.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Ty {
+        let all = |args: &[Ty]| args.iter().map(|a| a.rekey(from, to)).collect();
+        match self {
+            Ty::Named { path, args } => Ty::Named {
+                path: path.rekey(from, to),
+                args: all(args),
+            },
+            Ty::Project { path, args } => Ty::Project {
+                path: path.rekey(from, to),
+                args: all(args),
+            },
+            Ty::Array { elem, rank } => Ty::Array {
+                elem: Box::new(elem.rekey(from, to)),
+                rank: *rank,
+            },
+            Ty::Tuple(elems) => Ty::Tuple(all(elems)),
+            Ty::Fun { arg, ret } => Ty::Fun {
+                arg: Box::new(arg.rekey(from, to)),
+                ret: Box::new(ret.rekey(from, to)),
+            },
+            Ty::Param(i) => Ty::Param(*i),
+            Ty::Var(v) => Ty::Var(*v),
         }
     }
 }
@@ -395,7 +638,7 @@ pub(crate) fn typar_name(i: u32) -> String {
 /// is what `borzoi_assembly::display` already does for assembly members.
 /// Aligning the two display forms is separate work — the canonical form, which
 /// is the differential currency, is unaffected either way.
-fn render_named(head: &str, args: &[Ty], render_arg: fn(&Ty) -> String) -> String {
+fn render_named(head: &str, args: &[Ty], render_arg: impl Fn(&Ty) -> String) -> String {
     if args.is_empty() {
         return head.to_owned();
     }
@@ -410,7 +653,7 @@ fn render_named(head: &str, args: &[Ty], render_arg: fn(&Ty) -> String) -> Strin
 /// and `->`, so a bare `System.Int32 * System.String[]` denotes a *2-tuple of
 /// `int` and `string[]`* — a different type from the array of pairs it was meant
 /// to render. Shared by [`Ty::render`] and [`Ty::render_fsharp`].
-fn render_array(elem: &Ty, rank: u32, render_elem: fn(&Ty) -> String) -> String {
+fn render_array(elem: &Ty, rank: u32, render_elem: impl Fn(&Ty) -> String) -> String {
     let commas = ",".repeat((rank as usize).saturating_sub(1));
     let elem = match elem {
         Ty::Tuple(_) | Ty::Fun { .. } => format!("({})", render_elem(elem)),
@@ -426,7 +669,7 @@ fn render_array(elem: &Ty, rank: u32, render_elem: fn(&Ty) -> String) -> String 
 /// `a -> (b * c)` (since `*` binds tighter than `->`, an unparenthesised function
 /// element would be mis-grouped). Shared by [`Ty::render`] and
 /// [`Ty::render_fsharp`], and matched by the oracle's `renderTypeCanonical`.
-fn render_tuple(elems: &[Ty], render_elem: fn(&Ty) -> String) -> String {
+fn render_tuple(elems: &[Ty], render_elem: impl Fn(&Ty) -> String) -> String {
     elems
         .iter()
         .map(|e| match e {
@@ -443,7 +686,7 @@ fn render_tuple(elems: &[Ty], render_elem: fn(&Ty) -> String) -> String {
 /// and the *domain* is parenthesised only when it is itself a function
 /// (`(a -> b) -> c`); a tuple domain (`a * b -> c`) needs none. Shared by
 /// [`Ty::render`] and [`Ty::render_fsharp`].
-fn render_fun(arg: &Ty, ret: &Ty, render_elem: fn(&Ty) -> String) -> String {
+fn render_fun(arg: &Ty, ret: &Ty, render_elem: impl Fn(&Ty) -> String) -> String {
     let arg_s = match arg {
         Ty::Fun { .. } => format!("({})", render_elem(arg)),
         _ => render_elem(arg),
@@ -453,7 +696,15 @@ fn render_fun(arg: &Ty, ret: &Ty, render_elem: fn(&Ty) -> String) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
     use super::*;
+
+    /// The table every type in these tests is built against.
+    fn names() -> &'static NameTable {
+        static NAMES: LazyLock<NameTable> = LazyLock::new(NameTable::default);
+        &NAMES
+    }
 
     /// The F# rendering spells each segment as an identifier. `Ty::Named`'s path
     /// is raw metadata, and metadata carries names F# can only write in double
@@ -467,45 +718,47 @@ mod tests {
     #[test]
     fn renders_fsharp_names_as_identifiers() {
         let ty = Ty::Named {
-            path: vec![
-                "Ns".to_string(),
-                "Odd Type".to_string(),
-                "Inner@42".to_string(),
-            ],
+            path: TyPath::new(names(), &["Ns", "Odd Type", "Inner@42"]),
             args: vec![],
         };
-        assert_eq!(ty.render_fsharp(), "Ns.``Odd Type``.``Inner@42``");
-        assert_eq!(ty.render(), "Ns.Odd Type.Inner@42");
+        assert_eq!(ty.render_fsharp_in(names()), "Ns.``Odd Type``.``Inner@42``");
+        assert_eq!(ty.render_in(names()), "Ns.Odd Type.Inner@42");
         // A generic argument is rendered through the same path, so it is quoted
         // wherever it appears.
         let outer = Ty::Named {
-            path: vec!["Ns".to_string(), "Holder".to_string()],
+            path: TyPath::new(names(), &["Ns", "Holder"]),
             args: vec![ty],
         };
         assert_eq!(
-            outer.render_fsharp(),
+            outer.render_fsharp_in(names()),
             "Ns.Holder<Ns.``Odd Type``.``Inner@42``>"
         );
     }
 
     #[test]
     fn renders_named_and_array() {
-        assert_eq!(Ty::named("System.Int32").render(), "System.Int32");
-        assert_eq!(Ty::named("System.String").render(), "System.String");
+        assert_eq!(
+            Ty::named_in(names(), "System.Int32").render_in(names()),
+            "System.Int32"
+        );
+        assert_eq!(
+            Ty::named_in(names(), "System.String").render_in(names()),
+            "System.String"
+        );
         assert_eq!(
             Ty::Array {
-                elem: Box::new(Ty::named("System.Byte")),
+                elem: Box::new(Ty::named_in(names(), "System.Byte")),
                 rank: 1
             }
-            .render(),
+            .render_in(names()),
             "System.Byte[]"
         );
         assert_eq!(
             Ty::Array {
-                elem: Box::new(Ty::named("System.Int32")),
+                elem: Box::new(Ty::named_in(names(), "System.Int32")),
                 rank: 2
             }
-            .render(),
+            .render_in(names()),
             "System.Int32[,]"
         );
     }
@@ -521,30 +774,33 @@ mod tests {
             elem: Box::new(t),
             rank: 1,
         };
-        let pair = Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.String")]);
+        let pair = Ty::Tuple(vec![
+            Ty::named_in(names(), "System.Int32"),
+            Ty::named_in(names(), "System.String"),
+        ]);
         assert_eq!(
-            arr(pair.clone()).render(),
+            arr(pair.clone()).render_in(names()),
             "(System.Int32 * System.String)[]"
         );
-        assert_eq!(arr(pair).render_fsharp(), "(int * string)[]");
+        assert_eq!(arr(pair).render_fsharp_in(names()), "(int * string)[]");
 
         let fun = Ty::Fun {
-            arg: Box::new(Ty::named("System.Int32")),
-            ret: Box::new(Ty::named("System.String")),
+            arg: Box::new(Ty::named_in(names(), "System.Int32")),
+            ret: Box::new(Ty::named_in(names(), "System.String")),
         };
         assert_eq!(
-            arr(fun.clone()).render(),
+            arr(fun.clone()).render_in(names()),
             "(System.Int32 -> System.String)[]"
         );
-        assert_eq!(arr(fun).render_fsharp(), "(int -> string)[]");
+        assert_eq!(arr(fun).render_fsharp_in(names()), "(int -> string)[]");
 
         // A named, array or parameter element needs none: `[]` already binds
         // tighter than anything those spell.
         assert_eq!(
-            arr(arr(Ty::named("System.Int32"))).render_fsharp(),
+            arr(arr(Ty::named_in(names(), "System.Int32"))).render_fsharp_in(names()),
             "int[][]"
         );
-        assert_eq!(arr(Ty::Param(0)).render_fsharp(), "'a[]");
+        assert_eq!(arr(Ty::Param(0)).render_fsharp_in(names()), "'a[]");
     }
 
     /// The mirror of the array rule: a **generic argument** that is a tuple or a
@@ -559,50 +815,69 @@ mod tests {
     /// and a two-argument application are distinct strings.
     #[test]
     fn renders_a_structural_generic_argument_bare() {
-        let pair = Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.String")]);
+        let pair = Ty::Tuple(vec![
+            Ty::named_in(names(), "System.Int32"),
+            Ty::named_in(names(), "System.String"),
+        ]);
         let fun = Ty::Fun {
-            arg: Box::new(Ty::named("System.Int32")),
-            ret: Box::new(Ty::named("System.String")),
+            arg: Box::new(Ty::named_in(names(), "System.Int32")),
+            ret: Box::new(Ty::named_in(names(), "System.String")),
         };
         let app = |args: Vec<Ty>| Ty::Named {
-            path: vec!["N".to_owned(), "H".to_owned()],
+            path: TyPath::new(names(), &["N", "H"]),
             args,
         };
 
         assert_eq!(
-            app(vec![pair.clone()]).render(),
+            app(vec![pair.clone()]).render_in(names()),
             "N.H<System.Int32 * System.String>"
         );
-        assert_eq!(app(vec![pair.clone()]).render_fsharp(), "N.H<int * string>");
         assert_eq!(
-            app(vec![fun.clone()]).render(),
+            app(vec![pair.clone()]).render_fsharp_in(names()),
+            "N.H<int * string>"
+        );
+        assert_eq!(
+            app(vec![fun.clone()]).render_in(names()),
             "N.H<System.Int32 -> System.String>"
         );
-        assert_eq!(app(vec![fun]).render_fsharp(), "N.H<int -> string>");
+        assert_eq!(
+            app(vec![fun]).render_fsharp_in(names()),
+            "N.H<int -> string>"
+        );
 
         // Injectivity: one tuple argument never collides with two arguments.
         assert_ne!(
-            app(vec![pair]).render(),
-            app(vec![Ty::named("System.Int32"), Ty::named("System.String")]).render()
+            app(vec![pair]).render_in(names()),
+            app(vec![
+                Ty::named_in(names(), "System.Int32"),
+                Ty::named_in(names(), "System.String")
+            ])
+            .render_in(names())
         );
     }
 
     #[test]
     fn renders_tuples() {
-        let pair = Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.String")]);
-        assert_eq!(pair.render(), "System.Int32 * System.String");
-        assert_eq!(pair.render_fsharp(), "int * string");
+        let pair = Ty::Tuple(vec![
+            Ty::named_in(names(), "System.Int32"),
+            Ty::named_in(names(), "System.String"),
+        ]);
+        assert_eq!(pair.render_in(names()), "System.Int32 * System.String");
+        assert_eq!(pair.render_fsharp_in(names()), "int * string");
 
         // A nested tuple element is parenthesised so the join stays unambiguous.
         let nested = Ty::Tuple(vec![
-            Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.String")]),
-            Ty::named("System.Boolean"),
+            Ty::Tuple(vec![
+                Ty::named_in(names(), "System.Int32"),
+                Ty::named_in(names(), "System.String"),
+            ]),
+            Ty::named_in(names(), "System.Boolean"),
         ]);
         assert_eq!(
-            nested.render(),
+            nested.render_in(names()),
             "(System.Int32 * System.String) * System.Boolean"
         );
-        assert_eq!(nested.render_fsharp(), "(int * string) * bool");
+        assert_eq!(nested.render_fsharp_in(names()), "(int * string) * bool");
     }
 
     #[test]
@@ -613,42 +888,57 @@ mod tests {
         };
 
         // A monomorphic function: canonical FQNs and F# aliases.
-        let simple = fun(Ty::named("System.Boolean"), Ty::named("System.Int32"));
-        assert_eq!(simple.render(), "System.Boolean -> System.Int32");
-        assert_eq!(simple.render_fsharp(), "bool -> int");
+        let simple = fun(
+            Ty::named_in(names(), "System.Boolean"),
+            Ty::named_in(names(), "System.Int32"),
+        );
+        assert_eq!(simple.render_in(names()), "System.Boolean -> System.Int32");
+        assert_eq!(simple.render_fsharp_in(names()), "bool -> int");
 
         // Currying is right-associative — a nested range reads flat, no parens.
         let curried = fun(
-            Ty::named("System.Boolean"),
-            fun(Ty::named("System.Int32"), Ty::named("System.String")),
+            Ty::named_in(names(), "System.Boolean"),
+            fun(
+                Ty::named_in(names(), "System.Int32"),
+                Ty::named_in(names(), "System.String"),
+            ),
         );
         assert_eq!(
-            curried.render(),
+            curried.render_in(names()),
             "System.Boolean -> System.Int32 -> System.String"
         );
-        assert_eq!(curried.render_fsharp(), "bool -> int -> string");
+        assert_eq!(curried.render_fsharp_in(names()), "bool -> int -> string");
 
         // A *function* domain is parenthesised; a tuple domain is not (`*`
         // binds tighter than `->`).
         let higher_order = fun(
-            fun(Ty::named("System.Int32"), Ty::named("System.Int32")),
-            Ty::named("System.Boolean"),
+            fun(
+                Ty::named_in(names(), "System.Int32"),
+                Ty::named_in(names(), "System.Int32"),
+            ),
+            Ty::named_in(names(), "System.Boolean"),
         );
         assert_eq!(
-            higher_order.render(),
+            higher_order.render_in(names()),
             "(System.Int32 -> System.Int32) -> System.Boolean"
         );
-        assert_eq!(higher_order.render_fsharp(), "(int -> int) -> bool");
+        assert_eq!(
+            higher_order.render_fsharp_in(names()),
+            "(int -> int) -> bool"
+        );
 
         let tuple_domain = fun(
-            Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.Int32")]),
-            Ty::named("System.Int32"),
+            Ty::Tuple(vec![
+                Ty::named_in(names(), "System.Int32"),
+                Ty::named_in(names(), "System.Int32"),
+            ]),
+            Ty::named_in(names(), "System.Int32"),
         );
         assert_eq!(
-            tuple_domain.render(),
+            tuple_domain.render_in(names()),
             "System.Int32 * System.Int32 -> System.Int32"
         );
-        assert_eq!(tuple_domain.render_fsharp(), "int * int -> int");
+        assert_eq!(tuple_domain.render_fsharp_in(names()), "int * int -> int");
     }
 
     #[test]
@@ -657,29 +947,29 @@ mod tests {
         // does not read as `bool -> (int * int)` (`*` binds tighter than `->`).
         let ty = Ty::Tuple(vec![
             Ty::Fun {
-                arg: Box::new(Ty::named("System.Boolean")),
-                ret: Box::new(Ty::named("System.Int32")),
+                arg: Box::new(Ty::named_in(names(), "System.Boolean")),
+                ret: Box::new(Ty::named_in(names(), "System.Int32")),
             },
-            Ty::named("System.Int32"),
+            Ty::named_in(names(), "System.Int32"),
         ]);
         assert_eq!(
-            ty.render(),
+            ty.render_in(names()),
             "(System.Boolean -> System.Int32) * System.Int32"
         );
-        assert_eq!(ty.render_fsharp(), "(bool -> int) * int");
+        assert_eq!(ty.render_fsharp_in(names()), "(bool -> int) * int");
     }
 
     #[test]
     fn function_is_ground_only_when_both_operands_are() {
         let ground = Ty::Fun {
-            arg: Box::new(Ty::named("System.Boolean")),
-            ret: Box::new(Ty::named("System.Int32")),
+            arg: Box::new(Ty::named_in(names(), "System.Boolean")),
+            ret: Box::new(Ty::named_in(names(), "System.Int32")),
         };
         assert!(ground.is_ground());
 
         let open = Ty::Fun {
             arg: Box::new(Ty::Var(TyVid(0))),
-            ret: Box::new(Ty::named("System.Int32")),
+            ret: Box::new(Ty::named_in(names(), "System.Int32")),
         };
         assert!(!open.is_ground());
     }
@@ -707,7 +997,11 @@ mod tests {
             ("System.Boolean", "bool"),
         ];
         for (canonical, fsharp) in cases {
-            assert_eq!(Ty::named(canonical).render_fsharp(), fsharp, "{canonical}");
+            assert_eq!(
+                Ty::named_in(names(), canonical).render_fsharp_in(names()),
+                fsharp,
+                "{canonical}"
+            );
         }
     }
 
@@ -715,10 +1009,10 @@ mod tests {
     fn renders_fsharp_byte_array() {
         assert_eq!(
             Ty::Array {
-                elem: Box::new(Ty::named("System.Byte")),
+                elem: Box::new(Ty::named_in(names(), "System.Byte")),
                 rank: 1
             }
-            .render_fsharp(),
+            .render_fsharp_in(names()),
             "byte[]"
         );
     }
@@ -726,14 +1020,14 @@ mod tests {
     #[test]
     fn renders_type_parameters() {
         // The first 26 are `'a`..`'z`; index 26+ overflow to `'t26`, `'t27`, …
-        assert_eq!(Ty::Param(0).render(), "'a");
-        assert_eq!(Ty::Param(1).render(), "'b");
-        assert_eq!(Ty::Param(25).render(), "'z");
-        assert_eq!(Ty::Param(26).render(), "'t26");
-        assert_eq!(Ty::Param(27).render(), "'t27");
+        assert_eq!(Ty::Param(0).render_in(names()), "'a");
+        assert_eq!(Ty::Param(1).render_in(names()), "'b");
+        assert_eq!(Ty::Param(25).render_in(names()), "'z");
+        assert_eq!(Ty::Param(26).render_in(names()), "'t26");
+        assert_eq!(Ty::Param(27).render_in(names()), "'t27");
         // The display form is identical.
-        assert_eq!(Ty::Param(0).render_fsharp(), "'a");
-        assert_eq!(Ty::Param(26).render_fsharp(), "'t26");
+        assert_eq!(Ty::Param(0).render_fsharp_in(names()), "'a");
+        assert_eq!(Ty::Param(26).render_fsharp_in(names()), "'t26");
 
         // A quantified parameter is ground (it stands for "any type"), so a
         // scheme body reaches read-off.
@@ -743,8 +1037,8 @@ mod tests {
             ret: Box::new(Ty::Param(0)),
         };
         assert!(scheme.is_ground());
-        assert_eq!(scheme.render(), "'a -> 'a");
-        assert_eq!(scheme.render_fsharp(), "'a -> 'a");
+        assert_eq!(scheme.render_in(names()), "'a -> 'a");
+        assert_eq!(scheme.render_fsharp_in(names()), "'a -> 'a");
     }
 
     #[test]
@@ -761,20 +1055,20 @@ mod tests {
                 Ty::Param(0),
             ])),
         };
-        assert_eq!(scheme.render(), "'a -> ('b -> 'b) * 'a");
-        assert_eq!(scheme.render_fsharp(), "'a -> ('b -> 'b) * 'a");
+        assert_eq!(scheme.render_in(names()), "'a -> ('b -> 'b) * 'a");
+        assert_eq!(scheme.render_fsharp_in(names()), "'a -> ('b -> 'b) * 'a");
     }
 
     #[test]
     fn render_fsharp_spells_unit_as_fsharp_does() {
-        let unit = Ty::named("Microsoft.FSharp.Core.Unit");
-        assert_eq!(unit.render(), "Microsoft.FSharp.Core.Unit");
-        assert_eq!(unit.render_fsharp(), "unit");
+        let unit = Ty::named_in(names(), "Microsoft.FSharp.Core.Unit");
+        assert_eq!(unit.render_in(names()), "Microsoft.FSharp.Core.Unit");
+        assert_eq!(unit.render_fsharp_in(names()), "unit");
         let f = Ty::Fun {
             arg: Box::new(unit),
-            ret: Box::new(Ty::named("System.String")),
+            ret: Box::new(Ty::named_in(names(), "System.String")),
         };
-        assert_eq!(f.render_fsharp(), "unit -> string");
+        assert_eq!(f.render_fsharp_in(names()), "unit -> string");
     }
 
     /// A renamed FSharp.Core generic renders under its compiled name in the
@@ -784,30 +1078,31 @@ mod tests {
     /// type any `Ty` carries, and keeps its canonical spelling.
     #[test]
     fn render_fsharp_names_a_renamed_fsharp_core_generic_as_fsharp_does() {
-        let int = Ty::named("System.Int32");
+        let int = Ty::named_in(names(), "System.Int32");
         let app = |path: &str, args: Vec<Ty>| Ty::Named {
-            path: path.split('.').map(str::to_owned).collect(),
+            path: TyPath::dotted(names(), path),
             args,
         };
         let list = app("Microsoft.FSharp.Collections.FSharpList", vec![int.clone()]);
         assert_eq!(
-            list.render(),
+            list.render_in(names()),
             "Microsoft.FSharp.Collections.FSharpList<System.Int32>"
         );
-        assert_eq!(list.render_fsharp(), "list<int>");
+        assert_eq!(list.render_fsharp_in(names()), "list<int>");
         let nested = app("Microsoft.FSharp.Core.FSharpOption", vec![list]);
-        assert_eq!(nested.render_fsharp(), "option<list<int>>");
+        assert_eq!(nested.render_fsharp_in(names()), "option<list<int>>");
         let result = app(
             "Microsoft.FSharp.Core.FSharpResult",
-            vec![int.clone(), Ty::named("System.String")],
+            vec![int.clone(), Ty::named_in(names(), "System.String")],
         );
-        assert_eq!(result.render_fsharp(), "Result<int, string>");
+        assert_eq!(result.render_fsharp_in(names()), "Result<int, string>");
         for &(namespace, compiled, _, display) in FSHARP_CORE_RENAMED {
             let ty = app(&format!("{namespace}.{compiled}"), vec![int.clone()]);
-            assert_eq!(ty.render_fsharp(), format!("{display}<int>"));
+            assert_eq!(ty.render_fsharp_in(names()), format!("{display}<int>"));
         }
         assert_eq!(
-            Ty::named("Microsoft.FSharp.Collections.FSharpList").render_fsharp(),
+            Ty::named_in(names(), "Microsoft.FSharp.Collections.FSharpList")
+                .render_fsharp_in(names()),
             "Microsoft.FSharp.Collections.FSharpList"
         );
     }
@@ -816,7 +1111,7 @@ mod tests {
     fn render_fsharp_falls_back_to_canonical_for_unmapped() {
         // A named type with no F# alias renders by its dotted FQN.
         assert_eq!(
-            Ty::named("System.Collections.Generic.List").render_fsharp(),
+            Ty::named_in(names(), "System.Collections.Generic.List").render_fsharp_in(names()),
             "System.Collections.Generic.List"
         );
     }
@@ -940,8 +1235,8 @@ mod spelled_form {
         ) {
             let names = table(&decoys);
             let ty = s.to_ty(&names);
-            prop_assert_eq!(ty.render(), reference::render(&s));
-            prop_assert_eq!(ty.render_fsharp(), reference::render_fsharp(&s));
+            prop_assert_eq!(ty.render_in(&names), reference::render(&s));
+            prop_assert_eq!(ty.render_fsharp_in(&names), reference::render_fsharp(&s));
         }
     }
 }

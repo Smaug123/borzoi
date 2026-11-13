@@ -237,11 +237,11 @@ fn published(
     let exprs = inferred
         .types()
         .iter()
-        .map(|(range, ty)| (format!("expr {range:?}"), ty.render()));
+        .map(|(range, ty)| (format!("expr {range:?}"), ty.render(&env)));
     let defs = inferred.def_types().iter().map(|(def, ty)| {
         (
             format!("def {}", resolved.def(*def).spelling(env)),
-            ty.render(),
+            ty.render(&env),
         )
     });
     exprs.chain(defs).collect()
@@ -407,11 +407,14 @@ fn a_type_read_out_of_an_assembly_member_does_not_survive() {
     let (resolved, inferred) = resolve_and_infer(src, &complete);
     assert_eq!(
         inferred.def_type(def_of(&resolved)),
-        Some(&Ty::named("System.Int32")),
+        Some(&Ty::named(&complete, "System.Int32")),
         "the complete env must type the binder from the member's return, \
          else this pins nothing"
     );
-    assert_eq!(inferred.type_at(access), Some(&Ty::named("System.Int32")));
+    assert_eq!(
+        inferred.type_at(access),
+        Some(&Ty::named(&complete, "System.Int32"))
+    );
 
     let (resolved, inferred) = resolve_and_infer(src, &incomplete);
     assert_eq!(

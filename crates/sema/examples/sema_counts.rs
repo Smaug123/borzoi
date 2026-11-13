@@ -274,7 +274,7 @@ fn main() {
                 match ty {
                     Ty::Named { path, args } | Ty::Project { path, args } => {
                         named_nodes += 1;
-                        paths.insert(path.clone());
+                        paths.insert(path.segments(&env).into_iter().map(str::to_owned).collect());
                         stack.extend(args);
                     }
                     Ty::Array { elem, .. } => stack.push(elem),

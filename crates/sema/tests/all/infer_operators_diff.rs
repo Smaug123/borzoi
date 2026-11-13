@@ -532,7 +532,7 @@ pub(crate) fn check_in(
             c.ungraded += 1;
             continue;
         }
-        let ours = ty.render();
+        let ours = ty.render(&env);
         match dumps.types.get(&key) {
             None => wrong.push(format!(
                 "`{}` at {key:?} typed `{ours}`, but FCS has no node there: {}",
@@ -563,7 +563,7 @@ pub(crate) fn check_in(
             c.ungraded += 1;
             continue;
         }
-        let ours = ty.render();
+        let ours = ty.render(&env);
         match dumps.binders.get(&key) {
             None => wrong.push(format!(
                 "binder `{}` typed `{ours}`, but FCS has no binder there: {}",

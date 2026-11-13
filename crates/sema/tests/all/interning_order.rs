@@ -19,10 +19,12 @@ use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::test_support::names::{interned_paths, rekeyed, with_fresh_names};
+use borzoi_sema::test_support::names::{
+    interned_paths, rekeyed, rekeyed_inference, with_fresh_names,
+};
 use borzoi_sema::{
-    AssemblyEnv, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery, infer_project,
-    qualified_names, resolve_project, resolve_project_files,
+    AssemblyEnv, InferredProject, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery,
+    infer_project, qualified_names, resolve_project, resolve_project_files,
 };
 use proptest::prelude::*;
 
@@ -189,9 +191,9 @@ fn project_files(sources: &[String]) -> Vec<ProjectFile> {
         .collect()
 }
 
-/// Every type inferring `files` as one project against `env` publishes, at
-/// each node and binder of each file, rendered both ways, sorted.
-fn inferred_types(files: &[ProjectFile], env: &AssemblyEnv) -> Vec<String> {
+/// Infer `files` as one project against `env`, with every type it publishes
+/// at each node and binder of each file, rendered both ways, sorted.
+fn inferred_types(files: &[ProjectFile], env: &AssemblyEnv) -> (InferredProject, Vec<String>) {
     let resolved = resolve_project_files(files, env);
     let inferred = infer_project(files, &resolved, env);
     let mut out = Vec::new();
@@ -202,29 +204,30 @@ fn inferred_types(files: &[ProjectFile], env: &AssemblyEnv) -> Vec<String> {
         for (range, ty) in file.types() {
             out.push(format!(
                 "{idx} node {range:?} {} | {}",
-                ty.render(),
-                ty.render_fsharp()
+                ty.render(&env),
+                ty.render_fsharp(&env)
             ));
         }
         for (def, ty) in file.def_types() {
             out.push(format!(
                 "{idx} def {def:?} {} | {}",
-                ty.render(),
-                ty.render_fsharp()
+                ty.render(&env),
+                ty.render_fsharp(&env)
             ));
         }
     }
     out.sort();
-    out
+    (inferred, out)
 }
 
 /// Infer `sources` against an empty table and against one filled first in an
 /// order `seed` picks, as [`assert_fold_order_invariant`] resolves, and
-/// compare the types. Returns how many types the first run published.
+/// compare the types, rendered and as the whole fold (the first in the
+/// second's ids). Returns how many types the first run published.
 fn assert_inference_order_invariant(sources: &[String], base: &AssemblyEnv, seed: u64) -> usize {
     let files = project_files(sources);
     let first_env = with_fresh_names(base, &[]);
-    let first = inferred_types(&files, &first_env);
+    let (first_fold, first) = inferred_types(&files, &first_env);
     let mut paths = interned_paths(&first_env);
     let decoys: Vec<Vec<String>> = paths
         .iter()
@@ -233,19 +236,23 @@ fn assert_inference_order_invariant(sources: &[String], base: &AssemblyEnv, seed
     paths.extend(decoys);
     shuffle(&mut paths, seed);
     let second_env = with_fresh_names(base, &paths);
-    let second = inferred_types(&files, &second_env);
+    let (second_fold, second) = inferred_types(&files, &second_env);
     assert!(
         first == second,
         "inference moved with interning order (seed {seed}):\nfirst: {first:#?}\nsecond: {second:#?}"
+    );
+    assert!(
+        rekeyed_inference(&first_fold, &first_env, &second_env) == second_fold,
+        "the inference fold moved with interning order (seed {seed})"
     );
     first.len()
 }
 
 /// A value's right-hand side: literals of the primitive types, applications
-/// of FSharp.Core's generics, the file's own record and union, and earlier
-/// values.
+/// of FSharp.Core's generics, the file's own record and union, a member
+/// access (whose receiver type the fold records), and earlier values.
 fn typed_expr(choice: u8, i: usize) -> String {
-    match choice % 12 {
+    match choice % 13 {
         0 => "1".to_owned(),
         1 => "\"s\"".to_owned(),
         2 => "(1, \"s\", true)".to_owned(),
@@ -257,6 +264,7 @@ fn typed_expr(choice: u8, i: usize) -> String {
         8 => "[| 1uy |]".to_owned(),
         9 => "(1.0, 2L)".to_owned(),
         10 if i > 0 => format!("v{}", i - 1),
+        11 => "\"abc\".Length".to_owned(),
         _ => "Ok 1 : Result<int, string>".to_owned(),
     }
 }

@@ -927,7 +927,7 @@ fn an_ill_typed_match_over_a_project_union_keeps_what_fcs_keeps() {
     for (def, ty) in inferred.def_types() {
         let name = resolved.def(*def).spelling(env);
         if let Some((_, fcs)) = pinned.iter().find(|(n, _)| *n == name) {
-            assert_eq!(ty.render(), *fcs, "`{name}`");
+            assert_eq!(ty.render(&env), *fcs, "`{name}`");
         }
     }
 }

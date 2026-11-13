@@ -69,6 +69,13 @@ fn clean_project(
     (files, borzoi_sema::resolve_project_files(&project, env))
 }
 
+/// One [`bcl_env`] for the helpers that hand back an inference, whose types
+/// are read through the env they were inferred against.
+fn shared_bcl_env() -> &'static AssemblyEnv {
+    static ENV: std::sync::OnceLock<AssemblyEnv> = std::sync::OnceLock::new();
+    ENV.get_or_init(bcl_env)
+}
+
 /// An [`AssemblyEnv`] over the real BCL `System.Runtime.dll` — so `System.String`
 /// (and its `Length` / `Chars` / `Empty` members) is present.
 fn bcl_env() -> AssemblyEnv {
@@ -152,7 +159,12 @@ fn fsharp_core_env_no_longer_defers_unrelated_overload_names() {
         let def_types: HashMap<String, String> = inferred
             .def_types()
             .iter()
-            .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+            .map(|(id, ty)| {
+                (
+                    resolved.def(*id).spelling(&env).into_owned(),
+                    ty.render(&env),
+                )
+            })
             .collect();
         assert_eq!(
             def_types.get(binder).map(String::as_str),
@@ -172,7 +184,11 @@ fn fsharp_core_env_no_longer_defers_unrelated_overload_names() {
             let fcs_ty = fcs
                 .get(&key)
                 .unwrap_or_else(|| panic!("we typed {key:?} but FCS has no node there in {src:?}"));
-            assert_eq!(&ty.render(), fcs_ty, "type mismatch at {key:?} in {src:?}");
+            assert_eq!(
+                &ty.render(&env),
+                fcs_ty,
+                "type mismatch at {key:?} in {src:?}"
+            );
         }
     }
 }
@@ -272,7 +288,12 @@ fn open_of_extension_bearing_namespace_defers_only_colliding_names() {
         let def_types: HashMap<String, String> = inferred
             .def_types()
             .iter()
-            .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+            .map(|(id, ty)| {
+                (
+                    resolved.def(*id).spelling(&env).into_owned(),
+                    ty.render(&env),
+                )
+            })
             .collect();
         assert_eq!(
             def_types.get(*binder).map(String::as_str),
@@ -294,7 +315,11 @@ fn open_of_extension_bearing_namespace_defers_only_colliding_names() {
             let fcs_ty = fcs
                 .get(&key)
                 .unwrap_or_else(|| panic!("we typed {key:?} but FCS has no node there in {src:?}"));
-            assert_eq!(&ty.render(), fcs_ty, "type mismatch at {key:?} in {src:?}");
+            assert_eq!(
+                &ty.render(&env),
+                fcs_ty,
+                "type mismatch at {key:?} in {src:?}"
+            );
         }
     }
 }
@@ -350,7 +375,7 @@ fn open_of_namespace_with_a_dropped_prefix_split_is_unknowable() {
 
 /// Infer `src` against the BCL env.
 fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
-    let env = bcl_env();
+    let env = shared_bcl_env();
     let parsed = parse(src);
     assert!(
         parsed.errors.is_empty(),
@@ -369,7 +394,12 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
     let def_types = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     (inferred, def_types)
 }
@@ -408,12 +438,12 @@ fn assert_sound(src: &str) -> usize {
         let fcs_ty = fcs.get(&(start, end)).unwrap_or_else(|| {
             panic!(
                 "we typed {start}..{end} as {} but FCS has no node there\nsrc={src:?}\nfcs keys={:?}",
-                ty.render(),
+                ty.render(&env),
                 fcs.keys().collect::<Vec<_>>()
             )
         });
         assert_eq!(
-            &ty.render(),
+            &ty.render(&env),
             fcs_ty,
             "type mismatch at {start}..{end} in {src:?}"
         );
@@ -483,6 +513,7 @@ fn member_result_feeding_an_if_matches_fcs() {
 
 #[test]
 fn unknown_member_defers() {
+    let env = shared_bcl_env();
     // `s.Nonexistent` — no such member on `System.String`. The lookup misses, so
     // the access defers (D5): `n` is not published, and nothing wrong is emitted.
     let src = "module M\nlet s = \"hi\"\nlet n = s.Nonexistent\n";
@@ -493,7 +524,7 @@ fn unknown_member_defers() {
         !inferred
             .types()
             .values()
-            .any(|t| t.render() == "System.Int32"),
+            .any(|t| t.render(&env) == "System.Int32"),
         "no bogus int leaks from an unknown member"
     );
 }
@@ -609,7 +640,7 @@ fn infer_core_full(src: &str) -> (InferredFile, ResolvedFile, AssemblyEnv) {
 /// Infer `src` against the BCL env, returning the resolved file too so a test can
 /// locate ranges and cross-check `member_resolutions`.
 fn infer_bcl_full(src: &str) -> (InferredFile, ResolvedFile) {
-    let env = bcl_env();
+    let env = shared_bcl_env();
     let parsed = parse(src);
     assert!(
         parsed.errors.is_empty(),
@@ -1152,7 +1183,7 @@ fn unproven_object_base_edge_sinks_the_chain_rather_than_capping() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == "f")
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
 
     let clean = env_with_object_derived_demo_type();
@@ -1199,7 +1230,12 @@ fn enclosing_namespace_extension_defers_the_overload_gate() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("n"),
@@ -1223,7 +1259,12 @@ fn enclosing_namespace_extension_defers_the_overload_gate() {
     let ctypes: HashMap<String, String> = cinferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (cresolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                cresolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         ctypes.get("n").map(String::as_str),
@@ -1311,7 +1352,12 @@ fn single_params_method_routes_through_the_matcher() {
         inferred
             .def_types()
             .iter()
-            .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+            .map(|(id, ty)| {
+                (
+                    resolved.def(*id).spelling(&env).into_owned(),
+                    ty.render(&env),
+                )
+            })
             .collect::<HashMap<String, String>>()
     };
     assert_eq!(
@@ -1469,7 +1515,7 @@ fn interface_receiver_method_call_defers() {
         !inferred
             .types()
             .values()
-            .any(|t| t.render() == "System.String"),
+            .any(|t| t.render(&env) == "System.String"),
         "no String leaks from the incomplete interface group"
     );
 }
@@ -1585,7 +1631,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
     inferred
         .types()
         .values()
-        .map(|t| t.render())
+        .map(|t| t.render(&env))
         .find(|r| r == "System.Boolean")
 }
 
@@ -1715,7 +1761,12 @@ fn skipped_member_in_scope_defers_the_overload_gate() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("n"),
@@ -1747,7 +1798,7 @@ fn dropped_type_uncertainty_is_namespace_scoped() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == "n")
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
 
     let mut env = bcl_env();
@@ -1839,7 +1890,12 @@ fn dropped_type_in_the_receiver_namespace_defers_the_member() {
             let def_types: HashMap<String, String> = inferred
                 .def_types()
                 .iter()
-                .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+                .map(|(id, ty)| {
+                    (
+                        resolved.def(*id).spelling(&env).into_owned(),
+                        ty.render(&env),
+                    )
+                })
                 .collect();
             let member_res = inferred.member_resolution_at(ident_range(src, member));
             match expected {
@@ -1905,7 +1961,7 @@ fn annotated_receiver_door_is_sealed_by_the_resolver() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == "n")
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
 
     assert_eq!(
@@ -1948,7 +2004,12 @@ fn unknowable_auto_opens_defer_the_overload_gate() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("n"),
@@ -1985,7 +2046,12 @@ fn root_namespace_extension_defers_the_overload_gate() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("n"),
@@ -2019,7 +2085,7 @@ fn cross_file_extension_class_defers_the_overload_gate() {
         .map(|(id, ty)| {
             (
                 f2_resolved.def(*id).spelling(&env).into_owned(),
-                ty.render(),
+                ty.render(&env),
             )
         })
         .collect();
@@ -2042,7 +2108,12 @@ fn cross_file_extension_class_defers_the_overload_gate() {
     let types2: HashMap<String, String> = inferred2
         .def_types()
         .iter()
-        .map(|(id, ty)| (call_first.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                call_first.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         types2.get("n").map(String::as_str),
@@ -2307,7 +2378,12 @@ fn trailing_comma_argument_list_defers() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("a"),
@@ -2476,14 +2552,19 @@ fn void_method_call_defers_type_but_records_resolution() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(def_types.get("n"), None, "a void call type defers (unit)");
     assert!(
         !inferred
             .types()
             .values()
-            .any(|t| t.render() == "System.Void"),
+            .any(|t| t.render(&env) == "System.Void"),
         "no System.Void is ever emitted from a void method call"
     );
 }
@@ -2575,7 +2656,12 @@ fn omitted_out_parameter_single_candidate_defers() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("n"),
@@ -2586,7 +2672,7 @@ fn omitted_out_parameter_single_candidate_defers() {
         !inferred
             .types()
             .values()
-            .any(|t| t.render() == "System.Boolean"),
+            .any(|t| t.render(&env) == "System.Boolean"),
         "no raw Boolean leaks from an omitted-out call"
     );
 }
@@ -2719,7 +2805,12 @@ fn annotated_binding_rhs_root_stays_silent() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("o").map(String::as_str),
@@ -2746,7 +2837,12 @@ fn ill_typed_annotated_rhs_still_sound() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(def_types.get("n").map(String::as_str), Some("System.Int64"));
     assert_sound_core(src);
@@ -2798,7 +2894,12 @@ fn non_extension_attribute_no_longer_defers_the_overload() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("a").map(String::as_str),
@@ -2815,7 +2916,11 @@ fn non_extension_attribute_no_longer_defers_the_overload() {
         let fcs_ty = fcs
             .get(&key)
             .unwrap_or_else(|| panic!("we typed {key:?} but FCS has no node there in {src:?}"));
-        assert_eq!(&ty.render(), fcs_ty, "type mismatch at {key:?} in {src:?}");
+        assert_eq!(
+            &ty.render(&env),
+            fcs_ty,
+            "type mismatch at {key:?} in {src:?}"
+        );
     }
 }
 
@@ -2845,7 +2950,12 @@ fn a_real_extension_attribute_still_defers_the_overload() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_ne!(
         def_types.get("a").map(String::as_str),
@@ -2882,7 +2992,12 @@ fn augmentation_defers_only_its_own_member_names() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_eq!(
         def_types.get("a").map(String::as_str),
@@ -2899,7 +3014,11 @@ fn augmentation_defers_only_its_own_member_names() {
         let fcs_ty = fcs
             .get(&key)
             .unwrap_or_else(|| panic!("we typed {key:?} but FCS has no node there in {src:?}"));
-        assert_eq!(&ty.render(), fcs_ty, "type mismatch at {key:?} in {src:?}");
+        assert_eq!(
+            &ty.render(&env),
+            fcs_ty,
+            "type mismatch at {key:?} in {src:?}"
+        );
     }
 
     // The declared name itself still defers: `Twice` joins the instance group.
@@ -2918,7 +3037,12 @@ fn augmentation_defers_only_its_own_member_names() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_ne!(
         def_types.get("a").map(String::as_str),
@@ -2952,7 +3076,12 @@ fn augmentation_operator_member_defers_only_its_compiled_name() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert!(!resolved.augmentation_names_unknowable());
     assert!(resolved.augmentation_static_names().contains("op_PlusDot"));
@@ -2985,7 +3114,7 @@ fn preceding_augmentation_defers_only_its_member_names() {
             .def_types()
             .iter()
             .find(|(id, _)| rf2.def(*(*id)).spelling(&env) == "n")
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
 
     let unrelated = "module A\ntype System.String with\n    member this.Twice (x: int) = x + x\n";
@@ -3026,6 +3155,7 @@ fn preceding_augmentation_defers_only_its_member_names() {
 // itself). The FCS ground-truth types are pinned in `docs/interface-walk-plan.md`.
 #[test]
 fn interface_receiver_members_match_fcs() {
+    let env = shared_bcl_env();
     // (source, the member-access expression's source text, FCS `TypeCanon`)
     let cases: &[(&str, &str, &str)] = &[
         // An `Object` method reached through an interface receiver (probe P6).
@@ -3079,7 +3209,7 @@ fn interface_receiver_members_match_fcs() {
             .map(|(r, t)| {
                 (
                     src[usize::from(r.start())..usize::from(r.end())].to_string(),
-                    t.render(),
+                    t.render(&env),
                 )
             })
             .collect();
@@ -3127,12 +3257,21 @@ fn assert_sound_core(src: &str) -> HashMap<String, String> {
         let fcs_ty = fcs
             .get(&key)
             .unwrap_or_else(|| panic!("we typed {key:?} but FCS has no node there in {src:?}"));
-        assert_eq!(&ty.render(), fcs_ty, "type mismatch at {key:?} in {src:?}");
+        assert_eq!(
+            &ty.render(&env),
+            fcs_ty,
+            "type mismatch at {key:?} in {src:?}"
+        );
     }
     inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect()
 }
 
@@ -3195,7 +3334,12 @@ fn auto_open_module_augmentation_defers_only_its_member_names() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_ne!(
         def_types.get("a").map(String::as_str),
@@ -3230,7 +3374,12 @@ fn auto_open_module_with_extension_attribute_still_defers_wholesale() {
     let def_types: HashMap<String, String> = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| {
+            (
+                resolved.def(*id).spelling(&env).into_owned(),
+                ty.render(&env),
+            )
+        })
         .collect();
     assert_ne!(
         def_types.get("a").map(String::as_str),
@@ -3253,7 +3402,7 @@ fn auto_open_module_with_extension_attribute_still_defers_wholesale() {
         .def_types()
         .iter()
         .find(|(id, _)| rf2.def(*(*id)).spelling(&env) == "n")
-        .map(|(_, ty)| ty.render());
+        .map(|(_, ty)| ty.render(&env));
     assert_eq!(
         n_ty, None,
         "a preceding file's [<Extension>]-in-auto-open must defer later files wholesale"
@@ -3279,7 +3428,7 @@ fn preceding_plain_auto_open_no_longer_defers_the_overload() {
             .def_types()
             .iter()
             .find(|(id, _)| rf2.def(*(*id)).spelling(&env) == "n")
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
     let caller = "module B\nlet s = \"hi\"\nlet n = s.Substring(1)\n";
 
@@ -3318,7 +3467,7 @@ fn preceding_plain_auto_open_no_longer_defers_the_overload() {
         .def_types()
         .iter()
         .find(|(id, _)| rf1.def(*(*id)).spelling(&env) == "n")
-        .map(|(_, ty)| ty.render());
+        .map(|(_, ty)| ty.render(&env));
     assert_eq!(
         n_ty.as_deref(),
         Some("System.String"),

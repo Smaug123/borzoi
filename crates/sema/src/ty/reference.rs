@@ -9,7 +9,8 @@
 //! segments, so a test can ask that rendering a [`Ty`] through its ids gives
 //! the same text.
 
-use super::{FSHARP_CORE_RENAMED, Ty, TyVid, typar_name};
+use super::{FSHARP_CORE_RENAMED, Ty, TyPath, TyVid, typar_name};
+#[cfg(test)]
 use crate::names::NameTable;
 
 /// A [`Ty`] whose named types carry their paths as segments.
@@ -38,26 +39,37 @@ pub(crate) enum SpelledTy {
 
 impl SpelledTy {
     /// `ty` with each path spelled by `names`.
+    #[cfg(test)]
     pub(crate) fn of(names: &NameTable, ty: &Ty) -> SpelledTy {
-        let _ = names;
-        let all = |args: &[Ty]| args.iter().map(|a| SpelledTy::of(names, a)).collect();
+        SpelledTy::spelling(ty, &|path| path.spelled(names))
+    }
+
+    /// `ty` with each path spelled by the segments it carries, the table
+    /// unread: what [`Ty::render`] is held to on every call.
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    pub(crate) fn carried(ty: &Ty) -> SpelledTy {
+        SpelledTy::spelling(ty, &|path| path.text().to_vec())
+    }
+
+    fn spelling(ty: &Ty, spell: &dyn Fn(&TyPath) -> Vec<String>) -> SpelledTy {
+        let all = |args: &[Ty]| args.iter().map(|a| SpelledTy::spelling(a, spell)).collect();
         match ty {
             Ty::Named { path, args } => SpelledTy::Named {
-                path: path.clone(),
+                path: spell(path),
                 args: all(args),
             },
             Ty::Project { path, args } => SpelledTy::Project {
-                path: path.clone(),
+                path: spell(path),
                 args: all(args),
             },
             Ty::Array { elem, rank } => SpelledTy::Array {
-                elem: Box::new(SpelledTy::of(names, elem)),
+                elem: Box::new(SpelledTy::spelling(elem, spell)),
                 rank: *rank,
             },
             Ty::Tuple(elems) => SpelledTy::Tuple(all(elems)),
             Ty::Fun { arg, ret } => SpelledTy::Fun {
-                arg: Box::new(SpelledTy::of(names, arg)),
-                ret: Box::new(SpelledTy::of(names, ret)),
+                arg: Box::new(SpelledTy::spelling(arg, spell)),
+                ret: Box::new(SpelledTy::spelling(ret, spell)),
             },
             Ty::Param(i) => SpelledTy::Param(*i),
             Ty::Var(v) => SpelledTy::Var(*v),
@@ -65,16 +77,16 @@ impl SpelledTy {
     }
 
     /// This type with each path interned in `names`.
+    #[cfg(test)]
     pub(crate) fn to_ty(&self, names: &NameTable) -> Ty {
-        let _ = names;
         let all = |args: &[SpelledTy]| args.iter().map(|a| a.to_ty(names)).collect();
         match self {
             SpelledTy::Named { path, args } => Ty::Named {
-                path: path.clone(),
+                path: TyPath::new(names, path),
                 args: all(args),
             },
             SpelledTy::Project { path, args } => Ty::Project {
-                path: path.clone(),
+                path: TyPath::new(names, path),
                 args: all(args),
             },
             SpelledTy::Array { elem, rank } => Ty::Array {

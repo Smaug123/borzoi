@@ -628,7 +628,7 @@ fn run_chunk(chunk_index: usize, anns: &[Ann]) -> Vec<Row> {
                     .def(*id)
                     .spelling(crate::common::constrained_fixture_env())
                     .into_owned(),
-                ty.render(),
+                ty.render(crate::common::constrained_fixture_env()),
             )
         })
         .collect();

@@ -603,6 +603,7 @@ fn span(start: usize, end: usize) -> TextRange {
 /// (nothing of a rejected project is graded). `expect_errors` says it is
 /// meant to be ill-typed.
 fn grade_project(c: &Project, expect_errors: bool, g: &mut Graded) -> Result<(), Vec<String>> {
+    let env = full_bcl_env();
     let named: Vec<(&str, &str)> = c
         .files
         .iter()
@@ -725,7 +726,7 @@ fn grade_project(c: &Project, expect_errors: bool, g: &mut Graded) -> Result<(),
             if dump_types.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render();
+            let ours = ty.render(&env);
             match dump_types.types.get(&key) {
                 Some(theirs) if *theirs == ours => g.graded += 1,
                 theirs => g.wrong.push(format!(
@@ -742,7 +743,7 @@ fn grade_project(c: &Project, expect_errors: bool, g: &mut Graded) -> Result<(),
             if dump_types.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render();
+            let ours = ty.render(&env);
             match dump_types.binders.get(&key) {
                 Some(theirs) if *theirs == ours && !dump_types.hides_constraint(key, &ours) => {
                     g.graded += 1;

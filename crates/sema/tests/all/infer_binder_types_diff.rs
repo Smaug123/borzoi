@@ -18,7 +18,7 @@ use crate::common::{invoke_fcs_dump, parse_fcs_binder_types, temp_fs_file};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    InferredFile, ProjectItems, ResolvedFile, SyntaxRecovery, Ty, infer_file, resolve_file,
+    InferredFile, ProjectItems, ResolvedFile, SyntaxRecovery, infer_file, resolve_file,
 };
 
 /// Resolve and infer `source` (single-file, over the shared
@@ -53,6 +53,7 @@ fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
 /// soundness property for every binder type we produced. Returns how many we
 /// checked.
 fn assert_binder_sound(source: &str) -> usize {
+    let env = crate::common::full_bcl_env();
     let (resolved, inferred) = resolve_and_infer(source);
 
     let path = temp_fs_file("infer_binder", source);
@@ -71,16 +72,16 @@ fn assert_binder_sound(source: &str) -> usize {
             panic!(
                 "we inferred `{}` for binder `{}` at {key:?} but FCS reports no binder there \
                  in {source:?}",
-                ty.render(),
+                ty.render(&env),
                 def.spelling(crate::common::full_bcl_env())
             )
         });
         assert_eq!(
-            &ty.render(),
+            &ty.render(&env),
             fcs_ty,
             "binder-type mismatch for `{}` at {key:?} in {source:?}: ours=`{}`, FCS=`{fcs_ty}`",
             def.spelling(crate::common::full_bcl_env()),
-            ty.render()
+            ty.render(&env)
         );
         checked += 1;
     }
@@ -322,13 +323,14 @@ fn sealed_tuple_return_annotation_matches_fcs() {
 /// `renderTypeCanonical` parenthesises function tuple elements the same way).
 #[test]
 fn tuple_containing_a_function_is_parenthesised() {
+    let env = crate::common::full_bcl_env();
     let source = "module M\nlet f c = if c then 1 else 2\nlet t = (f, 0)\n";
     let (resolved, inferred) = resolve_and_infer(source);
     let t_ty = inferred
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(crate::common::full_bcl_env()) == "t")
-        .map(|(_, ty)| ty.render());
+        .map(|(_, ty)| ty.render(&env));
     assert_eq!(
         t_ty.as_deref(),
         Some("(System.Boolean -> System.Int32) * System.Int32"),
@@ -367,16 +369,17 @@ fn binder_render_under(source: &str, name: &str, recovery: &SyntaxRecovery) -> O
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-        .map(|(_, ty)| ty.render())
+        .map(|(_, ty)| ty.render(&env))
 }
 
 fn binder_render(source: &str, name: &str) -> Option<String> {
+    let env = crate::common::full_bcl_env();
     let (resolved, inferred) = resolve_and_infer(source);
     inferred
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(crate::common::full_bcl_env()) == name)
-        .map(|(_, ty)| ty.render())
+        .map(|(_, ty)| ty.render(&env))
 }
 
 /// The identity function generalises to `'a -> 'a`, agreeing with FCS's
@@ -476,6 +479,7 @@ fn unused_parameter_generalises_over_ground_return() {
 /// we must not generalise — `assert_binder_sound` confirms we say nothing.
 #[test]
 fn generalisation_defer_cases_stay_silent() {
+    let env = crate::common::full_bcl_env();
     for source in [
         "module M\nlet f x = x + 1\n",
         "module M\nlet f c x = if c then x else x\n",
@@ -488,7 +492,7 @@ fn generalisation_defer_cases_stay_silent() {
             inferred
                 .def_types()
                 .values()
-                .map(Ty::render)
+                .map(|t| t.render(&env))
                 .collect::<Vec<_>>()
         );
         assert_eq!(assert_binder_sound(source), 0);
@@ -951,7 +955,7 @@ fn a_constrained_head_defers_but_its_twin_does_not() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
 
     assert_eq!(
@@ -1014,7 +1018,7 @@ fn an_error_obsolete_head_or_argument_defers_but_a_warning_one_does_not() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
 
     assert_eq!(
@@ -1089,7 +1093,7 @@ fn a_rejecting_attribute_on_an_abbreviation_defers_but_a_warning_one_does_not() 
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&env))
     };
 
     assert_eq!(

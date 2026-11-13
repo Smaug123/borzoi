@@ -26,6 +26,7 @@
 use borzoi_assembly::{Access, Member, MethodLike, ParamDefault, Parameter, Primitive, TypeRef};
 
 use crate::assembly_env::{AssemblyEnv, BaseEdge, EntityHandle, MemberIndex};
+use crate::names::NameTable;
 use crate::ty::Ty;
 
 /// The inclusive caller-argument-count window `[min, max]` at which a candidate
@@ -142,7 +143,7 @@ fn sealed_canon_str(dotted: &str) -> Option<&'static str> {
 
 /// The canonical sealed-primitive name of a dotted-path slice (`["System",
 /// "Int32"]`), if it names one.
-fn sealed_canon_path(path: &[String]) -> Option<&'static str> {
+fn sealed_canon_path(path: &[&str]) -> Option<&'static str> {
     sealed_canon_str(&path.join("."))
 }
 
@@ -203,16 +204,16 @@ fn dotted_of(namespace: &[String], name: &str) -> String {
 impl ClosedTy {
     /// The closed-set classification of an inference [`Ty`] (a caller argument),
     /// or `None` if it is outside the set.
-    fn of_ty(ty: &Ty) -> Option<ClosedTy> {
+    fn of_ty(names: &NameTable, ty: &Ty) -> Option<ClosedTy> {
         match ty {
             // A generic application is never a sealed primitive, so it falls
             // out of the closed set and declines.
             Ty::Named { path, args } if args.is_empty() => {
-                sealed_canon_path(path).map(ClosedTy::Prim)
+                sealed_canon_path(&path.segments_in(names)).map(ClosedTy::Prim)
             }
             Ty::Array { elem, rank: 1 } => match elem.as_ref() {
                 Ty::Named { path, args } if args.is_empty() => {
-                    sealed_canon_path(path).map(ClosedTy::Vector)
+                    sealed_canon_path(&path.segments_in(names)).map(ClosedTy::Vector)
                 }
                 _ => None,
             },
@@ -341,7 +342,7 @@ impl AssemblyEnv {
             && let Some(elem) = ClosedTy::of_type_ref(&element.ty)
         {
             for a in &args[k - 1..] {
-                if let Some(arg) = ClosedTy::of_ty(a)
+                if let Some(arg) = ClosedTy::of_ty(self.names(), a)
                     && self.no_conversion_channel(&arg, &elem)
                 {
                     return true;
@@ -358,7 +359,10 @@ impl AssemblyEnv {
         if p.is_byref {
             return false;
         }
-        match (ClosedTy::of_ty(a), ClosedTy::of_type_ref(&p.ty)) {
+        match (
+            ClosedTy::of_ty(self.names(), a),
+            ClosedTy::of_type_ref(&p.ty),
+        ) {
             (Some(arg), Some(param)) => self.no_conversion_channel(&arg, &param),
             _ => false,
         }
@@ -547,7 +551,7 @@ impl AssemblyEnv {
         if self.ty_named_unprovable(a) {
             return false;
         }
-        ty_equiv(a, p) || self.is_subtype(a, p, declaring)
+        ty_equiv(self.names(), a, p) || self.is_subtype(a, p, declaring)
     }
 
     /// Whether the argument type `a` contains (at any depth) a **named type whose
@@ -565,7 +569,8 @@ impl AssemblyEnv {
                 if args.iter().any(|a| self.ty_named_unprovable(a)) {
                     return true;
                 }
-                if sealed_canon_path(path).is_some()
+                let path = path.spelled(self.names());
+                if sealed_canon_path(&path.iter().map(String::as_str).collect::<Vec<_>>()).is_some()
                     || path.iter().map(String::as_str).eq(["System", "Object"])
                 {
                     return false;
@@ -599,7 +604,7 @@ impl AssemblyEnv {
         if !args.is_empty() {
             return false;
         }
-        let Some(a_handle) = self.lookup_path(path) else {
+        let Some(a_handle) = self.lookup_path(&path.spelled(self.names())) else {
             return false;
         };
         let Some(p_handle) = self.resolve_super_handle(p, declaring) else {
@@ -681,23 +686,23 @@ impl AssemblyEnv {
 /// `TypeRef::Primitive(I4)`); a plain vector compares by rank and element.
 /// Anything else (generic instantiation, byref, bounded array, tuple/function
 /// argument) is *not* affirmed here — conservative, hence a deferral.
-fn ty_equiv(a: &Ty, p: &TypeRef) -> bool {
+fn ty_equiv(names: &NameTable, a: &Ty, p: &TypeRef) -> bool {
     match a {
-        Ty::Named { path, args } => args.is_empty() && named_matches(path, p),
+        Ty::Named { path, args } => args.is_empty() && named_matches(&path.segments_in(names), p),
         Ty::Array { elem, rank } => matches!(
             p,
             TypeRef::Array { element, rank: r2, sizes, lower_bounds }
                 if sizes.is_empty()
                     && lower_bounds.is_empty()
                     && *rank == u32::from(*r2)
-                    && ty_equiv(elem, &element.ty)
+                    && ty_equiv(names, elem, &element.ty)
         ),
         _ => false,
     }
 }
 
 /// Whether the metadata type `p` names exactly the dotted path `path`.
-fn named_matches(path: &[String], p: &TypeRef) -> bool {
+fn named_matches(path: &[&str], p: &TypeRef) -> bool {
     match p {
         TypeRef::Primitive(prim) => primitive_canon(*prim).is_some_and(|c| path.join(".") == c),
         TypeRef::Named {
@@ -708,8 +713,11 @@ fn named_matches(path: &[String], p: &TypeRef) -> bool {
             ..
         } if type_args.is_empty() && segment_arities.iter().all(|&a| a == 0) => {
             path.len() == namespace.len() + 1
-                && path[..namespace.len()] == namespace[..]
-                && &path[namespace.len()] == name
+                && path[..namespace.len()]
+                    .iter()
+                    .copied()
+                    .eq(namespace.iter().map(String::as_str))
+                && path[namespace.len()] == name
         }
         _ => false,
     }
@@ -974,11 +982,18 @@ mod tests {
         ])
     }
 
-    fn int_ty() -> Ty {
-        Ty::named("System.Int32")
+    fn int_ty(env: &AssemblyEnv) -> Ty {
+        Ty::named(env, "System.Int32")
     }
-    fn str_ty() -> Ty {
-        Ty::named("System.String")
+    fn str_ty(env: &AssemblyEnv) -> Ty {
+        Ty::named(env, "System.String")
+    }
+
+    /// One `mini_bcl(true)` for the generated cases, whose argument types are
+    /// built against its table before a case runs.
+    fn shared_bcl() -> &'static AssemblyEnv {
+        static ENV: std::sync::LazyLock<AssemblyEnv> = std::sync::LazyLock::new(|| mini_bcl(true));
+        &ENV
     }
 
     // ---- FCS-grounded probe unit tests (the §3 catalogue verdicts) ----
@@ -992,8 +1007,8 @@ mod tests {
             vec![param(TypeRef::Primitive(Primitive::Object))],
             int_ty_ref(),
         );
-        assert!(env.must_apply(&m, ASM, &[int_ty()]));
-        assert!(env.may_apply(&m, ASM, &[int_ty()]));
+        assert!(env.must_apply(&m, ASM, &[int_ty(&env)]));
+        assert!(env.may_apply(&m, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1006,8 +1021,8 @@ mod tests {
             vec![param(TypeRef::Primitive(Primitive::String))],
             int_ty_ref(),
         );
-        assert!(!env.may_apply(&m, ASM, &[int_ty()]));
-        assert!(!env.must_apply(&m, ASM, &[int_ty()]));
+        assert!(!env.may_apply(&m, ASM, &[int_ty(&env)]));
+        assert!(!env.must_apply(&m, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1026,8 +1041,8 @@ mod tests {
             vec![param(TypeRef::Primitive(Primitive::String))],
             int_ty_ref(),
         );
-        assert!(env.must_apply(&m_str, ASM, &[str_ty()]));
-        assert!(env.may_apply(&m_obj, ASM, &[str_ty()]));
+        assert!(env.must_apply(&m_str, ASM, &[str_ty(&env)]));
+        assert!(env.may_apply(&m_obj, ASM, &[str_ty(&env)]));
     }
 
     #[test]
@@ -1041,8 +1056,8 @@ mod tests {
             vec![param(TypeRef::Primitive(Primitive::R8))],
             int_ty_ref(),
         );
-        assert!(env.may_apply(&m, ASM, &[int_ty()]));
-        assert!(!env.must_apply(&m, ASM, &[int_ty()]));
+        assert!(env.may_apply(&m, ASM, &[int_ty(&env)]));
+        assert!(!env.must_apply(&m, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1063,8 +1078,8 @@ mod tests {
             vec![param(TypeRef::Primitive(Primitive::I4))],
             str_ty_ref(),
         );
-        assert!(!env.may_apply(&two, ASM, &[int_ty()]));
-        assert!(env.must_apply(&one, ASM, &[int_ty()]));
+        assert!(!env.may_apply(&two, ASM, &[int_ty(&env)]));
+        assert!(env.must_apply(&one, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1083,17 +1098,17 @@ mod tests {
         );
 
         // `V(1, 2)` and `V(7)`: the expanded params winner affirms.
-        assert!(env.must_apply(&v_pa, ASM, &[int_ty(), int_ty()]));
-        assert!(env.must_apply(&v_pa, ASM, &[int_ty()]));
+        assert!(env.must_apply(&v_pa, ASM, &[int_ty(&env), int_ty(&env)]));
+        assert!(env.must_apply(&v_pa, ASM, &[int_ty(&env)]));
         // and the `V(string)` loser refutes (wrong arity, or no channel).
-        assert!(!env.may_apply(&v_str, ASM, &[int_ty(), int_ty()]));
-        assert!(!env.may_apply(&v_str, ASM, &[int_ty()]));
+        assert!(!env.may_apply(&v_str, ASM, &[int_ty(&env), int_ty(&env)]));
+        assert!(!env.may_apply(&v_str, ASM, &[int_ty(&env)]));
 
         // `V("x")`: `V(string)` affirms; the params candidate is refuted in BOTH
         // its interpretations (direct-array `string ≠ int[]`, expanded
         // `string -> int` no channel), so it does not block the commit.
-        assert!(env.must_apply(&v_str, ASM, &[str_ty()]));
-        assert!(!env.may_apply(&v_pa, ASM, &[str_ty()]));
+        assert!(env.must_apply(&v_str, ASM, &[str_ty(&env)]));
+        assert!(!env.may_apply(&v_pa, ASM, &[str_ty(&env)]));
     }
 
     #[test]
@@ -1107,9 +1122,9 @@ mod tests {
         let env = mini_bcl(false);
         let i4 = || TypeRef::Primitive(Primitive::I4);
         let opt = method("M", vec![param(i4()), opt_param(i4())], int_ty_ref());
-        assert!(env.may_apply(&opt, ASM, &[int_ty()]));
+        assert!(env.may_apply(&opt, ASM, &[int_ty(&env)]));
         let out = method("M", vec![param(i4()), out_param(i4())], int_ty_ref());
-        assert!(env.may_apply(&out, ASM, &[int_ty()]));
+        assert!(env.may_apply(&out, ASM, &[int_ty(&env)]));
         // A *leading* required position is still refuted on type grounds even when
         // a trailing optional is omitted: `M(string, [<Optional>] int)` on `M(1)`.
         let str_opt = method(
@@ -1120,7 +1135,7 @@ mod tests {
             ],
             int_ty_ref(),
         );
-        assert!(!env.may_apply(&str_opt, ASM, &[int_ty()]));
+        assert!(!env.may_apply(&str_opt, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1136,11 +1151,11 @@ mod tests {
         );
 
         let with_conv = mini_bcl(true);
-        assert!(with_conv.may_apply(&m, ASM, &[int_ty()]));
-        assert!(!with_conv.must_apply(&m, ASM, &[int_ty()]));
+        assert!(with_conv.may_apply(&m, ASM, &[int_ty(&with_conv)]));
+        assert!(!with_conv.must_apply(&m, ASM, &[int_ty(&with_conv)]));
 
         let without_conv = mini_bcl(false);
-        assert!(!without_conv.may_apply(&m, ASM, &[int_ty()]));
+        assert!(!without_conv.may_apply(&m, ASM, &[int_ty(&without_conv)]));
     }
 
     #[test]
@@ -1162,7 +1177,7 @@ mod tests {
             vec![param(named(&["System"], "Decimal"))],
             int_ty_ref(),
         );
-        assert!(env.may_apply(&m, ASM, &[int_ty()]));
+        assert!(env.may_apply(&m, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1176,7 +1191,7 @@ mod tests {
             vec![param(named(&["System"], "Decimal"))],
             int_ty_ref(),
         );
-        assert!(env.may_apply(&m, ASM, &[int_ty()]));
+        assert!(env.may_apply(&m, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1189,14 +1204,14 @@ mod tests {
             int_ty_ref(),
         );
         generic.generic_parameters = vec![type_parameter("T")];
-        assert!(!env.must_apply(&generic, ASM, &[int_ty()]));
+        assert!(!env.must_apply(&generic, ASM, &[int_ty(&env)]));
         // A byref/out parameter in the winner defers.
         let byref = method(
             "M",
             vec![out_param(TypeRef::Primitive(Primitive::I4))],
             int_ty_ref(),
         );
-        assert!(!env.must_apply(&byref, ASM, &[int_ty()]));
+        assert!(!env.must_apply(&byref, ASM, &[int_ty(&env)]));
         // A constructor is not a value-receiver call.
         let mut ctor = method(
             ".ctor",
@@ -1204,7 +1219,7 @@ mod tests {
             int_ty_ref(),
         );
         ctor.is_constructor = true;
-        assert!(!env.must_apply(&ctor, ASM, &[int_ty()]));
+        assert!(!env.must_apply(&ctor, ASM, &[int_ty(&env)]));
     }
 
     #[test]
@@ -1352,7 +1367,7 @@ mod tests {
         );
         let group = vec![(h, MemberIndex::new(0), &m1), (h, MemberIndex::new(1), &m2)];
         let (_, idx, _) = env
-            .resolve_overload(&group, &[int_ty()])
+            .resolve_overload(&group, &[int_ty(&env)])
             .expect("a unique arity-surviving candidate commits");
         assert_eq!(idx.index(), 0, "the one-argument overload is chosen");
     }
@@ -1377,7 +1392,7 @@ mod tests {
             (h, MemberIndex::new(1), &m_str),
         ];
         assert!(
-            env.resolve_overload(&group, &[str_ty()]).is_none(),
+            env.resolve_overload(&group, &[str_ty(&env)]).is_none(),
             "two may_apply survivors defer (betterness would run)"
         );
     }
@@ -1399,7 +1414,7 @@ mod tests {
         );
         let group = vec![(h, MemberIndex::new(0), &m)];
         assert!(
-            env.resolve_overload(&group, &[int_ty()]).is_none(),
+            env.resolve_overload(&group, &[int_ty(&env)]).is_none(),
             "a widening-only survivor is not affirmed, so the group defers"
         );
     }
@@ -1441,12 +1456,12 @@ mod tests {
 
         let m_x = method("M", vec![param(named(&["N"], "X"))], int_ty_ref());
         assert!(
-            !env.must_apply(&m_x, ASM, &[Ty::named("N.X")]),
+            !env.must_apply(&m_x, ASM, &[Ty::named(&env, "N.X")]),
             "an ambiguous-FQN named argument cannot affirm (identity unprovable)"
         );
         let m_y = method("M", vec![param(named(&["N"], "Y"))], int_ty_ref());
         assert!(
-            env.must_apply(&m_y, ASM, &[Ty::named("N.Y")]),
+            env.must_apply(&m_y, ASM, &[Ty::named(&env, "N.Y")]),
             "a uniquely-named argument still affirms by type-equality"
         );
 
@@ -1455,7 +1470,7 @@ mod tests {
         // compare element paths with no assembly identity.
         let m_x_arr = method("M", vec![param(vector(named(&["N"], "X")))], int_ty_ref());
         let arg_arr = Ty::Array {
-            elem: Box::new(Ty::named("N.X")),
+            elem: Box::new(Ty::named(&env, "N.X")),
             rank: 1,
         };
         assert!(
@@ -1595,9 +1610,9 @@ mod tests {
     /// exercise the `must_apply` groundness gate) and `obj`.
     fn arb_arg() -> impl Strategy<Value = Ty> {
         prop_oneof![
-            8 => arb_prim().prop_map(|p| Ty::named(primitive_canon(p).unwrap_or("System.Object"))),
+            8 => arb_prim().prop_map(|p| Ty::named(shared_bcl(), primitive_canon(p).unwrap_or("System.Object"))),
             2 => arb_prim().prop_map(|p| Ty::Array {
-                elem: Box::new(Ty::named(primitive_canon(p).unwrap_or("System.Object"))),
+                elem: Box::new(Ty::named(shared_bcl(), primitive_canon(p).unwrap_or("System.Object"))),
                 rank: 1,
             }),
             1 => (0u32..4).prop_map(|v| Ty::Var(TyVid(v))),
@@ -1647,7 +1662,7 @@ mod tests {
         /// candidate it just affirmed — an outright contradiction.
         #[test]
         fn must_implies_may(m in arb_method(), args in prop::collection::vec(arb_arg(), 0..4)) {
-            let env = mini_bcl(true);
+            let env = shared_bcl();
             if env.must_apply(&m, ASM, &args) {
                 prop_assert!(env.may_apply(&m, ASM, &args));
             }
@@ -1658,9 +1673,9 @@ mod tests {
         /// argument of that exact type.
         #[test]
         fn identity_is_never_eliminated(p in arb_prim()) {
-            let env = mini_bcl(true);
+            let env = shared_bcl();
             let m = method("M", vec![param(TypeRef::Primitive(p))], TypeRef::Primitive(Primitive::I4));
-            let arg = Ty::named(primitive_canon(p).unwrap());
+            let arg = Ty::named(env, primitive_canon(p).unwrap());
             prop_assert!(env.may_apply(&m, ASM, &[arg]));
         }
 
@@ -1672,7 +1687,7 @@ mod tests {
         ])) {
             let env = mini_bcl(true);
             let m = method("M", vec![param(TypeRef::Primitive(to))], TypeRef::Primitive(Primitive::I4));
-            prop_assert!(env.may_apply(&m, ASM, &[int_ty()]));
+            prop_assert!(env.may_apply(&m, ASM, &[int_ty(&env)]));
         }
 
         /// `must_apply` only ever affirms at an in-window argument count — the
@@ -1682,7 +1697,7 @@ mod tests {
             m in arb_method(),
             args in prop::collection::vec(arb_arg(), 0..4),
         ) {
-            let env = mini_bcl(true);
+            let env = shared_bcl();
             if env.must_apply(&m, ASM, &args) {
                 prop_assert!(arity_window(&m).contains(args.len()));
             }
@@ -1700,7 +1715,7 @@ mod tests {
             param_array in any::<bool>(),
             args in prop::collection::vec(arb_arg(), 0..5),
         ) {
-            let env = mini_bcl(true);
+            let env = shared_bcl();
             let obj = || TypeRef::Primitive(Primitive::Object);
             let mut params: Vec<Parameter> = kinds
                 .into_iter()

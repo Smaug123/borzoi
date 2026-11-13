@@ -160,7 +160,7 @@ fn check(
         if dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render();
+        let ours = ty.render(&env);
         let theirs = dumps.types.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` at {key:?} (`{}`) but FCS reports no node there\n{source}",
@@ -186,7 +186,7 @@ fn check(
         if dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render();
+        let ours = ty.render(&env);
         let theirs = dumps.binders.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
