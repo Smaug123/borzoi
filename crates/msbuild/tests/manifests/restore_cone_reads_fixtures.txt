@@ -252,7 +252,7 @@
 10.0.401 resolved hooked/App.fsproj reads item KnownWebAssemblySdkPack	MSBuild 5; ours none, tainted
 10.0.401 resolved hooked/App.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item PackageDownload	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved hooked/App.fsproj reads item PackageReference	MSBuild 1; ours 1, identities agree, metadata agrees on 2 names, uncertain generatepathproperty; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item PackageReference	MSBuild 1; ours 1, identities agree, metadata agrees on 3 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item PackageVersion	MSBuild 0; ours a dedicated bucket of 0; the cone writes it
 10.0.401 resolved hooked/App.fsproj reads item ProjectReference	MSBuild 0; ours a dedicated bucket of 0
@@ -474,7 +474,7 @@
 10.0.401 resolved net10/App.fsproj reads item KnownWebAssemblySdkPack	MSBuild 5; ours none, tainted
 10.0.401 resolved net10/App.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item PackageDownload	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
-10.0.401 resolved net10/App.fsproj reads item PackageReference	MSBuild 2; ours 2, identities agree, metadata agrees on 3 names, uncertain generatepathproperty; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item PackageReference	MSBuild 2; ours 2, identities agree, metadata agrees on 4 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours 0, identities agree, metadata agrees on 0 names; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item PackageVersion	MSBuild 0; ours a dedicated bucket of 0; the cone writes it
 10.0.401 resolved net10/App.fsproj reads item ProjectReference	MSBuild 0; ours a dedicated bucket of 0
