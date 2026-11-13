@@ -1440,12 +1440,16 @@ impl<'src> Parser<'src> {
             self.builder.start_node(SyntaxKind::TYPE_ABBREV);
             self.parse_type();
             self.builder.finish_node();
-            // A lone identifier could still be a bar-less union's first case,
-            // so only it declines a member behind the separator.
+            // A lone identifier, quoted or not, could still be a bar-less
+            // union's first case, so only it declines a member behind the
+            // separator.
             let lone_ident = self.filtered.pos() == start + 1
                 && matches!(
                     self.filtered.tokens().get(start),
-                    Some((Ok(FilteredToken::Raw(Token::Ident(_))), _))
+                    Some((
+                        Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
+                        _
+                    ))
                 );
             admits_bare_members = !lone_ident;
         } else {
