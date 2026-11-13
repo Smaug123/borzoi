@@ -222,7 +222,7 @@ struct CachedEvaluation {
     evaluated: Option<EvaluatedProject>,
     /// The reads to confirm before serving `evaluated` again: everything the
     /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
-    /// less the immutable contents ([`VersionDirs::contain`]).
+    /// less the immutable contents ([`Evaluation::checks`]).
     checks: Vec<Check>,
     /// The generation that last confirmed `checks` (or that evaluated it);
     /// `None` when it was evaluated outside a generation.
@@ -243,16 +243,46 @@ struct Evaluation {
 }
 
 impl Evaluation {
-    /// The reads a cached copy must confirm.
+    /// The reads a cached copy must confirm: every read, except those
+    /// inside a version directory some read showed to exist
+    /// ([`VersionDirs::containing`]), and for each such version, that it
+    /// still does. A read inside a version no read showed to exist (an
+    /// `Exists` probe of a version not installed) is confirmed like any
+    /// other, since installing the version moves it.
     fn checks(&self) -> Vec<Check> {
-        let versions = self.immutable.versions(self.reads.reads());
-        self.reads
-            .reads()
+        let reads = self.reads.reads();
+        let versions = self.immutable.versions(reads);
+        let shown: std::collections::BTreeSet<PathBuf> = reads
             .iter()
-            .filter(|read| !versions.contain(&read.path))
+            .filter(|read| answered(&read.observation))
+            .filter_map(|read| versions.containing(&read.path))
+            .collect();
+        let trusted = |read: &&Read| {
+            versions
+                .containing(&read.path)
+                .is_some_and(|version| shown.contains(&version))
+        };
+        reads
+            .iter()
+            .filter(|read| !trusted(read))
             .cloned()
+            .chain(shown.iter().map(|version| Read {
+                // A read inside it succeeded, so it resolved to a directory.
+                path: version.clone(),
+                observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
+            }))
             .map(Check::new)
             .collect()
+    }
+}
+
+/// Whether a query got an answer, rather than failing.
+fn answered(observation: &Observation) -> bool {
+    match observation {
+        Observation::Text(answer) => answer.is_ok(),
+        Observation::Kind(answer) | Observation::LinkKind(answer) => answer.is_ok(),
+        Observation::Listing(answer) => answer.is_ok(),
+        Observation::Canonical(answer) => answer.is_ok(),
     }
 }
 
@@ -357,7 +387,8 @@ struct VersionDirs<'a> {
 }
 
 impl VersionDirs<'_> {
-    /// Whether a read of `path` is of an immutable content: `path`, taken
+    /// The version directory a read of `path` lies strictly inside, if it
+    /// does, which makes the read one of an immutable content: `path`, taken
     /// lexically normal, lies strictly inside a version directory. An
     /// installer writes a new version beside the old ones and never changes
     /// one in place, so whatever an evaluation saw inside one (a file's
@@ -371,18 +402,17 @@ impl VersionDirs<'_> {
     /// confirmed like any other read. So are the band and manifest
     /// directories of `sdk-manifests`, which a workload update writes into,
     /// and a version directory's canonical spelling, which an alias rests on.
-    fn contain(&self, path: &Path) -> bool {
+    fn containing(&self, path: &Path) -> Option<PathBuf> {
         let path = lexically_normalize(path);
-        if self
-            .roots
-            .version_of(&path)
-            .is_some_and(|(_, below)| below > 0)
+        if let Some((version, below)) = self.roots.version_of(&path)
+            && below > 0
         {
-            return true;
+            return Some(version);
         }
         self.aliases
             .iter()
-            .any(|alias| path.starts_with(alias) && path != *alias)
+            .find(|alias| path.starts_with(alias) && path != **alias)
+            .cloned()
     }
 }
 
@@ -557,7 +587,7 @@ impl Workspace {
 
     /// Confirm the cached evaluation of `project` for the open generation:
     /// every read it depends on (bar the immutable contents it was told it
-    /// may skip, see [`VersionDirs::contain`]) is asked again, once per
+    /// may skip, see [`Evaluation::checks`]) is asked again, once per
     /// generation, and an entry any of whose answers moved is dropped, so the
     /// lookup that follows evaluates afresh. Dropping it ends the
     /// [`Self::projects_generation`]. Nothing happens outside a generation, or
@@ -1887,8 +1917,8 @@ fn evaluate_project(
         disc.as_ref(),
         evaluated,
     );
-    // The served pass, when it is a second one, read on its own account.
-    let reads = reads.union(served.parsed.read_set.clone());
+    // The second pass read on its own account, whether or not it is served.
+    let reads = reads.union(served.pass2_reads.unwrap_or_default());
     let parsed = served.parsed;
     let chosen_tfm = served.chosen_tfm;
     // Pass 1's provenance verdict cannot see a write that only pass 2 performs,
@@ -1960,6 +1990,9 @@ struct ServedEvaluation {
     /// document is an inner build — see
     /// [`EvaluatedProject::not_an_inner_build`], which this becomes.
     not_an_inner_build: bool,
+    /// The read set of the seeded second pass, when one ran, whether or not
+    /// it is the one served: a discarded pass decided `not_an_inner_build`.
+    pass2_reads: Option<ReadSet>,
 }
 
 /// Apply [`tfm_policy::tfm_choice`]'s decision: re-evaluate `pass1`'s project
@@ -2000,6 +2033,7 @@ fn select_target_framework(
                 parsed: discarded_inner_build(pass1),
                 chosen_tfm: None,
                 not_an_inner_build: true,
+                pass2_reads: None,
             };
         }
         let chosen_tfm = choice.served().map(str::to_string);
@@ -2007,6 +2041,7 @@ fn select_target_framework(
             parsed: pass1,
             chosen_tfm,
             not_an_inner_build: false,
+            pass2_reads: None,
         };
     };
     let mut seeded = extras.clone();
@@ -2015,6 +2050,7 @@ fn select_target_framework(
     match parse_with_optional_sdk(source, project_path, &seeded, environment, disc, evaluated) {
         Some(pass2) => match tfm_policy::reseed_outcome(&pass2) {
             tfm_policy::ReseedOutcome::AsSeeded => ServedEvaluation {
+                pass2_reads: Some(pass2.read_set.clone()),
                 parsed: pass2,
                 chosen_tfm: Some(seed),
                 not_an_inner_build: false,
@@ -2036,6 +2072,7 @@ fn select_target_framework(
                 parsed: discarded_inner_build(pass1),
                 chosen_tfm: None,
                 not_an_inner_build: true,
+                pass2_reads: Some(pass2.read_set),
             },
         },
         // Same source, same resolver, and the seed key can't collide (a
@@ -2046,6 +2083,7 @@ fn select_target_framework(
             parsed: pass1,
             chosen_tfm: None,
             not_an_inner_build: false,
+            pass2_reads: None,
         },
     }
 }
@@ -5826,6 +5864,72 @@ mod tests {
             }
         }
 
+        /// The soundness property for what a cached evaluation confirms, its
+        /// checks ([`Evaluation::checks`]), rather than all it read: over
+        /// every perturbation of a project tree outside the installs (so
+        /// the immutable-content axiom holds), an evaluation whose checks
+        /// all stand is the evaluation a fresh one would be. The tree holds
+        /// the SDK project of [`world`], and a multi-targeted one whose
+        /// seeded pass imports a file that opts out of the seed (so that
+        /// pass is discarded) and probes for an import that is not there.
+        #[test]
+        fn the_workspace_checks_are_sound_outside_the_installs() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (sdk_project, env) = world(&root, false);
+            let multi = root.join("repo/Multi/Multi.fsproj");
+            write_file(
+                &multi,
+                r#"<Project>
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <Import Project="tfm.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+  <Import Project="maybe.props" Condition="Exists('maybe.props')" />
+  <ItemGroup><Compile Include="M.fs" /></ItemGroup>
+</Project>"#,
+            );
+            write_file(
+                &root.join("repo/Multi/tfm.props"),
+                r#"<Project TreatAsLocalProperty="TargetFramework" />"#,
+            );
+            write_file(&root.join("repo/Multi/M.fs"), "module M\n");
+            for project in [sdk_project, multi] {
+                let checked = || {
+                    let evaluation =
+                        evaluate_project(&project, &env, &HashMap::new(), &Cell::new(0));
+                    let read_set: ReadSet = evaluation
+                        .checks()
+                        .into_iter()
+                        .map(|check| check.read().clone())
+                        .collect();
+                    ParsedProject {
+                        read_set,
+                        ..evaluation_of(&project, evaluation.evaluated)
+                    }
+                };
+                let tally = soundness::sweep(&root.join("repo"), &checked, &[]);
+                assert!(
+                    tally.moved(Why::Rewrite) > 0 && tally.moved(Why::CreateAbsent) > 0,
+                    "{}: {tally:#?}",
+                    project.display()
+                );
+            }
+        }
+
+        /// The served pass of `evaluated`, or for a failed evaluation the
+        /// evaluation of an empty `<Project />`.
+        fn evaluation_of(project: &Path, evaluated: Option<EvaluatedProject>) -> ParsedProject {
+            match evaluated {
+                Some(evaluated) => evaluated.parsed,
+                None => borzoi_msbuild::parse_fsproj(
+                    "<Project />",
+                    project,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                )
+                .unwrap(),
+            }
+        }
+
         /// Which reads are exempt from validation as immutable contents.
         #[test]
         fn immutable_contents_lie_strictly_inside_a_version() {
@@ -5882,7 +5986,11 @@ mod tests {
             };
             let versions = roots.versions(std::slice::from_ref(&read));
             for (path, expected) in cases {
-                assert_eq!(versions.contain(Path::new(path)), expected, "{path}");
+                assert_eq!(
+                    versions.containing(Path::new(path)).is_some(),
+                    expected,
+                    "{path}"
+                );
             }
         }
 
@@ -5957,6 +6065,75 @@ mod tests {
             write_file(&root.join("App/tfm.props"), &props("TWO"));
             ws.begin_generation(Nanos(i128::MAX / 2 + 1));
             assert!(ws.symbols_for(&file).contains("TWO"));
+            ws.end_generation();
+        }
+
+        /// A read inside a version directory is trusted only while that
+        /// version is shown to exist: an `Exists`-guarded import of a file in
+        /// a version not yet installed sees the install.
+        #[test]
+        fn a_version_installed_after_the_evaluation_is_seen() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (_, env) = world(&root, false);
+            let import = root.join("dotnet/packs/P/1.0.0/x.props");
+            let project = root.join("repo/Lib/Lib.fsproj");
+            write_file(
+                &project,
+                &format!(
+                    r#"<Project>
+  <Import Project="{0}" Condition="Exists('{0}')" />
+  <ItemGroup><Compile Include="L.fs" /></ItemGroup>
+</Project>"#,
+                    import.display()
+                ),
+            );
+            write_file(&root.join("repo/Lib/L.fs"), "module L\n");
+            let file = root.join("repo/Lib/L.fs");
+            let mut ws = Workspace::with_env(env);
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert!(!ws.symbols_for(&file).contains("INSTALLED"));
+            ws.end_generation();
+            write_file(
+                &import,
+                "<Project><PropertyGroup><DefineConstants>$(DefineConstants);INSTALLED</DefineConstants></PropertyGroup></Project>",
+            );
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert!(ws.symbols_for(&file).contains("INSTALLED"));
+            ws.end_generation();
+        }
+
+        /// The reads of a pass whose evaluation is discarded still decide
+        /// the entry: a seeded pass that meets a `TreatAsLocalProperty`
+        /// opt-out makes the target framework untrusted, and removing the
+        /// opt-out trusts it again.
+        #[test]
+        fn a_discarded_pass_reads_are_confirmed() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let project = root.join("App/App.fsproj");
+            write_file(
+                &project,
+                r#"<Project>
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <Import Project="tfm.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+</Project>"#,
+            );
+            let props = root.join("App/tfm.props");
+            write_file(
+                &props,
+                r#"<Project TreatAsLocalProperty="TargetFramework" />"#,
+            );
+            let mut ws = Workspace::default();
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert_eq!(ws.served_tfm_for_project(&project), ServedTfm::Untrusted);
+            ws.end_generation();
+            write_file(&props, "<Project />");
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert_eq!(
+                ws.served_tfm_for_project(&project),
+                ServedTfm::Tfm("net8.0".to_string())
+            );
             ws.end_generation();
         }
 

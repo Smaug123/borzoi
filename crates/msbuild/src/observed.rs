@@ -149,6 +149,16 @@ impl ReadSet {
     }
 }
 
+impl FromIterator<Read> for ReadSet {
+    /// The reads as a set: sorted, each once.
+    fn from_iter<I: IntoIterator<Item = Read>>(reads: I) -> Self {
+        let mut reads: Vec<Read> = reads.into_iter().collect();
+        reads.sort();
+        reads.dedup();
+        ReadSet { reads }
+    }
+}
+
 /// One query and its answer.
 ///
 /// Reads compare by the path's raw spelling, not by `Path`'s equality, which
