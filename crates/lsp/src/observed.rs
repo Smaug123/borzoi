@@ -6,10 +6,11 @@
 //!   **generation**, the unit of work the dispatch loop does for one message
 //!   (or one step of a `workspace/diagnostic` sweep). The loop begins each
 //!   generation ([`Sources::begin_generation`]) and ends it
-//!   ([`Sources::end_generation`]), which emits the generation's counts as
-//!   the [`GENERATION_EVENT`] `tracing` event. So "a comment keystroke opens
-//!   no file" can be asserted by a test on any platform, and `edit_counts`
-//!   reports the same counts.
+//!   ([`Sources::end_generation`]), which sends the generation's counts to
+//!   the log a caller attached ([`Sources::log_generations`]) and emits them
+//!   as the [`GENERATION_EVENT`] `tracing` event. So "a comment keystroke
+//!   opens no file" can be asserted by a test on any platform, reading the
+//!   log as data, and `edit_counts` reports the same counts from the event.
 //! - **Every other observation** is a method of [`Unobserved`], whose variant
 //!   names the reader it belongs to and the plan stage that will route it.
 //!   Those are not counted.
@@ -27,6 +28,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::path::Path;
+use std::sync::mpsc::Sender;
 
 use lsp_types::Uri;
 
@@ -35,6 +37,13 @@ use crate::uri::UriExt as _;
 
 /// The name of the event [`Sources::end_generation`] emits, whose fields are
 /// the generation's number (`generation`) and its [`ReadCounts`] (`opens`).
+///
+/// A test reads [`Sources::log_generations`] instead. `tracing` caches each
+/// callsite's interest for the whole process, and while one dispatcher is
+/// registered it computes that interest from the default of whichever thread
+/// reaches the callsite first. So a subscriber scoped to one test's server
+/// thread misses every event if a loop in another test of the same binary
+/// reaches this callsite first.
 pub const GENERATION_EVENT: &str = "observed.generation";
 
 /// What one generation observed.
@@ -42,6 +51,13 @@ pub const GENERATION_EVENT: &str = "observed.generation";
 pub struct ReadCounts {
     /// Files opened to read them, whether or not the open succeeded.
     pub opens: u64,
+}
+
+/// One ended generation: its number and what it observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Generation {
+    pub number: u64,
+    pub counts: ReadCounts,
 }
 
 /// The client's open buffers, and the counted reads of everything else.
@@ -56,6 +72,9 @@ pub struct Sources {
     generation: u64,
     /// What the current generation has observed so far.
     counts: Cell<ReadCounts>,
+    /// Where each ended generation is sent, if a caller asked for them
+    /// ([`Self::log_generations`]).
+    log: Option<Sender<Generation>>,
 }
 
 impl FromIterator<(Uri, String)> for Sources {
@@ -155,16 +174,35 @@ impl Sources {
         self.counts.set(ReadCounts::default());
     }
 
-    /// End the current generation: emit its counts as [`GENERATION_EVENT`]
-    /// and return them.
-    pub fn end_generation(&self) -> ReadCounts {
-        let counts = self.counts.get();
+    /// Send every generation that ends from now on to `log`, replacing any
+    /// log attached before.
+    ///
+    /// The channel is unbounded, and the dispatch loop never waits on it: the
+    /// caller drains it, at one entry per message handled (and per sweep
+    /// step). A receiver that hangs up stops the logging.
+    pub fn log_generations(&mut self, log: Sender<Generation>) {
+        self.log = Some(log);
+    }
+
+    /// End the current generation: send it to the log, if one is attached,
+    /// emit its counts as [`GENERATION_EVENT`], and return it.
+    pub fn end_generation(&mut self) -> Generation {
+        let generation = Generation {
+            number: self.generation,
+            counts: self.counts.get(),
+        };
+        if let Some(log) = &self.log
+            && log.send(generation).is_err()
+        {
+            // The receiver hung up: nobody reads the log any more.
+            self.log = None;
+        }
         tracing::debug!(
             name: GENERATION_EVENT,
-            generation = self.generation,
-            opens = counts.opens,
+            generation = generation.number,
+            opens = generation.counts.opens,
         );
-        counts
+        generation
     }
 
     /// The current generation's number.

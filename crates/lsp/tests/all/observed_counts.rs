@@ -2,8 +2,9 @@
 //! (`docs/incremental-lsp-plan.md`, Stage 2a).
 //!
 //! A real dispatch loop runs on its own thread over an in-memory connection,
-//! with a `tracing` subscriber on that thread recording every
-//! [`GENERATION_EVENT`]. The client opens two Compile items of a generated
+//! sending every generation it ends to a channel the test reads
+//! ([`Sources::log_generations`](borzoi::observed::Sources::log_generations)).
+//! The client opens two Compile items of a generated
 //! `N`-item project, warms the fold, then types into a trailing comment of
 //! one of them and asks for its semantic tokens. The fold re-reads every
 //! Compile item, and the two that are open come from their buffers, so the
@@ -11,11 +12,11 @@
 //! pins today's behaviour: Stage 2b's `Vfs` takes the count to 0.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
-use borzoi::observed::GENERATION_EVENT;
+use borzoi::observed::Generation;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
 use borzoi::uri::UriExt as _;
@@ -26,65 +27,6 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-/// One [`GENERATION_EVENT`]: the generation's number and its opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Generation {
-    number: u64,
-    opens: u64,
-}
-
-/// A `tracing` subscriber that records [`GENERATION_EVENT`]s and nothing else.
-struct Recorder(Arc<Mutex<Vec<Generation>>>);
-
-/// A generation event's fields.
-#[derive(Default)]
-struct Fields {
-    generation: Option<u64>,
-    opens: Option<u64>,
-}
-
-impl tracing::field::Visit for Fields {
-    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        match field.name() {
-            "generation" => self.generation = Some(value),
-            "opens" => self.opens = Some(value),
-            _ => {}
-        }
-    }
-    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
-}
-
-impl tracing::Subscriber for Recorder {
-    fn register_callsite(
-        &self,
-        metadata: &'static tracing::Metadata<'static>,
-    ) -> tracing::subscriber::Interest {
-        if self.enabled(metadata) {
-            tracing::subscriber::Interest::always()
-        } else {
-            tracing::subscriber::Interest::never()
-        }
-    }
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.is_event() && metadata.name() == GENERATION_EVENT
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        let mut fields = Fields::default();
-        event.record(&mut fields);
-        self.0.lock().unwrap().push(Generation {
-            number: fields.generation.expect("a generation number"),
-            opens: fields.opens.expect("an opens count"),
-        });
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
-
 const RECV_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_SETTLE_ROUNDS: usize = 8;
 
@@ -92,20 +34,22 @@ struct Client {
     conn: Connection,
     server: Option<thread::JoinHandle<()>>,
     next_id: u64,
-    generations: Arc<Mutex<Vec<Generation>>>,
+    /// The generations the server has ended, as it sends them.
+    log: Receiver<Generation>,
+    /// The generations read from `log` so far.
+    generations: Vec<Generation>,
 }
 
 impl Client {
     fn start(root: &Path, pull: bool) -> Client {
         let (server_side, conn) = Connection::memory();
-        let generations = Arc::new(Mutex::new(Vec::new()));
-        let recorder = Recorder(Arc::clone(&generations));
+        let (log_sender, log) = mpsc::channel();
         let root = root.to_path_buf();
         let server = thread::Builder::new()
             .stack_size(SERVER_STACK_BYTES)
             .spawn(move || {
-                let _subscriber = tracing::subscriber::set_default(recorder);
                 let mut state = State::new();
+                state.docs.log_generations(log_sender);
                 // Hermetic: no `dotnet` is found, so no env is built from the
                 // host's packs. The project is SDK-less, so it evaluates and
                 // folds all the same.
@@ -130,7 +74,8 @@ impl Client {
             conn,
             server: Some(server),
             next_id: 0,
-            generations,
+            log,
+            generations: Vec::new(),
         }
     }
 
@@ -191,9 +136,12 @@ impl Client {
         panic!("the server kept sending requests");
     }
 
-    /// The generations recorded so far.
-    fn generations(&self) -> Vec<Generation> {
-        self.generations.lock().unwrap().clone()
+    /// The generations the server has ended so far: every one before the
+    /// response last received, since the loop ends a message's generation
+    /// before it reads the next message.
+    fn generations(&mut self) -> &[Generation] {
+        self.generations.extend(self.log.try_iter());
+        &self.generations
     }
 
     fn shut_down(mut self) {
@@ -241,7 +189,7 @@ struct Counted {
 /// Opens summed over the generations recorded since `from`, checking that
 /// they are numbered consecutively and that there are at least `messages` of
 /// them (one per message sent, before any the server's own requests cost).
-fn opens_since(client: &Client, from: usize, messages: usize) -> (u64, usize) {
+fn opens_since(client: &mut Client, from: usize, messages: usize) -> (u64, usize) {
     let generations = client.generations();
     let new = &generations[from..];
     assert!(
@@ -256,7 +204,7 @@ fn opens_since(client: &Client, from: usize, messages: usize) -> (u64, usize) {
             "generations are consecutive"
         );
     }
-    (new.iter().map(|g| g.opens).sum(), generations.len())
+    (new.iter().map(|g| g.counts.opens).sum(), generations.len())
 }
 
 fn run(n: usize, edited: usize, other: usize, pull: bool) -> Counted {
@@ -287,7 +235,7 @@ fn run(n: usize, edited: usize, other: usize, pull: bool) -> Counted {
 
     let mark = client.generations().len();
     tokens(&mut client, edited);
-    let (cold_tokens, mark) = opens_since(&client, mark, 1);
+    let (cold_tokens, mark) = opens_since(&mut client, mark, 1);
 
     texts[edited].push_str("// typed");
     client.notify(
@@ -298,10 +246,10 @@ fn run(n: usize, edited: usize, other: usize, pull: bool) -> Counted {
         }),
     );
     tokens(&mut client, edited);
-    let (keystroke_and_tokens, mark) = opens_since(&client, mark, 2);
+    let (keystroke_and_tokens, mark) = opens_since(&mut client, mark, 2);
 
     tokens(&mut client, other);
-    let (other_tokens, _) = opens_since(&client, mark, 1);
+    let (other_tokens, _) = opens_since(&mut client, mark, 1);
 
     client.shut_down();
     Counted {
