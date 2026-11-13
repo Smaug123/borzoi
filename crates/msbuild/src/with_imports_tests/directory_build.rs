@@ -1489,6 +1489,69 @@ fn an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal() {
     );
 }
 
+/// The known wrong commit of #614, pinned: the SDK's own `Sdk.props` gates an
+/// import on a condition outside the modelled grammar, which MSBuild finds
+/// true, so `Hidden.props` redefines `ThatProperty`, the entry body copies it
+/// into the `Directory.Build.targets` gate, and MSBuild takes the file. We
+/// skip the import, keep the stale `false`, skip the file, and commit the
+/// Compile set as certain. No refused write is involved (unlike the test
+/// above): `gate_value_is_exact` tolerates SDK-subtree opacity by design.
+/// A sound fix wants per-value staleness under opacity (P3 of
+/// `docs/msbuild-value-carried-provenance-plan.md`); un-ignore this then.
+#[test]
+#[ignore = "#614: a gate read from a property an opaque SDK import redefined commits"]
+fn a_gate_read_from_a_property_an_opaque_sdk_import_redefined_declines() {
+    let tmp = TempDir::new().unwrap();
+    let (root, props, targets) = write_synthetic_sdk(
+        tmp.path(),
+        "MySdk",
+        &format!(
+            r#"<Project>
+  <PropertyGroup><X>abc</X><ThatProperty>false</ThatProperty></PropertyGroup>
+  <Import Project="Hidden.props" Condition="{UNDECIDABLE_TRUE}" />
+</Project>"#
+        ),
+        "<Project/>",
+    );
+    write_at(
+        &root,
+        "Hidden.props",
+        r#"<Project><PropertyGroup><ThatProperty>true</ThatProperty></PropertyGroup></Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project><ItemGroup><Compile Include="FromDirBuild.fs" /></ItemGroup></Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project Sdk="MySdk">
+  <PropertyGroup>
+    <ImportDirectoryBuildTargets>$(ThatProperty)</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="Main.fs" /></ItemGroup>
+</Project>"#,
+    );
+    let result = parse_file_with_sdk(&project_path, |name| {
+        if name == "MySdk" {
+            Ok(SdkPaths {
+                root: root.clone(),
+                props: props.clone(),
+                targets: targets.clone(),
+            })
+        } else {
+            Err(SdkResolveError::NotFound)
+        }
+    });
+    assert!(
+        result.items_uncertain,
+        "the gate's value came from a property an opaque SDK import may have \
+         redefined; items: {:?}",
+        paths_of(&result.items)
+    );
+}
+
 #[test]
 fn a_self_default_after_a_refused_write_cannot_certify_the_gate() {
     // The default-fill idiom `<X Condition="'$(X)' == ''">…</X>` is exempted
