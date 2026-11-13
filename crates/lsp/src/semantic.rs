@@ -491,15 +491,16 @@ pub struct SemanticState {
     name_table_cap: NameTableCap,
 }
 
-/// The most entries, names and paths together, an env's table holds past a
-/// fold before the env is dropped (`docs/sema-interning-plan.md`, D2). The
-/// table only grows, by every distinct name and path a fold against the env
-/// meets — each prefix of a name as it is typed among them, and each new
-/// arrangement of names already held — so a long-lived server bounds it by
-/// rebuilding the env, and with it a fresh table, once a fold leaves it past
-/// this. A whole 11.8 MB source tree interns about 40,000 names, so the
-/// default is reached only by a long session of edits. The table then stays
-/// below the cap plus one fold's entries.
+/// The most entries, names, paths and types together, an env's tables hold
+/// past a fold before the env is dropped (`docs/sema-interning-plan.md`, D2
+/// and D4). The tables only grow, by every distinct name and path a fold
+/// against the env meets — each prefix of a name as it is typed among them,
+/// and each new arrangement of names already held — and every distinct type
+/// an inference against it publishes, so a long-lived server bounds them by
+/// rebuilding the env, and with it fresh tables, once a resolution fold or an
+/// inference fold leaves them past this. A whole 11.8 MB source tree interns
+/// about 40,000 names, so the default is reached only by a long session of
+/// edits. The tables then stay below the cap plus one fold's entries.
 #[derive(Debug, Clone, Copy)]
 struct NameTableCap(usize);
 
@@ -1279,8 +1280,8 @@ impl SemanticState {
         Some((resolved, env))
     }
 
-    /// Drop `env`, and every fold of `key`'s against it, once its name table
-    /// is past [`Self::name_table_cap`]. The next request then builds a fresh
+    /// Drop `env`, and every fold of `key`'s against it, once its tables
+    /// are past [`Self::name_table_cap`]. The next request then builds a fresh
     /// env, whose fold is cold through the existing [`Arc::ptr_eq`] checks.
     fn drop_env_past_name_cap(&mut self, key: &ProjectId, env: &Arc<AssemblyEnv>) {
         let entries = env.interned_count();
@@ -1291,7 +1292,7 @@ impl SemanticState {
             project = %key.as_path().display(),
             entries,
             cap = self.name_table_cap.0,
-            "dropping an assembly env whose name table is past its cap"
+            "dropping an assembly env whose tables are past their cap"
         );
         self.assembly_envs
             .retain(|_, cached| !Arc::ptr_eq(&cached.env, env));
@@ -1351,12 +1352,15 @@ impl SemanticState {
             Arc::new(inferred)
         };
         self.inferred_projects.insert(
-            key,
+            key.clone(),
             CachedInference {
                 env: Arc::clone(&env),
                 inferred: Arc::clone(&inferred),
             },
         );
+        // Inference publishes its types into the env's type table, which the
+        // cap bounds with the name table.
+        self.drop_env_past_name_cap(&key, &env);
         Some((resolved, env, inferred))
     }
 

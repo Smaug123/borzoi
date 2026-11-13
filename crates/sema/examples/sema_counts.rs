@@ -40,7 +40,7 @@ use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse_with_symbols;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
 use borzoi_sema::{
-    AssemblyEnv, PrecedingTypes, ProjectItems, SyntaxRecovery, Ty, infer_file, resolve_file,
+    AssemblyEnv, PrecedingTypes, ProjectItems, SyntaxRecovery, TyKind, infer_file, resolve_file,
 };
 
 /// The system allocator, counting calls and requested bytes.
@@ -268,29 +268,30 @@ fn main() {
     for file in &inferred {
         for ty in file.types().values().chain(file.def_types().values()) {
             published += 1;
-            nodes += ty.size().nodes;
-            let mut stack = vec![ty];
+            nodes += ty.size(&env).nodes;
+            let mut stack = vec![*ty];
             while let Some(ty) = stack.pop() {
-                match ty {
-                    Ty::Named { path, args } | Ty::Project { path, args } => {
+                match ty.kind(&env) {
+                    TyKind::Named { path, args } | TyKind::Project { path, args } => {
                         named_nodes += 1;
                         paths.insert(path.segments(&env).into_iter().map(str::to_owned).collect());
-                        stack.extend(args);
+                        stack.extend(args.iter().copied());
                     }
-                    Ty::Array { elem, .. } => stack.push(elem),
-                    Ty::Tuple(elems) => stack.extend(elems),
-                    Ty::Fun { arg, ret } => {
-                        stack.push(arg);
-                        stack.push(ret);
+                    TyKind::Array { elem, .. } => stack.push(*elem),
+                    TyKind::Tuple(elems) => stack.extend(elems.iter().copied()),
+                    TyKind::Fun { arg, ret } => {
+                        stack.push(*arg);
+                        stack.push(*ret);
                     }
-                    Ty::Param(_) | Ty::Var(_) => {}
+                    TyKind::Param(_) | TyKind::Var(_) => {}
                 }
             }
         }
     }
     println!(
-        "published types: {published}, {nodes} nodes, {named_nodes} named nodes over {} distinct paths",
-        paths.len()
+        "published types: {published}, {nodes} nodes, {named_nodes} named nodes over {} distinct paths; {} entries interned in the env's tables",
+        paths.len(),
+        env.interned_count()
     );
 }
 

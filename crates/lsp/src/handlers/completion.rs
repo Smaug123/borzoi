@@ -6,7 +6,7 @@
 //! completion list is a set of genuinely-callable candidates, not a type
 //! assertion, so methods belong even though inference (Stage 3.3a) only *types*
 //! data members. The receiver type comes from inference (the receiver's
-//! inferred/binder type); its [`borzoi_sema::Ty::Named`] head is resolved
+//! inferred/binder type); its [`borzoi_sema::TyKind::Named`] head is resolved
 //! through the project's [`AssemblyEnv`] to the entity's member list.
 //!
 //! **Soundness (D5: silence over noise).** A completion list requires a
@@ -34,7 +34,9 @@ use borzoi_cst::syntax::TextSize;
 use borzoi_cst::syntax::{
     AstNode, DotGetExpr, Expr, ImplFile, LongIdentExpr, SyntaxKind, SyntaxNode, SyntaxToken,
 };
-use borzoi_sema::{AssemblyEnv, InferredFile, InferredProject, Resolution, ResolvedFile, Ty};
+use borzoi_sema::{
+    AssemblyEnv, InferredFile, InferredProject, Resolution, ResolvedFile, Ty, TyKind,
+};
 use lsp_types::{CompletionItem, CompletionParams, CompletionResponse, Position};
 
 use crate::paths::{lexically_normalize, paths_equal};
@@ -112,7 +114,7 @@ fn member_candidates(
     let inferred = inferred_project.file(file_idx)?;
 
     let recv_ty = receiver_type(&receiver, file, inferred, &inferred_project)?;
-    // A ground `Ty::Named` receiver resolves to an entity; anything else (open,
+    // A ground `TyKind::Named` receiver resolves to an entity; anything else (open,
     // an array / tuple / function head, a generic named type) offers nothing.
     let names = members_of(&env, &recv_ty)?;
     Some(names.into_iter().map(str::to_string).collect())
@@ -259,26 +261,26 @@ fn receiver_type(
         Receiver::IdentHead(head) => {
             let res = file.resolution_at(head.text_range())?;
             match (file.resolved_def_id(res), res) {
-                (Some(def), _) => inferred.def_type(def).cloned(),
+                (Some(def), _) => inferred.def_type(def).copied(),
                 // An earlier file's top-level value: the type that file
                 // published for it.
                 (None, Resolution::Item(id)) if !file.owns_item(id) => {
-                    project.item_type(id).ok().cloned()
+                    project.item_type(id).ok().copied()
                 }
                 (None, _) => None,
             }
         }
-        Receiver::DotGet(range) => inferred.dot_get_receiver_type(*range).cloned(),
+        Receiver::DotGet(range) => inferred.dot_get_receiver_type(*range).copied(),
     }
 }
 
-/// The public instance member names of a ground `Ty::Named` receiver, resolved
+/// The public instance member names of a ground `TyKind::Named` receiver, resolved
 /// through `env`. `None` (offer nothing) for a non-`Named` head, a generic /
 /// nested named type we cannot resolve to an arity-0 entity, or an entity absent
 /// from the env. Duplicates (overloaded method names) are already deduplicated by
 /// [`AssemblyEnv::public_instance_member_names`].
 fn members_of<'e>(env: &'e AssemblyEnv, ty: &Ty) -> Option<Vec<&'e str>> {
-    let Ty::Named { path, args } = ty else {
+    let TyKind::Named { path, args } = ty.kind(env) else {
         return None;
     };
     // Arity 0 — a non-generic receiver, exactly Stage 3.3a's `HasMember` lookup.

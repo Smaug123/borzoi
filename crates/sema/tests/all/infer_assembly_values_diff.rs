@@ -1149,7 +1149,7 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
 /// FSharp.Core's sealed generics. A closed list rather than inference's own
 /// test, so the obligation it decides does not move with that test.
 fn takes_only_surely_sealed(env: &borzoi_sema::AssemblyEnv, ty: &borzoi_sema::Ty) -> bool {
-    use borzoi_sema::Ty;
+    use borzoi_sema::{Ty, TyKind};
     const SEALED: &[&str] = &[
         "System.Int32",
         "System.Int64",
@@ -1168,16 +1168,16 @@ fn takes_only_surely_sealed(env: &borzoi_sema::AssemblyEnv, ty: &borzoi_sema::Ty
         "Microsoft.FSharp.Core.FSharpChoice",
         "Microsoft.FSharp.Core.FSharpRef",
     ];
-    let sealed = |t: &Ty| match t {
-        Ty::Param(_) | Ty::Fun { .. } | Ty::Array { .. } | Ty::Tuple(_) => true,
-        Ty::Named { path, .. } => SEALED.contains(&path.segments(env).join(".").as_str()),
-        Ty::Var(_) | Ty::Project { .. } => false,
+    let sealed = |t: Ty| match t.kind(env) {
+        TyKind::Param(_) | TyKind::Fun { .. } | TyKind::Array { .. } | TyKind::Tuple(_) => true,
+        TyKind::Named { path, .. } => SEALED.contains(&path.segments(env).join(".").as_str()),
+        TyKind::Var(_) | TyKind::Project { .. } => false,
     };
-    let mut ty = ty;
-    while let Ty::Fun { arg, ret } = ty {
-        let ok = match arg.as_ref() {
-            Ty::Tuple(elems) => elems.iter().all(sealed),
-            other => sealed(other),
+    let mut ty = *ty;
+    while let TyKind::Fun { arg, ret } = *ty.kind(env) {
+        let ok = match arg.kind(env) {
+            TyKind::Tuple(elems) => elems.iter().all(|&e| sealed(e)),
+            _ => sealed(arg),
         };
         if !ok {
             return false;

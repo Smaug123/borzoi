@@ -415,10 +415,10 @@ pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(St
             let scheme = crate::function_ty::module_function_scheme(env, module, m)
                 .ok()?
                 .ty;
-            let scheme = flexed(env, &scheme, m.generic_parameters.len() as u32);
+            let scheme = flexed(env, scheme, m.generic_parameters.len() as u32);
             let mut order = Vec::new();
-            first_appearance(&scheme, &mut order);
-            let renamed = renumber(&scheme, &order);
+            first_appearance(env, scheme, &mut order);
+            let renamed = renumber(env, scheme, &order);
             Some((
                 env.member_display_name(module, idx).to_string(),
                 renamed.render(env),
@@ -430,7 +430,7 @@ pub fn module_function_types(env: &AssemblyEnv, module: EntityHandle) -> Vec<(St
 /// Every function and value of the F# module `module` that inference reads a
 /// type off (`function_ty::module_function_scheme`), by its F# source name,
 /// with the scheme as read: before a use loosens it, each type parameter the
-/// [`Ty::Param`](crate::Ty::Param) of its index.
+/// [`TyKind::Param`](crate::TyKind::Param) of its index.
 pub fn module_function_schemes(
     env: &AssemblyEnv,
     module: EntityHandle,
@@ -481,12 +481,70 @@ pub fn module_builtin_operators(env: &AssemblyEnv, module: EntityHandle) -> Vec<
                 return None;
             };
             let builtin = crate::function_ty::builtin_operator(env, module, m)?;
-            Some((
-                env.member_display_name(module, idx).to_string(),
-                format!("{builtin:?}"),
-            ))
+            let read = match builtin {
+                crate::function_ty::Builtin::Convert { target } => {
+                    format!("Convert {{ target: {} }}", spelled_debug(env, target))
+                }
+                other => format!("{other:?}"),
+            };
+            Some((env.member_display_name(module, idx).to_string(), read))
         })
         .collect()
+}
+
+/// `ty`, a type of `env`'s table, in the `Debug` layout of a tree whose paths
+/// are spelled: `Named { path: ["System", "Int32"], args: [] }`.
+pub fn spelled_debug(env: &AssemblyEnv, ty: crate::Ty) -> String {
+    #[derive(Debug)]
+    #[allow(dead_code)]
+    enum Spelled {
+        Named {
+            path: Vec<String>,
+            args: Vec<Spelled>,
+        },
+        Project {
+            path: Vec<String>,
+            args: Vec<Spelled>,
+        },
+        Array {
+            elem: Box<Spelled>,
+            rank: u32,
+        },
+        Tuple(Vec<Spelled>),
+        Fun {
+            arg: Box<Spelled>,
+            ret: Box<Spelled>,
+        },
+        Param(u32),
+        Var(crate::TyVid),
+    }
+    fn spell(env: &AssemblyEnv, ty: crate::Ty) -> Spelled {
+        use crate::TyKind;
+        let all = |args: &[crate::Ty]| args.iter().map(|&a| spell(env, a)).collect();
+        let path = |p: &crate::TyPath| p.segments(env).into_iter().map(str::to_owned).collect();
+        match ty.kind(env) {
+            TyKind::Named { path: p, args } => Spelled::Named {
+                path: path(p),
+                args: all(args),
+            },
+            TyKind::Project { path: p, args } => Spelled::Project {
+                path: path(p),
+                args: all(args),
+            },
+            TyKind::Array { elem, rank } => Spelled::Array {
+                elem: Box::new(spell(env, *elem)),
+                rank: *rank,
+            },
+            TyKind::Tuple(elems) => Spelled::Tuple(all(elems)),
+            TyKind::Fun { arg, ret } => Spelled::Fun {
+                arg: Box::new(spell(env, *arg)),
+                ret: Box::new(spell(env, *ret)),
+            },
+            TyKind::Param(i) => Spelled::Param(*i),
+            TyKind::Var(v) => Spelled::Var(*v),
+        }
+    }
+    format!("{:?}", spell(env, ty))
 }
 
 /// Whether the assembly called `assembly` names the non-generic top-level
@@ -532,13 +590,13 @@ pub fn module_function_application_type(
             .map(|s| s.ty)
     })?;
     for _ in 0..args {
-        let crate::Ty::Fun { ret, .. } = ty else {
+        let crate::TyKind::Fun { ret, .. } = ty.kind(env) else {
             return None;
         };
         ty = *ret;
     }
     let mut params = Vec::new();
-    first_appearance(&ty, &mut params);
+    first_appearance(env, ty, &mut params);
     params.is_empty().then(|| ty.render(env))
 }
 
@@ -549,86 +607,78 @@ pub fn module_function_application_type(
 /// not `obj -> 'b`. `System.Object` is the one unsealed type
 /// [`crate::function_ty::module_function_scheme`] carries; `next` is the first
 /// unused parameter index.
-fn flexed(env: &AssemblyEnv, ty: &crate::Ty, mut next: u32) -> crate::Ty {
-    use crate::Ty;
-    let mut flex = |t: &Ty| match t {
-        t if t.is_named(env.names(), &["System", "Object"]) => {
+fn flexed(env: &AssemblyEnv, ty: crate::Ty, mut next: u32) -> crate::Ty {
+    use crate::{Ty, TyKind};
+    let mut flex = |t: Ty| {
+        if env.types().is_named(env.names(), t, &["System", "Object"]) {
             next += 1;
-            Ty::Param(next - 1)
+            Ty::param(env, next - 1)
+        } else {
+            t
         }
-        other => other.clone(),
     };
     let mut domains = Vec::new();
     let mut ret = ty;
-    while let Ty::Fun { arg, ret: next_ret } = ret {
-        domains.push(match &**arg {
-            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(&mut flex).collect()),
-            other => flex(other),
+    while let TyKind::Fun { arg, ret: next_ret } = *ret.kind(env) {
+        domains.push(match arg.kind(env) {
+            TyKind::Tuple(elems) => {
+                let elems = elems.iter().map(|&e| flex(e)).collect();
+                Ty::tuple(env, elems)
+            }
+            _ => flex(arg),
         });
         ret = next_ret;
     }
     domains
         .into_iter()
         .rev()
-        .fold(ret.clone(), |ret, arg| Ty::Fun {
-            arg: Box::new(arg),
-            ret: Box::new(ret),
-        })
+        .fold(ret, |ret, arg| Ty::fun(env, arg, ret))
 }
 
-/// The [`Ty::Param`](crate::Ty::Param) indices of `ty` in first-appearance
-/// order, argument before return.
-fn first_appearance(ty: &crate::Ty, order: &mut Vec<u32>) {
-    use crate::Ty;
-    match ty {
-        Ty::Param(i) => {
+/// The [`TyKind::Param`](crate::TyKind::Param) indices of `ty` in
+/// first-appearance order, argument before return.
+fn first_appearance(env: &AssemblyEnv, ty: crate::Ty, order: &mut Vec<u32>) {
+    use crate::TyKind;
+    match ty.kind(env) {
+        TyKind::Param(i) => {
             if !order.contains(i) {
                 order.push(*i);
             }
         }
-        Ty::Var(_) => {}
-        Ty::Named { args, .. } | Ty::Project { args, .. } => {
-            args.iter().for_each(|a| first_appearance(a, order))
+        TyKind::Var(_) => {}
+        TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => {
+            args.iter().for_each(|&a| first_appearance(env, a, order))
         }
-        Ty::Array { elem, .. } => first_appearance(elem, order),
-        Ty::Tuple(elems) => elems.iter().for_each(|e| first_appearance(e, order)),
-        Ty::Fun { arg, ret } => {
-            first_appearance(arg, order);
-            first_appearance(ret, order);
+        TyKind::Array { elem, .. } => first_appearance(env, *elem, order),
+        TyKind::Fun { arg, ret } => {
+            first_appearance(env, *arg, order);
+            first_appearance(env, *ret, order);
         }
     }
 }
 
-/// `ty` with each [`Ty::Param`](crate::Ty::Param) renamed to its position in
-/// `order`.
-fn renumber(ty: &crate::Ty, order: &[u32]) -> crate::Ty {
-    use crate::Ty;
-    match ty {
-        Ty::Param(i) => Ty::Param(
+/// `ty` with each [`TyKind::Param`](crate::TyKind::Param) renamed to its
+/// position in `order`.
+fn renumber(env: &AssemblyEnv, ty: crate::Ty, order: &[u32]) -> crate::Ty {
+    use crate::{Ty, TyKind};
+    let all = |args: &[Ty]| -> Vec<Ty> { args.iter().map(|&a| renumber(env, a, order)).collect() };
+    match ty.kind(env) {
+        TyKind::Param(i) => Ty::param(
+            env,
             order
                 .iter()
                 .position(|j| j == i)
                 .and_then(|p| u32::try_from(p).ok())
                 .unwrap_or(*i),
         ),
-        Ty::Var(v) => Ty::Var(*v),
-        Ty::Named { path, args } => Ty::Named {
-            path: path.clone(),
-            args: args.iter().map(|a| renumber(a, order)).collect(),
-        },
-        Ty::Project { path, args } => Ty::Project {
-            path: path.clone(),
-            args: args.iter().map(|a| renumber(a, order)).collect(),
-        },
-        Ty::Array { elem, rank } => Ty::Array {
-            elem: Box::new(renumber(elem, order)),
-            rank: *rank,
-        },
-        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| renumber(e, order)).collect()),
-        Ty::Fun { arg, ret } => Ty::Fun {
-            arg: Box::new(renumber(arg, order)),
-            ret: Box::new(renumber(ret, order)),
-        },
+        TyKind::Var(_) => ty,
+        TyKind::Named { path, args } => Ty::app(env, path.clone(), all(args)),
+        TyKind::Project { path, args } => Ty::project(env, path.clone(), all(args)),
+        TyKind::Array { elem, rank } => Ty::array(env, renumber(env, *elem, order), *rank),
+        TyKind::Tuple(elems) => Ty::tuple(env, all(elems)),
+        TyKind::Fun { arg, ret } => {
+            Ty::fun(env, renumber(env, *arg, order), renumber(env, *ret, order))
+        }
     }
 }
 

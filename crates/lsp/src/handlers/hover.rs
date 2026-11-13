@@ -1191,7 +1191,7 @@ fn literal_hover_body(
     // inferred expression — a tuple today, a call once 3.2c lands — shows just
     // its type (`` `1, "hi"` — int * string ``), since "literal" would
     // misdescribe it. The kind is read off the covering syntax node rather than
-    // guessed from the `Ty` (a `Ty::Named` is produced by both a literal and a
+    // guessed from the `Ty` (a `TyKind::Named` is produced by both a literal and a
     // future call).
     let value = code_span(value);
     let ty = code_span(&ty.render_fsharp(env));

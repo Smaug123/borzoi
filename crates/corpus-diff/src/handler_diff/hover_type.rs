@@ -574,7 +574,9 @@ pub fn alpha_normalise(text: &str) -> String {
                 names.len() - 1
             }
         };
-        out.push_str(&Ty::Param(u32::try_from(index).expect("few parameters")).render_fsharp(&env));
+        out.push_str(
+            &Ty::param(&env, u32::try_from(index).expect("few parameters")).render_fsharp(&env),
+        );
         i = j;
     }
     out
@@ -588,7 +590,7 @@ pub fn alpha_normalise(text: &str) -> String {
 /// display-text fallback — since a type read wrongly would grade a right hover
 /// wrong or a wrong one right.
 ///
-/// Type parameters become [`Ty::Param`]s numbered by first appearance, and
+/// Type parameters become [`TyKind::Param`](borzoi_sema::TyKind::Param)s numbered by first appearance, and
 /// names are interned in `env`'s table, which the type is then rendered
 /// through.
 pub fn parse_canonical(env: &AssemblyEnv, text: &str) -> Option<Ty> {
@@ -628,10 +630,7 @@ impl<'a> Parser<'a> {
         let arg = self.tuple()?;
         if self.eat(" -> ") {
             let ret = self.function()?;
-            return Some(Ty::Fun {
-                arg: Box::new(arg),
-                ret: Box::new(ret),
-            });
+            return Some(Ty::fun(self.env, arg, ret));
         }
         Some(arg)
     }
@@ -645,7 +644,7 @@ impl<'a> Parser<'a> {
         Some(if elems.len() == 1 {
             elems.pop().expect("one element")
         } else {
-            Ty::Tuple(elems)
+            Ty::tuple(self.env, elems)
         })
     }
 
@@ -660,10 +659,7 @@ impl<'a> Parser<'a> {
             if !self.eat("]") {
                 return None;
             }
-            ty = Ty::Array {
-                elem: Box::new(ty),
-                rank,
-            };
+            ty = Ty::array(self.env, ty, rank);
         }
         Some(ty)
     }
@@ -690,7 +686,7 @@ impl<'a> Parser<'a> {
                     self.params.len() - 1
                 }
             };
-            return Some(Ty::Param(u32::try_from(index).ok()?));
+            return Some(Ty::param(self.env, u32::try_from(index).ok()?));
         }
         let name = self.name()?;
         let path: Vec<String> = name.split('.').map(str::to_string).collect();
@@ -710,10 +706,7 @@ impl<'a> Parser<'a> {
                 return None;
             }
         }
-        Some(Ty::Named {
-            path: TyPath::of(self.env, &path),
-            args,
-        })
+        Some(Ty::app(self.env, TyPath::of(self.env, &path), args))
     }
 
     /// A dotted name: everything up to a delimiter or a space.
@@ -748,10 +741,11 @@ mod tests {
     }
 
     fn named(path: &str, args: Vec<Ty>) -> Ty {
-        Ty::Named {
-            path: TyPath::of(env(), &path.split('.').collect::<Vec<_>>()),
+        Ty::app(
+            env(),
+            TyPath::of(env(), &path.split('.').collect::<Vec<_>>()),
             args,
-        }
+        )
     }
 
     #[test]
@@ -769,10 +763,7 @@ mod tests {
         );
         assert_eq!(
             parse_canonical(env(), "System.Int32 * System.Int32 -> System.Int32"),
-            Some(Ty::Fun {
-                arg: Box::new(Ty::Tuple(vec![int(), int()])),
-                ret: Box::new(int()),
-            })
+            Some(Ty::fun(env(), Ty::tuple(env(), vec![int(), int()]), int()))
         );
         assert_eq!(
             parse_canonical(
@@ -784,10 +775,11 @@ mod tests {
         );
         assert_eq!(
             parse_canonical(env(), "(System.Int32 * System.String)[,]"),
-            Some(Ty::Array {
-                elem: Box::new(Ty::Tuple(vec![int(), Ty::named(env(), "System.String")])),
-                rank: 2,
-            })
+            Some(Ty::array(
+                env(),
+                Ty::tuple(env(), vec![int(), Ty::named(env(), "System.String")]),
+                2
+            ))
         );
         assert_eq!(
             parse_canonical(env(), "Zoo.Outer/Inner"),
@@ -843,7 +835,7 @@ mod tests {
                 "A.B/C",
             ])
             .prop_map(|p| Ty::named(env(), p)),
-            (0u32..4).prop_map(Ty::Param),
+            (0u32..4).prop_map(|i| Ty::param(env(), i)),
         ];
         leaf.prop_recursive(4, 24, 3, |inner| {
             prop_oneof![
@@ -855,15 +847,10 @@ mod tests {
                     prop::collection::vec(inner.clone(), 1..3)
                 )
                     .prop_map(|(path, args)| named(path, args)),
-                (inner.clone(), 1u32..3).prop_map(|(elem, rank)| Ty::Array {
-                    elem: Box::new(elem),
-                    rank
-                }),
-                prop::collection::vec(inner.clone(), 2..4).prop_map(Ty::Tuple),
-                (inner.clone(), inner).prop_map(|(arg, ret)| Ty::Fun {
-                    arg: Box::new(arg),
-                    ret: Box::new(ret)
-                }),
+                (inner.clone(), 1u32..3).prop_map(|(elem, rank)| Ty::array(env(), elem, rank)),
+                prop::collection::vec(inner.clone(), 2..4)
+                    .prop_map(|elems| Ty::tuple(env(), elems)),
+                (inner.clone(), inner).prop_map(|(arg, ret)| Ty::fun(env(), arg, ret)),
             ]
         })
     }

@@ -33,7 +33,7 @@
 //! the plan's [D8] generate→solve: a pure fold produces an inert
 //! `Vec<Constraint>` over inference variables, the [`InferTable`] substrate
 //! solves them by unification, and each expression's type is read back by
-//! resolving its variable — emitted only when it is fully [`ground`](Ty::is_ground)
+//! resolving its variable — emitted only when it is fully [`ground`](TyTable::is_ground)
 //! (D5: silence otherwise).
 //!
 //! **Stage 3.2b-1 — value-reference propagation.** Generation now consults name
@@ -54,7 +54,7 @@
 //!
 //! **Stage 3.2b-2 — parentheses and tuples.** The coercion-free RHS typer
 //! recurses through transparent parentheses (`let y = (x)`) and types a
-//! reference tuple `(a, b, …)` as [`Ty::Tuple`], recursing into each element
+//! reference tuple `(a, b, …)` as [`TyKind::Tuple`], recursing into each element
 //! (still coercion-free — an unannotated tuple imposes no expected type on its
 //! elements). A tuple-bound value hovers as `int * string`. Struct tuples and an
 //! element we cannot type are deferred (the latter leaves the tuple un-ground
@@ -90,14 +90,14 @@
 //! synth-position lambda body are coercion-free (synth); a lambda reached in
 //! *check* mode passes it on (an expected function type could retarget the body);
 //! a `while` body is checked against `unit`. The function value itself stays
-//! Deferred: its `Ty::Fun` type (and let-generalisation) are a later slice — this
+//! Deferred: its `TyKind::Fun` type (and let-generalisation) are a later slice — this
 //! one lays the body-traversal groundwork they build on.
 //!
-//! **Stage 3.2c-2b — `Ty::Fun` + monomorphic function types + condition typing.**
-//! A `let`-function binder now carries a [`Ty::Fun`] type built by currying its
+//! **Stage 3.2c-2b — `TyKind::Fun` + monomorphic function types + condition typing.**
+//! A `let`-function binder now carries a [`TyKind::Fun`] type built by currying its
 //! parameter variables over the body's return variable
 //! ([`Gen::function_type`]) — emitted (on [`InferredFile::def_type`]) only when
-//! every operand is [`ground`](Ty::is_ground), i.e. **monomorphic** functions
+//! every operand is [`ground`](TyTable::is_ground), i.e. **monomorphic** functions
 //! (`let f c = if c then 1 else 2` ⇒ `f : bool -> int`). A polymorphic function
 //! (an un-grounded parameter or return) leaves an open variable and so silently
 //! defers until let-generalisation (3.2c-2c).
@@ -118,7 +118,7 @@
 //! any place we publish a parameter's *own* type. The mechanism:
 //! [`Gen::param_var`] gives each named parameter — alone, or an element of a
 //! tupled parameter ([`Gen::pattern_ty`]) — a **private slot**
-//! variable that is the parameter's type *inside* the function's `Ty::Fun`, and
+//! variable that is the parameter's type *inside* the function's `TyKind::Fun`, and
 //! condition typing grounds **that slot** ([`Gen::param_slots`]), *not* the
 //! parameter's binder [`def_var`](Gen::def_var). The binder's variable — which
 //! its expression uses and `def_type` read off — is therefore never grounded by a
@@ -127,7 +127,7 @@
 //! shapes (a constructor, a literal, an annotation outside the modelled set) gets no
 //! slot, so it never grounds and the function defers.
 //!
-//! Publishing only the function type is provably sound: a ground `Ty::Fun` means
+//! Publishing only the function type is provably sound: a ground `TyKind::Fun` means
 //! every parameter slot is ground, and any unmodelled constraint on a parameter
 //! would have blocked the function's groundness (so it would have deferred) —
 //! hence a ground function matches FCS, while still surfacing the parameter types
@@ -185,7 +185,7 @@
 //! so it defers this function rather than being quantified). At a function
 //! binding's finalisation: resolve its type; if ground, emit as before; else
 //! generalise iff complete **and** every open var is created-this-binding and
-//! unpoisoned — replacing those vars by [`Ty::Param`]s numbered by first
+//! unpoisoned — replacing those vars by [`TyKind::Param`]s numbered by first
 //! appearance (DFS, argument-before-return) — else defer. A use of a scheme'd
 //! binder ([`Gen::infer_construct`]'s [`Expr::Ident`] arm) instantiates with a
 //! fresh var per distinct `Param`.
@@ -225,7 +225,7 @@
 //!
 //! **Stage 3.3a — the suspended `HasMember` worklist (fields/properties).** A
 //! member access `recv.Name` where `Name` is a **field or non-indexer instance
-//! property** on a **non-generic [`Ty::Named`]** receiver resolved through the
+//! property** on a **non-generic [`TyKind::Named`]** receiver resolved through the
 //! [`AssemblyEnv`] now types: `let s = "hi"` then `let n = s.Length` ⇒ `n : int`,
 //! `let n = "hi".Length` ⇒ `int`, and chains / multi-dot access.
 //!
@@ -517,7 +517,7 @@ use crate::node_span::NodeSpans;
 use crate::overload::arity_window;
 use crate::qnof::QualifiedNameOfFile;
 use crate::resolve::{CaseKind, ItemId, Resolution, ResolvedFile};
-use crate::ty::{MAX_TYPE_DEPTH, Ty, TyPath, TyVid, TypeBudgetExceeded};
+use crate::ty::{MAX_TYPE_DEPTH, Ty, TyKind, TyPath, TyTable, TyVid, TypeBudgetExceeded};
 use crate::unify::{InferTable, TypeWalks};
 
 /// Per-file inference result. Two views, both populated only when a type can be
@@ -559,7 +559,7 @@ pub struct InferredFile {
     /// [`FileContribution::of`]: crate::infer_project::FileContribution::of
     module_values: HashMap<DefId, ModuleValue>,
     /// The types this file declares that an annotation may name as a
-    /// [`Ty::Project`], with their path and arity, so a later file's
+    /// [`TyKind::Project`], with their path and arity, so a later file's
     /// annotation naming one ([`Resolution::EarlierFileType`]) bridges exactly
     /// as this file's would.
     project_types: HashMap<DefId, (TyPath, usize)>,
@@ -583,7 +583,7 @@ impl InferredFile {
     /// This file's inference with every type's paths translated from `from`'s
     /// table to `to`'s, so it compares with an inference made against `to`.
     #[cfg(feature = "test-support")]
-    pub(crate) fn rekey_names(&self, from: &NameTable, to: &NameTable) -> InferredFile {
+    pub(crate) fn rekey_names(&self, from: &AssemblyEnv, to: &AssemblyEnv) -> InferredFile {
         let InferredFile {
             types,
             def_types,
@@ -619,7 +619,7 @@ impl InferredFile {
                 .collect(),
             project_types: project_types
                 .iter()
-                .map(|(def, (path, arity))| (*def, (path.rekey(from, to), *arity)))
+                .map(|(def, (path, arity))| (*def, (path.rekey(from.names(), to.names()), *arity)))
                 .collect(),
             project_cases: project_cases
                 .iter()
@@ -1059,14 +1059,14 @@ pub(crate) struct ProjectCase {
 }
 
 /// The records of the project inference reads field accesses on, by the
-/// path and arity of their [`Ty::Project`] (one type per assembly, FS0249).
+/// path and arity of their [`TyKind::Project`] (one type per assembly, FS0249).
 pub(crate) type ProjectRecords = HashMap<(TyPath, usize), ProjectRecord>;
 
 /// A record the project declares, as inference reads a field access on it
 /// ([`Gen::project_type_schemes`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectRecord {
-    /// The record applied to its own parameters ([`Ty::Param`]s).
+    /// The record applied to its own parameters ([`TyKind::Param`]s).
     record: Ty,
     /// Each field inference reads, by name, over those parameters.
     fields: HashMap<String, Ty>,
@@ -1080,8 +1080,8 @@ pub(crate) struct ProjectRecord {
 #[cfg(feature = "test-support")]
 pub(crate) fn rekey_records(
     records: &ProjectRecords,
-    from: &NameTable,
-    to: &NameTable,
+    from: &AssemblyEnv,
+    to: &AssemblyEnv,
 ) -> ProjectRecords {
     records
         .iter()
@@ -1099,7 +1099,7 @@ pub(crate) fn rekey_records(
                     .collect(),
                 scope: *scope,
             };
-            ((path.rekey(from, to), *arity), record)
+            ((path.rekey(from.names(), to.names()), *arity), record)
         })
         .collect()
 }
@@ -1110,9 +1110,9 @@ impl ProjectRecord {
         self.scope.is_none()
     }
 
-    /// The record, applied to its own parameters.
-    pub(crate) fn record(&self) -> &Ty {
-        &self.record
+    /// The record, applied to its own parameters: a type of the env's table.
+    pub(crate) fn record(&self) -> Ty {
+        self.record
     }
 }
 
@@ -1126,7 +1126,7 @@ impl ProjectCase {
     /// The case with its scheme's paths translated from `from`'s table to
     /// `to`'s.
     #[cfg(feature = "test-support")]
-    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> ProjectCase {
+    pub(crate) fn rekey(&self, from: &AssemblyEnv, to: &AssemblyEnv) -> ProjectCase {
         let ProjectCase {
             name,
             scheme,
@@ -1149,9 +1149,10 @@ impl ProjectCase {
         self.scope.is_none()
     }
 
-    /// The case's union, applied to its own parameters.
-    pub(crate) fn union(&self) -> &Ty {
-        &self.scheme.union
+    /// The case's union, applied to its own parameters: a type of the env's
+    /// table.
+    pub(crate) fn union(&self) -> Ty {
+        self.scheme.union
     }
 }
 
@@ -1229,7 +1230,7 @@ enum Constraint {
     /// member (field / non-indexer property, Stage 3.3a) *or* a method (a
     /// single-candidate method **call**, Stage 3.3d) — whose type is `result`.
     /// **Suspended**: it discharges only once `recv` resolves to a concrete
-    /// [`Ty::Named`] head, at which point the member is looked up against the
+    /// [`TyKind::Named`] head, at which point the member is looked up against the
     /// [`AssemblyEnv`] (dispatched on `kind`: `instance_data_member` vs
     /// `instance_method`) and its type — a data member's type, or a method's
     /// **return** type — bridged to a [`Ty`], pushing `Eq(result, member_ty)`. A
@@ -1377,7 +1378,7 @@ impl SuspendedMember {
 /// inert constraint set over inference variables, `solve` discharges it — the
 /// eager `Eq`s first, then a worklist waking each suspended `HasMember` once its
 /// receiver's head is concrete — and each recorded expression's type is read back
-/// from its variable, emitted only when fully [`ground`](Ty::is_ground).
+/// from its variable, emitted only when fully [`ground`](TyTable::is_ground).
 ///
 /// `preceding` is what the files before this one in Compile order published
 /// for their top-level values ([`crate::infer_project()`] folds it): a use the
@@ -1433,7 +1434,15 @@ fn infer_file_in(
     anonymous_module: Option<Vec<String>>,
 ) -> InferredFile {
     let ext_scope = ExtensionScope::of(resolved, env);
-    let mut cx = Gen::new(resolved, env, ext_scope, preceding);
+    let tys = TyTable::session();
+    #[cfg(feature = "test-support")]
+    {
+        let mut seeded = HashMap::default();
+        for &ty in env.session_seed() {
+            tys.import(env.types(), ty, &mut seeded);
+        }
+    }
+    let mut cx = Gen::new(resolved, env, &tys, ext_scope, preceding);
     cx.anonymous_module = anonymous_module;
     cx.rejecting_modules = cx.rejecting_modules(file);
     cx.rejected_defs = cx.rejected_use_defs(file);
@@ -1625,10 +1634,16 @@ struct Gen<'a> {
     /// ([`Self::type_let_decl`]), whether or not it found one.
     walked_binders: HashSet<DefId>,
     /// The flattened referenced-assembly view a member access resolves *into*
-    /// (Stage 3.3a): the receiver's [`Ty::Named`] head is looked up here for its
+    /// (Stage 3.3a): the receiver's [`TyKind::Named`] head is looked up here for its
     /// instance data member. Read-only (pure — values in).
     env: &'a AssemblyEnv,
-    table: InferTable,
+    /// The session's type table ([`TyTable::session`]): every term the walk
+    /// builds is an id into it. What the file publishes is copied into the
+    /// env's ([`Self::publish`]), and a type the env holds — an earlier file's
+    /// published type, a scheme — is read through an instantiation
+    /// ([`Self::instantiate`]).
+    tys: &'a TyTable,
+    table: InferTable<'a>,
     constraints: Vec<Constraint>,
     /// The argument checks a mid-walk [`Self::settle`] parked, in the order
     /// it met them: they stand ahead of every argument check in
@@ -1679,7 +1694,7 @@ struct Gen<'a> {
     guard_on_member: HashMap<TextRange, GuardId>,
     /// The **private function-type slot** variable for each simple named
     /// parameter of a `let`-function head ([`Self::param_var`]): the parameter's
-    /// type *inside* the function's [`Ty::Fun`], and the only variable
+    /// type *inside* the function's [`TyKind::Fun`], and the only variable
     /// [`Self::constrain_bool`] grounds when that parameter is used as a
     /// condition. It is deliberately **separate** from the parameter binder's
     /// [`def_var`](Self::def_var) — which its expression uses and `def_type` read
@@ -1702,7 +1717,7 @@ struct Gen<'a> {
     /// published function type, never from its binder variable.
     param_defs: HashSet<DefId>,
     /// Generalised binders' schemes, keyed by `DefId` (Stage 3.2c-2c). The scheme
-    /// body has open variables replaced by [`Ty::Param`]s (numbered by first
+    /// body has open variables replaced by [`TyKind::Param`]s (numbered by first
     /// appearance); each use [instantiates](Self::instantiate) it with fresh
     /// variables. Computed at a function binding's finalisation, consulted by a
     /// later binding's use — so it is filled sequentially, in document order.
@@ -1742,7 +1757,7 @@ struct Gen<'a> {
     /// later `g 1`).
     cur_mark: u32,
     /// The **scheme-instantiation provenance set** (Stage 3.3c): every fresh
-    /// inference variable [`Self::instantiate`] created from a [`Ty::Param`]. An
+    /// inference variable [`Self::instantiate`] created from a [`TyKind::Param`]. An
     /// application's suspended [`Constraint::ArgCheck`] discharges only when its
     /// domain resolves to a **no-subsumption** type — a sealed BCL primitive, a
     /// tuple of such, or *an unbound root in this set*. Membership is why
@@ -1820,7 +1835,7 @@ struct Gen<'a> {
     own_union_cases: HashSet<ItemId>,
     /// The declared type parameters of the type definition whose case fields
     /// [`Self::project_type_schemes`] is reading, by name, each the
-    /// [`Ty::Param`] of its position. Empty everywhere else.
+    /// [`TyKind::Param`] of its position. Empty everywhere else.
     decl_typars: HashMap<String, u32>,
     /// The project's unions and records inference knows of, by path, each
     /// with its arities: this file's ([`Self::project_cases`],
@@ -1923,6 +1938,7 @@ impl<'a> Gen<'a> {
     fn new(
         resolved: &'a ResolvedFile,
         env: &'a AssemblyEnv,
+        tys: &'a TyTable,
         ext_scope: ExtensionScope,
         preceding: &'a PrecedingTypes,
     ) -> Self {
@@ -1932,8 +1948,9 @@ impl<'a> Gen<'a> {
             module_binders: HashMap::default(),
             walked_binders: HashSet::default(),
             env,
+            tys,
             ext_scope,
-            table: InferTable::new(),
+            table: InferTable::new(tys),
             constraints: Vec::new(),
             settled_args: Vec::new(),
             exprs: Vec::new(),
@@ -1995,6 +2012,13 @@ impl<'a> Gen<'a> {
     /// trailing trivia trimmed ([`NodeSpans::span`]).
     fn node_span(&self, node: &SyntaxNode) -> TextRange {
         self.spans.borrow_mut().span(node)
+    }
+
+    /// `ty`, a type of the session ([`Self::tys`]), copied into the env's
+    /// table: what the file publishes, and the schemes it declares. `memo`
+    /// carries the copies made so far. `ty` must be ground.
+    fn publish(&self, ty: Ty, memo: &mut HashMap<Ty, Ty>) -> Ty {
+        self.env.types().import(self.tys, ty, memo)
     }
 
     /// Mark the current binding **walk-incomplete** — some sub-expression or
@@ -2285,7 +2309,7 @@ impl<'a> Gen<'a> {
     /// The path FCS names each in-file type definition by — its namespace,
     /// each enclosing module's compiled name, its own — with its arity, for
     /// the definitions where that is provably the written path
-    /// ([`Ty::Project`]). Probed against FCS's rendering: a type's
+    /// ([`TyKind::Project`]). Probed against FCS's rendering: a type's
     /// `[<CompiledName>]` renames it, a module takes a `Module` suffix beside a
     /// same-named type or under `CompilationRepresentation(ModuleSuffix)`, and
     /// a file without a header names its implicit module after the file. So a
@@ -2503,7 +2527,7 @@ impl<'a> Gen<'a> {
     /// The scheme of each case of the file's own unions whose type is read
     /// exactly, by how the resolver names the case ([`OwnCase`]): its fields'
     /// written types, read in the union's own type-parameter scope
-    /// ([`Self::decl_typars`]), and the union ([`Ty::Project`]) applied to its
+    /// ([`Self::decl_typars`]), and the union ([`TyKind::Project`]) applied to its
     /// parameters. Records every case of the file's unions that has an item in
     /// [`Self::own_union_cases`] as it goes.
     ///
@@ -2628,12 +2652,10 @@ impl<'a> Gen<'a> {
                     )
                 })
                 .collect();
-            let declared = Ty::Project {
-                path: path.clone(),
-                args: (0..arity)
-                    .map(|i| Ty::Param(u32::try_from(i).expect("checked above")))
-                    .collect(),
-            };
+            let params: Vec<Ty> = (0..arity)
+                .map(|i| self.tys.param(u32::try_from(i).expect("checked above")))
+                .collect();
+            let declared = self.tys.project(path.clone(), params);
             match repr {
                 DeclaredFields::Union(repr) => {
                     self.union_case_schemes(&repr, declared, scope, &mut out);
@@ -2643,14 +2665,16 @@ impl<'a> Gen<'a> {
                         .get_or_insert_with(|| IntrinsicMemberNames::of(file))
                         .of_type(&defn);
                     let fields = self.record_field_schemes(&repr, members);
-                    records.insert(
-                        (path, arity),
-                        ProjectRecord {
-                            record: declared,
-                            fields,
-                            scope,
-                        },
-                    );
+                    let mut memo = HashMap::default();
+                    let record = ProjectRecord {
+                        record: self.publish(declared, &mut memo),
+                        fields: fields
+                            .into_iter()
+                            .map(|(name, ty)| (name, self.publish(ty, &mut memo)))
+                            .collect(),
+                        scope,
+                    };
+                    records.insert((path, arity), record);
                 }
             }
             self.decl_typars.clear();
@@ -2706,9 +2730,13 @@ impl<'a> Gen<'a> {
                     index,
                     siblings: cases.len(),
                 };
+                let mut memo = HashMap::default();
                 let scheme = UnionCaseScheme {
-                    fields,
-                    union: union.clone(),
+                    fields: fields
+                        .into_iter()
+                        .map(|f| self.publish(f, &mut memo))
+                        .collect(),
+                    union: self.publish(union, &mut memo),
                 };
                 let Some(name) = case.ident().map(|t| ident_text(&t)) else {
                     continue;
@@ -2774,15 +2802,12 @@ impl<'a> Gen<'a> {
             .collect()
     }
 
-    /// The [`Ty::Project`] an annotation naming the in-file type `def` applied
+    /// The [`TyKind::Project`] an annotation naming the in-file type `def` applied
     /// to `args` denotes, when [`Self::project_type_paths`] holds its path and
     /// the arity matches.
     fn project_annotation_ty(&self, def: DefId, args: Vec<Ty>) -> Option<Ty> {
         let (path, arity) = self.project_types.get(&def)?;
-        (args.len() == *arity).then(|| Ty::Project {
-            path: path.clone(),
-            args,
-        })
+        (args.len() == *arity).then(|| self.tys.project(path.clone(), args))
     }
 
     /// [`Self::project_annotation_ty`] for a type an earlier file declares:
@@ -2790,10 +2815,7 @@ impl<'a> Gen<'a> {
     /// ([`PrecedingTypes::earlier_type`]), under the same arity check.
     fn earlier_annotation_ty(&self, file: u32, index: u32, args: Vec<Ty>) -> Option<Ty> {
         let (path, arity) = self.preceding.earlier_type(file as usize, index)?;
-        (args.len() == *arity).then(|| Ty::Project {
-            path: path.clone(),
-            args,
-        })
+        (args.len() == *arity).then(|| self.tys.project(path.clone(), args))
     }
 
     /// Whether `node` sits in a top-level module whose header carries an
@@ -3044,7 +3066,7 @@ impl<'a> Gen<'a> {
                         // let g x = (x, a)`).
                         let dv = self.def_var(def);
                         if let Some(rhs_var) = rhs_var {
-                            self.eq(Ty::Var(dv), Ty::Var(rhs_var));
+                            self.eq(self.tys.var(dv), self.tys.var(rhs_var));
                         }
                     }
                     self.solve();
@@ -3056,7 +3078,7 @@ impl<'a> Gen<'a> {
                 // slot); then the body is walked in synth mode for its own
                 // emissions (e.g. a body that is an `if` emits its result), and its
                 // return variable curries with the parameter slots into the
-                // function's own `Ty::Fun` type ([`Self::function_type`]). The
+                // function's own `TyKind::Fun` type ([`Self::function_type`]). The
                 // arguments span both `SynArgPats` shapes, matching `binders`'s
                 // function-head test: the curried list (`args()`) and the
                 // named-field group `Case (field = pat; …)` (`name_pat_pairs()`,
@@ -3197,7 +3219,7 @@ impl<'a> Gen<'a> {
         let arg_vars = self.param_vars(head);
         self.reading_head = false;
         let r = self.table.fresh();
-        self.eq(Ty::Var(r), t);
+        self.eq(self.tys.var(r), t);
         if let Some(rhs) = rhs {
             debug_assert!(
                 rhs.syntax()
@@ -3261,7 +3283,7 @@ impl<'a> Gen<'a> {
             && let Some(def) = self.def_at(tok.text_range())
         {
             let dv = self.def_var(def);
-            self.eq(Ty::Var(dv), t);
+            self.eq(self.tys.var(dv), t);
             if let Some(rhs) = rhs {
                 debug_assert!(
                     rhs.syntax()
@@ -3337,13 +3359,13 @@ impl<'a> Gen<'a> {
                 let tok = v.ident()?;
                 self.decl_typars
                     .get(&ident_text(&tok))
-                    .map(|&i| Ty::Param(i))
+                    .map(|&i| self.tys.param(i))
             }
             Type::Var(v) if self.reading_head => {
                 let tok = v.ident()?;
                 self.head_typars
                     .get(&ident_text(&tok))
-                    .map(|&tv| Ty::Var(tv))
+                    .map(|&tv| self.tys.var(tv))
             }
             Type::Paren(p) => self.annotation_ty(&p.inner()?),
             Type::LongIdent(li) => {
@@ -3371,10 +3393,11 @@ impl<'a> Gen<'a> {
                     [] => None,
                 }
             }
-            Type::Fun(f) => Some(Ty::Fun {
-                arg: Box::new(self.annotation_ty(&f.arg()?)?),
-                ret: Box::new(self.annotation_ty(&f.ret()?)?),
-            }),
+            Type::Fun(f) => {
+                let arg = self.annotation_ty(&f.arg()?)?;
+                let ret = self.annotation_ty(&f.ret()?)?;
+                Some(self.tys.fun(arg, ret))
+            }
             Type::Tuple(t) => {
                 // A struct tuple is a different runtime type; a `/` segment is
                 // a unit-of-measure tuple form — both defer.
@@ -3389,22 +3412,20 @@ impl<'a> Gen<'a> {
                         TupleSegment::Slash(_) => return None,
                     }
                 }
-                // `Ty::Tuple` is always arity ≥ 2; a degenerate segment list
-                // (recovery) defers.
+                // `TyKind::Tuple` is always arity ≥ 2; a degenerate segment
+                // list (recovery) defers.
                 if elems.len() < 2 {
                     return None;
                 }
-                Some(Ty::Tuple(elems))
+                Some(self.tys.tuple(elems))
             }
             Type::Array(a) => {
                 let rank = u32::try_from(a.rank()).ok()?;
                 if rank > MAX_ARRAY_RANK {
                     return None;
                 }
-                Some(Ty::Array {
-                    elem: Box::new(self.annotation_ty(&a.element_type()?)?),
-                    rank,
-                })
+                let elem = self.annotation_ty(&a.element_type()?)?;
+                Some(self.tys.array(elem, rank))
             }
             // A generic application. The CST has already normalised the two
             // surface spellings — postfix `int list` and prefix
@@ -3453,7 +3474,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Bridge a concrete annotation-head [`Resolution::Entity`] to a
-    /// [`Ty::Named`] (Stage R2-d), under the same conventions as the
+    /// [`TyKind::Named`] (Stage R2-d), under the same conventions as the
     /// `member_ty.rs` `TypeRef` bridge: **non-generic** and **non-nested**
     /// only, with the same defer set.
     ///
@@ -3551,7 +3572,7 @@ impl<'a> Gen<'a> {
         if self.env.entity_full_name(handle) != path.join(".") {
             return None;
         }
-        Some(Ty::named_path(self.env.names(), &path))
+        Some(self.tys.named_path(self.env.names(), &path))
     }
 
     /// Bridge a **generic application** whose head resolved to `handle` and
@@ -3604,7 +3625,9 @@ impl<'a> Gen<'a> {
         // FSharp.Core's own generic abbreviation (`int option`), read through
         // to the target FCS names; any other abbreviation declines.
         if entity.kind == EntityKind::Abbreviation {
-            return crate::function_ty::fsharp_core_abbreviation_ty(self.env, handle, args);
+            return crate::function_ty::fsharp_core_abbreviation_ty(
+                self.env, self.tys, handle, args,
+            );
         }
         if matches!(entity.kind, EntityKind::Module | EntityKind::Measure) {
             return None;
@@ -3626,7 +3649,7 @@ impl<'a> Gen<'a> {
         path.push(entity.name.clone());
         if self.env.entity_full_name(handle) != path.join(".") {
             let path = crate::function_ty::applied_type_path(self.env, handle)?;
-            return Some(Ty::Named { path, args });
+            return Some(self.tys.app(path, args));
         }
         if matches!(
             path.iter()
@@ -3639,10 +3662,7 @@ impl<'a> Gen<'a> {
         ) {
             return None;
         }
-        Some(Ty::Named {
-            path: TyPath::new(self.env.names(), &path),
-            args,
-        })
+        Some(self.tys.app(TyPath::new(self.env.names(), &path), args))
     }
 
     /// On a **complete** function binding, emit `Eq(slot, binder_var)` for each
@@ -3659,7 +3679,7 @@ impl<'a> Gen<'a> {
         // `def_var` / `eq`; the list is small (one entry per simple parameter).
         for (def, slot) in std::mem::take(&mut self.cur_params) {
             let dv = self.def_var(def);
-            self.eq(Ty::Var(slot), Ty::Var(dv));
+            self.eq(self.tys.var(slot), self.tys.var(dv));
         }
     }
 
@@ -3755,7 +3775,7 @@ impl<'a> Gen<'a> {
             // `Expr::MeasureLit`, not `Expr::Const`, so it is excluded
             // structurally — its inner numeric token is *not* the measured type.
             Expr::Const(c) => {
-                let Some(ty) = literal_ty(self.env.names(), c) else {
+                let Some(ty) = literal_ty(self.env.names(), self.tys, c) else {
                     // A deferred literal (`USER_NUM_LIT`, a source-location
                     // identifier) is unmodelled — its type is not fixed even in
                     // isolation — so the binding must not generalise.
@@ -3763,7 +3783,7 @@ impl<'a> Gen<'a> {
                     return None;
                 };
                 let v = self.table.fresh();
-                self.eq(Ty::Var(v), ty);
+                self.eq(self.tys.var(v), ty);
                 // The literal *token*'s range, not the `ConstExpr` node's: in a
                 // tuple element (`(1, "hi")`) the node range swallows the leading
                 // ` ` trivia after the comma, but FCS's node spans only the
@@ -3780,7 +3800,7 @@ impl<'a> Gen<'a> {
             // non-in-file target, or to a binder we never typed, leaves its
             // variable unbound and so stays Deferred at read-off. A use resolving
             // to a **generalised** binder ([`Self::def_schemes`]) instantiates the
-            // scheme with fresh variables per distinct [`Ty::Param`] (Stage
+            // scheme with fresh variables per distinct [`TyKind::Param`] (Stage
             // 3.2c-2c) — checked *before* the plain `def_var` path.
             Expr::Ident(ident) => {
                 let Some(tok) = ident.ident() else {
@@ -3818,7 +3838,7 @@ impl<'a> Gen<'a> {
                 };
                 self.infer_expr(&inner, expected)
             }
-            // A reference tuple `(a, b, …)`: `Ty::Tuple` of the element types. The
+            // A reference tuple `(a, b, …)`: `TyKind::Tuple` of the element types. The
             // elements share the tuple's mode — coercion-free (emitted) only when
             // the tuple itself is synth; in check mode the elements are
             // coercion-possible (an expected tuple type could retarget them, e.g.
@@ -3841,14 +3861,14 @@ impl<'a> Gen<'a> {
                         // suppresses the element's emission).
                         let elem_expected = expected.map(|_| self.table.fresh());
                         match self.infer_expr(&el, elem_expected) {
-                            Some(v) => Ty::Var(v),
+                            Some(v) => self.tys.var(v),
                             None => {
                                 // An element we cannot type leaves the tuple
                                 // un-ground; the element's own recursion already set
                                 // incomplete, but this arm may also be reached for a
                                 // recovery hole — be explicit.
                                 self.mark_incomplete_propagated();
-                                Ty::Var(self.table.fresh())
+                                self.tys.var(self.table.fresh())
                             }
                         }
                     })
@@ -3860,7 +3880,7 @@ impl<'a> Gen<'a> {
                     return None;
                 }
                 let tv = self.table.fresh();
-                self.eq(Ty::Var(tv), Ty::Tuple(elems));
+                self.eq(self.tys.var(tv), self.tys.tuple(elems));
                 self.emit(self.node_span(t.syntax()), tv, expected);
                 Some(tv)
             }
@@ -4001,7 +4021,7 @@ impl<'a> Gen<'a> {
                     // `idf : 'a -> 'a`) — the variables an argument check
                     // refuses to bind too ([`Self::touches_opaque`]).
                     self.settle();
-                    if !matches!(pt, Ty::Var(_))
+                    if !matches!(self.tys.kind(pt), TyKind::Var(_))
                         && (self.mentions_inherited_open(sv)
                             || self.touches_opaque(sv, sv, self.node_span(m.syntax())))
                     {
@@ -4013,7 +4033,8 @@ impl<'a> Gen<'a> {
                     // that contradicts one (`(fs x, match x with 1 -> …)` with
                     // `fs : string -> _`) is the one FCS rejects, and relating
                     // it now would fix the scrutinee in the check's place.
-                    if !matches!(pt, Ty::Var(_)) && self.pattern_preempts_earlier_relation(sv, &pt)
+                    if !matches!(self.tys.kind(pt), TyKind::Var(_))
+                        && self.pattern_preempts_earlier_relation(sv, pt)
                     {
                         self.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
@@ -4025,13 +4046,13 @@ impl<'a> Gen<'a> {
                     // relation to probe; so on an incomplete binding a
                     // pattern of structure relates only a ground scrutinee.
                     if !self.complete
-                        && !matches!(pt, Ty::Var(_))
-                        && !self.table.resolve(&Ty::Var(sv)).is_ground()
+                        && !matches!(self.tys.kind(pt), TyKind::Var(_))
+                        && !self.tys.is_ground(self.table.resolve(self.tys.var(sv)))
                     {
                         self.mark_incomplete(Incomplete::PatternAfterCheck);
                         return None;
                     }
-                    self.eq(Ty::Var(sv), pt);
+                    self.eq(self.tys.var(sv), pt);
                     // The pattern's names are typed before the clause's uses
                     // of them are walked, so a use reads a known type
                     // ([`Self::value_use`]).
@@ -4072,7 +4093,7 @@ impl<'a> Gen<'a> {
             // mode (e.g. an `if`-branch checked against another function), an
             // expected function type could retarget the body, so we check it —
             // emission suppressed. The lambda's own function type is not modelled
-            // yet (`Ty::Fun` is a later slice), so it defers. A param use in the
+            // yet (`TyKind::Fun` is a later slice), so it defers. A param use in the
             // body binds lazily via name resolution. (3.2c-2a)
             Expr::Fun(fun) => {
                 if let Some(body) = fun.body() {
@@ -4086,7 +4107,7 @@ impl<'a> Gen<'a> {
                         self.discard_emissions_since(body_mark);
                     }
                 }
-                // The lambda's own function type is not modelled yet (`Ty::Fun` on
+                // The lambda's own function type is not modelled yet (`TyKind::Fun` on
                 // a `fun` value is a later slice), so it defers — and marks the
                 // binding incomplete, since a body containing a lambda has an FCS
                 // type we cannot reproduce.
@@ -4242,11 +4263,11 @@ impl<'a> Gen<'a> {
                 return;
             }
         };
-        self.pattern_rhs(&pat, pat_ty.clone(), &rhs, BinderSite::Local);
+        self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Local);
         // The whole pattern's type, not just its names': a wildcard binds
         // nothing, but an RHS still open under it is as unsettled as a named
         // one.
-        if !self.table.resolve(&pat_ty).is_ground() {
+        if !self.tys.is_ground(self.table.resolve(pat_ty)) {
             self.mark_consequence(recorded, Incomplete::OpenLocal);
         }
     }
@@ -4313,7 +4334,7 @@ impl<'a> Gen<'a> {
         // A pattern that is a single variable (a name, a wildcard) imposes no
         // structure, so its check cannot fail, and the RHS's nodes stand even
         // when the RHS itself does not synthesize.
-        let structural = !matches!(pat_ty, Ty::Var(_));
+        let structural = !matches!(self.tys.kind(pat_ty), TyKind::Var(_));
         if structural && rhs_var.is_some_and(|v| self.mentions_inherited_open(v)) {
             // The equality would give an earlier binding's open variable a
             // structure of this binding's fresh variables, which then pass for
@@ -4324,11 +4345,11 @@ impl<'a> Gen<'a> {
             return;
         }
         if let Some(rhs_var) = rhs_var {
-            self.eq(pat_ty.clone(), Ty::Var(rhs_var));
+            self.eq(pat_ty, self.tys.var(rhs_var));
         }
         self.settle();
-        let agrees =
-            rhs_var.is_some_and(|v| self.table.resolve(&pat_ty) == self.table.resolve(&Ty::Var(v)));
+        let agrees = rhs_var
+            .is_some_and(|v| self.table.resolve(pat_ty) == self.table.resolve(self.tys.var(v)));
         if structural && !agrees {
             self.discard_emissions_since(mark);
         }
@@ -4339,7 +4360,7 @@ impl<'a> Gen<'a> {
     /// let an argument check ground.
     fn mentions_inherited_open(&mut self, v: TyVid) -> bool {
         let mut roots = HashSet::default();
-        collect_var_roots(&self.table.resolve(&Ty::Var(v)), &mut roots);
+        collect_var_roots(self.tys, self.table.resolve(self.tys.var(v)), &mut roots);
         roots
             .into_iter()
             .any(|r| self.table.any_older_unioned(r, self.cur_mark))
@@ -4382,7 +4403,7 @@ impl<'a> Gen<'a> {
             let recorded = self.reasons_recorded();
             if let Some(v) = self.infer_expr(stmt, Some(unit_check)) {
                 self.settle();
-                if !self.table.resolve(&Ty::Var(v)).is_ground() {
+                if !self.tys.is_ground(self.table.resolve(self.tys.var(v))) {
                     self.mark_consequence(recorded, Incomplete::OpenStatement);
                 }
             }
@@ -4465,11 +4486,8 @@ impl<'a> Gen<'a> {
         let r = self.table.fresh();
         // Genuinely true: applying `func` forces it to a function shape.
         self.eq(
-            Ty::Var(tf),
-            Ty::Fun {
-                arg: Box::new(Ty::Var(d)),
-                ret: Box::new(Ty::Var(r)),
-            },
+            self.tys.var(tf),
+            self.tys.fun(self.tys.var(d), self.tys.var(r)),
         );
         // The argument is a check position against the domain `d`, so it is walked
         // in check mode (its node is not emitted) — but **without** the poison
@@ -4582,9 +4600,9 @@ impl<'a> Gen<'a> {
             self.settle();
             let tys: Vec<Ty> = vars
                 .iter()
-                .map(|v| self.table.resolve(&Ty::Var(*v)))
+                .map(|v| self.table.resolve(self.tys.var(*v)))
                 .collect();
-            let verdict = builtin_verdict(self.env.names(), &builtin, &tys);
+            let verdict = builtin_verdict(self.env, self.tys, &builtin, &tys);
             if let Err(gap) = verdict {
                 self.mark_incomplete(Incomplete::Builtin(gap));
             }
@@ -4600,13 +4618,13 @@ impl<'a> Gen<'a> {
             // operand, so the application is `int` whatever the operand turns
             // out to be, or whenever it is solved. Only a known operand the
             // rule rejects, or may, is left untyped.
-            (None | Some(Err(BuiltinGap::OpenOperand)), Builtin::Convert { target }) => {
-                target.clone()
-            }
+            (None | Some(Err(BuiltinGap::OpenOperand)), Builtin::Convert { target }) => self
+                .tys
+                .import(self.env.types(), *target, &mut HashMap::default()),
             _ => return Some(None),
         };
         let r = self.table.fresh();
-        self.eq(Ty::Var(r), result);
+        self.eq(self.tys.var(r), result);
         Some(Some(r))
     }
 
@@ -4733,12 +4751,8 @@ impl<'a> Gen<'a> {
             }
             Some(Resolution::Local(_)) if self.own_union_case_at(at) => return self.case_use(at),
             Some(Resolution::Item(id)) if !self.resolved.owns_item(id) => {
-                let ty = self
-                    .preceding
-                    .get(id)
-                    .map_err(Incomplete::PrecedingValue)?
-                    .clone();
-                return Ok(self.scheme_use(&ty));
+                let ty = *self.preceding.get(id).map_err(Incomplete::PrecedingValue)?;
+                return Ok(self.scheme_use(self.env.types(), ty));
             }
             Some(Resolution::UnionCase { .. }) => return self.case_use(at),
             _ => return Err(Incomplete::NotInFileValue),
@@ -4764,9 +4778,10 @@ impl<'a> Gen<'a> {
     /// hold it to.
     fn case_use(&mut self, at: TextRange) -> Result<TyVid, Incomplete> {
         let (_, scheme) = self.case_at(at)?;
-        let ty = self.instantiate(&scheme.value_ty());
+        let env_tys = self.env.types();
+        let ty = self.instantiate(env_tys, scheme.value_ty(env_tys));
         let uv = self.table.fresh();
-        self.eq(Ty::Var(uv), ty);
+        self.eq(self.tys.var(uv), ty);
         Ok(uv)
     }
 
@@ -4776,7 +4791,7 @@ impl<'a> Gen<'a> {
     /// is checked once the binding is solved and never generalised while open.
     fn constrained_scheme_use(&mut self, scheme: &ModuleFunctionScheme) -> TyVid {
         let mut fresh: HashMap<u32, TyVid> = HashMap::default();
-        let body = self.instantiate_rec(&scheme.ty, &mut fresh);
+        let body = self.instantiate_rec(self.env.types(), scheme.ty, &mut fresh);
         for (i, req) in scheme.requirements.iter().enumerate() {
             let Some(req) = req else { continue };
             // A type parameter the type does not mention has no variable to
@@ -4786,20 +4801,20 @@ impl<'a> Gen<'a> {
                 self.poison.push(v);
             }
         }
-        let ty = self.loosened(&body).unwrap_or(body);
+        let ty = self.loosened(body).unwrap_or(body);
         let uv = self.table.fresh();
-        self.eq(Ty::Var(uv), ty);
+        self.eq(self.tys.var(uv), ty);
         uv
     }
 
-    /// The type variable of a use of a value whose type is `scheme`: the
-    /// scheme instantiated afresh and loosened as FCS loosens a value at a use
-    /// ([`Self::loosened`]).
-    fn scheme_use(&mut self, scheme: &Ty) -> TyVid {
-        let body = self.instantiate(scheme);
-        let ty = self.loosened(&body).unwrap_or(body);
+    /// The type variable of a use of a value whose type is `scheme`, a type of
+    /// `from`: the scheme instantiated afresh and loosened as FCS loosens a
+    /// value at a use ([`Self::loosened`]).
+    fn scheme_use(&mut self, from: &TyTable, scheme: Ty) -> TyVid {
+        let body = self.instantiate(from, scheme);
+        let ty = self.loosened(body).unwrap_or(body);
         let uv = self.table.fresh();
-        self.eq(Ty::Var(uv), ty);
+        self.eq(self.tys.var(uv), ty);
         uv
     }
 
@@ -4995,8 +5010,8 @@ impl<'a> Gen<'a> {
     /// the binder's variable and is recorded as **undecided**, which
     /// [`Self::verified`] checks once the binding is solved.
     fn value_use(&mut self, def: DefId) -> TyVid {
-        if let Some(scheme) = self.def_schemes.get(&def).cloned() {
-            return self.scheme_use(&scheme);
+        if let Some(&scheme) = self.def_schemes.get(&def) {
+            return self.scheme_use(self.tys, scheme);
         }
         let dv = self.def_var(def);
         let match_local = self.match_locals.contains(&def);
@@ -5006,23 +5021,25 @@ impl<'a> Gen<'a> {
             self.opaque.push((dv, None));
         }
         let known = match self.param_annotations.get(&def) {
-            Some(ann) => Some(ann.clone()),
+            Some(ann) => Some(*ann),
             // A match's pattern variable is typed by its pattern before its
             // clause is walked: a use of one whose type is known then is
             // loosened as FCS loosens it (`Some g -> g` with
             // `g : obj -> int` is `'a -> int` at the use).
-            None if match_local => Some(self.table.resolve(&Ty::Var(dv))).filter(Ty::is_ground),
+            None if match_local => {
+                Some(self.table.resolve(self.tys.var(dv))).filter(|&t| self.tys.is_ground(t))
+            }
             None if current_param => None,
-            None => Some(self.table.resolve(&Ty::Var(dv))).filter(Ty::is_ground),
+            None => Some(self.table.resolve(self.tys.var(dv))).filter(|&t| self.tys.is_ground(t)),
         };
         let Some(known) = known else {
             self.undecided_uses.push(dv);
             return dv;
         };
-        match self.loosened(&known) {
+        match self.loosened(known) {
             Some(ty) => {
                 let uv = self.table.fresh();
-                self.eq(Ty::Var(uv), ty);
+                self.eq(self.tys.var(uv), ty);
                 uv
             }
             None => dv,
@@ -5038,56 +5055,58 @@ impl<'a> Gen<'a> {
     /// condensed to its bound), which are not modelled. A bound other than
     /// `obj`, which every type meets, is a constraint inference cannot check,
     /// so its variable is recorded ([`Self::bounded_flex`]).
-    fn loosened(&mut self, ty: &Ty) -> Option<Ty> {
+    fn loosened(&mut self, ty: Ty) -> Option<Ty> {
+        let tys = self.tys;
         let mut groups = Vec::new();
         let mut ret = ty;
-        while let Ty::Fun { arg, ret: next } = ret {
-            groups.push(arg.as_ref());
+        while let TyKind::Fun { arg, ret: next } = *tys.kind(ret) {
+            groups.push(arg);
             ret = next;
         }
-        let elements = |group: &Ty| match group {
-            Ty::Tuple(elems) => elems.clone(),
-            other => vec![other.clone()],
+        let elements = |group: Ty| match tys.kind(group) {
+            TyKind::Tuple(elems) => elems.to_vec(),
+            _ => vec![group],
         };
         if groups
             .iter()
-            .all(|g| elements(g).iter().all(|e| is_sealed(self.env, e)))
+            .all(|&g| elements(g).iter().all(|&e| is_sealed(self.env, tys, e)))
         {
             return None;
         }
-        let ret = ret.clone();
         let mut loosened = Vec::new();
         for group in groups {
             let mut elems: Vec<Ty> = elements(group)
                 .into_iter()
                 .map(|e| {
-                    if is_sealed(self.env, &e) {
+                    if is_sealed(self.env, tys, e) {
                         return e;
                     }
                     let v = self.table.fresh();
                     self.poison.push(v);
-                    if !e.is_named(self.env.names(), &OBJECT_PATH) {
+                    if !tys.is_named(self.env.names(), e, &OBJECT_PATH) {
                         self.bounded_flex.push(v);
                     }
-                    Ty::Var(v)
+                    tys.var(v)
                 })
                 .collect();
-            loosened.push(match group {
-                Ty::Tuple(_) => Ty::Tuple(elems),
+            loosened.push(match tys.kind(group) {
+                TyKind::Tuple(_) => tys.tuple(elems),
                 _ => elems.pop().expect("one element"),
             });
         }
-        Some(loosened.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
-            arg: Box::new(arg),
-            ret: Box::new(ret),
-        }))
+        Some(
+            loosened
+                .into_iter()
+                .rev()
+                .fold(ret, |ret, arg| tys.fun(arg, ret)),
+        )
     }
 
     /// Type a **single-candidate instance method call** `recv.Method(args)` (Stage
     /// 3.3d), returning the call's type variable — the method's **return** type. The
     /// whole-call node is emitted by [`Self::infer_app`]'s callers at the `APP_EXPR`
     /// range (where FCS emits its `call:instance` node), read back only when
-    /// [`ground`](Ty::is_ground) — and a *rejected* call's `result` stays open (its
+    /// [`ground`](TyTable::is_ground) — and a *rejected* call's `result` stays open (its
     /// wake never discharges), so the whole-call node naturally drops. In a check
     /// position the whole-call node is not emitted at all.
     ///
@@ -5106,7 +5125,7 @@ impl<'a> Gen<'a> {
     /// second-to-last segment the resolver resolved to a referenced-assembly
     /// *type* entity ([`Self::static_callee`]) — takes the same path with
     /// `is_static` set: the receiver variable is unified with the entity's
-    /// [`Ty::Named`] immediately (a static receiver is known at generation, so
+    /// [`TyKind::Named`] immediately (a static receiver is known at generation, so
     /// the wake fires on the first fixpoint pass), and no receiver node is
     /// emitted (FCS emits no node anywhere on the qualified path — probed
     /// 2026-07-10: one `call:static*` node at the whole application, argument
@@ -5128,7 +5147,10 @@ impl<'a> Gen<'a> {
             // The static receiver's type is the rooting entity itself, ground at
             // generation time.
             let recv = self.table.fresh();
-            self.eq(Ty::Var(recv), Ty::named_path(self.env.names(), &path));
+            self.eq(
+                self.tys.var(recv),
+                self.tys.named_path(self.env.names(), &path),
+            );
             let result = self.table.fresh();
             self.has_member(
                 recv,
@@ -5189,7 +5211,7 @@ impl<'a> Gen<'a> {
     /// `LONG_IDENT_EXPR` whose **second-to-last** segment carries the resolver's
     /// [`Resolution::Entity`] — the rooting referenced-assembly type — with the
     /// final segment as the method name. Returns the entity's canonical
-    /// [`Ty::Named`] path and the method token, or `None` when the callee is not
+    /// [`TyKind::Named`] path and the method token, or `None` when the callee is not
     /// that shape:
     ///
     /// - the rooting segment resolved to anything else — an in-file value/type, a
@@ -5550,25 +5572,25 @@ impl<'a> Gen<'a> {
                 return None;
             }
             let ty = match self.preceding.get(id) {
-                Ok(ty) => ty.clone(),
+                Ok(&ty) => ty,
                 Err(gap) => {
                     self.mark_incomplete(Incomplete::PrecedingValue(gap));
                     return None;
                 }
             };
-            let body = self.instantiate(&ty);
+            let body = self.instantiate(self.env.types(), ty);
             let uv = self.table.fresh();
-            self.eq(Ty::Var(uv), body);
+            self.eq(self.tys.var(uv), body);
             return Some(uv);
         };
         if self.withheld_defs.contains(&def) {
             self.mark_incomplete(Incomplete::RigidTypeVariable);
             return None;
         }
-        if let Some(scheme) = self.def_schemes.get(&def).cloned() {
-            let body = self.instantiate(&scheme);
+        if let Some(&scheme) = self.def_schemes.get(&def) {
+            let body = self.instantiate(self.tys, scheme);
             let uv = self.table.fresh();
-            self.eq(Ty::Var(uv), body);
+            self.eq(self.tys.var(uv), body);
             return Some(uv);
         }
         let dv = self.def_var(def);
@@ -5602,18 +5624,18 @@ impl<'a> Gen<'a> {
     /// is the other domain a check discharges against
     /// ([`Self::function_domain`]).
     fn no_subsumption_domain(&mut self, dom: TyVid) -> bool {
-        let resolved = self.table.resolve(&Ty::Var(dom));
-        self.no_subsumption_ty(&resolved)
+        let resolved = self.table.resolve(self.tys.var(dom));
+        self.no_subsumption_ty(resolved)
     }
 
     /// The recursive core of [`Self::no_subsumption_domain`], over a **resolved**
     /// type: a sealed primitive, a tuple of such, or an unbound scheme-instantiation
     /// root. Everything else is `false`.
-    fn no_subsumption_ty(&mut self, ty: &Ty) -> bool {
-        match ty {
+    fn no_subsumption_ty(&mut self, ty: Ty) -> bool {
+        match self.tys.kind(ty) {
             // A sealed BCL primitive; `obj` and other nullary named types are
             // not.
-            Ty::Named { path, args } if args.is_empty() => {
+            TyKind::Named { path, args } if args.is_empty() => {
                 is_sealed_primitive(&path.segments_in(self.env.names()))
             }
             // A sealed generic application (`'a list`, `int option`, a generic
@@ -5622,21 +5644,21 @@ impl<'a> Gen<'a> {
             // first is its relation. Where it fails, FCS may still convert
             // (an `op_Implicit` into the type), and the failed equality
             // rolls the binding back ([`Self::verified`]).
-            Ty::Named { .. } => is_sealed(self.env, ty),
-            Ty::Tuple(elems) => elems.iter().all(|e| self.no_subsumption_ty(e)),
+            TyKind::Named { .. } => is_sealed(self.env, self.tys, ty),
+            TyKind::Tuple(elems) => elems.iter().all(|&e| self.no_subsumption_ty(e)),
             // An implicitly scoped type variable is an ordinary inference
             // variable while unbound, so the equality FCS tries first holds.
-            Ty::Var(v) => self.is_scheme_inst_root(*v) || self.is_head_typar_root(*v),
+            TyKind::Var(v) => self.is_scheme_inst_root(*v) || self.is_head_typar_root(*v),
             // A project union or record is sealed, and relates as a sealed
             // generic application does; any other project type may be a class
             // with subtypes.
-            Ty::Project { path, args } => self
+            TyKind::Project { path, args } => self
                 .sealed_project_types
                 .get(path)
                 .is_some_and(|arities| arities.contains(&args.len())),
             // Arrays, functions, and quantified `Param`s (never bound into the
             // table) are all excluded.
-            Ty::Array { .. } | Ty::Fun { .. } | Ty::Param(_) => false,
+            TyKind::Array { .. } | TyKind::Fun { .. } | TyKind::Param(_) => false,
         }
     }
 
@@ -5646,8 +5668,9 @@ impl<'a> Gen<'a> {
     fn rigid_typars_hold(&mut self) -> bool {
         let mut roots = Vec::new();
         for v in self.rigid_typars.clone() {
-            match self.table.resolve(&Ty::Var(v)) {
-                Ty::Var(r) if !roots.contains(&r) => roots.push(r),
+            let resolved = self.table.resolve(self.tys.var(v));
+            match self.tys.kind(resolved) {
+                TyKind::Var(r) if !roots.contains(r) => roots.push(*r),
                 _ => return false,
             }
         }
@@ -5656,9 +5679,9 @@ impl<'a> Gen<'a> {
 
     /// Whether every variable still open in the resolved type `ty` is one the
     /// current binding's head declares ([`Self::rigid_typars`]).
-    fn only_rigid_typars_open(&mut self, ty: &Ty) -> bool {
+    fn only_rigid_typars_open(&mut self, ty: Ty) -> bool {
         let mut open = Vec::new();
-        free_vars(ty, &mut open);
+        free_vars(self.tys, ty, &mut open);
         let rigid = self.rigid_typars.clone();
         open.into_iter()
             .all(|v| rigid.iter().any(|&r| self.table.unioned(r, v)))
@@ -5724,7 +5747,10 @@ impl<'a> Gen<'a> {
     /// variable FCS bounds by a subtype constraint, [`Self::verified`] undoes
     /// it.
     fn function_domain(&mut self, ac: ArgCheck) -> bool {
-        matches!(self.table.resolve(&Ty::Var(ac.dom)), Ty::Fun { .. })
+        matches!(
+            self.tys.kind(self.table.resolve(self.tys.var(ac.dom))),
+            TyKind::Fun { .. }
+        )
     }
 
     /// Constrain an `if` / `while` condition to `bool`. A condition admits **no**
@@ -5737,7 +5763,7 @@ impl<'a> Gen<'a> {
     ///
     /// It grounds the parameter's **private function-type slot**
     /// ([`Self::param_slots`]), *not* its binder variable — so the `bool` reaches
-    /// only the function's `Ty::Fun`, never a standalone parameter read-off. It
+    /// only the function's `TyKind::Fun`, never a standalone parameter read-off. It
     /// fires only for a binder that owns such a slot (a simple named parameter of
     /// the function head), so a condition referencing any *other* binder (an
     /// annotated / `rec` / value binder whose type this stage defers) is left
@@ -5782,7 +5808,10 @@ impl<'a> Gen<'a> {
                             .ident()
                             .is_some_and(|tok| self.is_first_occurrence(&tok)) =>
                     {
-                        self.eq(Ty::Var(slot), Ty::named(self.env, "System.Boolean"))
+                        self.eq(
+                            self.tys.var(slot),
+                            self.tys.named(self.env.names(), "System.Boolean"),
+                        )
                     }
                     // A condition on a parameter something earlier may have
                     // fixed: FCS reports the condition, it does not retype.
@@ -5836,9 +5865,9 @@ impl<'a> Gen<'a> {
 
     /// Emit a **monomorphic** function type on a `let`-function binder. Curries
     /// the pre-collected parameter variables `arg_vars` over the body's return
-    /// variable `ret` into a [`Ty::Fun`] and unifies it with the function's own
+    /// variable `ret` into a [`TyKind::Fun`] and unifies it with the function's own
     /// inference variable; at read-off it is emitted only if fully
-    /// [`ground`](Ty::is_ground), so a polymorphic function (any parameter or the
+    /// [`ground`](TyTable::is_ground), so a polymorphic function (any parameter or the
     /// return still an open variable) silently defers until let-generalisation
     /// (3.2c-2c).
     ///
@@ -5880,15 +5909,12 @@ impl<'a> Gen<'a> {
             return None;
         }
         // Curry right: `Fun(a0, Fun(a1, … Fun(an, ret)))`, matching FCS.
-        let mut fun_ty = Ty::Var(ret);
+        let mut fun_ty = self.tys.var(ret);
         for &arg in arg_vars.iter().rev() {
-            fun_ty = Ty::Fun {
-                arg: Box::new(Ty::Var(arg)),
-                ret: Box::new(fun_ty),
-            };
+            fun_ty = self.tys.fun(self.tys.var(arg), fun_ty);
         }
         let fv = self.def_var(f_def);
-        self.eq(Ty::Var(fv), fun_ty);
+        self.eq(self.tys.var(fv), fun_ty);
         // This binding's parameters are this head's: `begin_binding` cleared
         // the list, and a local function is not walked.
         for &(param, _) in &self.cur_params {
@@ -5932,11 +5958,14 @@ impl<'a> Gen<'a> {
     /// this stage does not model, so a function with such a parameter must not
     /// generalise.
     fn param_var(&mut self, pat: &Pat) -> TyVid {
-        match self.pattern_ty(pat, BinderSite::Param) {
-            Ok(Ty::Var(slot)) => slot,
-            Ok(t) => {
+        match self
+            .pattern_ty(pat, BinderSite::Param)
+            .map(|t| (t, self.tys.kind(t)))
+        {
+            Ok((_, TyKind::Var(slot))) => *slot,
+            Ok((t, _)) => {
                 let slot = self.table.fresh();
-                self.eq(Ty::Var(slot), t);
+                self.eq(self.tys.var(slot), t);
                 slot
             }
             Err(why) => {
@@ -6087,7 +6116,7 @@ impl<'a> Gen<'a> {
     /// Read a pattern into the shapes inference types, or name the first one it
     /// does not. Generates nothing.
     ///
-    /// A struct tuple is not modelled ([`Ty::Tuple`] has no struct flag), nor
+    /// A struct tuple is not modelled ([`TyKind::Tuple`] has no struct flag), nor
     /// is an annotation around anything but a name, or outside the modelled set
     /// ([`Self::annotation_ty`]).
     fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
@@ -6165,7 +6194,7 @@ impl<'a> Gen<'a> {
                     ) => {
                         let literal = c.literal().expect("a literal kind");
                         Ok(PatShape::Const(
-                            literal_kind_ty(self.env.names(), literal.kind())
+                            literal_kind_ty(self.env.names(), self.tys, literal.kind())
                                 .expect("a typed literal"),
                             literal_ctor(literal.kind(), literal.text()),
                         ))
@@ -6250,24 +6279,24 @@ impl<'a> Gen<'a> {
     ///   known is one FCS made on a receiver it did not yet know, an error
     ///   (FS0072), so the pattern must not wake it
     ///   (`(o.Length, match o with "a" -> …)`).
-    fn pattern_preempts_earlier_relation(&mut self, sv: TyVid, pt: &Ty) -> bool {
+    fn pattern_preempts_earlier_relation(&mut self, sv: TyVid, pt: Ty) -> bool {
         let mut eqs: Vec<(Ty, Ty)> = self
             .settled_args
             .iter()
-            .map(|ac| (Ty::Var(ac.arg), Ty::Var(ac.dom)))
+            .map(|ac| (self.tys.var(ac.arg), self.tys.var(ac.dom)))
             .collect();
         let mut receivers: Vec<TyVid> = Vec::new();
         for c in &self.constraints {
             match c {
-                Constraint::Eq(a, b) => eqs.push((a.clone(), b.clone())),
-                Constraint::ArgCheck(ac) => eqs.push((Ty::Var(ac.arg), Ty::Var(ac.dom))),
+                Constraint::Eq(a, b) => eqs.push((*a, *b)),
+                Constraint::ArgCheck(ac) => eqs.push((self.tys.var(ac.arg), self.tys.var(ac.dom))),
                 Constraint::HasMember { recv, .. } => receivers.push(*recv),
             }
         }
         eqs.extend(
             self.dropped
                 .iter()
-                .map(|&(a, b, _)| (Ty::Var(a), Ty::Var(b))),
+                .map(|&(a, b, _)| (self.tys.var(a), self.tys.var(b))),
         );
         // A parameter's private slot and its binder variable are one variable
         // in FCS ([`Self::slot_binder_reunify`]), so what a condition fixed on
@@ -6277,13 +6306,21 @@ impl<'a> Gen<'a> {
         eqs.extend(self.cur_params.iter().filter_map(|&(def, slot)| {
             self.def_vars
                 .get(&def)
-                .map(|&dv| (Ty::Var(slot), Ty::Var(dv)))
+                .map(|&dv| (self.tys.var(slot), self.tys.var(dv)))
         }));
         let mut scrutinee_roots: HashSet<TyVid> = HashSet::default();
-        collect_var_roots(&self.table.resolve(&Ty::Var(sv)), &mut scrutinee_roots);
+        collect_var_roots(
+            self.tys,
+            self.table.resolve(self.tys.var(sv)),
+            &mut scrutinee_roots,
+        );
         for recv in receivers {
             let mut recv_roots: HashSet<TyVid> = HashSet::default();
-            collect_var_roots(&self.table.resolve(&Ty::Var(recv)), &mut recv_roots);
+            collect_var_roots(
+                self.tys,
+                self.table.resolve(self.tys.var(recv)),
+                &mut recv_roots,
+            );
             if recv_roots
                 .iter()
                 .any(|&r| scrutinee_roots.iter().any(|&v| self.table.unioned(r, v)))
@@ -6300,12 +6337,12 @@ impl<'a> Gen<'a> {
         let snapshot = self.table.snapshot();
         let mut contradicts = false;
         for (a, b) in eqs {
-            if self.table.unify_atomic(&a, &b).is_err() {
+            if self.table.unify_atomic(a, b).is_err() {
                 contradicts = true;
                 break;
             }
         }
-        contradicts = contradicts || self.table.unify_atomic(&Ty::Var(sv), pt).is_err();
+        contradicts = contradicts || self.table.unify_atomic(self.tys.var(sv), pt).is_err();
         self.table.rollback_to(snapshot);
         contradicts
     }
@@ -6410,14 +6447,14 @@ impl<'a> Gen<'a> {
     /// belongs to, and every record whose fields it reads, in this file or an
     /// earlier one.
     fn sealed_project_types(&self) -> HashMap<TyPath, HashSet<usize>> {
-        let own_unions = self.project_cases.values().map(|pc| &pc.scheme.union);
-        let own_records = self.project_records.values().map(|r| &r.record);
+        let own_unions = self.project_cases.values().map(|pc| pc.scheme.union);
+        let own_records = self.project_records.values().map(|r| r.record);
         let mut out: HashMap<TyPath, HashSet<usize>> = HashMap::default();
         for ty in own_unions
             .chain(own_records)
             .chain(self.preceding.sealed_types())
         {
-            if let Ty::Project { path, args } = ty {
+            if let TyKind::Project { path, args } = self.env.types().kind(ty) {
                 out.entry(path.clone()).or_default().insert(args.len());
             }
         }
@@ -6493,45 +6530,57 @@ impl<'a> Gen<'a> {
     /// retyping the parameter.
     fn gen_pattern(&mut self, shape: &PatShape, site: BinderSite) -> Ty {
         match shape {
-            PatShape::Name(def) => Ty::Var(self.register_binder(*def, site)),
-            PatShape::Annotated(def, t) => {
+            PatShape::Name(def) => {
                 let v = self.register_binder(*def, site);
-                self.eq(Ty::Var(v), t.clone());
+                self.tys.var(v)
+            }
+            PatShape::Annotated(def, t) => {
+                let t = *t;
+                let v = self.register_binder(*def, site);
+                self.eq(self.tys.var(v), t);
                 if site == BinderSite::Param {
                     let dv = self.def_var(*def);
-                    self.eq(Ty::Var(dv), t.clone());
+                    self.eq(self.tys.var(dv), t);
                     // An annotation mentioning an implicitly scoped type
                     // variable ([`Self::open_head_typars`]) fixes the
                     // parameter's structure but not its type, which the body
                     // may still fix: it is not a type known at a use.
-                    if t.is_ground() {
-                        self.param_annotations.insert(*def, t.clone());
+                    if self.tys.is_ground(t) {
+                        self.param_annotations.insert(*def, t);
                     } else {
                         self.typar_params.insert(*def);
                     }
                 } else {
-                    debug_assert!(t.is_ground(), "a type variable outside a head");
+                    debug_assert!(self.tys.is_ground(t), "a type variable outside a head");
                 }
-                t.clone()
+                t
             }
-            PatShape::Wildcard => Ty::Var(self.table.fresh()),
-            PatShape::Unit => Ty::named(self.env, UNIT),
+            PatShape::Wildcard => {
+                let v = self.table.fresh();
+                self.tys.var(v)
+            }
+            PatShape::Unit => self.tys.named(self.env.names(), UNIT),
             PatShape::Tuple(elems) => {
-                Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
+                let elems: Vec<Ty> = elems.iter().map(|el| self.gen_pattern(el, site)).collect();
+                self.tys.tuple(elems)
             }
-            PatShape::Const(t, _) => t.clone(),
-            PatShape::Case(_, scheme, arg) => match self.instantiate(&scheme.value_ty()) {
-                Ty::Fun { arg: fields, ret } => {
-                    if let Some(arg) = arg
-                        && !matches!(**arg, PatShape::Wildcard)
-                    {
-                        let at = self.gen_pattern(arg, site);
-                        self.eq(at, *fields);
+            PatShape::Const(t, _) => *t,
+            PatShape::Case(_, scheme, arg) => {
+                let env_tys = self.env.types();
+                let instance = self.instantiate(env_tys, scheme.value_ty(env_tys));
+                match *self.tys.kind(instance) {
+                    TyKind::Fun { arg: fields, ret } => {
+                        if let Some(arg) = arg
+                            && !matches!(**arg, PatShape::Wildcard)
+                        {
+                            let at = self.gen_pattern(arg, site);
+                            self.eq(at, fields);
+                        }
+                        ret
                     }
-                    *ret
+                    _ => instance,
                 }
-                union => union,
-            },
+            }
         }
     }
 
@@ -6640,7 +6689,7 @@ impl<'a> Gen<'a> {
     /// Three constraint kinds:
     /// - **`Eq`** is discharged eagerly.
     /// - **`HasMember`** is *suspended*: it fires only once its receiver resolves
-    ///   to a concrete [`Ty::Named`] head, at which point an unambiguous public
+    ///   to a concrete [`TyKind::Named`] head, at which point an unambiguous public
     ///   instance data member is looked up ([`Self::wake_member`]) and its type is
     ///   unified with the result (a new `Eq`). A concrete non-`Named` head
     ///   (`Array` / `Tuple` / `Fun` / `Param`) drops the constraint (defer — those
@@ -6743,19 +6792,22 @@ impl<'a> Gen<'a> {
             .collect();
         let rigid = self.rigid_typars.clone();
         let mut holds = false;
+        let tys = self.tys;
         let _ = self.table.probe(|t| -> Result<(), ()> {
             let unified = relations
                 .iter()
-                .all(|(a, b)| t.unify(&Ty::Var(*a), &Ty::Var(*b)).is_ok());
+                .all(|(a, b)| t.unify(tys.var(*a), tys.var(*b)).is_ok());
             let mut roots = Vec::new();
             holds = unified
-                && rigid.iter().all(|v| match t.resolve(&Ty::Var(*v)) {
-                    Ty::Var(r) if !roots.contains(&r) => {
-                        roots.push(r);
-                        true
-                    }
-                    _ => false,
-                });
+                && rigid
+                    .iter()
+                    .all(|&v| match *tys.kind(t.resolve(tys.var(v))) {
+                        TyKind::Var(r) if !roots.contains(&r) => {
+                            roots.push(r);
+                            true
+                        }
+                        _ => false,
+                    });
             Err(())
         });
         holds
@@ -6765,7 +6817,7 @@ impl<'a> Gen<'a> {
     /// constrained instantiations ([`Self::constrained`]) in the table as it
     /// stands.
     fn constraint_verdict(&mut self) -> Verdict {
-        constraint_verdict_of(&mut self.table, self.env, &self.constrained)
+        constraint_verdict_of(&mut self.table, self.env, self.tys, &self.constrained)
     }
 
     /// [`Self::constraint_verdict`] once every relation the solve left
@@ -6784,13 +6836,14 @@ impl<'a> Gen<'a> {
         let env = self.env;
         let constrained = &self.constrained;
         let mut verdict = Verdict::Holds;
+        let tys = self.tys;
         let _ = self.table.probe(|t| -> Result<(), ()> {
             for (a, b) in &relations {
                 // A relation that does not unify fails the speculation in
                 // `verified` on its own; the rest still decide the verdict.
-                let _ = t.unify(&Ty::Var(*a), &Ty::Var(*b));
+                let _ = t.unify(tys.var(*a), tys.var(*b));
             }
-            verdict = constraint_verdict_of(t, env, constrained);
+            verdict = constraint_verdict_of(t, env, tys, constrained);
             Err(())
         });
         verdict
@@ -6888,11 +6941,12 @@ impl<'a> Gen<'a> {
         let bounded = &self.bounded_flex;
         let undecided = &self.undecided_uses;
         let mut consistent = false;
+        let tys = self.tys;
         let _ = self.table.probe(|t| -> Result<(), ()> {
             let unified = relations
                 .iter()
-                .all(|(a, b)| t.unify(&Ty::Var(*a), &Ty::Var(*b)).is_ok());
-            consistent = unified && loosened_as_fcs(env, t, bounded, undecided);
+                .all(|(a, b)| t.unify(tys.var(*a), tys.var(*b)).is_ok());
+            consistent = unified && loosened_as_fcs(env, tys, t, bounded, undecided);
             Err(())
         });
         consistent
@@ -6909,8 +6963,9 @@ impl<'a> Gen<'a> {
         let bounded = &self.bounded_flex;
         let undecided = &self.undecided_uses;
         let mut holds = false;
+        let tys = self.tys;
         let _ = self.table.probe(|t| -> Result<(), ()> {
-            holds = loosened_as_fcs(env, t, bounded, undecided);
+            holds = loosened_as_fcs(env, tys, t, bounded, undecided);
             Err(())
         });
         holds
@@ -6993,9 +7048,10 @@ impl<'a> Gen<'a> {
             let mut still_pending: Vec<SuspendedMember> = Vec::new();
             let mut woke = false;
             for m in std::mem::take(&mut suspended) {
-                match self.table.resolve(&Ty::Var(m.recv)) {
+                let head = self.table.resolve(self.tys.var(m.recv));
+                match self.tys.kind(head) {
                     // Unresolved receiver — keep it parked for a later wake.
-                    Ty::Var(_) => still_pending.push(SuspendedMember {
+                    TyKind::Var(_) => still_pending.push(SuspendedMember {
                         waited_on_receiver: true,
                         ..m
                     }),
@@ -7015,10 +7071,10 @@ impl<'a> Gen<'a> {
                     // arity-aware is what lets these wake; until then they stay
                     // parked, which is the silence they had before `Ty` carried
                     // arguments at all.
-                    Ty::Named { ref args, .. } if !args.is_empty() => {
+                    TyKind::Named { args, .. } if !args.is_empty() => {
                         still_pending.push(m);
                     }
-                    Ty::Named { path, .. } => {
+                    TyKind::Named { path, .. } => {
                         let path = path.spelled(self.env.names());
                         if self.wake_member(&path, &m.name, m.result, m.use_range, &m.kind) {
                             woke = true;
@@ -7030,7 +7086,7 @@ impl<'a> Gen<'a> {
                         }
                     }
                     // A field of a project record, read off its declaration.
-                    ref head @ Ty::Project { .. } if self.wake_record_field(head, &m) => {
+                    TyKind::Project { .. } if self.wake_record_field(head, &m) => {
                         woke = true;
                         if m.late(latest_discharge) {
                             outcome.late_member = true;
@@ -7040,14 +7096,17 @@ impl<'a> Gen<'a> {
                     // quantified param) has no assembly entity to look a member up
                     // on in this stage — drop the constraint (defer, D5). Arrays'
                     // `.Length` is an intrinsic, out of scope.
-                    Ty::Array { .. } | Ty::Tuple(_) | Ty::Fun { .. } | Ty::Param(_) => {
+                    TyKind::Array { .. }
+                    | TyKind::Tuple(_)
+                    | TyKind::Fun { .. }
+                    | TyKind::Param(_) => {
                         woke = true;
                     }
                     // Any other member of a project type is not modelled: drop
                     // the constraint, leaving the access's (poisoned) result
                     // open, and say so in the census, which would otherwise
                     // count the binding complete with an untyped access in it.
-                    Ty::Project { .. } => {
+                    TyKind::Project { .. } => {
                         woke = true;
                         if let Some(reasons) = self.incompleteness.last_mut() {
                             reasons.push(Incomplete::ProjectTypeMember);
@@ -7080,7 +7139,7 @@ impl<'a> Gen<'a> {
                     // way the check has fired and is not re-parked.
                     if self
                         .table
-                        .unify_atomic(&Ty::Var(ac.arg), &Ty::Var(ac.dom))
+                        .unify_atomic(self.tys.var(ac.arg), self.tys.var(ac.dom))
                         .is_err()
                     {
                         self.poison_arg_check(ac);
@@ -7174,9 +7233,9 @@ impl<'a> Gen<'a> {
     /// A resolution's variables are already roots, except where the table is
     /// past its budget and returns what it was given.
     fn open_roots(&mut self, v: TyVid) -> HashSet<TyVid> {
-        let ty = self.table.resolve(&Ty::Var(v));
+        let ty = self.table.resolve(self.tys.var(v));
         let mut vars = HashSet::default();
-        collect_var_roots(&ty, &mut vars);
+        collect_var_roots(self.tys, ty, &mut vars);
         vars.into_iter().map(|v| self.table.root(v)).collect()
     }
 
@@ -7232,7 +7291,7 @@ impl<'a> Gen<'a> {
         for c in std::mem::take(&mut self.constraints) {
             match c {
                 Constraint::Eq(a, b) => {
-                    if self.table.unify_atomic(&a, &b).is_err() {
+                    if self.table.unify_atomic(a, b).is_err() {
                         self.eq_failures += 1;
                     }
                 }
@@ -7271,8 +7330,8 @@ impl<'a> Gen<'a> {
     /// record-label environment and fixes the receiver to that record, so a
     /// receiver inference learns only later is that record too, or FCS
     /// rejects the program.
-    fn wake_record_field(&mut self, head: &Ty, m: &SuspendedMember) -> bool {
-        let Ty::Project { path, args } = head else {
+    fn wake_record_field(&mut self, head: Ty, m: &SuspendedMember) -> bool {
+        let TyKind::Project { path, args } = self.tys.kind(head) else {
             return false;
         };
         if !matches!(m.kind, MemberAccessKind::Data) {
@@ -7288,15 +7347,16 @@ impl<'a> Gen<'a> {
         }) else {
             return false;
         };
-        let Some(field) = record.fields.get(&m.name).cloned() else {
+        let Some(&field) = record.fields.get(&m.name) else {
             return false;
         };
-        let declared = record.record.clone();
+        let declared = record.record;
+        let env_tys = self.env.types();
         let mut fresh: HashMap<u32, TyVid> = HashMap::default();
-        let receiver = self.instantiate_rec(&declared, &mut fresh);
-        let field = self.instantiate_rec(&field, &mut fresh);
-        self.eq(receiver, head.clone());
-        self.eq(Ty::Var(m.result), field);
+        let receiver = self.instantiate_rec(env_tys, declared, &mut fresh);
+        let field = self.instantiate_rec(env_tys, field, &mut fresh);
+        self.eq(receiver, head);
+        self.eq(self.tys.var(m.result), field);
         true
     }
 
@@ -7334,7 +7394,7 @@ impl<'a> Gen<'a> {
         let Some((type_name, namespace)) = path.split_last() else {
             return true;
         };
-        // The receiver is a non-generic `Ty::Named`, so arity 0. A missing entity is
+        // The receiver is a non-generic `TyKind::Named`, so arity 0. A missing entity is
         // silence. The member lookup below walks this entity's base chain (Stage
         // 3.x-inh), so an inherited member is found and returned under its declaring
         // base's handle.
@@ -7365,7 +7425,7 @@ impl<'a> Gen<'a> {
                 // open) ground type — the applicability matcher's input.
                 let arg_tys: Vec<Ty> = arg_vids
                     .iter()
-                    .map(|v| self.table.resolve(&Ty::Var(*v)))
+                    .map(|v| self.table.resolve(self.tys.var(*v)))
                     .collect();
                 // **Extension-absence gate** (§4.1(4), the P15 landmine): an in-scope
                 // extension member of the name would join FCS's method group and
@@ -7473,7 +7533,7 @@ impl<'a> Gen<'a> {
                     // commit the unique applicable candidate or defer
                     // ([`AssemblyEnv::resolve_overload`]).
                     _ => {
-                        if !arg_tys.iter().all(Ty::is_ground) {
+                        if !arg_tys.iter().all(|&t| self.tys.is_ground(t)) {
                             return false;
                         }
                         // The matcher reads each candidate's parameter types,
@@ -7489,7 +7549,7 @@ impl<'a> Gen<'a> {
                         {
                             return true;
                         }
-                        self.env.resolve_overload(&group, &arg_tys)
+                        self.env.resolve_overload(&group, self.tys, &arg_tys)
                     }
                 }
                 // The curried-member gate above already deferred the whole call
@@ -7509,7 +7569,7 @@ impl<'a> Gen<'a> {
         // `member_ty_ref` from `self.env` would otherwise conflict with the insert
         // / unify below); `type_ref_to_ty` yields an owned `Ty` or `None`, and the
         // void check reads the `TypeRef` while it is still borrowed.
-        let member_ty = type_ref_to_ty(self.env.names(), member_ty_ref);
+        let member_ty = type_ref_to_ty(self.env.names(), self.tys, member_ty_ref);
         // A `void`-returning method's call type is F# `unit`, which this phase does
         // not model — so its type defers even though its identity is known (a data
         // member is never `void`, so this is a no-op for `kind = Data`). Bridging
@@ -7582,7 +7642,7 @@ impl<'a> Gen<'a> {
         }
         if self
             .table
-            .unify_atomic(&Ty::Var(result), &member_ty)
+            .unify_atomic(self.tys.var(result), member_ty)
             .is_err()
         {
             self.eq_failures += 1;
@@ -7605,8 +7665,8 @@ impl<'a> Gen<'a> {
     ///   silence (D5).
     fn finalise_function(&mut self, f_def: DefId, mark: u32) {
         let fv = self.def_var(f_def);
-        let fn_ty = self.table.resolve(&Ty::Var(fv));
-        if fn_ty.is_ground() {
+        let fn_ty = self.table.resolve(self.tys.var(fv));
+        if self.tys.is_ground(fn_ty) {
             // The monomorphic case: `finish` reads `fv` back and emits it.
             return;
         }
@@ -7618,10 +7678,10 @@ impl<'a> Gen<'a> {
         // A head that declares its variables generalises those alone: FCS
         // defaults every other variable left open to `obj`
         // (`let f<'a> (x: 'a) y` is `'a -> obj -> …`), which is not modelled.
-        if !self.rigid_typars.is_empty() && !self.only_rigid_typars_open(&fn_ty) {
+        if !self.rigid_typars.is_empty() && !self.only_rigid_typars_open(fn_ty) {
             return;
         }
-        if let Some(scheme) = self.generalise(&fn_ty, mark) {
+        if let Some(scheme) = self.generalise(fn_ty, mark) {
             self.def_schemes.insert(f_def, scheme);
         }
     }
@@ -7632,14 +7692,14 @@ impl<'a> Gen<'a> {
     /// `< mark` is unioned with it — an environment variable inherited from an
     /// earlier binder, whose openness we do not control, must defer this function)
     /// and **not poisoned** (a dropped check-mode relation could have grounded it
-    /// in FCS). If all pass, each distinct open root is replaced by a [`Ty::Param`]
+    /// in FCS). If all pass, each distinct open root is replaced by a [`TyKind::Param`]
     /// numbered by **first appearance** in a depth-first, argument-before-return
     /// walk — matching FCS's canonical numbering — and the substituted body is the
     /// scheme. Parameters are never bound *into* the table, so a `debug_assert`
     /// pins that the resolved `fn_ty` carries none before we introduce them.
-    fn generalise(&mut self, fn_ty: &Ty, mark: u32) -> Option<Ty> {
+    fn generalise(&mut self, fn_ty: Ty, mark: u32) -> Option<Ty> {
         debug_assert!(
-            !contains_param(fn_ty),
+            !contains_param(self.tys, fn_ty),
             "a resolved fn_ty must not already contain a Ty::Param before generalisation"
         );
         // The poison closure: every variable reachable (after resolution) from a
@@ -7647,8 +7707,8 @@ impl<'a> Gen<'a> {
         let poison = std::mem::take(&mut self.poison);
         let mut poison_roots: HashSet<TyVid> = HashSet::default();
         for v in &poison {
-            let resolved = self.table.resolve(&Ty::Var(*v));
-            collect_var_roots(&resolved, &mut poison_roots);
+            let resolved = self.table.resolve(self.tys.var(*v));
+            collect_var_roots(self.tys, resolved, &mut poison_roots);
         }
         // Restore the poison list (it is per-binding and cleared at the next
         // binding's start anyway, but keep `finalise_function`'s contract clean).
@@ -7656,7 +7716,7 @@ impl<'a> Gen<'a> {
 
         // The open roots of `fn_ty`, in first-appearance (DFS) order.
         let mut order: Vec<TyVid> = Vec::new();
-        collect_open_order(fn_ty, &mut order);
+        collect_open_order(self.tys, fn_ty, &mut order);
 
         // Every open root must be quantifiable, else defer the whole function.
         for &v in &order {
@@ -7671,64 +7731,68 @@ impl<'a> Gen<'a> {
             let next = assign.len() as u32;
             assign.entry(v).or_insert(next);
         }
-        Some(subst_params(fn_ty, &assign))
+        Some(subst_params(self.tys, fn_ty, &assign))
     }
 
     /// Instantiate a scheme body with a **fresh** inference variable per distinct
-    /// [`Ty::Param`], memoised within this one instantiation so the same index maps
+    /// [`TyKind::Param`], memoised within this one instantiation so the same index maps
     /// to the same variable (Stage 3.2c-2c). The fresh variables are `>= ` the
     /// current binding's mark, so a use inside a later function generalises in turn
     /// (`let h x = (id, x)` ⇒ `'a -> ('b -> 'b) * 'a`).
-    fn instantiate(&mut self, scheme: &Ty) -> Ty {
+    ///
+    /// `scheme` is a type of `from`: the env's table for a scheme the env
+    /// holds (an earlier file's published type, an assembly function's or
+    /// case's, a project case's or record's), or the session's for one of the
+    /// file's own generalised binders. The instance is the session's.
+    fn instantiate(&mut self, from: &TyTable, scheme: Ty) -> Ty {
         let mut fresh: HashMap<u32, TyVid> = HashMap::default();
-        self.instantiate_rec(scheme, &mut fresh)
+        self.instantiate_rec(from, scheme, &mut fresh)
     }
 
-    fn instantiate_rec(&mut self, ty: &Ty, fresh: &mut HashMap<u32, TyVid>) -> Ty {
-        match ty {
-            Ty::Param(i) => {
+    fn instantiate_rec(&mut self, from: &TyTable, ty: Ty, fresh: &mut HashMap<u32, TyVid>) -> Ty {
+        let tys = self.tys;
+        let mut all = |cx: &mut Self, args: &[Ty]| -> Vec<Ty> {
+            args.iter()
+                .map(|&a| cx.instantiate_rec(from, a, fresh))
+                .collect()
+        };
+        match from.kind(ty) {
+            TyKind::Param(i) => {
                 let v = *fresh.entry(*i).or_insert_with(|| self.table.fresh());
                 // Record the provenance: this fresh var is an instantiation of a
                 // quantified typar of one of our schemes (Stage 3.3c). Such a typar
                 // admits no coercion, so it is a **no-subsumption** domain against
                 // which a suspended `ArgCheck` may safely discharge.
                 self.scheme_inst_vars.insert(v);
-                Ty::Var(v)
+                tys.var(v)
             }
-            Ty::Var(_) => ty.clone(),
-            Ty::Named { path, args } => Ty::Named {
-                path: path.clone(),
-                args: args
-                    .iter()
-                    .map(|a| self.instantiate_rec(a, fresh))
-                    .collect(),
-            },
-            Ty::Project { path, args } => Ty::Project {
-                path: path.clone(),
-                args: args
-                    .iter()
-                    .map(|a| self.instantiate_rec(a, fresh))
-                    .collect(),
-            },
-            Ty::Array { elem, rank } => Ty::Array {
-                elem: Box::new(self.instantiate_rec(elem, fresh)),
-                rank: *rank,
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| self.instantiate_rec(e, fresh))
-                    .collect(),
-            ),
-            Ty::Fun { arg, ret } => Ty::Fun {
-                arg: Box::new(self.instantiate_rec(arg, fresh)),
-                ret: Box::new(self.instantiate_rec(ret, fresh)),
-            },
+            TyKind::Var(v) => tys.var(*v),
+            TyKind::Named { path, args } => {
+                let args = all(self, args);
+                tys.app(path.clone(), args)
+            }
+            TyKind::Project { path, args } => {
+                let args = all(self, args);
+                tys.project(path.clone(), args)
+            }
+            TyKind::Array { elem, rank } => {
+                let elem = self.instantiate_rec(from, *elem, fresh);
+                tys.array(elem, *rank)
+            }
+            TyKind::Tuple(elems) => {
+                let elems = all(self, elems);
+                tys.tuple(elems)
+            }
+            TyKind::Fun { arg, ret } => {
+                let arg = self.instantiate_rec(from, *arg, fresh);
+                let ret = self.instantiate_rec(from, *ret, fresh);
+                tys.fun(arg, ret)
+            }
         }
     }
 
     /// Read each recorded expression's and binder's type back from its (now
-    /// solved) variable, emitting only fully-[`ground`](Ty::is_ground) types — an
+    /// solved) variable, emitting only fully-[`ground`](TyTable::is_ground) types — an
     /// unsolved variable becomes silence (D5), never a wrong or meaningless
     /// answer.
     ///
@@ -7756,8 +7820,8 @@ impl<'a> Gen<'a> {
             if !self.guard_holds(guard) || self.ungraded_ranges.contains(&range) {
                 continue;
             }
-            let ty = self.table.resolve(&Ty::Var(var));
-            if ty.is_ground() {
+            let ty = self.table.resolve(self.tys.var(var));
+            if self.tys.is_ground(ty) {
                 types.insert(range, ty);
             }
         }
@@ -7778,15 +7842,15 @@ impl<'a> Gen<'a> {
             // A **generalised** binder publishes its scheme (its table variable
             // stays open, since `Param`s are never bound into the table). The
             // scheme was computed at the binding's finalisation, in document order.
-            if let Some(scheme) = self.def_schemes.get(&def) {
-                def_types.insert(def, scheme.clone());
+            if let Some(&scheme) = self.def_schemes.get(&def) {
+                def_types.insert(def, scheme);
                 continue;
             }
             // Otherwise a value / function binder is emitted only when ground
             // (3.2b-1 values via their RHS, 3.2c-2b monomorphic functions via
-            // `Ty::Fun`); an open variable stays silent (D5).
-            let ty = self.table.resolve(&Ty::Var(var));
-            if ty.is_ground() {
+            // `TyKind::Fun`); an open variable stays silent (D5).
+            let ty = self.table.resolve(self.tys.var(var));
+            if self.tys.is_ground(ty) {
                 def_types.insert(def, ty);
             }
         }
@@ -7806,8 +7870,8 @@ impl<'a> Gen<'a> {
             if self.withheld_defs.contains(&def) {
                 continue;
             }
-            if let Some(ann) = self.param_annotations.get(&def) {
-                def_types.insert(def, ann.clone());
+            if let Some(&ann) = self.param_annotations.get(&def) {
+                def_types.insert(def, ann);
                 continue;
             }
             let (Some(owner), Some(&slot)) =
@@ -7818,8 +7882,8 @@ impl<'a> Gen<'a> {
             if !def_types.contains_key(owner) {
                 continue;
             }
-            let ty = self.table.resolve(&Ty::Var(slot));
-            if ty.is_ground() {
+            let ty = self.table.resolve(self.tys.var(slot));
+            if self.tys.is_ground(ty) {
                 def_types.insert(def, ty);
             }
         }
@@ -7832,7 +7896,7 @@ impl<'a> Gen<'a> {
         // `Resolver::seal_assembly_readings`.
         //
         // The **types** are sealed too, but not here — by the time a type
-        // reaches this map it is a `Ty::Named` like any other, with nothing to
+        // reaches this map it is a `TyKind::Named` like any other, with nothing to
         // say where it came from. So the type side of the seal is drawn at each
         // door an assembly-supplied type enters through instead. Two of them
         // read the resolver's own map ([`Gen::entity_annotation_ty`] for an
@@ -7848,12 +7912,27 @@ impl<'a> Gen<'a> {
                 *res = res.sealed_under_incomplete_projection();
             }
         }
-        let receiver_types = std::mem::take(&mut self.dot_get_receivers)
+        let receiver_types: HashMap<TextRange, Ty> = std::mem::take(&mut self.dot_get_receivers)
             .into_iter()
             .filter_map(|(range, var)| {
-                let ty = self.table.resolve(&Ty::Var(var));
-                ty.is_ground().then_some((range, ty))
+                let ty = self.table.resolve(self.tys.var(var));
+                self.tys.is_ground(ty).then_some((range, ty))
             })
+            .collect();
+        // What the file publishes is the env's: each type is copied out of
+        // the session's table, which ends with the inference.
+        let mut memo = HashMap::default();
+        let types: HashMap<TextRange, Ty> = types
+            .into_iter()
+            .map(|(range, ty)| (range, self.publish(ty, &mut memo)))
+            .collect();
+        let def_types: HashMap<DefId, Ty> = def_types
+            .into_iter()
+            .map(|(def, ty)| (def, self.publish(ty, &mut memo)))
+            .collect();
+        let receiver_types: HashMap<TextRange, Ty> = receiver_types
+            .into_iter()
+            .map(|(range, ty)| (range, self.publish(ty, &mut memo)))
             .collect();
         // What each module-level binder publishes to later files. A rejected
         // use or an `inline` binding declines whatever its type; otherwise the
@@ -7866,8 +7945,8 @@ impl<'a> Gen<'a> {
                     ModuleValue::Declined(PrecedingGap::RejectedUse)
                 } else if binder.inline {
                     ModuleValue::Declined(PrecedingGap::Inline)
-                } else if let Some(ty) = def_types.get(&def) {
-                    ModuleValue::Typed(ty.clone())
+                } else if let Some(&ty) = def_types.get(&def) {
+                    ModuleValue::Typed(ty)
                 } else if self.walked_binders.contains(&def) {
                     ModuleValue::Declined(PrecedingGap::Untyped)
                 } else {
@@ -8048,8 +8127,8 @@ impl BuiltinKind {
 /// The [`BuiltinKind`] of `ty`, if it is one: exactly the type, with no
 /// argument. An enum, a measure-annotated number and every other type are
 /// not, and a rule over them is not modelled.
-fn builtin_kind(names: &NameTable, ty: &Ty) -> Option<BuiltinKind> {
-    let Ty::Named { path, args } = ty else {
+fn builtin_kind(names: &NameTable, tys: &TyTable, ty: Ty) -> Option<BuiltinKind> {
+    let TyKind::Named { path, args } = tys.kind(ty) else {
         return None;
     };
     if !args.is_empty() {
@@ -8072,9 +8151,9 @@ fn builtin_kind(names: &NameTable, ty: &Ty) -> Option<BuiltinKind> {
 }
 
 /// Whether `ty` is a type a FSharp.Core conversion function may return: a
-/// number or `char`.
-pub(crate) fn is_conversion_target(names: &NameTable, ty: &Ty) -> bool {
-    builtin_kind(names, ty).is_some_and(|k| k.numeric() || k == BuiltinKind::Char)
+/// number or `char`. `ty` is a type of `tys`.
+pub(crate) fn is_conversion_target(names: &NameTable, tys: &TyTable, ty: Ty) -> bool {
+    builtin_kind(names, tys, ty).is_some_and(|k| k.numeric() || k == BuiltinKind::Char)
 }
 
 /// The type of an application of `builtin` to operands of types `operands`
@@ -8097,19 +8176,28 @@ pub(crate) fn is_conversion_target(names: &NameTable, ty: &Ty) -> bool {
 /// fails. Anything else off the list is [`BuiltinGap::Undecided`] — another
 /// type's own operator members (`DateTime - DateTime`), an enum, a unit of
 /// measure.
+///
+/// `operands` and the result are types of `tys`, a session's table; a
+/// conversion's target is the env's, and is copied in.
 fn builtin_verdict(
-    names: &NameTable,
+    env: &AssemblyEnv,
+    tys: &TyTable,
     builtin: &Builtin,
     operands: &[Ty],
 ) -> Result<Ty, BuiltinGap> {
-    if !operands.iter().all(Ty::is_ground) {
+    if !operands.iter().all(|&t| tys.is_ground(t)) {
         return Err(BuiltinGap::OpenOperand);
     }
-    let kinds: Vec<Option<BuiltinKind>> = operands.iter().map(|t| builtin_kind(names, t)).collect();
+    let names = env.names();
+    let kinds: Vec<Option<BuiltinKind>> = operands
+        .iter()
+        .map(|&t| builtin_kind(names, tys, t))
+        .collect();
+    let is = |t: Ty, path: &[&str]| tys.is_named(names, t, path);
     let binary = |admits: &dyn Fn(BuiltinKind) -> bool| match (operands, kinds.as_slice()) {
         ([a, b], [Some(ka), Some(kb)]) if a == b && admits(*ka) => {
             debug_assert_eq!(ka, kb);
-            Ok(a.clone())
+            Ok(*a)
         }
         ([a, b], [Some(ka), Some(kb)])
             if a != b
@@ -8134,25 +8222,20 @@ fn builtin_verdict(
         // parameters are independent, so nothing is expected of its right
         // operand and nothing is widened.
         Builtin::Bitwise
-            if operands.get(1) == Some(&Ty::named_in(names, "System.Int32"))
-                && operands.first().is_some_and(|a| {
-                    [
-                        Ty::named_in(names, "System.Int64"),
-                        Ty::named_in(names, "System.IntPtr"),
-                        Ty::named_in(names, "System.Double"),
-                    ]
-                    .contains(a)
+            if operands
+                .get(1)
+                .is_some_and(|&b| is(b, &["System", "Int32"]))
+                && operands.first().is_some_and(|&a| {
+                    is(a, &["System", "Int64"])
+                        || is(a, &["System", "IntPtr"])
+                        || is(a, &["System", "Double"])
                 }) =>
         {
             Err(BuiltinGap::Undecided)
         }
         Builtin::Bitwise => binary(&BuiltinKind::integer),
         Builtin::Shift => match (operands, kinds.as_slice()) {
-            ([a, b], [Some(ka), _])
-                if ka.integer() && *b == Ty::named_in(names, "System.Int32") =>
-            {
-                Ok(a.clone())
-            }
+            ([a, b], [Some(ka), _]) if ka.integer() && is(*b, &["System", "Int32"]) => Ok(*a),
             ([_, _], [Some(ka), Some(kb)]) if ka.integer() && *kb != BuiltinKind::Decimal => {
                 Err(BuiltinGap::Violated)
             }
@@ -8160,13 +8243,13 @@ fn builtin_verdict(
         },
         Builtin::Negate => match (operands, kinds.as_slice()) {
             ([a], [Some(BuiltinKind::Signed | BuiltinKind::Float | BuiltinKind::Decimal)]) => {
-                Ok(a.clone())
+                Ok(*a)
             }
             _ => Err(BuiltinGap::Undecided),
         },
         Builtin::Convert { target } => match kinds.as_slice() {
             [Some(k)] if k.numeric() || matches!(k, BuiltinKind::Char | BuiltinKind::String) => {
-                Ok(target.clone())
+                Ok(tys.import(env.types(), *target, &mut HashMap::default()))
             }
             _ => Err(BuiltinGap::Undecided),
         },
@@ -8215,30 +8298,30 @@ enum Verdict {
 /// (its parameters may be `EqualityConditionalOn`), and comparison on any
 /// other named type (it turns on the interface hierarchy). A type parameter
 /// left in the type is [`Verdict::Open`] when nothing else decides.
-fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
-    match ty {
-        Ty::Var(_) => Verdict::Open,
+fn satisfies(env: &AssemblyEnv, tys: &TyTable, ty: Ty, needs: Needs) -> Verdict {
+    match tys.kind(ty) {
+        TyKind::Var(_) => Verdict::Open,
         // A rigid type parameter, which satisfies a constraint only if it
         // declares it. None reaches a binding's table today (an annotation
         // naming a type parameter declines), so this is the reading that stays
         // sound if one does.
-        Ty::Param(_) => Verdict::Undecided,
-        Ty::Fun { .. } => Verdict::Fails,
+        TyKind::Param(_) => Verdict::Undecided,
+        TyKind::Fun { .. } => Verdict::Fails,
         // An F# type's equality and comparison are derived from its fields and
         // attributes, which are not read.
-        Ty::Project { .. } => Verdict::Undecided,
-        Ty::Tuple(elems) => elems.iter().fold(Verdict::Holds, |acc, e| {
-            worse(acc, satisfies(env, e, needs))
+        TyKind::Project { .. } => Verdict::Undecided,
+        TyKind::Tuple(elems) => elems.iter().fold(Verdict::Holds, |acc, &e| {
+            worse(acc, satisfies(env, tys, e, needs))
         }),
-        Ty::Array { elem, .. } => satisfies(env, elem, needs),
-        Ty::Named { path, args } if args.is_empty() => {
+        TyKind::Array { elem, .. } => satisfies(env, tys, *elem, needs),
+        TyKind::Named { path, args } if args.is_empty() => {
             if is_sealed_primitive(&path.segments_in(env.names())) {
-                if needs == Needs::Comparison && ty.is_named(env.names(), &UNIT_PATH) {
+                if needs == Needs::Comparison && tys.is_named(env.names(), ty, &UNIT_PATH) {
                     return Verdict::Undecided;
                 }
                 return Verdict::Holds;
             }
-            if ty.is_named(env.names(), &OBJECT_PATH) {
+            if tys.is_named(env.names(), ty, &OBJECT_PATH) {
                 return match needs {
                     Needs::Equality => Verdict::Holds,
                     Needs::Comparison => Verdict::Fails,
@@ -8266,7 +8349,7 @@ fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
                 None => Verdict::Undecided,
             }
         }
-        Ty::Named { .. } => Verdict::Undecided,
+        TyKind::Named { .. } => Verdict::Undecided,
     }
 }
 
@@ -8275,17 +8358,18 @@ fn satisfies(env: &AssemblyEnv, ty: &Ty, needs: Needs) -> Verdict {
 fn constraint_verdict_of(
     table: &mut InferTable,
     env: &AssemblyEnv,
+    tys: &TyTable,
     constrained: &[(TyVid, EqualityComparison)],
 ) -> Verdict {
     let mut verdict = Verdict::Holds;
     for &(v, req) in constrained {
-        let ty = table.resolve(&Ty::Var(v));
+        let ty = table.resolve(tys.var(v));
         for (needed, wanted) in [
             (Needs::Equality, req.equality),
             (Needs::Comparison, req.comparison),
         ] {
             if wanted {
-                verdict = worse(verdict, satisfies(env, &ty, needed));
+                verdict = worse(verdict, satisfies(env, tys, ty, needed));
             }
         }
     }
@@ -8307,7 +8391,7 @@ fn worse(a: Verdict, b: Verdict) -> Verdict {
 /// The highest array rank F# accepts in an annotation.
 ///
 /// Our parser reads any rank the brackets spell, so the limit has to be applied
-/// here or a rank the language rejects reaches [`Ty::Array`]. Measured against
+/// here or a rank the language rejects reaches [`TyKind::Array`]. Measured against
 /// the `binder-types` oracle rather than read off a spec: `int[,…]` at rank 32
 /// types as itself, and at rank 33 FCS reports the annotation and recovers the
 /// binder to `System.Object` — in argument position (`System.Func<int[…], bool>`)
@@ -8370,92 +8454,84 @@ fn error_compiler_message(entity: &borzoi_assembly::Entity) -> bool {
         .is_some_and(|m| m.is_error && m.marker != Some(NAMEOF_MARKER))
 }
 
-fn contains_param(ty: &Ty) -> bool {
-    match ty {
-        Ty::Param(_) => true,
-        Ty::Var(_) => false,
-        Ty::Named { args, .. } | Ty::Project { args, .. } => args.iter().any(contains_param),
-        Ty::Array { elem, .. } => contains_param(elem),
-        Ty::Tuple(elems) => elems.iter().any(contains_param),
-        Ty::Fun { arg, ret } => contains_param(arg) || contains_param(ret),
+fn contains_param(tys: &TyTable, ty: Ty) -> bool {
+    match tys.kind(ty) {
+        TyKind::Param(_) => true,
+        TyKind::Var(_) => false,
+        TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => {
+            args.iter().any(|&a| contains_param(tys, a))
+        }
+        TyKind::Array { elem, .. } => contains_param(tys, *elem),
+        TyKind::Fun { arg, ret } => contains_param(tys, *arg) || contains_param(tys, *ret),
     }
 }
 
 /// Collect the (root) variables of a **resolved** term into `out` — the poison
-/// closure step in [`Gen::generalise`]. A resolved term's [`Ty::Var`] leaves are
+/// closure step in [`Gen::generalise`]. A resolved term's [`TyKind::Var`] leaves are
 /// already unbound representatives (roots), so equality-membership in a
 /// `HashSet<TyVid>` matches the open roots of `fn_ty`.
-fn collect_var_roots(ty: &Ty, out: &mut HashSet<TyVid>) {
-    match ty {
-        Ty::Var(v) => {
+fn collect_var_roots(tys: &TyTable, ty: Ty, out: &mut HashSet<TyVid>) {
+    match tys.kind(ty) {
+        TyKind::Var(v) => {
             out.insert(*v);
         }
-        Ty::Param(_) => {}
-        Ty::Named { args, .. } | Ty::Project { args, .. } => {
-            args.iter().for_each(|a| collect_var_roots(a, out))
+        TyKind::Param(_) => {}
+        TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => {
+            args.iter().for_each(|&a| collect_var_roots(tys, a, out))
         }
-        Ty::Array { elem, .. } => collect_var_roots(elem, out),
-        Ty::Tuple(elems) => elems.iter().for_each(|e| collect_var_roots(e, out)),
-        Ty::Fun { arg, ret } => {
-            collect_var_roots(arg, out);
-            collect_var_roots(ret, out);
+        TyKind::Array { elem, .. } => collect_var_roots(tys, *elem, out),
+        TyKind::Fun { arg, ret } => {
+            collect_var_roots(tys, *arg, out);
+            collect_var_roots(tys, *ret, out);
         }
     }
 }
 
 /// Collect the open (root) variables of a **resolved** `fn_ty` in **first
 /// appearance** order under a depth-first, argument-before-return walk — the
-/// order [`Gen::generalise`] numbers [`Ty::Param`]s by, matching FCS's canonical
+/// order [`Gen::generalise`] numbers [`TyKind::Param`]s by, matching FCS's canonical
 /// typar numbering. Duplicates are dropped (a repeated variable keeps its first
 /// position), so `'a -> 'a` numbers its single variable `Param(0)` once.
-fn collect_open_order(ty: &Ty, order: &mut Vec<TyVid>) {
-    match ty {
-        Ty::Var(v) => {
+fn collect_open_order(tys: &TyTable, ty: Ty, order: &mut Vec<TyVid>) {
+    match tys.kind(ty) {
+        TyKind::Var(v) => {
             if !order.contains(v) {
                 order.push(*v);
             }
         }
-        Ty::Param(_) => {}
-        Ty::Named { args, .. } | Ty::Project { args, .. } => {
-            args.iter().for_each(|a| collect_open_order(a, order))
+        TyKind::Param(_) => {}
+        TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => {
+            args.iter().for_each(|&a| collect_open_order(tys, a, order))
         }
-        Ty::Array { elem, .. } => collect_open_order(elem, order),
-        Ty::Tuple(elems) => elems.iter().for_each(|e| collect_open_order(e, order)),
-        Ty::Fun { arg, ret } => {
-            collect_open_order(arg, order);
-            collect_open_order(ret, order);
+        TyKind::Array { elem, .. } => collect_open_order(tys, *elem, order),
+        TyKind::Fun { arg, ret } => {
+            collect_open_order(tys, *arg, order);
+            collect_open_order(tys, *ret, order);
         }
     }
 }
 
 /// Substitute each open variable in a **resolved** term by its assigned
-/// [`Ty::Param`] index (the generalisation substitution in [`Gen::generalise`]).
+/// [`TyKind::Param`] index (the generalisation substitution in [`Gen::generalise`]).
 /// A variable absent from `assign` cannot occur (every open root of `fn_ty` was
 /// assigned), so this is total over the term.
-fn subst_params(ty: &Ty, assign: &HashMap<TyVid, u32>) -> Ty {
-    match ty {
-        Ty::Var(v) => match assign.get(v) {
-            Some(&i) => Ty::Param(i),
-            None => Ty::Var(*v),
+fn subst_params(tys: &TyTable, ty: Ty, assign: &HashMap<TyVid, u32>) -> Ty {
+    let all =
+        |args: &[Ty]| -> Vec<Ty> { args.iter().map(|&a| subst_params(tys, a, assign)).collect() };
+    match tys.kind(ty) {
+        TyKind::Var(v) => match assign.get(v) {
+            Some(&i) => tys.param(i),
+            None => ty,
         },
-        Ty::Param(_) => ty.clone(),
-        Ty::Named { path, args } => Ty::Named {
-            path: path.clone(),
-            args: args.iter().map(|a| subst_params(a, assign)).collect(),
-        },
-        Ty::Project { path, args } => Ty::Project {
-            path: path.clone(),
-            args: args.iter().map(|a| subst_params(a, assign)).collect(),
-        },
-        Ty::Array { elem, rank } => Ty::Array {
-            elem: Box::new(subst_params(elem, assign)),
-            rank: *rank,
-        },
-        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| subst_params(e, assign)).collect()),
-        Ty::Fun { arg, ret } => Ty::Fun {
-            arg: Box::new(subst_params(arg, assign)),
-            ret: Box::new(subst_params(ret, assign)),
-        },
+        TyKind::Param(_) => ty,
+        TyKind::Named { path, args } => tys.app(path.clone(), all(args)),
+        TyKind::Project { path, args } => tys.project(path.clone(), all(args)),
+        TyKind::Array { elem, rank } => tys.array(subst_params(tys, *elem, assign), *rank),
+        TyKind::Tuple(elems) => tys.tuple(all(elems)),
+        TyKind::Fun { arg, ret } => tys.fun(
+            subst_params(tys, *arg, assign),
+            subst_params(tys, *ret, assign),
+        ),
     }
 }
 
@@ -8648,19 +8724,18 @@ fn unparenthesize(e: Expr) -> Option<Expr> {
 /// Kept in lock-step with [`literal_ty`] by a shared list would over-engineer a
 /// 16-entry match; instead a unit test asserts the two agree.
 /// Every variable still standing in the resolved type `ty`.
-fn free_vars(ty: &Ty, out: &mut Vec<TyVid>) {
-    match ty {
-        Ty::Var(v) => out.push(*v),
-        Ty::Named { args, .. } | Ty::Project { args, .. } => {
-            args.iter().for_each(|a| free_vars(a, out));
+fn free_vars(tys: &TyTable, ty: Ty, out: &mut Vec<TyVid>) {
+    match tys.kind(ty) {
+        TyKind::Var(v) => out.push(*v),
+        TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => {
+            args.iter().for_each(|&a| free_vars(tys, a, out));
         }
-        Ty::Array { elem, .. } => free_vars(elem, out),
-        Ty::Tuple(elems) => elems.iter().for_each(|e| free_vars(e, out)),
-        Ty::Fun { arg, ret } => {
-            free_vars(arg, out);
-            free_vars(ret, out);
+        TyKind::Array { elem, .. } => free_vars(tys, *elem, out),
+        TyKind::Fun { arg, ret } => {
+            free_vars(tys, *arg, out);
+            free_vars(tys, *ret, out);
         }
-        Ty::Param(_) => {}
+        TyKind::Param(_) => {}
     }
 }
 
@@ -8709,25 +8784,26 @@ const OBJECT_PATH: [&str; 2] = ["System", "Object"];
 /// sealed ([`Gen::verified`]).
 fn loosened_as_fcs(
     env: &AssemblyEnv,
+    tys: &TyTable,
     t: &mut InferTable,
     bounded: &[TyVid],
     undecided: &[TyVid],
 ) -> bool {
     bounded
         .iter()
-        .all(|v| matches!(t.resolve(&Ty::Var(*v)), Ty::Var(_)))
+        .all(|&v| matches!(tys.kind(t.resolve(tys.var(v))), TyKind::Var(_)))
         && undecided
             .iter()
-            .all(|v| !takes_unsealed_parameter(env, &t.resolve(&Ty::Var(*v))))
+            .all(|&v| !takes_unsealed_parameter(env, tys, t.resolve(tys.var(v))))
 }
 
-fn takes_unsealed_parameter(env: &AssemblyEnv, ty: &Ty) -> bool {
+fn takes_unsealed_parameter(env: &AssemblyEnv, tys: &TyTable, ty: Ty) -> bool {
     let mut ty = ty;
-    while let Ty::Fun { arg, ret } = ty {
-        let unsealed = |t: &Ty| !matches!(t, Ty::Var(_)) && !is_sealed(env, t);
-        let hit = match arg.as_ref() {
-            Ty::Tuple(elems) => elems.iter().any(unsealed),
-            other => unsealed(other),
+    while let TyKind::Fun { arg, ret } = *tys.kind(ty) {
+        let unsealed = |t: Ty| !matches!(tys.kind(t), TyKind::Var(_)) && !is_sealed(env, tys, t);
+        let hit = match tys.kind(arg) {
+            TyKind::Tuple(elems) => elems.iter().any(|&e| unsealed(e)),
+            _ => unsealed(arg),
         };
         if hit {
             return true;
@@ -8745,15 +8821,19 @@ fn takes_unsealed_parameter(env: &AssemblyEnv, ty: &Ty) -> bool {
 /// tuple and array types, `unit`, value types, and F# unions, records and
 /// exceptions. An IL class is sealed by its flag (an F# class carries the flag
 /// exactly when it is `[<Sealed>]`); an interface never is.
-fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
-    match ty {
-        Ty::Var(_) | Ty::Param(_) | Ty::Fun { .. } | Ty::Tuple(_) | Ty::Array { .. } => true,
+fn is_sealed(env: &AssemblyEnv, tys: &TyTable, ty: Ty) -> bool {
+    match tys.kind(ty) {
+        TyKind::Var(_)
+        | TyKind::Param(_)
+        | TyKind::Fun { .. }
+        | TyKind::Tuple(_)
+        | TyKind::Array { .. } => true,
         // Whether a project type is sealed turns on its kind and attributes,
         // which are not read.
-        Ty::Project { .. } => false,
-        Ty::Named { path, args } => {
+        TyKind::Project { .. } => false,
+        TyKind::Named { path, args } => {
             if (args.is_empty() && is_sealed_primitive(&path.segments_in(env.names())))
-                || ty.is_named(env.names(), &UNIT_PATH)
+                || tys.is_named(env.names(), ty, &UNIT_PATH)
             {
                 return true;
             }
@@ -8790,8 +8870,8 @@ fn is_sealed(env: &AssemblyEnv, ty: &Ty) -> bool {
     }
 }
 
-fn literal_ty(names: &NameTable, c: &ConstExpr) -> Option<Ty> {
-    literal_kind_ty(names, c.literal()?.kind())
+fn literal_ty(names: &NameTable, tys: &TyTable, c: &ConstExpr) -> Option<Ty> {
+    literal_kind_ty(names, tys, c.literal()?.kind())
 }
 
 /// The value a constant pattern's literal spells, as reachability compares
@@ -8838,8 +8918,8 @@ fn literal_ctor(kind: SyntaxKind, text: &str) -> Ctor<UnionId> {
 
 /// The type of a literal token of `kind`, where it is fixed in isolation
 /// ([`literal_ty`]).
-fn literal_kind_ty(names: &NameTable, kind: SyntaxKind) -> Option<Ty> {
-    let prim = |path: &str| Some(Ty::named_in(names, path));
+fn literal_kind_ty(names: &NameTable, tys: &TyTable, kind: SyntaxKind) -> Option<Ty> {
+    let prim = |path: &str| Some(tys.named(names, path));
     match kind {
         // Integers (default and every explicit suffix).
         SyntaxKind::INT32_LIT => prim("System.Int32"),
@@ -8868,10 +8948,7 @@ fn literal_kind_ty(names: &NameTable, kind: SyntaxKind) -> Option<Ty> {
         // fires at a *use* site, not here — the bound value stays `byte[]`).
         SyntaxKind::BYTE_STRING_LIT
         | SyntaxKind::VERBATIM_BYTE_STRING_LIT
-        | SyntaxKind::TRIPLE_BYTE_STRING_LIT => Some(Ty::Array {
-            elem: Box::new(Ty::named_in(names, "System.Byte")),
-            rank: 1,
-        }),
+        | SyntaxKind::TRIPLE_BYTE_STRING_LIT => Some(tys.array(tys.named(names, "System.Byte"), 1)),
         // Deferred even in a no-expected-type position: a user-defined numeric
         // literal (`USER_NUM_LIT`, e.g. `1I`/`1G`) resolves through whichever
         // `NumericLiteral` module is in scope, and a source-location identifier
@@ -9043,7 +9120,7 @@ mod tests {
     use super::{ExtensionScope, Gen};
     use crate::recovery::SyntaxRecovery;
     use crate::resolve::ResolvedFile;
-    use crate::ty::Ty;
+    use crate::ty::{Ty, TyKind, TyTable};
     use crate::{AssemblyEnv, ProjectItems, resolve_file};
 
     #[test]
@@ -9568,7 +9645,7 @@ mod tests {
             ("module M\nlet x : int64 option = None\n", "generic app"),
             // `unit` is deliberately excluded from the v1 table.
             ("module M\nlet x : unit = ()\n", "unit excluded"),
-            // A struct tuple is not `Ty::Tuple`.
+            // A struct tuple is not `TyKind::Tuple`.
             (
                 "module M\nlet x : struct (int * int) = struct (1, 2)\n",
                 "struct tuple",
@@ -10332,10 +10409,10 @@ mod tests {
     #[test]
     fn sealed_primitive_set_matches_literal_ty() {
         // The no-subsumption sealed-primitive set (`is_sealed_primitive`) must be
-        // exactly the scalar `Ty::Named`s `literal_ty` produces — the same
+        // exactly the scalar `TyKind::Named`s `literal_ty` produces — the same
         // primitives a literal has, each sealed, so a `<lit>` argument may discharge
         // against a domain grounded to that primitive. This pins the two lists in
-        // lock-step (a byte-string literal is a `Ty::Array`, so it is *not* a named
+        // lock-step (a byte-string literal is a `TyKind::Array`, so it is *not* a named
         // sealed primitive — correctly excluded).
         use borzoi_cst::syntax::{ConstExpr, Expr};
         let kinds = [
@@ -10374,15 +10451,16 @@ mod tests {
                 .or_else(|| file.syntax().descendants_of::<ConstExpr>().next())
                 .expect("a const literal");
             let names = crate::names::NameTable::default();
-            let ty = super::literal_ty(&names, &cst);
-            match ty {
+            let tys = TyTable::session();
+            let ty = super::literal_ty(&names, &tys, &cst);
+            match ty.map(|t| tys.kind(t)) {
                 // Every named literal type must be a sealed primitive.
-                Some(super::Ty::Named { ref path, .. }) => assert!(
+                Some(TyKind::Named { path, .. }) => assert!(
                     super::is_sealed_primitive(&path.segments_in(&names)),
                     "{lit}: literal_ty gave named {path:?} but is_sealed_primitive says no"
                 ),
                 // A byte string is an array — not a sealed *named* primitive.
-                Some(super::Ty::Array { .. }) => {}
+                Some(TyKind::Array { .. }) => {}
                 // Deferred literals (none in this list) have no type.
                 _ => {}
             }
@@ -10460,49 +10538,39 @@ mod tests {
         // distinct vars; no `Param` survives.
         let resolved = empty_resolved();
         let env = AssemblyEnv::default();
+        let tys = TyTable::session();
         let preceding = crate::PrecedingTypes::default();
         let mut cx = Gen::new(
             &resolved,
             &env,
+            &tys,
             super::ExtensionScope::default(),
             &preceding,
         );
-        let scheme = Ty::Fun {
-            arg: Box::new(Ty::Param(0)),
-            ret: Box::new(Ty::Tuple(vec![Ty::Param(0), Ty::Param(1)])),
-        };
-        let inst = cx.instantiate(&scheme);
+        let p = |i| tys.param(i);
+        let scheme = tys.fun(p(0), tys.tuple(vec![p(0), p(1)]));
+        let inst = cx.instantiate(&tys, scheme);
         // Structure preserved, no Param survives.
         assert!(
-            !super::contains_param(&inst),
+            !super::contains_param(&tys, inst),
             "no Param may survive: {inst:?}"
         );
-        match &inst {
-            Ty::Fun { arg, ret } => {
-                let arg_v = match **arg {
-                    Ty::Var(v) => v,
-                    _ => panic!("arg should be a fresh var, got {arg:?}"),
-                };
-                match &**ret {
-                    Ty::Tuple(elems) => {
-                        let e0 = match elems[0] {
-                            Ty::Var(v) => v,
-                            _ => panic!("elem 0 should be a var"),
-                        };
-                        let e1 = match elems[1] {
-                            Ty::Var(v) => v,
-                            _ => panic!("elem 1 should be a var"),
-                        };
-                        // Param(0) appears in arg and elem 0 → same var.
-                        assert_eq!(arg_v, e0, "same Param index → same fresh var");
-                        // Param(1) is distinct from Param(0).
-                        assert_ne!(e0, e1, "distinct Param indices → distinct vars");
-                    }
-                    _ => panic!("ret should be a tuple"),
-                }
-            }
-            _ => panic!("inst should be a function"),
-        }
+        let var = |t: Ty| match tys.kind(t) {
+            TyKind::Var(v) => *v,
+            other => panic!("a fresh var, got {other:?}"),
+        };
+        let TyKind::Fun { arg, ret } = tys.kind(inst) else {
+            panic!("inst should be a function");
+        };
+        let arg_v = var(*arg);
+        let TyKind::Tuple(elems) = tys.kind(*ret) else {
+            panic!("ret should be a tuple");
+        };
+        let (e0, e1) = (var(elems[0]), var(elems[1]));
+        // Param(0) appears in arg and elem 0 → same var.
+        assert_eq!(arg_v, e0, "same Param index → same fresh var");
+        // Param(1) is distinct from Param(0).
+        assert_ne!(e0, e1, "distinct Param indices → distinct vars");
     }
 
     #[test]
@@ -10512,25 +10580,22 @@ mod tests {
         // through the table so the fresh vars are real keys.
         let resolved = empty_resolved();
         let env = AssemblyEnv::default();
+        let tys = TyTable::session();
         let preceding = crate::PrecedingTypes::default();
         let mut cx = Gen::new(
             &resolved,
             &env,
+            &tys,
             super::ExtensionScope::default(),
             &preceding,
         );
         let mark = cx.table.mark();
-        let scheme = Ty::Fun {
-            arg: Box::new(Ty::Param(0)),
-            ret: Box::new(Ty::Fun {
-                arg: Box::new(Ty::Param(1)),
-                ret: Box::new(Ty::Tuple(vec![Ty::Param(1), Ty::Param(0)])),
-            }),
-        };
-        let inst = cx.instantiate(&scheme);
-        let resolved_inst = cx.table.resolve(&inst);
+        let p = |i| tys.param(i);
+        let scheme = tys.fun(p(0), tys.fun(p(1), tys.tuple(vec![p(1), p(0)])));
+        let inst = cx.instantiate(&tys, scheme);
+        let resolved_inst = cx.table.resolve(inst);
         let regen = cx
-            .generalise(&resolved_inst, mark)
+            .generalise(resolved_inst, mark)
             .expect("fresh vars generalise");
         assert_eq!(regen, scheme, "generalise ∘ instantiate is the identity");
     }

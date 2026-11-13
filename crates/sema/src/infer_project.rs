@@ -83,7 +83,7 @@ pub enum PrecedingGap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ModuleValue {
     /// The binder's certain type: ground, or a generalised scheme over
-    /// [`Ty::Param`]s.
+    /// [`TyKind::Param`]s.
     Typed(Ty),
     /// No certain type, and why.
     Declined(PrecedingGap),
@@ -105,7 +105,7 @@ pub struct PrecedingTypes {
     /// Compile index and the type's position among those it declares — the
     /// identity a later file's
     /// [`Resolution::EarlierFileType`](crate::Resolution::EarlierFileType)
-    /// carries — with the path and arity of the [`Ty::Project`] it denotes.
+    /// carries — with the path and arity of the [`TyKind::Project`] it denotes.
     types: HashMap<(usize, u32), (TyPath, usize)>,
     /// The cases of each earlier file's unions its inference types, by the
     /// case's item — the handle a later file's use of one resolves to.
@@ -114,7 +114,7 @@ pub struct PrecedingTypes {
     /// make, signatured ones included ([`InferredFile::constructor_names`]).
     constructor_names: HashMap<String, usize>,
     /// The records each earlier file declares whose fields its inference
-    /// reads, by the path and arity of their `Ty::Project`.
+    /// reads, by the path and arity of their `TyKind::Project`.
     records: ProjectRecords,
 }
 
@@ -122,7 +122,7 @@ impl ModuleValue {
     /// The value with its type's paths translated from `from`'s table to
     /// `to`'s.
     #[cfg(feature = "test-support")]
-    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> ModuleValue {
+    pub(crate) fn rekey(&self, from: &AssemblyEnv, to: &AssemblyEnv) -> ModuleValue {
         match self {
             ModuleValue::Typed(ty) => ModuleValue::Typed(ty.rekey(from, to)),
             ModuleValue::Declined(gap) => ModuleValue::Declined(*gap),
@@ -134,7 +134,7 @@ impl PrecedingTypes {
     /// The table with every type's paths translated from `from`'s table to
     /// `to`'s.
     #[cfg(feature = "test-support")]
-    fn rekey_names(&self, from: &NameTable, to: &NameTable) -> PrecedingTypes {
+    fn rekey_names(&self, from: &AssemblyEnv, to: &AssemblyEnv) -> PrecedingTypes {
         let PrecedingTypes {
             items,
             types,
@@ -149,7 +149,7 @@ impl PrecedingTypes {
                 .collect(),
             types: types
                 .iter()
-                .map(|(key, (path, arity))| (*key, (path.rekey(from, to), *arity)))
+                .map(|(key, (path, arity))| (*key, (path.rekey(from.names(), to.names()), *arity)))
                 .collect(),
             cases: cases
                 .iter()
@@ -172,7 +172,7 @@ impl PrecedingTypes {
         }
     }
 
-    /// The path and arity of the [`Ty::Project`] an annotation naming the
+    /// The path and arity of the [`TyKind::Project`] an annotation naming the
     /// type at position `index` of the earlier file `file` denotes; `None` for
     /// a type that file's inference would not bridge either.
     pub(crate) fn earlier_type(&self, file: usize, index: u32) -> Option<&(TyPath, usize)> {
@@ -194,7 +194,7 @@ impl PrecedingTypes {
 
     /// The union of each case and the record of each record the earlier
     /// files published: project types F# seals.
-    pub(crate) fn sealed_types(&self) -> impl Iterator<Item = &Ty> + '_ {
+    pub(crate) fn sealed_types(&self) -> impl Iterator<Item = Ty> + '_ {
         self.cases
             .values()
             .map(ProjectCase::union)
@@ -430,7 +430,7 @@ impl InferredProject {
     /// read is kept as it was: it is how the fold was computed, which
     /// equality does not compare.
     #[cfg(feature = "test-support")]
-    pub(crate) fn rekey_names(&self, from: &NameTable, to: &NameTable) -> InferredProject {
+    pub(crate) fn rekey_names(&self, from: &AssemblyEnv, to: &AssemblyEnv) -> InferredProject {
         InferredProject {
             files: self
                 .files
