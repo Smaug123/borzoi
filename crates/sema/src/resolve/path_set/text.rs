@@ -11,7 +11,7 @@ type NodeId = usize;
 const ROOT: NodeId = 0;
 
 /// A multiset of paths (each a sequence of segments), with prefix queries
-/// answered by walking a trie, and a cheap [`Self::mark`] / [`Self::rollback`]
+/// answered by walking a trie, and a cheap [`TextPathSetMark::at`] / [`Self::rollback`]
 /// pair for a scope that only adds to the set.
 ///
 /// The trie's nodes sit in a flat `Vec`, so no walk of it (dropping or cloning

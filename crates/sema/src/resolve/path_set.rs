@@ -319,7 +319,7 @@ impl PathSet {
         false
     }
 
-    /// [`Self::has_prefix_of`] by the path's segments.
+    /// [`Self::has_prefix_of`] by the path's segments, building nothing.
     pub(super) fn has_prefix_of_path(&self, names: &NameTable, path: &[String]) -> bool {
         let found = self.any_member_prefix(names, path, |_| true);
         #[cfg(all(feature = "interning-reference", debug_assertions))]
@@ -327,7 +327,8 @@ impl PathSet {
         found
     }
 
-    /// [`Self::has_nonempty_prefix_of`] by the path's segments.
+    /// Whether some non-empty member is a prefix of `path` (`path` itself
+    /// included).
     pub(super) fn has_nonempty_prefix_of_path(&self, names: &NameTable, path: &[String]) -> bool {
         let found = self.any_member_prefix(names, path, |k| k > 0);
         #[cfg(all(feature = "interning-reference", debug_assertions))]
@@ -339,7 +340,8 @@ impl PathSet {
         found
     }
 
-    /// [`Self::has_strict_nonempty_prefix_of`] by the path's segments.
+    /// Whether some non-empty member is a *proper* prefix of `path`: `path`
+    /// descends strictly under it.
     pub(super) fn has_strict_nonempty_prefix_of_path(
         &self,
         names: &NameTable,

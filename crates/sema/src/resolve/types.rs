@@ -1005,12 +1005,12 @@ impl<'a> Resolver<'a> {
                     .map(|(name, res)| match res {
                         Resolution::Deferred(_) => ScopeEntry::undecided_case(
                             self.assemblies.names(),
-                            &name,
+                            name,
                             self.scope.open_generation,
                         ),
                         _ => ScopeEntry::binding(
                             self.assemblies.names(),
-                            &name,
+                            name,
                             *res,
                             self.scope.open_generation,
                         ),
@@ -1638,7 +1638,7 @@ impl<'a> Resolver<'a> {
         let unmodelled = |name: &str, generation| {
             ScopeEntry::binding(
                 self.assemblies.names(),
-                &name,
+                name,
                 Resolution::Deferred(DeferredReason::UnboundName),
                 generation,
             )

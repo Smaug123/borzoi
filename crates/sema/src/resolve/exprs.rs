@@ -532,7 +532,7 @@ impl<'a> Resolver<'a> {
                         entries.extend(self.pattern_locals(args.into_iter(), BinderRole::Pattern));
                         entries.push(ScopeEntry::binding(
                             self.assemblies.names(),
-                            &id_text(only).to_string(),
+                            &id_text(only),
                             Resolution::Deferred(DeferredReason::UnboundName),
                             self.scope.open_generation,
                         ));

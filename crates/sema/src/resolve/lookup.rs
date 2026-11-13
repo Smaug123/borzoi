@@ -378,7 +378,7 @@ impl<'a> Resolver<'a> {
             .map(|(name, idx)| match idx {
                 Some(idx) if certain => ScopeEntry::opened(
                     self.assemblies.names(),
-                    &name,
+                    name,
                     Resolution::Member {
                         parent: handle,
                         idx,
@@ -388,14 +388,14 @@ impl<'a> Resolver<'a> {
                 ),
                 Some(_) => ScopeEntry::opened_declined(
                     self.assemblies.names(),
-                    &name,
+                    name,
                     DeclineCause::OpenFoldResidue,
                     generation,
                     open_pos,
                 ),
                 None => ScopeEntry::opened_declined(
                     self.assemblies.names(),
-                    &name,
+                    name,
                     DeclineCause::OpenedOverloadSet,
                     generation,
                     open_pos,
@@ -2724,7 +2724,7 @@ impl<'a> Resolver<'a> {
             {
                 let mut entry = ScopeEntry::opened_declined(
                     self.assemblies.names(),
-                    &name,
+                    name,
                     DeclineCause::OpaqueBinder,
                     generation,
                     open_pos,
@@ -3439,7 +3439,7 @@ impl<'a> Resolver<'a> {
         a_variable.then(|| {
             ScopeEntry::binding(
                 self.assemblies.names(),
-                &name,
+                name,
                 Resolution::Deferred(DeferredReason::UnboundName),
                 self.scope.open_generation,
             )

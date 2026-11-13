@@ -603,7 +603,7 @@ impl Resolver<'_> {
                     .map(|name| (name, MarkReach::Both)),
             )
             .map(|(name, reach)| {
-                ScopeEntry::contributor_mark(self.assemblies.names(), &name, reach, generation, pos)
+                ScopeEntry::contributor_mark(self.assemblies.names(), name, reach, generation, pos)
             })
             .collect();
         self.module_frame().extend(marks);
