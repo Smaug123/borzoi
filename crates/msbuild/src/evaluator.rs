@@ -5478,6 +5478,10 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             .and_then(simple_property_reference)
             .is_some_and(|name| name.eq_ignore_ascii_case("DirectoryBuildPropsPath"));
         if is_props_rediscovery {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                state.directory_build_splices.props_points += 1;
+            }
             // What the real import here would take, decided before the splice
             // runs: the spliced file can rewrite what decides it.
             #[cfg(any(test, feature = "test-support"))]

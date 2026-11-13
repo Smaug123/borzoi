@@ -68,6 +68,10 @@ pub(super) struct DirectoryBuildSplices {
     pub(super) props_spliced: bool,
     pub(super) targets_spliced: bool,
     pub(super) props_point_reached: bool,
+    /// How many props import points an SDK chain reached. The splice
+    /// stands for one; a later one is an import the walk suppresses and
+    /// MSBuild may make (a `Directory.Build.props` can redirect the path).
+    pub(super) props_points: usize,
 }
 
 /// Where a `<Target>` element is.
@@ -201,7 +205,8 @@ impl State<'_> {
                 .all(|(defined, _)| plain_target_name(defined));
         let splices = &self.directory_build_splices;
         let graph_is_msbuilds = self.walk_opaque.is_none()
-            && (!splices.props_spliced || splices.props_point_reached)
+            && (!splices.props_spliced
+                || (splices.props_point_reached && splices.props_points == 1))
             && !splices.targets_spliced;
         TargetRead {
             definition,
@@ -917,6 +922,31 @@ mod spliced_target_order_tests {
             "<Project />",
             "<Project><PropertyGroup><Gate>true</Gate></PropertyGroup>\
              <Target Name=\"Phantom\" /></Project>",
+        );
+        assert!(!read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod spliced_target_redirect_tests {
+    use super::spliced_target_tests::read_phantom_beside;
+
+    /// `Directory.Build.props` redirects the path and the SDK reaches a
+    /// second props import point: MSBuild takes it, and the walk suppresses
+    /// it.
+    #[test]
+    fn a_second_props_import_point_declines() {
+        const POINT: &str = "<Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"Exists('$(DirectoryBuildPropsPath)')\" />";
+        let read = read_phantom_beside(
+            &format!(
+                "<Project><PropertyGroup><DirectoryBuildPropsPath>\
+                 $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildProjectDirectory)'))\
+                 </DirectoryBuildPropsPath></PropertyGroup>{POINT}{POINT}</Project>"
+            ),
+            "<Project />",
+            "<Project><PropertyGroup><DirectoryBuildPropsPath>$(MSBuildThisFileDirectory)other.props\
+             </DirectoryBuildPropsPath></PropertyGroup><Target Name=\"Phantom\" /></Project>",
         );
         assert!(!read.exact, "{read:?}");
     }
