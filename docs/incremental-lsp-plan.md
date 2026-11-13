@@ -770,6 +770,9 @@ keystrokes:
 | `hover L` | **117.2 M** | **6.43 M** | 140,624 | 7,015 |
 | **keystroke total** | **164.4 M** | **53.5 M** | 170,820 | 37,212 |
 
+On WoofWare.PawPrint.Domain (minimum over 10 keystrokes), `hover L` falls
+from 165.8 M to 9.6 M and the keystroke total from 242.9 M to 86.6 M.
+
 `hover L` falls further than the 9.7 M expected, which was measured with `E`
 at index 79 and so re-inferred three files; here only `E` is inferred afresh.
 The cold rows move by under 1%: a cold `hover L` is 122.7 M before and

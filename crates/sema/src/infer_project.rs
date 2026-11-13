@@ -92,7 +92,7 @@ pub(crate) enum ModuleValue {
 /// top-level values, keyed by the resolver's project-global [`ItemId`] — the
 /// handle a cross-file [`Resolution::Item`](crate::Resolution::Item) carries.
 ///
-/// Built only by [`PrecedingTypes::merge`], one file's [`FileContribution`] at
+/// Built only by `PrecedingTypes::merge`, one file's `FileContribution` at
 /// a time in Compile order ([`infer_project`] is the fold). [`Default`] is the
 /// empty table: a file with nothing before it, or a single file inferred on
 /// its own, where every cross-file use declines as
@@ -450,7 +450,7 @@ pub fn infer_project(
 /// holds, a file whose resolution is the same allocation as the one `prev`
 /// inferred it from, with the same tree and pairing, is reused. A file
 /// inferred afresh while the flag holds keeps it set only if its
-/// [`FileContribution`] equals the one `prev`'s inference of it made,
+/// `FileContribution` equals the one `prev`'s inference of it made,
 /// recomputed from `prev`'s own resolution and inference rather than stored.
 /// So after a body edit that changes no export's name or type, only the
 /// edited file is inferred afresh.
