@@ -34,6 +34,7 @@ mod companion_module_case_matrix;
 mod contributor_name_oracle;
 mod decline_cause;
 mod entity_placement;
+mod exported_names;
 mod explicit_impl_unreachable;
 mod extension_shadow_diff;
 mod extension_visibility_matrix;
