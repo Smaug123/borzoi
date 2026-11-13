@@ -656,9 +656,9 @@ fn langversion_diagnostics(
 }
 
 /// The lexer-level diagnostics a parse reports beside its tree, scanned off
-/// the raw table: the FS1161 tab errors ([`tab_diagnostics`]), the FS0046
-/// reserved-identifier warnings ([`reserved_ident_diagnostics`]) and the
-/// operator-character errors ([`operator_char_diagnostics`]), in that order.
+/// the raw table: the FS1161 tab errors (`tab_diagnostics`), the FS0046
+/// reserved-identifier warnings (`reserved_ident_diagnostics`) and the
+/// operator-character errors (`operator_char_diagnostics`), in that order.
 pub fn lexical_diagnostics(source: &str, raw_tokens: &RawTokens<'_>) -> [Vec<ParseError>; 3] {
     [
         tab_diagnostics(source, raw_tokens),
