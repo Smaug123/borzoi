@@ -1447,6 +1447,10 @@ dozen, and the counts report it.
   (`Exists('link/')`, and a link whose target ends with a separator, to
   another link); the narrower witnesses went, and a property on the host's
   file system now generates trees with symlinks of every such spelling.
+  Codex's next finding, a `..` whose directory lost its search permission,
+  is in the same walk: the directory a `..` leaves is looked up in too, so it
+  is stamped (a `chmod` moves its ctime). The host property now takes search
+  permissions away and gives them back.
 - **The graph walk reads the confirmed entry.** The env's project-graph walk
   evaluated the entry project afresh, a second evaluation on every cold env
   build. It now reads the cached evaluation when this generation has
@@ -1563,6 +1567,7 @@ Planted, each caught, then removed:
 | a version's alias inferred from a canonicalisation below it (Codex) | `only_a_version_directory_canonicalised_gives_an_alias` |
 | a witness for a trailing-separator spelling (Codex) | `a_spelling_the_stamps_cannot_follow_is_asked_every_time` |
 | a `Kind` witnessed by its link chain's parents, not its resolution (Codex) | the spelling test, the model property and its non-vacuity check |
+| the directory a `..` leaves not stamped (Codex) | `a_directory_left_by_dot_dot_is_witnessed` |
 
 Three plants first passed every test: the canonical-spelling witness (the
 model could not move a directory), the seeded pass's reads and the graph walk

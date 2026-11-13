@@ -296,12 +296,15 @@ impl<D: Probe> ReadChecks<D> {
         };
         push_all(&mut rest, path);
         while let Some(name) = rest.pop() {
+            // Every name, `..` included, is looked up in the directory
+            // reached, which takes search permission there: a `chmod` moves
+            // its stamp.
+            if !dirs.contains(&current) {
+                dirs.push(current.clone());
+            }
             if name == ".." {
                 current.pop();
                 continue;
-            }
-            if !dirs.contains(&current) {
-                dirs.push(current.clone());
             }
             let child = current.join(&name);
             let last = rest.is_empty();
@@ -402,6 +405,8 @@ mod host_tests {
         Link(Vec<usize>, usize),
         Remove(Vec<usize>),
         Rename(Vec<usize>, Vec<usize>),
+        /// Take away, or give back, a directory's search permission.
+        Search(Vec<usize>, bool),
     }
 
     fn rel(names: &[usize]) -> PathBuf {
@@ -424,7 +429,24 @@ mod host_tests {
                 std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir_all(&path))
             }
             Change::Rename(from, to) => std::fs::rename(at(from), at(to)),
+            Change::Search(p, allowed) => {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mode = if *allowed { 0o755 } else { 0o644 };
+                std::fs::set_permissions(at(p), std::fs::Permissions::from_mode(mode))
+            }
         };
+    }
+
+    fn restore_search(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+        if let Ok(entries) = host_fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    restore_search(&entry.path());
+                }
+            }
+        }
     }
 
     fn names() -> impl Strategy<Value = Vec<usize>> {
@@ -438,7 +460,49 @@ mod host_tests {
             (names(), 0..TARGETS.len()).prop_map(|(p, t)| Change::Link(p, t)),
             names().prop_map(Change::Remove),
             (names(), names()).prop_map(|(a, b)| Change::Rename(a, b)),
+            (names(), any::<bool>()).prop_map(|(p, allowed)| Change::Search(p, allowed)),
         ]
+    }
+
+    /// A `..` is looked up in the directory it leaves, which needs search
+    /// permission there: taking it away changes where a link through it
+    /// leads without changing any directory the link's target names after
+    /// the `..` (Codex).
+    #[test]
+    fn a_directory_left_by_dot_dot_is_witnessed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = host_fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir(root.join("gate")).unwrap();
+        std::fs::create_dir(root.join("target")).unwrap();
+        std::os::unix::fs::symlink("gate/../target", root.join("through")).unwrap();
+        let path = root.join("through");
+        let check = Check::new(Read {
+            observation: HostDisk.answer(&path, &Observation::Kind(Ok(EntryKind::Dir))),
+            path,
+        });
+        let mut checker = ReadChecks::<HostDisk>::default();
+        let mut at = Nanos(i128::MAX / 2);
+        for _ in 0..2 {
+            checker.begin_generation(at);
+            assert!(checker.holds(&check));
+            checker.end_generation();
+            at = Nanos(at.0 + 1);
+        }
+        std::fs::set_permissions(root.join("gate"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        checker.begin_generation(at);
+        let truth = HostDisk.answer(&check.read().path, &check.read().observation);
+        let holds = checker.holds(&check);
+        checker.end_generation();
+        std::fs::set_permissions(root.join("gate"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        assert_ne!(
+            truth,
+            check.read().observation,
+            "the permission did not matter"
+        );
+        assert!(!holds, "the check held");
     }
 
     proptest! {
@@ -466,6 +530,7 @@ mod host_tests {
                 // Spellings the kernel resolves otherwise than by components.
                 paths.push(PathBuf::from(format!("{}/{}/", root.display(), NAMES[a])));
                 paths.push(root.join("l/..").join(NAMES[a]));
+                paths.push(root.join("a/..").join(NAMES[a]));
                 for b in 0..NAMES.len() {
                     paths.push(root.join(NAMES[a]).join(NAMES[b]));
                 }
@@ -504,6 +569,9 @@ mod host_tests {
                 checker.end_generation();
                 at = Nanos(at.0 + 1);
             }
+            // Give every directory its search permission back, so the
+            // temporary directory can be removed.
+            restore_search(&root);
         }
     }
 
