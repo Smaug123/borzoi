@@ -948,7 +948,7 @@ after, against both bases.
   instead of at its own length fails only the property: the walk never makes
   an access root as long as the path.
 
-**Measured** (6c, on 6b at `0b97b6e6`): `resolve_file` 864.7 → 861.3
+**Measured** (6c, on 6b at `0b97b6e6`, whose sema main's `24dc0a9a` matches): `resolve_file` 864.7 → 861.3
 instructions per byte (−0.4%), allocations 0.693 → 0.686 per byte (−1.0%);
 the whole tree as one project (`resolve_project`, the throwaway variant of
 5a) 876.7 → 868.4 (−0.9%), allocations 0.617 → 0.609 per byte (−1.3%); infer
