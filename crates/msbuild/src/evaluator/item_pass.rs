@@ -2127,17 +2127,20 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
         // Inert for the dependency set, but not for an item table: whichever
         // references it matches carry what it writes. Without resolving the
         // match, every name it may write is unknown on every reference.
-        let written = node
-            .attributes()
-            .map(|attr| attr.name())
-            .filter(|name| is_item_metadata_attribute(name))
-            .chain(
-                node.children()
-                    .filter(Node::is_element)
-                    .map(|child| child.tag_name().name()),
-            )
-            .map(item_key);
-        state.package_reference_unknown_names.extend(written);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let written = node
+                .attributes()
+                .map(|attr| attr.name())
+                .filter(|name| is_item_metadata_attribute(name))
+                .chain(
+                    node.children()
+                        .filter(Node::is_element)
+                        .map(|child| child.tag_name().name()),
+                )
+                .map(item_key);
+            state.package_reference_unknown_names.extend(written);
+        }
         return;
     }
     state.note_package_uncertain_from_sdk_property_taint(target);
@@ -2195,9 +2198,13 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     // Every metadatum, as an item table reads it. Quietly: the dependency
     // capture has read the package names already, and nothing else may steer
     // the walk.
-    let previous = state.quiet_target_framework_reads.replace(true);
-    let exact = read_generic_item_metadata(node, state);
-    state.quiet_target_framework_reads.set(previous);
+    #[cfg(any(test, feature = "test-support"))]
+    let exact = {
+        let previous = state.quiet_target_framework_reads.replace(true);
+        let exact = read_generic_item_metadata(node, state);
+        state.quiet_target_framework_reads.set(previous);
+        exact
+    };
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let origin = state.current_origin();
@@ -2247,6 +2254,7 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
             .captured_package_references
             .push(CapturedPackageReference {
                 op,
+                #[cfg(any(test, feature = "test-support"))]
                 row: match op {
                     PackageRefOp::Include => source.row.clone().with_metadata_applied(&exact),
                     PackageRefOp::Update => EvaluatedItem::bare(&id).with_metadata_applied(&exact),
@@ -2356,6 +2364,7 @@ pub(super) struct CapturedPackageReference {
     metadata: PackageMetadata,
     /// The item as an item table reads it, every metadatum exact; see
     /// [`State::package_reference_rows`].
+    #[cfg(any(test, feature = "test-support"))]
     row: EvaluatedItem,
     span: Range<usize>,
     origin: DiagnosticOrigin,
@@ -2384,6 +2393,7 @@ pub(super) fn finalize_package_references(state: &mut State<'_>) {
                     .filter(|include| include.id.eq_ignore_ascii_case(&item.id))
                 {
                     include.metadata = include.metadata.with_overrides(&item.metadata);
+                    #[cfg(any(test, feature = "test-support"))]
                     include.row.updated_by(&item.row);
                 }
                 // A lone Update matching no prior Include is dropped here. Any
@@ -2408,7 +2418,10 @@ pub(super) fn finalize_package_references(state: &mut State<'_>) {
                 });
         }
     }
-    state.package_reference_rows = effective.iter().map(|r| r.row.clone()).collect();
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        state.package_reference_rows = effective.iter().map(|r| r.row.clone()).collect();
+    }
     state.package_references = effective
         .into_iter()
         .map(|reference| PackageReference {
@@ -2916,6 +2929,7 @@ struct DependencyIdentitySource {
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
     /// The item as an item table reads it: a helper item copied whole, or a
     /// bare literal identity.
+    #[cfg(any(test, feature = "test-support"))]
     row: EvaluatedItem,
 }
 
@@ -2965,12 +2979,17 @@ fn resolve_dependency_identity_sources(
                 metadata_uncertainties.extend(helper_item_definition_default_uncertainties(
                     &key, &item, state,
                 ));
+                #[cfg(any(test, feature = "test-support"))]
                 let mut row = item.clone();
-                row.metadata_uncertainties = metadata_uncertainties.clone();
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    row.metadata_uncertainties = metadata_uncertainties.clone();
+                }
                 resolved.push(DependencyIdentitySource {
                     identity: item.identity,
                     metadata,
                     metadata_uncertainties,
+                    #[cfg(any(test, feature = "test-support"))]
                     row,
                 });
             }
@@ -3010,6 +3029,7 @@ fn resolve_dependency_identity_sources(
         // either way must compare against.
         let identity = fragment_identity(entry);
         resolved.push(DependencyIdentitySource {
+            #[cfg(any(test, feature = "test-support"))]
             row: EvaluatedItem::bare(&identity),
             identity,
             metadata: PackageMetadata::default(),
@@ -3056,6 +3076,7 @@ struct GenericItemMetadata {
 
 impl EvaluatedItem {
     /// An item of `identity` and no metadata, all of it known.
+    #[cfg(any(test, feature = "test-support"))]
     fn bare(identity: &str) -> EvaluatedItem {
         EvaluatedItem {
             identity: identity.to_owned(),
@@ -3069,6 +3090,7 @@ impl EvaluatedItem {
     /// This item as an `Update` matching it leaves it: each metadatum the
     /// `Update` sets or leaves uncertain replaces this item's. (Identity and
     /// every other metadatum stay.)
+    #[cfg(any(test, feature = "test-support"))]
     fn updated_by(&mut self, update: &EvaluatedItem) {
         let written: HashSet<String> = update
             .exact_metadata
@@ -3936,7 +3958,11 @@ fn record_helper_item_definition_defaults(node: Node<'_, '_>, state: &mut State<
         let dependency = package_item_kind_for_element(child).is_some();
         let item_type = match generic_helper_item_type(child) {
             Some(item_type) => item_type,
-            None if dependency => child.tag_name().name().to_string(),
+            // Only the item table's rows read these, and only the differential
+            // tests read those.
+            None if dependency && cfg!(any(test, feature = "test-support")) => {
+                child.tag_name().name().to_string()
+            }
             None => continue,
         };
         let previous = state
