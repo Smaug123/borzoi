@@ -998,6 +998,26 @@ impl<'a> Resolver<'a> {
         any_module && self.is_project_module_key(self.path_key(mp))
     }
 
+    /// [`Self::is_project_module_path`] of the path whose id is `id`, `None`
+    /// when the table never interned it, and so no module set holds it. The
+    /// path is spelled (`text`) only for the reference.
+    fn is_project_module_id(&self, id: Option<PathId>, text: impl FnOnce() -> Vec<String>) -> bool {
+        let names = self.assemblies.names();
+        let found = self.module_paths.contains_id(names, id)
+            || self.nested_module_exports.contains_id(names, id)
+            || self.preceding.module_headers.contains_id(names, id)
+            || self.preceding.nested_module_paths.contains_id(names, id);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            let text = text();
+            PathKey::new(id, &text).check(names);
+            assert_eq!(found, self.is_project_module_path(&text), "{text:?}");
+        }
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        drop(text);
+        found
+    }
+
     /// [`Self::is_project_module_path`] by a key the caller already holds.
     pub(super) fn is_project_module_key(&self, mp: PathKey<'_>) -> bool {
         let names = self.assemblies.names();
@@ -1563,11 +1583,14 @@ impl<'a> Resolver<'a> {
         // companion-module grid a committed cell.
         //
         if !handles.is_empty() || self.assemblies.has_namespace(&namespace) {
-            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
-                path: namespace.clone(),
-                namespace_reading: true,
-                module_reading: !handles.is_empty(),
-            });
+            self.scope
+                .open_shortening_prefixes
+                .push(ShorteningPrefix::new(
+                    self.assemblies.names(),
+                    namespace.clone(),
+                    true,
+                    !handles.is_empty(),
+                ));
         }
         // A project `[<AutoOpen>]` module in this namespace nests short names
         // too, and FCS folds the project fragment last, so `open <short>`
@@ -1961,10 +1984,16 @@ impl<'a> Resolver<'a> {
     fn direct_tier_ids_at(&self, path: &[String]) -> HashMap<String, (ItemId, usize)> {
         let site = self.container_path.to_vec();
         let mut out: HashMap<String, (ItemId, usize)> = HashMap::default();
-        for (name, id) in self.preceding.direct_value_children(path, &site) {
+        for (name, id) in self
+            .preceding
+            .direct_value_children(self.assemblies.names(), path, &site)
+        {
             out.insert(name, (id, self.preceding.file_of(id)));
         }
-        for (name, id) in self.preceding.direct_constructor_children(path, &site) {
+        for (name, id) in
+            self.preceding
+                .direct_constructor_children(self.assemblies.names(), path, &site)
+        {
             out.entry(name)
                 .or_insert_with(|| (id, self.preceding.file_of(id)));
         }
@@ -2016,11 +2045,16 @@ impl<'a> Resolver<'a> {
                 value_names = Vec::new();
                 case_names = self
                     .preceding
-                    .fragment_constructor_children(&sub, file, &site)
+                    .fragment_constructor_children(self.assemblies.names(), &sub, file, &site)
                     .into_iter()
                     .map(|(name, _)| name)
                     .collect();
-                for (name, id) in self.preceding.fragment_value_children(&sub, file, &site) {
+                for (name, id) in self.preceding.fragment_value_children(
+                    self.assemblies.names(),
+                    &sub,
+                    file,
+                    &site,
+                ) {
                     // A maybe-literal value is a constant-pattern contestant: it
                     // ALSO feeds the `case` dimension (below), so a direct case
                     // does not win the constructor slot merely because the case
@@ -2179,12 +2213,19 @@ impl<'a> Resolver<'a> {
             }
             // Tier 1 — explicit opens (namespace + chained module), one
             // source-ordered list, latest open first so the most recent shadowing
-            // prefix wins across open kinds.
-            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
+            // prefix wins across open kinds. Each prefix is extended by the
+            // written names by id, and the path is spelled only where it hits.
+            let names = self.assemblies.names();
+            let written_names = names.lookup_names(written);
+            let spell = |prefix: &ShorteningPrefix| {
                 let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
-                if self.is_project_module_path(&full) {
-                    return Some(full);
+                full
+            };
+            for prefix in self.scope.open_shortening_prefixes.iter().rev() {
+                let id = names.extend_last(Some(prefix.id), &written_names);
+                if self.is_project_module_id(id, || spell(prefix)) {
+                    return Some(spell(prefix));
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
@@ -2223,7 +2264,10 @@ impl<'a> Resolver<'a> {
                     && !self.pending_items.contains(&it.id)
             })
             .map(|it| it.id)
-            .or_else(|| self.preceding.ordinary_value_at(path))
+            .or_else(|| {
+                self.preceding
+                    .ordinary_value_at(self.assemblies.names(), path)
+            })
     }
 
     /// Whether an **ordinary value** is exported at any proper prefix of the
@@ -2345,7 +2389,7 @@ impl<'a> Resolver<'a> {
         let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
             match self
                 .preceding
-                .type_qualified_case(&full, &self.container_path)
+                .type_qualified_case(self.assemblies.names(), &full, &self.container_path)
                 .filter(|_| !self.value_shadows_case(&full))
             {
                 None => None,
@@ -2368,11 +2412,22 @@ impl<'a> Resolver<'a> {
                 full.extend_from_slice(rest);
                 return hit(full, CaseTier::Alias);
             }
-            // Tier 1 — explicit opens, latest first.
+            // Tier 1 — explicit opens, latest first. Each prefix is extended
+            // by the written names by id, and a candidate the case index does
+            // not hold is never spelled.
+            let names = self.assemblies.names();
+            let written_names = names.lookup_names(written);
             for prefix in self.scope.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.path.clone();
-                full.extend_from_slice(written);
-                if let Some(found) = hit(full, CaseTier::Namespace) {
+                let spell = || {
+                    let mut full = prefix.path.clone();
+                    full.extend_from_slice(written);
+                    full
+                };
+                let id = names.extend_last(Some(prefix.id), &written_names);
+                if !self.preceding.holds_type_qualified_case(names, id, spell) {
+                    continue;
+                }
+                if let Some(found) = hit(spell(), CaseTier::Namespace) {
                     return Some(found);
                 }
             }
@@ -2510,9 +2565,11 @@ impl<'a> Resolver<'a> {
                     seen_ctors.insert(name.clone());
                     if hidden
                         || constant_names.contains(&name)
-                        || self
-                            .preceding
-                            .module_value_may_be_constant_pattern(q, &site)
+                        || self.preceding.module_value_may_be_constant_pattern(
+                            self.assemblies.names(),
+                            q,
+                            &site,
+                        )
                     {
                         suppressed.push(item.id);
                     }
@@ -2553,15 +2610,27 @@ impl<'a> Resolver<'a> {
         // (its members come from the same-file pass above).
         let (value_children, ctor_children) = match fragment_file {
             None => (
-                self.preceding.direct_value_children(module_path, &site),
                 self.preceding
-                    .direct_constructor_children(module_path, &site),
+                    .direct_value_children(self.assemblies.names(), module_path, &site),
+                self.preceding.direct_constructor_children(
+                    self.assemblies.names(),
+                    module_path,
+                    &site,
+                ),
             ),
             Some(f) if f < current_file => (
-                self.preceding
-                    .fragment_value_children(module_path, f, &site),
-                self.preceding
-                    .fragment_constructor_children(module_path, f, &site),
+                self.preceding.fragment_value_children(
+                    self.assemblies.names(),
+                    module_path,
+                    f,
+                    &site,
+                ),
+                self.preceding.fragment_constructor_children(
+                    self.assemblies.names(),
+                    module_path,
+                    f,
+                    &site,
+                ),
             ),
             Some(_) => (Vec::new(), Vec::new()),
         };
@@ -2574,9 +2643,11 @@ impl<'a> Resolver<'a> {
                     q.push(name.clone());
                     if hidden
                         || constant_names.contains(&name)
-                        || self
-                            .preceding
-                            .module_value_may_be_constant_pattern(&q, &site)
+                        || self.preceding.module_value_may_be_constant_pattern(
+                            self.assemblies.names(),
+                            &q,
+                            &site,
+                        )
                     {
                         suppressed.push(id);
                     }
@@ -2606,9 +2677,11 @@ impl<'a> Resolver<'a> {
                 q.push(name.clone());
                 if hidden
                     || constant_names.contains(&name)
-                    || self
-                        .preceding
-                        .module_value_may_be_constant_pattern(&q, &site)
+                    || self.preceding.module_value_may_be_constant_pattern(
+                        self.assemblies.names(),
+                        &q,
+                        &site,
+                    )
                 {
                     suppressed.push(id);
                 }
@@ -3186,8 +3259,11 @@ impl<'a> Resolver<'a> {
             })
             .map(|i| i.id)
             .or_else(|| {
-                self.preceding
-                    .lookup_qualified_path(&full, &self.container_path)
+                self.preceding.lookup_qualified_path(
+                    self.assemblies.names(),
+                    &full,
+                    &self.container_path,
+                )
             })
             .map_or(QualifiedMember::Absent, QualifiedMember::Bound)
     }
@@ -3206,7 +3282,7 @@ impl<'a> Resolver<'a> {
             Some(_) => QualifiedMember::Declined,
             None => self
                 .preceding
-                .lookup_qualified_path(path, &self.container_path)
+                .lookup_qualified_path(self.assemblies.names(), path, &self.container_path)
                 .map_or(QualifiedMember::Absent, QualifiedMember::Bound),
         }
     }
@@ -3219,7 +3295,7 @@ impl<'a> Resolver<'a> {
         let earlier = self
             .preceding
             .member_decl_files
-            .get(path)
+            .get(self.assemblies.names(), path)
             .map_or(&[][..], Vec::as_slice);
         let own = self.member_decl_counts.get(path).copied().unwrap_or(0);
         let mut files = earlier
@@ -3266,7 +3342,7 @@ impl<'a> Resolver<'a> {
             .map(|i| (i.id, accessible(i.access_root_len)));
         let earlier = self
             .preceding
-            .ordinary_values_at(full)
+            .ordinary_values_at(self.assemblies.names(), full)
             .map(|(id, root)| (id, accessible(root)));
         // `own` is this file's, which folds after every earlier one.
         let values: Vec<(ItemId, bool)> = earlier.chain(own).collect();
@@ -4353,9 +4429,11 @@ impl<'a> Resolver<'a> {
             || self
                 .preceding
                 .is_exact_project_module(self.assemblies.names(), path.key())
-            || self
-                .preceding
-                .is_project_value_prefixed(names, &self.container_path);
+            || self.preceding.is_project_value_prefixed(
+                self.assemblies.names(),
+                names,
+                &self.container_path,
+            );
         shadowed.then_some(DeclineCause::ProjectPathShadow)
     }
 
@@ -5123,7 +5201,7 @@ impl<'a> Resolver<'a> {
             // there anyway) — it falls to the conservative handling below.
             if self
                 .preceding
-                .type_qualified_case(&case_path, &self.container_path)
+                .type_qualified_case(self.assemblies.names(), &case_path, &self.container_path)
                 .is_some()
             {
                 return Some(SameFileQualified::Miss);
@@ -5162,7 +5240,7 @@ impl<'a> Resolver<'a> {
                 .any(|i| i.qualified.as_deref() == Some(ty_path.as_slice()))
                 || self
                     .preceding
-                    .lookup_qualified_path(&ty_path, &self.container_path)
+                    .lookup_qualified_path(self.assemblies.names(), &ty_path, &self.container_path)
                     .is_some()
             {
                 return Some(SameFileQualified::DeferStop);
@@ -5416,7 +5494,7 @@ impl<'a> Resolver<'a> {
             case_path.push(res.case.to_string());
             if self
                 .preceding
-                .type_qualified_case(&case_path, &self.container_path)
+                .type_qualified_case(self.assemblies.names(), &case_path, &self.container_path)
                 .is_some()
             {
                 return Some(SameFileQualified::Miss);
@@ -6013,11 +6091,15 @@ impl<'a> Resolver<'a> {
                     let names_head = if path == owner {
                         self.preceding
                             .is_real_nested_module(self.assemblies.names(), self.path_key(&path))
-                            || self.preceding.declares_member_at(&path)
+                            || self
+                                .preceding
+                                .declares_member_at(self.assemblies.names(), &path)
                     } else {
                         self.preceding
                             .binds_along_path(self.assemblies.names(), &path)
-                            || self.preceding.declares_member_at(&path)
+                            || self
+                                .preceding
+                                .declares_member_at(self.assemblies.names(), &path)
                     };
                     if names_head {
                         return false;
@@ -6145,7 +6227,9 @@ impl<'a> Resolver<'a> {
         let owner = &at[..at.len() - 1];
         (self.head_names_only_the_owner(head, owner)
             && self.opened_project_modules_leave_head(head, owner)
-            && !self.preceding.declares_member_at(&at))
+            && !self
+                .preceding
+                .declares_member_at(self.assemblies.names(), &at))
         .then_some(id)
     }
 
@@ -7053,7 +7137,10 @@ impl<'a> Resolver<'a> {
             None => {
                 let mut path = prefix.to_vec();
                 path.push(head.to_string());
-                if let Some(order) = self.preceding.union_case_order(&path, id) {
+                if let Some(order) =
+                    self.preceding
+                        .union_case_order(self.assemblies.names(), &path, id)
+                {
                     return Some(ValueFold::At(FoldOrder::earlier_file(order)));
                 }
                 if !entry.from_open {

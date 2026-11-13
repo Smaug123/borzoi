@@ -800,9 +800,29 @@ pub(super) struct OpenGroup {
 /// module pushes its own entry with this set.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ShorteningPrefix {
+    /// `path`'s id in the env's name table, interned when the prefix is
+    /// pushed, so a written path is probed under it by id.
+    pub(super) id: PathId,
     pub(super) path: Vec<String>,
     pub(super) namespace_reading: bool,
     pub(super) module_reading: bool,
+}
+
+impl ShorteningPrefix {
+    /// The prefix `path`, interned in `names`.
+    pub(super) fn new(
+        names: &NameTable,
+        path: Vec<String>,
+        namespace_reading: bool,
+        module_reading: bool,
+    ) -> Self {
+        ShorteningPrefix {
+            id: names.intern_path(&path),
+            path,
+            namespace_reading,
+            module_reading,
+        }
+    }
 }
 
 /// One interpretation of an `open <path>` clause at one base of the open's
@@ -1851,11 +1871,7 @@ pub(super) fn implicit_open_namespaces(assemblies: &AssemblyEnv) -> Vec<Vec<Stri
 pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<ShorteningPrefix> {
     implicit_open_namespaces(assemblies)
         .into_iter()
-        .map(|path| ShorteningPrefix {
-            path,
-            namespace_reading: true,
-            module_reading: false,
-        })
+        .map(|path| ShorteningPrefix::new(assemblies.names(), path, true, false))
         .collect()
 }
 

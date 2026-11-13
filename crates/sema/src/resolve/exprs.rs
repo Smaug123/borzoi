@@ -1435,7 +1435,7 @@ impl<'a> Resolver<'a> {
             // `decide_type_path` ignores values by design, so nothing else sees it.
             || self
                 .preceding
-                .namespace_exports_value_named(self.enclosing_namespace(), name)
+                .namespace_exports_value_named(self.assemblies.names(), self.enclosing_namespace(), name)
             // This file's own residue. An `[<AutoOpen>]` **type** abbreviation
             // (`[<AutoOpen>] type T = Demo.Calc`) folds the target's statics into
             // the rest of the container — fsi-verified — and an alias or `extern`

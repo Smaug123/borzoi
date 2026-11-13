@@ -3348,7 +3348,7 @@ mod export_decl_tests {
             pi.modules_with_hidden_values
         );
         // And, being anonymous-root, it contributes no value / case exports.
-        assert!(pi.value_exports.is_empty());
+        assert!(pi.value_exports.iter().next().is_none());
         assert!(pi.case_item_ids.is_empty());
     }
 
