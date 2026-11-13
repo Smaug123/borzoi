@@ -2229,10 +2229,20 @@ impl<'src> Parser<'src> {
     /// at pattern position through [`Self::parse_paren_pat`]. Caller
     /// must have confirmed the current token is accepted by
     /// [`raw_starts_const_payload`] *and* is not `LParen`.
+    ///
+    /// A numeric literal with an adjacent measure (`0<m>`) is FCS's measure
+    /// arm of `constant` (`pars.fsy:3520`), which `atomicPattern: constant`
+    /// takes as it does a bare literal; it is wrapped in a
+    /// [`SyntaxKind::MEASURE_LIT_PAT`] exactly as the expression side wraps
+    /// its `CONST_EXPR`.
     pub(super) fn parse_const_pat(&mut self) {
+        let cp = self.builder.checkpoint();
         self.builder.start_node(SyntaxKind::CONST_PAT);
         self.parse_const_payload();
         self.builder.finish_node();
+        if self.peek_is_tyapp_marker() && self.prev_filtered_is_measure_numeric() {
+            self.parse_measure_lit_tail(cp, SyntaxKind::MEASURE_LIT_PAT);
+        }
     }
 
     /// `SynPat.Paren` — open `PAREN_PAT` around an inner pat (or, for

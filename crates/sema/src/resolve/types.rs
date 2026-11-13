@@ -3584,13 +3584,15 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(&inner);
                 }
             }
-            // Leaves with no nested pattern and no type annotation. `OptionalVal`
+            // Leaves with no nested pattern and no type annotation (a measure
+            // annotation is not resolved, as in an expression). `OptionalVal`
             // (`?x`) is a bare binder; a typed optional arg `?x : T` is
             // `Typed(OptionalVal, T)`, so the annotation is resolved by the
             // `Typed` arm, never here.
             Pat::Named(_)
             | Pat::Wildcard(_)
             | Pat::Const(_)
+            | Pat::MeasureLit(_)
             | Pat::Null(_)
             | Pat::OptionalVal(_) => {}
         }
@@ -3936,8 +3938,13 @@ impl<'a> Resolver<'a> {
                 }
             }
             // No use to resolve. `OptionalVal` (`?x`) is not a meaningful parameter
-            // expression; `Const` / `Null` / `Wildcard` name nothing.
-            Pat::OptionalVal(_) | Pat::Const(_) | Pat::Null(_) | Pat::Wildcard(_) => {}
+            // expression; `Const` / `MeasureLit` / `Null` / `Wildcard` name
+            // nothing (a measure name is not resolved, as in an expression).
+            Pat::OptionalVal(_)
+            | Pat::Const(_)
+            | Pat::MeasureLit(_)
+            | Pat::Null(_)
+            | Pat::Wildcard(_) => {}
         }
     }
 

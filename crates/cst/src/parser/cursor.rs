@@ -747,8 +747,11 @@ impl<'src> Parser<'src> {
                 self.raw_pos += 1;
                 return;
             }
+            // Name the offending token by its source text: the diagnostic is
+            // user-facing, and the token's `Debug` form is lexer internals.
+            let found = self.source.get(span.clone()).unwrap_or_default();
             self.errors.push(ParseError {
-                message: format!("expected `{closer}` to close {construct}, found {res:?}"),
+                message: format!("expected `{closer}` to close {construct}, found `{found}`"),
                 span,
             });
             return;

@@ -232,6 +232,10 @@ pub const PAT_NODES: &[Node] = &[
         kinds: &[],
     },
     Node {
+        name: "MeasureLitPat",
+        kinds: &[],
+    },
+    Node {
         name: "NullPat",
         kinds: &[],
     },
@@ -295,6 +299,7 @@ pub const PAT_ENUMS: &[Enum] = &[Enum {
         ("Wildcard", "WildcardPat"),
         ("Paren", "ParenPat"),
         ("Const", "ConstPat"),
+        ("MeasureLit", "MeasureLitPat"),
         ("Null", "NullPat"),
         ("Typed", "TypedPat"),
         ("Tuple", "TuplePat"),

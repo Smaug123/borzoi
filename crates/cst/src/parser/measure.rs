@@ -1,7 +1,7 @@
-//! Unit-of-measure annotated numeric literals in expression position — FCS's
-//! `rawConstant HIGH_PRECEDENCE_TYAPP measureTypeArg` (`pars.fsy:3521`),
-//! projecting to `SynExpr.Const(SynConst.Measure(constant, range, synMeasure,
-//! trivia))`.
+//! Unit-of-measure annotated numeric literals — FCS's `rawConstant
+//! HIGH_PRECEDENCE_TYAPP measureTypeArg` (`pars.fsy:3521`), projecting to
+//! `SynConst.Measure(constant, range, synMeasure, trivia)` under a
+//! `SynExpr.Const` or, in pattern position, a `SynPat.Const`.
 //!
 //! The `measureTypeExpr` grammar (`pars.fsy:6693-6760`) is a small closed
 //! recursive grammar; this is its recursive-descent transcription. The exponent
@@ -17,18 +17,21 @@
 use super::*;
 
 impl<'src> Parser<'src> {
-    /// Wrap the `CONST_EXPR` checkpointed at `cp` and the trailing `< … >`
-    /// measure annotation in a [`SyntaxKind::MEASURE_LIT_EXPR`]. The caller
-    /// ([`Self::parse_postfix_tail`]) has verified the cursor sits at the
-    /// `HighPrecedenceTyApp` adjacency virtual that precedes the `<` and that
-    /// the head literal is numeric ([`Self::prev_filtered_is_measure_numeric`]).
+    /// Wrap the constant checkpointed at `cp` and the trailing `< … >` measure
+    /// annotation in a `kind` node: [`SyntaxKind::MEASURE_LIT_EXPR`] around a
+    /// `CONST_EXPR` ([`Self::parse_postfix_tail`]), or
+    /// [`SyntaxKind::MEASURE_LIT_PAT`] around a `CONST_PAT`
+    /// ([`Self::parse_const_pat`]). The caller has verified the cursor sits at
+    /// the `HighPrecedenceTyApp` adjacency virtual that precedes the `<` and
+    /// that the head literal is numeric
+    /// ([`Self::prev_filtered_is_measure_numeric`]).
     ///
     /// The `HighPrecedenceTyApp` virtual is consumed zero-width as an `ERROR`
     /// (mirroring [`Self::parse_type_app_tail`]). The matching `>` was already
     /// found by LexFilter's adjacency walk (it is what made the marker fire), so
     /// it is present as a `Greater(true)` and bumped as `GREATER_TOK`.
-    pub(super) fn parse_measure_lit_tail(&mut self, cp: Checkpoint) {
-        self.builder.start_node_at(cp, SyntaxKind::MEASURE_LIT_EXPR);
+    pub(super) fn parse_measure_lit_tail(&mut self, cp: Checkpoint, kind: SyntaxKind) {
+        self.builder.start_node_at(cp, kind);
         // HPA/HPTA virtual: consume as a zero-width ERROR placeholder.
         self.bump_into(SyntaxKind::ERROR);
         if matches!(
@@ -58,7 +61,7 @@ impl<'src> Parser<'src> {
                 span,
             });
         }
-        self.builder.finish_node(); // MEASURE_LIT_EXPR
+        self.builder.finish_node(); // MEASURE_LIT_EXPR / MEASURE_LIT_PAT
     }
 
     /// `measureTypeArg` body (the part *inside* `< >`, the `<`/`>` are the

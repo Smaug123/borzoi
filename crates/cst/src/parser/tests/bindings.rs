@@ -1094,6 +1094,7 @@ fn let_binding_function_form_mixed_args() {
             crate::syntax::Pat::LongIdent(_) => "long_ident",
             crate::syntax::Pat::Paren(_) => "paren",
             crate::syntax::Pat::Const(_) => "const",
+            crate::syntax::Pat::MeasureLit(_) => "measure_lit",
             crate::syntax::Pat::Null(_) => "null",
             crate::syntax::Pat::Typed(_) => "typed",
             crate::syntax::Pat::Tuple(_) => "tuple",
