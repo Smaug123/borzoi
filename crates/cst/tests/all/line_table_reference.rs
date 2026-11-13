@@ -12,8 +12,8 @@
 //! line 1's columns.
 //!
 //! How the filter uses the cursor (where virtual tokens go, what the FS0058
-//! messages say) is held to the frozen filter by `filter_reference`, whose
-//! alphabet includes [`NEWLINE_SHAPES`].
+//! messages say) is graded against FCS by the lex-filter differential, and
+//! `filtered_table` draws on [`NEWLINE_SHAPES`] too.
 
 use std::collections::HashSet;
 

@@ -1,35 +1,33 @@
-//! The filtered stream against the frozen reference pipeline
-//! (`borzoi_cst::reference`, `docs/token-pipeline-soa-plan.md` D7).
+//! The filtered token table ([`FilteredTokens`]) and the two inputs the
+//! filter reads.
 //!
-//! Under the `token-reference` feature every parse asserts that its filtered
-//! stream, offside diagnostics and language-version flag equal the reference
-//! pipeline's, so the parser suites, the panic sweep's exhaustive `WIDE` pairs
-//! and `CORE` triples, and the corpus sweeps all hold the live pipeline to it.
-//! (The triples matter: dropping `)` from the live filter's atomic-expression
-//! ends changes how `)-1` folds, which no pair spells and the triples catch.)
-//! This group adds the
-//! lexical shapes those need not reach (every string, comment, directive and
-//! line-break spelling of `token_table_reference::LEXICAL`), at each
-//! language-version band the filter's shape depends on, with the `#if` arms
-//! both active and inactive; and checks that the assertion is live.
+//! The parser filters the full-trivia table; the FCS lex-filter differential
+//! and the LSP filter an active-code stream through
+//! [`borzoi_cst::lexfilter::filter`], which builds a table from it with
+//! [`RawTokens::from_active`], marking each gap the preprocessor left as
+//! inactive code. The two must filter alike, tokens, offside diagnostics and
+//! language-version flag, or the differential grades a stream the parser does
+//! not read. [`check_table`] holds them to each other, and holds each entry's
+//! stored kind to the kind of the token it rebuilds, over the lexical shapes
+//! of `token_table_reference::LEXICAL`, the filter's rewriting shapes and the
+//! line-break shapes, at each language-version band the filter's shape
+//! depends on, with the `#if` arms both active and inactive. It records which
+//! [`FilteredKind`]s a generator reached: one that stops reaching a kind
+//! rebuilt by a rule of its own has stopped testing that rule.
 //!
-//! The parse holds the filtered table ([`FilteredTokens`]) to the reference
-//! after the sign fold. [`check`] also holds the table to the reference filter
-//! before it, so a fault in the table's encoding is not masked by the fold,
-//! and records which [`FilteredKind`]s a generator reached: one that stops
-//! reaching a kind rebuilt by a rule of its own has stopped testing that rule.
+//! What the filter emits is graded against FCS by the lex-filter differential
+//! (`lexfilter_diff`) and, through the parse, by the parser corpus manifests.
 
 use std::collections::{BTreeSet, HashSet};
 
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::lexer::{Token, TokenKind};
 use borzoi_cst::lexfilter::{FilteredToken, Virtual, filter_collect};
-use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
 use borzoi_cst::tokens::{FilteredKind, FilteredTokens, RawTokens, lex_full_trivia};
 use proptest::prelude::*;
 
 use crate::line_table_reference::NEWLINE_SHAPES;
-use crate::parser_panic_sweep::{CORE, WIDE};
+use crate::parser_panic_sweep::WIDE;
 use crate::token_table_reference::LEXICAL;
 
 /// Shapes the filter rewrites by a rule of its own: type applications (the
@@ -65,14 +63,10 @@ const FILTER_SHAPES: &[&str] = &[
     "-0x1l",
 ];
 
-/// Hold the live filter's table to the reference filter on `src` under `lang`
-/// and `symbols`, before the sign fold, recording the kinds it saw.
-///
-/// Also hold the filter over the active stream alone
-/// ([`RawTokens::from_active`], what [`borzoi_cst::lexfilter::filter`] and the
-/// FCS differential read) to the filter over the full-trivia table the parser
-/// reads: the gaps where the preprocessor removed code must filter as the
-/// directive and inactive-code entries they replace.
+/// Hold the filter over the active stream alone ([`RawTokens::from_active`])
+/// to the filter over the full-trivia table on `src` under `lang` and
+/// `symbols`, before the sign fold, and each entry's kind to its rebuilt
+/// token's, recording the kinds it saw.
 fn check_table(
     src: &str,
     symbols: &HashSet<String>,
@@ -81,14 +75,7 @@ fn check_table(
 ) {
     let lexed = lex_full_trivia(src, symbols);
     let live = filter_collect(&lexed.tokens, lang);
-    let reference =
-        borzoi_cst::reference::lexfilter::filter_collect(src, lang, lexed.tokens.active());
     let live_items: Vec<String> = live.tokens.items().map(|t| format!("{t:?}")).collect();
-    let want: Vec<String> = reference.tokens.iter().map(|t| format!("{t:?}")).collect();
-    assert_eq!(
-        live_items, want,
-        "filtered table differs at {lang} on {src:?}"
-    );
     let from_active = filter_collect(&RawTokens::from_active(src, lexed.tokens.active()), lang);
     assert_eq!(
         from_active
@@ -121,9 +108,8 @@ fn check_table(
     }
 }
 
-/// Parse `src` under every language-version band and `#if` symbol set; each
-/// parse runs the reference comparison. Also hold the table to the reference
-/// filter directly ([`check_table`]).
+/// [`check_table`] `src` under every language-version band and `#if` symbol
+/// set.
 ///
 /// Each source is checked again followed by an aligned sibling line, so the
 /// filter inserts an `OBLOCKSEP` after whatever token the source ends with.
@@ -143,14 +129,6 @@ fn check(src: &str, seen: &mut BTreeSet<FilteredKind>) {
     for src in [src, &sibling, &perturbed, &perturbed_sibling] {
         for symbols in [HashSet::new(), HashSet::from(["X".to_string()])] {
             for lang in LanguageVersion::SHAPE_REPRESENTATIVES {
-                parse_with_options(
-                    src,
-                    ParseOptions {
-                        file_kind: FileKind::Impl,
-                        symbols: &symbols,
-                        lang,
-                    },
-                );
                 check_table(src, &symbols, lang, seen);
             }
         }
@@ -220,7 +198,7 @@ fn pieces() -> impl Iterator<Item = &'static &'static str> + Clone {
 
 /// Every one- and two-piece source over [`pieces`].
 #[test]
-fn every_lexical_pair_matches_the_reference_filter() {
+fn every_lexical_pair_filters_alike_from_either_input() {
     let mut seen = BTreeSet::new();
     for a in pieces() {
         check(a, &mut seen);
@@ -229,26 +207,6 @@ fn every_lexical_pair_matches_the_reference_filter() {
         }
     }
     assert_reached(&seen, "the lexical pairs");
-}
-
-/// Every three-piece source over the panic sweep's `CORE` alphabet, the
-/// shortest length at which `)-1` is spelled (a filter change that moves how it
-/// folds passes every pair). The parse half also runs in the panic sweep; the
-/// table half is this group's.
-#[test]
-fn every_core_triple_matches_the_reference_filter() {
-    let mut seen = BTreeSet::new();
-    for a in CORE {
-        for b in CORE {
-            for c in CORE {
-                let src = format!("{a}{b}{c}\n");
-                let symbols = HashSet::new();
-                for lang in LanguageVersion::SHAPE_REPRESENTATIVES {
-                    check_table(&src, &symbols, lang, &mut seen);
-                }
-            }
-        }
-    }
 }
 
 /// Every filtered kind survives the table: the kind of the entry a kind
@@ -297,7 +255,7 @@ fn the_table_refuses_a_payload_that_is_not_its_text() {
 proptest! {
     /// Random walks over both alphabets, at lengths the pairs cannot reach.
     #[test]
-    fn random_sources_match_the_reference_filter(
+    fn random_sources_filter_alike_from_either_input(
         pieces in prop::collection::vec(
             prop::sample::select(
                 pieces().chain(WIDE).copied().collect::<Vec<_>>(),
@@ -307,22 +265,4 @@ proptest! {
     ) {
         check(&pieces.concat(), &mut BTreeSet::new());
     }
-}
-
-/// The comparison runs inside every parse: the reference module is compiled
-/// into this binary, and a parse of a source the filter rewrites goes through
-/// it without failing.
-#[test]
-fn the_reference_comparison_is_compiled_in() {
-    let run = borzoi_cst::reference::filtered_stream(
-        "let x =\n  1\n",
-        &HashSet::new(),
-        LanguageVersion::Preview,
-    );
-    assert!(
-        run.tokens.len() > 3,
-        "the reference filter inserts layout tokens: {:?}",
-        run.tokens
-    );
-    check("let x =\n  1\n", &mut BTreeSet::new());
 }

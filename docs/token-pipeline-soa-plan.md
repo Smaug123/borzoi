@@ -3,9 +3,9 @@
 > **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
 > table), Stage 2 (the frozen filter reference), Stage 3 (the filtered
 > token table), Stage 4 (the filter reads the raw table by index),
-> Stage 5 (the newline table), Stage 6 (the lexer writes the raw table) and
+> Stage 5 (the newline table), Stage 6 (the lexer writes the raw table),
 > Stage 7 (the diagnostic scans, measured and reordered rather than folded)
-> implemented.
+> and Stage 8 (the references retired) implemented: the plan is complete.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
 > parser's tree builder.
@@ -567,6 +567,68 @@ callers read the table). Optional, by profile: move the productions' hottest
 `peek` sites to kind comparisons (D5).
 
 **Oracle**: full gate and manifests unchanged.
+
+**Result.** The frozen copies are gone: `crate::reference` (the filter, the
+sign fold and Stage 7's scans, 7,700 lines), the two lockstep assertions in
+`parse_inner` that compared the parse with them, and `scan_reference`. What
+the filter emits is graded against FCS by the lex-filter differential and,
+through the parse, by the parser corpus manifests, which is what held it
+before #542 began; a frozen copy would only stand in the way of the next
+LexFilter arm ported. `filter_reference` becomes `filtered_table`, keeping the
+checks that guard something live: that the filter over an active-code stream
+(`RawTokens::from_active`, what `lexfilter::filter`, the FCS differential and
+the LSP read) and over the full-trivia table (what the parser reads) agree,
+and that every entry's stored kind is its rebuilt token's. Its `CORE` triples
+go: they hold no directive, so the two inputs are the same table.
+
+Two oracles stay because both sides are live. The newline table is held to a
+rescan of the bytes (`line_table_reference`), a naive implementation rather
+than a copy. And `lex_full_trivia` still asserts, under `token-reference`,
+that the table rebuilds the full-trivia driver iterator's stream
+(`token_table_reference` over the generated inputs): the iterators stay, so
+that comparison holds the parser's lexer and the LSP's to one another.
+
+**The iterators stay iterators.** Making `lex_with_symbols` a view over the
+table was measured and not done. Over the same tree, min of 3, the
+swallow-mode iterator costs 83.8 instructions and 0.01 bytes allocated per
+byte drained; building the table and walking its active tokens costs 85.5 and
+4.05. So the LSP's swallow-mode passes would get no cheaper. What a view would
+delete is small: the queue sink behind the iterators (`Queued`, the `Sink`
+trait's queue impl), the two iterator wrappers and the swallow mode's
+`trivia_mode` branches, against a view that must put each preprocessor error
+back between the tokens where the iterator yields it, which the table does not
+record, and must carry the `#line` store. The real saving for the LSP is
+elsewhere: `diagnostics::grouped_diagnostics` lexes each buffer three times
+beside the parse (`diagnostics_for`, `parse_diagnostics`'s overlap spans, and
+`line_directive_store`), and reading the lexer errors from one table's kinds
+costs 78.5 against the iterator's 84.0. That is an LSP change, whichever form
+the iterators take.
+
+**No peek site moves to kind comparisons.** A sample profile of the parse
+(xctrace, 2,393 samples inside `parse_inner`) names no production lookahead
+worth 1% of it. The largest are `next_non_trivia_raw_after` from
+`at_active_pat_name_at` (0.75%), `try_emit_head_binding_pat_element` (0.59%)
+and `op_rhs_is_swallowed_closer` (0.38%); the rest is spread over some forty
+call sites. Together the raw-side lookaheads rebuild a `Token` in
+`significant_raw_from` for 2.1% of the parse, but returning a kind from them
+would change every caller and the token predicates they feed, for at most that.
+The cursor's own rebuild of each token it moves to (`FilteredCursor::advance`,
+2.3%, and its table read under `bump_into`, 2.0%) is what D5 keeps so that the
+productions can match `Token`s.
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine (nothing on the
+production path changed):
+
+| phase | instr/B before | instr/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|
+| lex | 78.2 | 78.2 | 4.05 | 4.05 |
+| scans | 8.6 | 8.6 | 0.00 | 0.00 |
+| lex-filter | 189.9 | 189.5 | 5.76 | 5.76 |
+| parse | 510.9 | 510.5 | 52.44 | 52.44 |
+
+Across the plan, a parse went from 546.3 to 510.5 instructions per byte (7%)
+and from 109.2 to 52.4 bytes allocated per byte (52%); lexing and filtering
+from 318.6 to 267.7 instructions per byte.
 
 ## Non-goals
 
