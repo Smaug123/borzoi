@@ -710,20 +710,20 @@ The whole-corpus dump is byte-identical to Stage 4's.
   (`starts_with`) rather than by key, and none of them appears in a
   profile of resolve, per file or as one project.
 
-**Measured** (5a, on 5b): resolve 999.8 → 882.2 instructions per byte
-(−11.8%), allocations 0.947 → 0.758 per byte (−20%); infer 173.7 → 173.5.
+**Measured** (5a, on 5b): resolve 999.8 → 882.1 instructions per byte
+(−11.8%), allocations 0.947 → 0.759 per byte (−20%); infer 173.7 → 174.0.
 Each file resolves against an empty `ProjectItems` there, so this is the
 tier-1 walks alone. A throwaway variant that resolves the same files as one
 project (`resolve_project`, every map populated) measures the whole stage:
 
 | | Stage 4 | 5c | 5b | 5a |
 |---|---|---|---|---|
-| `resolve_file`, instr/B | 1245.1 | 1134.2 | 999.8 | 882.2 |
-| `resolve_project`, instr/B | 1304.4 | 1262.2 | 1225.1 | 910.7 |
+| `resolve_file`, instr/B | 1245.1 | 1134.2 | 999.8 | 882.1 |
+| `resolve_project`, instr/B | 1304.4 | 1262.2 | 1225.1 | 887.7 |
 
 The plan estimated −10 to −15% across the three parts; per file the stage
-measures −29%, and as one project −30%. Allocations per byte, per file, fall
-from 1.267 to 0.758: below one per source byte. The whole-corpus dump is
+measures −29%, and as one project −32%. Allocations per byte, per file, fall
+from 1.267 to 0.759: below one per source byte. The whole-corpus dump is
 byte-identical to Stage 4's after each part.
 
 ### Stage 6 (optional): published names
