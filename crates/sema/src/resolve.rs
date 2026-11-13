@@ -56,13 +56,12 @@ use std::sync::Arc;
 
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ExternDecl, ImplFile, JoinInExpr,
-    LongIdent, ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat,
-    SigDecl, SigFile, SyntaxKind, SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr, UnionCase,
+    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ImplFile, LongIdent, ModuleDecl,
+    ModuleOrNamespace, ModuleOrNamespaceKind, Pat, SigDecl, SigFile, SyntaxKind, SyntaxNode,
+    SyntaxToken, Type, TypeDefn, TypeDefnRepr,
 };
 
-use crate::assembly_env::{AssemblyEnv, EntityHandle};
-use crate::binders::every_let_pattern_binder_name;
+use crate::assembly_env::AssemblyEnv;
 pub(crate) use crate::def::id_text;
 use crate::def::{Def, DefId, DefKind};
 use crate::names::NameTable;
@@ -74,18 +73,19 @@ mod container;
 mod contributors;
 mod custom_operations;
 mod decl_path;
-use contributors::FileContributions;
 use decl_path::{DeclPath, ExportName};
 use open_scope::OpenScope;
-use path_set::PathSet;
 use prescan::Prescan;
-use unknowables::{Unknowable, Unknowables};
+use unknowables::Unknowable;
 use windows::Windows;
 mod decls;
 mod exprs;
+mod indexes;
+mod lexical;
 mod lookup;
 mod model;
 mod open_scope;
+mod output;
 mod path_set;
 mod prescan;
 mod state;
@@ -124,237 +124,12 @@ pub fn resolve_file(
     // scaffolding is `#[cfg]`'d out (and `tracing`-free) in the default build.
     #[cfg(feature = "otel")]
     let _phase = tracing::info_span!("resolver_new").entered();
-    let prescan = prescan::Prescan::of(file.syntax());
-    let mut r = Resolver::new(preceding, assemblies, &prescan);
-    r.recovery = recovery.clone();
-    r.dropped_decls = dropped_in_namespace(file);
+    let prescan = prescan::Prescan::of(file, preceding, assemblies);
+    let mut r = Resolver::new(preceding, assemblies, &prescan, recovery);
     #[cfg(feature = "otel")]
     drop(_phase);
     #[cfg(feature = "otel")]
     let _phase = tracing::info_span!("resolve_walk").entered();
-    // EX-3 §2(d): pre-scan every type definition's simple name for the
-    // attribute resolution's project-type guard. Whole-file and up front (not
-    // accumulated during the walk) so it is order-independent — a `[<Foo>]`
-    // candidate must defer whether the potentially-aliasing `type
-    // FooAttribute` is declared before or after it, or in a sibling block.
-    // Over-approximate (an augmentation target's last segment counts too),
-    // which is sound: a spurious match only adds a defer.
-    for defn in file.syntax().descendants_of::<TypeDefn>() {
-        if custom_operations::type_defn_renames_custom_operation(&defn) {
-            r.contributions.declares_custom_operation_alias = true;
-        }
-        if is_type_augmentation(&defn) {
-            let names = contributors::declared_identifiers(defn.syntax());
-            r.own_extension_statics.extend(names.iter().cloned());
-            r.contributions.extension_statics.extend(names);
-        }
-        if type_defn_renames_attribute(&defn, crate::assembly_env::SLOT_ATTRIBUTE_NAMES) {
-            r.contributions.declares_slot_attribute_alias = true;
-        }
-        if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
-            r.own_type_simple_names.insert(id_text(&name).to_string());
-            if !is_type_augmentation(&defn) {
-                let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
-                let scoped = arity > 0
-                    || match defn.repr() {
-                        Some(TypeDefnRepr::Union(_)) => true,
-                        Some(TypeDefnRepr::Abbrev(a)) => a
-                            .ty()
-                            .as_ref()
-                            .and_then(abbrev_target_single_ident)
-                            .is_some(),
-                        _ => false,
-                    };
-                *r.own_type_scoped
-                    .entry((id_text(&name).to_string(), arity))
-                    .or_default() |= scoped;
-            }
-            // A generic declaration of the name disqualifies an in-file
-            // attribute commit: FCS's attribute lookup is arity-0
-            // (`DefiniteEmpty`), so it skips a generic local and binds an
-            // assembly arity-0 type instead, and the in-file lookup only
-            // pins a local of the written arity in the innermost container
-            // declaring the name (codex round 7).
-            if defn.typar_decls().is_some() {
-                r.own_generic_type_simple_names
-                    .insert(id_text(&name).to_string());
-            }
-            if !is_type_augmentation(&defn) {
-                *r.own_type_decl_counts
-                    .entry(id_text(&name).to_string())
-                    .or_default() += 1;
-            }
-            // An in-file ABBREVIATION could alias `ExtensionAttribute` (the
-            // resolver records the local without chasing its target), so the
-            // gate's derivation must know which local names are abbreviations
-            // — a committed `Local` of one is a possible extension marker,
-            // where a concrete in-file class is its own tycon and provably
-            // not (EX-3 §2(d) stage 5).
-            if matches!(defn.repr(), Some(TypeDefnRepr::Abbrev(_))) {
-                r.own_abbrev_type_simple_names
-                    .insert(id_text(&name).to_string());
-            }
-        }
-    }
-    // An `exception E` occupies F#'s *type* namespace too (FCS resolves
-    // `[<E>]` to the exception, then errors on its constructor), so exception
-    // names join the same guard (codex round 6) — and their own set: an
-    // exception is never in `type_defs`, so an in-file *type* hit for a name
-    // an exception also declares may be resolving past the closer exception
-    // FCS would bind (codex on stage 4).
-    for exn in file.syntax().descendants_of::<ExceptionDefnDecl>() {
-        if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
-            r.own_type_simple_names.insert(id_text(&name).to_string());
-            r.own_exception_simple_names
-                .insert(id_text(&name).to_string());
-            *r.own_type_decl_counts
-                .entry(id_text(&name).to_string())
-                .or_default() += 1;
-        }
-    }
-    // The custom operations the file's augmentations declare, which extend
-    // every builder in every later computation expression, this file's
-    // included. Whole-file: F# reads a builder's operations off the completed
-    // type.
-    r.contributions.custom_operations =
-        custom_operations::file_custom_operations(file.syntax(), &|s| r.may_be_custom_operation(s));
-    // Every *nested module definition*'s simple name in the file, for the
-    // dotted half of the project `[<AutoOpen>]` shadow
-    // (`Resolver::project_module_named`): what owns a dotted head is a module.
-    //
-    // Definitions only. A `module X = A.B` **abbreviation** binds a name inside
-    // its own container and publishes it nowhere — fsc-verified, an abbreviation
-    // in an `[<AutoOpen>] module Auto` leaves a *sibling* module's use of the
-    // name at FS0039 — so it can never be the hidden declaration this index
-    // stands for. Within its container it is in scope, but there it is not
-    // unmodelled either: `Resolver::module_aliases` resolves same-file
-    // abbreviations directly. Everything collected here is a declaration
-    // nothing else models, which is what makes a name in it evidence of a real
-    // hazard rather than of a name merely occurring.
-    //
-    // A file's own top-level `module M` header is a `MODULE_OR_NAMESPACE` and
-    // so is not collected, which is exactly right for the same reason: the risk
-    // this bounds is a declaration nested inside an `[<AutoOpen>]` module, and a
-    // top-level header can never be one.
-    //
-    // A `module private X` **is** collected, though F# does not publish it past
-    // its parent either (fsc-verified: a private child of an auto-open module
-    // loses `Demo.CasePat.Shape` to the referenced assembly). Inside that parent
-    // it is both visible and unmodelled — sema does not model a nested module's
-    // members — and this pre-scan is position-blind, so it cannot tell the two
-    // sites apart. Keeping it over-defers uses outside the parent; dropping it
-    // would wrong-target uses inside.
-    //
-    // Whole-file and order-independent like the type pre-scan above.
-    for nm in file.syntax().descendants_of::<NestedModuleDecl>() {
-        // A nested header is written `module X`; `long_id` is dotted only on a
-        // malformed one, where the last segment is still the module the body
-        // hangs off.
-        if let Some(name) = nm.long_id().and_then(|li| li.idents().last()) {
-            r.own_module_simple_names.insert(id_text(&name).to_string());
-        }
-    }
-    // The type/exception names declared **directly inside an `[<AutoOpen>]`
-    // module** (AO-2): an in-file attribute hit for one of these must defer —
-    // the auto-open import contests it positionally in FCS, across blocks the
-    // block-scoped shadow set cannot see. Direct children only: a nested
-    // plain module's types are not bare-visible through the auto-open, and a
-    // nested auto-open module is itself a `NestedModuleDecl` this descendants
-    // walk visits. Like every pre-scan above, file-global and
-    // order-independent by design.
-    for nm in file.syntax().descendants_of::<NestedModuleDecl>() {
-        if !attrs_auto_open(nm.attributes()) {
-            continue;
-        }
-        for decl in nm.decls() {
-            match decl {
-                ModuleDecl::Types(types) => {
-                    for defn in types.defns() {
-                        if let Some(name) = defn.long_id().and_then(|li| li.idents().last()) {
-                            r.own_auto_open_type_names
-                                .insert(id_text(&name).to_string());
-                        }
-                    }
-                }
-                ModuleDecl::Exception(exn) => {
-                    if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
-                        r.own_auto_open_type_names
-                            .insert(id_text(&name).to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    // Every value-binder simple name in the file — the constructor fallback's
-    // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Every
-    // pattern goes through the resolution-independent [`pattern_names`] walk,
-    // which yields a binder *before* the resolution stage's provisional/interning
-    // drops, so a would-be-shadowed local and a provisional uppercase parameter
-    // are both captured. Every pattern node is entered (not just outermost) so no
-    // construct `pattern_names` might not recurse can hide a name —
-    // over-collection only defers. File-global and order-independent, like the
-    // type-name pre-scans above.
-    //
-    // The empty `argument_expressions` set costs nothing — it makes a
-    // parameterised active pattern's argument read as a binder, which is more
-    // over-collection of the kind this oracle already accepts.
-    r.own_binder_simple_names
-        .extend(every_let_pattern_binder_name(
-            file.syntax(),
-            assemblies.names(),
-        ));
-    // An `extern` prototype is the one value-namespace binder with no pattern for
-    // the walk above to reach: its name is a `LongIdent`, and the decl arm
-    // deliberately does not intern it as a usable value. Both halves of the
-    // fallback's "not a value" evidence therefore miss it, so it is added to the
-    // same oracle directly — otherwise `open Demo; extern int Thing(int x);
-    // Thing 1` would name the opened `Demo.Thing` where F# binds the prototype.
-    // Union and exception **cases** are bare-visible values with no `Pat` for the
-    // walk above to reach: `[<AutoOpen>] module A = exception Thing of int` puts
-    // `Thing` in bare expression scope, and a namespace-level union does the same.
-    // File-wide and kind-blind, like the binder scan — over-collection only
-    // defers, and a case name that never becomes bare-visible costs one deferral.
-    for case in file.syntax().descendants_of::<UnionCase>() {
-        if let Some(name) = case.ident() {
-            r.own_binder_simple_names.insert(id_text(&name).to_string());
-        }
-    }
-    // A query `join`/`groupJoin` range variable (`join Thing in ys on …`) is a
-    // value binder written as an *expression*, so the pattern walk cannot reach it
-    // either. FCS binds the LHS occurrence as the definition and later ones as
-    // uses of it. Only the binding position — the LHS — names a binder; the `rhs`
-    // is the source collection, an ordinary expression.
-    // A query `into` clause (`groupJoin … into Thing`, `group … into Thing`)
-    // names a further range variable. `into` lexes as an ordinary ident, so the
-    // binder is simply the ident that follows it. Scanned file-wide rather than
-    // per node kind: `into` appears under several query operators, not only
-    // `JoinInExpr`. A user value actually named `into` would over-collect the
-    // following name, which costs one deferral.
-    {
-        let mut prev_was_into = false;
-        for tok in file.syntax().tokens_where(|k| k == SyntaxKind::IDENT_TOK) {
-            if prev_was_into {
-                r.own_binder_simple_names.insert(id_text(&tok).to_string());
-            }
-            prev_was_into = id_text(&tok) == "into";
-        }
-    }
-    for join in file.syntax().descendants_of::<JoinInExpr>() {
-        let Some(lhs) = join.lhs() else { continue };
-        // Every ident in the binding position, not just a bare one: the `join`
-        // keyword itself lexes as an ident, so the LHS is the application
-        // `join Thing` rather than the binder alone. Over-collecting (the keyword,
-        // a `groupJoin` alias) only ever defers, which is what this oracle is for.
-        for tok in lhs.syntax().tokens_where(|k| k == SyntaxKind::IDENT_TOK) {
-            r.own_binder_simple_names.insert(id_text(&tok).to_string());
-        }
-    }
-    for ext in file.syntax().descendants_of::<ExternDecl>() {
-        if let Some(last) = ext.name().and_then(|n| n.idents().last()) {
-            r.own_binder_simple_names.insert(id_text(&last).to_string());
-        }
-    }
     // The top-level value scope is *per container*, not one shared base frame: F#
     // merges same-named `namespace N` blocks and isolates distinct ones, and the
     // value-namespace entries that *can* sit at namespace level — union cases (and
@@ -376,13 +151,13 @@ pub fn resolve_file(
             .long_id()
             .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
             .unwrap_or_default();
-        r.block_type_defs = HashSet::default();
+        r.lexical.block_type_defs = HashSet::default();
         // An `[<AutoOpen>]` module declared in one `namespace N` block is
         // opened again by every later block of `N`, and only of `N`.
         // They enter this block at its start, outranking every declaration
         // of an earlier block.
         let block_start = u32::from(module.syntax().text_range().start());
-        r.block_starts.push(block_start);
+        r.index.block_starts.push(block_start);
         let auto_open_type_shadow_names = block_auto_open_type_shadows
             .get(&block_key)
             .map(|shadows: &HashMap<String, state::AutoOpenTypeShadow>| {
@@ -425,14 +200,14 @@ pub fn resolve_file(
         // implicit filename module (unmodeled), so they are not bare-cross-file
         // exportable; a `namespace`/`module` header (including `namespace
         // global`) is a real root. See [`Resolver::anonymous_root`].
-        r.anonymous_root = matches!(module.kind(), ModuleOrNamespaceKind::Anon);
+        r.lexical.anonymous_root = matches!(module.kind(), ModuleOrNamespaceKind::Anon);
         if let Some(path) = &prefix {
             // A declared module shadows a same-named assembly type even with no
             // exports, so record it here, not from the exported values.
-            r.module_paths.insert(assemblies.names(), path);
+            r.index.module_paths.insert(assemblies.names(), path);
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
-            if header_auto_open && !r.anonymous_root {
+            if header_auto_open && !r.lexical.anonymous_root {
                 r.record_auto_open_module(path.clone(), header_private);
             }
             // The export-decl-list twin of the two lines above: one top-level
@@ -455,7 +230,7 @@ pub fn resolve_file(
         // qualified for *cross-file* reference — the header's `longId` for both
         // a `module` and a `namespace` (empty for an anonymous module /
         // `namespace global`). Unlike [`Resolver::module_path`] it is set for namespaces.
-        r.container_path.set(
+        r.lexical.container_path.set(
             module
                 .long_id()
                 .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
@@ -472,19 +247,22 @@ pub fn resolve_file(
         //   segments *before* the final module name — `Outer`, `Outer.Inner` —
         //   namespaces (`1..len`); the final segment is the module itself.
         let ns_upto = match module.kind() {
-            ModuleOrNamespaceKind::DeclaredNamespace => r.container_path.len(),
-            ModuleOrNamespaceKind::NamedModule => r.container_path.len().saturating_sub(1),
+            ModuleOrNamespaceKind::DeclaredNamespace => r.lexical.container_path.len(),
+            ModuleOrNamespaceKind::NamedModule => r.lexical.container_path.len().saturating_sub(1),
             ModuleOrNamespaceKind::Anon | ModuleOrNamespaceKind::GlobalNamespace => 0,
         };
-        r.block_namespace_start = r.namespace_paths.len();
-        r.block_container_len = r.container_path.len();
+        r.lexical.block_namespace_start = r.out.namespace_paths.len();
+        r.lexical.block_container_len = r.lexical.container_path.len();
         for k in 1..=ns_upto {
-            let ns = r.container_path[..k].to_vec();
+            let ns = r.lexical.container_path[..k].to_vec();
             // The export-decl-list twin: one `Namespace` decl per ancestor prefix,
             // reproducing the `ns_upto` bound verbatim (plan pitfall 4).
-            let decl_path =
-                DeclPath::interned(assemblies.names(), r.container_path.prefix_id(k), &ns);
-            r.namespace_paths.push(ns);
+            let decl_path = DeclPath::interned(
+                assemblies.names(),
+                r.lexical.container_path.prefix_id(k),
+                &ns,
+            );
+            r.out.namespace_paths.push(ns);
             r.push_export_decl(
                 decl_path,
                 module_header_pos(&module),
@@ -495,7 +273,7 @@ pub fn resolve_file(
         // `container_path` that are namespaces. Constant as the walk descends into
         // nested modules (a nested module appends to `container_path` but not to the
         // namespace), so set once here at the top-level header.
-        r.namespace_depth = ns_upto;
+        r.lexical.namespace_depth = ns_upto;
         // Activate this container's value frame for the block — merging same-named
         // `namespace` blocks (re-take the accumulated frame) and isolating distinct
         // ones (a fresh frame) — then store it back after. The nested-module
@@ -503,17 +281,23 @@ pub fn resolve_file(
         // inherit a sibling's `module Sub` (it would veto a valid assembly
         // `Sub.…` there — FCS resolves it), while a same-named block must (its
         // `Sub.…` really is the project's — FCS).
-        r.nested_module_locals = r
+        r.lexical.nested_module_locals = r
+            .lexical
             .top_level_nested_locals
-            .remove(&*r.container_path)
+            .remove(&*r.lexical.container_path)
             .unwrap_or_default();
-        r.augmentation_head_locals = r
+        r.lexical.augmentation_head_locals = r
+            .lexical
             .top_level_augmentation_locals
-            .remove(&*r.container_path)
+            .remove(&*r.lexical.container_path)
             .unwrap_or_default();
-        let frame = r.top_level.remove(&*r.container_path).unwrap_or_default();
-        r.module_frames.push(r.scopes.len());
-        r.scopes.push(frame);
+        let frame = r
+            .lexical
+            .top_level
+            .remove(&*r.lexical.container_path)
+            .unwrap_or_default();
+        r.lexical.module_frames.push(r.lexical.scopes.len());
+        r.lexical.scopes.push(frame);
         // The block frame is now active: seed the implicit auto-opens'
         // `[<AutoOpen>]` modules (FSharp.Core's `Operators` /
         // `ExtraTopLevelOperators`) as source-ordered `opened` entries so bare
@@ -531,15 +315,15 @@ pub fn resolve_file(
         // same-named `namespace N` block re-takes the bindings of the earlier
         // ones, which FCS adds after its implicit opens, so they must keep
         // winning over the seed.
-        let retained = r.module_frame().len();
+        let retained = r.lexical.module_frame().len();
         r.fold_implicit_union_cases(true);
         for ns in implicit_open_namespaces(r.assemblies) {
             // Implicit auto-opens precede every declaration: slot position 0.
             r.open_auto_open_modules_in(&ns, 0, true);
         }
         r.fold_implicit_union_cases(false);
-        let seeded = r.module_frame().len() - retained;
-        r.module_frame().rotate_tail_right(0, seeded);
+        let seeded = r.lexical.module_frame().len() - retained;
+        r.lexical.module_frame().rotate_tail_right(0, seeded);
         r.earlier_block_contributions(seeded);
         // …then what earlier files put in the root scope, and the block's
         // **own** enclosing namespace, which FCS opens implicitly as well
@@ -559,13 +343,14 @@ pub fn resolve_file(
         if matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace)
             && r.scope.latest_open_pos != 0
         {
-            r.unknowables.raise(Unknowable::GlobalBlockOpen);
+            r.out.unknowables.raise(Unknowable::GlobalBlockOpen);
         }
         let mut frame = r
+            .lexical
             .scopes
             .pop()
             .expect("container value frame is on the stack");
-        r.module_frames.pop();
+        r.lexical.module_frames.pop();
         // Opens are scoped to this one block: drop the entries an `open` brought
         // in ([`ScopeEntry::from_open`]) before storing the container frame back,
         // so a later same-named `namespace N` block re-takes only the value/case
@@ -580,13 +365,17 @@ pub fn resolve_file(
         // misread them as stale. Semantically they precede everything the next
         // block declares, which is exactly generation 0.
         frame.set_generation(0);
-        r.top_level.insert(r.container_path.to_vec(), frame);
-        let locals = std::mem::take(&mut r.nested_module_locals);
-        r.top_level_nested_locals
-            .insert(r.container_path.to_vec(), locals);
-        let augmentation_locals = std::mem::take(&mut r.augmentation_head_locals);
-        r.top_level_augmentation_locals
-            .insert(r.container_path.to_vec(), augmentation_locals);
+        r.lexical
+            .top_level
+            .insert(r.lexical.container_path.to_vec(), frame);
+        let locals = std::mem::take(&mut r.lexical.nested_module_locals);
+        r.lexical
+            .top_level_nested_locals
+            .insert(r.lexical.container_path.to_vec(), locals);
+        let augmentation_locals = std::mem::take(&mut r.lexical.augmentation_head_locals);
+        r.lexical
+            .top_level_augmentation_locals
+            .insert(r.lexical.container_path.to_vec(), augmentation_locals);
         block_auto_open_type_shadows.insert(
             block_key,
             std::mem::take(&mut r.scope.auto_open_type_shadow_names),
@@ -596,7 +385,8 @@ pub fn resolve_file(
     drop(_phase);
     #[cfg(feature = "otel")]
     let _phase = tracing::info_span!("resolve_finish").entered();
-    r.finish()
+    let item_base = r.item_base;
+    r.finish().into_resolved_file(prescan, item_base, recovery)
 }
 
 /// One Compile item as the project fold consumes it: an implementation file
@@ -2257,34 +2047,18 @@ fn module_prefix(module: &ModuleOrNamespace) -> Option<Vec<String>> {
 }
 
 impl<'a> Resolver<'a> {
-    fn new(preceding: &'a ProjectItems, assemblies: &'a AssemblyEnv, prescan: &'a Prescan) -> Self {
+    fn new(
+        preceding: &'a ProjectItems,
+        assemblies: &'a AssemblyEnv,
+        prescan: &'a Prescan,
+        recovery: &'a SyntaxRecovery,
+    ) -> Self {
         Resolver {
-            prescan,
-            unknowables: Unknowables::default(),
-            windows: Windows::default(),
-            defs: Vec::new(),
-            items: Vec::new(),
-            resolutions: HashMap::default(),
-            or_pattern_aliases: HashSet::default(),
-            opaque_binders: HashSet::default(),
-            opaque_regions: Vec::new(),
-            dropped_decls: HashSet::default(),
-            scopes: Vec::new(),
-            typar_scopes: Vec::new(),
-            type_defs: HashMap::default(),
-            type_slot_classes: HashMap::default(),
-            type_slot_history: crate::names::ChildMap::default(),
-            type_access_roots: HashMap::default(),
-            case_repr_roots: HashMap::default(),
-            container_decls: HashMap::default(),
-            type_cases: HashMap::default(),
-            type_members: HashMap::default(),
-            unindexed_augmented_names: HashSet::default(),
-            module_like_names: HashMap::default(),
-            top_level: HashMap::default(),
             preceding,
             assemblies,
             item_base: preceding.next_base(),
+            recovery,
+            prescan,
             scope: OpenScope::block_start(
                 implicit_open_groups(assemblies),
                 implicit_shortening_prefixes(assemblies),
@@ -2296,70 +2070,15 @@ impl<'a> Resolver<'a> {
                     recursive: false,
                 },
             ),
-            container_path: container::ContainerPath::new(assemblies.names()),
-            namespace_depth: 0,
-            module_paths: PathSet::default(),
-            namespace_paths: Vec::new(),
-            block_namespace_start: 0,
-            block_container_len: 0,
-            lexical_auto_open_paths: Vec::new(),
-            nested_module_locals: PathSet::default(),
-            top_level_nested_locals: HashMap::default(),
-            nested_module_exports: PathSet::default(),
-            augmentation_head_locals: PathSet::default(),
-            top_level_augmentation_locals: HashMap::default(),
-            augmentation_head_exports: PathSet::default(),
-            real_nested_module_exports: PathSet::default(),
-            type_path_exports: Vec::new(),
-            type_path_export_ids: HashMap::default(),
-            implicit_import_count: implicit_open_groups(assemblies).len(),
-            own_namespace_fold: state::RecordedFold::default(),
-            modules_with_hidden_values: HashSet::default(),
-            auto_open_module_paths: Vec::new(),
-            open_extension_namespaces: Vec::new(),
-            attribute_resolutions: HashMap::default(),
-            own_type_simple_names: HashSet::default(),
-            own_module_simple_names: HashSet::default(),
-            own_binder_simple_names: HashSet::default(),
-            case_field_names: HashMap::default(),
-            own_generic_type_simple_names: HashSet::default(),
-            own_type_decl_counts: HashMap::default(),
-            placed_types: Vec::new(),
-            type_decl_counts: HashMap::default(),
-            type_def_arities: HashMap::default(),
-            type_defs_by_arity: HashMap::default(),
-            own_type_scoped: HashMap::default(),
-            own_union_cases: HashMap::default(),
-            type_typar_frames: HashMap::default(),
-            own_exception_simple_names: HashSet::default(),
-            own_abbrev_type_simple_names: HashSet::default(),
-            own_auto_open_type_names: HashSet::default(),
-            augmentation_instance_names: HashSet::default(),
-            augmentation_static_names: HashSet::default(),
-            block_type_defs: HashSet::default(),
-            block_starts: Vec::new(),
-            augmentable_types: HashSet::default(),
-            module_aliases: HashMap::default(),
-            contributions: FileContributions::default(),
-            own_extension_statics: std::collections::BTreeSet::new(),
-            custom_operation_clauses: HashMap::default(),
-            in_file_constructions: HashMap::default(),
-            module_frames: Vec::new(),
-            auto_open_type_paths: HashSet::default(),
-            anonymous_root: false,
-            active_pattern_shape: HashMap::default(),
-            excluded_param_ranges: HashSet::default(),
-            diagnostics: Vec::new(),
-            trace_opens: Vec::new(),
-            recovery: SyntaxRecovery::Unretained,
-            decline_sites: HashMap::default(),
-            export_decls: Vec::new(),
-            member_decl_counts: crate::names::PathMap::default(),
+            windows: Windows::default(),
+            lexical: lexical::Lexical::new(assemblies.names()),
+            index: indexes::Indexes::default(),
+            out: output::Output::default(),
         }
     }
 
     /// Append one [`ExportDecl`](model::ExportDecl) to the file's source-ordered declaration list,
-    /// stamping it with the current [`Self::anonymous_root`]. The single
+    /// stamping it with the current [`Lexical::anonymous_root`](crate::resolve::lexical::Lexical::anonymous_root). The single
     /// append point (`docs/export-decl-model-plan.md` Stage 2): a decl is added
     /// wherever a legacy export writer fires, so the cross-file derivations in
     /// [`ProjectItems::extend_with`](model::ProjectItems::extend_with) reproduce
@@ -2373,21 +2092,21 @@ impl<'a> Resolver<'a> {
         let decl = model::ExportDecl {
             path,
             pos,
-            anonymous_root: self.anonymous_root,
+            anonymous_root: self.lexical.anonymous_root,
             kind,
         };
         // The walk is never screened: a signature replaces this file's own
         // identities only when the fold publishes them.
-        if let Some(member) = decl.member_path(&self.items, false) {
+        if let Some(member) = decl.member_path(&self.out.items, false) {
             let names = self.assemblies.names();
-            self.member_decl_counts.update_id(
+            self.index.member_decl_counts.update_id(
                 names,
                 member.id(),
                 || member.reference_text(names),
                 |count| *count += 1,
             );
         }
-        self.export_decls.push(decl);
+        self.out.export_decls.push(decl);
     }
 
     /// The current container extended by `segments`: the path of a
@@ -2395,8 +2114,8 @@ impl<'a> Resolver<'a> {
     pub(super) fn decl_path<S: AsRef<str>>(&self, segments: &[S]) -> DeclPath {
         DeclPath::under(
             self.assemblies.names(),
-            self.container_path.id(),
-            &self.container_path,
+            self.lexical.container_path.id(),
+            &self.lexical.container_path,
             segments,
         )
     }
@@ -2408,7 +2127,7 @@ impl<'a> Resolver<'a> {
     /// invoke it immediately after the item's decl append — no other decl can
     /// intervene). Feeds the `type_qualified_cases` derivation.
     pub(super) fn set_last_decl_type_qualified(&mut self, tq: DeclPath) {
-        match self.export_decls.last_mut().map(|d| &mut d.kind) {
+        match self.out.export_decls.last_mut().map(|d| &mut d.kind) {
             Some(model::ExportDeclKind::Item { type_qualified, .. }) => {
                 debug_assert!(
                     type_qualified.is_none(),
@@ -2435,13 +2154,10 @@ impl<'a> Resolver<'a> {
     /// surface we cannot fully enumerate — a hidden module name could contest any of
     /// these, and FCS folds the two halves in reference order (review round 17).
     fn open_auto_open_modules_in(&mut self, namespace: &[String], open_pos: u32, certain: bool) {
-        // Collect first — the slice borrows `self.assemblies`, while
-        // `open_type_statics` borrows `self` mutably.
-        let handles: Vec<EntityHandle> = self
-            .assemblies
-            .auto_open_modules_in_namespace(namespace)
-            .to_vec();
-        for handle in handles {
+        // The slice borrows the env, not `self`, which `open_type_statics`
+        // borrows mutably.
+        let assemblies = self.assemblies;
+        for &handle in assemblies.auto_open_modules_in_namespace(namespace) {
             self.open_type_statics(handle, open_pos, certain);
         }
     }
@@ -2464,18 +2180,22 @@ impl<'a> Resolver<'a> {
     /// `N.Auto.Foo`. The earlier-file half arrives already privacy-filtered by
     /// `finish()`.
     fn project_auto_open_module_in_namespace(&self, namespace: &[String]) -> bool {
-        self.auto_open_module_paths.iter().any(|(p, private)| {
-            model::is_directly_in(p, namespace)
-                && (!private || self.container_path.starts_with(namespace))
-        }) || self.preceding.has_auto_open_module_in_namespace(namespace)
+        self.index
+            .auto_open_module_paths
+            .iter()
+            .any(|(p, private)| {
+                model::is_directly_in(p, namespace)
+                    && (!private || self.lexical.container_path.starts_with(namespace))
+            })
+            || self.preceding.has_auto_open_module_in_namespace(namespace)
     }
 
     /// Record one `[<AutoOpen>]` module declaration — the single writer for
-    /// [`Self::auto_open_module_paths`], so the same-file view and the
+    /// [`Indexes::auto_open_module_paths`](crate::resolve::indexes::Indexes::auto_open_module_paths), so the same-file view and the
     /// cross-file export (the `finish()` privacy filter) can never disagree
     /// on what was declared.
     pub(super) fn record_auto_open_module(&mut self, path: Vec<String>, is_private: bool) {
-        self.auto_open_module_paths.push((path, is_private));
+        self.index.auto_open_module_paths.push((path, is_private));
     }
 
     /// Demote every **assembly-rooted** resolution this file recorded to
@@ -2499,14 +2219,15 @@ impl<'a> Resolver<'a> {
         // wholesale, so the cause is too.
         let sealed = model::DeclineSite::pre_walk(model::DeclineCause::IncompleteAssemblies);
         for (range, res) in self
+            .out
             .resolutions
             .iter_mut()
-            .chain(self.attribute_resolutions.iter_mut())
+            .chain(self.out.attribute_resolutions.iter_mut())
         {
             let before = *res;
             *res = res.sealed_under_incomplete_projection();
             if *res != before {
-                self.decline_sites.entry(*range).or_insert(sealed);
+                self.out.decline_sites.entry(*range).or_insert(sealed);
             }
         }
     }
@@ -2533,10 +2254,10 @@ impl<'a> Resolver<'a> {
     /// a diagnostic cross-check. Every test in the workspace runs it.
     fn debug_assert_shadowable_types_are_attributed(&self) {
         if cfg!(debug_assertions) {
-            for (range, res) in &self.resolutions {
+            for (range, res) in &self.out.resolutions {
                 debug_assert!(
                     *res != Resolution::Deferred(DeferredReason::ShadowableType)
-                        || self.decline_sites.contains_key(range),
+                        || self.out.decline_sites.contains_key(range),
                     "type-position deferral at {range:?} names no guard;                      a second producer of ShadowableType has appeared, or the                      recording shell stopped recording"
                 );
             }
@@ -2561,9 +2282,9 @@ impl<'a> Resolver<'a> {
     /// workspace runs it.
     fn debug_assert_commit_maps_are_disjoint(&self) {
         if cfg!(debug_assertions) {
-            for range in self.attribute_resolutions.keys() {
+            for range in self.out.attribute_resolutions.keys() {
                 debug_assert!(
-                    !self.resolutions.contains_key(range),
+                    !self.out.resolutions.contains_key(range),
                     "attribute and main resolutions both answer at {range:?}; \
                      the union a consumer reads is no longer unambiguous"
                 );
@@ -2575,15 +2296,15 @@ impl<'a> Resolver<'a> {
     /// walk resolves no name in it that a binder there could capture — the
     /// claim binder completeness reads every binder there as declined by.
     /// Checked rather than trusted. An attribute's *name* is resolved wherever
-    /// it is ([`Self::attribute_resolutions`]), but it is a type use, which no
+    /// it is ([`Output::attribute_resolutions`](crate::resolve::output::Output::attribute_resolutions)), but it is a type use, which no
     /// value or type parameter in the region can capture.
     fn debug_assert_opaque_regions_record_nothing(&self) {
         if cfg!(debug_assertions) {
-            for region in &self.opaque_regions {
+            for region in &self.out.opaque_regions {
                 let model::OpaqueRegion::Range(r) = region else {
                     continue;
                 };
-                for range in self.resolutions.keys() {
+                for range in self.out.resolutions.keys() {
                     debug_assert!(
                         !r.contains_range(*range),
                         "the walk records a resolution at {range:?} inside the opaque region {r:?}"
@@ -2593,84 +2314,20 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// [`ResolvedFile::unplaced_types`]: how many declarations of each name
-    /// the file makes — a type, an exception, an augmentation head — that
-    /// the walk did not place. An augmentation head alone declares nothing,
-    /// but counts as one: it may name a type of another file, and nothing
-    /// here says which.
-    fn unplaced_types(&self) -> HashMap<String, usize> {
-        self.own_type_simple_names
-            .iter()
-            .filter_map(|name| {
-                let placed = self
-                    .placed_types
-                    .iter()
-                    .filter(|t| t.path.last() == Some(name))
-                    .count();
-                let declared = self
-                    .own_type_decl_counts
-                    .get(name)
-                    .copied()
-                    .unwrap_or(0)
-                    .max(1);
-                let unplaced = declared.saturating_sub(placed);
-                (unplaced > 0).then(|| (name.clone(), unplaced))
-            })
-            .collect()
-    }
-
-    fn finish(mut self) -> ResolvedFile {
-        let unplaced_types = self.unplaced_types();
+    /// Close the walk: seal what it read from the assemblies, check what
+    /// it recorded, and hand on its [`Output`](output::Output).
+    fn finish(mut self) -> output::Output {
         self.seal_assembly_readings();
         self.debug_assert_shadowable_types_are_attributed();
         self.debug_assert_commit_maps_are_disjoint();
         self.debug_assert_opaque_regions_record_nothing();
         self.windows.assert_closed();
-        ResolvedFile {
-            defs: self.defs,
-            resolutions: self.resolutions,
-            or_pattern_aliases: self.or_pattern_aliases,
-            opaque_binders: self.opaque_binders,
-            opaque_regions: self.opaque_regions,
-            attribute_resolutions: self.attribute_resolutions,
-            placed_types: std::mem::take(&mut self.placed_types),
-            unplaced_types,
-            unplaced_type_places: HashMap::default(),
-            own_type_simple_names: self.own_type_simple_names,
-            own_module_simple_names: self.own_module_simple_names,
-            own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
-            contributions: self.contributions,
-            declares_core_attribute_alias: self.prescan.declares_core_attribute_alias,
-            unknowables: self.unknowables,
-            augmentation_instance_names: self.augmentation_instance_names,
-            augmentation_static_names: self.augmentation_static_names,
-            // Stamped by the Compile-order fold; a single file has no
-            // preceding files.
-            preceding_augmentation_instance_names: HashSet::default(),
-            preceding_augmentation_static_names: HashSet::default(),
-            exports: ExportedItems { items: self.items },
-            item_base: self.item_base,
-            namespace_paths: self.namespace_paths,
-            // The *cross-file* (preceding-files) signal is set by
-            // `resolve_project`; a single file has no preceding files.
-            preceding_declares_extension_source: false,
-            open_extension_namespaces: self.open_extension_namespaces,
-            active_pattern_shape: self.active_pattern_shape,
-            diagnostics: self.diagnostics,
-            resolution_trace: model::ResolutionTrace {
-                opens: self.trace_opens,
-            },
-            decline_sites: self.decline_sites,
-            export_decls: self.export_decls,
-            sig_screen: None,
-            sig_exports: Vec::new(),
-            recovery: self.recovery.clone(),
-        }
+        self.out
     }
 
     fn intern(&mut self, def: Def) -> DefId {
-        let id = DefId::new(self.defs.len());
-        self.defs.push(def);
+        let id = DefId::new(self.out.defs.len());
+        self.out.defs.push(def);
         id
     }
 
@@ -2683,7 +2340,7 @@ impl<'a> Resolver<'a> {
     /// while the later ones are the general shape of "and so we deferred".
     /// Last-write-wins would replace every precise cause with the broadest one.
     fn record_decline(&mut self, range: TextRange, site: model::DeclineSite) {
-        self.decline_sites.entry(range).or_insert(site);
+        self.out.decline_sites.entry(range).or_insert(site);
     }
 
     /// Record one decline against the one range that names **the path**: its
@@ -2768,7 +2425,7 @@ impl<'a> Resolver<'a> {
             );
             Resolution::Deferred(DeferredReason::UnboundName)
         };
-        self.resolutions.insert(range, res);
+        self.out.resolutions.insert(range, res);
     }
 
     /// Whether a use at the current walk position may commit to `res`.
@@ -2786,14 +2443,14 @@ impl<'a> Resolver<'a> {
     /// ([`ExportedItem::access_root_len`]), so they never reach here.
     pub(super) fn case_usable_here(&self, res: Resolution) -> bool {
         let root = match res {
-            Resolution::Local(def) => self.case_repr_roots.get(&def).map(Vec::as_slice),
+            Resolution::Local(def) => self.index.case_repr_roots.get(&def).map(Vec::as_slice),
             Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
-                Some(local) => self.items[local].repr_access_root.as_deref(),
+                Some(local) => self.out.items[local].repr_access_root.as_deref(),
                 None => self.preceding.case_repr_root(id),
             },
             _ => None,
         };
-        root.is_none_or(|root| self.container_path.starts_with(root))
+        root.is_none_or(|root| self.lexical.container_path.starts_with(root))
     }
 
     /// Record an **or-pattern alias**: a later alternative spelling a name the
@@ -2802,7 +2459,7 @@ impl<'a> Resolver<'a> {
     /// [`ResolvedFile::is_or_pattern_alias`].
     fn record_or_pattern_alias(&mut self, range: TextRange, res: Resolution) {
         self.record(range, res);
-        self.or_pattern_aliases.insert(range);
+        self.out.or_pattern_aliases.insert(range);
     }
 }
 
