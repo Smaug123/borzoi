@@ -227,6 +227,25 @@ impl State<'_> {
                 untracked: false,
             };
         }
+        // `ProjectReference` lives in the reference capture. The walk's own
+        // `@(ProjectReference)` view decides the list (no uncertain mutation,
+        // nothing hidden, every identity spelled as MSBuild spells it); the
+        // rows carry what that view leaves out, the metadata.
+        if key == item_key("ProjectReference") {
+            let rows: Option<Vec<ItemRow>> = self
+                .project_references
+                .iter()
+                .map(|ordered| ordered.row.as_ref().map(row))
+                .collect();
+            let exact = rows.is_some() && item_list_view(item_type, self).is_some();
+            return ItemRead {
+                items: rows,
+                exact,
+                tainted: self.project_references_uncertain
+                    || self.project_reference_includes_hidden,
+                untracked: false,
+            };
+        }
         // The list an `@(…)` reference in the walk itself would take as exact,
         // by the same predicate; else the table as captured, for reporting.
         // An identity that keeps a backslash is one whose spelling turns on
@@ -238,7 +257,7 @@ impl State<'_> {
             .is_some_and(|items| items.iter().all(|item| !item.identity.contains('\\')));
         // The rows are the table's own: an item declared directly holds its
         // type's definitions already, and only a copy is left with them
-        // uncertain. A type with no table (`ProjectReference`) reads as the view.
+        // uncertain. A type with no table reads as the view.
         let items = match self.evaluated_items.get(&key) {
             Some(list) => Some(
                 list.iter()
@@ -386,5 +405,55 @@ mod package_reference_tests {
         let row = &read.items.as_ref().unwrap()[0];
         assert_eq!(row.metadata.get("pack").map(String::as_str), Some("y"));
         assert_eq!(row.metadata.get("version").map(String::as_str), Some("2"));
+    }
+}
+
+#[cfg(test)]
+mod project_reference_tests {
+    use super::tests::read;
+
+    #[test]
+    fn a_reference_reads_with_its_metadata_and_definitions() {
+        let reads = read(
+            "<ItemDefinitionGroup><ProjectReference><Flavor>d</Flavor><Pack>d</Pack></ProjectReference></ItemDefinitionGroup>\
+             <ItemGroup><ProjectReference Include=\"a.fsproj;b.fsproj\" PrivateAssets=\" all \">\
+             <Pack>p</Pack></ProjectReference></ItemGroup>",
+            &[],
+            &["ProjectReference"],
+        );
+        let read = &reads.items["ProjectReference"];
+        let rows = read.items.as_ref().unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert_eq!(row.metadata["privateassets"], " all ");
+            assert_eq!(row.metadata["pack"], "p");
+            assert_eq!(row.metadata["flavor"], "d");
+            assert!(row.metadata_complete);
+            assert!(row.uncertain_metadata.is_empty(), "{row:?}");
+        }
+        // An item definition for the type makes the reference list uncertain.
+        assert!(!read.exact);
+    }
+
+    #[test]
+    fn a_plain_reference_list_is_exact_and_an_update_makes_it_not() {
+        let plain = read(
+            "<ItemGroup><ProjectReference Include=\"a.fsproj\" Flavor=\"x\" /></ItemGroup>",
+            &[],
+            &["ProjectReference"],
+        );
+        let read_plain = &plain.items["ProjectReference"];
+        assert!(read_plain.exact, "{read_plain:?}");
+        assert_eq!(
+            read_plain.items.as_ref().unwrap()[0].metadata["flavor"],
+            "x"
+        );
+        let updated = read(
+            "<ItemGroup><ProjectReference Include=\"a.fsproj\" />\
+             <ProjectReference Update=\"a.fsproj\" Flavor=\"y\" /></ItemGroup>",
+            &[],
+            &["ProjectReference"],
+        );
+        assert!(!updated.items["ProjectReference"].exact);
     }
 }

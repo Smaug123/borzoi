@@ -666,7 +666,6 @@ fn dedicated_bucket(parsed: &borzoi_msbuild::ParsedProject, item_type: &str) -> 
     Some(match item_type.to_ascii_lowercase().as_str() {
         "packageversion" => parsed.package_versions.len(),
         "globalpackagereference" => parsed.global_package_references.len(),
-        "projectreference" => parsed.project_references.len(),
         "compile" => parsed.items.len(),
         _ => return None,
     })
@@ -920,6 +919,13 @@ fn reads(
                         .iter()
                         .map(|i| i["identity"].as_str().unwrap())
                         .collect();
+                    // An exact list is a claim about every identity, in order.
+                    assert!(
+                        !read.exact || identities == msbuild_identities,
+                        "{}: our exact {item_type} list {identities:?} is not MSBuild's \
+                         {msbuild_identities:?}",
+                        subject.key
+                    );
                     let agreement = if identities == msbuild_identities {
                         "identities agree"
                     } else {
