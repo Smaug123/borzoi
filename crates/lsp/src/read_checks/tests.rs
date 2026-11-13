@@ -184,6 +184,11 @@ impl Model {
             Op::Remove(p) => self.remove(&path(*p)),
             Op::Write(p) => self.write(&path(*p), b"yy"),
             Op::Rename(from, to) => self.rename(&path(*from), &path(*to)),
+            Op::MoveAndLink(from) => {
+                let (from, to) = (path(*from), PathBuf::from("/w/z"));
+                self.rename(&from, &to);
+                self.create(&from, Node::Link(to));
+            }
             Op::Interleave(op) => self.interleaved = Some((**op).clone()),
             Op::Generation => {}
         }
@@ -353,6 +358,10 @@ enum Op {
     Write(usize),
     /// Move the first path to the second.
     Rename(usize, usize),
+    /// Move a directory to `/w/z`, and leave a symlink to it where it was:
+    /// every path through it leads where it did, under another canonical
+    /// spelling.
+    MoveAndLink(usize),
     /// Make this change at the next query a check asks.
     Interleave(Box<Op>),
     /// Begin a generation at the clock's time and check every read.
@@ -368,6 +377,7 @@ fn change() -> impl Strategy<Value = Op> {
         2 => p.clone().prop_map(Op::Remove),
         1 => p.clone().prop_map(Op::Write),
         2 => (p.clone(), p).prop_map(|(a, b)| Op::Rename(a, b)),
+        2 => (1usize..4).prop_map(Op::MoveAndLink),
     ]
 }
 
