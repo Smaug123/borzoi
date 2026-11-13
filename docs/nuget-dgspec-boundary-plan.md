@@ -4,7 +4,8 @@
 > landed, and so have the
 > resolver's handling of dependency asset filters, B₁'s of `<contentFiles>`, and
 > B₁'s reading of the environment restore runs under.
-> Stage 8 chose **A₁** (see its section for the numbers and the conditions).
+> Stage 8 chose **A₁** (see its section for the numbers and the conditions);
+> *A₁: the restore cone, staged* splits it into five stages, none landed yet.
 > B₁ runs in production in shadow: every on-demand restore hands it the spec
 > it read and logs whether B₁ agreed (see *B₁ in shadow*).
 > The resolver is NuGet's default dependency resolver reimplemented, and
@@ -1367,6 +1368,107 @@ the user restored themselves is read from its own assets file, whose spec
 names the user's feeds, which B₁ declines. MSBuild's log line is in the
 CLI's language, so on a host whose language is not English the identity
 declines.
+
+### A₁: the restore cone, staged
+
+The cone splits at one seam. Every target in it works towards a flat list of
+`_RestoreGraphEntry` items, each a GUID with a `Type` and a bag of metadata.
+`GenerateRestoreGraphFile` drops duplicates (`RemoveDuplicates`) and hands the
+list to `WriteRestoreGraphTask`, which calls `NuGet.Commands`'
+`MSBuildRestoreUtility.GetDependencySpec` and saves the result. Everything
+before the seam is MSBuild: evaluation, target ordering, intrinsic property and
+item groups, the `MSBuild` task's inner builds, and the task leaves that turn
+items into entries. Everything after it is NuGet library code with no MSBuild
+in it.
+
+So the stages work from the seam outwards. Each one has an oracle of its own,
+and the items at the seam are the currency between them: a stage before the
+seam is graded by the entries it produces, and the stage after it by the spec
+it makes of them.
+
+#### A₁.1: the item seam
+
+`borzoi_nuget::dgspec::from_restore_graph_items` takes the entries as the task
+reads them, together with the task's `RestoreRecursive` flag (true by
+default, which puts every `PackageReference` project in `restore`), and
+returns the `DependencyGraphSpec` that NuGet would write, or declines. The entries are a type plus metadata, after `ITaskItem.GetMetadata`
+has unescaped it. The function declines anything it does not model, in the
+same way `parse_dgspec` does: a project style other than `PackageReference`,
+runtime identifiers, `PackageTargetFallback`, C++/CLI, and any value the typed
+model cannot hold.
+
+**Oracle:** `tools/nuget-oracle`'s `restoreGraphItems` op builds the items,
+runs `GetDependencySpec` over them, saves the spec as the task does, and
+returns NuGet's reading of that file in `dgspec_diff`'s canonical projection.
+The op runs under each of `dgspec_diff`'s environments.
+
+**Differential** (`restore_items_diff`): certain-implies-exact against that op.
+The cases are:
+- hand cases that must commit;
+- a generator over entry lists that varies:
+  - metadata spellings, casing, whitespace and emptiness;
+  - duplicate and conflicting entries;
+  - cross-targeting, which decides whether `TargetFrameworks` metadata is split
+    on `;`;
+  - every item type the function reads.
+
+A commit must also be a spec `parse_dgspec` commits on, so the seam never
+produces what B₁'s input reader would refuse.
+
+The function models NuGet code, so it is keyed on the restoring NuGet's
+identity, like B₁. It shares B₁'s verified list, and regenerating that list
+claims that both differentials have graded the new NuGet.
+
+#### A₁.2: the seam on real projects
+
+`tools/msbuild-condition-oracle` gains an op that runs `_GenerateRestoreGraph`
+in-process under `restore_globals` and returns its target outputs with every
+custom metadata value, after `RemoveDuplicates`. Two things are checked on
+every corpus project and fixture:
+- feeding those entries to A₁.1 reproduces A₀'s spec exactly;
+- A₁.1 commits on each of them.
+
+From here on, the entries are what the stages before the seam are graded
+against.
+
+#### A₁.3: target execution
+
+`borzoi-msbuild` gains target execution for the cone's subset of it:
+- the target graph (`DependsOnTargets`, `BeforeTargets`, `AfterTargets`, each
+  target run once, conditions evaluated as the target starts);
+- intrinsic `PropertyGroup` and `ItemGroup` inside targets (`Include`,
+  `Remove`, metadata, `KeepDuplicates`, `%(…)` batching);
+- task `Output` and target `Returns`.
+
+A task call goes through a registry keyed on the task's name and assembly
+identity, and a task with no model declines. **Oracle:** the `targetItems` op,
+extended to return properties and metadata, run on generated targets the way
+`fsproj_compile_order_generative_diff` runs one. The engine executes the SDK's
+own target XML rather than hand-written Rust, so a release that changes only
+target text needs re-verifying, not new code.
+
+#### A₁.4: the task leaves
+
+These are the 23 non-built-in tasks of stage 8's census, plus `RemoveDuplicates`
+and `ConvertToAbsolutePath`. Each gets a Rust model and a per-task
+differential, which runs the real task inside a generated project through the
+oracle. They come in this order:
+1. **NuGet's `GetRestore*Task` converters.** These are thin.
+2. **`GetRestoreSettingsTask`.** This is `NuGet.Configuration`, and it overlaps
+   `settings::global_packages_folder`.
+3. **The SDK's tasks.** `ProcessFrameworkReferences` and `GetPackagesToPrune`
+   read data the SDK ships (`KnownFrameworkReference` items and the pruning
+   lists).
+
+#### A₁.5: composition
+
+The `MSBuild` task's inner builds re-evaluate the project under
+`TargetFramework` and walk project references, using `borzoi-msbuild`'s
+evaluation under global properties. **Gate:** A₁'s spec equals A₀'s on every
+corpus project and fixture it commits on. A₁ is keyed on the cone's identity,
+meaning the target file hashes and task-assembly identities that stage 8
+pins, through a verified list derived from those runs. Stage 9 then puts it in
+front of `restore.rs`.
 
 ### Stage 9: spawn-free runtime path
 

@@ -1,9 +1,10 @@
 # Interned names, paths and types in sema
 
-> **Status (2026-11-12).** Plan written; Stages 0 (count harness), 1 (the
+> **Status (2026-11-13).** Plan written; Stages 0 (count harness), 1 (the
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
-> product on ids) and 9 (`OpenScope`) implemented.
+> product on ids), 5 (the remaining path and name keys, in three parts) and
+> 9 (`OpenScope`) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -631,6 +632,99 @@ hashing a `Vec<String>` once, so the gain is in the callers that hold ids.
 The whole-corpus dump of Stage 4 (resolutions, decline sites, definitions,
 diagnostics, inferred types; each file alone and each directory as a
 project) is byte-identical before and after.
+
+**5b, implemented** (`resolve/path_set.rs`, `resolve/state.rs`):
+
+- **`PathSet` on ids.** The shadow sets (`module_paths`,
+  `nested_module_locals`/`_exports`, `augmentation_head_locals`/`_exports`,
+  `real_nested_module_exports`, and `ProjectItems`' `module_headers`,
+  `nested_module_paths`, `augmentation_head_paths`, `real_nested_modules`,
+  `type_qualified_case_paths`) are a log of `PathId`s and a member count per
+  id: the env's trie of names stands in for the trie each set kept of its
+  own. A question arrives as the ids of its prefixes (`PathPrefixes`): from
+  a lookup, from an interned reading extended by looked-up segments
+  (`PathPrefixes::under`, which `assembly_path_records` and
+  `assembly_type_path_core` share between the project shadow and their env
+  probes), or from `ContainerPath`'s ids. Suffix questions over the
+  container path (`Extended`) are extended once and asked of every set.
+  `head_contested_by_project_module`'s open loop asks each set for the
+  open's child of the head by id (`contains_child`), building no path.
+- **The scope frames on `Name`s.** `ScopeEntry::name` is a `Name`, interned
+  when the entry is made, so an entry clones without allocating, and
+  `Frame`'s index is keyed by it: a frame rebuilt for a member body
+  (`push_field_scope`) re-indexes without cloning a string, and a lookup
+  through every frame (`latest_entry_noting_withdrawals`,
+  `case_reference_scan`) looks the name up once and probes each frame by id.
+- **`PathSet` is shared.** It backs `ProjectItems`' sets as well as the
+  resolver's, so converting it converts both; 5a takes the rest of
+  `ProjectItems`.
+- **Lockstep.** `PathSet` keeps the string trie it replaced
+  (`path_set/text.rs`, whose log now holds nodes rather than paths, so the
+  reference is linear in the segments inserted too) and asserts every query
+  against it; `PathPrefixes::under` asserts each prefix id spells its
+  prefix; `Frame` keeps a string-keyed index and `named_rev` asserts the two
+  agree.
+- **Not converted**: the resolver's other string-keyed maps (`type_members`,
+  `top_level_nested_locals`, the per-block local sets' container keys, the
+  declared-name views) sit off the hot path: none of their queries is among
+  the functions the profile after this part attributes resolve's time to.
+- **`walk_cost_scaling`'s `MEMORY_EXEMPT` entry stays.** Its reason names
+  three holders of each nested module's full path; this part makes the
+  name-shadow and real-module sets linear (their `PathSet` reference too),
+  but the export declarations still carry full paths, and the test still
+  measures the shape growing. Those paths are Stage 6's (published paths).
+  The allocation test caught one quadratic this part introduced on the way:
+  a scan that spelled every member of a set per `open`
+  (`may_name_unlent_module`); it now spells only members whose last name
+  is the open's head.
+
+**Measured** (5b, on 5c): resolve 1134.2 → 999.8 instructions per byte
+(−11.9%), allocations 1.186 → 0.947 per byte (−20%); infer 175.4 → 173.7.
+The whole-corpus dump is byte-identical to Stage 4's.
+
+**5a, implemented** (`resolve/model.rs`, `names.rs`):
+
+- **Shortening prefixes on ids.** Every `ShorteningPrefix` is interned when
+  it is pushed. The tier-1 walks of `resolved_project_module` and the
+  cross-file type-qualified case extend each prefix by the written names by
+  id (`NameTable::extend_last`), and spell a candidate path only where a
+  module set (`is_project_module_id`) or the case index
+  (`holds_type_qualified_case`) holds it: with no project module or case of
+  the path, an `open`'s prefix costs a few integer probes rather than a
+  path built and hashed.
+- **`ProjectItems`' export maps.** `type_qualified_cases`, `value_exports`
+  and `member_decl_files` are `PathMap`s. A `PathMap` now indexes its keys
+  by their parent (`PathMap::children`), so the questions an `open` of a
+  module asks of the earlier files' exports
+  (`direct_value_children`, `direct_constructor_children`, the
+  `fragment_*` twins, `direct_type_contestants`) read the module's
+  children rather than scanning every export, which cost each such `open`
+  time linear in the whole project's exports.
+- **Lockstep.** Each map keeps its string-keyed twin; `children` is held, as
+  a set, to a scan of the twin; the tier-1 probes assert their id against
+  the spelled path and their answer against the string-keyed check.
+- **Not converted**: the rest of `ProjectItems`' string-keyed maps and sets
+  (`namespace_paths`, `modules_with_hidden_values`, the signature screens,
+  the opaque-case and contribution maps, `implicit_module_shadows`, the
+  simple-name indexes). Several are asked by prefix scan
+  (`starts_with`) rather than by key, and none of them appears in a
+  profile of resolve, per file or as one project.
+
+**Measured** (5a, on 5b): resolve 999.8 → 882.1 instructions per byte
+(−11.8%), allocations 0.947 → 0.759 per byte (−20%); infer 173.7 → 174.0.
+Each file resolves against an empty `ProjectItems` there, so this is the
+tier-1 walks alone. A throwaway variant that resolves the same files as one
+project (`resolve_project`, every map populated) measures the whole stage:
+
+| | Stage 4 | 5c | 5b | 5a |
+|---|---|---|---|---|
+| `resolve_file`, instr/B | 1245.1 | 1134.2 | 999.8 | 882.1 |
+| `resolve_project`, instr/B | 1304.4 | 1262.2 | 1225.1 | 887.7 |
+
+The plan estimated −10 to −15% across the three parts; per file the stage
+measures −29%, and as one project −32%. Allocations per byte, per file, fall
+from 1.267 to 0.759: below one per source byte. The whole-corpus dump is
+byte-identical to Stage 4's after each part.
 
 ### Stage 6 (optional): published names
 

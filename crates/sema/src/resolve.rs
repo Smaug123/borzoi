@@ -426,7 +426,7 @@ pub fn resolve_file(
         if let Some(path) = &prefix {
             // A declared module shadows a same-named assembly type even with no
             // exports, so record it here, not from the exported values.
-            r.module_paths.insert(path.clone());
+            r.module_paths.insert(assemblies.names(), path);
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
             if header_auto_open && !r.anonymous_root {
@@ -1701,7 +1701,7 @@ fn resolve_project_files_impl(
         {
             let path = implicit_module_path(&pf.qnof);
             if !path.is_empty() {
-                preceding.note_implicit_module_shadow(path);
+                preceding.note_implicit_module_shadow(assemblies.names(), path);
             }
         }
         resolved.push(Arc::new(rf));
@@ -2207,7 +2207,7 @@ fn resolve_project_files_incremental_impl(
         {
             let path = implicit_module_path(&pf.qnof);
             if !path.is_empty() {
-                preceding.note_implicit_module_shadow(path);
+                preceding.note_implicit_module_shadow(assemblies.names(), path);
             }
         }
         resolved.push(rf);
@@ -3348,7 +3348,7 @@ mod export_decl_tests {
             pi.modules_with_hidden_values
         );
         // And, being anonymous-root, it contributes no value / case exports.
-        assert!(pi.value_exports.is_empty());
+        assert!(pi.value_exports.iter().next().is_none());
         assert!(pi.case_item_ids.is_empty());
     }
 
@@ -3417,9 +3417,10 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
+            let names = crate::names::NameTable::default();
+            pi.extend_with(&rf, &names, None, None);
             assert!(
-                !pi.nested_module_paths.contains(&segs(&["M"])),
+                !pi.nested_module_paths.contains_path(&names, &segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
             );
         }
@@ -3438,7 +3439,8 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
+        let names = crate::names::NameTable::default();
+        pi.extend_with(&rf, &names, None, None);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(
@@ -3446,6 +3448,7 @@ mod export_decl_tests {
             "the final module segment is not a namespace"
         );
         // The full path is the module header, not a namespace.
-        assert!(pi.is_exact_project_module(&segs(&["A", "B", "C"])));
+        let path = segs(&["A", "B", "C"]);
+        assert!(pi.is_exact_project_module(&names, crate::names::PathKey::of(&names, &path)));
     }
 }

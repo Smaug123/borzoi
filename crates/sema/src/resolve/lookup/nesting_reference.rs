@@ -87,10 +87,17 @@ impl Census {
 impl Resolver<'_> {
     /// Whether `prefix + [head]` is a module that could contest a dotted head.
     fn reference_is_contesting_module(&self, path: &[String]) -> bool {
-        self.module_paths.contains(path)
-            || self.real_nested_module_exports.contains(path)
-            || self.preceding.is_exact_project_module(path)
-            || self.preceding.is_real_nested_module(path)
+        self.module_paths
+            .contains_path(self.assemblies.names(), path)
+            || self
+                .real_nested_module_exports
+                .contains_path(self.assemblies.names(), path)
+            || self
+                .preceding
+                .is_exact_project_module(self.assemblies.names(), self.path_key(path))
+            || self
+                .preceding
+                .is_real_nested_module(self.assemblies.names(), self.path_key(path))
     }
 
     /// [`Self::module_like_transparent_for`], with the module's path built
@@ -115,8 +122,12 @@ impl Resolver<'_> {
         if !kinds.module || kinds.alias {
             return false;
         }
-        if self.preceding.is_exact_project_module(&mp)
-            || self.preceding.is_exact_nested_module(&mp)
+        if self
+            .preceding
+            .is_exact_project_module(self.assemblies.names(), self.path_key(&mp))
+            || self
+                .preceding
+                .is_exact_nested_module(self.assemblies.names(), self.path_key(&mp))
             || self.is_project_namespace_path(&mp)
             || !self.assemblies_provably_lack_module_path(&mp)
             || self.module_has_hidden_values(&mp)
@@ -360,7 +371,7 @@ impl Resolver<'_> {
         let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
             match self
                 .preceding
-                .type_qualified_case(&full, &self.container_path)
+                .type_qualified_case(self.assemblies.names(), &full, &self.container_path)
                 .filter(|_| !self.value_shadows_case(&full))
             {
                 None => None,

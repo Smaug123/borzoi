@@ -57,6 +57,12 @@ impl<'n> ContainerPath<'n> {
             .expect("the root's id is always present")
     }
 
+    /// The ids of every enclosing container, the root first: one more than
+    /// there are segments.
+    pub(super) fn prefix_ids(&self) -> &[PathId] {
+        &self.prefix_ids
+    }
+
     /// The id of the enclosing container `self[..k]`.
     pub(super) fn prefix_id(&self, k: usize) -> PathId {
         self.prefix_ids[k]

@@ -1473,11 +1473,14 @@ impl<'a> Resolver<'a> {
                                 gp.clone(),
                             ));
                             if !(project_readings_only && !project_ns) {
-                                self.scope.open_shortening_prefixes.push(ShorteningPrefix {
-                                    path: gp.clone(),
-                                    namespace_reading: true,
-                                    module_reading: false,
-                                });
+                                self.scope
+                                    .open_shortening_prefixes
+                                    .push(ShorteningPrefix::new(
+                                        self.assemblies.names(),
+                                        gp.clone(),
+                                        true,
+                                        false,
+                                    ));
                                 self.scope.explicit_open_prefixes.push(OpenedPrefix::new(
                                     self.assemblies.names(),
                                     pos,
@@ -1502,11 +1505,14 @@ impl<'a> Resolver<'a> {
                         // -- The assembly *module* half's dotted-head bookkeeping —
                         // keyed on the module handles, not the namespace surface.
                         if !handles.is_empty() {
-                            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
-                                path: gp.clone(),
-                                namespace_reading: false,
-                                module_reading: true,
-                            });
+                            self.scope
+                                .open_shortening_prefixes
+                                .push(ShorteningPrefix::new(
+                                    self.assemblies.names(),
+                                    gp.clone(),
+                                    false,
+                                    true,
+                                ));
                             // Only a prefix that could hide a whole nested *module*
                             // (a dropped type, an unknowable pickle) can make a
                             // later `open Sub` name something we cannot see
@@ -1626,11 +1632,14 @@ impl<'a> Resolver<'a> {
                             // the project half lends no prefix (task #30). Where an
                             // assembly module shares the FQN, the module-half push
                             // above covers it.
-                            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
-                                path: gp.clone(),
-                                namespace_reading: false,
-                                module_reading: false,
-                            });
+                            self.scope
+                                .open_shortening_prefixes
+                                .push(ShorteningPrefix::new(
+                                    self.assemblies.names(),
+                                    gp.clone(),
+                                    false,
+                                    false,
+                                ));
                             if !resolved_alias
                                 && !has_assembly_module
                                 && !assembly_ns_applies
@@ -1748,7 +1757,8 @@ impl<'a> Resolver<'a> {
             if nm_auto_open {
                 self.record_auto_open_module(qualified.clone(), nm_private);
             }
-            self.real_nested_module_exports.insert(qualified.clone());
+            self.real_nested_module_exports
+                .insert(self.assemblies.names(), &qualified);
         }
         // The export-decl-list twin: one nested-module decl (`header: false`)
         // carrying its `[<AutoOpen>]`/`private` bits. Every derivation off it
@@ -1908,9 +1918,11 @@ impl<'a> Resolver<'a> {
         if !self.anonymous_root {
             let mut qualified = self.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
-            self.nested_module_exports.insert(qualified);
+            self.nested_module_exports
+                .insert(self.assemblies.names(), &qualified);
         }
-        self.nested_module_locals.insert(segs);
+        self.nested_module_locals
+            .insert(self.assemblies.names(), &segs);
     }
 
     /// The **augmentation-head** counterpart of [`Self::record_project_name_shadow`]:
@@ -1931,9 +1943,11 @@ impl<'a> Resolver<'a> {
         if !self.anonymous_root {
             let mut qualified = self.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
-            self.augmentation_head_exports.insert(qualified);
+            self.augmentation_head_exports
+                .insert(self.assemblies.names(), &qualified);
         }
-        self.augmentation_head_locals.insert(segs);
+        self.augmentation_head_locals
+            .insert(self.assemblies.names(), &segs);
     }
 
     /// Note `name` as a *module-like* declaration (nested module / abbreviation)

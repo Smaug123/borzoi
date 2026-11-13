@@ -246,7 +246,12 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Item(item_id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    let mut entry = ScopeEntry::binding(name, res, self.scope.open_generation);
+                    let mut entry = ScopeEntry::binding(
+                        self.assemblies.names(),
+                        &name,
+                        res,
+                        self.scope.open_generation,
+                    );
                     // A maybe-literal module-level value contests the pattern
                     // namespace as a constant pattern (see
                     // [`ScopeEntry::maybe_constant_pattern`]).
@@ -257,7 +262,12 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    param_entries.push(ScopeEntry::binding(name, res, self.scope.open_generation));
+                    param_entries.push(ScopeEntry::binding(
+                        self.assemblies.names(),
+                        &name,
+                        res,
+                        self.scope.open_generation,
+                    ));
                 }
             }
         }
@@ -433,7 +443,12 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    let entry = ScopeEntry::binding(name, res, self.scope.open_generation);
+                    let entry = ScopeEntry::binding(
+                        self.assemblies.names(),
+                        &name,
+                        res,
+                        self.scope.open_generation,
+                    );
                     if is_value {
                         value_entries.push(entry);
                     } else {
@@ -488,7 +503,7 @@ impl<'a> Resolver<'a> {
                 // binder (`let Pal = Pal.Color.Red` must resolve `Pal` cross-file, not
                 // stop on the same-file binder); for a `rec` group it is before, as the
                 // binder is in scope in its own RHS. Mirrors the scope-frame timing.
-                self.mark_decl(&e.name).value = true;
+                self.mark_decl(self.assemblies.names().text(e.name)).value = true;
                 self.module_frame().push(e.clone());
             }
         }
@@ -544,7 +559,8 @@ impl<'a> Resolver<'a> {
     fn enter_ap_body(&mut self, case_entries: &[ScopeEntry]) -> HashSet<String> {
         let restore = self.ap_body_case_names.clone();
         for e in case_entries {
-            self.ap_body_case_names.insert(e.name.clone());
+            self.ap_body_case_names
+                .insert(self.assemblies.names().text(e.name).to_string());
         }
         restore
     }
