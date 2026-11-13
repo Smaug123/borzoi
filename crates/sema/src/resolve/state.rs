@@ -22,7 +22,7 @@ use super::model::{
 };
 use super::open_scope::{InternedPrefix, OpenScope};
 use super::path_set::PathSet;
-use crate::names::{ChildMap, PathId};
+use crate::names::{ChildMap, Name, NameKey, NameTable, PathId};
 
 /// The opens in scope that could supply a **dotted-path head** the walk does
 /// not otherwise see ([`OpenOpacityState::dotted`](crate::resolve::open_scope::OpenOpacityState::dotted)).
@@ -70,11 +70,16 @@ impl DottedOpacity {
     }
 }
 
-/// A binding visible in a scope frame. `name` is `idText`-normalised; later
-/// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
+/// A binding visible in a scope frame. `name` is `idText`-normalised,
+/// interned in the env's name table; later entries in a frame shadow earlier
+/// ones (position-ordered shadowing, D4).
 #[derive(Debug, Clone)]
 pub(super) struct ScopeEntry {
-    pub(super) name: String,
+    pub(super) name: Name,
+    /// `name`'s text, which the frame's string-keyed reference index reads
+    /// under `interning-reference` in a debug build.
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    text: String,
     pub(super) resolution: Resolution,
     /// `true` if an `open` brought this name into scope — an opened type's static
     /// member (`open type T`), or (a later slice) an opened module's value
@@ -195,9 +200,16 @@ impl ScopeEntry {
     /// stamped with the current [`open_generation`](crate::resolve::open_scope::OpenScope::open_generation)
     /// so a later residue-bearing `open` can shadow it (see
     /// [`Self::generation`]).
-    pub(super) fn binding(name: String, resolution: Resolution, generation: usize) -> Self {
+    pub(super) fn binding(
+        names: &NameTable,
+        name: &str,
+        resolution: Resolution,
+        generation: usize,
+    ) -> Self {
         ScopeEntry {
-            name,
+            name: names.logical(name),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: name.to_string(),
             resolution,
             from_open: false,
             generation,
@@ -220,7 +232,8 @@ impl ScopeEntry {
     /// `resolution` is what it commits; an opened entry that declines is made
     /// with [`Self::opened_declined`], which names why.
     pub(super) fn opened(
-        name: String,
+        names: &NameTable,
+        name: &str,
         resolution: Resolution,
         generation: usize,
         open_pos: u32,
@@ -229,18 +242,20 @@ impl ScopeEntry {
             !matches!(resolution, Resolution::Deferred(_)),
             "opened entry {name:?} declines without naming why: use `opened_declined`"
         );
-        ScopeEntry::opened_unchecked(name, resolution, generation, open_pos)
+        ScopeEntry::opened_unchecked(names, name, resolution, generation, open_pos)
     }
 
     /// An opened entry that **declines** for `cause`: in scope, shadowing by
     /// position, naming nothing.
     pub(super) fn opened_declined(
-        name: String,
+        names: &NameTable,
+        name: &str,
         cause: DeclineCause,
         generation: usize,
         open_pos: u32,
     ) -> Self {
         let mut entry = ScopeEntry::opened_unchecked(
+            names,
             name,
             Resolution::Deferred(DeferredReason::UnboundName),
             generation,
@@ -254,13 +269,16 @@ impl ScopeEntry {
     /// position FCS adds the contributor's names to the environment, which the
     /// head-slot ordering compares like an `open`'s.
     pub(super) fn contributor_mark(
-        name: String,
+        names: &NameTable,
+        name: &str,
         reach: MarkReach,
         generation: usize,
         pos: u32,
     ) -> Self {
         ScopeEntry {
-            name,
+            name: names.logical(name),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: name.to_string(),
             resolution: Resolution::Deferred(DeferredReason::UnboundName),
             from_open: false,
             generation,
@@ -278,10 +296,11 @@ impl ScopeEntry {
     /// A source entry for a name that may be a union case the walk cannot
     /// decide ([`Self::undecided_case`]): in scope, shadowing by position in
     /// both namespaces, naming nothing.
-    pub(super) fn undecided_case(name: String, generation: usize) -> Self {
+    pub(super) fn undecided_case(names: &NameTable, name: &str, generation: usize) -> Self {
         ScopeEntry {
             undecided_case: true,
             ..ScopeEntry::binding(
+                names,
                 name,
                 Resolution::Deferred(DeferredReason::UnboundName),
                 generation,
@@ -290,13 +309,16 @@ impl ScopeEntry {
     }
 
     fn opened_unchecked(
-        name: String,
+        names: &NameTable,
+        name: &str,
         resolution: Resolution,
         generation: usize,
         open_pos: u32,
     ) -> Self {
         ScopeEntry {
-            name,
+            name: names.logical(name),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: name.to_string(),
             resolution,
             from_open: true,
             generation,
@@ -314,7 +336,8 @@ impl ScopeEntry {
     /// A constructor-namespace-only opened entry — a value-shadowed cross-file
     /// case (see [`Self::pattern_only`]).
     pub(super) fn opened_pattern_only(
-        name: String,
+        names: &NameTable,
+        name: &str,
         resolution: Resolution,
         generation: usize,
         open_pos: u32,
@@ -324,7 +347,9 @@ impl ScopeEntry {
             "opened entry {name:?} declines without naming why: use `opened_declined`"
         );
         ScopeEntry {
-            name,
+            name: names.logical(name),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: name.to_string(),
             resolution,
             from_open: true,
             generation,
@@ -383,7 +408,11 @@ pub(super) type TypeSlotDef = (u32, SlotClass);
 pub(super) struct Frame {
     entries: Vec<ScopeEntry>,
     /// Each name's positions in `entries`, ascending.
-    by_name: HashMap<String, Vec<usize>>,
+    by_name: HashMap<Name, Vec<usize>>,
+    /// The string-keyed index `by_name` replaced, held to it by every
+    /// [`Self::named_rev`] under `interning-reference` in a debug build.
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    by_text: HashMap<String, Vec<usize>>,
 }
 
 impl Frame {
@@ -391,6 +420,8 @@ impl Frame {
         let mut frame = Frame {
             entries,
             by_name: HashMap::default(),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            by_text: HashMap::default(),
         };
         frame.reindex();
         frame
@@ -407,20 +438,34 @@ impl Frame {
 
     /// The entries named `name`, latest first: the order in which the
     /// latest-wins scan over [`Self::entries`] would meet them.
-    pub(super) fn named_rev<'a>(&'a self, name: &str) -> impl Iterator<Item = &'a ScopeEntry> {
-        self.by_name
-            .get(name)
+    pub(super) fn named_rev<'a>(
+        &'a self,
+        name: NameKey<'_>,
+    ) -> impl Iterator<Item = &'a ScopeEntry> {
+        let positions = name.id.and_then(|n| self.by_name.get(&n));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            positions,
+            self.by_text.get(name.text),
+            "a frame's name index disagrees with its reference at {:?}",
+            name.text
+        );
+        positions
             .into_iter()
             .flat_map(|positions| positions.iter().rev())
             .map(|&i| &self.entries[i])
     }
 
     pub(super) fn push(&mut self, entry: ScopeEntry) {
-        self.by_name
-            .entry(entry.name.clone())
-            .or_default()
-            .push(self.entries.len());
+        self.index(self.entries.len(), &entry);
         self.entries.push(entry);
+    }
+
+    /// File `entry`, at position `i`, under its name.
+    fn index(&mut self, i: usize, entry: &ScopeEntry) {
+        self.by_name.entry(entry.name).or_default().push(i);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.by_text.entry(entry.text.clone()).or_default().push(i);
     }
 
     pub(super) fn extend(&mut self, entries: impl IntoIterator<Item = ScopeEntry>) {
@@ -450,9 +495,13 @@ impl Frame {
 
     fn reindex(&mut self) {
         self.by_name.clear();
-        for (i, entry) in self.entries.iter().enumerate() {
-            self.by_name.entry(entry.name.clone()).or_default().push(i);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.by_text.clear();
+        let entries = std::mem::take(&mut self.entries);
+        for (i, entry) in entries.iter().enumerate() {
+            self.index(i, entry);
         }
+        self.entries = entries;
     }
 }
 
@@ -1823,7 +1872,7 @@ pub(super) fn implicit_open_groups(assemblies: &AssemblyEnv) -> Vec<OpenGroup> {
 mod frame_tests {
     use proptest::prelude::*;
 
-    use super::{DeferredReason, Frame, Resolution, ScopeEntry};
+    use super::{DeferredReason, Frame, NameKey, NameTable, Resolution, ScopeEntry};
 
     const NAMES: [&str; 4] = ["a", "b", "ab", "``a``"];
 
@@ -1848,9 +1897,10 @@ mod frame_tests {
     }
 
     /// Each entry is told apart by its `open_pos`, which the frame never reads.
-    fn entry(name: usize, from_open: bool, id: u32) -> ScopeEntry {
+    fn entry(names: &NameTable, name: usize, from_open: bool, id: u32) -> ScopeEntry {
         let mut e = ScopeEntry::binding(
-            NAMES[name].to_string(),
+            names,
+            NAMES[name],
             Resolution::Deferred(DeferredReason::UnboundName),
             0,
         );
@@ -1871,10 +1921,11 @@ mod frame_tests {
             initial in prop::collection::vec((0..NAMES.len(), any::<bool>()), 0..8),
             ops in prop::collection::vec(op(), 0..40),
         ) {
+            let names = NameTable::default();
             let mut next_id = 0u32;
             let mut fresh = |name: usize, from_open: bool| {
                 next_id += 1;
-                entry(name, from_open, next_id)
+                entry(&names, name, from_open, next_id)
             };
             let mut model: Vec<ScopeEntry> =
                 initial.iter().map(|&(n, o)| fresh(n, o)).collect();
@@ -1912,9 +1963,10 @@ mod frame_tests {
                 prop_assert_eq!(frame.len(), model.len());
                 prop_assert_eq!(ids(frame.entries().iter()), ids(model.iter()));
                 for name in NAMES {
+                    let key = NameKey::of(&names, name);
                     prop_assert_eq!(
-                        ids(frame.named_rev(name)),
-                        ids(model.iter().rev().filter(|e| e.name == name)),
+                        ids(frame.named_rev(key)),
+                        ids(model.iter().rev().filter(|e| names.text(e.name) == name)),
                         "entries named {}", name
                     );
                 }

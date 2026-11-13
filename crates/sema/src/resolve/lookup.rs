@@ -5,6 +5,7 @@ use borzoi_cst::syntax::{TextRange, TextSize};
 
 use borzoi_assembly::{EntityKind, UnionCases};
 
+use super::path_set::PathPrefixes;
 use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget};
 use crate::def::{DefId, DefKind};
 use crate::hash::{HashMap, HashSet};
@@ -376,7 +377,8 @@ impl<'a> Resolver<'a> {
             .into_iter()
             .map(|(name, idx)| match idx {
                 Some(idx) if certain => ScopeEntry::opened(
-                    name.to_string(),
+                    self.assemblies.names(),
+                    name,
                     Resolution::Member {
                         parent: handle,
                         idx,
@@ -385,13 +387,15 @@ impl<'a> Resolver<'a> {
                     open_pos,
                 ),
                 Some(_) => ScopeEntry::opened_declined(
-                    name.to_string(),
+                    self.assemblies.names(),
+                    name,
                     DeclineCause::OpenFoldResidue,
                     generation,
                     open_pos,
                 ),
                 None => ScopeEntry::opened_declined(
-                    name.to_string(),
+                    self.assemblies.names(),
+                    name,
                     DeclineCause::OpenedOverloadSet,
                     generation,
                     open_pos,
@@ -496,7 +500,8 @@ impl<'a> Resolver<'a> {
         let entries: Vec<ScopeEntry> = cases
             .into_iter()
             .map(|(name, res)| {
-                let mut entry = ScopeEntry::opened(name, res, generation, open_pos);
+                let mut entry =
+                    ScopeEntry::opened(self.assemblies.names(), &name, res, generation, open_pos);
                 entry.opened_case = true;
                 entry
             })
@@ -530,15 +535,20 @@ impl<'a> Resolver<'a> {
                 let mut entry = match case.target {
                     OpenFoldTarget::UnionCase { union, case: idx } if definite => {
                         ScopeEntry::opened(
-                            case.name.clone(),
+                            self.assemblies.names(),
+                            &case.name,
                             Resolution::UnionCase { union, case: idx },
                             generation,
                             0,
                         )
                     }
-                    OpenFoldTarget::Opaque(cause) if !definite => {
-                        ScopeEntry::opened_declined(case.name.clone(), cause, generation, 0)
-                    }
+                    OpenFoldTarget::Opaque(cause) if !definite => ScopeEntry::opened_declined(
+                        self.assemblies.names(),
+                        &case.name,
+                        cause,
+                        generation,
+                        0,
+                    ),
                     OpenFoldTarget::UnionCase { .. }
                     | OpenFoldTarget::Opaque(_)
                     | OpenFoldTarget::Member { .. }
@@ -747,35 +757,63 @@ impl<'a> Resolver<'a> {
                 self.is_project_module_path(parent)
             }
         };
-        let declared_modules = self
-            .module_paths
+        let names = self.assemblies.names();
+        // The declared modules: the shadow sets' members by id, spelled only
+        // where the last segment is the head, and this file's module
+        // declarations by their paths.
+        let sets = [
+            &self.module_paths,
+            &self.nested_module_exports,
+            &self.preceding.nested_module_paths,
+            &self.preceding.real_nested_modules,
+        ];
+        let declared_decls: Vec<&Vec<String>> = self
+            .export_decls
             .iter()
-            .chain(&self.nested_module_exports)
-            .chain(self.export_decls.iter().filter_map(|d| {
+            .filter(|d| {
                 matches!(
                     d.kind,
                     super::model::ExportDeclKind::Module { .. }
                         | super::model::ExportDeclKind::ModuleAbbrev
                 )
-                .then_some(&d.path)
-            }))
-            .chain(&self.preceding.nested_module_paths)
-            .chain(&self.preceding.real_nested_modules);
+            })
+            .map(|d| &d.path)
+            .collect();
+        let headed: Vec<Vec<String>> = sets
+            .iter()
+            .flat_map(|set| set.iter())
+            .filter(|&id| {
+                names
+                    .split(id)
+                    .is_some_and(|(_, last)| names.text(last) == head)
+            })
+            .map(|id| names.segments(id).into_iter().map(str::to_string).collect())
+            .chain(
+                declared_decls
+                    .iter()
+                    .filter(|p| p.last() == Some(head))
+                    .map(|p| p.to_vec()),
+            )
+            .collect();
+        let declared = |full: &[String]| {
+            sets.iter().any(|set| set.contains_path(names, full))
+                || declared_decls.iter().any(|p| p.as_slice() == full)
+        };
         let opened = |full: &[String]| {
             interps
                 .iter()
                 .any(|i| matches!(i, OpenInterpretation::Module(p) if p.as_slice() == full))
         };
-        declared_modules.clone().any(|p| {
-            let Some((last, parent)) = p.split_last() else {
+        headed.iter().any(|p| {
+            let Some((_, parent)) = p.split_last() else {
                 return false;
             };
-            if last != head || !parent_may_auto_open(parent) {
+            if !parent_may_auto_open(parent) {
                 return false;
             }
             let mut full = parent.to_vec();
             full.extend_from_slice(path);
-            !opened(&full) && declared_modules.clone().any(|q| *q == full)
+            !opened(&full) && declared(&full)
         })
     }
 
@@ -900,10 +938,20 @@ impl<'a> Resolver<'a> {
                     }
                 };
                 let mut entry = match answer {
-                    Ok(res) => ScopeEntry::opened(e.name.clone(), res, generation, open_pos),
-                    Err(cause) => {
-                        ScopeEntry::opened_declined(e.name.clone(), cause, generation, open_pos)
-                    }
+                    Ok(res) => ScopeEntry::opened(
+                        self.assemblies.names(),
+                        &e.name,
+                        res,
+                        generation,
+                        open_pos,
+                    ),
+                    Err(cause) => ScopeEntry::opened_declined(
+                        self.assemblies.names(),
+                        &e.name,
+                        cause,
+                        generation,
+                        open_pos,
+                    ),
                 };
                 // Active-pattern tags live in the constructor namespace only —
                 // an expression-position use never sees them.
@@ -942,10 +990,21 @@ impl<'a> Resolver<'a> {
     /// no qualified export path, so they cannot be enumerated — the conservative
     /// `open_imports_project_values` fallback covers them).
     pub(super) fn is_project_module_path(&self, mp: &[String]) -> bool {
-        self.module_paths.contains(mp)
-            || self.nested_module_exports.contains(mp)
-            || self.preceding.is_exact_project_module(mp)
-            || self.preceding.is_exact_nested_module(mp)
+        // Looked up only when some set has a member to find.
+        let any_module = !(self.module_paths.is_empty()
+            && self.nested_module_exports.is_empty()
+            && self.preceding.module_headers.is_empty()
+            && self.preceding.nested_module_paths.is_empty());
+        any_module && self.is_project_module_key(self.path_key(mp))
+    }
+
+    /// [`Self::is_project_module_path`] by a key the caller already holds.
+    pub(super) fn is_project_module_key(&self, mp: PathKey<'_>) -> bool {
+        let names = self.assemblies.names();
+        self.module_paths.contains(names, mp)
+            || self.nested_module_exports.contains(names, mp)
+            || self.preceding.is_exact_project_module(names, mp)
+            || self.preceding.is_exact_nested_module(names, mp)
     }
 
     /// Whether `np` is a declared project **namespace** path — same file
@@ -1156,15 +1215,19 @@ impl<'a> Resolver<'a> {
     /// one walk along the container path in each module set's trie, building
     /// no path.
     pub(super) fn project_module_completions(&self, written: &[String]) -> Vec<usize> {
-        let path = &self.container_path[..];
+        let names = self.assemblies.names();
+        let path = self.container_prefixes();
+        let written_names = names.lookup_names(written);
+        let question = path.extended(names, &written_names, written);
         let mut lens: Vec<usize> = self
             .module_paths
-            .suffix_member_prefix_lens(path, written)
+            .suffix_member_prefix_lens(names, &question)
+            .into_iter()
             .chain(
                 self.nested_module_exports
-                    .suffix_member_prefix_lens(path, written),
+                    .suffix_member_prefix_lens(names, &question),
             )
-            .chain(self.preceding.module_suffix_prefix_lens(path, written))
+            .chain(self.preceding.module_suffix_prefix_lens(names, &question))
             .collect();
         lens.sort_unstable();
         lens.dedup();
@@ -1321,6 +1384,21 @@ impl<'a> Resolver<'a> {
     /// re-introducing).
     pub(super) fn enclosing_namespace(&self) -> &[String] {
         &self.container_path[..self.namespace_depth.min(self.container_path.len())]
+    }
+
+    /// `path`'s key in the env's name table, looked up.
+    pub(super) fn path_key<'p>(&self, path: &'p [String]) -> PathKey<'p> {
+        PathKey::of(self.assemblies.names(), path)
+    }
+
+    /// The ids of `path`'s prefixes in the env's name table, looked up.
+    pub(super) fn prefixes<'p>(&self, path: &'p [String]) -> PathPrefixes<'p> {
+        PathPrefixes::of(self.assemblies.names(), path)
+    }
+
+    /// The container path's prefixes, by the ids the walk interned.
+    pub(super) fn container_prefixes(&self) -> PathPrefixes<'_> {
+        PathPrefixes::interned(self.container_path.prefix_ids(), &self.container_path)
     }
 
     /// The empty prefix, as a query key.
@@ -2302,10 +2380,13 @@ impl<'a> Resolver<'a> {
             // Only a completion the case index holds can hit, and its trie
             // names them all in one walk along the container path, so no
             // other completion is built.
-            let completions: Vec<usize> = self
-                .preceding
-                .type_qualified_case_prefix_lens(&self.container_path, written)
-                .collect();
+            let names = self.assemblies.names();
+            let completions: Vec<usize> = self.preceding.type_qualified_case_prefix_lens(
+                names,
+                &self
+                    .container_prefixes()
+                    .extended(names, &names.lookup_names(written), written),
+            );
             for &k in completions.iter().rev().filter(|&&k| k >= 1) {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
@@ -2437,8 +2518,13 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 pushed_normal.insert(item.id);
-                let mut entry =
-                    ScopeEntry::opened(name, Resolution::Item(item.id), generation, open_pos);
+                let mut entry = ScopeEntry::opened(
+                    self.assemblies.names(),
+                    &name,
+                    Resolution::Item(item.id),
+                    generation,
+                    open_pos,
+                );
                 entry.maybe_constant_pattern = item.attributed;
                 let block = match item.def {
                     super::model::ExportDef::Own(id) => {
@@ -2496,8 +2582,13 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 pushed_normal.insert(id);
-                let mut entry =
-                    ScopeEntry::opened(name, Resolution::Item(id), generation, open_pos);
+                let mut entry = ScopeEntry::opened(
+                    self.assemblies.names(),
+                    &name,
+                    Resolution::Item(id),
+                    generation,
+                    open_pos,
+                );
                 entry.maybe_constant_pattern = self.preceding.is_attributed_item(id);
                 entries.push(entry);
             }
@@ -2522,7 +2613,8 @@ impl<'a> Resolver<'a> {
                     suppressed.push(id);
                 }
                 entries.push(ScopeEntry::opened_pattern_only(
-                    name,
+                    self.assemblies.names(),
+                    &name,
                     Resolution::Item(id),
                     generation,
                     open_pos,
@@ -2558,7 +2650,8 @@ impl<'a> Resolver<'a> {
                 && container == module_path
             {
                 let mut entry = ScopeEntry::opened_declined(
-                    name.clone(),
+                    self.assemblies.names(),
+                    name,
                     DeclineCause::OpaqueBinder,
                     generation,
                     open_pos,
@@ -2612,7 +2705,13 @@ impl<'a> Resolver<'a> {
         let marks: Vec<ScopeEntry> = contested
             .into_iter()
             .map(|name| {
-                ScopeEntry::contributor_mark(name, MarkReach::Expression, generation, open_pos)
+                ScopeEntry::contributor_mark(
+                    self.assemblies.names(),
+                    &name,
+                    MarkReach::Expression,
+                    generation,
+                    open_pos,
+                )
             })
             .collect();
         self.module_frame().extend(marks);
@@ -2894,7 +2993,8 @@ impl<'a> Resolver<'a> {
             while own_types.last().is_some_and(|(_, file)| *file <= frag_file) {
                 let (name, _) = own_types.pop().expect("checked non-empty");
                 let entry = ScopeEntry::opened_declined(
-                    name,
+                    self.assemblies.names(),
+                    &name,
                     DeclineCause::OpenedTypeName,
                     self.scope.open_generation,
                     open_pos,
@@ -2912,7 +3012,8 @@ impl<'a> Resolver<'a> {
                     .into_iter()
                     .map(|(name, _)| {
                         ScopeEntry::opened_declined(
-                            name,
+                            self.assemblies.names(),
+                            &name,
                             DeclineCause::OpenedTypeName,
                             generation,
                             open_pos,
@@ -2932,7 +3033,8 @@ impl<'a> Resolver<'a> {
         // The namespace's types of a file later than every fragment's.
         for (name, _) in own_types {
             let entry = ScopeEntry::opened_declined(
-                name,
+                self.assemblies.names(),
+                &name,
                 DeclineCause::OpenedTypeName,
                 self.scope.open_generation,
                 open_pos,
@@ -2957,7 +3059,13 @@ impl<'a> Resolver<'a> {
             // A maybe-literal winner keeps its constant-pattern flag; a case
             // winner's constant-shadow suppression (if any) already fired
             // id-keyed when its fragment folded, and survives this re-push.
-            let mut entry = ScopeEntry::opened(name, Resolution::Item(id), generation, open_pos);
+            let mut entry = ScopeEntry::opened(
+                self.assemblies.names(),
+                &name,
+                Resolution::Item(id),
+                generation,
+                open_pos,
+            );
             entry.maybe_constant_pattern = self.item_is_attributed(id);
             self.module_frame().push(entry);
             count += 1;
@@ -2965,8 +3073,10 @@ impl<'a> Resolver<'a> {
         for (name, id) in ctor_winners {
             // Pattern-only: wins the constructor namespace without disturbing the
             // value namespace (a later submodule value / type owns that slot).
+            let assemblies = self.assemblies;
             self.module_frame().push(ScopeEntry::opened_pattern_only(
-                name,
+                assemblies.names(),
+                &name,
                 Resolution::Item(id),
                 generation,
                 open_pos,
@@ -2979,8 +3089,13 @@ impl<'a> Resolver<'a> {
             // use defers, while `case_reference` reads it as a non-case and scans
             // past it to the constructor outcome — so a pattern the type does not
             // contest still resolves.
+            let assemblies = self.assemblies;
             self.module_frame().push(ScopeEntry::opened_declined(
-                name, cause, generation, open_pos,
+                assemblies.names(),
+                &name,
+                cause,
+                generation,
+                open_pos,
             ));
             count += 1;
         }
@@ -2992,7 +3107,8 @@ impl<'a> Resolver<'a> {
             // it — sound even between two plain values, since Deferred is never
             // wrong.
             let mut entry = ScopeEntry::opened_declined(
-                name,
+                self.assemblies.names(),
+                &name,
                 DeclineCause::OpenFoldResidue,
                 generation,
                 open_pos,
@@ -3017,7 +3133,8 @@ impl<'a> Resolver<'a> {
             names.sort();
             for name in names {
                 let mut entry = ScopeEntry::opened_declined(
-                    name,
+                    self.assemblies.names(),
+                    &name,
                     DeclineCause::SignatureScreened,
                     generation,
                     open_pos,
@@ -3245,7 +3362,8 @@ impl<'a> Resolver<'a> {
         }
         a_variable.then(|| {
             ScopeEntry::binding(
-                name.to_string(),
+                self.assemblies.names(),
+                name,
                 Resolution::Deferred(DeferredReason::UnboundName),
                 self.scope.open_generation,
             )
@@ -3318,8 +3436,9 @@ impl<'a> Resolver<'a> {
         constant_shadow_defers: bool,
     ) -> Result<&ScopeEntry, Option<DeclineCause>> {
         let mut skipped_literal = false;
+        let key = NameKey::of(self.assemblies.names(), name);
         for frame in self.scopes.iter().rev() {
-            for entry in frame.named_rev(name) {
+            for entry in frame.named_rev(key) {
                 // A contributor mark: the name may be a case the walk does not
                 // model, unless the contributor is a constructible type, which
                 // never enters the pattern table.
@@ -4216,7 +4335,8 @@ impl<'a> Resolver<'a> {
     /// sharing this verdict: the project-side commit sites already report it as
     /// [`DeclineCause::SignatureScreened`], and filing it under a project shadow
     /// here would move signature work into the project-merge bucket.
-    pub(super) fn project_shadow_cause(&self, names: &[String]) -> Option<DeclineCause> {
+    pub(super) fn project_shadow_cause(&self, path: &PathPrefixes<'_>) -> Option<DeclineCause> {
+        let names = path.text;
         if self.preceding.sig_screened_path(names) {
             return Some(DeclineCause::SignatureScreened);
         }
@@ -4228,9 +4348,11 @@ impl<'a> Resolver<'a> {
         // `(x: Calc)` with a top-level `module Calc` and `open Demo` is the
         // assembly type `Demo.Calc`, never the module (FCS-verified), so it must
         // not gate the type path.
-        let shadowed = self.path_is_project_type_shadowed(names)
-            || self.path_is_augmentation_head_shadowed(names)
-            || self.preceding.is_exact_project_module(names)
+        let shadowed = self.path_is_project_type_shadowed(path)
+            || self.path_is_augmentation_head_shadowed(path)
+            || self
+                .preceding
+                .is_exact_project_module(self.assemblies.names(), path.key())
             || self
                 .preceding
                 .is_project_value_prefixed(names, &self.container_path);
@@ -4332,8 +4454,12 @@ impl<'a> Resolver<'a> {
                     || {
                         let mut full = prefix.to_vec();
                         full.push(head.to_string());
-                        self.preceding.is_exact_project_module(&full)
-                            || self.preceding.is_exact_nested_module(&full)
+                        self.preceding
+                            .is_exact_project_module(self.assemblies.names(), self.path_key(&full))
+                            || self.preceding.is_exact_nested_module(
+                                self.assemblies.names(),
+                                self.path_key(&full),
+                            )
                     }
             });
         in_current || enclosing_module
@@ -4465,8 +4591,8 @@ impl<'a> Resolver<'a> {
     /// does **not** shadow it (F# `open type Demo.Calc` opens the assembly type
     /// even when an earlier `module Demo` has a `let Calc`), and neither does a
     /// bare top-level *module* of the same name (a module is not a type).
-    pub(super) fn path_is_project_type_shadowed(&self, names: &[String]) -> bool {
-        self.project_type_shadow_cause(names).is_some()
+    pub(super) fn path_is_project_type_shadowed(&self, path: &PathPrefixes<'_>) -> bool {
+        self.project_type_shadow_cause(path).is_some()
     }
 
     /// Whether `names` is rooted at a `type … with` **augmentation head** — this
@@ -4477,16 +4603,22 @@ impl<'a> Resolver<'a> {
     /// **Value namespace only**, and deliberately absent from
     /// [`Self::project_type_shadow_cause`]: the head names an existing type
     /// rather than declaring one, so it cannot occupy a type path.
-    pub(super) fn path_is_augmentation_head_shadowed(&self, names: &[String]) -> bool {
-        self.augmentation_head_locals.has_prefix_of(names)
-            || self.augmentation_head_exports.has_prefix_of(names)
-            || self.preceding.is_rooted_at_augmentation_head(names)
+    pub(super) fn path_is_augmentation_head_shadowed(&self, path: &PathPrefixes<'_>) -> bool {
+        let names = self.assemblies.names();
+        self.augmentation_head_locals.has_prefix_of(names, path)
+            || self.augmentation_head_exports.has_prefix_of(names, path)
+            || self.preceding.is_rooted_at_augmentation_head(names, path)
     }
 
     /// [`Self::path_is_project_type_shadowed`], *and which guard said so* — the
     /// type walk's sibling of [`Self::project_shadow_cause`], including its
     /// signature-screen-first rule and for the same reason.
-    pub(super) fn project_type_shadow_cause(&self, names: &[String]) -> Option<DeclineCause> {
+    pub(super) fn project_type_shadow_cause(
+        &self,
+        path: &PathPrefixes<'_>,
+    ) -> Option<DeclineCause> {
+        let names = path.text;
+        let table = self.assemblies.names();
         // Stage-1 signature screen (`docs/fsi-signature-restriction-plan.md`):
         // a path under a signatured module root whose residual the
         // signature *may* expose must not commit to a merged assembly
@@ -4499,20 +4631,20 @@ impl<'a> Resolver<'a> {
             return Some(DeclineCause::SignatureScreened);
         }
         let shadowed = self.rooted_at_current_module(names)
-            || self.nested_module_locals.has_prefix_of(names)
+            || self.nested_module_locals.has_prefix_of(table, path)
             // …and same-file *qualified* paths of nested modules / types /
             // exceptions (`Demo.Calc` for a `type Calc` under `namespace Demo`,
             // referenced from a sibling `module M`): `nested_module_locals` holds
             // only the *relative* form, so a namespace-qualified reference needs
             // the exported (qualified) form too.
-            || self.nested_module_exports.has_prefix_of(names)
+            || self.nested_module_exports.has_prefix_of(table, path)
             // NB: a *top-level* project module exactly equal to `names`
             // ([`ProjectItems::is_exact_project_module`]) is **not** a type
             // shadow — a module is not a type, so it never shadows a same-named
             // assembly type in type position (FCS); it lives in the value-only
             // [`Self::project_shadow_cause`]. A *nested* module still defers
             // here (its qualified path may root a project type we model later).
-            || self.preceding.is_rooted_at_nested_module(names);
+            || self.preceding.is_rooted_at_nested_module(table, path);
         shadowed.then_some(DeclineCause::ProjectTypePathShadow)
     }
 
@@ -4912,7 +5044,13 @@ impl<'a> Resolver<'a> {
         // `A.Pal.Color.Red` binds, in both positions). `None` (the target does
         // not own the residual) keeps the open transparent, so the search
         // backtracks past it exactly as before (probe BK1).
-        if self.module_paths.contains(&full) || self.nested_module_exports.contains(&full) {
+        if self
+            .module_paths
+            .contains_path(self.assemblies.names(), &full)
+            || self
+                .nested_module_exports
+                .contains_path(self.assemblies.names(), &full)
+        {
             // Contention at the opened scope (a dottable value / alias /
             // FS0037-illegal exception sharing the head name where the open's
             // target is declared): the target is not a clean module head there,
@@ -4967,8 +5105,12 @@ impl<'a> Resolver<'a> {
         // too is silent, out to the trailing `None`: transparent — FCS
         // backtracks past the open to the next candidate (probes CF2expr /
         // CF2pat / CF2b / CF5).
-        if self.preceding.is_exact_project_module(&full)
-            || self.preceding.is_exact_nested_module(&full)
+        if self
+            .preceding
+            .is_exact_project_module(self.assemblies.names(), self.path_key(&full))
+            || self
+                .preceding
+                .is_exact_nested_module(self.assemblies.names(), self.path_key(&full))
             || self.is_project_namespace_path(&full)
         {
             let mut case_path = full.clone();
@@ -5035,9 +5177,15 @@ impl<'a> Resolver<'a> {
             // namespace-shared shapes the `container_decls` arm above already
             // deferred, except a same-file `module <full…, ty>` *header*, which
             // never enters `container_decls` — hence the `module_paths` check.
-            if self.module_paths.contains(&ty_path)
-                || self.preceding.is_exact_project_module(&ty_path)
-                || self.preceding.is_real_nested_module(&ty_path)
+            if self
+                .module_paths
+                .contains_path(self.assemblies.names(), &ty_path)
+                || self
+                    .preceding
+                    .is_exact_project_module(self.assemblies.names(), self.path_key(&ty_path))
+                || self
+                    .preceding
+                    .is_real_nested_module(self.assemblies.names(), self.path_key(&ty_path))
                 || self.is_project_namespace_path(&ty_path)
             {
                 return Some(SameFileQualified::DeferStop);
@@ -5068,7 +5216,10 @@ impl<'a> Resolver<'a> {
                 // reach (e.g. an extern `Color` commits `A.Pal.Color` as the
                 // value; only illegal residuals were observed, but the
                 // catch-all keeps every unclassified shadow conservative).
-                None if self.preceding.is_exact_nested_module(&ty_path) => {
+                None if self
+                    .preceding
+                    .is_exact_nested_module(self.assemblies.names(), self.path_key(&ty_path)) =>
+                {
                     return Some(SameFileQualified::DeferStop);
                 }
                 None => {}
@@ -5218,7 +5369,9 @@ impl<'a> Resolver<'a> {
             .is_some_and(|k| k.module || k.alias);
         let incomplete = root_module
             || self.preceding.is_namespace(&ns)
-            || self.preceding.is_exact_project_module(&ns)
+            || self
+                .preceding
+                .is_exact_project_module(self.assemblies.names(), self.path_key(&ns))
             || !self.assemblies_provably_lack_module_path(&ns)
             || (!block_header.is_empty() && qualifier.starts_with(block_header));
         let walk = self.classify_module_qualified_residual(ns, res, in_pattern, use_pos);
@@ -5268,8 +5421,12 @@ impl<'a> Resolver<'a> {
             {
                 return Some(SameFileQualified::Miss);
             }
-            if self.preceding.is_exact_project_module(&p)
-                || self.preceding.is_exact_nested_module(&p)
+            if self
+                .preceding
+                .is_exact_project_module(self.assemblies.names(), self.path_key(&p))
+                || self
+                    .preceding
+                    .is_exact_nested_module(self.assemblies.names(), self.path_key(&p))
                 || self.is_project_namespace_path(&p)
                 || !self.assemblies_provably_lack_module_path(&p)
             {
@@ -5813,8 +5970,12 @@ impl<'a> Resolver<'a> {
     /// hidden-value marker or is an implicit headerless module, so no name it
     /// brings escapes enumeration.
     pub(super) fn project_module_names_enumerable(&self, module: &[String]) -> bool {
-        (self.preceding.is_exact_project_module(module)
-            || self.preceding.is_real_nested_module(module))
+        (self
+            .preceding
+            .is_exact_project_module(self.assemblies.names(), self.path_key(module))
+            || self
+                .preceding
+                .is_real_nested_module(self.assemblies.names(), self.path_key(module)))
             && !self.export_decls.iter().any(|d| d.path.starts_with(module))
             && !self
                 .modules_with_hidden_values
@@ -5850,7 +6011,8 @@ impl<'a> Resolver<'a> {
                     let mut path = m.clone();
                     path.push(head.to_string());
                     let names_head = if path == owner {
-                        self.preceding.is_real_nested_module(&path)
+                        self.preceding
+                            .is_real_nested_module(self.assemblies.names(), self.path_key(&path))
                             || self.preceding.declares_member_at(&path)
                     } else {
                         self.preceding
@@ -5898,13 +6060,19 @@ impl<'a> Resolver<'a> {
             || self.own_module_simple_names.contains(head)
             || self.container_path.iter().any(|s| s == head)
             || self.export_decls.iter().any(|d| segment_is_head(&d.path));
-        let earlier_files_name_it_otherwise = self.preceding.may_name_module_or_namespace(head)
+        let earlier_files_name_it_otherwise = self
+            .preceding
+            .may_name_module_or_namespace(self.assemblies.names(), head)
             || self.preceding.earlier_types.get(head).map_or(0, Vec::len) != 1
-            || self
-                .preceding
-                .nested_module_paths
-                .iter()
-                .any(|p| p.last().is_some_and(|s| s == head) && p.as_slice() != owner);
+            || {
+                let names = self.assemblies.names();
+                self.preceding.nested_module_paths.iter().any(|id| {
+                    names
+                        .split(id)
+                        .is_some_and(|(_, last)| names.text(last) == head)
+                        && names.segments(id) != owner
+                })
+            };
         let assemblies_may_name_it = self
             .assemblies
             .assembly_bare_value_surface_could_supply(head)
@@ -6442,8 +6610,12 @@ impl<'a> Resolver<'a> {
         }
         let mut mp = prefix.to_vec();
         mp.push(name.to_string());
-        if self.preceding.is_exact_project_module(&mp)
-            || self.preceding.is_exact_nested_module(&mp)
+        if self
+            .preceding
+            .is_exact_project_module(self.assemblies.names(), self.path_key(&mp))
+            || self
+                .preceding
+                .is_exact_nested_module(self.assemblies.names(), self.path_key(&mp))
             || self.is_project_namespace_path(&mp)
             || !self.assemblies_provably_lack_module_path(&mp)
             || self.module_has_hidden_values(&mp)
@@ -6545,7 +6717,11 @@ impl<'a> Resolver<'a> {
             .iter()
             .enumerate()
             .skip(module + 1)
-            .any(|(_, frame)| frame.named_rev(&entry.name).any(|e| std::ptr::eq(e, entry)))
+            .any(|(_, frame)| {
+                frame
+                    .named_rev(self.entry_key(entry))
+                    .any(|e| std::ptr::eq(e, entry))
+            })
     }
 
     fn head_value_slot(&self, head: &str) -> HeadSlot {
@@ -7070,34 +7246,48 @@ impl<'a> Resolver<'a> {
         // module sets' tries are asked about all of them in one walk along
         // the container path, so a head under `d` nested modules costs `d`
         // probes, not `d` copies and hashes of paths up to `d` long.
-        let path = &self.container_path[..];
-        let written = |k: usize| k == 0 || (self.namespace_depth.max(1)..=path.len()).contains(&k);
+        let names = self.assemblies.names();
+        let path = self.container_prefixes();
+        let written =
+            |k: usize| k == 0 || (self.namespace_depth.max(1)..=path.text.len()).contains(&k);
         let head_suffix = [head];
+        let head_name = [names.lookup(head)];
+        let question = path.extended(names, &head_name, &head_suffix);
         let contests_written = self
             .module_paths
-            .suffix_member_prefix_lens(path, &head_suffix)
+            .suffix_member_prefix_lens(names, &question)
+            .into_iter()
             .chain(
                 self.real_nested_module_exports
-                    .suffix_member_prefix_lens(path, &head_suffix),
+                    .suffix_member_prefix_lens(names, &question),
             )
             .chain(
                 self.preceding
-                    .real_module_suffix_prefix_lens(path, &head_suffix),
+                    .real_module_suffix_prefix_lens(names, &question),
             )
             .filter(|&k| written(k))
             .any(|k| !self.enclosing_module_like_transparent_for(k, head, residual));
+        // Each open's child of the head, by id: a child the table never
+        // interned is in no module set, and the path is spelled only for the
+        // reference.
         let contested = contests_written
             || self.scope.explicit_open_prefixes.iter().any(|open| {
                 let prefix = &open.path;
                 if self.module_like_transparent_for(prefix, head, residual) {
                     return false;
                 }
-                let mut path = prefix.clone();
-                path.push(head.to_string());
-                self.module_paths.contains(&path)
-                    || self.real_nested_module_exports.contains(&path)
-                    || self.preceding.is_exact_project_module(&path)
-                    || self.preceding.is_real_nested_module(&path)
+                let parent = PathKey::new(Some(open.id), prefix);
+                let head = NameKey::new(head_name[0], head);
+                self.module_paths.contains_child(names, parent, head)
+                    || self
+                        .real_nested_module_exports
+                        .contains_child(names, parent, head)
+                    || self
+                        .preceding
+                        .is_exact_project_module_child(names, parent, head)
+                    || self
+                        .preceding
+                        .is_real_nested_module_child(names, parent, head)
             });
         #[cfg(test)]
         self.check_head_contested(head, residual, contested);
@@ -7236,6 +7426,12 @@ impl<'a> Resolver<'a> {
     /// walk both share (so they can never disagree on the other skipping
     /// rules). Exists so [`Self::head_entry_staled`] can distinguish "no entry
     /// at all" from "an entry the barrier staled".
+    /// `entry`'s name as a query key.
+    fn entry_key(&self, entry: &ScopeEntry) -> NameKey<'_> {
+        let names = self.assemblies.names();
+        NameKey::new(Some(entry.name), names.text(entry.name))
+    }
+
     fn latest_entry(&self, name: &str) -> Option<&ScopeEntry> {
         self.latest_entry_noting_withdrawals(name).0
     }
@@ -7246,8 +7442,9 @@ impl<'a> Resolver<'a> {
     /// otherwise have found. One walk, so the census
     /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
     fn latest_entry_noting_withdrawals(&self, name: &str) -> (Option<&ScopeEntry>, bool) {
+        let key = NameKey::of(self.assemblies.names(), name);
         for frame in self.scopes.iter().rev() {
-            for entry in frame.named_rev(name) {
+            for entry in frame.named_rev(key) {
                 if entry.pattern_only {
                     continue; // constructor namespace only — not a value here
                 }
