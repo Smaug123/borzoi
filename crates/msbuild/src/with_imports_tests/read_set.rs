@@ -327,3 +327,50 @@ fn a_full_world_records_every_kind_of_query() {
         "the read set holds distinct queries, never more than were made"
     );
 }
+
+/// A project behind `Exists('alias')`, where `alias` is a symlink to
+/// `target`; `target_exists` decides whether the link dangles. The sweep must
+/// accept both: deleting or creating `target` moves the answer about `alias`,
+/// which the precision check has to see as touching it, and a dangling link
+/// is not an absent path to create a file at.
+#[cfg(unix)]
+fn sweep_symlinked_exists(target_exists: bool) {
+    let tmp = TempDir::new().unwrap();
+    let root = canon(tmp.path());
+    if target_exists {
+        write_at(&root, "proj/target", "x");
+    }
+    std::os::unix::fs::symlink(root.join("proj/target"), {
+        std::fs::create_dir_all(root.join("proj")).unwrap();
+        root.join("proj/alias")
+    })
+    .unwrap();
+    let source = r#"<Project>
+  <PropertyGroup Condition="Exists('alias')"><Linked>yes</Linked></PropertyGroup>
+</Project>"#;
+    let project = write_at(&root, "proj/Demo.fsproj", source);
+    let evaluate = || {
+        parse_fsproj_with_imports(
+            source,
+            &project,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+        )
+        .expect("well-formed XML parses")
+    };
+    sweep(&root, &evaluate, &[]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_whose_target_moves_is_swept() {
+    sweep_symlinked_exists(true);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_symlink_is_swept() {
+    sweep_symlinked_exists(false);
+}

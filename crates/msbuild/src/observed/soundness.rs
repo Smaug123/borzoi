@@ -135,7 +135,7 @@ pub fn sweep(root: &Path, evaluate: &dyn Fn() -> ParsedProject, extra: &[Perturb
         };
         let stale = base.read_set.first_stale().cloned();
         let after = evaluate();
-        let touched = undo.changed().any(|path| names(&base.read_set, path));
+        let touched = undo.changed().any(|path| names(root, &base.read_set, path));
         undo.restore();
         *tally.made.entry(perturbation.why).or_default() += 1;
         if !touched {
@@ -191,15 +191,25 @@ fn difference(base: &ParsedProject, after: &ParsedProject) -> String {
 /// Whether the read set names `path`: a read of it, or a listing of its
 /// directory.
 /// Paths compare lexically, `..` collapsed, since the read set keeps the
-/// spelling the evaluation used.
-fn names(read_set: &ReadSet, path: &Path) -> bool {
+/// spelling the evaluation used. A read whose path passes through a symlink
+/// under `root` (itself included) depends on wherever the link leads, so it
+/// counts as named by every change.
+fn names(root: &Path, read_set: &ReadSet, path: &Path) -> bool {
     let path = lexical(path);
     read_set.reads().iter().any(|read| {
         let read_path = lexical(&read.path);
         read_path == path
             || (matches!(read.observation, Observation::Listing(_))
                 && path.parent() == Some(read_path.as_path()))
+            || through_a_link(root, &read_path)
     })
+}
+
+/// Whether `path`, or a directory on the way to it below `root`, is a symlink.
+fn through_a_link(root: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .take_while(|dir| dir.starts_with(root) && *dir != root)
+        .any(|dir| host_fs::symlink_metadata(dir).is_ok_and(|meta| meta.file_type().is_symlink()))
 }
 
 /// `path` with `.` dropped and each `..` collapsed into its parent.
@@ -290,7 +300,9 @@ fn perturbations(root: &Path, read_set: &ReadSet) -> Vec<Perturbation> {
             | Observation::Canonical(Err(failure)) => failure.is_absent(),
             _ => false,
         };
-        if absent {
+        // A dangling symlink fails a following query as absent, but its
+        // entry is there: it is not a path to create a file at.
+        if absent && host_fs::symlink_metadata(&read.path).is_err() {
             out.push(Perturbation {
                 why: Why::CreateAbsent,
                 edits: vec![Edit::Write(read.path.clone(), PROPERTY_FILE.to_vec())],
@@ -400,7 +412,8 @@ fn apply(edits: &[Edit]) -> Result<Undo, Undo> {
                 std::fs::rename(path, &aside).expect("move the directory aside");
                 Prior::Dir(aside)
             }
-            Ok(_) => panic!("the sweep does not perturb {}", path.display()),
+            // A symlink, a socket: not something the sweep perturbs.
+            Ok(_) => return Err(Undo { priors }),
             Err(_) => Prior::Absent {
                 created: topmost_missing_ancestor(path),
             },
