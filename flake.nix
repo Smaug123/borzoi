@@ -93,8 +93,11 @@
               # `include_str!`ed by `borzoi_nuget::dgspec`: the NuGet identities
               # its resolver commits for.
               nugetVerified = rel == "crates/nuget/src/dgspec/verified_nuget.txt";
+              # `include_str!`ed by `borzoi-astgen`: the language-feature table
+              # the generator reads.
+              featureTable = rel == "crates/cst/language-features.tsv";
             in
-            (cargoSource || statsSite || nugetVerified) && (repoFilter path type);
+            (cargoSource || statsSite || nugetVerified || featureTable) && (repoFilter path type);
         };
 
       # `doCheck = false`: the crate build does not run `cargo test`. The
