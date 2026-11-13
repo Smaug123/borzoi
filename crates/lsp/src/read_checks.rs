@@ -496,13 +496,19 @@ mod host_tests {
             root.join("here/link/../target"),
             root.join("chain"),
         ];
+        let queries = [
+            Observation::Kind(Ok(EntryKind::Dir)),
+            // `lstat` of `link/` follows the link.
+            Observation::LinkKind(Ok(EntryKind::Dir)),
+        ];
         let checks: Vec<Check> = spellings
             .iter()
-            .map(|path| {
-                let observation = HostDisk.answer(path, &Observation::Kind(Ok(EntryKind::Dir)));
-                Check::new(Read {
-                    path: path.clone(),
-                    observation,
+            .flat_map(|path| {
+                queries.iter().map(move |query| {
+                    Check::new(Read {
+                        path: path.clone(),
+                        observation: HostDisk.answer(path, query),
+                    })
                 })
             })
             .collect();
