@@ -1150,7 +1150,9 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
             Some(false) => captured.push(EvaluatedItem {
                 identity,
                 metadata: metadata.values.clone(),
+                #[cfg(any(test, feature = "test-support"))]
                 exact_metadata: metadata.exact.clone(),
+                #[cfg(any(test, feature = "test-support"))]
                 metadata_complete: true,
                 metadata_uncertainties: metadata.uncertainties.clone(),
             }),
@@ -1432,7 +1434,9 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
                 // the package metadata a helper item records: a consumer
                 // reading one through the copy must treat it as unknown.
                 metadata: HashMap::new(),
+                #[cfg(any(test, feature = "test-support"))]
                 exact_metadata: HashMap::new(),
+                #[cfg(any(test, feature = "test-support"))]
                 metadata_complete: false,
                 metadata_uncertainties: PACKAGE_METADATA_NAMES
                     .iter()
@@ -3024,11 +3028,13 @@ impl EvaluatedItem {
         for (name, value) in &metadata.values {
             self.metadata.insert(name.clone(), value.clone());
         }
+        #[cfg(any(test, feature = "test-support"))]
         for (name, value) in &metadata.exact {
             self.exact_metadata.insert(name.clone(), value.clone());
         }
         for uncertainty in &metadata.uncertainties {
             self.metadata.remove(&item_key(&uncertainty.name));
+            #[cfg(any(test, feature = "test-support"))]
             self.exact_metadata.remove(&item_key(&uncertainty.name));
         }
         self

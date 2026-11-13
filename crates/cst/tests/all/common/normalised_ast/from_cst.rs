@@ -2876,7 +2876,7 @@ fn normalise_interp_string(node: &InterpStringExpr, counter: &mut u32) -> Normal
             InterpStringPart::Fill { expr, qualifier } => {
                 parts.push(NormalisedInterpPart::FillExpr {
                     expr: normalise_expr(&expr, counter),
-                    qualifier: qualifier.map(|t| t.text().to_string()),
+                    qualifier: qualifier.map(|t| strip_backticks(t.text()).to_string()),
                 });
             }
         }

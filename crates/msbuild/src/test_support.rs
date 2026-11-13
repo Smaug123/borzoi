@@ -91,7 +91,7 @@ pub fn parse_fsproj_reads(
     glob_resolver: Option<&crate::GlobResolver<'_>>,
     probe: &ReadProbe,
 ) -> Result<(crate::ParsedProject, EvaluationReads), crate::ParseError> {
-    let (parsed, reads) = crate::parse_fsproj_probed(
+    let walked = crate::parse_fsproj_probed(
         source,
         project_path,
         extra_properties,
@@ -100,5 +100,6 @@ pub fn parse_fsproj_reads(
         glob_resolver,
         Some(probe),
     )?;
-    Ok((parsed, reads.expect("a probed walk answers its probe")))
+    let reads = walked.reads.expect("a probed walk answers its probe");
+    Ok((walked.project, reads))
 }
