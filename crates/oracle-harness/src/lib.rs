@@ -166,6 +166,38 @@ impl BatchChild {
         Self::with_factory(Box::new(factory), what, default_timeout(), 2)
     }
 
+    /// [`Self::spawn`], with `environment` applied to the child's process
+    /// environment: each `(name, Some(value))` set, each `(name, None)`
+    /// removed. Unlike a variable an oracle sets on itself after starting,
+    /// these are seen by native code the runtime loads, such as ICU, which
+    /// reads the locale from the process environment.
+    pub fn spawn_with_environment<S: AsRef<OsStr>>(
+        program: S,
+        args: &[&str],
+        environment: &[(String, Option<String>)],
+    ) -> Self {
+        let program = program.as_ref().to_os_string();
+        let what = format!(
+            "{} {} (with {environment:?})",
+            program.to_string_lossy(),
+            args.join(" ")
+        );
+        let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        let environment = environment.to_vec();
+        let factory = move || {
+            let mut c = Command::new(&program);
+            c.args(&args);
+            for (name, value) in &environment {
+                match value {
+                    Some(value) => c.env(name, value),
+                    None => c.env_remove(name),
+                };
+            }
+            c
+        };
+        Self::with_factory(Box::new(factory), what, default_timeout(), 2)
+    }
+
     /// Construct over an arbitrary command factory and bounds — the seam the
     /// recovery tests use to inject fake oracles (responder / wedge /
     /// wedge-then-recover). `make_command` must yield a command *without* stdio

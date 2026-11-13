@@ -12,9 +12,16 @@
 //! per-name pools of spellings, metadata dropped, duplicated, re-cased or
 //! foreign, items added, dropped, duplicated and reordered. Every mutation
 //! kind must have produced an agreement, so none of them is graded vacuously.
+//! Because a random sweep reaches any one name and value rarely, a second
+//! sweep sets each name of each kind to every value in its pool, one at a
+//! time.
+//!
+//! Besides `dgspec_diff`'s environments, the oracles run under process
+//! environments that move the culture, since the writer sorts downloads by
+//! the culture's collation ([`CULTURES`]).
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 
 use borzoi_nuget::dgspec::{
     NuGetIdentity, RestoreGraphItem, RestoreItemsDecline, write_restore_graph,
@@ -29,22 +36,68 @@ use super::dgspec_diff::ENVIRONMENTS;
 // ---------------------------------------------------------------------------
 
 /// One oracle per environment, with the environment as our function sees it.
-struct Oracles(Vec<(BTreeMap<OsString, OsString>, Oracle)>);
+struct Oracles(Vec<(String, BTreeMap<OsString, OsString>, Oracle)>);
+
+/// Process environments that move the culture the writer sorts downloads by.
+/// They are applied to the oracle's process, since ICU reads the locale from
+/// the C library's environment, which a variable the oracle sets on itself
+/// never reaches.
+const CULTURES: &[&[(&str, Option<&str>)]] = &[
+    &[
+        ("LANG", Some("cs_CZ.UTF-8")),
+        ("LC_ALL", None),
+        ("LC_MESSAGES", None),
+    ],
+    &[("LC_ALL", Some("sv_SE.UTF-8"))],
+    &[
+        ("LANG", Some("en_US.UTF-8")),
+        ("LC_ALL", None),
+        ("LC_MESSAGES", None),
+    ],
+    &[("LANG", Some("C")), ("LC_ALL", None), ("LC_MESSAGES", None)],
+    &[("LANG", None), ("LC_ALL", None), ("LC_MESSAGES", None)],
+    &[("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", Some("1"))],
+];
 
 impl Oracles {
+    /// One oracle per `dgspec_diff` environment and per culture. Each comes
+    /// with the environment its process sees, which is what our function is
+    /// given: the test's own, with the changes applied.
     fn spawn() -> Oracles {
-        Oracles(
-            ENVIRONMENTS
+        let inherited = || std::env::vars_os().collect::<BTreeMap<OsString, OsString>>();
+        let mut oracles = Vec::new();
+        for environment in ENVIRONMENTS {
+            let mut map = inherited();
+            map.extend(
+                environment
+                    .iter()
+                    .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+            );
+            oracles.push((
+                format!("{environment:?}"),
+                map,
+                Oracle::spawn_with_environment(environment),
+            ));
+        }
+        for culture in CULTURES {
+            let mut map = inherited();
+            for (name, value) in *culture {
+                match value {
+                    Some(value) => map.insert(OsString::from(name), OsString::from(value)),
+                    None => map.remove(OsStr::new(name)),
+                };
+            }
+            let process: Vec<(String, Option<String>)> = culture
                 .iter()
-                .map(|environment| {
-                    let map = environment
-                        .iter()
-                        .map(|(k, v)| (OsString::from(k), OsString::from(v)))
-                        .collect();
-                    (map, Oracle::spawn_with_environment(environment))
-                })
-                .collect(),
-        )
+                .map(|(k, v)| (k.to_string(), v.map(str::to_owned)))
+                .collect();
+            oracles.push((
+                format!("process {culture:?}"),
+                map,
+                Oracle::spawn_with_process_environment(&process),
+            ));
+        }
+        Oracles(oracles)
     }
 }
 
@@ -77,7 +130,7 @@ fn grade(
 ) -> Result<(Outcome, Option<String>), String> {
     let request = request(items, recursive);
     let mut by_default = None;
-    for (environment, oracle) in &mut oracles.0 {
+    for (label, environment, oracle) in &mut oracles.0 {
         let response = oracle.request(&request);
         let identity = NuGetIdentity::new(
             response["nugetCommands"]["informationalVersion"]
@@ -90,14 +143,14 @@ fn grade(
             Ok(file) => {
                 if !written {
                     return Err(format!(
-                        "we wrote a spec where NuGet fails under {environment:?} ({}: {})",
+                        "we wrote a spec where NuGet fails under {label} ({}: {})",
                         response["exceptionType"], response["message"]
                     ));
                 }
                 let theirs = response["text"].as_str().expect("a written spec has text");
                 if file.text != theirs {
                     return Err(format!(
-                        "we wrote a different file under {environment:?}:\n{}",
+                        "we wrote a different file under {label}:\n{}",
                         first_line_difference(&file.text, theirs)
                     ));
                 }
@@ -559,6 +612,12 @@ const IDS: &[&str] = &[
     "A",
     "a-b_c",
     "Bad Id",
+    "char",
+    "horse",
+    "Ch",
+    "a.b",
+    "a1",
+    "Microsoft.AspNetCore.App.Ref",
     "",
 ];
 const PATHS: &[&str] = &[
@@ -633,6 +692,8 @@ const SOURCES: &[&str] = &[
     "",
 ];
 const VERSIONS: &[&str] = &[
+    "1.0-preview.1",
+    "1.0.0-beta.2+x",
     "1.0.0",
     "1.0",
     "2.0.0-beta",
@@ -650,6 +711,10 @@ const LEVELS: &[&str] = &[
     "10.0.100-preview.1",
     "",
     "9.0.100+x",
+    "1.0-preview.1",
+    "01.0-beta.2",
+    "1.0-Beta",
+    "1.0.0.0+m",
 ];
 const AUDIT: &[&str] = &[
     "direct", "all", "ALL", "low", "moderate", "", "true", "false",
@@ -664,9 +729,10 @@ const STYLES: &[&str] = &[
     "1",
 ];
 
-/// A value for `name`, from a pool of the spellings that matter to it.
-fn value_for(rng: &mut SplitMix64, name: &str) -> String {
-    let pick = |rng: &mut SplitMix64, pool: &[&str]| rng.pick(pool).to_string();
+/// The spellings that matter to `name`: the pool every value for it is drawn
+/// from. Version ranges add a few generated ones to a fixed list.
+fn pool_for(rng: &mut SplitMix64, name: &str) -> Vec<String> {
+    let pool = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
     match name {
         "CrossTargeting"
         | "SkipContentFileWrite"
@@ -686,54 +752,59 @@ fn value_for(rng: &mut SplitMix64, name: &str) -> String {
         | "GeneratePathProperty"
         | "RestoreEnablePackagePruning"
         | "RestorePackagePruningDefault"
-        | "NuGetAudit" => pick(rng, BOOLEANS),
-        "IncludeAssets" | "ExcludeAssets" | "PrivateAssets" => pick(rng, FLAGS),
-        "Id" => pick(rng, IDS),
-        "ProjectPath" | "ProjectUniqueName" | "ProjectReferenceUniqueName" => pick(rng, PATHS),
-        "TargetFramework" | "TargetFrameworks" => pick(rng, ALIASES),
-        "TargetFrameworkMoniker" => pick(rng, MONIKERS),
-        "TargetPlatformMoniker" => pick(rng, PLATFORMS),
-        "AssetTargetFallback" | "PackageTargetFallback" => {
-            if name == "PackageTargetFallback" && rng.below(2) == 0 {
-                String::new()
-            } else {
-                pick(rng, FALLBACKS)
-            }
+        | "NuGetAudit" => pool(BOOLEANS),
+        "IncludeAssets" | "ExcludeAssets" | "PrivateAssets" => pool(FLAGS),
+        "Id" => pool(IDS),
+        "ProjectPath" | "ProjectUniqueName" | "ProjectReferenceUniqueName" => pool(PATHS),
+        "TargetFramework" | "TargetFrameworks" => pool(ALIASES),
+        "TargetFrameworkMoniker" => pool(MONIKERS),
+        "TargetPlatformMoniker" => pool(PLATFORMS),
+        "AssetTargetFallback" => pool(FALLBACKS),
+        "PackageTargetFallback" => {
+            let mut values = pool(FALLBACKS);
+            values.extend(["".to_owned(), "".to_owned()]);
+            values
         }
-        "NoWarn" | "WarningsAsErrors" | "WarningsNotAsErrors" => pick(rng, CODES),
-        "Sources" => pick(rng, SOURCES),
+        "NoWarn" | "WarningsAsErrors" | "WarningsNotAsErrors" => pool(CODES),
+        "Sources" => pool(SOURCES),
         "FallbackFolders" | "ConfigFilePaths" => {
-            pick(rng, &["/f/a", "/f/b;/f/a", "/f/a;/f/a", "", " /f/c "])
+            pool(&["/f/a", "/f/b;/f/a", "/f/a;/f/a", "", " /f/c "])
         }
-        "Version" | "NETCoreSdkVersion" => pick(rng, VERSIONS),
-        "SdkAnalysisLevel" => pick(rng, LEVELS),
-        "NuGetAuditMode" | "NuGetAuditLevel" => pick(rng, AUDIT),
-        "ProjectStyle" => pick(rng, STYLES),
-        "VersionRange" | "VersionOverride" => match rng.below(4) {
-            0 => pick(
-                rng,
-                &[
-                    "[8.0.31]",
-                    "[8.0.31];[9.0.0]",
-                    "8.0.31",
-                    "[8.0.31, 9.0.0)",
-                    "10.0.0",
-                    "",
-                    "[1.0.0];[1.0.0]",
-                ],
-            ),
-            _ => gen_range_string(rng),
-        },
-        "RuntimeIdentifiers" | "RuntimeSupports" => {
-            pick(rng, &[";", "", "linux-x64", ";linux-x64"])
+        "Version" | "NETCoreSdkVersion" => pool(VERSIONS),
+        "SdkAnalysisLevel" => pool(LEVELS),
+        "NuGetAuditMode" | "NuGetAuditLevel" => pool(AUDIT),
+        "ProjectStyle" => pool(STYLES),
+        "VersionRange" | "VersionOverride" => {
+            let mut values = pool(&[
+                "[8.0.31]",
+                "[8.0.31];[9.0.0]",
+                "8.0.31",
+                "[8.0.31, 9.0.0)",
+                "10.0.0",
+                "",
+                "[1.0.0];[1.0.0]",
+                "1.0.0-Beta",
+                "1.0.0+meta",
+                "1.0",
+                "1.*",
+            ]);
+            values.extend((0..4).map(|_| gen_range_string(rng)));
+            values
         }
-        "Aliases" => pick(rng, &["", "Alias", "a,b"]),
-        "ProjectName" => pick(rng, &["App", "Lib", "", "Ünï"]),
+        "RuntimeIdentifiers" | "RuntimeSupports" => pool(&[";", "", "linux-x64", ";linux-x64"]),
+        "Aliases" => pool(&["", "Alias", "a,b"]),
+        "ProjectName" => pool(&["App", "Lib", "", "Ünï"]),
         "OutputPath" | "PackagesPath" | "RuntimeIdentifierGraphPath" => {
-            pick(rng, &["/o/", "/o/x", "", "/o/\"q\""])
+            pool(&["/o/", "/o/x", "", "/o/\"q\"", "/o/\\b"])
         }
-        _ => pick(rng, &["", "x", "true", "1.0.0"]),
+        _ => pool(&["", "x", "true", "1.0.0"]),
     }
+}
+
+/// A value for `name`, drawn from its pool.
+fn value_for(rng: &mut SplitMix64, name: &str) -> String {
+    let pool = pool_for(rng, name);
+    pool[rng.below(pool.len())].clone()
 }
 
 const KIND_NAMES: &[&str] = &[
@@ -1020,6 +1091,110 @@ fn mutated_entry_lists_are_written_as_nuget_writes_them() {
         assert!(
             agreed > 0,
             "no case under {mutation:?} agreed, so it graded nothing"
+        );
+    }
+}
+
+/// Every single mutation of one value: each metadata name of the first item of
+/// each kind in each base, set to every value in its pool (and a few foreign
+/// names besides). The random sweep reaches a given name and value only once
+/// in thousands of cases; this reaches each of them.
+#[test]
+fn every_single_value_is_written_as_nuget_writes_it() {
+    let mut oracles = Oracles::spawn();
+    let mut rng = SplitMix64(0x000a_15ea_0002);
+    let mut agreed = 0;
+    let mut graded = 0;
+    for (label, base) in bases() {
+        let mut seen_kinds: Vec<String> = Vec::new();
+        for (i, item) in base.iter().enumerate() {
+            let kind = item
+                .metadata
+                .iter()
+                .find(|(n, _)| n == "Type")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            if seen_kinds.contains(&kind) {
+                continue;
+            }
+            seen_kinds.push(kind.clone());
+            let mut names: Vec<String> = item
+                .metadata
+                .iter()
+                .map(|(n, _)| n.clone())
+                .filter(|n| n != "Type")
+                .collect();
+            for foreign in [
+                "Bogus",
+                "Id",
+                "TargetFrameworks",
+                "VersionOverride",
+                "NoWarn",
+            ] {
+                if !names.iter().any(|n| n == foreign) {
+                    names.push(foreign.to_owned());
+                }
+            }
+            for name in names {
+                for value in pool_for(&mut rng, &name) {
+                    let mut items = base.clone();
+                    match items[i].metadata.iter_mut().find(|(n, _)| *n == name) {
+                        Some(entry) => entry.1 = value.clone(),
+                        None => items[i].metadata.push((name.clone(), value.clone())),
+                    }
+                    let (outcome, _) = assert_sound(
+                        &mut oracles,
+                        &format!("{label}: {kind}.{name} = {value:?}"),
+                        &items,
+                        true,
+                    );
+                    graded += 1;
+                    if outcome == Outcome::Agree {
+                        agreed += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{agreed} of {graded} single-value mutations agreed");
+    assert!(
+        agreed * 2 > graded,
+        "fewer than half the single-value mutations committed"
+    );
+}
+
+/// Downloads sort by the culture's collation, which differs between cultures
+/// even for ASCII names: under Czech, `ch` is one letter, sorting after `h`.
+/// Each pair is graded under every culture in [`CULTURES`].
+#[test]
+fn culture_ordered_downloads_are_sound() {
+    let mut oracles = Oracles::spawn();
+    for (a, b) in [
+        ("char", "horse"),
+        ("Char", "Horse"),
+        ("a1", "a.b"),
+        ("Microsoft.NETCore.App.Ref", "Microsoft.AspNetCore.App.Ref"),
+        ("ab", "AC"),
+    ] {
+        let mut builder = Builder::new();
+        builder.project("/r/App", "App", &["net8.0"], &ProjectOptions::default());
+        let mut items = builder.items;
+        let mut ids = [a, b].into_iter();
+        for item in &mut items {
+            if item
+                .metadata
+                .iter()
+                .any(|(n, v)| n == "Type" && v == "DownloadDependency")
+                && let Some(entry) = item.metadata.iter_mut().find(|(n, _)| n == "Id")
+            {
+                entry.1 = ids.next().expect("two downloads").to_owned();
+            }
+        }
+        assert_sound(
+            &mut oracles,
+            &format!("downloads {a} and {b}"),
+            &items,
+            true,
         );
     }
 }

@@ -159,10 +159,54 @@ pub fn write_restore_graph(
         .map(|(index, item)| Item::read(index, item))
         .collect::<Result<Vec<_>>>()?;
     let graph = Graph::build(&items, restore_recursive)?;
-    let text = graph.write()?;
+    let text = graph.write(Culture::of(environment))?;
     let spec =
         parse_dgspec(&text).map_err(|decline| RestoreItemsDecline::Unreadable { decline })?;
     Ok(RestoreGraphFile { text, spec })
+}
+
+/// What the environment says about the culture the writer sorts downloads by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Culture {
+    known: bool,
+}
+
+impl Culture {
+    /// .NET runs in invariant mode, comparing ordinally, when
+    /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT` is `1` or `true`. Otherwise ICU
+    /// takes the locale from `LC_ALL`, `LC_MESSAGES` or `LANG`. The culture is
+    /// known when every one of those is unset, empty, `C` or `POSIX` (which
+    /// .NET reads as the invariant culture, and ICU as `en_US_POSIX`), or
+    /// English, whose collation is the root one. Anything else, such as
+    /// Czech, where `ch` sorts after `h`, is not modelled.
+    fn of(environment: &BTreeMap<OsString, OsString>) -> Culture {
+        let get = |name: &str| environment.get(OsStr::new(name)).and_then(|v| v.to_str());
+        let invariant = get("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT")
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let modelled_locale = |name: &str| match environment.get(OsStr::new(name)) {
+            None => true,
+            Some(value) => value.to_str().is_some_and(|value| {
+                let language = value.split(['.', '@']).next().unwrap_or_default();
+                language.is_empty()
+                    || language == "C"
+                    || language == "POSIX"
+                    || language == "en"
+                    || language.strip_prefix("en_").is_some_and(|region| {
+                        region.len() == 2 && region.bytes().all(|b| b.is_ascii_uppercase())
+                    })
+            }),
+        };
+        Culture {
+            known: invariant
+                || ["LC_ALL", "LC_MESSAGES", "LANG"]
+                    .into_iter()
+                    .all(modelled_locale),
+        }
+    }
+
+    fn is_known(self) -> bool {
+        self.known
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +498,17 @@ fn dotnet_trim(value: &str) -> &str {
     value.trim()
 }
 
+/// `NuGetVersion.ToString()` of a version parsed from `text`: the normalized
+/// form for a SemVer 2 version (one with metadata or a dotted release label),
+/// else the text as parsed.
+fn version_to_string(text: &str, version: &NuGetVersion) -> String {
+    if version.metadata().is_some() || version.release_labels().len() > 1 {
+        version.to_normalized_string()
+    } else {
+        text.to_owned()
+    }
+}
+
 /// `MSBuildStringUtility.Split`: split on `separators`, trim each piece, drop
 /// the empty ones.
 fn split<'a>(value: Option<&'a str>, separators: &[char]) -> Vec<&'a str> {
@@ -714,7 +769,8 @@ struct Project<'a> {
     nuget_lock_file_path: Option<&'a str>,
     restore_locked_mode: bool,
     audit: Option<Audit<'a>>,
-    sdk_analysis_level: Option<&'a str>,
+    /// As the writer writes it (`NuGetVersion.ToString()`).
+    sdk_analysis_level: Option<String>,
 }
 
 #[derive(Debug)]
@@ -919,12 +975,16 @@ impl<'a> Project<'a> {
             Some(value) => dotnet_bool(value)
                 .ok_or_else(|| spec.decline("UsingMicrosoftNETSdk", "bool.TryParse rejects it"))?,
         };
-        let sdk_analysis_level = spec.get("SdkAnalysisLevel");
-        if let Some(level) = sdk_analysis_level
-            && NuGetVersion::parse(level).is_err()
-        {
-            return Err(spec.decline("SdkAnalysisLevel", "NuGetVersion.TryParse rejects it"));
-        }
+        let sdk_analysis_level = spec
+            .get("SdkAnalysisLevel")
+            .map(|level| {
+                NuGetVersion::parse(level)
+                    .map(|version| version_to_string(level, &version))
+                    .map_err(|_| {
+                        spec.decline("SdkAnalysisLevel", "NuGetVersion.TryParse rejects it")
+                    })
+            })
+            .transpose()?;
         if let Some(sdk) = spec.get("NETCoreSdkVersion")
             && NuGetVersion::parse(sdk).is_err()
         {
@@ -1565,11 +1625,18 @@ where
 {
     let enable = spec.get("NuGetAudit");
     let level = spec.get("NuGetAuditLevel");
-    let mode = tfis
-        .iter()
-        .filter_map(|tfi| tfi.get("NuGetAuditMode"))
-        .find(|mode| mode.eq_ignore_ascii_case("all"))
-        .or_else(|| spec.get("NuGetAuditMode"));
+    // The project's mode, unless a framework's is `all` (ignoring case) and the
+    // project's is not: then the first such framework's, as it spells it.
+    // (Pinned against the oracle; NuGet's public source reads the frameworks
+    // first.)
+    let project_mode = spec.get("NuGetAuditMode");
+    let is_all = |mode: &&str| mode.eq_ignore_ascii_case("all");
+    let mode = project_mode.filter(is_all).or_else(|| {
+        tfis.iter()
+            .filter_map(|tfi| tfi.get("NuGetAuditMode"))
+            .find(is_all)
+            .or(project_mode)
+    });
     let mut suppressed: Vec<&str> = Vec::new();
     for item in suppressions {
         let id = item.required("Id")?;
@@ -1709,7 +1776,7 @@ fn escape(out: &mut String, value: &str) -> Result<()> {
 }
 
 impl Graph<'_> {
-    fn write(&self) -> Result<String> {
+    fn write(&self, culture: Culture) -> Result<String> {
         let mut root = Json::object();
         root.set("format", Json::Int(1));
         let mut restore = Json::object();
@@ -1719,7 +1786,7 @@ impl Graph<'_> {
         root.set("restore", restore);
         let mut projects = Json::object();
         for project in &self.projects {
-            projects.set(project.unique_name, project.write()?);
+            projects.set(project.unique_name, project.write(culture)?);
         }
         root.set("projects", projects);
         let mut out = String::new();
@@ -1730,7 +1797,7 @@ impl Graph<'_> {
 
 impl Project<'_> {
     /// `PackageSpecWriter.Write`.
-    fn write(&self) -> Result<Json> {
+    fn write(&self, culture: Culture) -> Result<Json> {
         let mut spec = Json::object();
         spec.string("version", self.version.to_full_string());
         spec.set("restore", self.write_metadata()?);
@@ -1744,7 +1811,7 @@ impl Project<'_> {
                 } else {
                     framework.alias
                 };
-                written.set(header, framework.write()?);
+                written.set(header, framework.write(culture)?);
             }
             spec.set("frameworks", written);
         }
@@ -1882,7 +1949,7 @@ impl Project<'_> {
             }
             m.set("restoreAuditProperties", a);
         }
-        if let Some(level) = self.sdk_analysis_level {
+        if let Some(level) = &self.sdk_analysis_level {
             m.string("SdkAnalysisLevel", level);
         }
         Ok(m)
@@ -1900,7 +1967,7 @@ fn sorted_codes(codes: &[NuGetLogCode]) -> Vec<&'static str> {
 
 impl Framework<'_> {
     /// One entry of `SetFrameworks`.
-    fn write(&self) -> Result<Json> {
+    fn write(&self, culture: Culture) -> Result<Json> {
         let mut f = Json::object();
         f.string("framework", &self.short_name);
         if !self.alias.is_empty() {
@@ -1938,7 +2005,7 @@ impl Framework<'_> {
         f.true_if("assetTargetFallback", self.asset_target_fallback);
         f.true_if("warn", self.asset_target_fallback);
         if !self.downloads.is_empty() {
-            f.set("downloadDependencies", self.write_downloads()?);
+            f.set("downloadDependencies", self.write_downloads(culture)?);
         }
         if !self.framework_references.is_empty() {
             let mut references: Vec<&(&str, bool)> = self.framework_references.iter().collect();
@@ -1968,11 +2035,11 @@ impl Framework<'_> {
     }
 
     /// `SetDownloadDependencies`: grouped by exact name, the groups in the
-    /// culture's string order, each group's versions in version order joined
-    /// by `;`. The culture's order is the ignore-case order for names made of
-    /// letters, digits and dots; anything else declines when there is an
-    /// order to decide.
-    fn write_downloads(&self) -> Result<Json> {
+    /// culture's string order (`OrderBy` on a string key), each group's
+    /// versions in version order joined by `;`. An order is committed only
+    /// where every culture [`Culture::is_known`] admits agrees on it: names of
+    /// letters, digits and dots, whose ordinal and ignore-case orders agree.
+    fn write_downloads(&self, culture: Culture) -> Result<Json> {
         let mut groups: Vec<(&str, Vec<&VersionRange>)> = Vec::new();
         for (name, range) in &self.downloads {
             match groups.iter_mut().find(|(n, _)| n == name) {
@@ -1980,29 +2047,36 @@ impl Framework<'_> {
                 None => groups.push((name, vec![range])),
             }
         }
-        if groups.len() > 1
-            && let Some((name, _)) = groups
+        if groups.len() > 1 {
+            if !culture.is_known() {
+                return Err(RestoreItemsDecline::HostDependent {
+                    detail: "downloads sort by a culture whose collation is not modelled"
+                        .to_owned(),
+                });
+            }
+            if let Some((name, _)) = groups
                 .iter()
                 .find(|(n, _)| !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '.'))
-        {
-            return Err(RestoreItemsDecline::HostDependent {
-                detail: format!("download {name:?} sorts by the culture"),
-            });
+            {
+                return Err(RestoreItemsDecline::HostDependent {
+                    detail: format!("download {name:?} sorts by the culture"),
+                });
+            }
         }
-        if let Some(pair) = groups
-            .iter()
-            .enumerate()
-            .flat_map(|(i, a)| groups[i + 1..].iter().map(move |b| (a.0, b.0)))
-            .find(|(a, b)| a.eq_ignore_ascii_case(b))
-        {
+        sort_ignoring_case(&mut groups, |g| g.0, "download")?;
+        // Ordinal order (the invariant mode's, and `en_US_POSIX`'s) and the
+        // root collation's (ignore-case, for these names) must agree.
+        if let Some(pair) = groups.windows(2).find(|pair| {
+            ordinal(pair[0].0, pair[1].0) != Ordering::Less
+                || pair[0].0.eq_ignore_ascii_case(pair[1].0)
+        }) {
             return Err(RestoreItemsDecline::HostDependent {
                 detail: format!(
                     "downloads {:?} and {:?} sort by the culture",
-                    pair.0, pair.1
+                    pair[0].0, pair[1].0
                 ),
             });
         }
-        sort_ignoring_case(&mut groups, |g| g.0, "download")?;
         let mut written = Vec::new();
         for (name, mut ranges) in groups {
             ranges.sort_by(|a, b| a.min_version().cmp(&b.min_version()));

@@ -514,7 +514,9 @@ let private restoreErrorCodes (lockFile: NuGet.ProjectModel.LockFile) : string a
 ///
 /// Fails if any loaded `NuGet.*` assembly came from anywhere but `sdkDir`: the
 /// identity names one SDK's build, so it is only true of a run that used that
-/// build throughout.
+/// build throughout. A satellite resource assembly (`NuGet.X.resources`, which
+/// the runtime loads for a culture other than English when a message is
+/// formatted) comes from that culture's subdirectory of `sdkDir`.
 let private nugetCommandsIdentity (sdkDir: string) =
     for asm in AppDomain.CurrentDomain.GetAssemblies() do
         let name = asm.GetName().Name
@@ -522,7 +524,13 @@ let private nugetCommandsIdentity (sdkDir: string) =
         if name.StartsWith("NuGet.", StringComparison.Ordinal) then
             let dir = Path.GetDirectoryName asm.Location
 
-            if not (String.Equals(dir, sdkDir, StringComparison.Ordinal)) then
+            let expected =
+                if name.EndsWith(".resources", StringComparison.Ordinal) then
+                    Path.GetDirectoryName dir
+                else
+                    dir
+
+            if not (String.Equals(expected, sdkDir, StringComparison.Ordinal)) then
                 failwithf "%s was loaded from %s, not the SDK directory %s" name asm.Location sdkDir
 
     let commands = typeof<RestoreRunner>.Assembly

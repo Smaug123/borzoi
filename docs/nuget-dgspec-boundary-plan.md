@@ -1435,6 +1435,18 @@ byte for byte, under each of `dgspec_diff`'s environments. The cases are:
 
   Each kind must produce at least one agreement. A 30,000-case soak found no
   violation, and between 55% and 70% of the value and item mutations agree.
+- **Every single-value mutation.** Each metadata name of the first item of
+  each kind in each base is set to every value in its pool: 3,690 cases, of
+  which 2,205 commit. The random sweep reaches any one name and value only
+  once in thousands of cases. Review found two violations it had missed, an
+  `SdkAnalysisLevel` with build metadata and Czech download order, and this
+  sweep is what reaches the first kind.
+
+The oracles run under `dgspec_diff`'s environments and under six process
+environments that move the culture: Czech, Swedish, English, `C`, no locale,
+and invariant mode. A locale has to be set in the oracle's *process*
+environment, because ICU reads it from the C library, which a variable the
+oracle sets on itself never reaches.
 
 Most of the work was declining where NuGet's result is not a function of the
 items:
@@ -1443,7 +1455,10 @@ items:
 - **OS-dependent output.** A `file:/` source is completed with a number of
   slashes that depends on the OS.
 - **Culture-dependent order.** Downloads are ordered by the culture's
-  collation.
+  collation, and ASCII names do not settle that: under Czech, `ch` sorts after
+  `h`. An order is committed only when every name is letters, digits and
+  dots, the ordinal and ignore-case orders agree, and the process runs in
+  invariant mode or under an English, `C` or unset locale.
 - **Unmodelled .NET behaviour.** This covers `Enum.TryParse`'s numeric forms
   and .NET's case folding beyond ASCII.
 
