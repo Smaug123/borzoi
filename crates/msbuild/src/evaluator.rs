@@ -421,7 +421,7 @@ struct WalkObservations {
     reads: Option<EvaluationReads>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct OrderedResolvedItem {
     order: usize,
     item: ResolvedItem,
@@ -431,6 +431,12 @@ struct OrderedResolvedItem {
     /// resolver, which returns paths rather than the relative spelling MSBuild
     /// derives from the glob.
     identity: Option<String>,
+    /// The item as an item table reads it, metadata and item-definition
+    /// defaults included, for a `<ProjectReference>` declared by a literal
+    /// identity. `None` for a Compile item and for one spliced from the glob
+    /// resolver.
+    #[cfg(any(test, feature = "test-support"))]
+    row: Option<EvaluatedItem>,
 }
 
 fn into_resolved_items(items: Vec<OrderedResolvedItem>) -> Vec<ResolvedItem> {

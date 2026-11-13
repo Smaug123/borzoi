@@ -1708,9 +1708,9 @@ So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
    discipline (landed; see *A₁.3b: every metadatum* below);
 2. expose the dedicated buckets as item lists the executor can read
-   (`PackageReference` and `FrameworkReference` landed; see *A₁.3b:
-   `PackageReference` rows* below; `PackageVersion` and `ProjectReference`
-   remain);
+   (`PackageReference`, `FrameworkReference` and `ProjectReference` landed;
+   see *A₁.3b: `PackageReference` rows* and *A₁.3b: `ProjectReference` rows*
+   below; `PackageVersion` remains);
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
@@ -1841,6 +1841,26 @@ opacity, and package-id-shaped identities. Every fixture's reference agrees
 with MSBuild on every name. `PackageVersion` needs its own exactness first.
 Until central versions are applied, any `PackageVersion` marks the whole
 dependency set uncertain, so that flag cannot vouch for its rows.
+
+##### A₁.3b: `ProjectReference` rows — landed
+
+`ProjectReference` lives in the reference capture, which the LSP reads for
+its project graph. Each reference declared by a literal identity also
+carries its row, read the way `PackageReference`'s are: every metadatum,
+quietly, over its type's item-definition defaults. The probe takes the list
+as exact by the walk's own `@(ProjectReference)` view: no `Update` or
+unapplied `Remove` may have run, no `Include` was hidden from the walk, no
+item definition gives the type a default, and no identity keeps a
+backslash. So the rows add metadata to a list whose identities the capture
+already vouched for, and claim nothing it did not.
+
+`fsproj_generic_items_generative_diff` generates `ProjectReference` items
+like the other types. Dropping a row's metadata, or taking the list as exact
+without the view, fails it. The census reads the list on every cone, and an
+exact list whose identities are not MSBuild's panics there. Every corpus
+project and single-target fixture holds no reference, so each reads as an
+exact empty list. The one fixture with a reference, `cpm`, is a
+multi-targeting outer build, whose walk is opaque.
 
 #### A₁.4: the task leaves
 
