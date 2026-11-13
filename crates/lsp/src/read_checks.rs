@@ -19,7 +19,8 @@
 //! path leads to now: a symlink re-pointed anywhere above it changes the
 //! inode the stamp names. So, while the stamp of `d` holds,
 //!
-//! - **a listing** of `d` holds (its entries and their types);
+//! - **a listing** of `d` holds (its entries and their types), and a
+//!   listing that found `d` absent holds while `d` is, as below;
 //! - **what `d/n` is**, not following it, holds, and so does whether it is
 //!   there; following it holds too while, if `d/n` is a symlink, the stamp
 //!   of the directory its target is looked up in holds, and so on along the
@@ -218,9 +219,10 @@ impl<D: Probe> ReadChecks<D> {
         let path = &read.path;
         let parent = || path.parent().map(|dir| vec![dir.to_path_buf()]);
         match &read.observation {
-            Observation::Listing(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
-                Some(vec![path.clone()])
-            }
+            Observation::Listing(Ok(_)) => Some(vec![path.clone()]),
+            // An absent directory is an entry absent from the one it would
+            // be looked up in.
+            Observation::Listing(Err(failure)) if failure.is_absent() => self.link_chain(path),
             Observation::LinkKind(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
                 parent()
             }
