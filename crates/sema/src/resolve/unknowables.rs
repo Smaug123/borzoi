@@ -22,7 +22,7 @@ pub(super) enum Unknowable {
     /// dropped-path open. The overload engine's extension gate then defers
     /// every method-call commit in the file, as it did for *any* `open`
     /// before EX-2. File-global like
-    /// [`Resolver::open_extension_namespaces`](super::state::Resolver::open_extension_namespaces):
+    /// [`Output::open_extension_namespaces`](crate::resolve::output::Output::open_extension_namespaces):
     /// an `open` in a nested module counts for the whole file.
     OpenExtensionSurface,
     /// Some attribute in the file has no resolvable *name shape*, a nameless
