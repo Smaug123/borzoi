@@ -1916,8 +1916,9 @@ target's XML from that file and range. The answer is exact only when:
 - every `Directory.Build.*` file the walk spliced in itself stands for an
   import an SDK chain really makes. The props splice must have first run at
   `Microsoft.Common.props`'s import point, whose condition, decided before
-  the splice ran, is exactly true and names the file spliced, and the chain
-  must reach no other props import point, which the walk would suppress. The targets
+  the splice ran, is exactly true and names the file spliced. Every other
+  props import point the chain reaches, each of which the walk suppresses,
+  must decide exactly false: MSBuild imports nothing there. The targets
   splice is a fallback the walk makes only when no chain reached its import
   point first, which MSBuild never makes, so it always declines;
 - the name, and every name defined, is plain: printable ASCII, no `%`, no

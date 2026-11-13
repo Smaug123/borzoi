@@ -68,10 +68,11 @@ pub(super) struct DirectoryBuildSplices {
     pub(super) props_spliced: bool,
     pub(super) targets_spliced: bool,
     pub(super) props_point_reached: bool,
-    /// How many props import points an SDK chain reached. The splice
-    /// stands for one; a later one is an import the walk suppresses and
-    /// MSBuild may make (a `Directory.Build.props` can redirect the path).
-    pub(super) props_points: usize,
+    /// A props import point the walk suppressed although MSBuild's import
+    /// there may take a file the splice does not stand for: undecided, or a
+    /// file taken again or other than the splice's (a `Directory.Build.props`
+    /// can redirect the path, an SDK can import it with the splice off).
+    pub(super) props_point_unaccounted: bool,
 }
 
 /// Where a `<Target>` element is.
@@ -205,8 +206,8 @@ impl State<'_> {
                 .all(|(defined, _)| plain_target_name(defined));
         let splices = &self.directory_build_splices;
         let graph_is_msbuilds = self.walk_opaque.is_none()
-            && (!splices.props_spliced
-                || (splices.props_point_reached && splices.props_points == 1))
+            && !splices.props_point_unaccounted
+            && (!splices.props_spliced || splices.props_point_reached)
             && !splices.targets_spliced;
         TargetRead {
             definition,
@@ -814,14 +815,17 @@ mod spliced_target_tests {
             sdk_props,
             sdk_targets,
             "<Project><Target Name=\"Phantom\" /></Project>",
+            None,
         )
     }
 
-    /// [`read_phantom`] beside a `Directory.Build.props` of `beside`.
+    /// [`read_phantom`] beside a `Directory.Build.props` of `beside`, and an
+    /// `other.props` of `other` if given.
     pub(super) fn read_phantom_beside(
         sdk_props: &str,
         sdk_targets: &str,
         beside: &str,
+        other: Option<&str>,
     ) -> TargetRead {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::observed::host_fs::canonicalize(dir.path()).unwrap();
@@ -832,6 +836,9 @@ mod spliced_target_tests {
         let project = root.join("p").join("p.fsproj");
         std::fs::create_dir(project.parent().unwrap()).unwrap();
         std::fs::write(root.join("p").join("Directory.Build.props"), beside).unwrap();
+        if let Some(other) = other {
+            std::fs::write(root.join("p").join("other.props"), other).unwrap();
+        }
         let source = "<Project Sdk=\"S\"></Project>";
         std::fs::write(&project, source).unwrap();
         let resolver = |_: &str, _: &crate::observed::Observer| {
@@ -922,6 +929,7 @@ mod spliced_target_order_tests {
             "<Project />",
             "<Project><PropertyGroup><Gate>true</Gate></PropertyGroup>\
              <Target Name=\"Phantom\" /></Project>",
+            None,
         );
         assert!(!read.exact, "{read:?}");
     }
@@ -947,6 +955,28 @@ mod spliced_target_redirect_tests {
             "<Project />",
             "<Project><PropertyGroup><DirectoryBuildPropsPath>$(MSBuildThisFileDirectory)other.props\
              </DirectoryBuildPropsPath></PropertyGroup><Target Name=\"Phantom\" /></Project>",
+            Some("<Project><Target Name=\"Phantom\" /></Project>"),
+        );
+        assert!(!read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod suppressed_props_import_tests {
+    use super::spliced_target_tests::read_phantom;
+
+    /// The splice is off (`ImportDirectoryBuildProps=false`), but the SDK
+    /// imports the file itself: MSBuild takes it, and the walk suppresses it.
+    #[test]
+    fn an_sdk_import_of_the_props_file_with_the_splice_off_declines() {
+        let read = read_phantom(
+            "<Project><PropertyGroup><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>\
+             <DirectoryBuildPropsPath>\
+             $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildProjectDirectory)'))\
+             </DirectoryBuildPropsPath></PropertyGroup>\
+             <Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
+            "<Project />",
         );
         assert!(!read.exact, "{read:?}");
     }

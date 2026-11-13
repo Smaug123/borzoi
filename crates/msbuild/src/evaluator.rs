@@ -5478,16 +5478,13 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             .and_then(simple_property_reference)
             .is_some_and(|name| name.eq_ignore_ascii_case("DirectoryBuildPropsPath"));
         if is_props_rediscovery {
+            // What the real import here takes, decided before the splice runs:
+            // the spliced file can rewrite what decides it.
             #[cfg(any(test, feature = "test-support"))]
-            {
-                state.directory_build_splices.props_points += 1;
-            }
-            // What the real import here would take, decided before the splice
-            // runs: the spliced file can rewrite what decides it.
-            #[cfg(any(test, feature = "test-support"))]
-            let real_import = (!state.directory_build_splices.props_spliced)
-                .then(|| props_import_point_names(node, current_file_dir, state))
-                .flatten();
+            let (real_import, spliced_before) = (
+                props_import_point(node, current_file_dir, state),
+                state.directory_build_splices.props_spliced,
+            );
             if !state.in_entry_body && state.directory_build_props_splice_pending {
                 fire_entry_directory_build_props_splice(state);
             } else if state.in_entry_body && state.pending_directory_build_props.take().is_some() {
@@ -5499,11 +5496,22 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // no-op afterwards.
                 fire_entry_directory_build_props_splice(state);
             }
-            // The splice stands for this import only if it ran here, for the
-            // first time, on the file the import names.
+            // The walk suppresses this import, so it is accounted for only when
+            // it takes nothing, or when the splice ran here, for the first
+            // time, on the file it takes.
             #[cfg(any(test, feature = "test-support"))]
-            if real_import.is_some() && real_import == state.directory_build_props_splice_path {
-                state.directory_build_splices.props_point_reached = true;
+            match real_import {
+                PropsImportPoint::TakesNothing => {}
+                PropsImportPoint::Takes(path)
+                    if !spliced_before
+                        && state.directory_build_splices.props_spliced
+                        && state.directory_build_props_splice_path.as_ref() == Some(&path) =>
+                {
+                    state.directory_build_splices.props_point_reached = true;
+                }
+                PropsImportPoint::Takes(_) | PropsImportPoint::Undecided => {
+                    state.directory_build_splices.props_point_unaccounted = true;
+                }
             }
         }
         return;
@@ -6615,45 +6623,80 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     state.exit_this_file(frame);
 }
 
-/// The file the `Microsoft.Common.props` import of `$(DirectoryBuildPropsPath)`
-/// at `node` takes, canonical as [`State::directory_build_props_splice_path`]
-/// holds it, when that is decided: its condition decides true exactly, and
-/// the path it names is trusted. Read quietly
-/// ([`State::quiet_target_framework_reads`]): only the target probe asks.
+/// What the `Microsoft.Common.props` import of `$(DirectoryBuildPropsPath)` at
+/// a props import point takes, as far as the walk can decide it. Only the
+/// target probe asks ([`reads::DirectoryBuildSplices`]).
 #[cfg(any(test, feature = "test-support"))]
-fn props_import_point_names(
+#[derive(Debug, PartialEq, Eq)]
+enum PropsImportPoint {
+    /// Its condition decides true exactly and names this trusted file,
+    /// canonical as [`State::directory_build_props_splice_path`] holds it.
+    Takes(PathBuf),
+    /// Its condition decides false exactly: MSBuild imports nothing here.
+    TakesNothing,
+    /// Anything else.
+    Undecided,
+}
+
+/// Decide the props import at `node` before the walk does anything there.
+/// Read quietly ([`State::quiet_target_framework_reads`]): only the target
+/// probe asks.
+#[cfg(any(test, feature = "test-support"))]
+fn props_import_point(
     node: Node<'_, '_>,
     current_file_dir: &Path,
     state: &State<'_>,
-) -> Option<PathBuf> {
+) -> PropsImportPoint {
     let previous = state.quiet_target_framework_reads.replace(true);
-    let condition_holds = node.attribute("Condition").is_none_or(|condition| {
-        let exists = |path: &str| condition_exists(state.observer, path, current_file_dir);
-        let eval = condition::evaluate_with_exists(
-            condition,
-            &state.lookup,
-            condition::Probes {
-                exists: &exists,
-                observer: state.observer,
-            },
-        );
-        eval.outcome == condition::Outcome::True
-            && state.condition_is_decided_exactly(condition, Some(current_file_dir), &|name| {
-                state.undefined_read_is_exact(name)
-            })
-    });
+    let outcome = match node.attribute("Condition") {
+        None => Some(true),
+        Some(condition) => {
+            let exists = |path: &str| condition_exists(state.observer, path, current_file_dir);
+            let eval = condition::evaluate_with_exists(
+                condition,
+                &state.lookup,
+                condition::Probes {
+                    exists: &exists,
+                    observer: state.observer,
+                },
+            );
+            let exact =
+                state.condition_is_decided_exactly(condition, Some(current_file_dir), &|name| {
+                    state.undefined_read_is_exact(name)
+                });
+            match eval.outcome {
+                condition::Outcome::True if exact => Some(true),
+                condition::Outcome::False if exact => Some(false),
+                _ => None,
+            }
+        }
+    };
     state.quiet_target_framework_reads.set(previous);
-    if !condition_holds
-        || state
-            .trust_of("DirectoryBuildPropsPath")
-            .reference_is_untrusted()
-    {
-        return None;
+    match outcome {
+        Some(false) => PropsImportPoint::TakesNothing,
+        None => PropsImportPoint::Undecided,
+        Some(true) => {
+            if state
+                .trust_of("DirectoryBuildPropsPath")
+                .reference_is_untrusted()
+            {
+                return PropsImportPoint::Undecided;
+            }
+            let path = state
+                .lookup
+                .get_unescaped("DirectoryBuildPropsPath")
+                .unwrap_or_default();
+            let path = path.trim();
+            if path.is_empty() {
+                PropsImportPoint::Undecided
+            } else {
+                PropsImportPoint::Takes(canonicalise_or_normalise(
+                    state.observer,
+                    &current_file_dir.join(path),
+                ))
+            }
+        }
     }
-    let path = state.lookup.get_unescaped("DirectoryBuildPropsPath")?;
-    let path = path.trim();
-    (!path.is_empty())
-        .then(|| canonicalise_or_normalise(state.observer, &current_file_dir.join(path)))
 }
 
 fn walk_directory_build_file(
