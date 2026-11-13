@@ -40,6 +40,7 @@ mod parser_diff_arg_name_generator;
 mod parser_diff_assignment;
 mod parser_diff_ast_ranges;
 mod parser_diff_atomic_app;
+mod parser_diff_bare_member_grid;
 mod parser_diff_base;
 mod parser_diff_begin_end;
 mod parser_diff_brack_index;
