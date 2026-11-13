@@ -1877,6 +1877,16 @@ walk is not opaque, and every identity has the package-id shape. A cause
 raised anywhere else declines: on a `PackageVersion`, an item group, an
 import, an item definition.
 
+Two rules of the dependency capture, for every dependency type, keep a
+cause attributed elsewhere from leaking into the list:
+- A copy of a list this crate keeps in its own bucket
+  (`Include="@(PackageReference)"`, `@(Compile)`, and so on) is unevaluable:
+  there is no item table to read it from.
+- An `Exclude` is matched by normalised path (`item_spec::comparison_key`),
+  as MSBuild matches it and a `Remove`, so `Exclude="./a"` removes `a`. An
+  identity outside that key's domain declines. Matching as lowercased text
+  would keep an excluded `PackageReference` as well.
+
 The attribution is sound only because every write of the package set's flag
 records a cause. `fsproj_generic_items_generative_diff` generates
 `PackageVersion` items like the other types. Counting every cause as

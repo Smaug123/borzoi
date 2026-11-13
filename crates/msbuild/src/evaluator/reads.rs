@@ -535,3 +535,45 @@ mod package_version_tests {
         assert!(!reads.items["PackageVersion"].exact);
     }
 }
+
+#[cfg(test)]
+mod dependency_list_tests {
+    use super::tests::read;
+
+    /// MSBuild matches an `Exclude` by normalised path.
+    #[test]
+    fn an_exclude_naming_the_reference_by_path_removes_it() {
+        for item_type in ["PackageVersion", "PackageReference", "FrameworkReference"] {
+            let reads = read(
+                &format!(
+                    "<ItemGroup><{item_type} Include=\"a;b\" Version=\"1\" Exclude=\"./a\" /></ItemGroup>"
+                ),
+                &[],
+                &[item_type],
+            );
+            let read = &reads.items[item_type];
+            let identities: Vec<&str> = read
+                .items
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|r| r.identity.as_str())
+                .collect();
+            assert_eq!(identities, ["b"], "{item_type}");
+        }
+    }
+
+    /// A copy of a list this crate keeps in its own bucket reads nothing the
+    /// bucket holds, so it cannot be exact.
+    #[test]
+    fn a_copy_of_a_bucketed_list_is_not_exact() {
+        let reads = read(
+            "<ItemGroup><PackageReference Include=\"a\" Version=\"1\" \
+             Condition=\"$([System.String]::IsNullOrWhiteSpace(''))\" />\
+             <PackageVersion Include=\"@(PackageReference)\" /></ItemGroup>",
+            &[],
+            &["PackageVersion"],
+        );
+        assert!(!reads.items["PackageVersion"].exact);
+    }
+}
