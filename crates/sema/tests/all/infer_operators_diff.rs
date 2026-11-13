@@ -567,17 +567,17 @@ pub(crate) fn check_in(
         match dumps.binders.get(&key) {
             None => wrong.push(format!(
                 "binder `{}` typed `{ours}`, but FCS has no binder there: {}",
-                def.name,
+                def.spelling(env),
                 line_of(key.0)
             )),
             Some(theirs) if *theirs != ours => wrong.push(format!(
                 "binder `{}` typed `{ours}`, FCS `{theirs}`: {}",
-                def.name,
+                def.spelling(env),
                 line_of(key.0)
             )),
             Some(_) if dumps.hides_constraint(key, &ours) => wrong.push(format!(
                 "binder `{}` typed `{ours}`, which FCS constrains ({:?}): {}",
-                def.name,
+                def.spelling(env),
                 dumps.binder_constraints[&key],
                 line_of(key.0)
             )),

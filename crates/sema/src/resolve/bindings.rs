@@ -161,7 +161,12 @@ impl<'a> Resolver<'a> {
             // `resolve_let_head_pat_types` has run the active-pattern split, so
             // `excluded_param_ranges` names this head's argument *expressions*
             // (see `pattern_locals`). Bound before the loop so the borrow ends.
-            let names = pattern_names(&head, BinderRole::Let, &self.excluded_param_ranges);
+            let names = pattern_names(
+                &head,
+                BinderRole::Let,
+                &self.excluded_param_ranges,
+                self.assemblies,
+            );
             let mut aliases = AliasTargets::default();
             for pat_name in names {
                 // An or-pattern's later alternative re-spelling a name the first
@@ -194,7 +199,8 @@ impl<'a> Resolver<'a> {
                 // since FCS binds it as a variable. See the module-level
                 // "Provisional pattern heads" note.
                 if def.provisional {
-                    if let Some(mask) = self.resolve_provisional_case_head(&def.key(), def.range) {
+                    let name = self.assemblies.names().text(def.name());
+                    if let Some(mask) = self.resolve_provisional_case_head(name, def.range) {
                         if matches!(def.kind, DefKind::Value { .. }) {
                             item_entries.push(mask);
                         } else {
@@ -203,7 +209,8 @@ impl<'a> Resolver<'a> {
                     }
                     continue;
                 }
-                let name = def.key().to_string();
+                let table = self.assemblies.names();
+                let (name_id, name) = (def.name(), table.text(def.name()));
                 let range = def.range;
                 let is_value = matches!(def.kind, DefKind::Value { .. });
                 let id = self.intern(def);
@@ -212,9 +219,9 @@ impl<'a> Resolver<'a> {
                     // contiguous range starting at `item_base`.
                     let item_idx = self.items.len();
                     let item_id = ItemId::new(self.item_base as usize + item_idx);
-                    let qualified = self.qualified_export_path(&name);
+                    let qualified = self.qualified_export_path(name);
                     self.items.push(ExportedItem {
-                        name: name.clone(),
+                        name: name.to_string(),
                         qualified,
                         id: item_id,
                         def: super::model::ExportDef::Own(id),
@@ -233,7 +240,7 @@ impl<'a> Resolver<'a> {
                     // The export-decl-list twin of the `ExportedItem` push: an
                     // ordinary `let` value (no case, no type-qualified path). Its
                     // `value_exports` row derives from the referenced item.
-                    let decl_path = self.decl_path(std::slice::from_ref(&name));
+                    let decl_path = self.decl_path(&[name]);
                     self.push_export_decl(
                         decl_path,
                         range.start(),
@@ -245,12 +252,8 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Item(item_id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    let mut entry = ScopeEntry::binding(
-                        self.assemblies.names(),
-                        &name,
-                        res,
-                        self.scope.open_generation,
-                    );
+                    let mut entry =
+                        ScopeEntry::binding_named(table, name_id, res, self.scope.open_generation);
                     // A maybe-literal module-level value contests the pattern
                     // namespace as a constant pattern (see
                     // [`ScopeEntry::maybe_constant_pattern`]).
@@ -261,9 +264,9 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    param_entries.push(ScopeEntry::binding(
-                        self.assemblies.names(),
-                        &name,
+                    param_entries.push(ScopeEntry::binding_named(
+                        table,
+                        name_id,
                         res,
                         self.scope.open_generation,
                     ));
@@ -399,7 +402,12 @@ impl<'a> Resolver<'a> {
                     ap_cases = self.define_active_pattern(&apn, false, arity, false);
                     value_entries.extend(ap_cases.iter().cloned());
                 }
-                let names = pattern_names(&head, BinderRole::Let, &self.excluded_param_ranges);
+                let names = pattern_names(
+                    &head,
+                    BinderRole::Let,
+                    &self.excluded_param_ranges,
+                    self.assemblies,
+                );
                 let mut aliases = AliasTargets::default();
                 for pat_name in names {
                     // An or-pattern alias (`let (A v | B v) = …`) is a use of the
@@ -424,9 +432,8 @@ impl<'a> Resolver<'a> {
                     // variable binder in FCS, so it still hides any enclosing
                     // value of its name, as in `pattern_locals`.
                     if def.provisional {
-                        if let Some(mask) =
-                            self.resolve_provisional_case_head(&def.key(), def.range)
-                        {
+                        let name = self.assemblies.names().text(def.name());
+                        if let Some(mask) = self.resolve_provisional_case_head(name, def.range) {
                             if matches!(def.kind, DefKind::Value { .. }) {
                                 value_entries.push(mask);
                             } else {
@@ -435,16 +442,16 @@ impl<'a> Resolver<'a> {
                         }
                         continue;
                     }
-                    let name = def.key().to_string();
+                    let name = def.name();
                     let range = def.range;
                     let is_value = matches!(def.kind, DefKind::Value { .. });
                     let id = self.intern(def);
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    let entry = ScopeEntry::binding(
+                    let entry = ScopeEntry::binding_named(
                         self.assemblies.names(),
-                        &name,
+                        name,
                         res,
                         self.scope.open_generation,
                     );

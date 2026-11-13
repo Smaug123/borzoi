@@ -63,7 +63,7 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
     let def_types = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
+        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
         .collect();
     (inferred, def_types)
 }

@@ -4,7 +4,8 @@
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
 > product on ids), 5 (the remaining path and name keys, in three parts), 6a
-> (export-declaration paths on ids) and 9 (`OpenScope`) implemented.
+> (export-declaration paths on ids), 6b (definitions' names on ids) and 9
+> (`OpenScope`) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -756,9 +757,12 @@ domain across sema's API, not speed.
   37.2× (58.5× in a release build, so not the reference maps): the
   quadratic is `extend_with`'s `FileExportIndices`, which cloned each
   module's full path into two index lists.
-- **6b**: `Def::name` and the published names of `ExportedItem` (`name`,
-  `qualified`), which the LSP and corpus-diff read, with the spelling
-  question above.
+- **6b**: `Def::name`, which the LSP and corpus-diff read, with the
+  spelling question above.
+- **6c**: the published names of `ExportedItem` (`name`, `qualified`, and
+  their signature twin `SigExport`). Split from 6b when 6b was taken: the
+  two share no code, and `qualified` is read by a dozen lookups in
+  `lookup.rs` where `Def::name` is read by the LSP.
 - The paths inside `Resolution` payloads are already gone: every variant
   holds a handle, an index or an id (`DefId`, `ItemId`, `EntityHandle`,
   `MemberIndex`, `UnionCaseIndex`), so nothing is left to convert.
@@ -824,6 +828,63 @@ dump (resolutions, attribute
 resolutions, decline sites, definitions, diagnostics, exported items, opaque
 binders and regions, namespace paths, inferred types; each of 5,202 files
 alone and each directory as a project) is byte-identical before and after.
+
+**6b, implemented** (`def.rs`):
+
+- **The spelling question.** The census's 1,489 definitions whose name is not
+  the text at their range are all of the walk's making. 1,487 are
+  active-pattern definitions: a recognizer, named with its parentheses
+  (`(|Even|Odd|)`) and ranged without them, and each case's use definition,
+  named with the case's logical name and ranged at the recognizer. The 2
+  union cases are FSharp.Core's `[]` and `::`, named with their compiled
+  `op_Nil` and `op_ColonColon`. So "the text at the range" is not the
+  spelling, and the stage keeps each one as the walk wrote it.
+- **`Def` on ids.** A `Def` holds its logical name as a `Name` (`id_text` of
+  its spelling, what `Def::key` computed on every call) and how the source
+  spelled it as a `Spelling`: `AsName`, `Quoted` (the name in double
+  backticks), or `Verbatim(Box<str>)`. Only an operator binder (`+`, whose
+  name is `op_Addition`) and a recognizer are `Verbatim`; the case uses and
+  the operator cases are spelled as their names. `Def::spelling(env)`
+  renders what a consumer shows. No `Def` holds a `String`, and the walk's
+  scope entries take the definition's `Name` (`ScopeEntry::binding_named`)
+  rather than interning the name's text again; the `key().to_string()`
+  each binder site made is gone.
+- **Where the table comes from.** Every `Def` is made against the env's
+  table, so `pattern_names` takes the env and a signature's surface the
+  fold's table.
+- **The LSP.** Hover's binder arms read the spelling against the env the
+  fold ran against: the project path passed an empty env to those arms,
+  which ignored it, and now passes the fold's. The XML-doc collector and
+  signature pairing read a `Binder` (spelling, range, kind) rather than a
+  sema `Def`, since pairing makes one from a signature declaration's token,
+  and `ProjectDocs` takes the env. `semantic.rs` changes in one test.
+- **Lockstep.** Under `interning-reference` in a debug build a `Def` carries
+  the verbatim spelling it was made with. Construction asserts that the
+  name is its `id_text` and the spelling renders back to it, `spelling`
+  asserts the rendering on every call, and re-keying (the interning-order
+  test, the LSP's incremental-against-cold tests) asserts both against the
+  target table. A property test (`def::tests`) generates every way the walk
+  makes a `Def` under spellings that differ from their names (quoted names,
+  a quoted keyword, a quoted operator, operator binders, active patterns,
+  operator cases), and holds the spelling to the census's rule, the name to
+  `id_text` of the spelling, and both to themselves after re-keying. It was
+  written against the string field first and passed there. Four planted bugs
+  fail: interning the spelling as the name (the construction check, in the
+  property and in `resolve_scoping`); spelling a quoted name as its name
+  (`spelling`'s check, likewise); re-keying through `id_text` a second time,
+  which turns the quoted operator `+` into `op_Addition` (the property; the
+  interning-order test missed it, having no quoted operator); and keying a
+  `let` value's scope entry by its spelling rather than its name (13 cases
+  of `operator_name_diff`, `infer_operators_diff` and their neighbours).
+
+**Measured** (6b, on main at `b45dd798`): `resolve_file` 884.9 → 865.6
+instructions per byte (−2.2%), allocations 0.741 → 0.693 per byte (−6.5%);
+infer 177.3 → 173.6, with its input unchanged (it runs on the heap resolve
+leaves behind, as at Stage 4); parse 510.8 → 510.2. Before main merged #633
+the same change measured 877.7 → 866.8 and 0.741 → 0.693 on `2ed2dfb7`. The
+census is unchanged. The whole-corpus dump of 6a, with each definition printed
+as its spelling, range, kind and provisionality, is byte-identical before and
+after, against both bases.
 
 ### Stage 7: `Ty` paths on ids
 

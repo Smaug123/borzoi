@@ -11,9 +11,7 @@
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{
-    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
-};
+use borzoi_sema::{DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file};
 
 /// Parse `src` (asserting it is in the parser subset) and resolve it as a lone
 /// single file.
@@ -29,7 +27,7 @@ fn resolve(src: &str) -> ResolvedFile {
     resolve_file(
         &file,
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::empty_env(),
         &recovery,
     )
 }
@@ -272,7 +270,11 @@ fn operator_union_cases_are_defined() {
         let def = rf
             .resolved_def(res)
             .unwrap_or_else(|| panic!("the {needle} case resolution has no def"));
-        assert_eq!(def.name, op_name, "{needle} → {op_name}");
+        assert_eq!(
+            def.spelling(crate::common::empty_env()),
+            op_name,
+            "{needle} → {op_name}"
+        );
         assert_eq!(def.kind, DefKind::UnionCase);
     }
 }
@@ -291,7 +293,11 @@ fn operator_enum_case_is_defined() {
         let def = rf
             .resolved_def(res)
             .unwrap_or_else(|| panic!("the {needle} enum case resolution has no def"));
-        assert_eq!(def.name, op_name, "{needle} → {op_name}");
+        assert_eq!(
+            def.spelling(crate::common::empty_env()),
+            op_name,
+            "{needle} → {op_name}"
+        );
         assert_eq!(def.kind, DefKind::EnumCase);
     }
 }

@@ -245,28 +245,30 @@ fn check_parsed(
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
                  there\n{source}",
-                def.name
+                def.spelling(env)
             )
         });
         assert_eq!(
-            &ours, theirs,
+            &ours,
+            theirs,
             "binder type mismatch for `{}` at {key:?}\n{source}",
-            def.name
+            def.spelling(env)
         );
         assert!(
             !dumps.hides_constraint(key, &ours),
             "binder `{}` typed `{ours}`, which FCS constrains\n{source}",
-            def.name
+            def.spelling(env)
         );
         c.binders += 1;
         if let Some(&in_pattern) = local_binder_ranges.get(&key) {
             c.local_binders += 1;
             c.pattern_locals += usize::from(in_pattern);
         }
-        if def.name.starts_with("tf") {
+        let spelling = def.spelling(env);
+        if spelling.starts_with("tf") {
             c.tupled_functions += 1;
         }
-        if def.name.starts_with('w') && def.name[1..].chars().all(|ch| ch.is_ascii_digit()) {
+        if spelling.starts_with('w') && spelling[1..].chars().all(|ch| ch.is_ascii_digit()) {
             c.match_payloads += 1;
         }
     }

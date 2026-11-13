@@ -41,9 +41,7 @@ use crate::common::{
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{
-    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
-};
+use borzoi_sema::{ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file};
 
 /// Seeds checked against FCS by default.
 const DEFAULT_SEEDS: usize = 24;
@@ -60,7 +58,7 @@ fn resolve(src: &str) -> ResolvedFile {
     resolve_file(
         &file,
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::empty_env(),
         &recovery,
     )
 }
@@ -120,13 +118,16 @@ fn grade(
                 Some(def) if def.range == want => Ok(Grade::Agrees),
                 Some(def) => Err(format!(
                     "committed to {:?} at {:?}, planted {want:?}",
-                    def.name, def.range
+                    def.spelling(crate::common::empty_env()),
+                    def.range
                 )),
                 None => Err(format!("committed to {res:?}, which names no in-file def")),
             }
         }
         (Some(res @ (Resolution::Local(_) | Resolution::Item(_))), Expected::External) => {
-            let def = rf.resolved_def(res).map(|d| (d.name.to_string(), d.range));
+            let def = rf
+                .resolved_def(res)
+                .map(|d| (d.spelling(crate::common::empty_env()).into_owned(), d.range));
             Err(format!(
                 "committed in-file to {def:?}, but FSharp.Core supplies it"
             ))

@@ -48,6 +48,12 @@
 //! line. Only a cone of the SDK's targets alone is graded: a user target can
 //! run anything around the writer.
 //!
+//! Each cone under the SDK its project resolves also gets a read census
+//! (stage A₁.3a, [`reads`]). Every property and item type its targets
+//! reference is read at the end of our evaluation and at the end of MSBuild's.
+//! The verdicts are pinned in `tests/manifests/restore_cone_reads_projects.txt`
+//! and `restore_cone_reads_fixtures.txt`.
+//!
 //! File spellings are host-independent: `sdk:` relative to the SDK directory,
 //! `dotnet:` relative to the dotnet root, and `project:`/`fixture:` relative to
 //! the tree the project lives in. A file anywhere else fails the census, which
@@ -512,6 +518,378 @@ fn seam(project: &Path, answer: &Value, loaded: &BTreeMap<PathBuf, String>) -> S
     }
 }
 
+/// What the cone's own targets reference and write, read from their XML: the
+/// read census's subjects (stage A₁.3a of the plan). Each map is keyed by the
+/// lowercase name and holds the least spelling the targets use, so the
+/// manifest's spelling does not depend on which file was read first.
+#[derive(Default)]
+struct ConeText {
+    /// Every `$(Name)` in a target's attributes and text.
+    properties: BTreeMap<String, String>,
+    /// Every `@(Type)`, and the `Type` of every qualified `%(Type.Name)`.
+    items: BTreeMap<String, String>,
+    /// Property names a target writes: a `PropertyGroup` child, or a task
+    /// `Output`'s `PropertyName`.
+    written_properties: BTreeSet<String>,
+    /// Item types a target writes: an `ItemGroup` child, or a task `Output`'s
+    /// `ItemName`.
+    written_items: BTreeSet<String>,
+}
+
+fn note(map: &mut BTreeMap<String, String>, name: &str) {
+    let slot = map
+        .entry(name.to_ascii_lowercase())
+        .or_insert_with(|| name.to_owned());
+    if name < slot.as_str() {
+        *slot = name.to_owned();
+    }
+}
+
+/// The item types `text` references: `@(Type…)`, and `Type` in `%(Type.Name)`.
+/// An over-report is harmless here (it costs a census line), so this scans
+/// for the openers alone rather than parsing the expression around them.
+fn item_references(text: &str) -> Vec<&str> {
+    fn name_at(text: &str, start: usize) -> Option<(&str, usize)> {
+        let bytes = text.as_bytes();
+        let mut i = start;
+        while bytes.get(i) == Some(&b' ') {
+            i += 1;
+        }
+        let begin = i;
+        // A `-` is a name character, except where it opens a transform's `->`.
+        while bytes.get(i).is_some_and(|b| {
+            b.is_ascii_alphanumeric()
+                || *b == b'_'
+                || (*b == b'-' && bytes.get(i + 1) != Some(&b'>'))
+        }) {
+            i += 1;
+        }
+        let first = *bytes.get(begin)?;
+        (i > begin && (first.is_ascii_alphabetic() || first == b'_')).then(|| (&text[begin..i], i))
+    }
+    let mut out = Vec::new();
+    for (opener, qualified_only) in [("@(", false), ("%(", true)] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(opener) {
+            let start = from + at + opener.len();
+            if let Some((name, end)) = name_at(text, start)
+                && (!qualified_only || text.as_bytes().get(end) == Some(&b'.'))
+            {
+                out.push(name);
+            }
+            from = start;
+        }
+    }
+    out
+}
+
+/// What the cone's executed targets reference and write, from the definition
+/// of each in the file MSBuild reported it from (the last definition of that
+/// name there, as MSBuild keeps the last).
+fn cone_text(cone: &Cone, key: &str) -> ConeText {
+    use borzoi_msbuild::test_support::property_references;
+
+    let mut text = ConeText::default();
+    let mut sources: BTreeMap<&Path, String> = BTreeMap::new();
+    let defined: BTreeSet<(&str, &Path)> = cone
+        .targets
+        .iter()
+        .map(|t| (t.name.as_str(), t.file.as_path()))
+        .collect();
+    for (name, file) in defined {
+        let source = sources.entry(file).or_insert_with(|| {
+            host_fs::read_to_string(file)
+                .unwrap_or_else(|e| panic!("{key}: read {}: {e}", file.display()))
+        });
+        let doc = roxmltree::Document::parse(source)
+            .unwrap_or_else(|e| panic!("{key}: parse {}: {e}", file.display()));
+        let target = doc
+            .descendants()
+            .rfind(|n| {
+                n.is_element()
+                    && n.tag_name().name() == "Target"
+                    && n.attribute("Name")
+                        .is_some_and(|n| n.trim().eq_ignore_ascii_case(name))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{key}: {} defines no target {name}, which MSBuild ran from it",
+                    file.display()
+                )
+            });
+        for node in target.descendants() {
+            let mut scan = |raw: &str| {
+                for property in property_references(raw) {
+                    note(&mut text.properties, property);
+                }
+                for item in item_references(raw) {
+                    note(&mut text.items, item);
+                }
+            };
+            if node.is_text() {
+                scan(node.text().unwrap_or_default());
+                continue;
+            }
+            if !node.is_element() {
+                continue;
+            }
+            for attribute in node.attributes() {
+                scan(attribute.value());
+            }
+            let element = node.tag_name().name();
+            match node.parent_element().map(|p| p.tag_name().name()) {
+                Some("PropertyGroup") => {
+                    text.written_properties.insert(element.to_ascii_lowercase());
+                }
+                Some("ItemGroup") => {
+                    text.written_items.insert(element.to_ascii_lowercase());
+                }
+                _ => {}
+            }
+            if element == "Output" {
+                if let Some(name) = node.attribute("PropertyName") {
+                    text.written_properties
+                        .insert(name.trim().to_ascii_lowercase());
+                }
+                if let Some(name) = node.attribute("ItemName") {
+                    text.written_items.insert(name.trim().to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    text
+}
+
+/// The item types `borzoi-msbuild` keeps in buckets of their own rather than in
+/// the generic item tables, with how many items each bucket holds.
+fn dedicated_bucket(parsed: &borzoi_msbuild::ParsedProject, item_type: &str) -> Option<usize> {
+    Some(match item_type.to_ascii_lowercase().as_str() {
+        "packagereference" => parsed.package_references.len(),
+        "frameworkreference" => parsed.framework_references.len(),
+        "packageversion" => parsed.package_versions.len(),
+        "globalpackagereference" => parsed.global_package_references.len(),
+        "projectreference" => parsed.project_references.len(),
+        "compile" => parsed.items.len(),
+        _ => return None,
+    })
+}
+
+/// A short, host-independent spelling of why a value is untrusted.
+fn cause(cause: &borzoi_msbuild::UntrustedCause) -> String {
+    use borzoi_msbuild::UntrustedCause::*;
+    match cause {
+        UndefinedProperty { name, hidden_by } => match hidden_by {
+            Some(hidden) => format!(
+                "read $({name}) undefined, hidden by {}",
+                self::cause(hidden)
+            ),
+            None => format!("read $({name}) undefined"),
+        },
+        Unmodelled(_) => "unmodelled text".to_owned(),
+        SdkPackageInput => "an SDK package input".to_owned(),
+        Unentered(_) => "content not entered".to_owned(),
+    }
+}
+
+/// The read census of one cone (stage A₁.3a of the plan): every property and
+/// item type the cone's targets reference, read at the end of our evaluation
+/// of the project under the census globals and at the end of MSBuild's, as
+/// manifest items keyed by `prefix`.
+///
+/// A property value we hold and trust must be MSBuild's, or the census panics:
+/// that is the value a target would read. Everything else is a verdict: unset
+/// where MSBuild sets it, untrusted, or inexact, which is A₁.3's worklist. An
+/// item type's verdict says how many items MSBuild's evaluation holds, and
+/// whether our tables hold the same identities untainted.
+///
+/// Our evaluation resolves the SDK the cone ran under, at its real path, as
+/// the oracle does.
+fn reads(
+    oracle: &mut Oracle,
+    subject: &Subject,
+    cone: &Cone,
+    sdk: &str,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    use borzoi_msbuild::test_support::{InexactUnset, PropertyRead, ReadProbe, parse_fsproj_reads};
+    use borzoi_msbuild::{SdkVersion, VersionSpec, glob_resolver, resolve_sdk, workloads};
+
+    let text = cone_text(cone, &subject.key);
+    let scratch = Scratch::new();
+    let globals = scratch.globals();
+    let properties: Vec<&str> = text.properties.values().map(String::as_str).collect();
+    let items: Vec<&str> = text.items.values().map(String::as_str).collect();
+    let msbuild = oracle.evaluated(&subject.project, &globals, &properties, &items);
+
+    let dotnet_root = cone.sdk_dir.parent().and_then(Path::parent).unwrap();
+    let spec = VersionSpec::with_version(
+        SdkVersion::parse(sdk).unwrap_or_else(|| panic!("SDK version {sdk}")),
+        borzoi_msbuild::RollForward::Disable,
+        false,
+    );
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        resolve_sdk(
+            dotnet_root,
+            None,
+            name,
+            Some(&spec),
+            None,
+            &workloads::WorkloadEnvironment {
+                user_dotnet_root: user_dotnet_root.as_deref(),
+                overrides_present,
+                global_json_pins_workload_set: false,
+            },
+            observer,
+        )
+    };
+    let extra: std::collections::HashMap<String, String> = globals
+        .iter()
+        .map(|(name, value)| {
+            (
+                (*name).to_owned(),
+                value.to_str().expect("UTF-8 global").to_owned(),
+            )
+        })
+        .collect();
+    let source = host_fs::read_to_string(&subject.project).unwrap();
+    let probe = ReadProbe {
+        properties: properties.iter().map(|p| (*p).to_owned()).collect(),
+        item_types: items.iter().map(|i| (*i).to_owned()).collect(),
+    };
+    let (parsed, ours) = parse_fsproj_reads(
+        &source,
+        &subject.project,
+        &extra,
+        &common::oracle_environment(),
+        Some(&resolver),
+        Some(&glob_resolver::resolve as &borzoi_msbuild::GlobResolver<'_>),
+        &probe,
+    )
+    .unwrap_or_else(|e| panic!("{}: our evaluation failed: {e}", subject.key));
+    // The probe reads the walk's end state and changes nothing in it.
+    let unprobed = borzoi_msbuild::parse_fsproj_with_imports(
+        &source,
+        &subject.project,
+        &extra,
+        &common::oracle_environment(),
+        Some(&resolver),
+        Some(&glob_resolver::resolve as &borzoi_msbuild::GlobResolver<'_>),
+    )
+    .unwrap();
+    assert!(
+        parsed == unprobed,
+        "{}: probing the walk changed its result",
+        subject.key
+    );
+
+    let mut out = Vec::new();
+    for name in &properties {
+        let theirs = &msbuild["properties"][*name];
+        let set = theirs.as_str().is_some_and(|v| !v.is_empty());
+        let set_word = if set { "set" } else { "unset" };
+        // Expanded against the file each element came from, so no one value
+        // stands for the evaluation.
+        if name.to_ascii_lowercase().starts_with("msbuildthisfile") {
+            out.push((
+                format!("{prefix} reads property {name}"),
+                "per file".to_owned(),
+            ));
+            continue;
+        }
+        let verdict = match &ours.properties[*name] {
+            PropertyRead::Value(value) => {
+                assert!(
+                    theirs.as_str().unwrap_or_default() == value,
+                    "{}: we read $({name}) as {value:?} at the end of evaluation, MSBuild as {theirs}",
+                    subject.key
+                );
+                if set {
+                    "value agrees".to_owned()
+                } else {
+                    "unset agrees".to_owned()
+                }
+            }
+            PropertyRead::Unset if set => "unset here, set in MSBuild".to_owned(),
+            PropertyRead::Unset => "unset agrees".to_owned(),
+            PropertyRead::UnsetInexact(why) => {
+                let why = match why {
+                    InexactUnset::Refused => "a refused write".to_owned(),
+                    InexactUnset::Environment => "the environment".to_owned(),
+                    InexactUnset::Toolset => "the toolset".to_owned(),
+                    InexactUnset::Opaque(c) => format!("opacity: {}", cause(c)),
+                    InexactUnset::ConsumerCarveOut => "a consumer carve-out".to_owned(),
+                };
+                format!("unset, inexact ({why}); {set_word} in MSBuild")
+            }
+            PropertyRead::Untrusted(c) => {
+                format!("untrusted ({}); {set_word} in MSBuild", cause(c))
+            }
+        };
+        let written = if text.written_properties.contains(&name.to_ascii_lowercase()) {
+            "; the cone writes it"
+        } else {
+            ""
+        };
+        out.push((
+            format!("{prefix} reads property {name}"),
+            format!("{verdict}{written}"),
+        ));
+    }
+    for item_type in &items {
+        let theirs: Vec<&Value> = msbuild["items"][*item_type]
+            .as_array()
+            .unwrap_or_else(|| panic!("evaluated: no items for {item_type}"))
+            .iter()
+            .collect();
+        let read = &ours.items[*item_type];
+        let mut verdict = format!("MSBuild {}", theirs.len());
+        if let Some(count) = dedicated_bucket(&parsed, item_type) {
+            verdict.push_str(&format!("; ours a dedicated bucket of {count}"));
+        } else {
+            match &read.items {
+                None => verdict.push_str("; ours none"),
+                Some(rows) => {
+                    let identities: Vec<&str> = rows.iter().map(|r| r.identity.as_str()).collect();
+                    let msbuild_identities: Vec<&str> = theirs
+                        .iter()
+                        .map(|i| i["identity"].as_str().unwrap())
+                        .collect();
+                    let agreement = if identities == msbuild_identities {
+                        "identities agree"
+                    } else {
+                        "identities differ"
+                    };
+                    let names: BTreeSet<String> = theirs
+                        .iter()
+                        .flat_map(|i| i["metadata"].as_object().unwrap().keys())
+                        .map(|k| k.to_ascii_lowercase())
+                        .collect();
+                    let kept: BTreeSet<&String> =
+                        rows.iter().flat_map(|r| r.metadata.keys()).collect();
+                    verdict.push_str(&format!(
+                        "; ours {}, {agreement}, metadata kept for {} of {} names",
+                        rows.len(),
+                        kept.len(),
+                        names.len()
+                    ));
+                }
+            }
+            if read.tainted {
+                verdict.push_str(", tainted");
+            }
+            if read.untracked {
+                verdict.push_str(", untracked");
+            }
+        }
+        if text.written_items.contains(&item_type.to_ascii_lowercase()) {
+            verdict.push_str("; the cone writes it");
+        }
+        out.push((format!("{prefix} reads item {item_type}"), verdict));
+    }
+    out
+}
+
 /// One project in a census: its file, its manifest key, and the tree its own
 /// files are spelt relative to (`(tag, root)`).
 struct Subject {
@@ -632,7 +1010,7 @@ impl SdkCensus {
 
 /// The census of `subjects` under every installed SDK: the manifest, and a
 /// readable report.
-fn census(subjects: &[Subject]) -> (Manifest, String) {
+fn census(subjects: &[Subject]) -> (Manifest, Manifest, String) {
     let resolved: Vec<String> = subjects.iter().map(|s| resolved_sdk(&s.project)).collect();
     let sdks = installed_sdks();
     for (subject, sdk) in subjects.iter().zip(&resolved) {
@@ -644,6 +1022,7 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
     }
     let mut items = Vec::new();
     let mut shared = BTreeSet::new();
+    let mut read_items = Vec::new();
     // Each subject's spec under the previous SDK measured, for drift.
     let mut previous: Vec<Option<(String, Value)>> = subjects.iter().map(|_| None).collect();
     let mut report = String::new();
@@ -721,6 +1100,9 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
                 seam(&subject.project, &cone.answer, &cone.loaded)
             };
             items.push((format!("{prefix} seam"), verdict));
+            if how == "resolved" {
+                read_items.extend(reads(&mut oracle, subject, &cone, sdk, &prefix));
+            }
             for target in &cone.targets {
                 let file = subject.spell(&cone, &target.file);
                 per_sdk
@@ -772,7 +1154,8 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
     }
     items.extend(shared);
     let manifest = Manifest::from_keyed(items).unwrap_or_else(|e| panic!("manifest: {e}"));
-    (manifest, report)
+    let reads = Manifest::from_keyed(read_items).unwrap_or_else(|e| panic!("reads manifest: {e}"));
+    (manifest, reads, report)
 }
 
 fn manifest_path(name: &str) -> PathBuf {
@@ -804,11 +1187,19 @@ fn pinned_projects() {
         })
         .collect();
     assert!(!subjects.is_empty(), "BORZOI_PROJECT_LIST is empty");
-    let (manifest, report) = census(&subjects);
+    let (manifest, reads, report) = census(&subjects);
     println!("{report}");
     check(
         &manifest_path("restore_cone_projects.txt"),
         &manifest,
+        &format!(
+            "{UPDATE_ENV}=1 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi-msbuild \
+             --test restore_cone_census pinned_projects -- --ignored"
+        ),
+    );
+    check(
+        &manifest_path("restore_cone_reads_projects.txt"),
+        &reads,
         &format!(
             "{UPDATE_ENV}=1 BORZOI_PROJECT_LIST=… nix develop -c cargo test -p borzoi-msbuild \
              --test restore_cone_census pinned_projects -- --ignored"
@@ -917,7 +1308,7 @@ fn fixtures() {
         root: root.clone(),
     })
     .collect();
-    let (manifest, report) = census(&subjects);
+    let (manifest, reads, report) = census(&subjects);
     println!("{report}");
     let hooked: Vec<&String> = manifest
         .entries()
@@ -934,6 +1325,14 @@ fn fixtures() {
     check(
         &manifest_path("restore_cone_fixtures.txt"),
         &manifest,
+        &format!(
+            "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-msbuild --test restore_cone_census \
+             fixtures"
+        ),
+    );
+    check(
+        &manifest_path("restore_cone_reads_fixtures.txt"),
+        &reads,
         &format!(
             "{UPDATE_ENV}=1 nix develop -c cargo test -p borzoi-msbuild --test restore_cone_census \
              fixtures"

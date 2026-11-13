@@ -65,6 +65,7 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::binders::every_let_pattern_binder_name;
 pub(crate) use crate::def::id_text;
 use crate::def::{Def, DefId, DefKind};
+use crate::names::NameTable;
 use crate::qnof::QualifiedNameOfFile;
 
 mod assembly;
@@ -302,7 +303,10 @@ pub fn resolve_file(
     // parameterised active pattern's argument read as a binder, which is more
     // over-collection of the kind this oracle already accepts.
     r.own_binder_simple_names
-        .extend(every_let_pattern_binder_name(file.syntax()));
+        .extend(every_let_pattern_binder_name(
+            file.syntax(),
+            assemblies.names(),
+        ));
     // An `extern` prototype is the one value-namespace binder with no pattern for
     // the walk above to reach: its name is a `LongIdent`, and the decl arm
     // deliberately does not intern it as a usable value. Both halves of the
@@ -1084,6 +1088,7 @@ fn contested_bare_value_names(decls: &[SigDecl]) -> HashSet<String> {
 }
 
 fn collect_sig_container_exports(
+    names: &NameTable,
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
     access_floor: Option<usize>,
@@ -1133,7 +1138,7 @@ fn collect_sig_container_exports(
                     case: Option<CaseKind>,
                     type_qualified: Option<Vec<String>>,
                     attributed: bool| {
-        let name = def.key().to_string();
+        let name = names.text(def.name()).to_string();
         let pos = def.range.start();
         let def_id = DefId::new(defs.len());
         defs.push(def);
@@ -1175,7 +1180,7 @@ fn collect_sig_container_exports(
                 // over-approximation).
                 let attributed = vd.attributes().next().is_some();
                 let is_function = sig_val_type_is_function(vs.ty());
-                let def = Def::from_token(&ident, DefKind::Value { is_function });
+                let def = Def::from_token(names, &ident, DefKind::Value { is_function });
                 push(defs, def, true, access_root_len, None, None, attributed);
             }
             SigDecl::Types(types) => {
@@ -1207,8 +1212,8 @@ fn collect_sig_container_exports(
                                 // Operator-named cases (`([])` / `(::)`) are
                                 // Stage 3.
                                 let Some(ident) = case.ident() else { continue };
-                                let def = Def::from_token(&ident, DefKind::UnionCase);
-                                let tq = tq_path(&def.key());
+                                let def = Def::from_token(names, &ident, DefKind::UnionCase);
+                                let tq = tq_path(names.text(def.name()));
                                 push(
                                     defs,
                                     def,
@@ -1227,8 +1232,8 @@ fn collect_sig_container_exports(
                         Some(TypeDefnRepr::Enum(e)) => {
                             for case in e.cases() {
                                 let Some(ident) = case.ident() else { continue };
-                                let def = Def::from_token(&ident, DefKind::EnumCase);
-                                let tq = tq_path(&def.key());
+                                let def = Def::from_token(names, &ident, DefKind::EnumCase);
+                                let tq = tq_path(names.text(def.name()));
                                 push(
                                     defs,
                                     def,
@@ -1263,7 +1268,11 @@ fn collect_sig_container_exports(
 /// it; over-approximation only ever defers) — plus the Stage-2 export
 /// surface ([`collect_sig_container_exports`]) whose exact paths are the
 /// screen's exemption set.
-fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurface {
+fn signature_surface(
+    sig: &SigFile,
+    qnof: &QualifiedNameOfFile,
+    names: &NameTable,
+) -> SignatureSurface {
     let mut roots = Vec::new();
     let mut auto_open_nested = Vec::new();
     let mut auto_open_type_containers = Vec::new();
@@ -1287,6 +1296,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                     let access_floor =
                         decls::header_is_private(fragment.syntax()).then(|| path.len() - 1);
                     collect_sig_container_exports(
+                        names,
                         &path,
                         fragment.sig_decls(),
                         access_floor,
@@ -1322,6 +1332,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             let access_floor =
                                 decls::header_is_private(nm.syntax()).then(|| path.len() - 1);
                             collect_sig_container_exports(
+                                names,
                                 &path,
                                 nm.sig_decls(),
                                 access_floor,
@@ -1454,6 +1465,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                     // though the unsigned headerless impl's own values are
                     // not.
                     collect_sig_container_exports(
+                        names,
                         &path,
                         fragment.sig_decls(),
                         None,
@@ -1773,7 +1785,7 @@ fn signature_slot(
     preceding: &ProjectItems,
     assemblies: &AssemblyEnv,
 ) -> ResolvedFile {
-    let surface = signature_surface(sig, &pf.qnof);
+    let surface = signature_surface(sig, &pf.qnof, assemblies.names());
     let mut rf = ResolvedFile::signature_slot(
         preceding.next_base(),
         surface.screen,
@@ -3045,7 +3057,8 @@ mod signature_surface_tests {
             )
             .pop()
             .expect("one qnof");
-            let surface = signature_surface(&sig, &qnof);
+            let env = AssemblyEnv::default();
+            let surface = signature_surface(&sig, &qnof, env.names());
             assert!(
                 surface.screen.auto_open_type_containers.contains(&expected),
                 "{label}: {expected:?} missing from {:?}",

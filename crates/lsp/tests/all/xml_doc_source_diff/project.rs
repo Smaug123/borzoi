@@ -94,6 +94,7 @@ fn load(project: &Path, workspace: &mut Workspace, sema: &mut SemanticState) -> 
             texts: parses.texts.iter().map(|t| t.to_string()).collect(),
             files: parses.files.clone(),
             resolved,
+            env,
         },
         paths: parses.paths.clone(),
         refs,

@@ -7,20 +7,28 @@ use borzoi_assembly::op_name::{compile_op_name, is_operator_spelling, prefix_op_
 use borzoi_cst::syntax::SyntaxToken;
 use borzoi_cst::syntax::TextRange;
 
+use crate::AssemblyEnv;
+use crate::names::{Name, NameTable};
+
 /// A name introduced by F# source — a `let`-bound value or function, a
-/// parameter, and (in later stages) modules and local pattern binders.
+/// parameter, a type, a case, a member, a type parameter.
 ///
-/// Stage A produces `Def`s only from pattern binder extraction
-/// ([`crate::pattern_names`]). The scope tree that interns them and assigns stable
-/// identifiers lands in Stage C, so a `Def` carries no id yet.
+/// It holds its name twice over, against its env's name table: the
+/// *logical* name the walk keys it by (backticks stripped, a bare operator
+/// compiled, as FCS's `idText`), and how the source spelled that name, which
+/// is what a consumer shows ([`Def::spelling`]). Like every id, both mean
+/// something only beside the env the file was resolved against.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Def {
-    /// The bound identifier's source text, verbatim from the token. Backticks
-    /// (`` `quoted name` ``) are retained as written; `idText`-style
-    /// normalisation that collapses `` `x` `` and `x` to one name is deferred
-    /// to the resolution stage that actually needs name *identity* (Stage C),
-    /// where it can be checked against FCS.
-    pub name: String,
+    /// The logical name: [`id_text`] of the spelling.
+    name: Name,
+    /// How the source spelled [`Self::name`].
+    spelling: Spelling,
+    /// The spelling as the constructor received it, which every answer about
+    /// the name is checked against under `interning-reference` in a debug
+    /// build.
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    reference: Box<str>,
     /// Source range of the defining identifier token, as a byte range into
     /// the file (a [`TextRange`]).
     pub range: TextRange,
@@ -36,6 +44,39 @@ pub struct Def {
     /// references. Definite binders (`Named` leaves, the direct `let` head)
     /// are never provisional.
     pub provisional: bool,
+}
+
+/// How a [`Def`]'s source spelled its logical name.
+///
+/// Almost every definition is spelled as its logical name or as that name in
+/// double backticks, so neither of those costs a string. The rest keep their
+/// spelling: an operator binder (`+`, whose name is `op_Addition`) and an
+/// active-pattern recognizer (`(|Even|Odd|)`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Spelling {
+    /// The logical name's text.
+    AsName,
+    /// The logical name's text in double backticks.
+    Quoted,
+    /// Anything else, as written.
+    Verbatim(Box<str>),
+}
+
+impl Spelling {
+    /// How `spelling` writes `logical`, its [`ident_name`].
+    fn of(spelling: &str, logical: &str) -> Self {
+        if spelling == logical {
+            Spelling::AsName
+        } else if spelling.len() == logical.len() + 4
+            && spelling.starts_with("``")
+            && spelling.ends_with("``")
+            && &spelling[2..spelling.len() - 2] == logical
+        {
+            Spelling::Quoted
+        } else {
+            Spelling::Verbatim(spelling.into())
+        }
+    }
 }
 
 /// What sort of binder a [`Def`] is.
@@ -151,7 +192,7 @@ pub enum DefKind {
 /// the referenced-assembly variants (`Module`, `Method`, `Property`, `Event`)
 /// come from classifying a [`Resolution::Entity`](crate::Resolution) /
 /// [`Resolution::Member`](crate::Resolution) against the
-/// [`AssemblyEnv`](crate::AssemblyEnv) (see
+/// [`AssemblyEnv`] (see
 /// [`AssemblyEnv::entity_class`](crate::AssemblyEnv::entity_class) /
 /// [`AssemblyEnv::member_class`](crate::AssemblyEnv::member_class)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,44 +280,127 @@ impl DefId {
 }
 
 impl Def {
-    /// Build a definite (non-provisional) `Def` from an identifier token and
-    /// its kind.
-    pub(crate) fn from_token(token: &SyntaxToken, kind: DefKind) -> Self {
-        Self {
-            name: token.text().to_string(),
-            range: token.text_range(),
-            kind,
-            provisional: false,
-        }
-    }
-
-    /// Build a definite (non-provisional) `Def` from a name and an explicit
-    /// range, for a binder whose span is not a single identifier token: a
-    /// type parameter's `'T` occurrence (sigil + name, the `TYPAR_DECL` node) or
-    /// an operator-named case (see [`Self::from_op_name`]).
-    pub(crate) fn from_range(name: &str, range: TextRange, kind: DefKind) -> Self {
-        Self {
-            name: name.to_string(),
+    /// A `Def` spelled `spelling` (verbatim, as the source wrote it), whose
+    /// logical name is interned in `names`.
+    fn new(
+        names: &NameTable,
+        spelling: &str,
+        range: TextRange,
+        kind: DefKind,
+        provisional: bool,
+    ) -> Self {
+        let logical = ident_name(spelling);
+        let def = Self {
+            spelling: Spelling::of(spelling, &logical),
+            name: names.logical(&logical),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            reference: spelling.into(),
             range,
             kind,
-            provisional: false,
-        }
+            provisional,
+        };
+        def.check(names);
+        def
+    }
+
+    /// Build a definite (non-provisional) `Def` from an identifier token and
+    /// its kind.
+    pub(crate) fn from_token(names: &NameTable, token: &SyntaxToken, kind: DefKind) -> Self {
+        Self::new(names, token.text(), token.text_range(), kind, false)
+    }
+
+    /// Build a definite (non-provisional) `Def` from a spelling and an
+    /// explicit range, for a binder whose span is not a single identifier
+    /// token: a type parameter's `'T` occurrence (sigil + name, the
+    /// `TYPAR_DECL` node), an active pattern (whose recognizer is spelled
+    /// with its parentheses), or an operator-named case (see
+    /// [`Self::from_op_name`]).
+    pub(crate) fn from_range(
+        names: &NameTable,
+        spelling: &str,
+        range: TextRange,
+        kind: DefKind,
+    ) -> Self {
+        Self::new(names, spelling, range, kind, false)
     }
 
     /// Build a `Def` for an operator-named union/enum case — its compiled
     /// `op_Nil` / `op_ColonColon` name and the source range of the operator
     /// tokens (see `UnionCase::operator_name`). Unlike [`Self::from_token`] there
     /// is no single identifier token, so the name and range are passed directly.
-    pub(crate) fn from_op_name(name: &str, range: TextRange, kind: DefKind) -> Self {
-        Self::from_range(name, range, kind)
+    pub(crate) fn from_op_name(
+        names: &NameTable,
+        name: &str,
+        range: TextRange,
+        kind: DefKind,
+    ) -> Self {
+        Self::from_range(names, name, range, kind)
     }
 
     /// Build a *provisional* maybe-var `Def` (see [`Def::provisional`]).
-    pub(crate) fn provisional_from_token(token: &SyntaxToken, kind: DefKind) -> Self {
-        Self {
-            provisional: true,
-            ..Self::from_token(token, kind)
+    pub(crate) fn provisional_from_token(
+        names: &NameTable,
+        token: &SyntaxToken,
+        kind: DefKind,
+    ) -> Self {
+        Self::new(names, token.text(), token.text_range(), kind, true)
+    }
+
+    /// The name this binder is keyed by in the name environment: [`id_text`]
+    /// of its spelling.
+    pub(crate) fn name(&self) -> Name {
+        self.name
+    }
+
+    /// The name as the source spelled it, which is what a consumer shows:
+    /// backticks kept, an operator binder uncompiled (`+`, not
+    /// `op_Addition`). `env` must be the env the definition was resolved
+    /// against.
+    pub fn spelling<'s>(&'s self, env: &'s AssemblyEnv) -> Cow<'s, str> {
+        self.spelling_in(env.names())
+    }
+
+    /// [`Self::spelling`], read from the table.
+    pub(crate) fn spelling_in<'s>(&'s self, names: &'s NameTable) -> Cow<'s, str> {
+        let text = names.text(self.name);
+        let spelled = match &self.spelling {
+            Spelling::AsName => Cow::Borrowed(text),
+            Spelling::Quoted => Cow::Owned(format!("``{text}``")),
+            Spelling::Verbatim(spelling) => Cow::Borrowed(&**spelling),
+        };
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            spelled, *self.reference,
+            "a Def's spelling is not the one it was made with"
+        );
+        spelled
+    }
+
+    /// Assert, under `interning-reference` in a debug build, that the name
+    /// and the spelling answer as the spelling the definition was made with.
+    fn check(&self, names: &NameTable) {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            assert_eq!(
+                names.text(self.name),
+                ident_name(&self.reference),
+                "a Def's name is not the logical name of its spelling"
+            );
+            let _ = self.spelling_in(names);
         }
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = names;
+    }
+
+    /// This definition with its name interned in `to` rather than `from`.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
+        let def = Self {
+            name: crate::names::rekey_name(from, to, self.name),
+            ..self.clone()
+        };
+        def.check(to);
+        def
     }
 }
 
@@ -297,8 +421,8 @@ impl Def {
 /// It takes a **token**, not a string, because it is not idempotent: the
 /// name of `` ``+`` `` is `+`, whose own name would be `op_Addition`. A
 /// function handed a name that is already canonical must use it as it is, and
-/// the type keeps it from normalising twice. A binder's stored text goes
-/// through [`Def::key`], the one other entry point.
+/// the type keeps it from normalising twice. A binder's spelling goes
+/// through [`Def`]'s constructors, the one other entry point.
 pub(crate) fn id_text(tok: &SyntaxToken) -> Cow<'_, str> {
     if is_prefix_operator(tok) {
         prefix_op_name(tok.text())
@@ -348,10 +472,119 @@ fn ident_name(raw: &str) -> Cow<'_, str> {
     }
 }
 
-impl Def {
-    /// The name this binder is keyed by in the name environment: [`id_text`]
-    /// of its verbatim [`name`](Self::name).
-    pub(crate) fn key(&self) -> Cow<'_, str> {
-        ident_name(&self.name)
+#[cfg(test)]
+mod tests {
+    //! What a definition publishes about its name: the spelling a consumer
+    //! shows, and the logical name the walk keys it by. Every way the walk
+    //! makes a [`Def`] is generated, under spellings that differ from their
+    //! logical names (quoted identifiers, operators, a quoted operator).
+
+    use super::*;
+    use crate::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
+    use borzoi_cst::parser::parse;
+    use borzoi_cst::syntax::{ActivePatName, AstNode, ImplFile, SyntaxKind};
+    use proptest::prelude::*;
+
+    /// A value's spellings: plain, quoted, a quoted keyword, a quoted
+    /// operator (the identifier `+`, not `op_Addition`).
+    const VALUES: &[&str] = &["x", "y", "``x``", "``a b``", "``type``", "``+``"];
+    /// A type's, a case's or an active-pattern case's spellings.
+    const UPPERS: &[&str] = &["A", "B", "``A``", "``A B``"];
+    /// An operator binder's spellings, inside its parentheses.
+    const OPERATORS: &[&str] = &["+", "+++", "<*>", "~~~", "|>>"];
+
+    /// One declaration, built from indices into the spelling pools.
+    fn declaration() -> impl Strategy<Value = String> {
+        let value = || prop::sample::select(VALUES);
+        let upper = || prop::sample::select(UPPERS);
+        let operator = || prop::sample::select(OPERATORS);
+        prop_oneof![
+            value().prop_map(|v| format!("let {v} = 0")),
+            (value(), value()).prop_map(|(f, p)| format!("let {f} {p} = {p}")),
+            operator().prop_map(|o| format!("let ( {o} ) a b = a")),
+            (upper(), upper()).prop_map(|(t, c)| format!("type {t}<'T> = | {c} of int | Z")),
+            (upper(), upper()).prop_map(|(t, c)| format!("type {t} = | {c} = 0 | Z = 1")),
+            upper().prop_map(|e| format!("exception {e} of string")),
+            upper().prop_map(|a| format!("let (|{a}|_|) x = None")),
+            (upper(), upper()).prop_map(|(a, b)| format!("let (|{a}|{b}|) x = {a}")),
+            Just("type L = | ([]) | ( :: ) of int * L".to_string()),
+            value().prop_map(|m| format!("type R() =\n    static member {m} = 1")),
+            value().prop_map(|v| format!("let m = match 1 with {v} -> {v}")),
+            value().prop_map(|v| format!("let g = fun {v} -> {v}")),
+        ]
+    }
+
+    /// The spelling `def` publishes.
+    fn spelling<'e>(def: &'e Def, env: &'e AssemblyEnv) -> Cow<'e, str> {
+        def.spelling(env)
+    }
+
+    /// The logical name `def` is keyed by.
+    fn logical<'e>(def: &'e Def, env: &'e AssemblyEnv) -> Cow<'e, str> {
+        Cow::Borrowed(env.names().text(def.name()))
+    }
+
+    proptest! {
+        #[test]
+        fn a_definition_publishes_its_spelling_and_keys_its_logical_name(
+            decls in prop::collection::vec(declaration(), 1..6),
+        ) {
+            let src = format!("module M\n\n{}\n", decls.join("\n\n"));
+            let parsed = parse(&src);
+            prop_assert!(parsed.errors.is_empty(), "{src:?}: {:?}", parsed.errors);
+            let recovery = SyntaxRecovery::of(&parsed);
+            let root = parsed.root.clone();
+            let file = ImplFile::cast(parsed.root).expect("an impl file");
+            let env = AssemblyEnv::default();
+            #[cfg(feature = "test-support")]
+            let other = AssemblyEnv::default();
+            let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+            prop_assert!(resolved.defs().next().is_some());
+            for def in resolved.defs() {
+                let at = &src[usize::from(def.range.start())..usize::from(def.range.end())];
+                let shown = spelling(def, &env);
+                // The census's exceptions: a recognizer shows its parenthesised
+                // name, a case use its case's name, an operator case its
+                // compiled name. Every other definition shows its token.
+                let expected: Vec<String> = match def.kind {
+                    DefKind::ActivePattern => {
+                        let apn = root
+                            .covering_element(def.range)
+                            .ancestors()
+                            .find_map(ActivePatName::cast)
+                            .expect("a recognizer span sits in its name");
+                        std::iter::once(apn.syntax().text().to_string())
+                            .chain(
+                                apn.case_tokens()
+                                    .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                                    .map(|t| ident_name(t.text()).into_owned()),
+                            )
+                            .collect()
+                    }
+                    DefKind::UnionCase if at == "[]" || at.trim() == "::" => {
+                        vec!["op_Nil".to_string(), "op_ColonColon".to_string()]
+                    }
+                    _ => vec![at.to_string()],
+                };
+                prop_assert!(
+                    expected.iter().any(|e| *e == shown),
+                    "{src:?}: {def:?} shows {shown:?}, not one of {expected:?}"
+                );
+                prop_assert_eq!(
+                    &*logical(def, &env),
+                    &*ident_name(&shown),
+                    "{:?}: {:?}",
+                    src,
+                    def
+                );
+                // Re-keyed onto another table, it answers as it did.
+                #[cfg(feature = "test-support")]
+                {
+                    let rekeyed = def.rekey(env.names(), other.names());
+                    prop_assert_eq!(&spelling(&rekeyed, &other), &shown, "{:?}", src);
+                    prop_assert_eq!(logical(&rekeyed, &other), logical(def, &env), "{:?}", src);
+                }
+            }
+        }
     }
 }

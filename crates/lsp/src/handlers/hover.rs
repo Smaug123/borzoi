@@ -329,9 +329,15 @@ fn project_hover(
                     }
                     _ => None,
                 });
-            hover_body(semantic, &resolved, file, res, &Arc::default(), ty).map(|mut body| {
-                body.documentation =
-                    source_documentation(&parses.files, &resolved, target_file_idx, range, res);
+            hover_body(semantic, &resolved, file, res, &env, ty).map(|mut body| {
+                body.documentation = source_documentation(
+                    &parses.files,
+                    &resolved,
+                    &env,
+                    target_file_idx,
+                    range,
+                    res,
+                );
                 body
             })
         };
@@ -396,7 +402,11 @@ fn single_file_hover(
         let ty = resolved
             .resolved_def_id(res)
             .and_then(|d| inferred.def_type(d));
-        return Some(make_hover(format_def(&def.name, def.kind, ty), text, range));
+        return Some(make_hover(
+            format_def(&def.spelling(&env), def.kind, ty),
+            text,
+            range,
+        ));
     }
 
     // Fallback: inferred expression type (a literal or a tuple) — works on an
@@ -413,10 +423,11 @@ fn single_file_hover(
 /// the resolution doesn't carry surfaceable detail today (deferred /
 /// unresolved). `ty` is the binder's inferred type (for the `Local` / `Item`
 /// value arms; `None` when inference deferred it or the symbol isn't a binder).
-/// `env` is only read for the referenced-assembly arms
-/// ([`Resolution::Entity`] / [`Resolution::Member`]); the others ignore it.
-/// Those two arms also carry the symbol's XML documentation, where the `.xml`
-/// beside its DLL has an entry for it.
+/// `env` must be the env `resolved` was folded against: the referenced-assembly
+/// arms ([`Resolution::Entity`] / [`Resolution::Member`]) read the symbol from
+/// it, and the binder arms read the definition's spelling from its name
+/// table. The two referenced-assembly arms also carry the symbol's XML
+/// documentation, where the `.xml` beside its DLL has an entry for it.
 fn hover_body(
     semantic: &mut SemanticState,
     resolved: &ResolvedProject,
@@ -428,11 +439,11 @@ fn hover_body(
     match res {
         Resolution::Local(id) => {
             let def = file.def(id);
-            Some(format_def(&def.name, def.kind, ty).into())
+            Some(format_def(&def.spelling(env), def.kind, ty).into())
         }
         Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
             let (_, def) = resolved.item_def(res)?;
-            Some(format_def(&def.name, def.kind, ty).into())
+            Some(format_def(&def.spelling(env), def.kind, ty).into())
         }
         Resolution::Entity(handle) => {
             let mut body = entity_hover_label(env, handle);
@@ -507,11 +518,12 @@ fn documentation(
 fn source_documentation(
     files: &[borzoi_sema::ProjectFile],
     resolved: &ResolvedProject,
+    env: &AssemblyEnv,
     from: usize,
     at: TextRange,
     res: Resolution,
 ) -> Option<RenderedDoc> {
-    match ProjectDocs::new(files, resolved).doc(from, at, res)? {
+    match ProjectDocs::new(files, resolved, env).doc(from, at, res)? {
         SourceDoc::Attached(lines) => match source::member_element(&lines) {
             Ok(member) => {
                 let (blocks, report) = render_member(&member);
