@@ -1776,25 +1776,32 @@ diagnostic pull falls from 3.35 M toward the cost of hashing the text twice
 **Implemented** (`crates/lsp/src/workspace.rs`, `crates/lsp/src/read_checks.rs`):
 
 - **The memo.** `Workspace::owners` holds, per file spelling, the owner a
-  walk inside a generation found, the listings it read (as
-  `read_checks::Check`s) and the evaluations whose membership verdicts it
-  consulted, each by a new identity, `EvaluationId`, which every
+  walk inside a generation found, the directories it listed and the
+  evaluations whose membership verdicts it consulted, each by an identity:
+  `ListingId` for a listing, and `EvaluationId`, which every
   `CachedEvaluation` gets when it is cached. The first ask in a later
-  generation confirms the answer: every listing holds
-  (`ReadChecks::holds`, Stage 3b's witnesses: the directory's stamp), and
-  every consulted evaluation, once `Workspace::validate` has confirmed it
-  for this generation, is still the entry with that identity. Later asks
-  in the generation are hits. An answer that does not stand is walked
-  again. Validation is exact, with no staleness window: Stage 3b's racy
-  rule applies to every witness.
+  generation confirms the answer: every directory's listing is still the
+  one the walk read and still holds (`ReadChecks::holds`, Stage 3b's
+  witnesses: the directory's stamp), and every consulted evaluation, once
+  `Workspace::validate` has confirmed it for this generation, is still the
+  entry with that identity. Later asks in the generation are hits. An
+  answer that does not stand is walked again. Validation is exact, with no
+  staleness window: Stage 3b's racy rule applies to every witness.
+- **One listing per directory.** The listings live in one table
+  (`DirListings`), one per directory, confirmed at most once per
+  generation and shared by every owner whose walk read it; a walk reads a
+  directory's listing from it when it still holds. An owner holding copies
+  of its listings would keep, after a sweep over a directory of `N` files,
+  `N` copies of a listing of `N` entries (Codex measured 257 MB for 2,000
+  files).
 - **Born witnesses.** `ReadChecks::list` stamps a directory, then lists it,
   and returns the check with that stamp as its witness when the listing is
   an answer and a fact. So the generation after a walk confirms it by the
   `stat`s alone; a check built from an observer's read set would have
   listed once more, to take its witness.
-- **Its own checker.** The walk lists through a `ReadChecks` of its own
-  (`owner_checks`), not the one confirming evaluations, so its counts are
-  the generation's ownership counts (`o.list`, `o.stat`). The price is that
+- **Its own checker.** The listings are made and confirmed through a
+  `ReadChecks` of their own, not the one confirming evaluations, so its
+  counts are the generation's ownership counts (`o.list`, `o.stat`). The price is that
   a directory both confirm (the project's) is `stat`ed twice per
   generation.
 - **An owner that moves.** A walk that finds another owner than the answer
@@ -1840,7 +1847,9 @@ The oracle:
   answer, remembered answers that no longer stood, and owners that moved.
   Beside it: a walk lists each directory once and records what it
   consulted; a generation after the walk confirms by one `stat` per
-  directory however often it asks; outside a generation every ask walks.
+  directory however often it asks; the owners of ten files in one
+  directory share its listing (one listing of each directory, one kept);
+  outside a generation every ask walks.
 - `read_checks`: the model property holds every listing `ReadChecks::list`
   makes to the same rule as every other check, in each later generation,
   with a non-vacuity count of listings confirmed by their born witness and
@@ -1871,6 +1880,7 @@ Planted, each caught, then removed:
 | no `projects_generation` move when an owner moves | three pinned scripts, the generated creation test |
 | consulted evaluations not confirmed | both `ownership_memo` tests, the sibling-rewrite pinned script, the generated creation test |
 | owners remembered and served outside a generation | `outside_a_generation_every_ask_walks` (added for it: the plant first passed every test) |
+| a shared listing never confirmed again | LISTING_TRUSTED |
 
 One plant is not a defect: `ReadChecks::list` asking before it stamps.
 A change landing between the listing and the stamp carries a time after
@@ -1880,34 +1890,37 @@ again. No test can tell the two orders apart, and the model's change at a
 else in `read_checks`.
 
 **Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
-minimum over three runs of each binary: Stage 3b (2eb1b108), Stage 4a and
-this stage. Every source-read and validation column is unchanged (80
+minimum over three runs of each binary: Stage 3b (2eb1b108), Stage 4a
+(33c211b9) and this stage. Every source-read and validation column is unchanged (80
 `stat`s on each fold-reading row, 137 validation `stat`s on each row that
 reads the evaluation).
 
 | message, per keystroke | instructions 3b | 4a | 4b | allocs 3b | 4a | 4b | o.list 4a | 4b | o.stat 4b |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `didChange E` | 0.14 M | 0.17 M | 0.13 M | 99 | 99 | 99 | 0 | 0 | 0 |
+| `didChange E` | 0.14 M | 0.17 M | 0.18 M | 99 | 99 | 99 | 0 | 0 | 0 |
 | `diagnostic E` | 7.08 M | 7.62 M | **3.63 M** | 1,531 | 2,227 | 238 | 4 | 0 | 1 |
-| `diagnostic L` (`unchanged`) | 5.58 M | 5.89 M | **2.65 M** | 1,519 | 1,891 | 84 | 4 | 0 | 2 |
-| `semanticTokens E` | 9.88 M | 10.01 M | 9.03 M | 5,357 | 5,531 | 5,036 | 1 | 0 | 1 |
-| `semanticTokens L` | 13.87 M | 13.96 M | 12.48 M | 12,177 | 12,363 | 11,461 | 2 | 0 | 2 |
-| `hover L` | 9.23 M | 9.40 M | 7.87 M | 5,060 | 5,246 | 4,344 | 2 | 0 | 2 |
-| **keystroke total** | **45.81 M** | **47.32 M** | **35.88 M** | 25,743 | 27,357 | 21,262 | **13** | **0** | **8** |
+| `diagnostic L` (`unchanged`) | 5.58 M | 5.89 M | **2.68 M** | 1,519 | 1,891 | 84 | 4 | 0 | 2 |
+| `semanticTokens E` | 9.88 M | 10.01 M | 9.01 M | 5,357 | 5,531 | 5,036 | 1 | 0 | 1 |
+| `semanticTokens L` | 13.87 M | 13.96 M | 12.40 M | 12,177 | 12,363 | 11,461 | 2 | 0 | 2 |
+| `hover L` | 9.23 M | 9.40 M | 7.83 M | 5,060 | 5,246 | 4,344 | 2 | 0 | 2 |
+| **keystroke total** | **45.81 M** | **47.32 M** | **35.81 M** | 25,743 | 27,357 | 21,262 | **13** | **0** | **8** |
 
 The 13 listings become 0, and each message that asks for an owner
 confirms it with one `stat` of each directory the walk read: 8 per
-keystroke. The keystroke falls by 9.9 M instructions (22%) and 4,481
-allocations against Stage 3b, and by 11.4 M against Stage 4a's counted
+keystroke. The keystroke falls by 10.0 M instructions (22%) and 4,481
+allocations against Stage 3b, and by 11.5 M against Stage 4a's counted
 listings. That is more than the listings cost: each of the 13 walks also
 asked the project whether it lists the file, a scan of its 82 Compile
 items that normalises each path, and a hit asks nothing. The `unchanged`
-pull of `L` falls to 2.65 M, not to the plan's 0.2 M: the plan predates
+pull of `L` falls to 2.68 M, not to the plan's 0.2 M: the plan predates
 Stage 3b, whose confirmation of the evaluation (137 `stat`s, about 2.4 M
 here) every message that reads the evaluation pays. The cold rows that
 walk for the first time cost one `stat` per directory more than Stage
-4a's (the stamp a walk takes before it lists); the cold `diagnostic` rows
-fall by 4 M and 7 M for the same reason as the keystroke's.
+4a's (the stamp a walk takes before it lists), and `didOpen L` lists only
+`Skeleton/`, reading the project's directory from the listing `didOpen E`
+made; the cold `diagnostic` rows fall by 4 M and 7 M for the same reason
+as the keystroke's. `didChange E` reads no file and moves within its
+runs' spread (0.13–0.19 M across the three binaries).
 
 ### Stage 5: one parse per text
 
