@@ -34,6 +34,8 @@
 //!   of downloads whose order depends on the culture.
 //! - **The environment.** `NUGET_ENABLE_EXPERIMENTAL_MACROS` makes the writer
 //!   abbreviate paths under the user's settings folder.
+//! - **Windows.** Its writer ends lines with CRLF, so every Windows host
+//!   declines, as B₁'s reading of the environment does.
 //!
 //! And, as [`parse_dgspec`] does, it accepts only the vocabulary it models:
 //! - Every item type and metadata name it does not know declines, and so does
@@ -154,6 +156,14 @@ pub fn write_restore_graph(
     if environment.contains_key(OsStr::new(MACROS_VARIABLE)) {
         return Err(RestoreItemsDecline::Environment {
             variable: MACROS_VARIABLE.to_owned(),
+        });
+    }
+    // On Windows the writer ends lines with CRLF, completes `file:` sources
+    // differently and compares paths ignoring case; as B₁'s reading of the
+    // environment does, the model declines the host outright.
+    if cfg!(windows) {
+        return Err(RestoreItemsDecline::HostDependent {
+            detail: "a Windows host, whose writer output is not modelled".to_owned(),
         });
     }
     // With no items the task warns and writes no file at all.

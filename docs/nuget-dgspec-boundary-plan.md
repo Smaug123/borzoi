@@ -1461,6 +1461,8 @@ items:
   `h`. An order is committed only when every name is letters, digits and
   dots, the ordinal and ignore-case orders agree, and the process runs in
   invariant mode or under an English, `C` or unset locale.
+- **Windows.** The writer ends lines with CRLF there, so every Windows host
+  declines, as B₁ does.
 - **Unmodelled .NET behaviour.** This covers `Enum.TryParse`'s numeric forms
   and .NET's case folding beyond ASCII.
 
