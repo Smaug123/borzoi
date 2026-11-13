@@ -1,25 +1,24 @@
 # AST versioning plan
 
-> **Status (2026-07-15).** Partially landed. Stages 0–2 (the `LanguageVersion`
-> value type #592/#597, threading it into `parse` with the first `#elif`
-> legality gate #606, and the LSP `<LangVersion>` wiring #613) and the Stage 3
-> typed-facade *mechanism* (generated `syntax::v8` / `syntax::v9` facades
-> projecting the F# 9.0 `WithNull` delta over a runtime interval-table node gate)
-> have landed. **Still open:** `Parse::view()`, the public-vs-private union API
-> decision, unifying the duplicated interval source between `syntax/kinds.rs` and
-> `tools/astgen`, and broadening interval rows below 8.0 — see **Still to do**.
+> **Status (2026-11-13).** A living plan. The decisions below are settled; the
+> work is an eight-PR sequence ([PR sequence](#pr-sequence)), of which PR 1 (the
+> feature table, #15) has landed. Earlier stages that still stand:
+> `LanguageVersion` as a parse input (#592/#597/#606), the LSP's
+> `<LangVersion>` wiring (#613), and the generated `syntax::v8` / `syntax::v9`
+> facades (#618 and after). The goal: before the next F# compiler upgrade (a new
+> language version), every earlier language version has a stable, exhaustive
+> typed facade, and the upgrade itself is the proof that the scheme extends.
 > Companion to [`parser-plan.md`](parser-plan.md), which owns the parser; this
 > doc owns the *public typed-AST surface* and how it stays stable as F# evolves.
 
 ## Problem
 
 The typed AST is a public artifact: third-party tooling (and LLM agents) will
-write code that matches on it. F# the language grows — new syntax, occasionally
-relaxed restrictions, rarely a gated source-break — so our model of it must grow
-too. The tension is the usual one for a closed sum type: adding a variant to a
-dispatch enum (`Expr`, `Pat`, `Type`, `ModuleDecl`, `SigDecl` in
-[`syntax/mod.rs`](../crates/cst/src/syntax/mod.rs)) is a breaking change for
-every exhaustive `match` downstream. We want consumers to be able to:
+write code that matches on it. F# grows — new syntax, occasionally relaxed
+restrictions, rarely a gated source break — so our model of it must grow too.
+Adding a variant to a dispatch enum (`Expr`, `Pat`, `Type`, `ModuleDecl`,
+`SigDecl` in [`syntax/mod.rs`](../crates/cst/src/syntax/mod.rs)) breaks every
+exhaustive `match` downstream. Consumers should be able to:
 
 1. pin to an F# language surface (e.g. 8.0) and get a typed AST that is **both
    stable** (never breaks under our upgrades) **and exhaustive** (the compiler
@@ -29,299 +28,357 @@ every exhaustive `match` downstream. We want consumers to be able to:
 
 FCS and Roslyn both decline to solve this — FCS lets `SynExpr` grow and breaks
 consumers on upgrade; Roslyn sidesteps closed sums with open virtual dispatch.
-We can do better because we sit on rowan, where the untyped tree is already
-stable and additive and the typed layer is a thin, regenerable projection.
+We can do better because the untyped tree is already stable and additive and
+the typed layer is a thin, regenerable projection over it.
 
 ## The core insight
 
 A versioned typed AST is a **projection** with two directions, and they have
 different totality:
 
-- **Reading** parsed source — `private_union → vN`. **Partial** in general: a
-  parsed tree may contain post-N nodes `vN` cannot represent.
-- **Constructing / rewriting** — `vN → private_union`. **Total**: the supported
-  surface only grows, so every `vN` tree embeds in the union.
+- **Reading** parsed source — `union → vN`. **Partial** in general: a parsed
+  tree may contain post-N nodes `vN` cannot represent.
+- **Constructing / rewriting** — `vN → union`. **Total**: the supported surface
+  only grows, so every `vN` tree embeds in the union.
 
-The reading direction is the one that bites, and the *only* thing that makes it
-total is a guarantee that the tree contains no post-N nodes. That guarantee is
-exactly **LanguageVersion pinning**: parse at langversion N, and `union → vN` is
-total by construction. Language-version support and versioned facades are
-therefore not two independent features — the langversion is the **index that
-makes the read-projection sound**. Everything language-evolution can throw at us
-— new syntax, new legal positions for existing kinds, a langversion-gated parse
-divergence — is absorbed by keying on the version. The one risk the version
-index does *not* cover is **us re-modelling an already-frozen version**
-(representation drift with no language change); §D6 / the round-trip property
-contain that residual.
+The reading direction is the one that bites, and what makes it safe is
+**language-version pinning**: parse at N, and every post-N node in the tree lies
+under a diagnostic that says so (D9). Language-version support and versioned
+facades are therefore not two independent features — the version is the
+**index that makes the read-projection sound**. The one risk the version index
+does *not* cover is **us re-modelling an already-frozen version**
+(representation drift with no language change); the lock files of D6 make that
+a visible, reviewed event.
 
 ## Scope
 
-- **In scope.** A first-class `LanguageVersion`; making the current typed facade
-  the *private union*; public, frozen, per-version typed facades projected from
-  it; the soundness invariant and the property suite that enforces it.
+- **In scope.** `LanguageVersion` as a parse input; the union as the maximal
+  model behind a feature flag; one deep, frozen typed facade per language
+  version; the feature table that drives gates and facades; the property suite
+  and lock files that enforce it all.
 - **Out of scope (by choice).** Trivia and ranges are **not** versioned — the
   differential normaliser already elides them, so the versioned surface is
-  *structural* only. The untyped rowan layer (`SyntaxNode`/`SyntaxToken`) is not
-  versioned; it is the stable substrate (D2).
-- **Free hand.** The repo is private; we may make arbitrary breaking changes to
-  land this. The versioning we build is for *future external* consumers, not for
-  today's callers.
-- **Current typed-facade scope: `v8` + `v9`.** The original `v10` + `preview`
-  starting scope proved insufficient because the only post-10.0 feature we model,
-  `#elif`, is trivia rather than a typed AST node. The production slice therefore
-  uses the first real structural delta we model, F# 9.0 nullness: `syntax::v9` is
-  the union surface today; `syntax::v8` is the frozen facade that excludes
-  `WithNull`. F# 10.0, 11.0, and `preview` remain parse-version values, not
-  typed facade modules. We do **not** yet backfill 4.6–7.0 as separate facades;
-  their interval rows are an open data-completeness task (Still to do).
+  *structural* only. The untyped substrate (`SyntaxNode`, `SyntaxToken`,
+  `SyntaxKind`, `AstNode`, `TextRange`) is versioned by crate SemVer, not by
+  language version (D1, D7).
+- **Free hand.** The repo is private; breaking today's internal callers is
+  fine. The versioning is for *future external* consumers.
 
 ## Settled decisions
 
 ### D1. Two orthogonal version axes — never conflate them
 
-Two clocks, kept independent:
-
-- **F# language version** (8.0 vs 9.0) — a property of the *source*. This indexes
+- **F# language version** (8.0 vs 9.0) — a property of the *source*. It indexes
   the public facades and is what gets *frozen*.
 - **Crate SemVer** — a property of *our code* (we model `match` more precisely,
-  fix a projection bug, add an accessor). Ordinary library versioning.
+  fix a projection bug, add an accessor). Ordinary library versioning; it also
+  governs the substrate.
 
-We must be able to ship F# 9.0 parsing support (a crate upgrade) **without**
-forcing consumers off `ast::v8`, and to fix a modelling bug **without** inventing
-a new F# version. Facades live at `ast::v8`, `ast::v9`, …; bug-fixes and new
-accessors are SemVer events on the crate; a new `ast::vN` module appears only
-when F# ships a syntax-affecting language version.
+We must be able to ship a newer F# version's parsing (a crate upgrade)
+**without** forcing consumers off `v8`, and fix a modelling bug **without**
+inventing a new F# version.
 
 ### D2. The private type is the *union of supported surfaces*, not "latest"
 
-"Always the latest" is subtly wrong, and the wrongness is the *removal* case: if
-F# 11 drops a construct 8.0 had, "latest" stops modelling it and `v8 → latest`
-ceases to be total. Fix: the private representation is the **union over all
-currently-supported surfaces**. Each construct carries an *interval*
-(`introduced`, optional `removed`) and the union retains it as long as *any*
-supported version needs it. Removal then needs no special case — it is one more
-interval bound on the same table (D5).
+"Always the latest" is wrong under *removal*: if F# drops a construct an older
+version had, "latest" stops modelling it and `vOld → latest` stops being total.
+So the private representation is the **union over all supported surfaces**. Each
+construct carries an interval (`introduced`, optional `removed`), and the union
+keeps it while *any* supported version needs it. Removal is then one more
+interval bound (`KindInterval::removed`, carried and unused today).
 
-The current [`syntax`](../crates/cst/src/syntax/mod.rs) facade *becomes* this
-private union. The union is `syntax::v9` today; `syntax::v8` is the first frozen
-projection, and the split is load-bearing because `v8::Type` excludes the F# 9.0
-`WithNull` node the union accepts. The union facade is still publicly
-re-exported from `syntax`; privatizing that boundary is an open decision (Still
-to do). `removed` intervals stay unreachable for now, but the table carries the
-field from the start so the format does not churn when a future version removes a
-construct. The rowan substrate stays public — it is the backstop (D7).
+The union is what sema and the LSP use (they need the maximal, preview tree).
+It sits behind the cargo feature `unstable-union` (D11), which sema, the LSP,
+corpus-diff and cst's own tests enable; without it, `syntax` exports only the
+substrate and the facades.
 
-### D3. LanguageVersion is a first-class parse input (the index)
+### D3. `LanguageVersion` is a first-class parse input (the index)
 
-Model it after FCS's
-[`LanguageFeatures.fs`](../../fsharp/src/Compiler/Facilities/LanguageFeatures.fs):
-a closed enum of concrete versions (`4.6 … 11.0`), plus `Default` (currently
-10.0) and `Preview`. `parse` takes it explicitly and `Parse` records it:
+Modelled on FCS's `LanguageFeatures.fs`: a closed enum `V4_6 … V11_0, Preview`
+with `DEFAULT = V10_0` (FCS's `defaultVersion`; `latest` and `latestmajor`
+resolve to it) and `Preview` above every numbered version (FCS's `9999`).
+`ParseOptions::lang` selects it and `Parse::lang` records it.
 
-```rust
-pub enum LanguageVersion { V4_6, /* … */ V10_0, V11_0, Preview }
-impl LanguageVersion { pub const DEFAULT: LanguageVersion = LanguageVersion::V10_0; }
+The version has two parser roles:
 
-pub struct Parse {
-    pub root: SyntaxNode,
-    pub errors: Vec<ParseError>,
-    pub warnings: Vec<ParseError>,
-    pub lang: LanguageVersion, // the surface this tree was parsed against
-}
-```
+- **Legality gates.** A construct newer than the pin draws FCS's diagnostic
+  (FS3350 and friends). Gates are **per feature**, each against its own
+  introduction version, so an unusual pin is gated correctly. Which features
+  are gated, and how, is the [feature table](#the-feature-table).
+- **Parse divergence.** Some features change what the lex-filter produces:
+  `RelaxWhitespace2` (6.0: the `+1` offside grace and `CtxtMatch` pops) and
+  `StrictIndentation` (8.0: offside pushes abort rather than warn) reshape the
+  token stream and so the tree. A parse records reaching such a point in
+  `Parse::shape_depends_on_language_version`, and
+  `LanguageVersion::SHAPE_REPRESENTATIVES` names one version per band. These
+  are the table's `Shape` rows.
 
-LanguageVersion has two parser roles:
+### D4. Deep facades: each `vN` owns its whole surface
 
-- **Legality gate.** Reject post-N constructs under pin N, emitting a diagnostic
-  — this is what keeps the parsed tree within `surface(N)` and makes `union → vN`
-  total. The gate is **per-feature**, not per-surface: each feature is gated
-  against its own introduction version (mirroring FCS's
-  `langVersion.SupportsFeature`), so an unusual pin like 8.0 is gated correctly.
-  The gate never alters the green tree (asserted by a property test): FCS
-  feature-checks *recognised directives*, not emitted markers, so the driver
-  records the checked spans and the parser turns them into diagnostics —
-  matching FCS's `CheckLanguageFeatureAndRecover` (report, then parse anyway).
-- **Parse divergence.** A handful of constructs *parse differently* by version
-  (e.g. the int-overflow fallback in `directives/line.rs`); version-correct
-  parsing. Not yet engaged — the modelled deltas are additive so far.
+For each language version, `syntax::vN` owns **every** node type and enum: a
+node is a newtype over the union node, and each accessor is a generated one-line
+delegate that calls the union accessor and re-casts the result into `vN`'s
+types (`v8::ParenType::inner() -> Option<v8::Type>`). `tools/astgen` learns the
+accessor signatures by reading `syntax/mod.rs` with `syn`; the return shapes
+are a small closed set (`Option<Enum>`, `bool`, `impl Iterator<Item = Node |
+Enum>`, `Option<SyntaxToken>`, `Option<Node>`, `Vec<_>`, small value enums), and
+astgen **fails** on a shape outside it. The hand-written standalone
+`ast_node!`s move into astgen's tables.
 
-This is *parse, don't validate*: the langversion is part of the parse
-configuration that defines the correctness envelope, not a post-hoc check.
-Resolving a pin to the *nearest modelled facade* is a **view-layer** concern
-(`Parse::view()`, Still to do), not a parse concern. The known view-layer
-limitation: for an unmodelled older pin the LSP may *under*-report errors a
-pinned compiler would raise, narrowed as we model more versions.
+There is no `Deref` or `From` to the union. The escapes are `.syntax()` (the
+substrate, D7) and `to_union()`, the latter only under `unstable-union`. A union
+refactor that breaks a frozen delegate needs an explicit hand-written compat
+shim — the cost D6 accepts, made visible. Each facade sits behind a cargo
+feature; sema and the LSP enable none; cst's tests enable all.
 
-### D4. Public facades are frozen projections; the canonical view matches the parse version
+The canonical read is `Parse::view::<V>()`: it checks `parse.lang ∈
+V::VERSIONS` and returns the root as `V`'s file node. A node out of `V`'s
+surface reads as an absent child (its cast is `None`), and a legality
+diagnostic covers it (D9). Viewing a tree through a different version's facade
+is not the main path; exact match sidesteps removal entirely.
 
-For each supported version, `ast::vN` is a typed facade — the same
-newtype-over-`SyntaxNode` pattern as today, but with **frozen dispatch-enum
-variant sets and accessor signatures**. Because every node is a newtype over the
-same `SyntaxNode`, a facade is really a *classification*:
-`ast::v8::Expr::cast(node)` accepts the node iff its kind is in `surface(8.0)`,
-and rejects (→ `None`) post-8.0 kinds.
+### D5. Single source of truth: the feature table (#15)
 
-The **canonical, always-sound** operation is to view a tree through the facade
-matching its parse version:
+One hand-edited table,
+[`crates/cst/language-features.tsv`](../crates/cst/language-features.tsv),
+keyed by FCS feature, drives both the parser's version gates and the facades'
+kind intervals; `tools/astgen` (dependency-free) generates everything else from
+it. See [The feature table](#the-feature-table).
 
-```rust
-let p = parse(src, LanguageVersion::V8_0);
-let file: ast::v8::ImplFile = p.view();   // total: tree ⊆ surface(8.0) by the gate
-```
+### D6. Freezing: a lock file that is the generator's input
 
-`view()` is well-typed because `Parse::lang` records the version. Cross-version
-reinterpretation (viewing an 8.0 tree through `ast::v9`) is sound only when
-`surface(8.0) ⊆ surface(9.0)`, which *fails under removal* — so it is **not** the
-main path; defaulting to exact-match sidesteps removal entirely. What "frozen"
-means concretely: the **only** things frozen are (a) the dispatch-enum variant
-*sets* and (b) accessor *signatures*. Adding an accessor, or a field FCS
-exposes, is non-breaking and lands in the union.
+`crates/cst/facades/vN.lock` lists a facade's enums (variants and their kind
+sets), node types, and accessors (signature and union delegate).
 
-### D5. Single source of truth: an interval-annotated grammar table → codegen
+- An **unpublished** facade's lock is derived and regenerated freely.
+- A **published** facade (astgen's `PUBLISHED` list) is generated *from* its
+  lock: the generator reads it and never writes it, and the staleness test
+  checks `code == gen(lock)`.
 
-Do **not** hand-maintain N parallel facade hierarchies. Annotate each construct
-once with its `(introduced, removed?)` interval — the natural home is alongside
-the `SyntaxKind` enum in
-[`syntax/kinds.rs`](../crates/cst/src/syntax/kinds.rs). From that one table
-derive the **legality predicate** `is_legal(kind, version)` (the parser gate) and
-each **frozen facade** `ast::vN` = union minus constructs whose interval excludes
-N. Mirror FCS's `featureVersionMap` in `LanguageFeatures.fs` as the authority for
-which feature landed in which version, and differentially test our gate against
-FCS `--langversion` rejection. Codegen has landed for `syntax::v8` / `syntax::v9`;
-the single-source-of-truth part has **not** — see Still to do.
+Checks:
 
-### D6. The freeze cost is real, bounded, and paid consciously
+1. a CI script, with its own test, diffs every published lock against the merge
+   base and allows only appended accessor lines and additions to a variant's
+   kind set;
+2. generic P2/P3 over every (facade, enum) pair;
+3. a frozen consumer fixture per published facade — an exhaustive,
+   wildcard-free `match` on every enum and a typed call of every accessor —
+   generated once, at publish.
 
-Freezing `ast::v8` means we cannot fix a *modelling* bug in the 8.0 surface
-without it being a breaking change. The discipline: freeze the **shape** (variant
-sets + accessor signatures) of a published `vN`; land modelling fixes in the
-**union** and in *unpublished* future facades; document `vN` as preserving its
-original, possibly-imperfect shape for compat. This is the v1→v2→v3
-edge-compatibility pattern applied to a library surface, where the "edge"
-projects *outward* from the union and consumers are external — precisely the case
-where once-legal-stays-legal is the correct default. The cost cannot sneak up on
-us: the round-trip property (P3) fails the build the moment a union refactor
-*coarsens* a distinction a frozen facade relies on.
+The only re-baseline route is an explicit `FREEZE_EPOCH` bump, allowed until
+the first external release. cargo-semver-checks was considered and rejected:
+the lock is both narrower (only the facades) and stronger (it is the
+generator's input).
 
-### D7. rowan is the floor: incomplete, never wrong
+What freezing costs: a *modelling* fix to a published surface is a breaking
+change, so it lands in the union and in unpublished facades, and the published
+`vN` keeps its original, possibly imperfect shape.
 
-The untyped green tree can represent any tree the parser produces. So the typed
-facade's failure mode for anything unanticipated is **incompleteness, never
-wrongness**: a consumer can always drop to `.syntax()` and walk rowan. A
-construct we have not yet modelled is a documented *gap*, not a *lie*. Corollary:
+### D7. The substrate is the floor: incomplete, never wrong
 
-- The untyped substrate (`SyntaxKind`) is **`#[non_exhaustive]`** — the one place
-  non-exhaustiveness is correct (you match the kinds you know and ignore the
-  rest). The honest, additive, lossy layer.
-- The typed `ast::vN` dispatch enums are **closed and exhaustive** — the precise,
-  frozen layer where consumers *want* total-coverage enforcement.
+The untyped tree represents anything the parser produces, so the typed layer's
+failure mode for anything unanticipated is **incompleteness, never
+wrongness**: a consumer can always drop to `.syntax()`.
 
-Do **not** add an `Unknown(SyntaxNode)` arm to a frozen facade enum — that
-re-introduces the wildcard. New-version syntax under an old pin is a **parse
-error** from the gate (D3), not an `Unknown` node; `.syntax()` is only for our
-own modelling gaps.
+- `SyntaxKind` is `#[non_exhaustive]` — the one place non-exhaustiveness is
+  right.
+- Facade enums are closed and exhaustive. There is **no `Unknown` arm**: a
+  post-N construct under pin N is a hole covered by a legality diagnostic
+  (D9), not a node.
+
+### D8. One module per `LanguageVersion`
+
+`syntax::{v4_6, v4_7, v5, v6, v7, v8, v9, v10, v11, preview}`. A version whose
+surface equals its neighbour's is `pub use super::vX::*`, recorded as
+`alias-of` in its lock — so shared type identity between aliases is part of the
+contract (accepted). The expected distinct surfaces are {4.6, 4.7}, {5, 6, 7},
+{8}, {9, 10, 11} and preview. A kind with no FCS `LanguageFeature` gets no
+interval, so it is in every facade (`Expr::Typar` is in all of them).
+
+### D9. Gate and surface are different questions; diagnostics carry a class
+
+The table separates them: `introduced` alone drives the **surface**;
+`fcs_stage`, `fcs_effect` and `borzoi` drive the **gate**. FCS checks some
+features that have syntax kinds only in the type checker (`StringInterpolation`
+5.0, `FromEndSlicing` preview), and one, which we have so far left ungated, in
+the parser (`AccessorFunctionShorthand` 8.0, `_.M`). Each such kind still gets
+a borzoi **parse-phase legality diagnostic**, graded against FCS's parse *plus
+check* diagnostics, because without it `view::<V>()` would have an uncovered
+hole.
+
+Every diagnostic carries a class:
+
+- `Legality { feature }` — tree-neutral: "this construct needs a newer
+  version";
+- `Recovery` — ordinary errors, and the gates whose FCS effect is `Reshape`.
+
+`Parse::errors` minus the `Legality` ones stays FCS-*parse*-faithful. P2 is
+restated: `view::<V>()` is total when there are no legality diagnostics, and
+otherwise every hole lies under one.
+
+### D10. Version invariance compares Recovery only
+
+`SyntaxRecovery::of_guessed_version` (sema) keeps its full `[MIN, MAX]` range,
+but reads only `Recovery` diagnostics, and `diagnostics_are_version_invariant`
+compares `Recovery` diagnostics and tree shape. So a faithful legality gate
+(`_.M`, interpolated strings) does not make every file using the construct
+version-dependent — the trade-off that has kept those gates unmodelled. A
+`Reshape` gate (`_.` patterns, `for _ =`: FCS raises a parse error and
+recovers) is `Recovery` and stays version-dependent. To confirm FCS type-checks the same tree after
+`CheckLanguageFeatureAndRecover`, one inference differential runs at an old
+pin; a corpus census counts version-dependent files.
+
+### D11. Feature flags and the remaining issue decisions
+
+- **#13** — the union sits behind `unstable-union`; paths are unchanged.
+- **#17** — `syntax::preview` sits behind `unstable-preview`, is never
+  published, and its lock is always regenerated.
+- **#16** (compile-time type-tag views) stays deferred; `view::<V>()` over a
+  sealed `Facade` trait is the baseline.
+
+## The feature table
+
+[`crates/cst/language-features.tsv`](../crates/cst/language-features.tsv) has
+one row per FCS `LanguageFeature`, *including* the ones only the type checker
+reads (`Unmodelled(checker-only)`), so that a compiler bump's new features all
+show up as missing rows. Its columns (the file's header comment is the
+reference):
+
+| Column | Meaning |
+|---|---|
+| `feature` | FCS's case name, and the `LanguageFeature` variant name. |
+| `introduced` | FCS's `features` map version (`4.7` … `11.0`, `preview`). It alone decides facade membership. |
+| `fcs_stage` | Where FCS's parse pipeline consults it (`lex`, `lexfilter`, `parse`, `post-parse`, `+`-joined), or `check` when only the checker or a later phase does. |
+| `fcs_effect` | What FCS does below `introduced`: `Diagnose` (CLFAR; the tree FCS builds is ours), `Reshape` (hard error with recovery, a relabelled token, a different token stream), `Severity` (a diagnostic appears or changes severity); `-` for `check`. |
+| `borzoi` | `Kind(K)` (a node kind the feature introduced), `Positional(detector)`, `Shape`, `Trivia`, or `Unmodelled(reason)`; `+`-joined, except `Unmodelled`. |
+| `engaged` | `live`, `deferred(reason)` (recorded, inert: no gate, no interval), or `-` for `Unmodelled`. |
+| `fcs_sites` | `LanguageFeature.X` uses per file of FCS's parse pipeline, as `path=count`. |
+| `display_name` | FCS's FS3350 name for it (`FSComp.txt`). |
+| `notes` | Free text. |
+
+**Generated from it** (`cargo run -p borzoi-astgen --example generate`, held by
+astgen's staleness test `tests/up_to_date.rs`):
+
+- `crates/cst/src/syntax/generated/features.rs`: the `LanguageFeature` enum
+  (re-exported from `borzoi_cst::language_version`), `introduced()`,
+  `display_name()`, `fcs_stages()`, `fcs_effects()`, `POSITIONAL_GATES` (the
+  tree-walk gates' fast path), `kind_feature` (the live `Kind` rows), and
+  `DEFERRED_KIND_FEATURES`;
+- the facades' kind intervals (astgen reads the live `Kind` rows directly).
+
+Every version question the parser asks is `lang.supports(LanguageFeature::X)`;
+there are no per-feature predicates.
+
+**Held to the compiler** by cst's `language_features` tests, which read the
+pinned compiler source (`BORZOI_CORPUS`) and run in the normal suite:
+
+1. every FCS feature has exactly one row, with FCS's version and display name,
+   and FCS's version ladder and default are `LanguageVersion`'s;
+2. each row's `fcs_sites` equals a census of `LanguageFeature.X` (outside `//`
+   comments) over the parse pipeline — `lex.fsl`, `pppars.fsy`, `pars.fsy`,
+   all of `SyntaxTree/`, `Facilities/prim-lexing.fs{,i}` and
+   `Driver/ParseAndCheckInputs.fs` — and a row the pipeline never mentions is a
+   `check` row;
+3. the live rows are what the parser consults: every
+   `supports(LanguageFeature::X)` / `gate(LanguageFeature::X, …)` in
+   `crates/cst/src` names a live row, and every live row with a non-`Kind` item
+   is consulted.
+
+Each failure prints the cell to write. A compiler bump therefore lands as a
+list of table edits: new rows (a ready-to-paste line for each), moved versions,
+and new or moved parse-time sites to classify.
+
+**Deferred rows.** `INTERP_STRING_EXPR` (`StringInterpolation`, 5.0),
+`DOT_LAMBDA_EXPR` (`AccessorFunctionShorthand`, 8.0) and `INDEX_FROM_END_EXPR`
+(`FromEndSlicing`, preview) are recorded as `Kind` rows with
+`engaged = deferred(PR 3 …)`. They drive neither a gate nor a facade interval,
+so the `v8`/`v9` facades and every gate are exactly what the hand-written
+tables gave. They go live in PR 3, with D9's legality diagnostics, and reach
+the facades in PR 6.
 
 ## The central invariant (and how it is enforced)
 
-Soundness reduces to one property of the private union: **it only ever *refines*
-distinctions, never *coarsens* them.** As long as the union keeps every
-distinction any supported `vN` relies on, every projection stays well-defined and
-the round-trip is the identity. This is testable cheaply, because the facades are
-kind-driven classifications over a shared `SyntaxNode`:
+Soundness reduces to one property of the union: **it only ever *refines*
+distinctions, never *coarsens* them.** The facades are kind-driven
+classifications over a shared `SyntaxNode`, so this is cheap to test:
 
-- **P1 — Gate completeness.** For every construct introduced after N, parsing it
-  under pin N produces a diagnostic (the node never reaches a `vN` tree). Driven
-  from per-feature fixtures and, differentially, from FCS `--langversion`
-  rejection.
-- **P2 — Projection totality.** For a tree parsed at P, `ast::vP::*::cast(root)`
-  succeeds on every node.
-- **P3 — Round-trip identity.** For any `vP` node `n`, lowering to the union and
-  re-projecting to `vP` yields `n` (same underlying `SyntaxNode`) — the
-  executable statement of "the union has not coarsened."
+- **P1 — Gate completeness.** Every construct introduced after N draws a
+  diagnostic under pin N. Per-feature fixtures, and differentially FCS at every
+  version (`parser_diff_feature_gates`, 4.6 … 11.0 and preview).
+- **P2 — Projection totality.** For a tree parsed at P, `view::<vP>()` is total
+  when there are no legality diagnostics, and otherwise every hole lies under
+  one.
+- **P3 — Round-trip identity.** For any `vP` node, lowering to the union and
+  re-projecting yields the same node — "the union has not coarsened".
 - **P4 — Interval consistency.** The union's classification refines every
-  supported `vN`'s: no two kinds distinct in some `vN` collapse in the union.
+  `vN`'s: no two kinds distinct in some `vN` collapse in the union.
 
-With **two** typed surfaces these have teeth today: P1/P2 reject or locate
-`WithNull` under `v8`; P3 holds for the `v8` projection; P4 guards that the union
-(`v9`) keeps every distinction `v8` relies on. The nullness delta was chosen
-deliberately small — a concrete, cheap delta on which to get the property suite
-right before the surface count (and the cost of a mistake) grows.
+Today P2–P4 are tested for `Type` and nullness only (`ast_projection.rs`);
+PR 6 makes them generic over every (facade, enum) pair.
 
-## Landed stages (one line each)
+## Landed stages
 
-- **Stage 0 — `LanguageVersion` value type** (#592/#597) — the enum (D3),
-  [`from_lang_version_text`](../crates/cst/src/language_version.rs) mirroring FCS
-  `getVersionFromString`, `DEFAULT = V10_0`, `Display`, ordering; exhaustive +
-  proptest coverage.
-- **Stage 1 — thread the version into `parse`; the first gate** (#606) —
-  [`ParseOptions`](../crates/cst/src/parser/mod.rs) / `parse_with_options` (the
-  four `parse*` wrappers default to `Preview`, zero caller churn), `Parse::lang`,
-  and the per-feature `#elif` legality gate emitting FS3350 under any sub-11.0
-  pin (recognised-directive oracle covering dead arms, nested-inactive branches,
-  and the bare-vs-malformed edge cases; tree left unaltered). P1 landed in
-  `crates/cst/tests/all/langversion_gate.rs`.
-- **Stage 2 — consume the gate in the LSP** (#613) — `<LangVersion>` surfaced on
-  `borzoi_msbuild::ParsedProject`, resolved in the LSP
-  (`Workspace::lang_version_for{,_project,_linked}`; absent → 10.0, unrecognised
-  → 10.0 + log, orphan → `Preview`) and threaded through every parse entry, so a
-  default project with `#elif` now reports FS3350, matching FCS.
-- **Stage 3 (mechanism) — typed-facade projection proof** (#618,
+- **`LanguageVersion` value type** (#592/#597) — the enum,
+  `from_lang_version_text` mirroring FCS's `getVersionFromString`, `DEFAULT`,
+  `Display`, ordering.
+- **The version threaded into `parse`, and the `#elif` gate** (#606) —
+  `ParseOptions` / `parse_with_options`, `Parse::lang`, FS3350 on `#elif`
+  below 11.0 from a driver side channel that leaves the tree alone.
+- **The LSP's `<LangVersion>`** (#613) — absent → 10.0, unrecognised → 10.0 and
+  a log line, orphan buffer → `Preview`.
+- **The facade mechanism** (#618,
   [`ast-versioning-nullness-proof.md`](completed/ast-versioning-nullness-proof.md))
-  — a distinct exhaustive `v8::Type` (union `Type` minus `WithNull`), its `cast`,
-  the surface predicate, and `first_out_of_surface_type` in
-  `crates/cst/src/syntax/projection.rs`, with the P-exclude/totality,
-  round-trip, no-coarsen, and gate≡totality property suite.
-- **Stage 3 (productionized for nullness)** — `tools/astgen` emits distinct
-  generated `syntax::v8` / `syntax::v9` facades and the parser uses the runtime
-  interval gate to report typed-node surface violations.
-- **Stage 4 (codegen)** — generated per-version facades landed (the codegen half
-  of D5); the single-source-of-truth half has not (Still to do).
+  and its productionisation: astgen generates `syntax::v8` (the union minus
+  `Type::WithNull`) and `syntax::v9` (the union), and `syntax::projection` holds
+  the runtime surface gate.
+- **Parse-time feature gates** — `parser::feature_gates` (FS3350 for `while!`,
+  constraint intersection, `static abstract`, attributes after `module`, typed
+  `let!`/`return`, FS1153 for `1f`), and the lex-filter's version-aware offside
+  gates.
+- **PR 1 — the feature table** (#15): the TSV, astgen's parser and the
+  generated `features.rs`, `#elif` as an ordinary row, the three
+  compiler-source tests, and 11.0 in `parser_diff_feature_gates`.
+
+## PR sequence
+
+1. **Feature table (#15)**, this plan, stale-doc fixes. No behaviour change.
+   *Landed.*
+2. **Diagnostic classes** (D9): `Legality` / `Recovery`; `SyntaxRecovery` and
+   version invariance over `Recovery` (D10); the version-dependence census.
+3. **Faithful gates** (#21's remainder): `_.M`, interpolated strings, `^`
+   from-end indexing, `_.` patterns, `for _ =`, `$$"""`, `>|}`
+   (`BetterAnonymousRecordParsing`) — each gated, or `Unmodelled` with its
+   reason. The three deferred `Kind` rows go live.
+4. **Union behind `unstable-union`** (#13). Independent of 1–3.
+5. **astgen owns every node** and reads accessor signatures (D4); it emits the
+   union's lock only.
+6. **Deep facades for every version and preview** (#14, #17),
+   `Parse::view::<V>()` (#12), generic P2/P3/P4.
+7. **Freeze**: `PUBLISHED = v4_6 … v10`, the CI lock check, consumer fixtures,
+   and a permanent synthetic-feature test (a fake feature and kind at "12.0",
+   in memory: every published facade regenerates byte-identically, and the new
+   facade differs by exactly that variant).
+8. **The compiler upgrade** — the proof; `v11` is published after it.
 
 ## Still to do
 
-### Stage 3 remainder
+Everything in PRs 2–8 above. Beyond them:
 
-- **`Parse::view()`.** Add the canonical always-sound view (D4) that hands back
-  the frozen facade matching `Parse::lang`. Nothing named `view` exists on
-  `Parse` yet; this is where the "nearest modelled facade" resolution and the
-  view-layer limitation noted in D3 live.
-- **Union privacy decision.** The union facade is still publicly re-exported from
-  `syntax` (no `pub(crate) mod union`). Decide whether to make that boundary
-  private and, if so, how without breaking the rowan-substrate backstop (D7).
-- **Broaden interval data below 8.0.** The rows cover nullness (9.0) and the
-  two 8.0 kinds FCS gates while parsing, `WHILE_BANG_EXPR` and
-  `INTERSECTION_TYPE` (`kind_feature` in `syntax/kinds.rs` says why
-  `INTERP_STRING_EXPR` and `DOT_LAMBDA_EXPR` have none); 4.6–7.0 are not yet
-  modelled as separate facades. This is a data-completeness task, not a
-  mechanism change.
-
-### Stage 4 remainder — single source of truth for intervals
-
-Codegen landed, but the interval data is **duplicated**: `syntax/kinds.rs`
-carries the runtime interval table driving legality, while `tools/astgen`'s
-`kind_introduced` carries the introduction data used for code generation. Promote
-the `(introduced, removed?)` annotations to a single declarative source of truth,
-seeded from FCS `LanguageFeatures.fs`, so the legality predicate and the facade
-codegen both desugar from one table (D5). Optionally add the compile-time
-`parse::<V>` type-tag strengthening (see Open questions).
+- **Stale issues.** #21's text predates the relax-whitespace and `#nowarn`
+  work; its remaining scope is PR 3's list. #14's "interval data below 8.0" is
+  the table's job; what remains of it is PR 6.
+- **`display_name` is FSComp.txt's text verbatim.** For the gated features that
+  is the FS3350 text FCS prints (the differentials check it); for a
+  checker-only row it is unverified until the row is gated (one spells
+  `builder {{ }}`, which FCS may render differently).
 
 ## Open questions
 
-- **Type-tag vs runtime-checked views.** The LSP reads langversion from the
-  `.fsproj` *at runtime*, so the core `view()` must be runtime-grounded
-  (`Parse::lang`). A compile-time-tag layer (`parse::<V8_0>(src) -> Parse<V8_0>`,
-  with `view` bounded by a sealed `surface(P) ⊆ surface(N)` trait) would make
-  some misuse a compile error — but encoding surface-subset over a finite version
-  set is O(versions²) trait impls (codegen-able). Proposed: runtime-checked
-  baseline; type-tag as an *optional* convenience for compile-time-known
-  versions. Decide when the type-tag work lands.
-- **`Preview` semantics.** FCS treats `preview` as version `9999`. Whether
-  `ast::preview` is a published, frozen facade or an explicitly-unstable view is
-  a policy call; lean unstable (never frozen) so preview features can re-shape
-  freely.
-- **Granularity of the gate.** Some evolution is "new legal *position* for an
-  existing kind" rather than a new kind (relaxed-whitespace, nested updates). The
-  gate predicate is therefore over *trees/positions*, not just the kind set — so
-  part of the interval metadata lives in the parser/grammar, not only the kind
-  enum. The single-source-of-truth table format (Stage 4 remainder) must carry
-  positional features, not just per-kind introductions.
+- **Positional features and the surface.** A feature that gives an existing
+  kind a new legal *position* (`Positional`) has no facade delta, only a gate.
+  If a future positional feature needs a facade distinction, it needs a kind of
+  its own first.
+- **Type-tag views (#16).** A compile-time `parse::<V8_0>(src) -> Parse<V8_0>`
+  layer, bounded by a sealed `surface(P) ⊆ surface(N)` trait, would make some
+  misuse a compile error; it is O(versions²) trait impls (codegen-able).
+  Deferred; the runtime-checked `view::<V>()` is the baseline.

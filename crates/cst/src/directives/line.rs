@@ -65,7 +65,7 @@
 
 use super::expr::{ParseError as ExprParseError, parse_if_expr};
 use crate::directives::expr::Expr;
-use crate::language_version::LanguageVersion;
+use crate::language_version::{LanguageFeature, LanguageVersion};
 use std::ops::Range;
 
 /// A warning number parsed from a `#nowarn` / `#warnon` directive argument.
@@ -80,7 +80,7 @@ pub struct WarningNumber(pub i32);
 
 /// One parsed `#nowarn` / `#warnon` argument: its [`WarningNumber`] and whether
 /// FCS accepts it only under `LanguageFeature.ParsedHashDirectiveArgumentNonQuotes`
-/// (F# 9.0, [`LanguageVersion::supports_non_quoted_hash_directive_arguments`]) —
+/// (F# 9.0, [`LanguageFeature::ParsedHashDirectiveArgumentNonQuotes`]) —
 /// an unquoted argument (`40`, `FS40`) or an `FS`-prefixed one, even quoted
 /// (`"FS40"`). Below 9.0 FCS drops such an argument (`WarnScopes.getNumber`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -175,7 +175,7 @@ impl Directive {
         let (Self::NoWarn { numbers } | Self::WarnOn { numbers }) = self else {
             return Vec::new();
         };
-        let non_quoted = lang.supports_non_quoted_hash_directive_arguments();
+        let non_quoted = lang.supports(LanguageFeature::ParsedHashDirectiveArgumentNonQuotes);
         numbers
             .iter()
             .filter(|a| non_quoted || !a.needs_non_quoted_arguments)

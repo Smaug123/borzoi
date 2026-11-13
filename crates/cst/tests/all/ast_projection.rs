@@ -136,13 +136,10 @@ fn each_base_plus_null_yields_exactly_one_with_null() {
 }
 
 #[test]
-fn general_gate_coincides_with_type_gate_today() {
-    // The only gated kind today is a `Type` kind (nullness), so the general gate
-    // (`first_out_of_surface`, over every modelled kind) and the `Type`-restricted
-    // gate must find the same node at every version. This locks the
-    // generalisation: the day a non-`Type` kind is gated, the type-only gate would
-    // start missing it and this equality would break — exactly the regression we
-    // want flagged.
+fn general_gate_coincides_with_type_gate_on_type_sources() {
+    // In a source whose only gated kinds are `Type` kinds (nullness), the general
+    // gate (`first_out_of_surface`, over every modelled kind) and the
+    // `Type`-restricted gate must find the same node at every version.
     for src in [
         "let x : string | null = failwith \"\"\n",
         "let f : int -> int list = failwith \"\"\n",

@@ -3,10 +3,10 @@
 //!
 //! Two lex-filter gates make the filtered stream's *shape* depend on the
 //! language version: strict indentation (F# 8,
-//! `LanguageVersion::strict_indentation_is_error`), under which a version-gated
+//! `LanguageFeature::StrictIndentation`), under which a version-gated
 //! context push whose anchor is offside is aborted rather than kept (with a
 //! warning), and `relaxWhitespace2` (F# 6,
-//! `LanguageVersion::supports_relax_whitespace2`), under which a dedented
+//! `LanguageFeature::RelaxWhitespace2`), under which a dedented
 //! closer leaves an enclosing context open and a `CtxtMatch` is popped with its
 //! clauses. The flag records reaching such a point, and `false` must
 //! **prove** the tree is identical under every version — that is the property

@@ -69,6 +69,7 @@ const VERSIONS: &[(LanguageVersion, &str)] = &[
     (LanguageVersion::V8_0, "8.0"),
     (LanguageVersion::V9_0, "9.0"),
     (LanguageVersion::V10_0, "10.0"),
+    (LanguageVersion::V11_0, "11.0"),
     (LanguageVersion::Preview, "preview"),
 ];
 
@@ -436,9 +437,10 @@ fn feature_gates_on_recovered_input_match_fcs() {
 /// version-dependent under `diagnostics_are_version_invariant`, so a guessed
 /// language version (an orphan buffer, or a project whose `LangVersion` the
 /// evaluator cannot pin) would retain no diagnostics for it — and `_.M` lambdas
-/// and `for _ = …` loops are common in real code. Until that trade-off is
-/// decided, this test pins the leniency: FCS errors below the threshold and we
-/// do not. It fails if either side changes.
+/// and `for _ = …` loops are common in real code. Until PR 3 of
+/// `docs/ast-versioning-plan.md` gates them (their feature-table rows say so),
+/// this test pins the leniency: FCS errors below the threshold and we do not.
+/// It fails if either side changes.
 #[test]
 fn unmodelled_gates_are_pinned() {
     const UNMODELLED: &[(&str, LanguageVersion, &str, i64)] = &[

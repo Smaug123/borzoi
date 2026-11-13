@@ -20,7 +20,7 @@
 
 use std::ops::Range;
 
-use crate::language_version::LanguageVersion;
+use crate::language_version::{LanguageFeature, LanguageVersion};
 use crate::lexer::{LexError, Span, Token, TokenKind};
 use crate::tokens::{
     FilteredKind, FilteredTokens, LineCursor, LinePos, LineStarts, RawKind, RawTokens,
@@ -803,8 +803,8 @@ where
 /// ([`FilterRun::shape_depends_on_language_version`]). The streaming
 /// [`filter`] cannot return these, so the parser — which needs them — uses
 /// this. `lang` resolves the severity/presence gates
-/// ([`LanguageVersion::strict_indentation_is_error`],
-/// [`LanguageVersion::reports_invalid_decls_in_type_definitions`]).
+/// ([`LanguageFeature::StrictIndentation`],
+/// [`LanguageFeature::ErrorOnInvalidDeclsInTypeDefinitions`]).
 ///
 /// The filter reads the table by index: it skips trivia, directive lines and
 /// inactive code by kind, and reads a token's text from the source only for
@@ -892,12 +892,12 @@ pub struct FilterRun<'a> {
     /// across language versions. There are three kinds:
     ///
     ///  * the strict-indentation gate (F# 8,
-    ///    [`LanguageVersion::strict_indentation_is_error`]): a version-gated
+    ///    [`LanguageFeature::StrictIndentation`]): a version-gated
     ///    context push whose anchor is offside is *aborted* at F# 8+ but
     ///    *kept* (with a warning) below, so everything after nests
     ///    differently;
     ///  * the `relaxWhitespace2OffsideRule` grace (F# 6,
-    ///    [`LanguageVersion::supports_relax_whitespace2`]): a dedented closer
+    ///    [`LanguageFeature::RelaxWhitespace2`]): a dedented closer
     ///    at exactly an enclosing context's column pops it below 6.0 and
     ///    leaves it open from 6.0 (`Filter::is_offside_of`);
     ///  * the `CtxtMatch` popped together with its `CtxtMatchClauses` from
@@ -1011,15 +1011,26 @@ struct Filter<'a> {
     ///    which changes the resulting tree (a following construct nests vs. becomes
     ///    a sibling).
     ///
-    /// See [`LanguageVersion::strict_indentation_is_error`].
+    /// FCS also honours a `--strict-indentation[+|-]` CLI override; we have no
+    /// compiler CLI, so the version is the sole determinant
+    /// ([`LanguageFeature::StrictIndentation`]).
     strict_indentation_is_error: bool,
-    /// See [`LanguageVersion::supports_relax_whitespace`].
+    /// [`LanguageFeature::RelaxWhitespace`] (F# 4.7): the undentation limit for
+    /// a `static member P with get() =` body (`CtxtWithAsLet` over
+    /// `CtxtMemberHead`) is the member head's column + 1; below 4.7 it is found
+    /// further down the stack. The limit only grades offside *warnings* below
+    /// F# 8 (where no push is strict), so this gate never moves the stream.
     relax_whitespace: bool,
-    /// See [`LanguageVersion::supports_relax_whitespace2`].
+    /// [`LanguageFeature::RelaxWhitespace2`] (F# 6.0). It gates the
+    /// `relaxWhitespace2OffsideRule` `+1` grace that lets a dedented closer sit
+    /// at an enclosing context's column without popping it (shape-affecting),
+    /// popping a `CtxtMatch` together with the `CtxtMatchClauses` above it
+    /// (shape-affecting), and three undentation-limit arms (warnings only below
+    /// F# 8, where it is always on).
     relax_whitespace2: bool,
     /// Whether the nested-declaration-in-type FS0058 problems are reported at
     /// all (F# 10+). See
-    /// [`LanguageVersion::reports_invalid_decls_in_type_definitions`]. Consumed
+    /// [`LanguageFeature::ErrorOnInvalidDeclsInTypeDefinitions`]. Consumed
     /// by the nested-construct (§B–F) emission stage.
     #[allow(dead_code)]
     reports_invalid_decls_in_type: bool,
@@ -1053,9 +1064,9 @@ struct Filter<'a> {
 /// resolved from the filter's [`LanguageVersion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UndentationGates {
-    /// [`LanguageVersion::supports_relax_whitespace`].
+    /// [`LanguageFeature::RelaxWhitespace`].
     relax_whitespace: bool,
-    /// [`LanguageVersion::supports_relax_whitespace2`].
+    /// [`LanguageFeature::RelaxWhitespace2`].
     relax_whitespace2: bool,
 }
 
@@ -1069,7 +1080,7 @@ enum PushStrictness {
     /// emits its FS0058, but never aborts, so the shape is version-invariant.
     AlwaysLenient,
     /// FCS passes `strictIndentation` (the F# 8 gate,
-    /// [`LanguageVersion::strict_indentation_is_error`]): an offside anchor
+    /// [`LanguageFeature::StrictIndentation`]): an offside anchor
     /// aborts the push at F# 8+ and keeps it below, so *reaching this case
     /// with an offside anchor* is exactly what makes the resulting tree
     /// version-dependent — [`Filter::try_push_ctxt`] records it on
@@ -1163,10 +1174,11 @@ impl<'a> Filter<'a> {
             last_real_end: 0,
             last_real_was_atomic_end: false,
             tokens_that_need_no_processing: 0,
-            strict_indentation_is_error: lang.strict_indentation_is_error(),
-            relax_whitespace: lang.supports_relax_whitespace(),
-            relax_whitespace2: lang.supports_relax_whitespace2(),
-            reports_invalid_decls_in_type: lang.reports_invalid_decls_in_type_definitions(),
+            strict_indentation_is_error: lang.supports(LanguageFeature::StrictIndentation),
+            relax_whitespace: lang.supports(LanguageFeature::RelaxWhitespace),
+            relax_whitespace2: lang.supports(LanguageFeature::RelaxWhitespace2),
+            reports_invalid_decls_in_type: lang
+                .supports(LanguageFeature::ErrorOnInvalidDeclsInTypeDefinitions),
             diagnostics: Vec::new(),
             shape_depends_on_language_version: false,
             match_ghost: None,
@@ -2860,7 +2872,7 @@ impl<'a> Filter<'a> {
     /// nests inside the pushed context instead of becoming a sibling. The
     /// severity gate ([`Self::is_correct_indent`]) and this push decision are the
     /// same boolean in FCS — the *tree* depends on the language version, not just
-    /// the diagnostic. See [`LanguageVersion::strict_indentation_is_error`].
+    /// the diagnostic. See [`LanguageFeature::StrictIndentation`].
     fn push_ctxt_seq_block(&mut self, fallback: &TokenTup, add_block_end: AddBlockEnd) {
         self.push_ctxt_seq_block_at(PushStrictness::VersionGated, true, fallback, add_block_end);
     }

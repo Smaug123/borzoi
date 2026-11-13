@@ -39,6 +39,12 @@ macro_rules! accessor {
 #[cfg_attr(not(feature = "unstable-union"), allow(dead_code))]
 mod generated;
 
+// The feature table's generated half (`crates/cst/language-features.tsv`):
+// `LanguageFeature`, re-exported from `crate::language_version`, and the
+// kinds it introduced.
+pub(crate) use generated::features;
+pub use generated::features::{DEFERRED_KIND_FEATURES, kind_feature};
+
 // The frozen per-version facades (plan PR E): `borzoi_cst::syntax::v8` /
 // `::v9`. The names re-exported from `union` (no `vN::` prefix) are the *union*
 // surface — the maximal, every-version superset; pin a `vN` for a frozen,
@@ -46,7 +52,7 @@ mod generated;
 // union's node types and accessors, so they are behind its feature.
 #[cfg(feature = "unstable-union")]
 pub use generated::{v8, v9};
-pub use kinds::{KindInterval, SyntaxKind, kind_feature, kind_in_surface, kind_interval};
+pub use kinds::{KindInterval, SyntaxKind, kind_in_surface, kind_interval};
 
 /// Ties [`SyntaxKind`] to rowan's `u16`-tagged trees, for the rowan reference
 /// differential (`tests/all/flat_tree_reference.rs`) only. Zero-sized.

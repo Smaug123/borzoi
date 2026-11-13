@@ -977,8 +977,9 @@ impl Workspace {
     /// `LangVersion` has no safe fallback to decline *to*. No version is
     /// uniformly permissive — `Preview` raises the strict-indentation and
     /// invalid-decls-in-types severities
-    /// ([`LanguageVersion::strict_indentation_is_error`] /
-    /// `reports_invalid_decls_in_type_definitions`), and `DEFAULT` discards
+    /// (`StrictIndentation` / `ErrorOnInvalidDeclsInTypeDefinitions`, see
+    /// [`LanguageFeature`](borzoi_cst::language_version::LanguageFeature)), and
+    /// `DEFAULT` discards
     /// an evaluated value that is still the best single guess (the gate the
     /// walker couldn't pin usually *does* run). Untrusted provenance is the
     /// exception rather than the rule: an ordinary SDK project's is trusted,

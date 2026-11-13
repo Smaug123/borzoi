@@ -41,7 +41,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::directives::{PreprocError, TriviaToken};
-use crate::language_version::LanguageVersion;
+use crate::language_version::{LanguageFeature, LanguageVersion};
 use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{
     ContextPush, FilteredToken, OffsideDiagnostic, OffsideSeverity, Virtual, filter_collect,
@@ -566,28 +566,22 @@ fn parse_inner_stopping_at(
 /// driver records), mirroring FCS's `CheckLanguageFeatureAndRecover`, which
 /// reports the feature error and then parses the construct anyway.
 ///
-/// Today the only gated construct is `#elif` (FCS's
-/// `LanguageFeature.PreprocessorElif`, F# 11.0): `elif_directives` holds the
-/// span of every `#elif` FCS feature-checks — separator required, dead arms and
-/// nested branches included — so this is a faithful map of FCS's three check
-/// sites, not an approximation. As more features become version-gated this
-/// grows into the interval table (Stage 3 of `docs/ast-versioning-plan.md`).
+/// The gated construct is `#elif` ([`LanguageFeature::PreprocessorElif`], F#
+/// 11.0): `elif_directives` holds the span of every `#elif` FCS feature-checks —
+/// separator required, dead arms and nested branches included — so this is a
+/// faithful map of FCS's three check sites, not an approximation. The
+/// tree-walk gates are `feature_gates`.
 fn langversion_diagnostics(
     elif_directives: &[Range<usize>],
     lang: LanguageVersion,
 ) -> Vec<ParseError> {
-    if lang.supports_preprocessor_elif() {
+    if lang.supports(LanguageFeature::PreprocessorElif) {
         return Vec::new();
     }
     elif_directives
         .iter()
         .map(|span| ParseError {
-            // FCS FS3350 `chkFeatureNotLanguageSupported`, feature name
-            // `featurePreprocessorElif`.
-            message: format!(
-                "Feature '#elif preprocessor directive' is not available in F# {lang}. \
-                 Please use language version 11.0 or greater."
-            ),
+            message: LanguageFeature::PreprocessorElif.not_available_message(lang),
             span: span.clone(),
         })
         .collect()

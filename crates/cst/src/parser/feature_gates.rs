@@ -13,6 +13,11 @@
 //! after the attributes (FCS reports at the empty `opt_rec`, whose range is the
 //! next token's). `parser_diff_feature_gates` holds every span, severity and
 //! message to FCS at every version.
+//!
+//! The features gated here are the feature table's live `Kind` rows, through
+//! [`kind_feature`], and its live `Positional` rows whose detector is a function
+//! below (`crates/cst/language-features.tsv`; the lex-filter's `Positional`
+//! rows are gated there).
 
 use std::ops::Range;
 
@@ -32,8 +37,13 @@ pub(super) fn feature_gate_diagnostics(
 ) -> Vec<ParseError> {
     let mut out = Vec::new();
     // The common case — a project at F# 10.0, or an orphan buffer at preview —
-    // has every feature, so skip the walk.
-    if LanguageFeature::ALL.iter().all(|&f| lang.supports(f)) {
+    // has every feature gated here, so skip the walk. `POSITIONAL_GATES` is
+    // every live `Kind` or `Positional` row of the feature table, a superset of
+    // what this walk gates.
+    if LanguageFeature::POSITIONAL_GATES
+        .iter()
+        .all(|&f| lang.supports(f))
+    {
         return out;
     }
     let mut gate = |feature: LanguageFeature, span: Range<usize>| {

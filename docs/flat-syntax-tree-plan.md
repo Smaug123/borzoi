@@ -151,7 +151,7 @@ differential compares results by child-index path for this reason.
 ### D5. Accessors are generated (with the borrowed handles, if those happen)
 
 `tools/astgen` already generates the dispatch enums and their variant sets.
-`docs/ast-versioning-plan.md` D5 wants it to own accessor signatures too, so
+`docs/ast-versioning-plan.md` D4 wants it to own accessor signatures too, so
 that a frozen facade freezes them. The 390 positional accessors only need
 rewriting if the handle type changes (D2). So the generator takes them over
 in the same stage that moves to borrowed handles, and not before.

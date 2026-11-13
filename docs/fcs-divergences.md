@@ -21,10 +21,12 @@ Two kinds of difference are deliberately *not* counted as divergences:
 - **Language-version pinning.** Since `42265b3` (#613) the LSP resolves each
   project's `<LangVersion>` (absent → 10.0, FCS's default; orphan/non-file
   buffers → `preview`) and threads it through the parse, so wired feature gates
-  such as `#elif`/FS3350, nullness and the lex-filter's offside gates honour it
-  and *match* FCS (not a divergence). A gate that is *not yet* version-aware is
-  implemented at its latest-version form unconditionally, so it diverges only
-  when a project sets an older `<LangVersion>`. See
+  such as `#elif`/FS3350 and the lex-filter's offside gates honour it and
+  *match* FCS (not a divergence). Nullness honours it too, but differently from
+  FCS (see below). A gate that is *not yet* version-aware is implemented at its
+  latest-version form unconditionally, so it diverges only when a project sets
+  an older `<LangVersion>`. Which features are gated, and how, is the feature
+  table `crates/cst/language-features.tsv`. See
   [Language-version pinning](#language-version-pinning).
 - **Correctness over availability.** Where FCS warns-and-continues on malformed
   metadata, we usually error loudly instead, so a future format change is not
@@ -426,8 +428,8 @@ recovering ~36 members per framework. It was never a feature gap. (`#711`)
 
 The LSP now resolves each project's `<LangVersion>` and threads it through the
 parse (`6e9377f`/#606 added the seam, `42265b3`/#613 wired it into the LSP):
-`#elif`/FS3350 and nullness gates honour it and *match* FCS, so they are **not**
-divergences (absent `<LangVersion>` → 10.0, FCS's default; orphan/non-file
+`#elif`/FS3350 honours it and *matches* FCS, so it is **not** a
+divergence (absent `<LangVersion>` → 10.0, FCS's default; orphan/non-file
 buffers → `preview` to avoid guess-flagging). Every lexer and lex-filter gate
 FCS consults (`RelaxWhitespace`, `RelaxWhitespace2`, `StrictIndentation`,
 `NullnessChecking`, `ErrorOnInvalidDeclsInTypeDefinitions`) is version-aware
@@ -442,17 +444,27 @@ checks while parsing (`CheckLanguageFeatureAndRecover`, and the lexer's dotless
 annotations and `1f` literals each draw FCS's diagnostic below their version,
 over the same tree (`crates/cst/src/parser/feature_gates.rs`).
 `parser_diff_feature_gates` holds every fixture's whole diagnostic set and tree
-to FCS at every version. These remain divergent:
+to FCS at every version. `crates/cst/language-features.tsv` lists every FCS
+feature with where FCS checks it and what we do about it. These remain
+divergent:
 
+- **Nullness below F# 9.0 is diagnosed, not reshaped.** Below 9.0 FCS's
+  lex-filter does not relabel the `|` before `null` (`NullnessChecking`), so
+  `string | null` parses as something else and errors accordingly; we parse the
+  9.0 tree at every version and report FS3350 over the nullness type
+  (`nullness_gate.rs`), so the typed facades see one tree. Not FCS-diffed.
 - **`_.M` and `for _ = …` are accepted at every version.** FCS gates the
   accessor shorthand (`AccessorFunctionShorthand`, F# 8.0, FS3350 at the `_.`)
   and a wildcard integer-`for` variable (`WildCardInForLoop`, F# 4.7, FS0525)
-  while parsing; we report neither. Modelling them is a trade-off not yet
-  decided: `diagnostics_are_version_invariant` compares F# 4.6 with `preview`,
-  so either gate would make every file using the construct version-dependent,
-  and a guessed language version (an orphan buffer, or a project whose
-  `LangVersion` the evaluator cannot pin) would then retain no diagnostics for
-  the file. `_.M` lambdas are common in modern code. Pinned by
+  while parsing; we report neither. Today `diagnostics_are_version_invariant`
+  compares F# 4.6 with `preview`, so either gate would make every file using
+  the construct version-dependent, and a guessed language version (an orphan
+  buffer, or a project whose `LangVersion` the evaluator cannot pin) would then
+  retain no diagnostics for the file; `_.M` lambdas are common in modern code.
+  `docs/ast-versioning-plan.md` settles `_.M`: legality diagnostics get a class
+  of their own that version invariance ignores (D9, D10), and its PR 3 gates
+  it. `for _ =` is a parse error with recovery in FCS, so it stays
+  version-dependent once gated; PR 3 decides it. Pinned by
   `parser_diff_feature_gates::unmodelled_gates_are_pinned`.
 - **FS3535 on `static abstract` is not reported.** From F# 7.0 FCS warns on
   every `static abstract` member. Code declaring such interfaces usually
