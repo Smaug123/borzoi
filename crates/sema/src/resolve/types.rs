@@ -32,8 +32,8 @@ use crate::recovery::SyntaxRecovery;
 
 /// Which names a type definition's member bodies see beyond the module scope,
 /// their self identifier and their parameters ([`Resolver::member_scope_of`]).
-/// `own` is the type's binder, the key of [`Resolver::own_union_cases`] and
-/// [`Resolver::type_typar_frames`].
+/// `own` is the type's binder, the key of [`Indexes::own_union_cases`](crate::resolve::indexes::Indexes::own_union_cases) and
+/// [`Indexes::type_typar_frames`](crate::resolve::indexes::Indexes::type_typar_frames).
 pub(super) enum MemberScope {
     /// A genuine definition: its constructor parameters and fields, its own
     /// type parameters, and its own union cases above the module scope.
@@ -179,11 +179,11 @@ pub(super) fn typar_occurrence(node: &SyntaxNode) -> Option<(TextRange, String)>
 impl<'a> Resolver<'a> {
     /// Intern a genuine type definition's name as a first-class
     /// [`DefKind::Type`] binder: record its self-resolution (so the defining
-    /// occurrence answers go-to-definition) and enter it in [`Self::type_defs`]
+    /// occurrence answers go-to-definition) and enter it in [`Indexes::type_defs`](crate::resolve::indexes::Indexes::type_defs)
     /// for same-file type-name use resolution. The binder is a
     /// [`Resolution::Local`] — reachable within this file's def arena; exporting
     /// it for cross-file qualified references is a later slice (see
-    /// [`Self::type_defs`]).
+    /// [`Indexes::type_defs`](crate::resolve::indexes::Indexes::type_defs)).
     pub(super) fn define_type(
         &mut self,
         name: &SyntaxToken,
@@ -196,15 +196,17 @@ impl<'a> Resolver<'a> {
         let key = names.text(def.name());
         let range = def.range;
         let id = self.intern(def);
-        self.type_def_arities.insert(id, arity);
-        self.type_defs_by_arity
-            .entry(self.container_path.id())
+        self.index.type_def_arities.insert(id, arity);
+        self.index
+            .type_defs_by_arity
+            .entry(self.lexical.container_path.id())
             .or_default()
             .insert((key.to_string(), arity), id);
         self.record(range, Resolution::Local(id));
         *self
+            .index
             .type_decl_counts
-            .entry(self.container_path.id())
+            .entry(self.lexical.container_path.id())
             .or_default()
             .entry(key.to_string())
             .or_default()
@@ -213,21 +215,17 @@ impl<'a> Resolver<'a> {
         // Filed under the current container path (see [`Self::type_defs`]). Last
         // definition of a name wins — a redefinition shadows the earlier one for
         // later uses, mirroring the value frames' last-wins.
-        self.type_defs
-            .entry(self.container_path.id())
+        self.index
+            .type_defs
+            .entry(self.lexical.container_path.id())
             .or_default()
             .insert(key.to_string(), id);
-        // The parallel slot-class entry (same key, same last-wins) — whether
-        // this type's name enters FCS's unqualified slot and can evict a
-        // same-named value ([`head_value_slot`](Self::head_value_slot)).
-        self.type_slot_classes
-            .entry(self.container_path.to_vec())
-            .or_default()
-            .insert(key.to_string(), slot);
+        // Whether this type's name enters FCS's unqualified slot and can
+        // evict a same-named value ([`head_value_slot`](Self::head_value_slot)).
         let def = (u32::from(range.start()), slot);
-        self.type_slot_history.update(
+        self.index.type_slot_history.update(
             self.assemblies.names(),
-            self.container_path.id(),
+            self.lexical.container_path.id(),
             key,
             |history| history.push(def),
         );
@@ -235,15 +233,16 @@ impl<'a> Resolver<'a> {
         // type is accessible only within its container's subtree, so a same-file
         // module-qualified `A.Foo.Red` from an inaccessible site (a sibling) does
         // not resolve its case/member ([`Self::type_access_roots`]).
-        self.type_access_roots
-            .entry(self.container_path.to_vec())
+        self.index
+            .type_access_roots
+            .entry(self.lexical.container_path.to_vec())
             .or_default()
             .insert(key.to_string(), access_root_len);
         self.mark_decl(key).ty = true;
     }
 
     /// Push the generic parameters of an optional header (`type Foo<'T>`,
-    /// `let f<'T>`, `member _.M<'T>`) onto the [`typar scope`](Self::typar_scopes),
+    /// `let f<'T>`, `member _.M<'T>`) onto the [`typar scope`](crate::resolve::lexical::Lexical::typar_scopes),
     /// if any. Returns `true` iff a frame was pushed — pass it to
     /// [`Self::leave_typars`] for a symmetric pop. A header with no `<…>` pushes
     /// nothing (the common, non-generic case keeps the stack empty).
@@ -251,7 +250,7 @@ impl<'a> Resolver<'a> {
         match decls {
             Some(d) => {
                 let frame = self.intern_typars(&d);
-                self.typar_scopes.push(frame);
+                self.lexical.typar_scopes.push(frame);
                 true
             }
             None => false,
@@ -261,7 +260,7 @@ impl<'a> Resolver<'a> {
     /// Pop the frame [`Self::enter_typars`] pushed (a no-op when it pushed none).
     pub(super) fn leave_typars(&mut self, pushed: bool) {
         if pushed {
-            self.typar_scopes.pop();
+            self.lexical.typar_scopes.pop();
         }
     }
 
@@ -317,6 +316,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn lookup_typar(&self, name: &str) -> Option<DefId> {
         let mut hit = None;
         for (_, id) in self
+            .lexical
             .typar_scopes
             .iter()
             .flatten()
@@ -336,7 +336,7 @@ impl<'a> Resolver<'a> {
     /// Intern the cases of a union `type T = A | B of …` as [`DefKind::UnionCase`]
     /// binders: each case's defining occurrence resolves to itself, and — when
     /// the union certainly is not `[<RequireQualifiedAccess>]` (`rqa`) — the
-    /// case is added to the current container's value frame ([`module_frame`](Self::module_frame))
+    /// case is added to the current container's value frame ([`Lexical::module_frame`](super::lexical::Lexical::module_frame))
     /// at its source position, so an unqualified use resolves to it. A non-union
     /// definition contributes no cases.
     ///
@@ -351,7 +351,7 @@ impl<'a> Resolver<'a> {
     /// an error.
     ///
     /// Cases are value-namespace entries living in the same position-ordered,
-    /// container-scoped frame as values (see [`Self::top_level`]); that gives
+    /// container-scoped frame as values (see [`Lexical::top_level`](crate::resolve::lexical::Lexical::top_level)); that gives
     /// source-order shadowing against a same-named value, isolation from sibling
     /// `namespace` blocks, and visibility in nested modules, all for free via
     /// [`lookup`](Self::lookup) / [`case_reference`](Self::case_reference). A
@@ -375,12 +375,13 @@ impl<'a> Resolver<'a> {
         // A `private` representation leaves the type visible but its cases
         // usable only within the type's container.
         let repr_access_root =
-            super::decls::union_repr_is_private(defn).then(|| self.container_path.to_vec());
+            super::decls::union_repr_is_private(defn).then(|| self.lexical.container_path.to_vec());
         let type_key = id_text(type_name).to_string();
         // The type was just defined, so the name's latest binder is it.
         let own_key = self
+            .index
             .type_defs
-            .get(&self.container_path.id())
+            .get(&self.lexical.container_path.id())
             .and_then(|m| m.get(&type_key))
             .copied();
         for case in u.cases() {
@@ -399,7 +400,7 @@ impl<'a> Resolver<'a> {
             let range = def.range;
             let id = self.intern(def);
             if let Some(root) = &repr_access_root {
-                self.case_repr_roots.insert(id, root.clone());
+                self.index.case_repr_roots.insert(id, root.clone());
             }
             // An anonymous field has the name F# generates for it: `Item` when
             // it is the case's only field, `Item<n>` (its 1-based position)
@@ -417,7 +418,7 @@ impl<'a> Resolver<'a> {
                     })
                     .collect()
             });
-            self.case_field_names.insert(id, fields);
+            self.index.case_field_names.insert(id, fields);
             // A non-qualified union case is *also* a value-namespace member,
             // reachable unqualified (`open M; Red`) and via the shortcut (`M.Red`,
             // type elided). Export it ([`export_case`]) and use the resulting
@@ -460,7 +461,7 @@ impl<'a> Resolver<'a> {
                         Resolution::Item(item_id)
                     }
                     None => {
-                        self.note_hidden_value_module(self.container_path.to_vec());
+                        self.note_hidden_value_module(self.lexical.container_path.to_vec());
                         Resolution::Local(id)
                     }
                 }
@@ -471,14 +472,16 @@ impl<'a> Resolver<'a> {
             // cases use). Storing the resolution — not the bare `DefId` — keeps one
             // identity: a non-RQA union case's `Color.Red` resolves to the same
             // `Item` as its declaration and bare / `Mod.Case` uses.
-            self.type_cases
-                .entry(self.container_path.to_vec())
+            self.index
+                .type_cases
+                .entry(self.lexical.container_path.to_vec())
                 .or_default()
                 .entry(type_key.clone())
                 .or_default()
                 .insert(name.to_string(), res);
             if let Some(own) = own_key {
-                self.own_union_cases
+                self.index
+                    .own_union_cases
                     .entry(own)
                     .or_default()
                     .push((name.to_string(), res));
@@ -498,7 +501,8 @@ impl<'a> Resolver<'a> {
             }
             if !require_qualified {
                 let generation = self.scope.open_generation;
-                self.module_frame()
+                self.lexical
+                    .module_frame()
                     .push(ScopeEntry::binding_named(names, name_id, res, generation));
             }
         }
@@ -543,12 +547,13 @@ impl<'a> Resolver<'a> {
             defn.typar_decls().map_or(0, |t| t.typars().count()),
         );
         if let Some(own) = self
+            .index
             .type_defs_by_arity
-            .get(&self.container_path.id())
+            .get(&self.lexical.container_path.id())
             .and_then(|m| m.get(&key))
             .copied()
         {
-            self.own_union_cases.entry(own).or_default().push((
+            self.index.own_union_cases.entry(own).or_default().push((
                 case.clone(),
                 Resolution::Deferred(DeferredReason::UnboundName),
             ));
@@ -556,7 +561,7 @@ impl<'a> Resolver<'a> {
         if !require_qualified {
             let generation = self.scope.open_generation;
             let assemblies = self.assemblies;
-            self.module_frame().push(ScopeEntry::undecided_case(
+            self.lexical.module_frame().push(ScopeEntry::undecided_case(
                 assemblies.names(),
                 &case,
                 generation,
@@ -567,7 +572,7 @@ impl<'a> Resolver<'a> {
     /// Intern the cases of an `enum` definition (`type Color = Red = 0 | …`,
     /// [`TypeDefnRepr::Enum`]) as [`DefKind::EnumCase`] binders keyed by the enum
     /// `type_name`. Each case's defining occurrence resolves to itself, and the
-    /// case enters the require-qualified [`Self::type_cases`] index — **not** the
+    /// case enters the require-qualified [`Indexes::type_cases`](crate::resolve::indexes::Indexes::type_cases) index — **not** the
     /// value frame, since an enum case is reachable only as `Color.Red`, never
     /// bare `Red` (FCS reports bare `Red` as `FS0039`). A qualified use is
     /// resolved by [`resolve_long_ident`](Self::resolve_long_ident) via that
@@ -616,8 +621,9 @@ impl<'a> Resolver<'a> {
             };
             // The defining occurrence self-resolves (go-to-definition on the case).
             self.record(range, res);
-            self.type_cases
-                .entry(self.container_path.to_vec())
+            self.index
+                .type_cases
+                .entry(self.lexical.container_path.to_vec())
                 .or_default()
                 .entry(type_key.clone())
                 .or_default()
@@ -628,7 +634,7 @@ impl<'a> Resolver<'a> {
     /// Intern an `exception E of …` definition's constructor name as a
     /// [`DefKind::ExceptionCase`] value binder: record its self-resolution (so
     /// the defining occurrence answers go-to-definition) and add it to the
-    /// current container's value frame ([`module_frame`](Self::module_frame)) at
+    /// current container's value frame ([`Lexical::module_frame`](super::lexical::Lexical::module_frame)) at
     /// its source position, so an unqualified use resolves.
     ///
     /// The single-constructor analogue of [`define_union_cases`](Self::define_union_cases):
@@ -654,7 +660,7 @@ impl<'a> Resolver<'a> {
         let res = match self.export_case(entry_name, id, is_private, None, CaseKind::Exception) {
             Some(item_id) => Resolution::Item(item_id),
             None => {
-                self.note_hidden_value_module(self.container_path.to_vec());
+                self.note_hidden_value_module(self.lexical.container_path.to_vec());
                 Resolution::Local(id)
             }
         };
@@ -664,7 +670,8 @@ impl<'a> Resolver<'a> {
         // *head* it does not commit member access (see [`DeclKinds::exception_ctor`]).
         self.mark_decl(entry_name).exception_ctor = true;
         let generation = self.scope.open_generation;
-        self.module_frame()
+        self.lexical
+            .module_frame()
             .push(ScopeEntry::binding_named(names, entry_id, res, generation));
     }
 
@@ -794,7 +801,7 @@ impl<'a> Resolver<'a> {
             // Every case of one recognizer shares its shape, keyed by the *use*
             // identity — the case's `use_id` def, which is also the `ExportedItem`'s
             // `def` below, so a same-file `Item` maps back to it (Stage 3a).
-            self.active_pattern_shape.insert(use_id, shape);
+            self.out.active_pattern_shape.insert(use_id, shape);
             // A *module-level* case name occupies the value/pattern namespace of its
             // container; record it so a same-named type is seen as contention for the
             // module-qualifier (in pattern position). A *local* active pattern (inside a
@@ -815,12 +822,12 @@ impl<'a> Resolver<'a> {
             // file-local `Resolution::Local(use_id)`.
             let case_res = if at_module_level {
                 self.mark_decl(case_name).active_pattern = true;
-                let item = if self.anonymous_root {
+                let item = if self.lexical.anonymous_root {
                     None
                 } else {
-                    let item_idx = self.items.len();
+                    let item_idx = self.out.items.len();
                     let item_id = ItemId::new(self.item_base as usize + item_idx);
-                    self.items.push(ExportedItem {
+                    self.out.items.push(ExportedItem {
                         name: self.export_name(use_id, case_name),
                         qualified: None,
                         id: item_id,
@@ -955,7 +962,7 @@ impl<'a> Resolver<'a> {
     ///   to every member body;
     /// * a per-member **member frame** — the member's self-id + curried params.
     ///
-    /// Beneath both, the type's own union cases ([`Self::own_union_cases`]).
+    /// Beneath both, the type's own union cases ([`Indexes::own_union_cases`](crate::resolve::indexes::Indexes::own_union_cases)).
     ///
     /// An *augmentation* (`type T with …`), intrinsic or optional, has neither
     /// the type frame nor the field frame: the primary-constructor parameters
@@ -989,7 +996,7 @@ impl<'a> Resolver<'a> {
         // The type's own union cases, above the module scope. A case the walk
         // cannot decide (`type T = T`'s) declines in both namespaces.
         let mut cases: Vec<ScopeEntry> = own
-            .and_then(|k| self.own_union_cases.get(&k))
+            .and_then(|k| self.index.own_union_cases.get(&k))
             .map(|cases| {
                 cases
                     .iter()
@@ -1030,7 +1037,7 @@ impl<'a> Resolver<'a> {
         }
         let pushed_cases = !cases.is_empty();
         if pushed_cases {
-            self.scopes.push(Frame::new(cases));
+            self.lexical.scopes.push(Frame::new(cases));
         }
         if super::is_type_augmentation(defn) {
             {
@@ -1044,7 +1051,7 @@ impl<'a> Resolver<'a> {
             self.resolve_genuine_member_bodies(defn, &members);
         }
         if pushed_cases {
-            self.scopes.pop();
+            self.lexical.scopes.pop();
         }
     }
 
@@ -1053,7 +1060,7 @@ impl<'a> Resolver<'a> {
     /// records nothing, so every use there stays a deferral and binder
     /// completeness reads its binders as unmodelled.
     fn skip_unproven_augmentation(&mut self, members: &[MemberDefn]) {
-        self.opaque_regions.extend(
+        self.out.opaque_regions.extend(
             members
                 .iter()
                 .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
@@ -1065,9 +1072,10 @@ impl<'a> Resolver<'a> {
     /// [`SlotClass::Keeps`]).
     fn type_in_scope_may_take_slot(&self, name: &str) -> bool {
         let interned = self.assemblies.names().lookup(name);
-        (0..=self.container_path.len()).any(|k| {
-            self.type_slot_history
-                .get(self.container_path.prefix_id(k), interned, name)
+        (0..=self.lexical.container_path.len()).any(|k| {
+            self.index
+                .type_slot_history
+                .get(self.lexical.container_path.prefix_id(k), interned, name)
                 .is_some_and(|entries| entries.iter().any(|(_, class)| *class != SlotClass::Keeps))
         })
     }
@@ -1077,8 +1085,9 @@ impl<'a> Resolver<'a> {
     pub(super) fn member_scope_of(&self, defn: &TypeDefn) -> MemberScope {
         let header = defn.typar_decls().map_or(0, |t| t.typars().count());
         let here = |name: &str, arity: usize| {
-            self.type_defs_by_arity
-                .get(&self.container_path.id())
+            self.index
+                .type_defs_by_arity
+                .get(&self.lexical.container_path.id())
                 .and_then(|m| m.get(&(name.to_string(), arity)))
                 .copied()
         };
@@ -1108,7 +1117,8 @@ impl<'a> Resolver<'a> {
         let clean = matches!(&self.recovery, SyntaxRecovery::Reported(spans) if spans.is_empty());
         // A source-ordered, named container: not a `rec` block, and not
         // `namespace global` or an anonymous module.
-        let ordered = !self.scope.recursive_module_active && !self.container_path.is_empty();
+        let ordered =
+            !self.scope.recursive_module_active && !self.lexical.container_path.is_empty();
         if !(clean && ordered) {
             return None;
         }
@@ -1124,18 +1134,20 @@ impl<'a> Resolver<'a> {
         // The file's only type or exception of the name, declared in this
         // container and this block, at arity 0, of a covered kind and
         // certainly not `[<AutoOpen>]`.
-        let only_declaration = self.own_type_decl_counts.get(&name) == Some(&1);
+        let only_declaration = self.prescan.own_type_decl_counts.get(&name) == Some(&1);
         let own = self
+            .index
             .type_defs_by_arity
-            .get(&self.container_path.id())
+            .get(&self.lexical.container_path.id())
             .and_then(|m| m.get(&(name.clone(), 0)))
             .copied()?;
         let pinned = only_declaration
-            && self.block_type_defs.contains(&own)
-            && self.augmentable_types.contains(&own);
+            && self.lexical.block_type_defs.contains(&own)
+            && self.index.augmentable_types.contains(&own);
         // No `open` since the declaration, and no `[<AutoOpen>]` module of the
         // file declaring a type of the name.
-        let unopened = !self.opened_after(own) && !self.own_auto_open_type_names.contains(&name);
+        let unopened =
+            !self.opened_after(own) && !self.prescan.own_auto_open_type_names.contains(&name);
         (pinned && unopened).then_some(own)
     }
 
@@ -1150,19 +1162,24 @@ impl<'a> Resolver<'a> {
         let frame = match scope {
             MemberScope::Genuine { own } => {
                 if let Some(own) = own {
-                    self.type_typar_frames
+                    self.index
+                        .type_typar_frames
                         .insert(*own, header.clone().unwrap_or_default());
                 }
                 header
             }
-            MemberScope::Intrinsic { own } => {
-                header.map(|_| self.type_typar_frames.get(own).cloned().unwrap_or_default())
-            }
+            MemberScope::Intrinsic { own } => header.map(|_| {
+                self.index
+                    .type_typar_frames
+                    .get(own)
+                    .cloned()
+                    .unwrap_or_default()
+            }),
             MemberScope::Unwalked => header,
         };
         match frame {
             Some(f) => {
-                self.typar_scopes.push(f);
+                self.lexical.typar_scopes.push(f);
                 true
             }
             None => false,
@@ -1204,7 +1221,7 @@ impl<'a> Resolver<'a> {
                 let mut tokens = i.syntax().tokens_where(|k| !k.is_trivia());
                 if let Some(first) = tokens.next() {
                     let end = tokens.last().unwrap_or_else(|| first.clone());
-                    self.opaque_binders.insert(TextRange::new(
+                    self.out.opaque_binders.insert(TextRange::new(
                         first.text_range().start(),
                         end.text_range().end(),
                     ));
@@ -1262,13 +1279,13 @@ impl<'a> Resolver<'a> {
         } else {
             instance_entries
         };
-        self.scopes.push(Frame::new(entries.to_vec()));
+        self.lexical.scopes.push(Frame::new(entries.to_vec()));
         1
     }
 
     fn pop_field_scope(&mut self, depth: usize) {
         for _ in 0..depth {
-            self.scopes.pop();
+            self.lexical.scopes.pop();
         }
     }
 
@@ -1473,11 +1490,11 @@ impl<'a> Resolver<'a> {
         if let Some(ret) = b.return_type() {
             self.resolve_type(&ret);
         }
-        self.scopes.push(Frame::new(entries));
+        self.lexical.scopes.push(Frame::new(entries));
         if let Some(body) = b.expr() {
             self.resolve_expr(&body);
         }
-        self.scopes.pop();
+        self.lexical.scopes.pop();
         self.leave_typars(pushed_typars);
     }
 
@@ -1501,11 +1518,11 @@ impl<'a> Resolver<'a> {
             if let Some(ret) = acc.return_type() {
                 self.resolve_type(&ret);
             }
-            self.scopes.push(Frame::new(entries));
+            self.lexical.scopes.push(Frame::new(entries));
             if let Some(body) = acc.body() {
                 self.resolve_expr(&body);
             }
-            self.scopes.pop();
+            self.lexical.scopes.pop();
         }
     }
 
@@ -1594,9 +1611,9 @@ impl<'a> Resolver<'a> {
         if lb.is_rec() {
             // A `rec` field is in scope for every RHS in the group (mutually
             // recursive fields), so make the value binders visible for the RHSs.
-            self.scopes.push(Frame::new(value_entries.clone()));
+            self.lexical.scopes.push(Frame::new(value_entries.clone()));
             self.resolve_local_let_rhss(&per_binding);
-            self.scopes.pop();
+            self.lexical.scopes.pop();
         } else {
             self.resolve_local_let_rhss(&per_binding);
         }
@@ -1800,7 +1817,7 @@ impl<'a> Resolver<'a> {
                         // declares one implicitly at its first occurrence, which
                         // this left unrecorded is an opaque binder of.
                         None => {
-                            self.opaque_binders.insert(range);
+                            self.out.opaque_binders.insert(range);
                         }
                     }
                 }
@@ -1945,7 +1962,7 @@ impl<'a> Resolver<'a> {
             let later_in_file_type = self
                 .lookup_type_def_at_arity(only, arity)
                 .and_then(|(_, found)| found)
-                .is_some_and(|id| u32::from(self.defs[id.index()].range.start()) > import_pos);
+                .is_some_and(|id| u32::from(self.out.defs[id.index()].range.start()) > import_pos);
             if !later_in_file_type {
                 return TypePathResolution::Deferred(DeclineSite::pre_walk(
                     DeclineCause::SameFileAutoOpenType,
@@ -2295,7 +2312,7 @@ impl<'a> Resolver<'a> {
     /// EX-3 §2(d) (`docs/extension-scope-enumeration-plan.md`): resolve the
     /// *type* each attribute in `lists` names, at the scope currently in
     /// force, recording the verdict at the written name's range into
-    /// [`Self::attribute_resolutions`]. FCS resolves an attribute by trying
+    /// [`Output::attribute_resolutions`](crate::resolve::output::Output::attribute_resolutions). FCS resolves an attribute by trying
     /// two candidates through the general type resolver
     /// (`ResolveAttributeType`): the written path with `Attribute` suffixed
     /// onto the last segment **first**, then the path as written — so `[<Literal>]`
@@ -2313,7 +2330,8 @@ impl<'a> Resolver<'a> {
                 // binder FCS declares there (an implicit type parameter of a
                 // `typeof<'U>`) is one it knows declines.
                 if let Some(arg) = attr.arg() {
-                    self.opaque_regions
+                    self.out
+                        .opaque_regions
                         .push(super::model::OpaqueRegion::Range(arg.syntax().text_range()));
                 }
                 if let Some(type_name) = attr.type_name() {
@@ -2321,7 +2339,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     // No name node at all: the gate cannot key this attribute
                     // and must keep the presence defer for the file.
-                    self.unknowables.raise(Unknowable::AttributeShape);
+                    self.out.unknowables.raise(Unknowable::AttributeShape);
                 }
             }
         }
@@ -2365,7 +2383,7 @@ impl<'a> Resolver<'a> {
         let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
             // A name node with no ident tokens: unkeyable, like the nameless
             // case — the gate keeps the presence defer.
-            self.unknowables.raise(Unknowable::AttributeShape);
+            self.out.unknowables.raise(Unknowable::AttributeShape);
             return;
         };
         // FCS records the attribute-type use at the written path's range
@@ -2384,11 +2402,12 @@ impl<'a> Resolver<'a> {
         // Deferral deletes that class; the single-segment path below is where
         // the gate's value lives (review on stage 4).
         if toks.len() > 1 || first.text() == "global" {
-            self.attribute_resolutions
+            self.out
+                .attribute_resolutions
                 .insert(range, Resolution::Deferred(DeferredReason::ShadowableType));
             // Declined by this function's own rule rather than by the walk —
             // the census names it as such instead of leaving it unattributed.
-            self.decline_sites.insert(
+            self.out.decline_sites.insert(
                 range,
                 DeclineSite::pre_walk(DeclineCause::QualifiedAttribute),
             );
@@ -2414,13 +2433,13 @@ impl<'a> Resolver<'a> {
             },
         };
         if let Some(res) = verdict {
-            self.attribute_resolutions.insert(range, res);
+            self.out.attribute_resolutions.insert(range, res);
         }
         // Keyed by the written attribute name's range, matching
         // `attribute_resolutions` — the attribute path has no token the main
         // resolution map claims, so the two tables agree on one key.
         if let Some(site) = declined_at {
-            self.decline_sites.insert(range, site);
+            self.out.decline_sites.insert(range, site);
         }
     }
 
@@ -2482,11 +2501,12 @@ impl<'a> Resolver<'a> {
                 // - the positional contest: an `open` later than the def
                 //   wins in FCS (codex round 6).
                 let unreliable = names.last().is_some_and(|last| {
-                    self.own_generic_type_simple_names.contains(last)
-                        || self.own_exception_simple_names.contains(last)
-                        || self.own_auto_open_type_names.contains(last)
+                    self.prescan.own_generic_type_simple_names.contains(last)
+                        || self.prescan.own_exception_simple_names.contains(last)
+                        || self.prescan.own_auto_open_type_names.contains(last)
                 }) || self.scope.recursive_module_active
-                    || self.scope.latest_open_pos > u32::from(self.defs[id.index()].range.start());
+                    || self.scope.latest_open_pos
+                        > u32::from(self.out.defs[id.index()].range.start());
                 if unreliable {
                     AttrCandidate::Deferred(DeclineSite::pre_walk(
                         DeclineCause::AttributeInFileUnreliable,
@@ -2653,24 +2673,24 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether any project **type** — declared anywhere in this file
-    /// ([`Resolver::own_type_simple_names`]) or in a preceding Compile-order
+    /// ([`Prescan::own_type_simple_names`](crate::resolve::prescan::Prescan::own_type_simple_names)) or in a preceding Compile-order
     /// file ([`ProjectItems::project_type_simple_names`](super::model::ProjectItems))
     /// — has the simple name `name`. The attribute resolution's project-type
     /// guard; see [`Self::attribute_candidate`].
     fn project_type_named(&self, name: &str) -> bool {
-        self.own_type_simple_names.contains(name)
+        self.prescan.own_type_simple_names.contains(name)
             || self.preceding.project_type_simple_names.contains(name)
     }
 
     /// [`Self::project_type_named`]'s module twin: whether any project
     /// **module** — declared or abbreviated anywhere in this file
-    /// ([`Resolver::own_module_simple_names`]) or in a preceding Compile-order
+    /// ([`Prescan::own_module_simple_names`](crate::resolve::prescan::Prescan::own_module_simple_names)) or in a preceding Compile-order
     /// file
     /// ([`ProjectItems::project_module_simple_names`](super::model::ProjectItems))
     /// — has the simple name `name`. The dotted head's owner; see
     /// [`Self::project_shadow_at`].
     fn project_module_named(&self, name: &str) -> bool {
-        self.own_module_simple_names.contains(name)
+        self.prescan.own_module_simple_names.contains(name)
             || self.preceding.project_module_simple_names.contains(name)
     }
 
@@ -2966,8 +2986,8 @@ impl<'a> Resolver<'a> {
     /// *under* it, `Sub.Calc` where `Sub` is a nested `module` — not the module's
     /// own name) — whose unmodelled types could shadow a same-path assembly type,
     /// so a type reference through it must defer (D5). Covers this file's nested
-    /// modules (relative [`Self::nested_module_locals`] and qualified
-    /// [`Self::nested_module_exports`] forms) and earlier Compile-order ones
+    /// modules (relative [`Lexical::nested_module_locals`](crate::resolve::lexical::Lexical::nested_module_locals) and qualified
+    /// [`Indexes::nested_module_exports`](crate::resolve::indexes::Indexes::nested_module_exports) forms) and earlier Compile-order ones
     /// ([`ProjectItems::is_rooted_at_nested_module`](super::model::ProjectItems::is_rooted_at_nested_module)).
     ///
     /// Two cases are deliberately **excluded** (both resolve to the assembly type):
@@ -2977,9 +2997,11 @@ impl<'a> Resolver<'a> {
     /// `Demo.Calc`). Hence the *strict* prefix (`names.len() > p.len()`); the
     /// conservative defer is for proper descents like `Calc.Inner`.
     fn type_path_descends_into_nested_module(&self, names: &[String]) -> bool {
-        self.nested_module_locals
+        self.lexical
+            .nested_module_locals
             .has_strict_nonempty_prefix_of_path(self.assemblies.names(), names)
             || self
+                .index
                 .nested_module_exports
                 .has_strict_nonempty_prefix_of_path(self.assemblies.names(), names)
             || (self
@@ -3011,7 +3033,7 @@ impl<'a> Resolver<'a> {
     /// ([`OpenScope::latest_open_pos`](crate::resolve::open_scope::OpenScope::latest_open_pos)(super::state::Resolver)), so it could
     /// supply a same-named type that wins.
     pub(super) fn opened_after(&self, id: DefId) -> bool {
-        self.scope.latest_open_pos > u32::from(self.defs[id.index()].range.start())
+        self.scope.latest_open_pos > u32::from(self.out.defs[id.index()].range.start())
     }
 
     /// What a single-segment type name `name` at `arity` binds when an
@@ -3061,7 +3083,7 @@ impl<'a> Resolver<'a> {
             .filter(|d| {
                 d.as_ref().is_none_or(|t| {
                     t.access_root
-                        .is_none_or(|n| self.container_path.starts_with(&t.path[..n]))
+                        .is_none_or(|n| self.lexical.container_path.starts_with(&t.path[..n]))
                 })
             })
             .collect();
@@ -3093,7 +3115,7 @@ impl<'a> Resolver<'a> {
         {
             return decline(DeclineCause::EarlierTypeOutsideNamespace);
         }
-        if candidate.arity != arity || self.own_type_simple_names.contains(name) {
+        if candidate.arity != arity || self.prescan.own_type_simple_names.contains(name) {
             return decline(DeclineCause::EarlierTypeNameReused);
         }
         if self.assemblies.identities_incomplete()
@@ -3136,7 +3158,7 @@ impl<'a> Resolver<'a> {
         type_id: DefId,
         module: Option<&[String]>,
     ) -> bool {
-        let Some(&arity) = self.type_def_arities.get(&type_id) else {
+        let Some(&arity) = self.index.type_def_arities.get(&type_id) else {
             return true;
         };
         if arity == 0 {
@@ -3144,8 +3166,9 @@ impl<'a> Resolver<'a> {
         }
         if let Some(module) = module {
             return self
+                .lexical
                 .container_path
-                .get_at(&self.type_decl_counts, module)
+                .get_at(&self.index.type_decl_counts, module)
                 .and_then(|m| m.get(name))
                 .is_none_or(|by_arity| by_arity.keys().any(|&a| a < arity));
         }
@@ -3197,15 +3220,17 @@ impl<'a> Resolver<'a> {
                 }
             }
             if let Some(by_arity) = self
+                .lexical
                 .container_path
-                .get_at(&self.type_decl_counts, container)
+                .get_at(&self.index.type_decl_counts, container)
                 .and_then(|m| m.get(name))
             {
                 arities.extend(by_arity.keys().copied());
             }
             let mut path = container.to_vec();
             path.push(name.clone());
-            if (self.scope.recursive_module_active && self.own_type_simple_names.contains(name))
+            if (self.scope.recursive_module_active
+                && self.prescan.own_type_simple_names.contains(name))
                 || self.dropped_type_could_root_this_path(&path)
             {
                 return true;
@@ -3240,7 +3265,10 @@ impl<'a> Resolver<'a> {
     /// visits, an `[<AutoOpen>]` surface's, or a dropped type that may be one.
     pub(super) fn pattern_type_head_possible(&self, head: &str) -> bool {
         let names = [head.to_string()];
-        self.own_type_scoped.keys().any(|(name, _)| name == head)
+        self.prescan
+            .own_type_scoped
+            .keys()
+            .any(|(name, _)| name == head)
             || self.preceding.earlier_type_arities.contains_key(head)
             || self.assemblies.manifest_auto_open_target_is_uncertain()
             || self.assemblies.contested_auto_open_is_uncertain()
@@ -3270,10 +3298,11 @@ impl<'a> Resolver<'a> {
     /// see [`Self::lower_arity_namesake_possible`] for the channels.
     fn namesake_below_arity_possible(&self, name: &str, arity: usize) -> bool {
         let in_file = self
+            .prescan
             .own_type_scoped
             .keys()
             .any(|(n, a)| n == name && *a < arity)
-            || self.own_exception_simple_names.contains(name);
+            || self.prescan.own_exception_simple_names.contains(name);
         let earlier = self
             .preceding
             .earlier_type_arities
@@ -3327,10 +3356,11 @@ impl<'a> Resolver<'a> {
         let Some(id) = found else {
             return Some(Err(DeclineCause::InFileArityMismatch));
         };
-        let (at_arity, any_arity) = (0..=self.container_path.len())
+        let (at_arity, any_arity) = (0..=self.lexical.container_path.len())
             .filter_map(|k| {
-                self.type_decl_counts
-                    .get(&self.container_path.prefix_id(k))
+                self.index
+                    .type_decl_counts
+                    .get(&self.lexical.container_path.prefix_id(k))
                     .and_then(|m| m.get(name))
             })
             .fold((0, 0), |(at, any), by_arity| {
@@ -3339,10 +3369,15 @@ impl<'a> Resolver<'a> {
                     any + by_arity.values().sum::<usize>(),
                 )
             });
-        let declared = self.own_type_decl_counts.get(name).copied().unwrap_or(0);
+        let declared = self
+            .prescan
+            .own_type_decl_counts
+            .get(name)
+            .copied()
+            .unwrap_or(0);
         if at_arity > 1
             || (self.scope.recursive_module_active && declared > any_arity)
-            || self.own_exception_simple_names.contains(name)
+            || self.prescan.own_exception_simple_names.contains(name)
         {
             return Some(Err(DeclineCause::InFileTypeNameReused));
         }
@@ -3356,21 +3391,23 @@ impl<'a> Resolver<'a> {
     /// visible container declaring the name at all, with that container's
     /// path length: `None` when none does, and no def when that container
     /// declares the name only at other arities. Within one container both
-    /// arities are kept ([`Self::type_defs_by_arity`]), so `type E` beside
+    /// arities are kept ([`Indexes::type_defs_by_arity`](crate::resolve::indexes::Indexes::type_defs_by_arity)), so `type E` beside
     /// `type E<'T>` answers `E` and `E<int>` alike, whatever their order.
     pub(super) fn lookup_type_def_at_arity(
         &self,
         name: &str,
         arity: usize,
     ) -> Option<(usize, Option<DefId>)> {
-        (0..=self.container_path.len()).rev().find_map(|k| {
-            self.type_defs
-                .get(&self.container_path.prefix_id(k))
+        (0..=self.lexical.container_path.len()).rev().find_map(|k| {
+            self.index
+                .type_defs
+                .get(&self.lexical.container_path.prefix_id(k))
                 .is_some_and(|m| m.contains_key(name))
                 .then(|| {
                     let found = self
+                        .index
                         .type_defs_by_arity
-                        .get(&self.container_path.prefix_id(k))
+                        .get(&self.lexical.container_path.prefix_id(k))
                         .and_then(|m| m.get(&(name.to_string(), arity)))
                         .copied();
                     (k, found)
@@ -3549,7 +3586,7 @@ impl<'a> Resolver<'a> {
                     if applied
                         && let [single] = segs.as_slice()
                         && !matches!(
-                            self.resolutions.get(&single.text_range()),
+                            self.out.resolutions.get(&single.text_range()),
                             Some(
                                 Resolution::Local(_)
                                     | Resolution::Item(_)
@@ -3685,7 +3722,7 @@ impl<'a> Resolver<'a> {
     ///
     /// - a **same-file** case resolves to [`Resolution::Item`] (or, under an
     ///   anonymous root, [`Resolution::Local`]) — its shape is keyed by the case's
-    ///   use-def in [`Self::active_pattern_shape`]; an `Item` is mapped to that def
+    ///   use-def in [`Output::active_pattern_shape`](crate::resolve::output::Output::active_pattern_shape); an `Item` is mapped to that def
     ///   through this file's `items`;
     /// - a **cross-file** case resolves to [`Resolution::Item`] whose handle is
     ///   out of this file's range — its shape comes from
@@ -3696,13 +3733,14 @@ impl<'a> Resolver<'a> {
     /// fabricate-a-binder behaviour (the unknown-shape decline is Stage 3c).
     fn resolution_active_pattern_shape(&self, res: Resolution) -> Option<ActivePatternShape> {
         match res {
-            Resolution::Local(id) => self.active_pattern_shape.get(&id).copied(),
+            Resolution::Local(id) => self.out.active_pattern_shape.get(&id).copied(),
             Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
                 // Same-file: map the handle to its defining use-def, then the shape.
                 Some(local) => self
+                    .out
                     .items
                     .get(local)
-                    .and_then(|it| self.active_pattern_shape.get(&it.def()?).copied()),
+                    .and_then(|it| self.out.active_pattern_shape.get(&it.def()?).copied()),
                 // Cross-file: the shape crosses the boundary in the side map.
                 None => self.preceding.active_pattern_shape_of(id),
             },
@@ -3770,7 +3808,7 @@ impl<'a> Resolver<'a> {
     /// Exclude the would-be binders of a *parameter* argument of an applied
     /// active-pattern head: run the [`pattern_names`] walk and
     /// insert each returned occurrence's **ident-token** range into
-    /// [`Self::excluded_param_ranges`], so the three binder-interning loops drop
+    /// [`Indexes::excluded_param_ranges`](crate::resolve::indexes::Indexes::excluded_param_ranges), so the three binder-interning loops drop
     /// them (see that field). Or-pattern aliases are excluded alongside the
     /// binders they name: the whole argument is an expression here, so no part of
     /// it may fabricate a resolution. The [`BinderRole`] only affects `DefKind`s,
@@ -3785,7 +3823,7 @@ impl<'a> Resolver<'a> {
             &HashSet::default(),
             self.assemblies,
         ) {
-            self.excluded_param_ranges.insert(name.range());
+            self.index.excluded_param_ranges.insert(name.range());
         }
     }
 
@@ -3949,14 +3987,18 @@ impl<'a> Resolver<'a> {
     }
 
     /// Index a genuine (non-augmentation) type definition's members into
-    /// [`Self::type_members`] — the trailing-members slot (`type C = … member …`)
+    /// [`Indexes::type_members`](crate::resolve::indexes::Indexes::type_members) — the trailing-members slot (`type C = … member …`)
     /// plus, for an object model, the repr's own members. Entries are visible
     /// from the definition itself. Last definition of a name wins (mirroring
-    /// [`Self::type_defs`] / [`Self::type_cases`]): a redefinition drops the
+    /// [`Indexes::type_defs`](crate::resolve::indexes::Indexes::type_defs) / [`Indexes::type_cases`](crate::resolve::indexes::Indexes::type_cases)): a redefinition drops the
     /// earlier member set before repopulating.
     pub(super) fn define_type_members(&mut self, defn: &TypeDefn, type_name: &SyntaxToken) {
         let type_key = id_text(type_name).to_string();
-        if let Some(by_type) = self.type_members.get_mut(&*self.container_path) {
+        if let Some(by_type) = self
+            .index
+            .type_members
+            .get_mut(&*self.lexical.container_path)
+        {
             by_type.remove(&type_key);
         }
         let visible_from = defn.syntax().text_range().start();
@@ -3964,8 +4006,7 @@ impl<'a> Resolver<'a> {
         if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
             members.extend(om.members());
         }
-        let container = self.container_path.to_vec();
-        self.add_type_members(&container, &type_key, &members, visible_from);
+        self.add_type_members(&type_key, &members, visible_from);
     }
 
     /// Index a same-file augmentation's (`type T with …`) members. Only a
@@ -3974,7 +4015,7 @@ impl<'a> Resolver<'a> {
     /// (its members do not exist before it: FCS `FS0039`, probe M4a). Any other
     /// head — dotted (`type A.B with …`), or a module-housed optional extension
     /// of an outer type (whose visibility is scope-dependent, probes M5a/M5b) —
-    /// lands in [`Self::unindexed_augmented_names`] instead, suppressing member
+    /// lands in [`Indexes::unindexed_augmented_names`](crate::resolve::indexes::Indexes::unindexed_augmented_names) instead, suppressing member
     /// *emission* for that type name file-wide (the unfiled members could
     /// overload an indexed one).
     pub(super) fn index_augmentation_members(&mut self, defn: &TypeDefn) {
@@ -3986,29 +4027,30 @@ impl<'a> Resolver<'a> {
         if let [seg] = segs.as_slice() {
             let type_key = id_text(seg).to_string();
             if self
+                .index
                 .type_defs
-                .get(&self.container_path.id())
+                .get(&self.lexical.container_path.id())
                 .is_some_and(|m| m.contains_key(&type_key))
             {
                 let mut members: Vec<MemberDefn> = defn.members().collect();
                 if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
                     members.extend(om.members());
                 }
-                let container = self.container_path.to_vec();
-                self.add_type_members(&container, &type_key, &members, visible_from);
+                self.add_type_members(&type_key, &members, visible_from);
                 return;
             }
         }
         if let Some(last) = segs.last() {
-            self.unindexed_augmented_names
+            self.index
+                .unindexed_augmented_names
                 .insert(id_text(last).to_string());
         }
     }
 
     /// EX-3 §2(a): collect the member **names** a `type … with` augmentation
     /// contributes, keyed by staticness, into
-    /// [`Resolver::augmentation_instance_names`] /
-    /// [`Resolver::augmentation_static_names`] — the extension gate defers
+    /// [`Output::augmentation_instance_names`](crate::resolve::output::Output::augmentation_instance_names) /
+    /// [`Output::augmentation_static_names`](crate::resolve::output::Output::augmentation_static_names) — the extension gate defers
     /// exactly those names instead of every call in the file. Unlike the
     /// *emission* index ([`Self::index_augmentation_members`], which needs the
     /// head to resolve), the names are walkable for **every** augmentation
@@ -4049,12 +4091,12 @@ impl<'a> Resolver<'a> {
                     match name {
                         Some(name) => {
                             if mm.leading_keyword() == MemberLeading::StaticMember {
-                                self.augmentation_static_names.insert(name);
+                                self.out.augmentation_static_names.insert(name);
                             } else {
-                                self.augmentation_instance_names.insert(name);
+                                self.out.augmentation_instance_names.insert(name);
                             }
                         }
-                        None => self.unknowables.raise(Unknowable::AugmentationNames),
+                        None => self.out.unknowables.raise(Unknowable::AugmentationNames),
                     }
                 }
                 MemberDefn::GetSetMember(g) => {
@@ -4065,24 +4107,24 @@ impl<'a> Resolver<'a> {
                     {
                         Some(name) => {
                             if g.is_static() {
-                                self.augmentation_static_names.insert(name);
+                                self.out.augmentation_static_names.insert(name);
                             } else {
-                                self.augmentation_instance_names.insert(name);
+                                self.out.augmentation_instance_names.insert(name);
                             }
                         }
-                        None => self.unknowables.raise(Unknowable::AugmentationNames),
+                        None => self.out.unknowables.raise(Unknowable::AugmentationNames),
                     }
                 }
                 MemberDefn::AutoProperty(a) => match a.ident() {
                     Some(name) => {
                         let name = id_text(&name).to_string();
                         if a.is_static() {
-                            self.augmentation_static_names.insert(name);
+                            self.out.augmentation_static_names.insert(name);
                         } else {
-                            self.augmentation_instance_names.insert(name);
+                            self.out.augmentation_instance_names.insert(name);
                         }
                     }
-                    None => self.unknowables.raise(Unknowable::AugmentationNames),
+                    None => self.out.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 // These shapes are illegal in an augmentation (FCS rejects
                 // them), but a name we *can* read defers that name in both
@@ -4090,30 +4132,30 @@ impl<'a> Resolver<'a> {
                 MemberDefn::AbstractSlot(s) => match s.val_sig().and_then(|v| v.ident()) {
                     Some(name) => {
                         let name = id_text(&name).to_string();
-                        self.augmentation_instance_names.insert(name.clone());
-                        self.augmentation_static_names.insert(name);
+                        self.out.augmentation_instance_names.insert(name.clone());
+                        self.out.augmentation_static_names.insert(name);
                     }
-                    None => self.unknowables.raise(Unknowable::AugmentationNames),
+                    None => self.out.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 MemberDefn::ValField(v) => match v.ident() {
                     Some(name) => {
                         let name = id_text(&name).to_string();
-                        self.augmentation_instance_names.insert(name.clone());
-                        self.augmentation_static_names.insert(name);
+                        self.out.augmentation_instance_names.insert(name.clone());
+                        self.out.augmentation_static_names.insert(name);
                     }
-                    None => self.unknowables.raise(Unknowable::AugmentationNames),
+                    None => self.out.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 MemberDefn::MemberSig(ms) => match ms.val_sig().and_then(|v| v.ident()) {
                     Some(name) => {
                         let name = id_text(&name).to_string();
-                        self.augmentation_instance_names.insert(name.clone());
-                        self.augmentation_static_names.insert(name);
+                        self.out.augmentation_instance_names.insert(name.clone());
+                        self.out.augmentation_static_names.insert(name);
                     }
-                    None => self.unknowables.raise(Unknowable::AugmentationNames),
+                    None => self.out.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 // An `inherit` pulls the base's members in under names we
                 // cannot enumerate.
-                MemberDefn::Inherit(_) => self.unknowables.raise(Unknowable::AugmentationNames),
+                MemberDefn::Inherit(_) => self.out.unknowables.raise(Unknowable::AugmentationNames),
                 // Class-local bindings are lexically private; an interface
                 // implementation's members are reachable only through the
                 // interface, never the receiver's own name group.
@@ -4122,7 +4164,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// File `members` under `(container, type_key)`, classifying each shape
+    /// File `members` under `type_key` in the current container, classifying each shape
     /// per the M-series pins (`docs/project-type-member-plan.md`):
     ///
     /// - **Emit-eligible** — an unrestricted-access `static member` binding
@@ -4147,7 +4189,6 @@ impl<'a> Resolver<'a> {
     /// and keeps the earliest visibility.
     fn add_type_members(
         &mut self,
-        container: &[String],
         type_key: &str,
         members: &[MemberDefn],
         visible_from: borzoi_cst::syntax::TextSize,
@@ -4163,7 +4204,7 @@ impl<'a> Resolver<'a> {
                         Pat::LongIdent(l) => Some(l),
                         _ => None,
                     }) else {
-                        self.suppress_member_emit(container, type_key);
+                        self.suppress_member_emit(type_key);
                         continue;
                     };
                     let restricted = node_has_access_modifier(Some(mm.syntax()))
@@ -4182,12 +4223,12 @@ impl<'a> Resolver<'a> {
                         || idents.is_empty()
                         || idents.len() > 2
                     {
-                        self.suppress_member_emit(container, type_key);
+                        self.suppress_member_emit(type_key);
                         continue;
                     }
                     let name_tok = idents.last().expect("non-empty");
                     let emit_eligible = leading == MemberLeading::StaticMember && !restricted;
-                    self.insert_member(container, type_key, name_tok, emit_eligible, visible_from);
+                    self.insert_member(type_key, name_tok, emit_eligible, visible_from);
                 }
                 MemberDefn::GetSetMember(g) => {
                     let idents: Vec<SyntaxToken> = match g.name() {
@@ -4201,7 +4242,7 @@ impl<'a> Resolver<'a> {
                     }) || idents.is_empty()
                         || idents.len() > 2
                     {
-                        self.suppress_member_emit(container, type_key);
+                        self.suppress_member_emit(type_key);
                         continue;
                     }
                     let name_tok = idents.last().expect("non-empty");
@@ -4215,45 +4256,45 @@ impl<'a> Resolver<'a> {
                         || g.setter()
                             .is_some_and(|a| node_has_access_modifier(Some(a.syntax())));
                     let emit_eligible = g.is_static() && !restricted;
-                    self.insert_member(container, type_key, name_tok, emit_eligible, visible_from);
+                    self.insert_member(type_key, name_tok, emit_eligible, visible_from);
                 }
                 MemberDefn::AutoProperty(a) => {
                     let Some(name_tok) = a.ident() else {
-                        self.suppress_member_emit(container, type_key);
+                        self.suppress_member_emit(type_key);
                         continue;
                     };
                     let emit_eligible =
                         a.is_static() && !node_has_access_modifier(Some(a.syntax()));
-                    self.insert_member(container, type_key, &name_tok, emit_eligible, visible_from);
+                    self.insert_member(type_key, &name_tok, emit_eligible, visible_from);
                 }
                 MemberDefn::AbstractSlot(s) => {
                     let Some(name_tok) = s.val_sig().and_then(|v| v.ident()) else {
-                        self.suppress_member_emit(container, type_key);
+                        self.suppress_member_emit(type_key);
                         continue;
                     };
-                    self.insert_member(container, type_key, &name_tok, false, visible_from);
+                    self.insert_member(type_key, &name_tok, false, visible_from);
                 }
                 MemberDefn::ValField(v) => {
                     let Some(name_tok) = v.ident() else {
-                        self.suppress_member_emit(container, type_key);
+                        self.suppress_member_emit(type_key);
                         continue;
                     };
-                    self.insert_member(container, type_key, &name_tok, false, visible_from);
+                    self.insert_member(type_key, &name_tok, false, visible_from);
                 }
                 MemberDefn::MemberSig(ms) => {
                     let Some(name_tok) = ms.val_sig().and_then(|v| v.ident()) else {
-                        self.suppress_member_emit(container, type_key);
+                        self.suppress_member_emit(type_key);
                         continue;
                     };
-                    self.insert_member(container, type_key, &name_tok, false, visible_from);
+                    self.insert_member(type_key, &name_tok, false, visible_from);
                 }
-                MemberDefn::Inherit(_) => self.suppress_member_emit(container, type_key),
+                MemberDefn::Inherit(_) => self.suppress_member_emit(type_key),
                 MemberDefn::Interface(_) | MemberDefn::LetBindings(_) | MemberDefn::Do(_) => {}
             }
         }
     }
 
-    /// Enter one member name under `(container, type_key)`. A fresh
+    /// Enter one member name under `type_key` in the current container. A fresh
     /// emit-eligible name is interned as a [`DefKind::Member`] def — the emit
     /// target qualified uses resolve to. Its defining occurrence is deliberately
     /// **not** self-recorded: FCS reports extra synthetic symbols at a member's
@@ -4264,7 +4305,6 @@ impl<'a> Resolver<'a> {
     /// the earliest visibility.
     fn insert_member(
         &mut self,
-        container: &[String],
         type_key: &str,
         name_tok: &SyntaxToken,
         emit_eligible: bool,
@@ -4272,8 +4312,9 @@ impl<'a> Resolver<'a> {
     ) {
         let name = id_text(name_tok).to_string();
         if let Some(entry) = self
+            .index
             .type_members
-            .get_mut(container)
+            .get_mut(&*self.lexical.container_path)
             .and_then(|m| m.get_mut(type_key))
             .and_then(|s| s.entries.get_mut(&name))
         {
@@ -4290,8 +4331,9 @@ impl<'a> Resolver<'a> {
         } else {
             None
         };
-        self.type_members
-            .entry(container.to_vec())
+        self.index
+            .type_members
+            .entry(self.lexical.container_path.to_vec())
             .or_default()
             .entry(type_key.to_string())
             .or_default()
@@ -4299,11 +4341,12 @@ impl<'a> Resolver<'a> {
             .insert(name, MemberEntry { emit, visible_from });
     }
 
-    /// Disable member *emission* for `(container, type_key)` — see
+    /// Disable member *emission* for `type_key` in the current container — see
     /// [`TypeMemberSet::emit_suppressed`](super::state::TypeMemberSet::emit_suppressed).
-    fn suppress_member_emit(&mut self, container: &[String], type_key: &str) {
-        self.type_members
-            .entry(container.to_vec())
+    fn suppress_member_emit(&mut self, type_key: &str) {
+        self.index
+            .type_members
+            .entry(self.lexical.container_path.to_vec())
             .or_default()
             .entry(type_key.to_string())
             .or_default()

@@ -1008,7 +1008,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn open_reading_prefixes(
         &self,
     ) -> impl Iterator<Item = (DeclineTier, PrefixRef<'_>)> {
-        let implicit = self.implicit_import_count;
+        let implicit = self.prescan.implicit_import_count;
         self.scope
             .imports
             .iter()
@@ -1035,7 +1035,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn explicit_open_reading_prefixes(
         &self,
     ) -> impl Iterator<Item = (DeclineTier, PrefixRef<'_>)> {
-        self.scope.imports[self.implicit_import_count..]
+        self.scope.imports[self.prescan.implicit_import_count..]
             .iter()
             .rev()
             .flat_map(|open| {
@@ -1745,8 +1745,8 @@ impl<'a> Resolver<'a> {
             // *is* it), which the type-shadow check reports — that only means
             // *decline* when an assembly type actually sits at this path and a
             // project entity shadows it; otherwise we keep walking outward.
-            for k in (1..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
+            for k in (1..=self.lexical.container_path.len()).rev() {
+                let mut full = self.lexical.container_path[..k].to_vec();
                 full.extend_from_slice(path);
                 if let Some(handle) = self.opened_assembly_type(&full) {
                     return (!self.open_type_target_shadowed(&full)).then_some(handle);
@@ -1762,7 +1762,7 @@ impl<'a> Resolver<'a> {
         // shadow a root type, but we do not index project *types* across files, so
         // a cross-file `namespace Demo; type Calc` is invisible here. Resolving the
         // root type could therefore be wrong — decline (defer) rather than guess.
-        let bare_in_namespace = path.len() == 1 && !self.container_path.is_empty();
+        let bare_in_namespace = path.len() == 1 && !self.lexical.container_path.is_empty();
         if !bare_in_namespace && let Some(handle) = self.opened_assembly_type(path) {
             return (!self.open_type_target_shadowed(path)).then_some(handle);
         }
@@ -1794,7 +1794,7 @@ impl<'a> Resolver<'a> {
     /// whose (tier-resolved) path satisfies this enumerates M's direct values into
     /// the frame ([`Self::open_module_values`]) rather than treating the open as a
     /// namespace prefix or assembly type. Covers project modules from this file
-    /// (top-level [`Self::module_paths`] and nested) and earlier Compile-order
+    /// (top-level [`Indexes::module_paths`](crate::resolve::indexes::Indexes::module_paths) and nested) and earlier Compile-order
     /// files (via [`Preceding`]).
     ///
     /// The *nested*-module checks match a **prefix** (`open Calc.Inner` where
@@ -1806,12 +1806,15 @@ impl<'a> Resolver<'a> {
     ///
     /// [`Preceding`]: super::model::ProjectItems
     pub(super) fn open_imports_project_values(&self, path: &[String]) -> bool {
-        self.module_paths
+        self.index
+            .module_paths
             .contains_path(self.assemblies.names(), path)
             || self
+                .lexical
                 .nested_module_locals
                 .has_nonempty_prefix_of_path(self.assemblies.names(), path)
             || self
+                .index
                 .nested_module_exports
                 .has_nonempty_prefix_of_path(self.assemblies.names(), path)
             || self

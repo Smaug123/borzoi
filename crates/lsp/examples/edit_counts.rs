@@ -44,6 +44,11 @@
 //!   `ParsedProject::read_counts` reports it (files opened, paths `stat`ed,
 //!   directories listed, paths canonicalised), and the size of their read
 //!   sets, from [`EVALUATION_EVENT`].
+//! - **v.open**, **v.stat**, **v.list** and **v.canon**: what confirming the
+//!   cached evaluations cost, which every generation that reads one does
+//!   once (`borzoi::workspace::Workspace::validate`): files read again,
+//!   paths `stat`ed, directories listed and paths canonicalised, from each
+//!   [`GENERATION_EVENT`].
 //!
 //! The counts describe the project fold only if the requests take it, and a
 //! handler that falls back to single-file analysis still answers. So the run
@@ -233,6 +238,12 @@ static STATS: AtomicU64 = AtomicU64::new(0);
 static EVALUATION: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 const EVALUATION_FIELDS: [&str; 5] = ["opens", "stats", "listings", "canonicalizations", "reads"];
 
+/// What confirming cached evaluations cost every generation that has ended,
+/// from each [`GENERATION_EVENT`]: opens, stats, listings and
+/// canonicalisations.
+static VALIDATION: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+const VALIDATION_FIELDS: [&str; 4] = ["v_opens", "v_stats", "v_listings", "v_canonicalizations"];
+
 /// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
 /// [`ENV_BUILD_SPAN`], [`GENERATION_EVENT`] and [`EVALUATION_EVENT`] alone. Every
 /// other callsite is registered as never interesting, so it costs what it
@@ -273,11 +284,13 @@ impl tracing::field::Visit for ProjectField {
     }
 }
 
-/// A generation event's `opens` and `stats` fields.
+/// A generation event's `opens` and `stats` fields, and its validation
+/// fields in [`VALIDATION_FIELDS`] order.
 #[derive(Default)]
 struct ReadFields {
     opens: Option<u64>,
     stats: Option<u64>,
+    validation: [Option<u64>; 4],
 }
 
 impl tracing::field::Visit for ReadFields {
@@ -285,7 +298,11 @@ impl tracing::field::Visit for ReadFields {
         match field.name() {
             "opens" => self.opens = Some(value),
             "stats" => self.stats = Some(value),
-            _ => {}
+            name => {
+                if let Some(i) = VALIDATION_FIELDS.iter().position(|v| *v == name) {
+                    self.validation[i] = Some(value);
+                }
+            }
         }
     }
     fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
@@ -383,6 +400,12 @@ impl tracing::Subscriber for FoldObserver {
                 fields.stats.expect("a generation event carries `stats`"),
                 Relaxed,
             );
+            for (counter, value) in VALIDATION.iter().zip(fields.validation) {
+                counter.fetch_add(
+                    value.expect("a generation event carries every validation field"),
+                    Relaxed,
+                );
+            }
         }
     }
     fn enter(&self, _: &tracing::span::Id) {}
@@ -405,6 +428,8 @@ struct Cost {
     stats: u64,
     /// The MSBuild evaluations' counts, in [`EVALUATION_FIELDS`] order.
     evaluation: [u64; 5],
+    /// The validations' counts, in [`VALIDATION_FIELDS`] order.
+    validation: [u64; 4],
 }
 
 impl Cost {
@@ -423,6 +448,7 @@ impl Cost {
             opens: self.opens + other.opens,
             stats: self.stats + other.stats,
             evaluation: std::array::from_fn(|i| self.evaluation[i] + other.evaluation[i]),
+            validation: std::array::from_fn(|i| self.validation[i] + other.validation[i]),
         }
     }
 }
@@ -436,6 +462,7 @@ struct Reading {
     opens: u64,
     stats: u64,
     evaluation: [u64; 5],
+    validation: [u64; 4],
 }
 
 impl Reading {
@@ -451,6 +478,7 @@ impl Reading {
             opens: OPENS.load(Relaxed),
             stats: STATS.load(Relaxed),
             evaluation: std::array::from_fn(|i| EVALUATION[i].load(Relaxed)),
+            validation: std::array::from_fn(|i| VALIDATION[i].load(Relaxed)),
         }
     }
 
@@ -471,6 +499,7 @@ impl Reading {
             opens: later.opens - self.opens,
             stats: later.stats - self.stats,
             evaluation: std::array::from_fn(|i| later.evaluation[i] - self.evaluation[i]),
+            validation: std::array::from_fn(|i| later.validation[i] - self.validation[i]),
         }
     }
 }
@@ -831,15 +860,16 @@ fn columns(cost: &Cost) -> String {
         .instructions
         .map_or_else(|| "n/a".to_string(), |i| i.to_string());
     let [e_opens, e_stats, e_listings, e_canon, e_reads] = cost.evaluation;
+    let [v_opens, v_stats, v_listings, v_canon] = cost.validation;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7}",
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7} {v_opens:>7} {v_stats:>7} {v_listings:>7} {v_canon:>7}",
         cost.allocations, cost.allocated_bytes, cost.opens, cost.stats,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "message",
         "instructions",
         "allocs",
@@ -850,7 +880,11 @@ fn header() -> String {
         "e.stat",
         "e.list",
         "e.canon",
-        "e.reads"
+        "e.reads",
+        "v.open",
+        "v.stat",
+        "v.list",
+        "v.canon"
     )
 }
 
@@ -867,6 +901,7 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             opens: f(a.opens, b.opens),
             stats: f(a.stats, b.stats),
             evaluation: std::array::from_fn(|i| f(a.evaluation[i], b.evaluation[i])),
+            validation: std::array::from_fn(|i| f(a.validation[i], b.validation[i])),
         })
     };
     (pick(u64::min), pick(u64::max))

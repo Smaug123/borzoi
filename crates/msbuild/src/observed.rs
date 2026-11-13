@@ -132,9 +132,30 @@ impl ReadSet {
     /// a different answer. `None` when every answer stands, and then the
     /// evaluation that recorded this read set would come out the same.
     pub fn first_stale(&self) -> Option<&Read> {
-        self.reads
-            .iter()
-            .find(|read| read.observation.ask_again(&read.path) != read.observation)
+        self.reads.iter().find(|read| !read.still_holds())
+    }
+
+    /// Both read sets' reads, as one set: what a value computed from both
+    /// evaluations (or from an evaluation and the reads that prepared it)
+    /// depends on. A query the two answered differently keeps both answers,
+    /// so the union can never validate, as for a file that moved during one
+    /// evaluation.
+    pub fn union(self, other: ReadSet) -> ReadSet {
+        let mut reads = self.reads;
+        reads.extend(other.reads);
+        reads.sort();
+        reads.dedup();
+        ReadSet { reads }
+    }
+}
+
+impl FromIterator<Read> for ReadSet {
+    /// The reads as a set: sorted, each once.
+    fn from_iter<I: IntoIterator<Item = Read>>(reads: I) -> Self {
+        let mut reads: Vec<Read> = reads.into_iter().collect();
+        reads.sort();
+        reads.dedup();
+        ReadSet { reads }
     }
 }
 
@@ -152,6 +173,12 @@ pub struct Read {
 impl Read {
     fn key(&self) -> (&std::ffi::OsStr, &Observation) {
         (self.path.as_os_str(), &self.observation)
+    }
+
+    /// Whether the query, asked of the host's file system now, gets the
+    /// answer recorded.
+    pub fn still_holds(&self) -> bool {
+        answer_now(&self.path, &self.observation) == self.observation
     }
 }
 
@@ -197,23 +224,17 @@ pub enum Observation {
     Canonical(Result<PathBuf, Failure>),
 }
 
-impl Observation {
-    /// The same query, asked of the host now, through a scratch observer.
-    fn ask_again(&self, path: &Path) -> Observation {
-        let scratch = Observer::new();
-        match self {
-            Observation::Text(_) => drop(read_to_string(&scratch, path)),
-            Observation::Kind(_) => drop(kind(&scratch, path)),
-            Observation::LinkKind(_) => drop(link_kind(&scratch, path)),
-            Observation::Listing(_) => drop(read_dir(&scratch, path)),
-            Observation::Canonical(_) => drop(canonicalize(&scratch, path)),
-        }
-        scratch
-            .reads
-            .into_inner()
-            .pop()
-            .expect("asking a query records it")
-            .observation
+/// `query`'s query (its answer is ignored) asked of the host's file system
+/// now, at `path`, with its answer: what the query function would record,
+/// without recording it. A caller that validates a read set through its own
+/// counters asks here, so that its answers are the query functions' own.
+pub fn answer_now(path: &Path, query: &Observation) -> Observation {
+    match query {
+        Observation::Text(_) => Observation::Text(text_digest(&read_text(path))),
+        Observation::Kind(_) => Observation::Kind(kind_of(path)),
+        Observation::LinkKind(_) => Observation::LinkKind(link_kind_of(path)),
+        Observation::Listing(_) => Observation::Listing(listed(&listing_of(path))),
+        Observation::Canonical(_) => Observation::Canonical(canonical_of(path)),
     }
 }
 
@@ -280,7 +301,8 @@ pub struct Failure {
 }
 
 impl Failure {
-    fn of(error: &std::io::Error) -> Self {
+    /// What its asker can learn from `error`.
+    pub fn of(error: &std::io::Error) -> Self {
         Self {
             kind: error.kind(),
             message: error.to_string(),
@@ -331,31 +353,117 @@ pub struct DirEntry {
 // everywhere else. They are public so that a caller's own `SdkResolver` or
 // `GlobResolver` can query through the observer it is handed.
 
-/// [`std::fs::read_to_string`].
+/// The answer a whole-file read gets from `bytes`, the result of reading the
+/// file: its text, or why there is none. A file that is not UTF-8 fails as
+/// [`ErrorKind::InvalidData`].
+///
+/// [`read_to_string`] answers through this function, so a caller that reads
+/// a file in its own way (stamping it first, say) and hands the bytes here
+/// gets the answer the query function would have recorded.
+pub fn text_answer(bytes: std::io::Result<Vec<u8>>) -> Result<String, Failure> {
+    let bytes = bytes.map_err(|e| Failure::of(&e))?;
+    String::from_utf8(bytes).map_err(|_| {
+        Failure::of(&std::io::Error::new(
+            ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })
+}
+
+/// What a [`Observation::Text`] records of a whole-file read's answer.
+pub fn text_digest(answer: &Result<String, Failure>) -> Result<TextDigest, Failure> {
+    answer.as_deref().map(TextDigest::of).map_err(Clone::clone)
+}
+
 #[allow(clippy::disallowed_methods)]
+fn read_text(path: &Path) -> Result<String, Failure> {
+    text_answer(std::fs::read(path))
+}
+
+#[allow(clippy::disallowed_methods)]
+fn kind_of(path: &Path) -> Result<EntryKind, Failure> {
+    std::fs::metadata(path)
+        .map(|meta| EntryKind::of(meta.file_type()))
+        .map_err(|e| Failure::of(&e))
+}
+
+#[allow(clippy::disallowed_methods)]
+fn link_kind_of(path: &Path) -> Result<EntryKind, Failure> {
+    std::fs::symlink_metadata(path)
+        .map(|meta| EntryKind::of(meta.file_type()))
+        .map_err(|e| Failure::of(&e))
+}
+
+#[allow(clippy::disallowed_methods)]
+fn listing_of(path: &Path) -> Result<Vec<Result<DirEntry, Failure>>, Failure> {
+    std::fs::read_dir(path)
+        .map_err(|e| Failure::of(&e))
+        .map(|entries| {
+            entries
+                .map(|entry| {
+                    let entry = entry.map_err(|e| Failure::of(&e))?;
+                    Ok(DirEntry {
+                        path: entry.path(),
+                        name: entry.file_name(),
+                        kind: entry
+                            .file_type()
+                            .map(EntryKind::of)
+                            .map_err(|e| Failure::of(&e)),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .map(|mut entries| {
+            entries.sort_by(|a, b| match (a, b) {
+                (Ok(a), Ok(b)) => a.name.cmp(&b.name),
+                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+            });
+            entries
+        })
+}
+
+/// What a [`Observation::Listing`] records of a listing's answer.
+fn listed(
+    answer: &Result<Vec<Result<DirEntry, Failure>>, Failure>,
+) -> Result<Vec<Listed>, Failure> {
+    answer.as_ref().map_err(Clone::clone).map(|entries| {
+        entries
+            .iter()
+            .map(|entry| match entry {
+                Ok(entry) => Listed::Entry {
+                    name: entry.name.clone(),
+                    kind: entry.kind.clone(),
+                },
+                Err(failure) => Listed::Unreadable(failure.clone()),
+            })
+            .collect()
+    })
+}
+
+#[allow(clippy::disallowed_methods)]
+fn canonical_of(path: &Path) -> Result<PathBuf, Failure> {
+    std::fs::canonicalize(path).map_err(|e| Failure::of(&e))
+}
+
+/// [`std::fs::read_to_string`].
 pub fn read_to_string(observer: &Observer, path: &Path) -> Result<String, Failure> {
-    let result = std::fs::read_to_string(path).map_err(|e| Failure::of(&e));
-    let digest = result.as_deref().map(TextDigest::of).map_err(Clone::clone);
-    observer.record(path, Observation::Text(digest));
+    let result = read_text(path);
+    observer.record(path, Observation::Text(text_digest(&result)));
     result
 }
 
 /// What `path` names, following symlinks: [`std::fs::metadata`].
-#[allow(clippy::disallowed_methods)]
 pub fn kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
-    let result = std::fs::metadata(path)
-        .map(|meta| EntryKind::of(meta.file_type()))
-        .map_err(|e| Failure::of(&e));
+    let result = kind_of(path);
     observer.record(path, Observation::Kind(result.clone()));
     result
 }
 
 /// What `path` itself is: [`std::fs::symlink_metadata`].
-#[allow(clippy::disallowed_methods)]
 pub fn link_kind(observer: &Observer, path: &Path) -> Result<EntryKind, Failure> {
-    let result = std::fs::symlink_metadata(path)
-        .map(|meta| EntryKind::of(meta.file_type()))
-        .map_err(|e| Failure::of(&e));
+    let result = link_kind_of(path);
     observer.record(path, Observation::LinkKind(result.clone()));
     result
 }
@@ -382,57 +490,18 @@ pub fn exists(observer: &Observer, path: &Path) -> bool {
 /// contents: tmpfs lists in creation order, so deleting a file and writing it
 /// back moves it. An evaluation that read the host's order could change with
 /// no entry changing, and its read set would have to record that order.
-#[allow(clippy::disallowed_methods)]
 pub fn read_dir(
     observer: &Observer,
     path: &Path,
 ) -> Result<Vec<Result<DirEntry, Failure>>, Failure> {
-    let result: Result<Vec<Result<DirEntry, Failure>>, Failure> = std::fs::read_dir(path)
-        .map_err(|e| Failure::of(&e))
-        .map(|entries| {
-            entries
-                .map(|entry| {
-                    let entry = entry.map_err(|e| Failure::of(&e))?;
-                    Ok(DirEntry {
-                        path: entry.path(),
-                        name: entry.file_name(),
-                        kind: entry
-                            .file_type()
-                            .map(EntryKind::of)
-                            .map_err(|e| Failure::of(&e)),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .map(|mut entries| {
-            entries.sort_by(|a, b| match (a, b) {
-                (Ok(a), Ok(b)) => a.name.cmp(&b.name),
-                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
-                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-                (Err(_), Err(_)) => std::cmp::Ordering::Equal,
-            });
-            entries
-        });
-    let listing = result.as_ref().map_err(Clone::clone).map(|entries| {
-        entries
-            .iter()
-            .map(|entry| match entry {
-                Ok(entry) => Listed::Entry {
-                    name: entry.name.clone(),
-                    kind: entry.kind.clone(),
-                },
-                Err(failure) => Listed::Unreadable(failure.clone()),
-            })
-            .collect()
-    });
-    observer.record(path, Observation::Listing(listing));
+    let result = listing_of(path);
+    observer.record(path, Observation::Listing(listed(&result)));
     result
 }
 
 /// [`std::fs::canonicalize`].
-#[allow(clippy::disallowed_methods)]
 pub fn canonicalize(observer: &Observer, path: &Path) -> Result<PathBuf, Failure> {
-    let result = std::fs::canonicalize(path).map_err(|e| Failure::of(&e));
+    let result = canonical_of(path);
     observer.record(path, Observation::Canonical(result.clone()));
     result
 }
@@ -626,6 +695,69 @@ mod tests {
             .map(|e| e.unwrap().name)
             .collect();
         assert_eq!(names, ["a", "b", "m", "q", "z"]);
+    }
+
+    /// A whole-file read answers what `std::fs::read_to_string` answers,
+    /// for every byte content: text with a byte-order mark kept, and a file
+    /// that is not UTF-8 failing as invalid data. And [`answer_now`] gives
+    /// every query's recorded answer.
+    #[test]
+    fn a_read_answers_as_std_does() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let contents: [&[u8]; 6] = [
+            b"",
+            b"<Project />",
+            "\u{feff}<Project />".as_bytes(),
+            b"\xff\xfe",
+            b"ok\xc3",
+            "\u{e9}t\u{e9}".as_bytes(),
+        ];
+        for bytes in contents {
+            let path = dir.join("f");
+            std::fs::write(&path, bytes).unwrap();
+            let std = host_fs::read_to_string(&path);
+            let ours = read_to_string(&Observer::new(), &path);
+            match (&std, &ours) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b),
+                (Err(a), Err(b)) => assert_eq!(a.kind(), b.kind()),
+                _ => panic!("{bytes:?}: std {std:?}, ours {ours:?}"),
+            }
+        }
+        let observer = Observer::new();
+        let _ = read_to_string(&observer, &dir.join("f"));
+        let _ = read_to_string(&observer, &dir.join("absent"));
+        let _ = kind(&observer, &dir);
+        let _ = link_kind(&observer, &dir.join("f"));
+        let _ = read_dir(&observer, &dir);
+        let _ = canonicalize(&observer, &dir.join("f"));
+        let (read_set, _) = observer.finish();
+        for read in read_set.reads() {
+            assert_eq!(answer_now(&read.path, &read.observation), read.observation);
+        }
+    }
+
+    /// A union holds each read once, and a query answered two ways keeps
+    /// both answers, so it never validates.
+    #[test]
+    fn a_union_keeps_both_answers_of_a_query() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let path = dir.join("p.props");
+        let ask = || {
+            let observer = Observer::new();
+            let _ = read_to_string(&observer, &path);
+            let _ = kind(&observer, &dir);
+            observer.finish().0
+        };
+        let before = ask();
+        assert_eq!(before.clone().union(before.clone()), before);
+        std::fs::write(&path, "<Project />").unwrap();
+        let after = ask();
+        let both = before.union(after.clone());
+        assert_eq!(both.len(), 3, "{both:#?}");
+        assert!(both.first_stale().is_some());
+        assert_eq!(after.first_stale(), None);
     }
 
     /// Two evaluations that ask the same queries in different orders (a walk

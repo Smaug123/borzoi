@@ -51,7 +51,12 @@ fn synthetic_nuget_pinned_sdk_resolves_to_the_same_props_as_msbuild() {
     // keeps discovery's roots non-empty; the per-import pin drives NuGet
     // resolution, which does not consult it.
     let env = common::sdk_oracle_discovery_env(&gpf, tmp.path().join("dotnet"));
-    let disc = SdkDiscovery::for_project(&project_path, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(
+        &project_path,
+        &env,
+        &borzoi_msbuild::observed::Observer::new(),
+    )
+    .expect("discovery");
     let our_props = match disc
         .resolve("Foo/1.2.3", &borzoi_msbuild::observed::Observer::new())
         .expect("we resolve the pinned SDK")
@@ -253,9 +258,13 @@ fn versioned_sdk_resolves_from_the_folder_nuget_settings_choose() {
         let theirs = oracle
             .resolve(&sdk_ref, &project_path)
             .map(|props| canon(&props));
-        let ours = SdkDiscovery::for_project(&project_path, &env)
-            .expect("discovery")
-            .resolve(&sdk_ref, &borzoi_msbuild::observed::Observer::new());
+        let ours = SdkDiscovery::for_project(
+            &project_path,
+            &env,
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("discovery")
+        .resolve(&sdk_ref, &borzoi_msbuild::observed::Observer::new());
         let expected = case.expect.map(|want| {
             let (_, props) = copies
                 .iter()

@@ -16,10 +16,14 @@
 //!   that contains at least one `.fsproj`. Multiple `.fsproj`s in the
 //!   same directory are tie-broken alphabetically for determinism.
 //!
-//! No file-system watching: edits to a `.fsproj` while the server is
-//! running do *not* invalidate the cache (the next LSP restart picks
-//! them up). Smarter invalidation is deferred until we wire the LSP to
-//! `workspace/didChangeWatchedFiles`.
+//! The cache needs no file watching: each evaluation keeps every file-system
+//! query it and the reads preparing it made, with the answers, and within a
+//! dispatch-loop generation the first lookup of a cached evaluation confirms
+//! them ([`Workspace::validate`], through [`crate::read_checks`]). One whose
+//! answers moved is evaluated afresh. Reads strictly inside an installed SDK,
+//! pack, workload manifest or package version are not confirmed: an installer
+//! never changes a version in place. A structural watch event still drops
+//! every evaluation ([`Workspace::invalidate_projects`]).
 //!
 //! SDK resolution is wired through [`SdkDiscovery`]: each project gets
 //! its own discovery context (built from a [`SdkDiscoveryEnv`] held on
@@ -33,9 +37,13 @@
 //! [`crate::fsproj_diagnostics`]), but evaluation still completes and the
 //! body's own `<DefineConstants>` are still collected.
 
-use crate::observed::Unobserved;
+use crate::observed::{EvaluationCounts, Unobserved};
+use crate::read_checks::{Check, ReadChecks, a_fact};
+use crate::vfs::Nanos;
+use borzoi_msbuild::observed::{self as msbuild_observed, Observation, Observer, Read, ReadSet};
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_msbuild::{
@@ -100,16 +108,24 @@ fn is_script_path(file: &Path) -> bool {
 pub struct ProjectsGeneration(u64);
 
 pub struct Workspace {
-    /// Keyed by [`ProjectId`], whose spelling is what was evaluated. The value is `None`
-    /// when evaluation failed for any reason (IO, malformed XML,
-    /// reserved-property collision in `extra_properties`) — caching
-    /// the failure means we don't re-attempt on every keystroke.
-    projects: HashMap<ProjectId, Option<EvaluatedProject>>,
-    /// Bumped by every [`Self::invalidate_projects`], so a caller that read
-    /// several evaluations across a span of time can tell whether they all
-    /// came from one generation of the cache — see
-    /// [`Self::projects_generation`].
+    /// Keyed by [`ProjectId`], whose spelling is what was evaluated. The
+    /// evaluation is `None` when it failed for any reason (IO, malformed
+    /// XML, reserved-property collision in `extra_properties`) — caching
+    /// the failure means we don't re-attempt on every keystroke. Each entry
+    /// carries what it read, and is confirmed against the disk once per
+    /// generation that reads it ([`Self::validate`]).
+    projects: HashMap<ProjectId, CachedEvaluation>,
+    /// Bumped whenever an evaluation the cache served is dropped: by
+    /// [`Self::invalidate_projects`], and by a validation that finds an
+    /// entry's reads moved. So a caller that read several evaluations across
+    /// a span of time can tell whether they all came from one generation of
+    /// the cache — see [`Self::projects_generation`].
     projects_generation: ProjectsGeneration,
+    /// Confirms the evaluations' reads once per generation, by stamps, so
+    /// confirming an unchanged file or directory costs one `stat`.
+    checker: ReadChecks,
+    /// MSBuild evaluations run in the open generation.
+    evaluated: Cell<u64>,
     /// SDK-resolution environment used to build a [`SdkDiscovery`] per
     /// project on first evaluation. Held by value so tests can supply
     /// a hermetic env without mutating the host's environment.
@@ -200,6 +216,224 @@ struct EvaluatedProject {
     not_an_inner_build: bool,
 }
 
+/// One cached project evaluation and what it depends on.
+#[derive(Debug)]
+struct CachedEvaluation {
+    evaluated: Option<EvaluatedProject>,
+    /// The reads to confirm before serving `evaluated` again: everything the
+    /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
+    /// less the immutable contents (`Evaluation::checks`).
+    checks: Vec<Check>,
+    /// The generation that last confirmed `checks` (or that evaluated it);
+    /// `None` when it was evaluated outside a generation.
+    validated_in: Option<u64>,
+}
+
+/// What [`evaluate_project`] produced and read.
+struct Evaluation {
+    evaluated: Option<EvaluatedProject>,
+    /// Every file-system query the result depends on, with its answer: the
+    /// `.fsproj` read and SDK discovery's, and each evaluation pass's own
+    /// read set ([`ParsedProject::read_set`]). A pass that fails
+    /// (`ParseError`) fails on the source text and the caller's arguments
+    /// alone, so its reads are not needed.
+    reads: ReadSet,
+    /// Where the immutable contents its reads may include live.
+    immutable: ImmutableRoots,
+}
+
+impl Evaluation {
+    /// The reads a cached copy must confirm: every read, except those
+    /// inside a version directory some read showed to exist
+    /// ([`VersionDirs::containing`]), and for each such version, that it
+    /// still does. A read inside a version no read showed to exist (an
+    /// `Exists` probe of a version not installed) is confirmed like any
+    /// other, since installing the version moves it.
+    ///
+    /// A package under the NuGet folder is extracted in place, and the
+    /// extraction is complete only once it writes `.nupkg.metadata`; an
+    /// evaluation that ran during one may have seen part of it. So a package
+    /// version is trusted only where `committed` says its extraction was
+    /// complete before the evaluation began ([`nuget_committed_before`]).
+    fn checks(&self, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
+        let reads = self.reads.reads();
+        let versions = self.immutable.versions(reads);
+        let is_package = |version: &Path| {
+            self.immutable
+                .nuget
+                .iter()
+                .any(|root| version.starts_with(root))
+        };
+        let shown: std::collections::BTreeSet<PathBuf> = reads
+            .iter()
+            .filter(|read| answered(&read.observation))
+            .filter_map(|read| versions.containing(&read.path))
+            .filter(|version| !is_package(version) || committed(version))
+            .collect();
+        // What a version holds is immutable; an I/O error reading it is
+        // not, so only an answer or an absence is trusted.
+        let trusted = |read: &&Read| {
+            a_fact(&read.observation)
+                && versions
+                    .containing(&read.path)
+                    .is_some_and(|version| shown.contains(&version))
+        };
+        reads
+            .iter()
+            .filter(|read| !trusted(read))
+            .cloned()
+            .chain(shown.iter().map(|version| Read {
+                // A read inside it succeeded, so it resolved to a directory.
+                path: version.clone(),
+                observation: Observation::Kind(Ok(msbuild_observed::EntryKind::Dir)),
+            }))
+            .map(Check::new)
+            .collect()
+    }
+}
+
+/// Whether the package version at `version` under the NuGet folder was
+/// extracted completely before `started`: its `.nupkg.metadata`, which NuGet
+/// writes last, is there with a stamp no later than [`crate::vfs::RACY_WINDOW`]
+/// before `started`. Never outside a generation, where there is no `started`.
+fn nuget_committed_before(checker: &ReadChecks, version: &Path, started: Option<Nanos>) -> bool {
+    started.is_some_and(|started| {
+        checker
+            .stamp(&version.join(".nupkg.metadata"))
+            .is_some_and(|stamp| !stamp.is_racy(started))
+    })
+}
+
+/// Whether a query got an answer, rather than failing.
+fn answered(observation: &Observation) -> bool {
+    match observation {
+        Observation::Text(answer) => answer.is_ok(),
+        Observation::Kind(answer) | Observation::LinkKind(answer) => answer.is_ok(),
+        Observation::Listing(answer) => answer.is_ok(),
+        Observation::Canonical(answer) => answer.is_ok(),
+    }
+}
+
+/// The install roots whose versioned directories hold immutable contents
+/// (`docs/incremental-lsp-plan.md`, D3): every .NET install root the
+/// evaluation's SDK discovery consulted or its SDK resolved from, and the
+/// NuGet global packages folder it resolves SDK references from.
+#[derive(Debug, Default)]
+struct ImmutableRoots {
+    dotnet: Vec<PathBuf>,
+    nuget: Vec<PathBuf>,
+}
+
+impl ImmutableRoots {
+    /// The version directory `path` lies in or names, and how many
+    /// components of `path` lie below it. The version directories are
+    /// `<dotnet>/sdk/<version>`, `<dotnet>/packs/<pack>/<version>` and
+    /// `<dotnet>/sdk-manifests/<band>/<manifest>/<version>` under a .NET
+    /// install root, and `<id>/<version>` under the NuGet global packages
+    /// folder; a version starts with an ASCII digit. `path` is taken
+    /// lexically normal ([`lexically_normalize`]).
+    fn version_of(&self, path: &Path) -> Option<(PathBuf, usize)> {
+        let version = |name: &std::ffi::OsStr| {
+            name.as_encoded_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_digit)
+        };
+        let below = |root: &Path| -> Option<Vec<&std::ffi::OsStr>> {
+            path.strip_prefix(root)
+                .ok()?
+                .components()
+                .map(|component| match component {
+                    Component::Normal(name) => Some(name),
+                    _ => None,
+                })
+                .collect()
+        };
+        for root in &self.dotnet {
+            let Some(names) = below(root) else { continue };
+            let depth = match names.as_slice() {
+                [sdk, v, ..] if *sdk == "sdk" && version(v) => 2,
+                [packs, _, v, ..] if *packs == "packs" && version(v) => 3,
+                [manifests, _, _, v, ..] if *manifests == "sdk-manifests" && version(v) => 4,
+                _ => continue,
+            };
+            let dir = names[..depth]
+                .iter()
+                .fold(root.clone(), |dir, name| dir.join(name));
+            return Some((dir, names.len() - depth));
+        }
+        for root in &self.nuget {
+            let Some(names) = below(root) else { continue };
+            if let [id, v, ..] = names.as_slice()
+                && version(v)
+            {
+                return Some((root.join(id).join(v), names.len() - 2));
+            }
+        }
+        None
+    }
+
+    /// Every version directory `reads` reach: those under the roots, and
+    /// the spelling a canonicalisation in `reads` of a version directory
+    /// itself resolved it to (an install whose version directories are
+    /// symlinks into another tree, as Nix's combined installs are, is read
+    /// through both spellings). Only the version directory's own
+    /// canonicalisation names its other spelling: a symlink below a version
+    /// can lead anywhere.
+    fn versions<'r>(&self, reads: impl IntoIterator<Item = &'r Read>) -> VersionDirs<'_> {
+        let aliases = reads
+            .into_iter()
+            .filter_map(|read| {
+                let Observation::Canonical(Ok(canonical)) = &read.observation else {
+                    return None;
+                };
+                let (dir, below) = self.version_of(&lexically_normalize(&read.path))?;
+                let installed = self.dotnet.iter().any(|root| dir.starts_with(root));
+                (below == 0 && installed && *canonical != dir).then(|| canonical.clone())
+            })
+            .collect();
+        VersionDirs {
+            roots: self,
+            aliases,
+        }
+    }
+}
+
+/// The version directories an evaluation's reads reach ([`ImmutableRoots::versions`]).
+struct VersionDirs<'a> {
+    roots: &'a ImmutableRoots,
+    aliases: Vec<PathBuf>,
+}
+
+impl VersionDirs<'_> {
+    /// The version directory a read of `path` lies strictly inside, if it
+    /// does, which makes the read one of an immutable content: `path`, taken
+    /// lexically normal, lies strictly inside a version directory. An
+    /// installer writes a new version beside the old ones and never changes
+    /// one in place, so whatever an evaluation saw inside one (a file's
+    /// text, what a path names, a listing, an absence) stands for as long as
+    /// the version does. The axiom covers what a version links to as well:
+    /// a `..` below a version is taken lexically.
+    ///
+    /// What installing or removing a version does change is the listing of
+    /// the directory holding the versions, and whether a version directory
+    /// exists. Neither path lies strictly inside a version, so both are
+    /// confirmed like any other read. So are the band and manifest
+    /// directories of `sdk-manifests`, which a workload update writes into,
+    /// and a version directory's canonical spelling, which an alias rests on.
+    fn containing(&self, path: &Path) -> Option<PathBuf> {
+        let path = lexically_normalize(path);
+        if let Some((version, below)) = self.roots.version_of(&path)
+            && below > 0
+        {
+            return Some(version);
+        }
+        self.aliases
+            .iter()
+            .find(|alias| path.starts_with(alias) && path != **alias)
+            .cloned()
+    }
+}
+
 /// The workspace's served-TFM verdict for an entry project
 /// ([`Workspace::served_tfm_for_project`], fsproj 3.3d round 19). The
 /// assembly-env layer keys its assets-target selection on this, and the
@@ -282,6 +516,8 @@ impl Workspace {
         Self {
             projects: HashMap::new(),
             projects_generation: ProjectsGeneration(0),
+            checker: ReadChecks::default(),
+            evaluated: Cell::new(0),
             env,
             extra_build_properties,
         }
@@ -328,15 +564,73 @@ impl Workspace {
         self.projects_generation.0 += 1;
     }
 
+    /// Watch events named `paths`: forget what the evaluations' files held at
+    /// each, so the next validation re-reads it whatever its stamp says.
+    pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        self.checker.hint(paths);
+    }
+
     /// Which generation of the project-evaluation cache lookups are served
     /// from now. Two lookups observed under one generation read the same
     /// on-disk project state — the cache is the only path to an evaluation,
-    /// and a generation ends only when [`Self::invalidate_projects`] drops
-    /// every entry — so a consumer accumulating facts across many lookups
-    /// (the stepped `workspace/diagnostic` sweep) checks it to know its facts
-    /// are mutually consistent.
+    /// and a generation ends whenever an evaluation it served is dropped
+    /// ([`Self::invalidate_projects`], or a validation that finds its reads
+    /// moved) — so a consumer accumulating facts across many lookups (the
+    /// stepped `workspace/diagnostic` sweep, the semantic layer's folds)
+    /// checks it to know its facts are mutually consistent.
     pub fn projects_generation(&self) -> ProjectsGeneration {
         self.projects_generation
+    }
+
+    /// Start a dispatch-loop generation at time `now`
+    /// ([`crate::vfs`]): from now until [`Self::end_generation`], the first
+    /// lookup of each cached evaluation confirms its reads against the disk,
+    /// and every later lookup in the generation trusts that answer.
+    ///
+    /// Outside a generation (the server's work before its loop starts, and
+    /// code that drives the workspace directly, as unit tests do) a cached
+    /// evaluation is served as it is.
+    pub fn begin_generation(&mut self, now: Nanos) {
+        self.checker.begin_generation(now);
+        self.evaluated.set(0);
+    }
+
+    /// End the generation, returning what reading evaluations cost it.
+    pub fn end_generation(&mut self) -> EvaluationCounts {
+        EvaluationCounts {
+            evaluated: self.evaluated.get(),
+            validation: self.checker.end_generation(),
+        }
+    }
+
+    /// Confirm the cached evaluation of `project` for the open generation:
+    /// every read it depends on (bar the immutable contents it was told it
+    /// may skip, see `Evaluation::checks`) is asked again, once per
+    /// generation, and an entry any of whose answers moved is dropped, so the
+    /// lookup that follows evaluates afresh. Dropping it ends the
+    /// [`Self::projects_generation`]. Nothing happens outside a generation, or
+    /// for a project not cached.
+    pub fn validate(&mut self, project: &ProjectId) {
+        let Some(generation) = self.checker.generation() else {
+            return;
+        };
+        let Some(cached) = self.projects.get_mut(project) else {
+            return;
+        };
+        if cached.validated_in == Some(generation) {
+            return;
+        }
+        let checker = &self.checker;
+        if cached.checks.iter().all(|check| checker.holds(check)) {
+            cached.validated_in = Some(generation);
+        } else {
+            tracing::info!(
+                project = %project.as_path().display(),
+                "a project evaluation's inputs moved; evaluating it again"
+            );
+            self.projects.remove(project);
+            self.projects_generation.0 += 1;
+        }
     }
 
     /// The target framework the project at `project_path` was evaluated
@@ -463,11 +757,10 @@ impl Workspace {
     /// absent — when an SDK *was* resolved, [`Self::dotnet_root_for_project`]
     /// uses that instead, so the probe's multi-root ambiguity never bites.
     fn probe_dotnet_root(&self, project_path: &Path) -> Option<PathBuf> {
-        let disc = SdkDiscovery::for_project(project_path, &self.env).ok()?;
-        if let Ok(SdkResolution::Single(paths)) = disc.resolve(
-            "Microsoft.NET.Sdk",
-            &Unobserved::Evaluation.msbuild_observer(),
-        ) && let Some(install_root) = install_root_from_sdk_path(&paths.root)
+        let observer = Unobserved::EnvResolution.msbuild_observer();
+        let disc = SdkDiscovery::for_project(project_path, &self.env, &observer).ok()?;
+        if let Ok(SdkResolution::Single(paths)) = disc.resolve("Microsoft.NET.Sdk", &observer)
+            && let Some(install_root) = install_root_from_sdk_path(&paths.root)
         {
             return Some(install_root.to_path_buf());
         }
@@ -792,7 +1085,23 @@ impl Workspace {
     /// deferral refresh runs after every dispatched message and already holds
     /// [`ProjectId`]s, so re-deriving them would be pure cost there.
     pub fn project_evaluation_of(&mut self, project: &ProjectId) -> ProjectEvaluation<'_> {
-        match self.evaluated_of(project) {
+        self.validate(project);
+        self.project_evaluation_as_last_confirmed(project)
+    }
+
+    /// [`Self::project_evaluation_of`] without confirming a cached evaluation
+    /// for the open generation: what the last generation that read it found.
+    ///
+    /// For the deferral refresh, which runs after every dispatched message: a
+    /// message that read the project has confirmed it already, and one that
+    /// did not (a `didChange`, a refresh reply) would otherwise pay a
+    /// validation for a report. A report built on a project whose files moved
+    /// unwatched is corrected by the next message that reads the project.
+    pub fn project_evaluation_as_last_confirmed(
+        &mut self,
+        project: &ProjectId,
+    ) -> ProjectEvaluation<'_> {
+        match self.cached_or_evaluated(project) {
             Some(evaluated) => ProjectEvaluation::Evaluated {
                 parsed: &evaluated.parsed,
                 not_an_inner_build: evaluated.not_an_inner_build,
@@ -815,11 +1124,35 @@ impl Workspace {
     /// that path are, and the entry can never hold another spelling's
     /// evaluation.
     fn evaluated_of(&mut self, project: &ProjectId) -> Option<&EvaluatedProject> {
+        self.validate(project);
+        self.cached_or_evaluated(project)
+    }
+
+    /// The cached evaluation of `project` as it is, without confirming it for
+    /// the open generation; evaluated, as [`Self::evaluated_of`] would, if
+    /// none is cached.
+    fn cached_or_evaluated(&mut self, project: &ProjectId) -> Option<&EvaluatedProject> {
         let env = &self.env;
         let extra_build_properties = &self.extra_build_properties;
+        let evaluated = &self.evaluated;
+        let generation = self.checker.generation();
+        // Read before the evaluation starts, as the generation's time is.
+        let started = self.checker.now();
+        let checker = &self.checker;
         self.projects
             .entry(project.clone())
-            .or_insert_with(|| evaluate_project(project.as_path(), env, extra_build_properties))
+            .or_insert_with(|| {
+                let evaluation =
+                    evaluate_project(project.as_path(), env, extra_build_properties, evaluated);
+                CachedEvaluation {
+                    checks: evaluation
+                        .checks(|version| nuget_committed_before(checker, version, started)),
+                    evaluated: evaluation.evaluated,
+                    // Read in this generation, so confirmed for it.
+                    validated_in: generation,
+                }
+            })
+            .evaluated
             .as_ref()
     }
 
@@ -861,9 +1194,11 @@ impl Workspace {
     /// (recurse only through `.fsproj`; `.csproj` is a terminal boundary owned
     /// by the C# sidecar).
     ///
-    /// **Evaluates every node fresh and leaves the project cache untouched.**
-    /// Unlike [`Workspace::project`], this does not read or populate
-    /// `Workspace.projects`; each node is parsed from disk via
+    /// **Evaluates every node fresh and leaves the project cache untouched**,
+    /// except that the entry reads its cached evaluation when this
+    /// generation has confirmed it (the same evaluation, already shown
+    /// current). Unlike [`Workspace::project`], this does not populate
+    /// `Workspace.projects`; every other node is parsed from disk via
     /// `evaluate_project`. That is load-bearing for its consumer, the `.fsproj`
     /// reference-cycle diagnostics:
     /// - **No pinning.** A `.fsproj` diagnostic must not pin the project cache —
@@ -921,6 +1256,18 @@ impl Workspace {
         // through an already-normalised edge target. Compare normalised so an
         // entry spelled with `.`/`..` still recognises itself.
         let entry_key = lexically_normalize(entry);
+        // The entry's own cached evaluation, when this generation has
+        // confirmed it and it is of exactly this spelling: the walk's
+        // seedless evaluation of the entry is the same computation, so it
+        // reads the cache rather than evaluating again.
+        let generation = self.checker.generation();
+        let entry_id = ProjectId::new(entry);
+        let confirmed_entry = self
+            .projects
+            .get(&entry_id)
+            .filter(|cached| generation.is_some() && cached.validated_in == generation)
+            .filter(|_| entry_id.as_path() == entry)
+            .map(|cached| cached.evaluated.as_ref());
         build_graph(entry, |path| {
             // The map's keys are canonicalised; graph paths are only
             // lexically normalised. A path that fails to canonicalise (not
@@ -930,16 +1277,31 @@ impl Workspace {
                 .ok()
                 .and_then(|canon| producer_tfms.get(&canon))
                 .map(String::as_str);
+            let is_entry = lexically_normalize(path) == entry_key;
             resolve_node_uncached(
                 path,
-                &self.env,
-                &self.extra_build_properties,
+                NodeContext {
+                    env: &self.env,
+                    extra_build_properties: &self.extra_build_properties,
+                    evaluated: &self.evaluated,
+                },
                 seed_tfm,
                 purpose,
-                lexically_normalize(path) == entry_key,
+                is_entry,
+                confirmed_entry.filter(|_| is_entry && path == entry),
             )
         })
     }
+}
+
+/// What every node of a graph walk is evaluated with: the workspace's SDK
+/// discovery environment and build properties, and its count of evaluations
+/// run.
+#[derive(Clone, Copy)]
+struct NodeContext<'a> {
+    env: &'a SdkDiscoveryEnv,
+    extra_build_properties: &'a HashMap<String, String>,
+    evaluated: &'a Cell<u64>,
 }
 
 /// What a graph walk is *for* — the two consumers need different edge
@@ -1065,12 +1427,17 @@ fn evaluated_output_name(path: &Path, evaluated: &EvaluatedProject) -> Option<St
 /// outcome as a [`NodeTfm`] for the env fold's output-DLL location.
 fn resolve_node_uncached(
     path: &Path,
-    env: &SdkDiscoveryEnv,
-    extra_build_properties: &HashMap<String, String>,
+    context: NodeContext<'_>,
     seed_tfm: Option<&str>,
     purpose: GraphWalkPurpose,
     is_entry: bool,
+    cached: Option<Option<&EvaluatedProject>>,
 ) -> NodeResult {
+    let NodeContext {
+        env,
+        extra_build_properties,
+        evaluated,
+    } = context;
     if !Unobserved::EnvResolution.exists(path) {
         return NodeResult::NotFound;
     }
@@ -1079,12 +1446,21 @@ fn resolve_node_uncached(
     }
     // Outer (seedless) evaluation first: its first-pass view is the source of
     // truth for what the project currently declares, and its edges are the
-    // first-declared inner build's (via `select_target_framework`).
-    let Some(outer) = evaluate_project(path, env, extra_build_properties) else {
+    // first-declared inner build's (via `select_target_framework`). `cached`
+    // is that evaluation when the caller already holds it confirmed.
+    let fresh;
+    let outer = match cached {
+        Some(cached) => cached,
+        None => {
+            fresh = evaluate_project(path, env, extra_build_properties, evaluated).evaluated;
+            fresh.as_ref()
+        }
+    };
+    let Some(outer) = outer else {
         return NodeResult::resolved(Vec::new());
     };
-    let outer_edges = edges_of(&outer, purpose, is_entry);
-    let outer_suppressed = references_suppressed(&outer, purpose);
+    let outer_edges = edges_of(outer, purpose, is_entry);
+    let outer_suppressed = references_suppressed(outer, purpose);
     if outer.not_an_inner_build {
         // Ahead of the caller-owned fast path below, for the reason
         // `Workspace::served_tfm_for_project` states: caller ownership excuses
@@ -1110,7 +1486,7 @@ fn resolve_node_uncached(
                 Some(tfm) => NodeTfm::Known(tfm.clone()),
                 None => NodeTfm::NoneDeclared,
             },
-            output_name: evaluated_output_name(path, &outer),
+            output_name: evaluated_output_name(path, outer),
             references_uncertain: outer_suppressed,
         };
     }
@@ -1139,7 +1515,7 @@ fn resolve_node_uncached(
         return NodeResult::Resolved {
             edges: outer_edges,
             tfm: NodeTfm::Known(body.clone()),
-            output_name: evaluated_output_name(path, &outer),
+            output_name: evaluated_output_name(path, outer),
             references_uncertain: outer_suppressed,
         };
     }
@@ -1167,7 +1543,7 @@ fn resolve_node_uncached(
         return NodeResult::Resolved {
             edges: outer_edges,
             output_name: names_the_build
-                .then(|| evaluated_output_name(path, &outer))
+                .then(|| evaluated_output_name(path, outer))
                 .flatten(),
             tfm,
             references_uncertain: outer_suppressed,
@@ -1185,13 +1561,13 @@ fn resolve_node_uncached(
                 return NodeResult::Resolved {
                     edges: outer_edges,
                     tfm: NodeTfm::Known(current.clone()),
-                    output_name: evaluated_output_name(path, &outer),
+                    output_name: evaluated_output_name(path, outer),
                     references_uncertain: outer_suppressed,
                 };
             }
             let mut map = extra_build_properties.clone();
             seed_target_framework_global(&mut map, current);
-            return match evaluate_project(path, env, &map) {
+            return match evaluate_project(path, env, &map, evaluated).evaluated {
                 // The label describes the evaluation, as everywhere else: this
                 // seeded pass may itself turn out not to be an inner build,
                 // and only *it* can tell us — a `TreatAsLocalProperty` reached
@@ -1252,7 +1628,7 @@ fn resolve_node_uncached(
             for tfm in declared.iter().skip(1) {
                 let mut map = extra_build_properties.clone();
                 seed_target_framework_global(&mut map, tfm);
-                let Some(branch) = evaluate_project(path, env, &map) else {
+                let Some(branch) = evaluate_project(path, env, &map, evaluated).evaluated else {
                     return NodeResult::Resolved {
                         edges: Vec::new(),
                         tfm: NodeTfm::Unresolved,
@@ -1492,9 +1868,10 @@ pub(crate) fn asset_list_covers_compile(v: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case("compile") || part.eq_ignore_ascii_case("all"))
 }
 
-/// Read and evaluate `project_path`. Returns `None` on any failure
-/// (IO, XML, or evaluation) — the caller caches the `None` so we don't
-/// retry on every keystroke.
+/// Read and evaluate `project_path`, and say what that read. The evaluation
+/// is `None` on any failure (IO, XML, or evaluation) — the caller caches the
+/// `None` so we don't retry on every keystroke. Each MSBuild evaluation pass
+/// it runs is counted in `evaluated`.
 ///
 /// Builds a per-project [`SdkDiscovery`] from `env`; on
 /// [`crate::sdk_discovery::DiscoveryError`] (e.g. missing `$DOTNET_ROOT`,
@@ -1505,14 +1882,23 @@ fn evaluate_project(
     project_path: &Path,
     env: &SdkDiscoveryEnv,
     extra_build_properties: &HashMap<String, String>,
-) -> Option<EvaluatedProject> {
+    evaluated: &Cell<u64>,
+) -> Evaluation {
     let _span =
         tracing::info_span!("evaluate_project", project = %project_path.display()).entered();
-    let source = Unobserved::Evaluation
-        .read_to_string(project_path)
-        .map(crate::disk_text::without_bom)
-        .ok()?;
-    let disc = SdkDiscovery::for_project(project_path, env)
+    // The reads that prepare the evaluation: the project's text, and SDK
+    // discovery's `global.json` walk and `dotnet` probes.
+    let preparation = Observer::new();
+    let source = msbuild_observed::read_to_string(&preparation, project_path)
+        .map(crate::disk_text::without_bom);
+    let Ok(source) = source else {
+        return Evaluation {
+            evaluated: None,
+            reads: preparation.finish().0,
+            immutable: ImmutableRoots::default(),
+        };
+    };
+    let disc = SdkDiscovery::for_project(project_path, env, &preparation)
         .inspect_err(|err| {
             crate::log_warn!(
                 "SDK discovery failed; evaluating without resolver",
@@ -1521,14 +1907,38 @@ fn evaluate_project(
             );
         })
         .ok();
+    let mut immutable = disc
+        .as_ref()
+        .map_or_else(ImmutableRoots::default, |disc| ImmutableRoots {
+            dotnet: disc
+                .roots()
+                .iter()
+                .cloned()
+                .chain(disc.user_dotnet_root().map(Path::to_path_buf))
+                .collect(),
+            nuget: disc
+                .nuget_packages()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect(),
+        });
+    let reads = preparation.finish().0;
     let extras = build_properties(extra_build_properties);
-    let parsed = parse_with_optional_sdk(
+    let Some(parsed) = parse_with_optional_sdk(
         &source,
         project_path,
         &extras,
         &env.build_environment,
         disc.as_ref(),
-    )?;
+        evaluated,
+    ) else {
+        return Evaluation {
+            evaluated: None,
+            reads,
+            immutable,
+        };
+    };
+    let reads = reads.union(parsed.read_set.clone());
     // First-pass views, captured before any first-declared re-evaluation
     // (a `TfmChoice::Reseed` replaces `parsed` with an inner-build pass in
     // which an outer-gated `<TargetFrameworks>` may no longer exist).
@@ -1542,7 +1952,10 @@ fn evaluate_project(
         &extras,
         &env.build_environment,
         disc.as_ref(),
+        evaluated,
     );
+    // The second pass read on its own account, whether or not it is served.
+    let reads = reads.union(served.pass2_reads.unwrap_or_default());
     let parsed = served.parsed;
     let chosen_tfm = served.chosen_tfm;
     // Pass 1's provenance verdict cannot see a write that only pass 2 performs,
@@ -1561,15 +1974,22 @@ fn evaluate_project(
         .as_deref()
         .and_then(install_root_from_sdk_path)
         .map(Path::to_path_buf);
-    Some(EvaluatedProject {
-        parsed,
-        sdk_install_root,
-        chosen_tfm,
-        declared_tfms,
-        body_target_framework,
-        tfm_untrusted,
-        not_an_inner_build,
-    })
+    // The install the SDK resolved from, as the evaluation spelt its reads
+    // there (a root SDK discovery names may reach it through a symlink).
+    immutable.dotnet.extend(sdk_install_root.clone());
+    Evaluation {
+        evaluated: Some(EvaluatedProject {
+            parsed,
+            sdk_install_root,
+            chosen_tfm,
+            declared_tfms,
+            body_target_framework,
+            tfm_untrusted,
+            not_an_inner_build,
+        }),
+        reads,
+        immutable,
+    }
 }
 
 /// Mark an outer dispatch build served in place of a discarded inner one as
@@ -1607,6 +2027,9 @@ struct ServedEvaluation {
     /// document is an inner build — see
     /// [`EvaluatedProject::not_an_inner_build`], which this becomes.
     not_an_inner_build: bool,
+    /// The read set of the seeded second pass, when one ran, whether or not
+    /// it is the one served: a discarded pass decided `not_an_inner_build`.
+    pass2_reads: Option<ReadSet>,
 }
 
 /// Apply [`tfm_policy::tfm_choice`]'s decision: re-evaluate `pass1`'s project
@@ -1623,6 +2046,7 @@ fn select_target_framework(
     extras: &HashMap<String, String>,
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
+    evaluated: &Cell<u64>,
 ) -> ServedEvaluation {
     let choice = tfm_policy::tfm_choice(&pass1, extras);
     let Some(seed) = choice.reseed() else {
@@ -1646,6 +2070,7 @@ fn select_target_framework(
                 parsed: discarded_inner_build(pass1),
                 chosen_tfm: None,
                 not_an_inner_build: true,
+                pass2_reads: None,
             };
         }
         let chosen_tfm = choice.served().map(str::to_string);
@@ -1653,14 +2078,16 @@ fn select_target_framework(
             parsed: pass1,
             chosen_tfm,
             not_an_inner_build: false,
+            pass2_reads: None,
         };
     };
     let mut seeded = extras.clone();
     tfm_policy::seed_target_framework_global(&mut seeded, seed);
     let seed = seed.to_string();
-    match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
+    match parse_with_optional_sdk(source, project_path, &seeded, environment, disc, evaluated) {
         Some(pass2) => match tfm_policy::reseed_outcome(&pass2) {
             tfm_policy::ReseedOutcome::AsSeeded => ServedEvaluation {
+                pass2_reads: Some(pass2.read_set.clone()),
                 parsed: pass2,
                 chosen_tfm: Some(seed),
                 not_an_inner_build: false,
@@ -1682,6 +2109,7 @@ fn select_target_framework(
                 parsed: discarded_inner_build(pass1),
                 chosen_tfm: None,
                 not_an_inner_build: true,
+                pass2_reads: Some(pass2.read_set),
             },
         },
         // Same source, same resolver, and the seed key can't collide (a
@@ -1692,6 +2120,7 @@ fn select_target_framework(
             parsed: pass1,
             chosen_tfm: None,
             not_an_inner_build: false,
+            pass2_reads: None,
         },
     }
 }
@@ -1761,7 +2190,9 @@ fn parse_with_optional_sdk(
     extras: &HashMap<String, String>,
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
+    evaluated: &Cell<u64>,
 ) -> Option<ParsedProject> {
+    evaluated.set(evaluated.get() + 1);
     // Glob resolution is independent of SDK discovery, so both arms get the
     // filesystem-backed resolver. It borrows nothing, so it lives for the
     // whole function.
@@ -5342,6 +5773,604 @@ mod tests {
                 ws.dotnet_root_for_project(&proj).as_deref(),
                 Some(dotnet.as_path())
             );
+        }
+    }
+
+    /// Stage 3b: a cached evaluation carries what it read, and is confirmed
+    /// against the disk once per generation that reads it.
+    mod validation {
+        use super::*;
+        use borzoi_msbuild::observed::soundness::{self, Edit, Perturbation, Why};
+
+        /// A stub `Microsoft.NET.Sdk` of `version` under `dotnet`, whose
+        /// `Sdk.props` defines `define`.
+        fn install_sdk(dotnet: &Path, version: &str, define: &str) {
+            let sdk = dotnet.join(format!("sdk/{version}/Sdks/Microsoft.NET.Sdk/Sdk"));
+            fs::create_dir_all(&sdk).unwrap();
+            fs::write(
+                sdk.join("Sdk.props"),
+                format!(
+                    "<Project><PropertyGroup><DefineConstants>$(DefineConstants);{define}</DefineConstants></PropertyGroup></Project>"
+                ),
+            )
+            .unwrap();
+            fs::write(sdk.join("Sdk.targets"), "<Project />").unwrap();
+        }
+
+        /// A world with an SDK project that imports, globs, and sits under a
+        /// `Directory.Build.props`; its `.fsproj`, and the SDK discovery
+        /// environment. With `on_path`, the dotnet root is found by probing
+        /// `$PATH` rather than named by `$DOTNET_ROOT`.
+        fn world(root: &Path, on_path: bool) -> (PathBuf, SdkDiscoveryEnv) {
+            let dotnet = root.join("dotnet");
+            install_sdk(&dotnet, "10.0.100", "SDK_ONE");
+            // The launcher `$PATH` discovery looks for.
+            write_file(
+                &dotnet.join(if cfg!(windows) {
+                    "dotnet.exe"
+                } else {
+                    "dotnet"
+                }),
+                "",
+            );
+            write_file(
+                &root.join("repo/Directory.Build.props"),
+                "<Project><PropertyGroup><DefineConstants>$(DefineConstants);DBP</DefineConstants></PropertyGroup></Project>",
+            );
+            write_file(
+                &root.join("repo/common.props"),
+                "<Project><PropertyGroup><DefineConstants>$(DefineConstants);COMMON</DefineConstants></PropertyGroup></Project>",
+            );
+            let project = root.join("repo/App/App.fsproj");
+            write_file(
+                &project,
+                r#"<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../common.props" Condition="Exists('../common.props')" />
+  <ItemGroup><Compile Include="*.fs" /></ItemGroup>
+</Project>"#,
+            );
+            write_file(&root.join("repo/App/A.fs"), "module A\n");
+            let env = if on_path {
+                SdkDiscoveryEnv {
+                    search_path: Some(dotnet.clone().into_os_string()),
+                    ..SdkDiscoveryEnv::default()
+                }
+            } else {
+                SdkDiscoveryEnv {
+                    dotnet_root: Some(dotnet),
+                    ..SdkDiscoveryEnv::default()
+                }
+            };
+            (project, env)
+        }
+
+        /// What a cached evaluation is: the served pass, with the whole read
+        /// set behind it. A failed evaluation is the evaluation of an empty
+        /// `<Project />`, which no perturbation of the world evaluates to,
+        /// with the reads behind the failure.
+        fn evaluation(project: &Path, env: &SdkDiscoveryEnv) -> ParsedProject {
+            let evaluation = evaluate_project(project, env, &HashMap::new(), &Cell::new(0));
+            let parsed = match evaluation.evaluated {
+                Some(evaluated) => evaluated.parsed,
+                None => borzoi_msbuild::parse_fsproj(
+                    "<Project />",
+                    project,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                )
+                .unwrap(),
+            };
+            ParsedProject {
+                read_set: evaluation.reads,
+                ..parsed
+            }
+        }
+
+        /// The read-set soundness property of `docs/incremental-lsp-plan.md`
+        /// (D7), through the LSP: for every perturbation of the world that
+        /// leaves every read the workspace recorded standing (the `.fsproj`
+        /// text and SDK discovery's reads included, beside each pass's own),
+        /// evaluating again gives the same evaluation. Installing a newer SDK
+        /// moves it, so the sweep is not vacuous.
+        #[test]
+        fn the_workspace_read_set_is_sound() {
+            for on_path in [false, true] {
+                let tmp = TempDir::new().unwrap();
+                let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+                let (project, env) = world(&root, on_path);
+                let newer = root.join("dotnet/sdk/10.0.200/Sdks/Microsoft.NET.Sdk/Sdk");
+                let extra = [
+                    Perturbation {
+                        why: Why::Extra,
+                        edits: vec![
+                            Edit::Write(
+                                newer.join("Sdk.props"),
+                                b"<Project><PropertyGroup><DefineConstants>NEWER</DefineConstants></PropertyGroup></Project>".to_vec(),
+                            ),
+                            Edit::Write(newer.join("Sdk.targets"), b"<Project />".to_vec()),
+                        ],
+                    },
+                    Perturbation {
+                        why: Why::Extra,
+                        edits: vec![Edit::Write(
+                            root.join("repo/global.json"),
+                            br#"{ "sdk": { "version": "9.0.100", "rollForward": "disable" } }"#
+                                .to_vec(),
+                        )],
+                    },
+                ];
+                let tally = soundness::sweep(&root, &|| evaluation(&project, &env), &extra);
+                assert_eq!(
+                    tally.moved(Why::Extra),
+                    2,
+                    "an SDK install and a global.json pin each move the evaluation \
+                     (on_path = {on_path}): {tally:#?}"
+                );
+            }
+        }
+
+        /// The soundness property for what a cached evaluation confirms, its
+        /// checks ([`Evaluation::checks`]), rather than all it read: over
+        /// every perturbation of a project tree outside the installs (so
+        /// the immutable-content axiom holds), an evaluation whose checks
+        /// all stand is the evaluation a fresh one would be. The tree holds
+        /// the SDK project of [`world`], and a multi-targeted one whose
+        /// seeded pass imports a file that opts out of the seed (so that
+        /// pass is discarded) and probes for an import that is not there.
+        #[test]
+        fn the_workspace_checks_are_sound_outside_the_installs() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (sdk_project, env) = world(&root, false);
+            let multi = root.join("repo/Multi/Multi.fsproj");
+            write_file(
+                &multi,
+                r#"<Project>
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <Import Project="tfm.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+  <Import Project="maybe.props" Condition="Exists('maybe.props')" />
+  <ItemGroup><Compile Include="M.fs" /></ItemGroup>
+</Project>"#,
+            );
+            write_file(
+                &root.join("repo/Multi/tfm.props"),
+                r#"<Project TreatAsLocalProperty="TargetFramework" />"#,
+            );
+            write_file(&root.join("repo/Multi/M.fs"), "module M\n");
+            for project in [sdk_project, multi] {
+                let checked = || {
+                    let evaluation =
+                        evaluate_project(&project, &env, &HashMap::new(), &Cell::new(0));
+                    let read_set: ReadSet = evaluation
+                        .checks(|_| false)
+                        .into_iter()
+                        .map(|check| check.read().clone())
+                        .collect();
+                    ParsedProject {
+                        read_set,
+                        ..evaluation_of(&project, evaluation.evaluated)
+                    }
+                };
+                let tally = soundness::sweep(&root.join("repo"), &checked, &[]);
+                assert!(
+                    tally.moved(Why::Rewrite) > 0 && tally.moved(Why::CreateAbsent) > 0,
+                    "{}: {tally:#?}",
+                    project.display()
+                );
+            }
+        }
+
+        /// A version's canonical spelling is an alias for it only when the
+        /// version directory itself was canonicalised: a symlink below a
+        /// version leads somewhere that is not that version.
+        #[test]
+        fn only_a_version_directory_canonicalised_gives_an_alias() {
+            let roots = ImmutableRoots {
+                dotnet: vec![PathBuf::from("/d")],
+                nuget: vec![],
+            };
+            let canonical = |path: &str, to: &str| Read {
+                path: PathBuf::from(path),
+                observation: Observation::Canonical(Ok(PathBuf::from(to))),
+            };
+            let below = [canonical("/d/sdk/1.0.0/Sdks/X/Sdk", "/repo/Sdks/X/Sdk")];
+            let versions = roots.versions(below.iter());
+            assert_eq!(versions.containing(Path::new("/repo/App.fsproj")), None);
+            let itself = [canonical("/d/sdk/1.0.0", "/real/sdk/1.0.0")];
+            let versions = roots.versions(itself.iter());
+            assert_eq!(
+                versions.containing(Path::new("/real/sdk/1.0.0/x.props")),
+                Some(PathBuf::from("/real/sdk/1.0.0"))
+            );
+        }
+
+        /// A package version's contents are trusted only once its
+        /// extraction was committed (`.nupkg.metadata` written) before the
+        /// evaluation began: an evaluation racing an extraction confirms
+        /// what it read inside it, so finishing the extraction is noticed
+        /// (Codex).
+        #[test]
+        fn a_package_is_trusted_only_once_committed_before_the_evaluation() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let nuget = root.join("nuget");
+            let version = nuget.join("pkg/1.0.0");
+            write_file(&version.join("Sdk/Sdk.props"), "<Project />");
+            let observer = Observer::new();
+            let _ = msbuild_observed::read_to_string(&observer, &version.join("Sdk/Sdk.props"));
+            let _ = msbuild_observed::kind(&observer, &version.join("Sdk/Sdk.targets"));
+            let evaluation = Evaluation {
+                evaluated: None,
+                reads: observer.finish().0,
+                immutable: ImmutableRoots {
+                    dotnet: vec![],
+                    nuget: vec![nuget.clone()],
+                },
+            };
+            let inside = |checks: &[Check]| {
+                checks
+                    .iter()
+                    .filter(|check| check.read().path.starts_with(&version))
+                    .map(|check| check.read().path.clone())
+                    .collect::<Vec<_>>()
+            };
+            let mut checker = ReadChecks::default();
+            let mut checks_at = |at: Nanos| {
+                checker.begin_generation(at);
+                let started = checker.now();
+                let checks = evaluation.checks(|v| nuget_committed_before(&checker, v, started));
+                checker.end_generation();
+                inside(&checks)
+            };
+            // Mid-extraction: no marker, so both reads are confirmed.
+            assert_eq!(checks_at(Nanos(i128::MAX / 2)).len(), 2);
+            write_file(&version.join(".nupkg.metadata"), "{}");
+            // Committed just now: the evaluation may have raced it.
+            let now = Nanos::of(std::time::SystemTime::now());
+            assert_eq!(checks_at(now).len(), 2);
+            // Committed long before: the reads inside are trusted, and the
+            // version's existence is what is confirmed. A host whose stamps
+            // carry no change time can never show the marker settled
+            // (`crate::vfs::Stamp::is_racy`), so there the reads stay.
+            let expected = if cfg!(unix) {
+                vec![version.clone()]
+            } else {
+                inside(&evaluation.checks(|_| false))
+            };
+            assert_eq!(checks_at(Nanos(i128::MAX / 2)), expected);
+        }
+
+        /// Inside a version shown to exist, an answer or an absence is
+        /// trusted, but a read that failed otherwise is confirmed: the
+        /// failure can clear (Codex).
+        #[test]
+        fn a_failed_read_inside_a_version_is_confirmed() {
+            let failure = |kind: std::io::ErrorKind| {
+                msbuild_observed::Failure::of(&std::io::Error::from(kind))
+            };
+            let read = |path: &str, observation: Observation| Read {
+                path: PathBuf::from(path),
+                observation,
+            };
+            let reads = [
+                read(
+                    "/d/sdk/1.0.0/Sdk.props",
+                    Observation::Text(Err(failure(std::io::ErrorKind::PermissionDenied))),
+                ),
+                read(
+                    "/d/sdk/1.0.0/Sdk.targets",
+                    Observation::Text(Ok(msbuild_observed::TextDigest::of("<Project />"))),
+                ),
+                read(
+                    "/d/sdk/1.0.0/absent.props",
+                    Observation::Kind(Err(failure(std::io::ErrorKind::NotFound))),
+                ),
+                read(
+                    "/d/sdk/1.0.0/Sdks",
+                    Observation::Listing(Ok(vec![msbuild_observed::Listed::Unreadable(
+                        msbuild_observed::Failure::of(&std::io::Error::other("transient")),
+                    )])),
+                ),
+            ];
+            let evaluation = Evaluation {
+                evaluated: None,
+                reads: reads.iter().cloned().collect(),
+                immutable: ImmutableRoots {
+                    dotnet: vec![PathBuf::from("/d")],
+                    nuget: vec![],
+                },
+            };
+            let mut checked: Vec<PathBuf> = evaluation
+                .checks(|_| true)
+                .iter()
+                .map(|check| check.read().path.clone())
+                .collect();
+            checked.sort();
+            assert_eq!(
+                checked,
+                [
+                    "/d/sdk/1.0.0",
+                    "/d/sdk/1.0.0/Sdk.props",
+                    "/d/sdk/1.0.0/Sdks"
+                ]
+                .map(PathBuf::from)
+            );
+        }
+
+        /// The served pass of `evaluated`, or for a failed evaluation the
+        /// evaluation of an empty `<Project />`.
+        fn evaluation_of(project: &Path, evaluated: Option<EvaluatedProject>) -> ParsedProject {
+            match evaluated {
+                Some(evaluated) => evaluated.parsed,
+                None => borzoi_msbuild::parse_fsproj(
+                    "<Project />",
+                    project,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                )
+                .unwrap(),
+            }
+        }
+
+        /// Which reads are exempt from validation as immutable contents.
+        #[test]
+        fn immutable_contents_lie_strictly_inside_a_version() {
+            let roots = ImmutableRoots {
+                dotnet: vec![PathBuf::from("/d")],
+                nuget: vec![PathBuf::from("/n")],
+            };
+            let cases = [
+                ("/d/sdk/10.0.100/Sdks/X/Sdk/Sdk.props", true),
+                ("/d/sdk/10.0.100/absent.props", true),
+                ("/d/packs/Microsoft.NETCore.App.Ref/10.0.0/data/x", true),
+                (
+                    "/d/sdk-manifests/10.0.100/microsoft.net.sdk.ios/26.0.1/WorkloadManifest.json",
+                    true,
+                ),
+                (
+                    "/n/fsharp.core/9.0.100/lib/netstandard2.1/FSharp.Core.dll",
+                    true,
+                ),
+                // The directories holding the versions, and the versions
+                // themselves: an install or an uninstall moves them.
+                ("/d/sdk", false),
+                ("/d/sdk/10.0.100", false),
+                ("/d/packs/Microsoft.NETCore.App.Ref", false),
+                ("/d/packs/Microsoft.NETCore.App.Ref/10.0.0", false),
+                ("/n/fsharp.core", false),
+                ("/n/fsharp.core/9.0.100", false),
+                // A workload update writes into a band and a manifest.
+                ("/d/sdk-manifests/10.0.100/microsoft.net.sdk.ios", false),
+                (
+                    "/d/sdk-manifests/10.0.100/microsoft.net.sdk.ios/WorkloadManifest.json",
+                    false,
+                ),
+                // Not a version.
+                ("/d/sdk/preview/x.props", false),
+                ("/d/packs/X/latest/x", false),
+                ("/d/metadata/workloads/10.0.100/userlocal", false),
+                // A `..` is taken lexically: one that stays inside the
+                // version, and ones that leave it.
+                ("/d/sdk/10.0.100/Sdks/X/Sdk/../../Y/Sdk/Sdk.props", true),
+                ("/d/sdk/10.0.100/Sdks/X/Sdk/../../../..", false),
+                ("/d/sdk/10.0.100/../../elsewhere/x", false),
+                // Not under a root.
+                ("/elsewhere/sdk/10.0.100/x", false),
+                // The canonical spelling of a version a read resolved.
+                ("/real/sdk/10.0.100/Sdks/X/Sdk/Sdk.props", true),
+                ("/real/sdk/10.0.100", false),
+                ("/real/sdk/10.0.200/x", false),
+            ];
+            // A canonicalisation that resolved a version to another tree.
+            let read = Read {
+                path: PathBuf::from("/d/sdk/10.0.100"),
+                observation: Observation::Canonical(Ok(PathBuf::from("/real/sdk/10.0.100"))),
+            };
+            let versions = roots.versions(std::slice::from_ref(&read));
+            for (path, expected) in cases {
+                assert_eq!(
+                    versions.containing(Path::new(path)).is_some(),
+                    expected,
+                    "{path}"
+                );
+            }
+        }
+
+        /// The workspace serves a cached evaluation as it is outside a
+        /// generation, confirms it once per generation inside one, and
+        /// evaluates again, ending the projects generation, once a project
+        /// file it read has moved.
+        #[test]
+        fn a_moved_project_file_is_noticed_in_the_next_generation() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (_, env) = world(&root, false);
+            let file = root.join("repo/App/A.fs");
+            let mut ws = Workspace::with_env(env);
+            let at = |ws: &mut Workspace| {
+                // Old enough that no stamp is racy, so an unchanged file is
+                // confirmed by `stat` alone.
+                ws.begin_generation(Nanos(i128::MAX / 2));
+            };
+            at(&mut ws);
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            let first = ws.end_generation();
+            assert!(first.evaluated > 0);
+            let generation = ws.projects_generation();
+
+            at(&mut ws);
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            let confirmed = ws.end_generation();
+            assert_eq!(confirmed.evaluated, 0, "{confirmed:?}");
+            assert!(confirmed.validation.stats > 0, "{confirmed:?}");
+            assert_eq!(ws.projects_generation(), generation);
+
+            fs::remove_file(root.join("repo/common.props")).unwrap();
+            // Outside a generation the cache is served as it is.
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            at(&mut ws);
+            assert!(!ws.symbols_for(&file).contains("COMMON"));
+            let moved = ws.end_generation();
+            assert!(moved.evaluated > 0, "{moved:?}");
+            assert_ne!(ws.projects_generation(), generation);
+        }
+
+        /// A file only the second, seeded pass reads (an import gated on the
+        /// target framework a multi-targeted project is re-evaluated under)
+        /// is one the cached evaluation depends on.
+        #[test]
+        fn a_file_only_the_seeded_pass_reads_is_confirmed() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let project = root.join("App/App.fsproj");
+            write_file(
+                &project,
+                r#"<Project>
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <Import Project="tfm.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
+</Project>"#,
+            );
+            let props = |define: &str| {
+                format!(
+                    "<Project><PropertyGroup><DefineConstants>$(DefineConstants);{define}</DefineConstants></PropertyGroup></Project>"
+                )
+            };
+            write_file(&root.join("App/tfm.props"), &props("ONE"));
+            write_file(&root.join("App/A.fs"), "module A\n");
+            let file = root.join("App/A.fs");
+            let mut ws = Workspace::default();
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert!(ws.symbols_for(&file).contains("ONE"));
+            ws.end_generation();
+            write_file(&root.join("App/tfm.props"), &props("TWO"));
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert!(ws.symbols_for(&file).contains("TWO"));
+            ws.end_generation();
+        }
+
+        /// A read inside a version directory is trusted only while that
+        /// version is shown to exist: an `Exists`-guarded import of a file in
+        /// a version not yet installed sees the install.
+        #[test]
+        fn a_version_installed_after_the_evaluation_is_seen() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (_, env) = world(&root, false);
+            let import = root.join("dotnet/packs/P/1.0.0/x.props");
+            let project = root.join("repo/Lib/Lib.fsproj");
+            write_file(
+                &project,
+                &format!(
+                    r#"<Project>
+  <Import Project="{0}" Condition="Exists('{0}')" />
+  <ItemGroup><Compile Include="L.fs" /></ItemGroup>
+</Project>"#,
+                    import.display()
+                ),
+            );
+            write_file(&root.join("repo/Lib/L.fs"), "module L\n");
+            let file = root.join("repo/Lib/L.fs");
+            let mut ws = Workspace::with_env(env);
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert!(!ws.symbols_for(&file).contains("INSTALLED"));
+            ws.end_generation();
+            write_file(
+                &import,
+                "<Project><PropertyGroup><DefineConstants>$(DefineConstants);INSTALLED</DefineConstants></PropertyGroup></Project>",
+            );
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert!(ws.symbols_for(&file).contains("INSTALLED"));
+            ws.end_generation();
+        }
+
+        /// The reads of a pass whose evaluation is discarded still decide
+        /// the entry: a seeded pass that meets a `TreatAsLocalProperty`
+        /// opt-out makes the target framework untrusted, and removing the
+        /// opt-out trusts it again.
+        #[test]
+        fn a_discarded_pass_reads_are_confirmed() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let project = root.join("App/App.fsproj");
+            write_file(
+                &project,
+                r#"<Project>
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <Import Project="tfm.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+</Project>"#,
+            );
+            let props = root.join("App/tfm.props");
+            write_file(
+                &props,
+                r#"<Project TreatAsLocalProperty="TargetFramework" />"#,
+            );
+            let mut ws = Workspace::default();
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert_eq!(ws.served_tfm_for_project(&project), ServedTfm::Untrusted);
+            ws.end_generation();
+            write_file(&props, "<Project />");
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert_eq!(
+                ws.served_tfm_for_project(&project),
+                ServedTfm::Tfm("net8.0".to_string())
+            );
+            ws.end_generation();
+        }
+
+        /// The graph walk reads the entry's cached evaluation only when the
+        /// open generation has confirmed it: a walk that comes first in a
+        /// generation evaluates the entry as it is on disk.
+        #[test]
+        fn the_graph_walk_reads_only_a_confirmed_entry() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let a = root.join("A/A.fsproj");
+            let b = root.join("B/B.fsproj");
+            write_file(&a, "<Project />");
+            write_file(&b, "<Project />");
+            let mut ws = Workspace::default();
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert!(ws.project(&a).is_some());
+            assert_eq!(ws.project_graph(&a).nodes.len(), 1);
+            ws.end_generation();
+            write_file(
+                &a,
+                r#"<Project><ItemGroup><ProjectReference Include="../B/B.fsproj" /></ItemGroup></Project>"#,
+            );
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert_eq!(ws.project_graph(&a).nodes.len(), 2);
+            ws.end_generation();
+        }
+
+        /// A rewrite of a file inside an SDK version is not looked for: the
+        /// read is an immutable content. Installing a version beside it is.
+        #[test]
+        fn an_sdk_version_is_trusted_but_its_listing_is_confirmed() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (_, env) = world(&root, false);
+            let file = root.join("repo/App/A.fs");
+            let mut ws = Workspace::with_env(env);
+            let generation = |ws: &mut Workspace, at: i128| ws.begin_generation(Nanos(at));
+            generation(&mut ws, i128::MAX / 2);
+            assert!(ws.symbols_for(&file).contains("SDK_ONE"));
+            ws.end_generation();
+
+            install_sdk(&root.join("dotnet"), "10.0.100", "REWRITTEN");
+            generation(&mut ws, i128::MAX / 2 + 1);
+            let symbols = ws.symbols_for(&file);
+            assert!(
+                symbols.contains("SDK_ONE") && !symbols.contains("REWRITTEN"),
+                "{symbols:?}"
+            );
+            ws.end_generation();
+
+            install_sdk(&root.join("dotnet"), "10.0.200", "SDK_TWO");
+            generation(&mut ws, i128::MAX / 2 + 2);
+            assert!(ws.symbols_for(&file).contains("SDK_TWO"));
+            ws.end_generation();
         }
     }
 }

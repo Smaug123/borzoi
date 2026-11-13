@@ -182,11 +182,15 @@ fn project(dir: &Path, n: usize) -> (Vec<PathBuf>, Vec<String>) {
     (items, texts)
 }
 
-/// What one stretch of messages opened and `stat`ed.
+/// What one stretch of messages opened and `stat`ed to read sources, how many
+/// MSBuild evaluations it ran, and how many files it opened to confirm the
+/// cached evaluation (`borzoi::workspace::Workspace::validate`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Reads {
     opens: u64,
     stats: u64,
+    evaluated: u64,
+    validation_opens: u64,
 }
 
 /// What a keystroke and the requests after it read.
@@ -200,10 +204,15 @@ struct Counted {
     other_tokens: Reads,
 }
 
+/// [`Counted`], and the paths the other document's request `stat`ed to
+/// confirm the cached evaluation, which depend on how deep the temporary
+/// directory sits.
+type Run = (Counted, u64);
+
 /// Counts summed over the generations recorded since `from`, checking that
 /// they are numbered consecutively and that there are at least `messages` of
 /// them (one per message sent, before any the server's own requests cost).
-fn reads_since(client: &mut Client, from: usize, messages: usize) -> (Reads, usize) {
+fn reads_since(client: &mut Client, from: usize, messages: usize) -> (Reads, usize, u64) {
     let generations = client.generations();
     let new = &generations[from..];
     assert!(
@@ -221,11 +230,14 @@ fn reads_since(client: &mut Client, from: usize, messages: usize) -> (Reads, usi
     let reads = Reads {
         opens: new.iter().map(|g| g.counts.opens).sum(),
         stats: new.iter().map(|g| g.counts.stats).sum(),
+        evaluated: new.iter().map(|g| g.evaluations.evaluated).sum(),
+        validation_opens: new.iter().map(|g| g.evaluations.validation.opens).sum(),
     };
-    (reads, generations.len())
+    let validation_stats = new.iter().map(|g| g.evaluations.validation.stats).sum();
+    (reads, generations.len(), validation_stats)
 }
 
-fn run(n: usize, edited: usize, other: usize, pull: bool, clock: Clock) -> Counted {
+fn run(n: usize, edited: usize, other: usize, pull: bool, clock: Clock) -> Run {
     let tmp = TempDir::new().unwrap();
     let (items, mut texts) = project(tmp.path(), n);
     let mut client = Client::start(tmp.path(), pull, clock);
@@ -253,7 +265,7 @@ fn run(n: usize, edited: usize, other: usize, pull: bool, clock: Clock) -> Count
 
     let mark = client.generations().len();
     tokens(&mut client, edited);
-    let (cold_tokens, mark) = reads_since(&mut client, mark, 1);
+    let (cold_tokens, mark, _) = reads_since(&mut client, mark, 1);
 
     texts[edited].push_str("// typed");
     client.notify(
@@ -264,17 +276,20 @@ fn run(n: usize, edited: usize, other: usize, pull: bool, clock: Clock) -> Count
         }),
     );
     tokens(&mut client, edited);
-    let (keystroke_and_tokens, mark) = reads_since(&mut client, mark, 2);
+    let (keystroke_and_tokens, mark, _) = reads_since(&mut client, mark, 2);
 
     tokens(&mut client, other);
-    let (other_tokens, _) = reads_since(&mut client, mark, 1);
+    let (other_tokens, _, validation_stats) = reads_since(&mut client, mark, 1);
 
     client.shut_down();
-    Counted {
-        cold_tokens,
-        keystroke_and_tokens,
-        other_tokens,
-    }
+    (
+        Counted {
+            cold_tokens,
+            keystroke_and_tokens,
+            other_tokens,
+        },
+        validation_stats,
+    )
 }
 
 /// Ahead of the host's clock by more than the racy window, so the files the
@@ -303,6 +318,12 @@ proptest! {
     /// comment keystroke and the request after it open nothing and `stat`
     /// each unbuffered item once, and so does a second document's request,
     /// which validates the cached fold.
+    ///
+    /// The project was evaluated when its documents opened, and no request
+    /// after that evaluates it again: the cold request's env build reads the
+    /// confirmed evaluation rather than evaluating the entry afresh, and
+    /// every later request confirms it by `stat` alone (some `stat`, so the
+    /// confirmation runs), opening nothing.
     #[test]
     fn after_the_cold_fold_a_keystroke_stats_and_opens_nothing(
         (n, edited, other, pull) in cases(),
@@ -311,35 +332,54 @@ proptest! {
         // A non-unix host's stamps have no change time, so they are always
         // racy (`borzoi::vfs::Stamp::ctime`) and every request re-reads.
         let warm = if cfg!(unix) {
-            Reads { opens: 0, stats: n_minus_2 }
+            Reads { opens: 0, stats: n_minus_2, evaluated: 0, validation_opens: 0 }
         } else {
-            Reads { opens: n_minus_2, stats: 0 }
+            Reads { opens: n_minus_2, stats: 0, evaluated: 0, validation_opens: 1 }
         };
+        let (counted, validation_stats) = run(n, edited, other, pull, settled());
         prop_assert_eq!(
-            run(n, edited, other, pull, settled()),
+            counted,
             Counted {
-                cold_tokens: Reads { opens: n_minus_2, stats: 0 },
+                cold_tokens: Reads {
+                    opens: n_minus_2,
+                    stats: 0,
+                    evaluated: 0,
+                    validation_opens: warm.validation_opens,
+                },
                 keystroke_and_tokens: warm,
                 other_tokens: warm,
             }
         );
+        prop_assert!(validation_stats > 0, "the cached evaluation was not confirmed");
     }
 
     /// The control: with every stamp racy, every request that reads the fold
-    /// re-reads each unbuffered item, so the count above is the racy rule's
-    /// to make and not an artefact of a server that never looks.
+    /// re-reads each unbuffered item, and each generation that reads the
+    /// evaluation re-reads the project file it read, so the counts above are
+    /// the racy rule's to make and not an artefact of a server that never
+    /// looks.
     #[test]
     fn with_racy_stamps_every_fold_reading_request_re_reads(
         (n, edited, other, pull) in cases(),
     ) {
         let n_minus_2 = (n - 2) as u64;
+        let (counted, _) = run(n, edited, other, pull, racy());
         prop_assert_eq!(
-            run(n, edited, other, pull, racy()),
             Counted {
-                cold_tokens: Reads { opens: n_minus_2, stats: 0 },
-                keystroke_and_tokens: Reads { opens: n_minus_2, stats: 0 },
-                other_tokens: Reads { opens: n_minus_2, stats: 0 },
+                cold_tokens: Reads { validation_opens: 0, ..counted.cold_tokens },
+                keystroke_and_tokens: Reads { validation_opens: 0, ..counted.keystroke_and_tokens },
+                other_tokens: Reads { validation_opens: 0, ..counted.other_tokens },
+            },
+            Counted {
+                cold_tokens: Reads { opens: n_minus_2, stats: 0, evaluated: 0, validation_opens: 0 },
+                keystroke_and_tokens: Reads { opens: n_minus_2, stats: 0, evaluated: 0, validation_opens: 0 },
+                other_tokens: Reads { opens: n_minus_2, stats: 0, evaluated: 0, validation_opens: 0 },
             }
+        );
+        prop_assert!(
+            counted.other_tokens.validation_opens > 0,
+            "a racy project file was confirmed without reading it: {:?}",
+            counted
         );
     }
 }

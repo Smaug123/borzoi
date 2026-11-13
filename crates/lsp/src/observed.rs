@@ -12,7 +12,12 @@
 //!   data, and `edit_counts` reports the same counts from the event.
 //! - **MSBuild evaluations** observe through `borzoi_msbuild::observed`, which
 //!   records each one's read set and counts in its `ParsedProject`; the
-//!   server emits the counts as the [`EVALUATION_EVENT`] `tracing` event.
+//!   server emits the counts as the [`EVALUATION_EVENT`] `tracing` event. The
+//!   reads that prepare an evaluation (the `.fsproj` text, SDK discovery's
+//!   `global.json` walk and `dotnet` probes) record into an observer of their
+//!   own, and the [`crate::workspace::Workspace`] keeps all of them beside
+//!   the evaluation and confirms them once per generation that reads it,
+//!   counted in the generation's [`EvaluationCounts`].
 //! - **Every other observation** is a method of [`Unobserved`], whose variant
 //!   names the reader it belongs to and the plan stage that will route it.
 //!   Those are not counted.
@@ -27,9 +32,11 @@ use std::path::Path;
 
 use crate::vfs::{Disk, Nanos, Stamp};
 
-/// The name of the event [`crate::vfs::Vfs::end_generation`] emits, whose
-/// fields are the generation's number (`generation`) and its [`ReadCounts`]
-/// (`opens`, `stats`).
+/// The name of the event [`crate::vfs::Vfs::end_generation_with`] emits, whose
+/// fields are the generation's number (`generation`), its source reads'
+/// [`ReadCounts`] (`opens`, `stats`), and its [`EvaluationCounts`]
+/// (`evaluated`, and the validation's `v_opens`, `v_stats`, `v_listings` and
+/// `v_canonicalizations`).
 ///
 /// A test reads [`crate::vfs::Vfs::log_generations`] instead. `tracing`
 /// caches each callsite's interest for the whole process, and while one
@@ -69,11 +76,31 @@ pub struct ReadCounts {
     pub stats: u64,
 }
 
+/// What reading project evaluations cost one generation: the evaluations it
+/// ran, and the queries it asked to confirm the evaluations it reused
+/// ([`crate::workspace::Workspace`] validates each cached evaluation's read
+/// set once per generation that reads it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvaluationCounts {
+    /// MSBuild evaluations run (each [`EVALUATION_EVENT`] reports one's own
+    /// reads). A project evaluated under a second, seeded target framework
+    /// counts once.
+    pub evaluated: u64,
+    /// The queries asked to validate cached evaluations: files opened (a
+    /// file read again because its stamp moved), paths `stat`ed (a file's
+    /// stamp, or what a path names), directories listed and paths
+    /// canonicalised.
+    pub validation: borzoi_msbuild::observed::ReadCounts,
+}
+
 /// One ended generation: its number and what it observed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Generation {
     pub number: u64,
+    /// The source reads ([`crate::vfs::Vfs`]).
     pub counts: ReadCounts,
+    /// The project evaluations read.
+    pub evaluations: EvaluationCounts,
 }
 
 /// The host's file system, as the [`crate::vfs::Vfs`] reads it.
@@ -128,6 +155,30 @@ impl Disk for HostDisk {
     }
 }
 
+// The project evaluations' reads are confirmed through the same host.
+#[allow(clippy::disallowed_methods)]
+impl crate::read_checks::Probe for HostDisk {
+    fn entry(&self, path: &Path) -> std::io::Result<crate::read_checks::EntryAt> {
+        use crate::read_checks::EntryAt;
+        let kind = std::fs::symlink_metadata(path)?.file_type();
+        Ok(if kind.is_symlink() {
+            EntryAt::Link(std::fs::read_link(path)?)
+        } else if kind.is_dir() {
+            EntryAt::Dir
+        } else {
+            EntryAt::Other
+        })
+    }
+
+    fn answer(
+        &self,
+        path: &Path,
+        query: &borzoi_msbuild::observed::Observation,
+    ) -> borzoi_msbuild::observed::Observation {
+        borzoi_msbuild::observed::answer_now(path, query)
+    }
+}
+
 /// A reason a file-system observation is **not** counted: the reader it
 /// belongs to, and so the plan stage that will route it through an observing
 /// module, or the fact that no stage does.
@@ -139,12 +190,11 @@ impl Disk for HostDisk {
 /// the `std` call they wrap does, and count nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unobserved {
-    /// The LSP's own reads of project-evaluation inputs: the `.fsproj` text,
-    /// SDK discovery's `global.json` walk (through `borzoi-msbuild`, into an
-    /// observer nobody reads) and `dotnet` probes, and the `.fsproj`
-    /// diagnostics' existence probes. The evaluation's own reads are in its
-    /// `ParsedProject::read_set`; Stage 3b validates evaluations against it.
-    Evaluation,
+    /// The `.fsproj` buffer's diagnostics: their existence probes, and the
+    /// SDK discovery they run for the buffer (into an observer nobody
+    /// reads). No stage routes them: the diagnostics are computed afresh for
+    /// every request, so nothing they read is cached.
+    FsprojDiagnostics,
     /// The ownership walk's directory listings. Stage 4a.
     Ownership,
     /// The assembly env's reference resolution: the assets file, the project

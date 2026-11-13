@@ -189,7 +189,8 @@ impl<'a> Resolver<'a> {
                 {
                     let idents: Vec<SyntaxToken> = base.idents().collect();
                     if let (Some(first), Some(last)) = (idents.first(), idents.last()) {
-                        self.opaque_binders
+                        self.out
+                            .opaque_binders
                             .insert(borzoi_cst::syntax::TextRange::new(
                                 first.text_range().start(),
                                 last.text_range().end(),
@@ -336,11 +337,11 @@ impl<'a> Resolver<'a> {
             }
             Expr::Fun(e) => {
                 let entries = self.pattern_locals(e.args(), BinderRole::Param);
-                self.scopes.push(Frame::new(entries));
+                self.lexical.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
-                self.scopes.pop();
+                self.lexical.scopes.pop();
             }
             Expr::Quote(e) => {
                 // A quotation `<@ … @>` captures the enclosing scope; resolve
@@ -540,11 +541,11 @@ impl<'a> Resolver<'a> {
                     }
                     entries.extend(self.pattern_locals(b.pat().into_iter(), BinderRole::Pattern));
                 }
-                self.scopes.push(Frame::new(entries));
+                self.lexical.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
-                self.scopes.pop();
+                self.lexical.scopes.pop();
             }
             Expr::LetOrUse(e) => {
                 // Plain expression-level (block) `let`/`use` — a
@@ -613,11 +614,11 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(&enum_expr);
                 }
                 let entries = self.pattern_locals(e.pat().into_iter(), BinderRole::Pattern);
-                self.scopes.push(Frame::new(entries));
+                self.lexical.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
-                self.scopes.pop();
+                self.lexical.scopes.pop();
             }
             Expr::For(e) => {
                 // `for ident = from to/downto to do body` — both bounds resolve
@@ -647,11 +648,11 @@ impl<'a> Resolver<'a> {
                         self.scope.open_generation,
                     ));
                 }
-                self.scopes.push(Frame::new(entries));
+                self.lexical.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
                     self.resolve_expr(&body);
                 }
-                self.scopes.pop();
+                self.lexical.scopes.pop();
             }
             Expr::Try(e) => {
                 // `try body with <clauses>` / `try body finally cleanup` — the
@@ -754,14 +755,14 @@ impl<'a> Resolver<'a> {
     /// [`Expr::MatchBang`], and [`Expr::MatchLambda`].
     pub(super) fn resolve_match_clause(&mut self, clause: &MatchClause) {
         let entries = self.pattern_locals(clause.pat().into_iter(), BinderRole::Pattern);
-        self.scopes.push(Frame::new(entries));
+        self.lexical.scopes.push(Frame::new(entries));
         if let Some(guard) = clause.guard() {
             self.resolve_expr(&guard);
         }
         if let Some(result) = clause.result() {
             self.resolve_expr(&result);
         }
-        self.scopes.pop();
+        self.lexical.scopes.pop();
     }
 
     /// A primary constructor's parameters, as FCS reads them
@@ -807,7 +808,7 @@ impl<'a> Resolver<'a> {
                     continue;
                 }
                 if def.provisional {
-                    self.opaque_binders.insert(def.range);
+                    self.out.opaque_binders.insert(def.range);
                     let name = def.name();
                     let a_case = self
                         .case_reference(self.assemblies.names().text(name))
@@ -920,7 +921,12 @@ impl<'a> Resolver<'a> {
             // `excluded_param_ranges` now names this pattern's argument
             // *expressions* — the occurrences the or-pattern pairing must not
             // count as bindings. Bound before the loop so the borrow ends here.
-            let names = pattern_names(&pat, role, &self.excluded_param_ranges, self.assemblies);
+            let names = pattern_names(
+                &pat,
+                role,
+                &self.index.excluded_param_ranges,
+                self.assemblies,
+            );
             let mut aliases = AliasTargets::default();
             for pat_name in names {
                 // An or-pattern's later alternative re-spelling a name the first
@@ -934,7 +940,7 @@ impl<'a> Resolver<'a> {
                 // expression and excluded its range. Skip it whichever kind it
                 // is — before the alias and `provisional` branches — so nothing
                 // overwrites that expression resolution.
-                if self.excluded_param_ranges.contains(&pat_name.range()) {
+                if self.index.excluded_param_ranges.contains(&pat_name.range()) {
                     continue;
                 }
                 let def = match pat_name {
@@ -1087,7 +1093,7 @@ impl<'a> Resolver<'a> {
     /// - a value-frame miss is only *conservative*, not a genuine unbound — the
     ///   crux, since `lookup` returns `None` for names FCS still binds as values.
     ///   Two channels cover that, both invisible to `decide_type_path` (type
-    ///   position): [`own_binder_simple_names`](Self::own_binder_simple_names) — the
+    ///   position): [`own_binder_simple_names`](crate::resolve::prescan::Prescan::own_binder_simple_names) — the
     ///   file's whole value-binder name set, so a would-be-shadowed local, a
     ///   *provisional* uppercase parameter (`let f (Thing: int) = Thing`), or an
     ///   `extern` prototype (`extern int Thing(int x)`, which is never interned) —
@@ -1138,9 +1144,9 @@ impl<'a> Resolver<'a> {
     /// the containers that set it are rare (an auto-open type abbreviation, a
     /// module alias, an `extern`).
     fn container_and_ancestors_hide_values(&self) -> bool {
-        let mut path = self.container_path.to_vec();
+        let mut path = self.lexical.container_path.to_vec();
         loop {
-            if self.modules_with_hidden_values.contains(&path) {
+            if self.index.modules_with_hidden_values.contains(&path) {
                 return true;
             }
             // …and the `[<AutoOpen>]` modules *inside* it, whose contents F# folds
@@ -1150,7 +1156,7 @@ impl<'a> Resolver<'a> {
             // Recurses, since an auto-open module may hold another.
             let mut frontier = self.auto_open_modules_directly_in(&path);
             while let Some(module) = frontier.pop() {
-                if self.modules_with_hidden_values.contains(&module) {
+                if self.index.modules_with_hidden_values.contains(&module) {
                     return true;
                 }
                 frontier.extend(self.auto_open_modules_directly_in(&module));
@@ -1165,7 +1171,8 @@ impl<'a> Resolver<'a> {
     /// file's own pre-scan. The in-file twin of
     /// `ProjectItems::auto_open_modules_directly_in`.
     pub(super) fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
-        self.auto_open_module_paths
+        self.index
+            .auto_open_module_paths
             .iter()
             .filter(|(p, _)| p.len() == container.len() + 1 && p.starts_with(container))
             .map(|(p, _)| p.clone())
@@ -1309,12 +1316,12 @@ impl<'a> Resolver<'a> {
         let Some(range) = range else {
             return Callee::MaybeNamed;
         };
-        let of_def = |id: DefId| match self.defs[id.index()].kind {
+        let of_def = |id: DefId| match self.out.defs[id.index()].kind {
             DefKind::Value { .. } | DefKind::Parameter | DefKind::PatternLocal => Callee::Function,
             DefKind::UnionCase => Callee::Case(id),
             _ => Callee::MaybeNamed,
         };
-        match self.resolutions.get(&range) {
+        match self.out.resolutions.get(&range) {
             // A member of an F# module is a `let`-bound function or value, never
             // a method: FCS applies it as a function.
             Some(Resolution::Member { parent, .. }) if self.assemblies.is_module(*parent) => {
@@ -1324,7 +1331,7 @@ impl<'a> Resolver<'a> {
             // A module-level export: a value or function, or a constructor case.
             Some(Resolution::Item(item)) => {
                 match item.index().checked_sub(self.item_base as usize) {
-                    Some(local) => match self.items.get(local) {
+                    Some(local) => match self.out.items.get(local) {
                         Some(it) => match it.def {
                             super::model::ExportDef::Own(def) => of_def(def),
                             super::model::ExportDef::Sig { .. } if it.case_kind().is_none() => {
@@ -1394,7 +1401,7 @@ impl<'a> Resolver<'a> {
             Callee::MaybeNamed => true,
             // An unread field list could hold the name, so only a case whose
             // fields are known and lack it is an equality.
-            Callee::Case(id) => match self.case_field_names.get(&id) {
+            Callee::Case(id) => match self.index.case_field_names.get(&id) {
                 Some(Some(fields)) => fields.contains(&name),
                 _ => true,
             },
@@ -1420,7 +1427,7 @@ impl<'a> Resolver<'a> {
     /// [`Self::opened_constructor_target`] applies before asking which type it
     /// is.
     pub(super) fn bare_constructor_unshadowed(&self, name: &str) -> bool {
-        !(self.own_binder_simple_names.contains(name)
+        !(self.prescan.own_binder_simple_names.contains(name)
             || self.head_entry_staled(name)
             // Every assembly-side surface F# makes bare-visible without an
             // explicit `open` — auto-opened module values, contested contributor

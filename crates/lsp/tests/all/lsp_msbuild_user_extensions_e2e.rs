@@ -124,7 +124,8 @@ fn plain_net10_reaches_certainty_through_the_server_environment() {
         borzoi_msbuild::escape(&extensions.path().to_string_lossy()),
     );
 
-    let disc = SdkDiscovery::for_project(&fsproj, &env).expect("SDK discovery");
+    let disc = SdkDiscovery::for_project(&fsproj, &env, &borzoi_msbuild::observed::Observer::new())
+        .expect("SDK discovery");
     let resolver: &SdkResolver<'_> = &|name, observer| disc.resolve(name, observer);
     let glob: &GlobResolver<'_> = &glob_resolver::resolve;
     let parsed = parse_fsproj_with_imports(

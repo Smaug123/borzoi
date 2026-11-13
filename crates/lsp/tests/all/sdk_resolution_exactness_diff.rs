@@ -203,7 +203,12 @@ impl Harness {
         let theirs = self.oracle.borrow_mut().resolve(&sdk_ref, &project_path);
 
         let env = common::sdk_oracle_discovery_env(&self.gpf, self.dotnet_root.clone());
-        let disc = SdkDiscovery::for_project(&project_path, &env).expect("discovery");
+        let disc = SdkDiscovery::for_project(
+            &project_path,
+            &env,
+            &borzoi_msbuild::observed::Observer::new(),
+        )
+        .expect("discovery");
         let ours = disc.resolve(&sdk_ref, &borzoi_msbuild::observed::Observer::new());
 
         let ctx = || {

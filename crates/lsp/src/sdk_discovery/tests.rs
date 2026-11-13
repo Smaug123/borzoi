@@ -60,7 +60,7 @@ fn dotnet_root_explicit_env_wins_without_path_probe() {
         // Even with PATH set, the explicit env wins.
         e.search_path = Some(OsString::from("/this/should/be/ignored"));
     });
-    let resolved = resolve_dotnet_root(&env);
+    let resolved = resolve_dotnet_root(&env, &Observer::new());
     assert_eq!(
         resolved.as_deref(),
         Some(Path::new("/explicit/path/does/not/exist"))
@@ -81,7 +81,7 @@ fn dotnet_root_falls_back_to_path_lookup() {
     let env = env_with(|e| {
         e.search_path = Some(OsString::from(dotnet_install.as_os_str()));
     });
-    let resolved = resolve_dotnet_root(&env).expect("found on PATH");
+    let resolved = resolve_dotnet_root(&env, &Observer::new()).expect("found on PATH");
 
     let expected = crate::observed::host_fs::canonicalize(&dotnet_install).unwrap();
     assert_eq!(resolved, expected);
@@ -108,7 +108,7 @@ fn dotnet_root_canonicalises_symlinks_on_path() {
     let env = env_with(|e| {
         e.search_path = Some(OsString::from(path_dir.as_os_str()));
     });
-    let resolved = resolve_dotnet_root(&env).expect("found via symlink");
+    let resolved = resolve_dotnet_root(&env, &Observer::new()).expect("found via symlink");
 
     let expected = crate::observed::host_fs::canonicalize(&real_install).unwrap();
     assert_eq!(
@@ -133,7 +133,7 @@ fn dotnet_root_skips_path_entries_without_dotnet() {
 
     let path_joined = std::env::join_paths([&empty_a, &empty_b, &real]).unwrap();
     let env = env_with(|e| e.search_path = Some(path_joined));
-    let resolved = resolve_dotnet_root(&env).expect("found in third PATH entry");
+    let resolved = resolve_dotnet_root(&env, &Observer::new()).expect("found in third PATH entry");
 
     assert_eq!(
         resolved,
@@ -162,7 +162,8 @@ fn dotnet_root_skips_shim_dir_without_sdk_sibling() {
 
     let path_joined = std::env::join_paths([&shim, &real]).unwrap();
     let env = env_with(|e| e.search_path = Some(path_joined));
-    let resolved = resolve_dotnet_root(&env).expect("real install in second PATH entry");
+    let resolved =
+        resolve_dotnet_root(&env, &Observer::new()).expect("real install in second PATH entry");
 
     assert_eq!(
         resolved,
@@ -184,7 +185,7 @@ fn dotnet_root_returns_none_when_only_shims_on_path() {
 
     let env = env_with(|e| e.search_path = Some(OsString::from(shim.as_os_str())));
     assert!(
-        resolve_dotnet_root(&env).is_none(),
+        resolve_dotnet_root(&env, &Observer::new()).is_none(),
         "shim-only PATH must not be accepted as an SDK root"
     );
 }
@@ -192,7 +193,7 @@ fn dotnet_root_returns_none_when_only_shims_on_path() {
 #[test]
 fn dotnet_root_returns_none_with_neither_env_nor_path() {
     let env = env_with(|_| {});
-    assert!(resolve_dotnet_root(&env).is_none());
+    assert!(resolve_dotnet_root(&env, &Observer::new()).is_none());
 }
 
 #[test]
@@ -201,7 +202,7 @@ fn dotnet_root_returns_none_when_path_has_no_dotnet() {
     fs::create_dir_all(tmp.path()).unwrap();
     // Tempdir is empty — no `dotnet` binary lives in it.
     let env = env_with(|e| e.search_path = Some(OsString::from(tmp.path().as_os_str())));
-    assert!(resolve_dotnet_root(&env).is_none());
+    assert!(resolve_dotnet_root(&env, &Observer::new()).is_none());
 }
 
 /// Lay down a `dotnet` shim in `dir`: an executable whose real location
@@ -339,7 +340,7 @@ fn discovery_never_executes_a_dotnet_shim_on_path() {
                 ),
             };
 
-            let outcome = SdkDiscovery::for_project(&project, &env);
+            let outcome = SdkDiscovery::for_project(&project, &env, &Observer::new());
             let case = format!("{label}, DOTNET_ROOT set: {explicit_root}");
             assert!(
                 !sentinel.host_exists(),
@@ -430,7 +431,7 @@ impl PackagesLayout {
     }
 
     fn discovery(&self, env: &SdkDiscoveryEnv) -> SdkDiscovery {
-        SdkDiscovery::for_project(&self.project, env).expect("discovery")
+        SdkDiscovery::for_project(&self.project, env, &Observer::new()).expect("discovery")
     }
 }
 
@@ -600,7 +601,7 @@ fn for_project_without_global_json() {
     let env = env_with(|e| {
         e.dotnet_root = Some(tmp.path().join("dotnet"));
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     // No global.json ⇒ unpinned spec carrying the host's prerelease
     // policy (CLI default = true).
@@ -628,7 +629,7 @@ fn no_global_json_with_vs_host_still_filters_prereleases() {
         e.dotnet_root = Some(dotnet.clone());
         e.host_default_allow_prerelease = false;
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
     assert!(!disc.spec().allow_prerelease());
 
     let paths = single_root(
@@ -662,7 +663,7 @@ fn for_project_with_global_json_populates_spec_and_pins() {
         // spec carries the right policy (no global.json override here).
         e.host_default_allow_prerelease = false;
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let spec = disc.spec();
     assert_eq!(spec.roll_forward(), RollForward::Feature);
@@ -693,7 +694,7 @@ fn for_project_global_json_above_project_dir_is_found() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     // Pin from the global.json carries through into the spec.
     assert_eq!(
@@ -712,7 +713,7 @@ fn for_project_missing_dotnet_root_errors() {
     let project = tmp.path().join("App.fsproj");
     // No DOTNET_ROOT, no search_path ⇒ MissingDotnetRoot.
     let env = env_with(|_| {});
-    let err = SdkDiscovery::for_project(&project, &env).unwrap_err();
+    let err = SdkDiscovery::for_project(&project, &env, &Observer::new()).unwrap_err();
     assert!(
         matches!(err, DiscoveryError::MissingDotnetRoot),
         "expected MissingDotnetRoot, got {err:?}"
@@ -743,7 +744,7 @@ fn for_project_normalises_dot_dot_segments_before_walk() {
 
     let project = tmp.path().join("a").join("..").join("b").join("App.fsproj");
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert_eq!(
         disc.global_json_path().map(Path::to_path_buf),
@@ -764,7 +765,7 @@ fn for_project_rejects_relative_project_path() {
     // than honour it with the wrong semantics.
     let env = env_with(|e| e.dotnet_root = Some(PathBuf::from("/dotnet")));
     let relative = Path::new("App.fsproj");
-    let err = SdkDiscovery::for_project(relative, &env).unwrap_err();
+    let err = SdkDiscovery::for_project(relative, &env, &Observer::new()).unwrap_err();
     match err {
         DiscoveryError::RelativeProjectPath(path) => assert_eq!(path, relative),
         other => panic!("expected RelativeProjectPath, got {other:?}"),
@@ -786,7 +787,7 @@ fn for_project_surfaces_global_json_parse_error() {
     fs::write(tmp.path().join("global.json"), "not valid json {").unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-    let err = SdkDiscovery::for_project(&project, &env).unwrap_err();
+    let err = SdkDiscovery::for_project(&project, &env, &Observer::new()).unwrap_err();
     match err {
         DiscoveryError::GlobalJsonParse { path, .. } => {
             assert_eq!(path, tmp.path().join("global.json"));
@@ -814,7 +815,7 @@ fn resolve_picks_global_json_pinned_sdk() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet.clone()));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let paths = single_root(
         disc.resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -846,7 +847,7 @@ fn resolve_returns_version_not_satisfied_when_pin_unmet() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     match disc
         .resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -878,7 +879,7 @@ fn e2e_parse_fsproj_with_imports_via_discovery() {
     fs::write(&project, source).unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let resolver: &SdkResolver<'_> = &|name, observer| disc.resolve(name, observer);
     let parsed = parse_fsproj_with_imports(
@@ -943,7 +944,7 @@ fn e2e_msbuild_sdks_pin_overrides_caller_spec() {
         e.nuget_packages_dir = Some(nuget.clone());
         e.home_dir = Some(home);
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let paths = single_root(
         disc.resolve("My.Custom.Sdk", &Observer::new())
@@ -997,7 +998,7 @@ fn paths_resolved_against_global_json_dir() {
     // DOTNET_ROOT set to a directory with no installed SDKs — proves
     // the relative entry, not the host root, is doing the work.
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-host")));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert_eq!(disc.roots(), std::slice::from_ref(&alt_root));
     let paths = single_root(
@@ -1031,7 +1032,7 @@ fn host_token_expands_to_discovered_root() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet.clone()));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert_eq!(disc.roots(), std::slice::from_ref(&dotnet));
     let paths = single_root(
@@ -1064,7 +1065,7 @@ fn host_token_orders_after_explicit_paths() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet.clone()));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert_eq!(disc.roots(), [alt, dotnet]);
 }
@@ -1089,7 +1090,7 @@ fn relative_entry_wins_over_host_when_both_satisfy() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let paths = single_root(
         disc.resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -1121,7 +1122,7 @@ fn empty_paths_list_returns_not_found() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert!(disc.roots().is_empty());
     let err = disc
@@ -1154,7 +1155,7 @@ fn nonexistent_relative_root_falls_through() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-host")));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let paths = single_root(
         disc.resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -1184,7 +1185,7 @@ fn host_token_skipped_when_host_resolution_fails() {
     // Hermetic env: no DOTNET_ROOT, no PATH ⇒ resolve_dotnet_root
     // returns None. Without `paths`, this would be MissingDotnetRoot.
     let env = env_with(|_| {});
-    let disc = SdkDiscovery::for_project(&project, &env)
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new())
         .expect("paths: Some(_) must not fail on MissingDotnetRoot");
 
     assert_eq!(
@@ -1227,7 +1228,7 @@ fn global_json_version_pin_applies_across_roots() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-host")));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let paths = single_root(
         disc.resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -1268,7 +1269,7 @@ fn version_not_satisfied_unions_available_across_roots() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-host")));
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let err = disc
         .resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -1763,7 +1764,8 @@ fn resolve_workload_locator_exactly_without_global_json_pin() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet_root.clone()));
-    let disc = SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env).unwrap();
+    let disc =
+        SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env, &Observer::new()).unwrap();
     let resolved = disc
         .resolve(
             workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR,
@@ -1791,7 +1793,8 @@ fn resolve_degrades_locators_when_global_json_pins_workload_set() {
     .unwrap();
 
     let env = env_with(|e| e.dotnet_root = Some(dotnet_root.clone()));
-    let disc = SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env).unwrap();
+    let disc =
+        SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env, &Observer::new()).unwrap();
     let err = disc
         .resolve(
             workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR,
@@ -1854,7 +1857,8 @@ fn empty_home_dir_in_hand_built_env_derives_no_user_root() {
         e.dotnet_root = Some(dotnet_root.clone());
         e.home_dir = Some(PathBuf::new());
     });
-    let disc = SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env).unwrap();
+    let disc =
+        SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env, &Observer::new()).unwrap();
     let err = disc
         .resolve(
             workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR,
@@ -1961,7 +1965,7 @@ fn resolve_declines_when_build_environment_sets_msbuild_sdks_path() {
             "/somewhere/else/Sdks".to_string(),
         )]);
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let err = disc
         .resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -1989,7 +1993,7 @@ fn resolve_unaffected_by_empty_msbuild_sdks_path() {
         e.dotnet_root = Some(dotnet.clone());
         e.build_environment = HashMap::from([("MSBuildSDKsPath".to_string(), String::new())]);
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     let paths = single_root(
         disc.resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -2016,7 +2020,7 @@ fn resolve_declines_for_case_variant_msbuild_sdks_path() {
         e.build_environment =
             HashMap::from([("msbuildsdkspath".to_string(), "/somewhere/else".to_string())]);
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert!(matches!(
         disc.resolve("Microsoft.NET.Sdk", &Observer::new())
@@ -2064,7 +2068,7 @@ fn msbuild_sdks_pinned_resolution_declines_under_the_override() {
             "/nonexistent/Sdks".to_string(),
         )]);
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert!(matches!(
         disc.resolve("My.Custom.Sdk", &Observer::new()).unwrap_err(),
@@ -2105,7 +2109,7 @@ fn workload_locator_resolution_declines_under_the_override() {
             "/nonexistent/Sdks".to_string(),
         )]);
     });
-    let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
+    let disc = SdkDiscovery::for_project(&project, &env, &Observer::new()).expect("discovery");
 
     assert!(matches!(
         disc.resolve(

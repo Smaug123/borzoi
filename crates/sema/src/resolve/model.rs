@@ -405,7 +405,7 @@ pub struct ProjectItems {
     /// Paths named by an earlier file's `type … with` **augmentation head**
     /// ([`ExportDeclKind::TypeAugmentation`]) — the value-namespace-only
     /// sibling of [`Self::nested_module_paths`]. See
-    /// [`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals):
+    /// [`Lexical::augmentation_head_locals`](crate::resolve::lexical::Lexical::augmentation_head_locals):
     /// the head declares no type, so a *type* path rooted at one must resolve
     /// normally, while a *value* path must still defer (the extension's members
     /// join the augmented type's method groups).
@@ -469,7 +469,7 @@ pub struct ProjectItems {
     /// Qualified paths of earlier-file modules whose `open` may bring value-space
     /// names we cannot enumerate — aliases, or modules declaring union cases /
     /// exception constructors / active patterns (see
-    /// [`Resolver::modules_with_hidden_values`](super::state::Resolver::modules_with_hidden_values)). A later file's `open M` of one
+    /// [`Indexes::modules_with_hidden_values`](crate::resolve::indexes::Indexes::modules_with_hidden_values)). A later file's `open M` of one
     /// must bump the open generation so it shadows earlier opens.
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
     /// Bare value names a signatured file exposes directly under each
@@ -2707,7 +2707,7 @@ pub(super) enum ExportDeclKind {
     ///
     /// Feeds [`ProjectItems::augmentation_head_paths`] rather than
     /// `nested_module_paths`, because an augmentation head declares no type: see
-    /// [`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals)
+    /// [`Lexical::augmentation_head_locals`](crate::resolve::lexical::Lexical::augmentation_head_locals)
     /// for why the value namespace still has to honour it and the type namespace
     /// must not.
     TypeAugmentation,
@@ -3900,7 +3900,7 @@ pub struct ResolvedFile {
     /// keyed by each of its per-case *use def ids* (the `Resolution::Local`
     /// identity a case use resolves to). Read through
     /// [`Self::active_pattern_shape`]; see
-    /// [`Resolver::active_pattern_shape`](super::state::Resolver::active_pattern_shape).
+    /// [`Output::active_pattern_shape`](crate::resolve::output::Output::active_pattern_shape).
     pub(super) active_pattern_shape: HashMap<DefId, ActivePatternShape>,
     /// Always-sound semantic diagnostics found while walking the file (today
     /// only `use rec`; see [`SemaDiagnostic`]). Source-ordered.

@@ -47,7 +47,7 @@ pub(super) struct Windows {
     /// Project-global [`ItemId`]s of the value binders of the **current
     /// non-`rec` `let … and …` group**, while that group's RHSs are being
     /// resolved — items that are interned (eagerly pushed to
-    /// [`Resolver::items`] by [`prepare_binding`](Resolver::prepare_binding))
+    /// [`Output::items`](crate::resolve::output::Output::items) by [`prepare_binding`](Resolver::prepare_binding))
     /// but **not yet in scope**, because a non-`rec` binding is not visible in
     /// its own (or its group's) RHS. Empty outside such a window and for `rec`
     /// groups (whose binders *are* in scope).

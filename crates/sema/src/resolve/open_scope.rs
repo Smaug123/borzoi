@@ -9,7 +9,7 @@
 //! so a field added here is restored without anyone remembering to.
 //!
 //! The container path and the block's local-path shadow sets
-//! ([`Resolver::nested_module_locals`], [`Resolver::augmentation_head_locals`])
+//! ([`Lexical::nested_module_locals`](crate::resolve::lexical::Lexical::nested_module_locals), [`Lexical::augmentation_head_locals`](crate::resolve::lexical::Lexical::augmentation_head_locals))
 //! share this lifetime but stay outside: each is restored through its own
 //! mark ([`ContainerPath::mark`](super::container::ContainerPath::mark),
 //! [`PathSet::mark`](super::path_set::PathSet::mark)), which costs nothing,
@@ -194,7 +194,7 @@ pub(super) struct OpenScope {
     pub(super) access_floor: Option<usize>,
     /// Whether the container being walked is a module whose path qualifies
     /// its exports: a `module` header, or a nested module under a real root.
-    /// That path is then [`Resolver::container_path`], read through
+    /// That path is then [`Lexical::container_path`](crate::resolve::lexical::Lexical::container_path), read through
     /// [`module_path`](Resolver::module_path); a flag rather than a copy, since a
     /// copy per nested module is quadratic in the nesting depth.
     pub(super) in_exporting_module: bool,

@@ -31,14 +31,17 @@ use borzoi_cst::syntax::{
     SyntaxKind, SyntaxNode, Type, TypeDefn, TypeDefnRepr, TypeDefnsDecl, UnionCase,
 };
 
+use super::lexical::Lexical;
 use super::model::SlotClass;
 use super::model::{ProjectItems, ResolvedFile};
+use super::open_scope::OpenScope;
 use super::state::{MarkReach, ScopeEntry};
 use super::{Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation};
 use crate::assembly_env::{AssemblyEnv, CoreAttributeAliases, CustomOperationNames};
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
 use crate::hash::HashSet;
+use crate::names::NameTable;
 
 /// The bare names one contributor may add to the environment: a closed
 /// over-approximation of them, or `unlisted` when they are spelled nowhere in
@@ -115,6 +118,19 @@ pub(super) struct FileContributions {
     /// ([`crate::assembly_env::SLOT_ATTRIBUTE_NAMES`]), after which any
     /// attribute may be one ([`Resolver::type_slot_class`]).
     pub(super) declares_slot_attribute_alias: bool,
+}
+
+/// The part of [`FileContributions`] the walk records as it passes each
+/// block and module; the [`Prescan`](super::prescan::Prescan) decides the
+/// rest before the walk starts.
+#[derive(Debug, Default)]
+pub(super) struct OpenContributions {
+    /// See [`FileContributions::root`].
+    pub(super) root: Contribution,
+    /// See [`FileContributions::module_opens`].
+    pub(super) module_opens: Vec<(Vec<String>, Contribution)>,
+    /// See [`FileContributions::namespace_opens`].
+    pub(super) namespace_opens: Vec<(Vec<String>, Contribution)>,
 }
 
 /// Every name anything declared in `node` can bear: each identifier written
@@ -406,6 +422,7 @@ impl Resolver<'_> {
     fn may_augment_auto_open(&self, block: &HashSet<String>, name: &str) -> bool {
         block.contains(name)
             || self
+                .index
                 .auto_open_type_paths
                 .iter()
                 .any(|path| path.last().is_some_and(|last| last == name))
@@ -422,7 +439,12 @@ impl Resolver<'_> {
     ) -> Contribution {
         // A declaration FCS drops puts nothing anywhere.
         let decls: Vec<ModuleDecl> = decls
-            .filter(|decl| !self.dropped_decls.contains(&decl.syntax().text_range()))
+            .filter(|decl| {
+                !self
+                    .prescan
+                    .dropped_decls
+                    .contains(&decl.syntax().text_range())
+            })
             .collect();
         // The block's own types and exceptions that may be `[<AutoOpen>]`: an
         // intrinsic augmentation of one adds to the statics its fold brings.
@@ -592,26 +614,41 @@ impl Resolver<'_> {
     /// first; the named marks then follow at the new generation, so each still
     /// names its own cause.
     pub(super) fn push_contribution(&mut self, contribution: &Contribution, pos: u32) {
-        if contribution.unlisted {
-            self.scope.open_generation += 1;
-        }
-        let generation = self.scope.open_generation;
-        let marks: Vec<ScopeEntry> = contribution
-            .values
-            .iter()
-            .map(|name| (name, MarkReach::Expression))
-            .chain(
-                contribution
-                    .names
-                    .iter()
-                    .map(|name| (name, MarkReach::Both)),
-            )
-            .map(|(name, reach)| {
-                ScopeEntry::contributor_mark(self.assemblies.names(), name, reach, generation, pos)
-            })
-            .collect();
-        self.module_frame().extend(marks);
+        push_contribution(
+            &mut self.scope,
+            &mut self.lexical,
+            self.assemblies.names(),
+            contribution,
+            pos,
+        );
     }
+}
+
+/// [`Resolver::push_contribution`], given only the parts of the resolver it
+/// writes, so the contribution may be borrowed from another part.
+fn push_contribution(
+    scope: &mut OpenScope,
+    lexical: &mut Lexical,
+    names: &NameTable,
+    contribution: &Contribution,
+    pos: u32,
+) {
+    if contribution.unlisted {
+        scope.open_generation += 1;
+    }
+    let generation = scope.open_generation;
+    let marks = contribution
+        .values
+        .iter()
+        .map(|name| (name, MarkReach::Expression))
+        .chain(
+            contribution
+                .names
+                .iter()
+                .map(|name| (name, MarkReach::Both)),
+        )
+        .map(|(name, reach)| ScopeEntry::contributor_mark(names, name, reach, generation, pos));
+    lexical.module_frame().extend(marks);
 }
 
 /// The cases of the active patterns `decls` declare at their own level.
@@ -662,7 +699,7 @@ impl Resolver<'_> {
     /// Whether the current container is a namespace (rather than a module):
     /// its path holds no module segment.
     fn container_is_namespace(&self) -> bool {
-        self.container_path.len() == self.namespace_depth
+        self.lexical.container_path.len() == self.lexical.namespace_depth
     }
 
     /// Record `contribution` as what an `open` of the current container adds
@@ -677,20 +714,23 @@ impl Resolver<'_> {
         fold_models: bool,
     ) {
         if fold_models
-            || self.anonymous_root
-            || self.container_path.is_empty()
+            || self.lexical.anonymous_root
+            || self.lexical.container_path.is_empty()
             || contribution.is_empty()
         {
             return;
         }
         let into = if self.container_is_namespace() {
-            &mut self.contributions.namespace_opens
+            &mut self.out.contributions.namespace_opens
         } else {
-            &mut self.contributions.module_opens
+            &mut self.out.contributions.module_opens
         };
-        match into.iter_mut().find(|(p, _)| *p == *self.container_path) {
+        match into
+            .iter_mut()
+            .find(|(p, _)| *p == *self.lexical.container_path)
+        {
             Some((_, c)) => c.merge(contribution),
-            None => into.push((self.container_path.to_vec(), contribution.clone())),
+            None => into.push((self.lexical.container_path.to_vec(), contribution.clone())),
         }
     }
 
@@ -721,21 +761,18 @@ impl Resolver<'_> {
                 self.open_project_namespace_values(&path, end);
                 self.module_open_contributions(&path, end);
                 let generation = self.scope.open_generation;
-                let marks: Vec<ScopeEntry> = active_pattern_cases(nm.decls())
-                    .into_iter()
-                    .map(|name| {
-                        let mut mark = ScopeEntry::contributor_mark(
-                            self.assemblies.names(),
-                            &name,
-                            MarkReach::Both,
-                            generation,
-                            end,
-                        );
-                        mark.pattern_only = true;
-                        mark
-                    })
-                    .collect();
-                self.module_frame().extend(marks);
+                let marks = active_pattern_cases(nm.decls()).into_iter().map(|name| {
+                    let mut mark = ScopeEntry::contributor_mark(
+                        self.assemblies.names(),
+                        &name,
+                        MarkReach::Both,
+                        generation,
+                        end,
+                    );
+                    mark.pattern_only = true;
+                    mark
+                });
+                self.lexical.module_frame().extend(marks);
             }
             None => self.push_contribution(&contribution, end),
         }
@@ -751,7 +788,7 @@ impl Resolver<'_> {
         let spellings = attribute_spellings(nm.attributes());
         if !attrs_auto_open(nm.attributes())
             || !self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
-            || self.anonymous_root
+            || self.lexical.anonymous_root
             || self.scope.rec_block.is_some()
         {
             return None;
@@ -764,7 +801,7 @@ impl Resolver<'_> {
         if segs.is_empty() {
             return None;
         }
-        let mut path = self.container_path.to_vec();
+        let mut path = self.lexical.container_path.to_vec();
         path.extend(segs);
         Some(path)
     }
@@ -797,18 +834,18 @@ impl Resolver<'_> {
                 self.push_contribution(&contribution, pos);
                 self.record_open_contribution(&contribution, false);
                 if let Some(name) = name {
-                    let mut path = self.container_path.to_vec();
+                    let mut path = self.lexical.container_path.to_vec();
                     path.push(name);
-                    self.auto_open_type_paths.insert(path);
+                    self.index.auto_open_type_paths.insert(path);
                 }
             } else if is_type_augmentation(&defn)
                 && let Some(name) = name
             {
                 // An intrinsic augmentation of an `[<AutoOpen>]` type extends
                 // the statics that type folds into its container.
-                let mut path = self.container_path.to_vec();
+                let mut path = self.lexical.container_path.to_vec();
                 path.push(name);
-                if self.auto_open_type_paths.contains(&path) {
+                if self.index.auto_open_type_paths.contains(&path) {
                     let contribution = Contribution {
                         values: declared_identifiers(defn.syntax()),
                         ..Contribution::default()
@@ -828,9 +865,9 @@ impl Resolver<'_> {
         }
         // Its later augmentations extend what it folds, as a type's do.
         if let Some(name) = exn.union_case().and_then(|c| c.ident()) {
-            let mut path = self.container_path.to_vec();
+            let mut path = self.lexical.container_path.to_vec();
             path.push(id_text(&name).to_string());
-            self.auto_open_type_paths.insert(path);
+            self.index.auto_open_type_paths.insert(path);
         }
         let contribution = Contribution {
             values: declared_identifiers(exn.syntax()),
@@ -913,7 +950,7 @@ impl Resolver<'_> {
     /// earlier ones.
     pub(super) fn module_open_contributions(&mut self, path: &[String], pos: u32) {
         let mut contribution = Contribution::default();
-        for (p, c) in &self.contributions.module_opens {
+        for (p, c) in &self.out.contributions.module_opens {
             if p == path {
                 contribution.merge(c);
             }
@@ -928,7 +965,7 @@ impl Resolver<'_> {
     /// what its fold does not model.
     pub(super) fn namespace_open_contributions(&mut self, path: &[String], pos: u32) {
         let mut contribution = Contribution::default();
-        for (p, c) in &self.contributions.namespace_opens {
+        for (p, c) in &self.out.contributions.namespace_opens {
             if p == path {
                 contribution.merge(c);
             }
@@ -946,11 +983,18 @@ impl Resolver<'_> {
     /// block's re-taken bindings, which are those same declarations walked,
     /// stand above them.
     pub(super) fn earlier_block_contributions(&mut self, seeded: usize) {
-        let own = self.contributions.root.clone();
-        let before = self.module_frame().len();
-        self.push_contribution(&own, 0);
-        let pushed = self.module_frame().len() - before;
-        self.module_frame().rotate_tail_right(seeded, pushed);
+        let before = self.lexical.module_frame().len();
+        push_contribution(
+            &mut self.scope,
+            &mut self.lexical,
+            self.assemblies.names(),
+            &self.out.contributions.root,
+            0,
+        );
+        let pushed = self.lexical.module_frame().len() - before;
+        self.lexical
+            .module_frame()
+            .rotate_tail_right(seeded, pushed);
     }
 
     /// A top-level block, after the implicit auto-opens are seeded and before
@@ -960,8 +1004,8 @@ impl Resolver<'_> {
     /// FCS's order — then, for a `rec` block, its binders. Also records what
     /// this block puts in later files' root scope.
     pub(super) fn block_start_contributions(&mut self, module: &ModuleOrNamespace) {
-        let root = self.preceding.root_contribution.clone();
-        self.push_contribution(&root, 0);
+        let preceding = self.preceding;
+        self.push_contribution(&preceding.root_contribution, 0);
         // The implicit open pushes its unmodelled contributions itself, inside
         // its resolution-explain trace.
         self.open_own_enclosing_namespace(module.long_id().map_or_else(
@@ -971,22 +1015,28 @@ impl Resolver<'_> {
         match module.kind() {
             ModuleOrNamespaceKind::GlobalNamespace => {
                 let contribution = self.decls_contribution(module.decls());
-                self.contributions.root.merge(&contribution);
+                self.out.contributions.root.merge(&contribution);
             }
             ModuleOrNamespaceKind::NamedModule if self.may_auto_open(module.attributes()) => {
                 let contribution = self.decls_contribution(module.decls());
-                if self.container_path.len() == 1 {
-                    self.contributions.root.merge(&contribution);
+                if self.lexical.container_path.len() == 1 {
+                    self.out.contributions.root.merge(&contribution);
                 } else if !attrs_auto_open(module.attributes()) {
-                    let ns = self.container_path[..self.container_path.len() - 1].to_vec();
+                    let ns = self.lexical.container_path[..self.lexical.container_path.len() - 1]
+                        .to_vec();
                     match self
+                        .out
                         .contributions
                         .namespace_opens
                         .iter_mut()
                         .find(|(p, _)| *p == ns)
                     {
                         Some((_, c)) => c.merge(&contribution),
-                        None => self.contributions.namespace_opens.push((ns, contribution)),
+                        None => self
+                            .out
+                            .contributions
+                            .namespace_opens
+                            .push((ns, contribution)),
                     }
                 }
             }

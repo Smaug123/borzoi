@@ -38,7 +38,7 @@ use borzoi_cst::syntax::{
 use super::Resolver;
 use super::model::{DeclineCause, Resolution};
 use super::state::{Frame, MarkReach, ScopeEntry};
-use crate::assembly_env::{BuilderValue, CustomOperationNames};
+use crate::assembly_env::{AssemblyEnv, BuilderValue, CustomOperationNames};
 use crate::def::{DefId, DefKind, id_text};
 use crate::hash::HashSet;
 
@@ -607,7 +607,8 @@ impl Resolver<'_> {
             for spine in clauses.iter().map(clause_spine) {
                 for tok in spine.identifiers() {
                     if names.contains(&*id_text(&tok)) {
-                        self.custom_operation_clauses
+                        self.index
+                            .custom_operation_clauses
                             .insert(tok.text_range(), cause);
                     }
                 }
@@ -630,7 +631,7 @@ impl Resolver<'_> {
                 mark
             })
             .collect();
-        self.scopes.push(Frame::new(entries));
+        self.lexical.scopes.push(Frame::new(entries));
         true
     }
 
@@ -658,7 +659,7 @@ impl Resolver<'_> {
             .collect();
         for (binder, resets) in binders {
             let at = binder.text_range().start();
-            self.opaque_binders.insert(binder.text_range());
+            self.out.opaque_binders.insert(binder.text_range());
             let mut declined: HashSet<String> = HashSet::from_iter([id_text(&binder).to_string()]);
             if resets {
                 // Over-approximate: every identifier in a pattern before the
@@ -673,7 +674,8 @@ impl Resolver<'_> {
             }
             for tok in &idents {
                 if tok.text_range().start() >= at && declined.contains(&*id_text(tok)) {
-                    self.custom_operation_clauses
+                    self.index
+                        .custom_operation_clauses
                         .entry(tok.text_range())
                         .or_insert(DeclineCause::OpaqueBinder);
                 }
@@ -685,7 +687,7 @@ impl Resolver<'_> {
     /// entered.
     pub(super) fn leave_computation_expression(&mut self, pushed: bool) {
         if pushed {
-            self.scopes.pop();
+            self.lexical.scopes.pop();
         }
     }
 
@@ -695,7 +697,8 @@ impl Resolver<'_> {
         &self,
         tok: &SyntaxToken,
     ) -> Option<DeclineCause> {
-        self.custom_operation_clauses
+        self.index
+            .custom_operation_clauses
             .get(&tok.text_range())
             .copied()
     }
@@ -720,12 +723,13 @@ impl Resolver<'_> {
         let resolution = match &func {
             Expr::Ident(i) => i
                 .ident()
-                .and_then(|t| self.resolutions.get(&t.text_range()).copied()),
+                .and_then(|t| self.out.resolutions.get(&t.text_range()).copied()),
             Expr::LongIdent(li) => li.long_ident().and_then(|li| {
                 let last = li.idents().last()?;
-                self.resolutions
+                self.out
+                    .resolutions
                     .get(&last.text_range())
-                    .or_else(|| self.resolutions.get(&li.syntax().text_range()))
+                    .or_else(|| self.out.resolutions.get(&li.syntax().text_range()))
                     .copied()
             }),
             _ => None,
@@ -755,7 +759,7 @@ impl Resolver<'_> {
         // Every extension, wherever it is declared and whatever it extends:
         // the project's augmentations, earlier files' and this one's.
         let project = &self.preceding.custom_operations;
-        let own = &self.contributions.custom_operations;
+        let own = &self.prescan.custom_operations;
         let assembly = self.assemblies.extension_custom_operations();
         if project.unlisted || own.unlisted || assembly.unlisted {
             return CeOps::Unknown;
@@ -768,7 +772,7 @@ impl Resolver<'_> {
 
     /// Note what the application whose function is `func` constructs, when
     /// it is `T` or `T<…>` naming a type of this file
-    /// ([`Self::in_file_constructions`]). The type-position resolver decides
+    /// ([`Indexes::in_file_constructions`](crate::resolve::indexes::Indexes::in_file_constructions)). The type-position resolver decides
     /// which type the bare name denotes, as it does for an assembly type used
     /// as a constructor, behind the same guards against a value the value
     /// frame misses; a value in the frame takes the name outright. Must be
@@ -786,9 +790,9 @@ impl Resolver<'_> {
             return;
         };
         let name = id_text(&tok).to_string();
-        if !self.own_type_simple_names.contains(&name)
+        if !self.prescan.own_type_simple_names.contains(&name)
             || !matches!(
-                self.resolutions.get(&tok.text_range()),
+                self.out.resolutions.get(&tok.text_range()),
                 Some(Resolution::Deferred(_))
             )
             || self.latest_entry_exists(&name)
@@ -799,7 +803,9 @@ impl Resolver<'_> {
         if let super::types::TypePathResolution::InFileType(id) =
             self.decide_type_path(std::slice::from_ref(&name), arity)
         {
-            self.in_file_constructions.insert(tok.text_range(), id);
+            self.index
+                .in_file_constructions
+                .insert(tok.text_range(), id);
         }
     }
 
@@ -810,13 +816,12 @@ impl Resolver<'_> {
     /// file so far declares one, or a referenced assembly may, under any name
     /// F# looks the spelling up as.
     pub(super) fn may_be_custom_operation(&self, spelling: &str) -> bool {
-        CUSTOM_OPERATION_SPELLINGS.contains(&spelling)
-            || !super::contributors::core_attribute_spellings_trusted(
-                self.preceding.custom_operation_alias_declared
-                    || self.contributions.declares_custom_operation_alias,
-                self.assemblies.custom_operation_aliases(),
-                [spelling],
-            )
+        may_be_custom_operation(
+            spelling,
+            self.preceding.custom_operation_alias_declared
+                || self.prescan.declares_custom_operation_alias,
+            self.assemblies,
+        )
     }
 
     /// The def a resolution into this file names.
@@ -825,7 +830,7 @@ impl Resolver<'_> {
             Resolution::Local(id) => Some(id),
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
-                self.items.get(local)?.def()
+                self.out.items.get(local)?.def()
             }
             _ => None,
         }
@@ -834,7 +839,7 @@ impl Resolver<'_> {
     /// The operations of a builder bound in this file as `let b = T(…)`,
     /// with `T` a type of this file.
     fn project_builder_operations(&self, def: DefId, root: &SyntaxNode) -> CeOps {
-        let d = &self.defs[def.index()];
+        let d = &self.out.defs[def.index()];
         if d.kind != (DefKind::Value { is_function: false }) {
             return CeOps::Unknown;
         }
@@ -853,17 +858,19 @@ impl Resolver<'_> {
             return CeOps::Unknown;
         };
         let constructed = self
+            .index
             .in_file_constructions
             .get(&ty.text_range())
             .copied()
             .or_else(|| {
                 // `new T(…)` names `T` in type position, which the walk resolves.
-                self.resolutions
+                self.out
+                    .resolutions
                     .get(&ty.text_range())
                     .and_then(|r| self.same_file_def(*r))
             });
         match constructed {
-            Some(t) if self.defs[t.index()].kind == DefKind::Type => {
+            Some(t) if self.out.defs[t.index()].kind == DefKind::Type => {
                 self.project_type_operations(t, root, 0)
             }
             _ => CeOps::Unknown,
@@ -876,7 +883,7 @@ impl Resolver<'_> {
         if depth > 32 {
             return CeOps::Unknown;
         }
-        let Some(name) = ident_at(root, self.defs[type_def.index()].range) else {
+        let Some(name) = ident_at(root, self.out.defs[type_def.index()].range) else {
             return CeOps::Unknown;
         };
         let Some(defn) = name.parent_ancestors().find_map(TypeDefn::cast) else {
@@ -905,9 +912,9 @@ impl Resolver<'_> {
             let Some(base) = inherit.base_type().as_ref().and_then(type_head) else {
                 return CeOps::Unknown;
             };
-            let resolved = self.resolutions.get(&base.text_range()).copied();
+            let resolved = self.out.resolutions.get(&base.text_range()).copied();
             let ops = match (resolved, resolved.and_then(|r| self.same_file_def(r))) {
-                (_, Some(t)) if self.defs[t.index()].kind == DefKind::Type => {
+                (_, Some(t)) if self.out.defs[t.index()].kind == DefKind::Type => {
                     self.project_type_operations(t, root, depth + 1)
                 }
                 (Some(Resolution::Entity(h)), _) => {
@@ -922,6 +929,22 @@ impl Resolver<'_> {
         }
         CeOps::Known(out)
     }
+}
+
+/// Whether an attribute written `spelling` may be `[<CustomOperation>]`
+/// ([`Resolver::may_be_custom_operation`]), given whether some file so far
+/// declares a type that may rename `CustomOperationAttribute`.
+pub(super) fn may_be_custom_operation(
+    spelling: &str,
+    alias_declared: bool,
+    assemblies: &AssemblyEnv,
+) -> bool {
+    CUSTOM_OPERATION_SPELLINGS.contains(&spelling)
+        || !super::contributors::core_attribute_spellings_trusted(
+            alias_declared,
+            assemblies.custom_operation_aliases(),
+            [spelling],
+        )
 }
 
 #[cfg(test)]
@@ -961,6 +984,49 @@ mod tests {
             let recovery = SyntaxRecovery::of(&parsed);
             let file = ImplFile::cast(parsed.root).expect("impl file");
             let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+            let at = src.rfind("foo 1").expect("the use");
+            let range = borzoi_cst::syntax::TextRange::new(
+                u32::try_from(at).unwrap().into(),
+                u32::try_from(at + 3).unwrap().into(),
+            );
+            let committed = rf
+                .resolution_at(range)
+                .is_some_and(|r| matches!(r, Resolution::Local(_) | Resolution::Item(_)));
+            assert_eq!(
+                !committed,
+                declines,
+                "{alias}: {:?}",
+                rf.resolution_at(range)
+            );
+        }
+    }
+
+    /// An abbreviation of `CustomOperationAttribute` the file declares itself
+    /// makes its own augmentations' attributes possible custom operations,
+    /// wherever it stands: the file's augmentation of every builder may then
+    /// declare `foo`, which takes it from the file's own `foo` inside the
+    /// expression. With no such abbreviation the augmentation declares none.
+    #[test]
+    fn an_abbreviation_the_file_declares_may_name_its_augmentations_operations() {
+        use crate::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+        use borzoi_cst::syntax::{AstNode, ImplFile};
+
+        let body = "type B() =\n    member _.Yield(()) = 0\n    member _.Return(_: 'a) = 0\ntype System.Object with\n    [<GridCO(\"foo\")>]\n    member _.Op(s: int, v: int) = s + v\nlet b = B()\nlet foo (x: int) = x\nlet probe = b { return foo 1 }\n";
+        for (alias, declines) in [
+            ("type GridCO = CustomOperationAttribute\n", true),
+            ("type GridCO = System.ObsoleteAttribute\n", false),
+        ] {
+            let src = format!("module M\n{body}{alias}");
+            let parsed = parse(&src);
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let recovery = SyntaxRecovery::of(&parsed);
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let rf = resolve_file(
+                &file,
+                &ProjectItems::default(),
+                &AssemblyEnv::default(),
+                &recovery,
+            );
             let at = src.rfind("foo 1").expect("the use");
             let range = borzoi_cst::syntax::TextRange::new(
                 u32::try_from(at).unwrap().into(),

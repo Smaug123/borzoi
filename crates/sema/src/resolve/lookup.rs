@@ -369,41 +369,40 @@ impl<'a> Resolver<'a> {
     /// (review round 17). A merge names a definite target only when *every* half is fully
     /// enumerable.
     pub(super) fn open_type_statics(&mut self, handle: EntityHandle, open_pos: u32, certain: bool) {
-        // Collect first — `open_static_entries` borrows `self.assemblies`, and the
-        // push below borrows `self.scopes` mutably; the two must not overlap.
+        // The entries borrow the env, not the scope stack they are pushed on.
         let generation = self.scope.open_generation;
-        let entries: Vec<ScopeEntry> = self
-            .assemblies
-            .open_static_entries(handle)
-            .into_iter()
-            .map(|(name, idx)| match idx {
-                Some(idx) if certain => ScopeEntry::opened(
-                    self.assemblies.names(),
-                    name,
-                    Resolution::Member {
-                        parent: handle,
-                        idx,
-                    },
-                    generation,
-                    open_pos,
-                ),
-                Some(_) => ScopeEntry::opened_declined(
-                    self.assemblies.names(),
-                    name,
-                    DeclineCause::OpenFoldResidue,
-                    generation,
-                    open_pos,
-                ),
-                None => ScopeEntry::opened_declined(
-                    self.assemblies.names(),
-                    name,
-                    DeclineCause::OpenedOverloadSet,
-                    generation,
-                    open_pos,
-                ),
-            })
-            .collect();
-        self.module_frame().extend(entries);
+        let assemblies = self.assemblies;
+        let entries =
+            assemblies
+                .open_static_entries(handle)
+                .into_iter()
+                .map(|(name, idx)| match idx {
+                    Some(idx) if certain => ScopeEntry::opened(
+                        assemblies.names(),
+                        name,
+                        Resolution::Member {
+                            parent: handle,
+                            idx,
+                        },
+                        generation,
+                        open_pos,
+                    ),
+                    Some(_) => ScopeEntry::opened_declined(
+                        assemblies.names(),
+                        name,
+                        DeclineCause::OpenFoldResidue,
+                        generation,
+                        open_pos,
+                    ),
+                    None => ScopeEntry::opened_declined(
+                        assemblies.names(),
+                        name,
+                        DeclineCause::OpenedOverloadSet,
+                        generation,
+                        open_pos,
+                    ),
+                });
+        self.lexical.module_frame().extend(entries);
         // The members the projection dropped are statics FCS still opens, by
         // names the entries above do not list. An accessor's IL name carries
         // its property's.
@@ -450,7 +449,7 @@ impl<'a> Resolver<'a> {
         beside.unlisted |= assembly.unlisted || self.assemblies.dropped_any_type();
         for statics in [
             &self.preceding.extension_statics,
-            &self.own_extension_statics,
+            &self.prescan.extension_statics,
         ] {
             beside.values.extend(statics.iter().cloned());
         }
@@ -498,16 +497,13 @@ impl<'a> Resolver<'a> {
             return;
         };
         let generation = self.scope.open_generation;
-        let entries: Vec<ScopeEntry> = cases
-            .into_iter()
-            .map(|(name, res)| {
-                let mut entry =
-                    ScopeEntry::opened(self.assemblies.names(), &name, res, generation, open_pos);
-                entry.opened_case = true;
-                entry
-            })
-            .collect();
-        self.module_frame().extend(entries);
+        let entries = cases.into_iter().map(|(name, res)| {
+            let mut entry =
+                ScopeEntry::opened(self.assemblies.names(), &name, res, generation, open_pos);
+            entry.opened_case = true;
+            entry
+        });
+        self.lexical.module_frame().extend(entries);
     }
 
     /// Push the implicitly opened union cases
@@ -528,7 +524,7 @@ impl<'a> Resolver<'a> {
     ///   opaque entry defers both positions, which is sound in every order.
     pub(super) fn fold_implicit_union_cases(&mut self, definite: bool) {
         let generation = self.scope.open_generation;
-        let entries: Vec<ScopeEntry> = self
+        let entries = self
             .assemblies
             .implicit_union_cases()
             .iter()
@@ -557,9 +553,8 @@ impl<'a> Resolver<'a> {
                 };
                 entry.opened_case = true;
                 Some(entry)
-            })
-            .collect();
-        self.module_frame().extend(entries);
+            });
+        self.lexical.module_frame().extend(entries);
     }
 
     /// Whether a **constructible type** named `name` may hold FCS's unqualified
@@ -748,7 +743,10 @@ impl<'a> Resolver<'a> {
         let spellings_trusted = self.attribute_spellings_trusted(["AutoOpen"].into_iter());
         let parent_may_auto_open = |parent: &[String]| {
             if spellings_trusted {
-                self.auto_open_module_paths.iter().any(|(p, _)| p == parent)
+                self.index
+                    .auto_open_module_paths
+                    .iter()
+                    .any(|(p, _)| p == parent)
                     || self
                         .preceding
                         .auto_open_module_paths
@@ -763,12 +761,13 @@ impl<'a> Resolver<'a> {
         // where the last segment is the head, and this file's module
         // declarations by their paths.
         let sets = [
-            &self.module_paths,
-            &self.nested_module_exports,
+            &self.index.module_paths,
+            &self.index.nested_module_exports,
             &self.preceding.nested_module_paths,
             &self.preceding.real_nested_modules,
         ];
         let declared_decls: Vec<&super::DeclPath> = self
+            .out
             .export_decls
             .iter()
             .filter(|d| {
@@ -976,12 +975,12 @@ impl<'a> Resolver<'a> {
                 entries.push(entry);
             }
         }
-        self.module_frame().extend(entries);
+        self.lexical.module_frame().extend(entries);
     }
 
     /// Whether `mp` is **exactly** a declared in-project module path — a
-    /// top-level [`module`](Self::module_paths) header, a nested module's full
-    /// qualified path ([`Self::nested_module_exports`]), or either from an earlier
+    /// top-level [`module`](crate::resolve::indexes::Indexes::module_paths) header, a nested module's full
+    /// qualified path ([`Indexes::nested_module_exports`](crate::resolve::indexes::Indexes::nested_module_exports)), or either from an earlier
     /// Compile-order file. An *exact* match (not the "rooted at / under a module"
     /// prefix test of [`open_imports_project_values`](Self::open_imports_project_values)),
     /// because [`resolved_project_module`](Self::resolved_project_module) must
@@ -992,8 +991,8 @@ impl<'a> Resolver<'a> {
     /// `open_imports_project_values` fallback covers them).
     pub(super) fn is_project_module_path(&self, mp: &[String]) -> bool {
         // Looked up only when some set has a member to find.
-        let any_module = !(self.module_paths.is_empty()
-            && self.nested_module_exports.is_empty()
+        let any_module = !(self.index.module_paths.is_empty()
+            && self.index.nested_module_exports.is_empty()
             && self.preceding.module_headers.is_empty()
             && self.preceding.nested_module_paths.is_empty());
         any_module && self.is_project_module_key(self.path_key(mp))
@@ -1004,8 +1003,8 @@ impl<'a> Resolver<'a> {
     /// path is spelled (`text`) only for the reference.
     fn is_project_module_id(&self, id: Option<PathId>, text: impl FnOnce() -> Vec<String>) -> bool {
         let names = self.assemblies.names();
-        let found = self.module_paths.contains_id(names, id)
-            || self.nested_module_exports.contains_id(names, id)
+        let found = self.index.module_paths.contains_id(names, id)
+            || self.index.nested_module_exports.contains_id(names, id)
             || self.preceding.module_headers.contains_id(names, id)
             || self.preceding.nested_module_paths.contains_id(names, id);
         #[cfg(all(feature = "interning-reference", debug_assertions))]
@@ -1022,17 +1021,17 @@ impl<'a> Resolver<'a> {
     /// [`Self::is_project_module_path`] by a key the caller already holds.
     pub(super) fn is_project_module_key(&self, mp: PathKey<'_>) -> bool {
         let names = self.assemblies.names();
-        self.module_paths.contains(names, mp)
-            || self.nested_module_exports.contains(names, mp)
+        self.index.module_paths.contains(names, mp)
+            || self.index.nested_module_exports.contains(names, mp)
             || self.preceding.is_exact_project_module(names, mp)
             || self.preceding.is_exact_nested_module(names, mp)
     }
 
     /// Whether `np` is a declared project **namespace** path — same file
-    /// ([`Self::namespace_paths`]) or an earlier Compile-order one
+    /// ([`Output::namespace_paths`](crate::resolve::output::Output::namespace_paths)) or an earlier Compile-order one
     /// ([`ProjectItems::is_namespace`](super::model::ProjectItems::is_namespace)).
     pub(super) fn is_project_namespace_path(&self, np: &[String]) -> bool {
-        self.namespace_paths.iter().any(|p| p == np) || self.preceding.is_namespace(np)
+        self.out.namespace_paths.iter().any(|p| p == np) || self.preceding.is_namespace(np)
     }
 
     /// Everything an `open <path>` names — project modules **and** namespace
@@ -1181,11 +1180,15 @@ impl<'a> Resolver<'a> {
             // are reachable only at the enclosing-namespace base.
             let modules = self.project_module_completions(written);
             let reach = self.assembly_open_reach();
-            for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
-                if k <= reach || k == self.namespace_depth || modules.binary_search(&k).is_ok() {
-                    let mut full = self.container_path[..k].to_vec();
+            for k in (self.lexical.namespace_depth.max(1)..=self.lexical.container_path.len()).rev()
+            {
+                if k <= reach
+                    || k == self.lexical.namespace_depth
+                    || modules.binary_search(&k).is_ok()
+                {
+                    let mut full = self.lexical.container_path[..k].to_vec();
                     full.extend_from_slice(written);
-                    paths.push((full, k == self.namespace_depth));
+                    paths.push((full, k == self.lexical.namespace_depth));
                 } else {
                     unnamed_beyond = Some(reach);
                 }
@@ -1223,7 +1226,9 @@ impl<'a> Resolver<'a> {
         // a dropped type could lie at is a prefix of `container_path[..reach]`.
         let unlisted = candidates.unnamed_beyond.is_some_and(|reach| {
             self.assemblies
-                .any_split_of_a_module_path_has_a_dropped_type(&self.container_path[..reach])
+                .any_split_of_a_module_path_has_a_dropped_type(
+                    &self.lexical.container_path[..reach],
+                )
         });
         let uncovered = listed || unlisted;
         #[cfg(test)]
@@ -1241,11 +1246,13 @@ impl<'a> Resolver<'a> {
         let written_names = names.lookup_names(written);
         let question = path.extended(names, &written_names, written);
         let mut lens: Vec<usize> = self
+            .index
             .module_paths
             .suffix_member_prefix_lens(names, &question)
             .into_iter()
             .chain(
-                self.nested_module_exports
+                self.index
+                    .nested_module_exports
                     .suffix_member_prefix_lens(names, &question),
             )
             .chain(self.preceding.module_suffix_prefix_lens(names, &question))
@@ -1268,7 +1275,7 @@ impl<'a> Resolver<'a> {
     /// level the assemblies share with the container path, which they bound,
     /// not the nesting.
     fn assembly_open_reach(&self) -> usize {
-        let path = &self.container_path[..];
+        let path = &self.lexical.container_path[..];
         let mut entities: Vec<EntityHandle> = Vec::new();
         for k in 0..path.len() {
             let segment = &path[k];
@@ -1404,7 +1411,10 @@ impl<'a> Resolver<'a> {
     /// type resolution can't drift from it (the bug an ad-hoc per-site loop kept
     /// re-introducing).
     pub(super) fn enclosing_namespace(&self) -> &[String] {
-        &self.container_path[..self.namespace_depth.min(self.container_path.len())]
+        &self.lexical.container_path[..self
+            .lexical
+            .namespace_depth
+            .min(self.lexical.container_path.len())]
     }
 
     /// `path`'s key in the env's name table, looked up.
@@ -1419,7 +1429,10 @@ impl<'a> Resolver<'a> {
 
     /// The container path's prefixes, by the ids the walk interned.
     pub(super) fn container_prefixes(&self) -> PathPrefixes<'_> {
-        PathPrefixes::interned(self.container_path.prefix_ids(), &self.container_path)
+        PathPrefixes::interned(
+            self.lexical.container_path.prefix_ids(),
+            &self.lexical.container_path,
+        )
     }
 
     /// The empty prefix, as a query key.
@@ -1429,10 +1442,13 @@ impl<'a> Resolver<'a> {
 
     /// [`Self::enclosing_namespace`] with its id.
     pub(super) fn enclosing_namespace_prefix(&self) -> PrefixRef<'_> {
-        let depth = self.namespace_depth.min(self.container_path.len());
+        let depth = self
+            .lexical
+            .namespace_depth
+            .min(self.lexical.container_path.len());
         PrefixRef {
-            id: self.container_path.prefix_id(depth),
-            path: &self.container_path[..depth],
+            id: self.lexical.container_path.prefix_id(depth),
+            path: &self.lexical.container_path[..depth],
         }
     }
 
@@ -1478,7 +1494,7 @@ impl<'a> Resolver<'a> {
     /// ([`Self::namespace_open_contributions`]), at the same position.
     ///
     /// What the project half and those contributions wrote is kept as
-    /// [`Self::own_namespace_fold`]: it is exactly the namespace's fragments
+    /// [`Lexical::own_namespace_fold`](crate::resolve::lexical::Lexical::own_namespace_fold): it is exactly the namespace's fragments
     /// from earlier files and earlier blocks, the ones FCS has registered by
     /// now, so an explicit `open` of the namespace later in the block writes
     /// it again at its own position ([`Self::replay_own_namespace_fold`]).
@@ -1488,7 +1504,7 @@ impl<'a> Resolver<'a> {
     /// covers the fold and the contributions both, as an explicit `open`'s
     /// does.
     pub(super) fn open_own_enclosing_namespace(&mut self, header: TextRange) {
-        self.own_namespace_fold = RecordedFold::default();
+        self.lexical.own_namespace_fold = RecordedFold::default();
         let namespace = self.enclosing_namespace().to_vec();
         if namespace.is_empty() {
             return;
@@ -1496,9 +1512,9 @@ impl<'a> Resolver<'a> {
         let trace_before = self.open_trace_snapshot();
         let project_half = self.fold_own_enclosing_namespace(&namespace);
         let contributions = self.record_fold(|r| r.namespace_open_contributions(&namespace, 0));
-        self.own_namespace_fold = project_half.then(contributions);
+        self.lexical.own_namespace_fold = project_half.then(contributions);
         let opacity = self.open_opacity_since(&trace_before);
-        self.trace_opens.push(OpenTrace {
+        self.out.trace_opens.push(OpenTrace {
             range: header,
             path: namespace,
             is_type: false,
@@ -1550,6 +1566,7 @@ impl<'a> Resolver<'a> {
             self.is_project_module_path(&namespace) && self.module_has_hidden_values(&namespace);
         let bump_covered_by_screen = project_module_bump
             && !self
+                .index
                 .modules_with_hidden_values
                 .iter()
                 .any(|path| path.starts_with(namespace.as_slice()))
@@ -1669,9 +1686,9 @@ impl<'a> Resolver<'a> {
     /// entries and the generation's growth are all of it that a replay needs.
     fn record_fold(&mut self, fold: impl FnOnce(&mut Self)) -> RecordedFold {
         let generation = self.scope.open_generation;
-        let len = self.module_frame().len();
+        let len = self.lexical.module_frame().len();
         fold(self);
-        let entries = self.module_frame().entries()[len..]
+        let entries = self.lexical.module_frame().entries()[len..]
             .iter()
             .map(|entry| {
                 let barriers = entry
@@ -1688,7 +1705,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// An explicit `open` of this block's own enclosing namespace: write what
-    /// the block's implicit open of it wrote ([`Self::own_namespace_fold`])
+    /// the block's implicit open of it wrote ([`Lexical::own_namespace_fold`](crate::resolve::lexical::Lexical::own_namespace_fold))
     /// again, at `open_pos` and on top of the current generation, raising the
     /// same barriers between the same entries.
     ///
@@ -1712,18 +1729,9 @@ impl<'a> Resolver<'a> {
     pub(super) fn replay_own_namespace_fold(&mut self, open_pos: u32) {
         let namespace = self.enclosing_namespace().to_vec();
         self.push_signatured_slot_marks(&namespace, open_pos);
-        let RecordedFold { entries, barriers } = self.own_namespace_fold.clone();
         let generation = self.scope.open_generation;
-        let replayed: Vec<ScopeEntry> = entries
-            .into_iter()
-            .map(|(barriers_before, mut entry)| {
-                entry.generation = generation + barriers_before;
-                entry.open_pos = open_pos;
-                entry
-            })
-            .collect();
-        self.module_frame().extend(replayed);
-        self.scope.open_generation = generation + barriers;
+        self.scope.open_generation =
+            generation + self.lexical.replay_own_namespace_fold(generation, open_pos);
     }
 
     /// The walk state an `open` can perturb, captured before it so
@@ -1733,7 +1741,7 @@ impl<'a> Resolver<'a> {
         OpenTraceSnapshot {
             opacity: self.scope.opacity.levels(),
             generation: self.scope.open_generation,
-            entries: self.scopes.last().map_or(0, |f| f.len()),
+            entries: self.lexical.scopes.last().map_or(0, |f| f.len()),
             imports: self.scope.imports.len(),
             shortening: self.scope.open_shortening_prefixes.len(),
         }
@@ -1760,7 +1768,7 @@ impl<'a> Resolver<'a> {
             opaque_dotted: raised.opaque_dotted,
             unmodelled: raised.unmodelled,
             staled_earlier: self.scope.open_generation > before.generation,
-            imported_deferred: self.scopes.last().is_some_and(|f| {
+            imported_deferred: self.lexical.scopes.last().is_some_and(|f| {
                 f.entries()
                     .get(before.entries..)
                     .unwrap_or(&[])
@@ -1774,11 +1782,11 @@ impl<'a> Resolver<'a> {
 
     /// Whether opening module `mp` may bring **value-space names we cannot
     /// enumerate** — a module alias, or union cases / exception constructors /
-    /// active patterns ([`Self::modules_with_hidden_values`], same file or an
+    /// active patterns ([`Indexes::modules_with_hidden_values`](crate::resolve::indexes::Indexes::modules_with_hidden_values), same file or an
     /// earlier Compile-order one). Such an open conservatively shadows earlier
     /// opens (see the `open` arm's generation bump).
     pub(super) fn module_has_hidden_values(&self, mp: &[String]) -> bool {
-        self.modules_with_hidden_values.contains(mp)
+        self.index.modules_with_hidden_values.contains(mp)
             || self.preceding.modules_with_hidden_values.contains(mp)
     }
 
@@ -1802,18 +1810,19 @@ impl<'a> Resolver<'a> {
     /// in the SAME file doing `open N`, does not see `A`'s contents — FCS
     /// reports the name unbound). `private` restricts a module to its own
     /// enclosing container and that container's descendants, so it is visible
-    /// only when [`Resolver::container_path`] — the *open statement's own*
+    /// only when [`Lexical::container_path`](crate::resolve::lexical::Lexical::container_path) — the *open statement's own*
     /// lexical position — starts with `container` (the candidate's direct
     /// parent). `preceding`'s half needs no such check: it is already
     /// privacy-filtered at the file/export boundary.
     pub(super) fn project_auto_open_submodules_in(&self, container: &[String]) -> Vec<Vec<String>> {
         let mut out: Vec<Vec<String>> = self.preceding.auto_open_modules_directly_in(container);
         out.extend(
-            self.auto_open_module_paths
+            self.index
+                .auto_open_module_paths
                 .iter()
                 .filter(|(p, private)| {
                     super::model::is_directly_in(p, container)
-                        && (!private || self.container_path.starts_with(container))
+                        && (!private || self.lexical.container_path.starts_with(container))
                 })
                 .map(|(p, _)| p.clone()),
         );
@@ -1831,11 +1840,12 @@ impl<'a> Resolver<'a> {
         let mut out = self.preceding.auto_open_fragments_directly_in(container);
         let current = self.preceding.num_files();
         out.extend(
-            self.auto_open_module_paths
+            self.index
+                .auto_open_module_paths
                 .iter()
                 .filter(|(p, private)| {
                     super::model::is_directly_in(p, container)
-                        && (!private || self.container_path.starts_with(container))
+                        && (!private || self.lexical.container_path.starts_with(container))
                 })
                 .map(|(p, _)| (p.clone(), current)),
         );
@@ -1955,13 +1965,14 @@ impl<'a> Resolver<'a> {
     /// assembly-facing surface does, cannot express "later evicts earlier"
     /// at all, only "some project source contests".
     fn direct_project_type_contestants(&self, container: &[String]) -> Vec<(String, usize)> {
-        let site = &self.container_path;
+        let site = &self.lexical.container_path;
         let mut out =
             self.preceding
                 .direct_type_contestants(self.assemblies.names(), container, site);
         let current = self.preceding.num_files();
         out.extend(
-            self.type_path_exports
+            self.index
+                .type_path_exports
                 .iter()
                 .filter(|(p, _, slot)| {
                     p.len() == container.len() + 1
@@ -1983,17 +1994,17 @@ impl<'a> Resolver<'a> {
     /// files. Accessibility (own-/inherited-`private`) is filtered exactly as the
     /// open-fold does, so an inaccessible name never enters the straddle contest.
     fn direct_tier_ids_at(&self, path: &[String]) -> HashMap<String, (ItemId, usize)> {
-        let site = self.container_path.to_vec();
+        let site: &[String] = &self.lexical.container_path;
         let mut out: HashMap<String, (ItemId, usize)> = HashMap::default();
         for (name, id) in self
             .preceding
-            .direct_value_children(self.assemblies.names(), path, &site)
+            .direct_value_children(self.assemblies.names(), path, site)
         {
             out.insert(name, (id, self.preceding.file_of(id)));
         }
         for (name, id) in
             self.preceding
-                .direct_constructor_children(self.assemblies.names(), path, &site)
+                .direct_constructor_children(self.assemblies.names(), path, site)
         {
             out.entry(name)
                 .or_insert_with(|| (id, self.preceding.file_of(id)));
@@ -2001,10 +2012,10 @@ impl<'a> Resolver<'a> {
         let current = self.preceding.num_files();
         let names = self.assemblies.names();
         let parent = PathKey::of(names, path);
-        for item in &self.items {
+        for item in &self.out.items {
             if let Some(q) = &item.qualified
                 && q.is_child_of(names, parent)
-                && q.accessible_from(names, item.access_root_len, &self.container_path)
+                && q.accessible_from(names, item.access_root_len, &self.lexical.container_path)
             {
                 out.insert(
                     q.last(names).expect("non-empty qualified path").to_string(),
@@ -2034,7 +2045,7 @@ impl<'a> Resolver<'a> {
     /// **latest** such fragment (the file-`max`). With the fold exact, the caller
     /// lets a genuinely later submodule win instead of conservatively deferring.
     fn submodule_contributions_at(&self, path: &[String]) -> HashMap<String, SubmoduleFold> {
-        let site = self.container_path.to_vec();
+        let site: &[String] = &self.lexical.container_path;
         let mut out: HashMap<String, SubmoduleFold> = HashMap::default();
         let current = self.preceding.num_files();
         for (sub, file) in self.auto_open_fragments_reachable(path) {
@@ -2047,7 +2058,7 @@ impl<'a> Resolver<'a> {
                 value_names = Vec::new();
                 case_names = self
                     .preceding
-                    .fragment_constructor_children(self.assemblies.names(), &sub, file, &site)
+                    .fragment_constructor_children(self.assemblies.names(), &sub, file, site)
                     .into_iter()
                     .map(|(name, _)| name)
                     .collect();
@@ -2055,7 +2066,7 @@ impl<'a> Resolver<'a> {
                     self.assemblies.names(),
                     &sub,
                     file,
-                    &site,
+                    site,
                 ) {
                     // A maybe-literal value is a constant-pattern contestant: it
                     // ALSO feeds the `case` dimension (below), so a direct case
@@ -2073,10 +2084,14 @@ impl<'a> Resolver<'a> {
                 case_names = Vec::new();
                 let names = self.assemblies.names();
                 let parent = PathKey::of(names, sub.as_slice());
-                for item in &self.items {
+                for item in &self.out.items {
                     if let Some(q) = &item.qualified
                         && q.is_child_of(names, parent)
-                        && q.accessible_from(names, item.access_root_len, &self.container_path)
+                        && q.accessible_from(
+                            names,
+                            item.access_root_len,
+                            &self.lexical.container_path,
+                        )
                     {
                         let name = q.last(names).expect("non-empty qualified path").to_string();
                         // A case — or a maybe-literal value, a constant-pattern
@@ -2129,7 +2144,7 @@ impl<'a> Resolver<'a> {
     ///
     /// Lexical shadowing is respected: the **innermost** module-like declaration
     /// of `name` in scope wins, whatever its kind. We find that declaration via
-    /// [`module_like_names`](Self::module_like_names) (nested modules *and*
+    /// [`module_like_names`](crate::resolve::indexes::Indexes::module_like_names) (nested modules *and*
     /// abbreviations) — the longest enclosing container that declares `name` — and
     /// follow it **only if it is a resolvable alias**. If the nearest declaration
     /// is instead a real nested module or an unresolvable abbreviation, `None` is
@@ -2144,23 +2159,27 @@ impl<'a> Resolver<'a> {
     pub(super) fn lexical_alias_target(&self, name: &str) -> Option<&[String]> {
         // The innermost enclosing container that declares `name` as module-like
         // (longest prefix of `container_path`) shadows any outer one.
-        let scope = (0..=self.container_path.len()).rev().find(|&k| {
-            self.module_like_names
-                .get(&self.container_path.prefix_id(k))
+        let scope = (0..=self.lexical.container_path.len()).rev().find(|&k| {
+            self.index
+                .module_like_names
+                .get(&self.lexical.container_path.prefix_id(k))
                 .is_some_and(|names| names.contains(name))
         })?;
         // Follow it only if that nearest declaration is a resolvable alias.
-        let mut alias_path = self.container_path[..scope].to_vec();
+        let mut alias_path = self.lexical.container_path[..scope].to_vec();
         alias_path.push(name.to_string());
-        self.module_aliases.get(&alias_path).map(Vec::as_slice)
+        self.index
+            .module_aliases
+            .get(&alias_path)
+            .map(Vec::as_slice)
     }
 
     /// Record the **current container** as a module that brings value-space names
     /// we cannot enumerate (a union case / exception constructor / active pattern,
     /// or — at the caller's discretion — a module alias). See
-    /// [`Self::modules_with_hidden_values`].
+    /// [`Indexes::modules_with_hidden_values`](crate::resolve::indexes::Indexes::modules_with_hidden_values).
     pub(super) fn note_hidden_value_module(&mut self, path: Vec<String>) {
-        self.modules_with_hidden_values.insert(path);
+        self.index.modules_with_hidden_values.insert(path);
     }
 
     /// If `written` (a plain `open` clause's path) names an **in-project
@@ -2238,7 +2257,7 @@ impl<'a> Resolver<'a> {
                 .rev()
                 .find(|&&k| k >= 1)
             {
-                let mut full = self.container_path[..k].to_vec();
+                let mut full = self.lexical.container_path[..k].to_vec();
                 full.extend_from_slice(written);
                 return Some(full);
             }
@@ -2258,7 +2277,8 @@ impl<'a> Resolver<'a> {
     pub(super) fn ordinary_value_at(&self, path: &[String]) -> Option<ItemId> {
         let names = self.assemblies.names();
         let key = PathKey::of(names, path);
-        self.items
+        self.out
+            .items
             .iter()
             .rev()
             .find(|it| {
@@ -2394,7 +2414,7 @@ impl<'a> Resolver<'a> {
         let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
             match self
                 .preceding
-                .type_qualified_case(self.assemblies.names(), &full, &self.container_path)
+                .type_qualified_case(self.assemblies.names(), &full, &self.lexical.container_path)
                 .filter(|_| !self.value_shadows_case(&full))
             {
                 None => None,
@@ -2448,7 +2468,7 @@ impl<'a> Resolver<'a> {
                     .extended(names, &names.lookup_names(written), written),
             );
             for &k in completions.iter().rev().filter(|&&k| k >= 1) {
-                let mut full = self.container_path[..k].to_vec();
+                let mut full = self.lexical.container_path[..k].to_vec();
                 full.extend_from_slice(written);
                 if let Some(found) = hit(full, CaseTier::Namespace) {
                     return Some(found);
@@ -2462,7 +2482,7 @@ impl<'a> Resolver<'a> {
     /// Bring the **direct** exported values of project module `module_path` into
     /// the current frame as source-ordered [`ScopeEntry::opened`] entries — the
     /// bare names an `open M` makes resolvable (substep 3). Same-file values come
-    /// from [`Self::items`] (a value whose qualified export path is
+    /// from [`Output::items`](crate::resolve::output::Output::items) (a value whose qualified export path is
     /// `[module_path…, name]`, exactly one segment beyond), earlier-file values
     /// from [`ProjectItems::direct_value_children`](super::model::ProjectItems::direct_value_children); a value nested deeper (in a
     /// submodule) has a longer path and is excluded. A name found in *this* file
@@ -2497,7 +2517,7 @@ impl<'a> Resolver<'a> {
         // `private` value of `module_path` is accessible — F# hides it from an
         // `open` outside the container's subtree (oracle-pinned; on `main` such a
         // value wrongly resolved cross-file).
-        let site = self.container_path.to_vec();
+        let site: &[String] = &self.lexical.container_path;
         // Stage 5 per-fragment gate: folding a single `[<AutoOpen>]` fragment
         // brings in only the members `module_path` declares in that fragment's
         // file. Same-file members share the current file (one check); cross-file
@@ -2539,12 +2559,12 @@ impl<'a> Resolver<'a> {
         let names = self.assemblies.names();
         let module_key = PathKey::of(names, module_path);
         let mut constant_names: HashSet<String> = HashSet::default();
-        for item in &self.items {
+        for item in &self.out.items {
             if item.attributed
                 && let Some(q) = &item.qualified
                 && q.is_child_of(names, module_key)
                 && same_file_folds
-                && q.accessible_from(names, item.access_root_len, &self.container_path)
+                && q.accessible_from(names, item.access_root_len, &self.lexical.container_path)
             {
                 constant_names.insert(q.last(names).expect("non-empty qualified path").to_string());
             }
@@ -2556,13 +2576,13 @@ impl<'a> Resolver<'a> {
         // and a same-named `let`) keeps both, in the order FCS adds them — block by
         // block, and by [`fold_rank`] within a block — so latest-wins `lookup`
         // picks the one FCS binds.
-        let block_of = super::model::top_level_block_ordinals(&self.export_decls);
+        let block_of = super::model::top_level_block_ordinals(&self.out.export_decls);
         let mut same_file: Vec<((usize, u8), ScopeEntry)> = Vec::new();
-        for item in &self.items {
+        for item in &self.out.items {
             if let Some(q) = &item.qualified
                 && q.is_child_of(names, module_key)
                 && same_file_folds
-                && q.accessible_from(names, item.access_root_len, &self.container_path)
+                && q.accessible_from(names, item.access_root_len, &self.lexical.container_path)
             {
                 let name = q.last(names).expect("non-empty qualified path").to_string();
                 seen_values.insert(name.clone());
@@ -2573,7 +2593,7 @@ impl<'a> Resolver<'a> {
                         || self.preceding.module_value_may_be_constant_pattern(
                             names,
                             &q.spell(names),
-                            &site,
+                            site,
                         )
                     {
                         suppressed.push(item.id);
@@ -2590,7 +2610,7 @@ impl<'a> Resolver<'a> {
                 entry.maybe_constant_pattern = item.attributed;
                 let block = match item.def {
                     super::model::ExportDef::Own(id) => {
-                        block_of(self.defs[id.index()].range.start())
+                        block_of(self.out.defs[id.index()].range.start())
                     }
                     // A signature-paired binder lives in the `.fsi`'s arena;
                     // the walk of an implementation file exports none.
@@ -2616,11 +2636,11 @@ impl<'a> Resolver<'a> {
         let (value_children, ctor_children) = match fragment_file {
             None => (
                 self.preceding
-                    .direct_value_children(self.assemblies.names(), module_path, &site),
+                    .direct_value_children(self.assemblies.names(), module_path, site),
                 self.preceding.direct_constructor_children(
                     self.assemblies.names(),
                     module_path,
-                    &site,
+                    site,
                 ),
             ),
             Some(f) if f < current_file => (
@@ -2628,13 +2648,13 @@ impl<'a> Resolver<'a> {
                     self.assemblies.names(),
                     module_path,
                     f,
-                    &site,
+                    site,
                 ),
                 self.preceding.fragment_constructor_children(
                     self.assemblies.names(),
                     module_path,
                     f,
-                    &site,
+                    site,
                 ),
             ),
             Some(_) => (Vec::new(), Vec::new()),
@@ -2651,7 +2671,7 @@ impl<'a> Resolver<'a> {
                         || self.preceding.module_value_may_be_constant_pattern(
                             self.assemblies.names(),
                             &q,
-                            &site,
+                            site,
                         )
                     {
                         suppressed.push(id);
@@ -2685,7 +2705,7 @@ impl<'a> Resolver<'a> {
                     || self.preceding.module_value_may_be_constant_pattern(
                         self.assemblies.names(),
                         &q,
-                        &site,
+                        site,
                     )
                 {
                     suppressed.push(id);
@@ -2706,6 +2726,7 @@ impl<'a> Resolver<'a> {
         // open reaches: the answer scans the file's declarations.
         let names = self.assemblies.names();
         let own_cases: Vec<(Vec<String>, bool)> = self
+            .out
             .export_decls
             .iter()
             .filter(|d| {
@@ -2717,7 +2738,7 @@ impl<'a> Resolver<'a> {
             .map(|d| {
                 (
                     d.path.spell(names),
-                    super::model::superseded_by_a_value(&self.export_decls, &self.items, d),
+                    super::model::superseded_by_a_value(&self.out.export_decls, &self.out.items, d),
                 )
             })
             .collect();
@@ -2746,7 +2767,7 @@ impl<'a> Resolver<'a> {
             }
         }
         let count = entries.len();
-        self.module_frame().extend(entries);
+        self.lexical.module_frame().extend(entries);
         self.scope.pattern_suppressed_case_ids.extend(suppressed);
         count
     }
@@ -2786,19 +2807,16 @@ impl<'a> Resolver<'a> {
         contested.sort();
         contested.dedup();
         let generation = self.scope.open_generation;
-        let marks: Vec<ScopeEntry> = contested
-            .into_iter()
-            .map(|name| {
-                ScopeEntry::contributor_mark(
-                    self.assemblies.names(),
-                    &name,
-                    MarkReach::Expression,
-                    generation,
-                    open_pos,
-                )
-            })
-            .collect();
-        self.module_frame().extend(marks);
+        let marks = contested.into_iter().map(|name| {
+            ScopeEntry::contributor_mark(
+                self.assemblies.names(),
+                &name,
+                MarkReach::Expression,
+                generation,
+                open_pos,
+            )
+        });
+        self.lexical.module_frame().extend(marks);
     }
 
     /// Bring a project **namespace**'s direct cases/exceptions into scope —
@@ -3083,7 +3101,7 @@ impl<'a> Resolver<'a> {
                     self.scope.open_generation,
                     open_pos,
                 );
-                self.module_frame().push(entry);
+                self.lexical.module_frame().push(entry);
             }
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
@@ -3092,19 +3110,16 @@ impl<'a> Resolver<'a> {
             let evicting_types = self.direct_project_type_contestants(&frag_path);
             if !evicting_types.is_empty() {
                 let generation = self.scope.open_generation;
-                let entries: Vec<ScopeEntry> = evicting_types
-                    .into_iter()
-                    .map(|(name, _)| {
-                        ScopeEntry::opened_declined(
-                            self.assemblies.names(),
-                            &name,
-                            DeclineCause::OpenedTypeName,
-                            generation,
-                            open_pos,
-                        )
-                    })
-                    .collect();
-                self.module_frame().extend(entries);
+                let entries = evicting_types.into_iter().map(|(name, _)| {
+                    ScopeEntry::opened_declined(
+                        self.assemblies.names(),
+                        &name,
+                        DeclineCause::OpenedTypeName,
+                        generation,
+                        open_pos,
+                    )
+                });
+                self.lexical.module_frame().extend(entries);
             }
             // A fragment bringing value-space names we cannot enumerate (an active
             // pattern, an alias, an `extern`) bumps the generation before it folds,
@@ -3123,7 +3138,7 @@ impl<'a> Resolver<'a> {
                 self.scope.open_generation,
                 open_pos,
             );
-            self.module_frame().push(entry);
+            self.lexical.module_frame().push(entry);
         }
         // What each fragment adds that this fold does not model
         // ([`Self::module_open_contributions`]). These are marks, so they go
@@ -3151,20 +3166,22 @@ impl<'a> Resolver<'a> {
                 open_pos,
             );
             entry.maybe_constant_pattern = self.item_is_attributed(id);
-            self.module_frame().push(entry);
+            self.lexical.module_frame().push(entry);
             count += 1;
         }
         for (name, id) in ctor_winners {
             // Pattern-only: wins the constructor namespace without disturbing the
             // value namespace (a later submodule value / type owns that slot).
             let assemblies = self.assemblies;
-            self.module_frame().push(ScopeEntry::opened_pattern_only(
-                assemblies.names(),
-                &name,
-                Resolution::Item(id),
-                generation,
-                open_pos,
-            ));
+            self.lexical
+                .module_frame()
+                .push(ScopeEntry::opened_pattern_only(
+                    assemblies.names(),
+                    &name,
+                    Resolution::Item(id),
+                    generation,
+                    open_pos,
+                ));
             count += 1;
         }
         for (name, cause) in value_deferrals {
@@ -3174,13 +3191,15 @@ impl<'a> Resolver<'a> {
             // past it to the constructor outcome — so a pattern the type does not
             // contest still resolves.
             let assemblies = self.assemblies;
-            self.module_frame().push(ScopeEntry::opened_declined(
-                assemblies.names(),
-                &name,
-                cause,
-                generation,
-                open_pos,
-            ));
+            self.lexical
+                .module_frame()
+                .push(ScopeEntry::opened_declined(
+                    assemblies.names(),
+                    &name,
+                    cause,
+                    generation,
+                    open_pos,
+                ));
             count += 1;
         }
         for name in deferred_straddles {
@@ -3198,7 +3217,7 @@ impl<'a> Resolver<'a> {
                 open_pos,
             );
             entry.opened_case = true;
-            self.module_frame().push(entry);
+            self.lexical.module_frame().push(entry);
             count += 1;
         }
         // A signatured fragment's bare names with no exported identity
@@ -3224,7 +3243,7 @@ impl<'a> Resolver<'a> {
                     open_pos,
                 );
                 entry.opened_case = true;
-                self.module_frame().push(entry);
+                self.lexical.module_frame().push(entry);
                 count += 1;
             }
         }
@@ -3233,7 +3252,7 @@ impl<'a> Resolver<'a> {
 
     /// The [`ItemId`] of the value `value` exported **directly** by project module
     /// `module_path` (its qualified export path is exactly `[module_path…,
-    /// value]`), or `None`. Searches this file's [`Self::items`] first, then
+    /// value]`), or `None`. Searches this file's [`Output::items`](crate::resolve::output::Output::items) first, then
     /// earlier Compile-order files ([`ProjectItems::lookup_qualified_path`](super::model::ProjectItems::lookup_qualified_path)) — the
     /// value an already-name-shortened `Mod.value` resolves to. Only `let` values
     /// are recorded with qualified paths, so a `value` that is actually a nested
@@ -3255,7 +3274,8 @@ impl<'a> Resolver<'a> {
         // match before falling back to an earlier file's export.
         let names = self.assemblies.names();
         let key = PathKey::of(names, &full);
-        self.items
+        self.out
+            .items
             .iter()
             .rfind(|i| {
                 // Accessibility-gate the same-file qualified value exactly as the
@@ -3265,7 +3285,7 @@ impl<'a> Resolver<'a> {
                 // by a later inaccessible `private` one is still recovered.
                 i.qualified.as_ref().is_some_and(|q| {
                     q.is(names, key)
-                        && q.accessible_from(names, i.access_root_len, &self.container_path)
+                        && q.accessible_from(names, i.access_root_len, &self.lexical.container_path)
                 })
             })
             .map(|i| i.id)
@@ -3273,7 +3293,7 @@ impl<'a> Resolver<'a> {
                 self.preceding.lookup_qualified_path(
                     self.assemblies.names(),
                     &full,
-                    &self.container_path,
+                    &self.lexical.container_path,
                 )
             })
             .map_or(QualifiedMember::Absent, QualifiedMember::Bound)
@@ -3293,14 +3313,14 @@ impl<'a> Resolver<'a> {
             Some(_) => QualifiedMember::Declined,
             None => self
                 .preceding
-                .lookup_qualified_path(self.assemblies.names(), path, &self.container_path)
+                .lookup_qualified_path(self.assemblies.names(), path, &self.lexical.container_path)
                 .map_or(QualifiedMember::Absent, QualifiedMember::Bound),
         }
     }
 
     /// Every declaration of a member at `path` (container + name) the walk
     /// knows of: earlier files' ([`ProjectItems::member_decl_files`](super::model::ProjectItems::member_decl_files))
-    /// and this file's so far ([`Self::member_decl_counts`]), accessible or
+    /// and this file's so far ([`Indexes::member_decl_counts`](crate::resolve::indexes::Indexes::member_decl_counts)), accessible or
     /// not, of every kind [`ExportDecl::member_path`](super::model::ExportDecl::member_path) counts.
     pub(super) fn member_declarations(&self, path: &[String]) -> MemberDeclarations {
         let earlier = self
@@ -3309,6 +3329,7 @@ impl<'a> Resolver<'a> {
             .get(self.assemblies.names(), path)
             .map_or(&[][..], Vec::as_slice);
         let own = self
+            .index
             .member_decl_counts
             .get(self.assemblies.names(), path)
             .copied()
@@ -3348,11 +3369,11 @@ impl<'a> Resolver<'a> {
         if decls.count <= 1 {
             return None;
         }
-        let site = &self.container_path;
+        let site = &self.lexical.container_path;
         let accessible = |root: Option<usize>| super::model::accessible_from(root, full, site);
         let names = self.assemblies.names();
         let key = PathKey::of(names, full);
-        let own = self.items.iter().filter_map(|i| {
+        let own = self.out.items.iter().filter_map(|i| {
             let q = i
                 .qualified
                 .as_ref()
@@ -3396,13 +3417,15 @@ impl<'a> Resolver<'a> {
         let names = self.assemblies.names();
         let key = PathKey::of(names, full);
         let mut keyed = self
+            .out
             .items
             .iter()
             .filter_map(|i| Some((i.qualified.as_ref().filter(|q| q.is(names, key))?, i)))
             .peekable();
         keyed.peek().is_some()
-            && keyed
-                .all(|(q, i)| !q.accessible_from(names, i.access_root_len, &self.container_path))
+            && keyed.all(|(q, i)| {
+                !q.accessible_from(names, i.access_root_len, &self.lexical.container_path)
+            })
     }
 
     /// If a *constructor case* named `name` is in scope — a union case, an
@@ -3454,7 +3477,7 @@ impl<'a> Resolver<'a> {
             Some(r) => matches!(r, Resolution::Deferred(_)),
         };
         if a_variable {
-            self.opaque_binders.insert(range);
+            self.out.opaque_binders.insert(range);
         }
         a_variable.then(|| {
             ScopeEntry::binding(
@@ -3533,7 +3556,7 @@ impl<'a> Resolver<'a> {
     ) -> Result<&ScopeEntry, Option<DeclineCause>> {
         let mut skipped_literal = false;
         let key = NameKey::of(self.assemblies.names(), name);
-        for frame in self.scopes.iter().rev() {
+        for frame in self.lexical.scopes.iter().rev() {
             for entry in frame.named_rev(key) {
                 // A contributor mark: the name may be a case the walk does not
                 // model, unless the contributor is a constructible type, which
@@ -3677,7 +3700,7 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => id,
             Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
                 // Same-file: classify via this file's def arena.
-                Some(local) => self.items.get(local)?.def()?,
+                Some(local) => self.out.items.get(local)?.def()?,
                 // Cross-file: its def lives in an earlier file's arena, so consult
                 // the exported case-id set instead.
                 None => return Some(self.preceding.is_case_item(id)),
@@ -3694,7 +3717,7 @@ impl<'a> Resolver<'a> {
             | Resolution::Unresolved => return Some(false),
         };
         Some(matches!(
-            self.defs[def.index()].kind,
+            self.out.defs[def.index()].kind,
             DefKind::UnionCase | DefKind::ExceptionCase | DefKind::ActivePattern
         ))
     }
@@ -3704,7 +3727,7 @@ impl<'a> Resolver<'a> {
     /// [`ProjectItems::is_case_item`](super::model::ProjectItems::is_case_item).
     fn item_is_case(&self, id: ItemId) -> bool {
         match id.index().checked_sub(self.item_base as usize) {
-            Some(local) => self.items.get(local).is_some_and(|it| it.is_case()),
+            Some(local) => self.out.items.get(local).is_some_and(|it| it.is_case()),
             None => self.preceding.is_case_item(id),
         }
     }
@@ -3716,7 +3739,7 @@ impl<'a> Resolver<'a> {
     /// [`ProjectItems::is_attributed_item`](super::model::ProjectItems::is_attributed_item).
     fn item_is_attributed(&self, id: ItemId) -> bool {
         match id.index().checked_sub(self.item_base as usize) {
-            Some(local) => self.items.get(local).is_some_and(|it| it.attributed),
+            Some(local) => self.out.items.get(local).is_some_and(|it| it.attributed),
             None => self.preceding.is_attributed_item(id),
         }
     }
@@ -3837,7 +3860,7 @@ impl<'a> Resolver<'a> {
             if !value_takes_qualifier {
                 let type_pos = Self::reached_type_slot_pos(
                     reach,
-                    u32::from(self.defs[type_id.index()].range.start()),
+                    u32::from(self.out.defs[type_id.index()].range.start()),
                 );
                 if let Some(cause) = self.reached_type_contested(head, reach, type_pos) {
                     self.defer_with_cause(
@@ -3880,7 +3903,7 @@ impl<'a> Resolver<'a> {
             // block's start for an earlier block's.
             let type_pos = Self::reached_type_slot_pos(
                 reach,
-                u32::from(self.defs[type_id.index()].range.start()),
+                u32::from(self.out.defs[type_id.index()].range.start()),
             );
             // Whether the type takes the qualifier: `None` when a value
             // does, the cause when the contest is not decidable.
@@ -4084,7 +4107,7 @@ impl<'a> Resolver<'a> {
                     // a current-group binding needs the current module's own name as
                     // the head, now rejected.
                     && let head_len = module_path.len() - prefix.len() + 1
-                    && !self.container_path.starts_with(&module_path[..head_len])
+                    && !self.lexical.container_path.starts_with(&module_path[..head_len])
                     && let found @ (QualifiedMember::Bound(_) | QualifiedMember::Declined) =
                         self.qualified_value_in(&module_path, &id_text(value_seg))
                 {
@@ -4387,7 +4410,7 @@ impl<'a> Resolver<'a> {
             if !rest.is_empty()
                 && (self.scope.opacity.bare_or_dotted_heads_unknowable() || head_staled)
                 && matches!(
-                    self.resolutions.get(&first.text_range()),
+                    self.out.resolutions.get(&first.text_range()),
                     Some(Resolution::Deferred(_)) | None
                 )
             {
@@ -4452,7 +4475,7 @@ impl<'a> Resolver<'a> {
             || self.preceding.is_project_value_prefixed(
                 self.assemblies.names(),
                 names,
-                &self.container_path,
+                &self.lexical.container_path,
             );
         shadowed.then_some(DeclineCause::ProjectPathShadow)
     }
@@ -4490,11 +4513,14 @@ impl<'a> Resolver<'a> {
     /// regardless of nesting depth ([`Self::self_module_shadow_only`]).
     pub(super) fn self_qualified_member_path(&self, names: &[String]) -> Option<Vec<String>> {
         let head = names.first()?;
-        let depth = self.namespace_depth.min(self.container_path.len());
-        let j = (depth..self.container_path.len())
+        let depth = self
+            .lexical
+            .namespace_depth
+            .min(self.lexical.container_path.len());
+        let j = (depth..self.lexical.container_path.len())
             .rev()
-            .find(|&j| &self.container_path[j] == head)?;
-        let mut full = self.container_path[..=j].to_vec();
+            .find(|&j| &self.lexical.container_path[j] == head)?;
+        let mut full = self.lexical.container_path[..=j].to_vec();
         full.extend_from_slice(&names[1..]);
         Some(full)
     }
@@ -4526,12 +4552,14 @@ impl<'a> Resolver<'a> {
     /// at the reconstructed path.
     fn same_name_entity_shadows_head(&self, head: &str) -> bool {
         let in_current = self
+            .index
             .module_like_names
-            .get(&self.container_path.id())
+            .get(&self.lexical.container_path.id())
             .is_some_and(|names| names.contains(head))
             || self
+                .index
                 .type_defs
-                .get(&self.container_path.id())
+                .get(&self.lexical.container_path.id())
                 .is_some_and(|types| types.contains_key(head));
         // A same-name MODULE declared in an enclosing container — a genuine
         // *cousin*, same-file (`module_like_names`) or an earlier file
@@ -4541,13 +4569,17 @@ impl<'a> Resolver<'a> {
         // `container_path[..=k]`, part of the current chain), not a cousin — an
         // ancestor self-qualifier (`List.rev` inside `module List` / `module
         // Helpers`) must still fall through to FSharp.Core.
-        let depth = self.namespace_depth.min(self.container_path.len());
-        let enclosing_module = (depth..self.container_path.len().saturating_sub(1))
-            .filter(|&k| self.container_path[k] != head)
+        let depth = self
+            .lexical
+            .namespace_depth
+            .min(self.lexical.container_path.len());
+        let enclosing_module = (depth..self.lexical.container_path.len().saturating_sub(1))
+            .filter(|&k| self.lexical.container_path[k] != head)
             .any(|k| {
-                let prefix = &self.container_path[..k];
-                self.module_like_names
-                    .get(&self.container_path.prefix_id(k))
+                let prefix = &self.lexical.container_path[..k];
+                self.index
+                    .module_like_names
+                    .get(&self.lexical.container_path.prefix_id(k))
                     .is_some_and(|names| names.contains(head))
                     || {
                         let mut full = prefix.to_vec();
@@ -4615,8 +4647,13 @@ impl<'a> Resolver<'a> {
         // A same-name child module/type binds the head ahead of self — same-file in
         // the current container, or a cross-file child under `container_path ++ names`.
         if let Some(head) = names.first() {
-            let child_path: Vec<String> =
-                self.container_path.iter().chain(names).cloned().collect();
+            let child_path: Vec<String> = self
+                .lexical
+                .container_path
+                .iter()
+                .chain(names)
+                .cloned()
+                .collect();
             if self.same_name_entity_shadows_head(head)
                 || self
                     .preceding
@@ -4694,7 +4731,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether `names` is rooted at a `type … with` **augmentation head** — this
-    /// file's ([`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals),
+    /// file's ([`Lexical::augmentation_head_locals`](crate::resolve::lexical::Lexical::augmentation_head_locals),
     /// which explains the rule) or an earlier Compile-order one's
     /// ([`ProjectItems::is_rooted_at_augmentation_head`](super::model::ProjectItems::is_rooted_at_augmentation_head)).
     ///
@@ -4703,8 +4740,13 @@ impl<'a> Resolver<'a> {
     /// rather than declaring one, so it cannot occupy a type path.
     pub(super) fn path_is_augmentation_head_shadowed(&self, path: &PathPrefixes<'_>) -> bool {
         let names = self.assemblies.names();
-        self.augmentation_head_locals.has_prefix_of(names, path)
-            || self.augmentation_head_exports.has_prefix_of(names, path)
+        self.lexical
+            .augmentation_head_locals
+            .has_prefix_of(names, path)
+            || self
+                .index
+                .augmentation_head_exports
+                .has_prefix_of(names, path)
             || self.preceding.is_rooted_at_augmentation_head(names, path)
     }
 
@@ -4729,13 +4771,13 @@ impl<'a> Resolver<'a> {
             return Some(DeclineCause::SignatureScreened);
         }
         let shadowed = self.rooted_at_current_module(names)
-            || self.nested_module_locals.has_prefix_of(table, path)
+            || self.lexical.nested_module_locals.has_prefix_of(table, path)
             // …and same-file *qualified* paths of nested modules / types /
             // exceptions (`Demo.Calc` for a `type Calc` under `namespace Demo`,
             // referenced from a sibling `module M`): `nested_module_locals` holds
             // only the *relative* form, so a namespace-qualified reference needs
             // the exported (qualified) form too.
-            || self.nested_module_exports.has_prefix_of(table, path)
+            || self.index.nested_module_exports.has_prefix_of(table, path)
             // NB: a *top-level* project module exactly equal to `names`
             // ([`ProjectItems::is_exact_project_module`]) is **not** a type
             // shadow — a module is not a type, so it never shadows a same-named
@@ -4763,8 +4805,10 @@ impl<'a> Resolver<'a> {
         let Some((type_id, case_res, reach)) = self.type_case_path(type_seg, case_seg) else {
             return false;
         };
-        let type_pos =
-            Self::reached_type_slot_pos(reach, u32::from(self.defs[type_id.index()].range.start()));
+        let type_pos = Self::reached_type_slot_pos(
+            reach,
+            u32::from(self.out.defs[type_id.index()].range.start()),
+        );
         if let Some(cause) = self.reached_type_contested(&id_text(type_seg), reach, type_pos) {
             self.defer_with_cause(
                 type_seg.text_range(),
@@ -4787,7 +4831,7 @@ impl<'a> Resolver<'a> {
 
     /// Classify a **same-file module-qualified** type-qualified case `Pal.Color.Red`
     /// — or one with a longer qualifier, `A.B.Color.Red` — against the complete
-    /// per-container declared-name view [`Self::container_decls`]. This is Gap A of
+    /// per-container declared-name view [`Indexes::container_decls`](crate::resolve::indexes::Indexes::container_decls). This is Gap A of
     /// `docs/type-qualified-case-prefix-plan.md`, closed for the clean case — sound by
     /// construction (decide on certainty, defer on any contention).
     ///
@@ -4935,13 +4979,15 @@ impl<'a> Resolver<'a> {
         // whose segment classification finds nothing (`None` below) *continues* to
         // the next candidate; only when every same-file candidate declines may the
         // caller fall through to cross-file resolution.
-        let relative = (self.namespace_depth.max(1)..=self.container_path.len()).rev();
+        let relative =
+            (self.lexical.namespace_depth.max(1)..=self.lexical.container_path.len()).rev();
         let root_tier: &[usize] = &[0];
         for k in relative.chain(root_tier.iter().copied()) {
-            let parent = &self.container_path[..k];
+            let parent = &self.lexical.container_path[..k];
             let Some(&kinds) = self
+                .index
                 .container_decls
-                .get(&self.container_path.prefix_id(k))
+                .get(&self.lexical.container_path.prefix_id(k))
                 .and_then(|d| d.get(head))
             else {
                 continue; // nothing named `Pal` here — next container outward
@@ -4955,8 +5001,9 @@ impl<'a> Resolver<'a> {
             // or the opened module wins over a later root module, which the
             // positional contest does not model.
             if k == 0
-                && (self.unknowables.contains(Unknowable::GlobalBlockOpen)
+                && (self.out.unknowables.contains(Unknowable::GlobalBlockOpen)
                     || self
+                        .out
                         .namespace_paths
                         .iter()
                         .any(|p| p.len() == 1 && p[0] == head))
@@ -4989,7 +5036,7 @@ impl<'a> Resolver<'a> {
             // environment, and F# tries the *next* same-named candidate outward
             // (FCS-probed: inside `Top.Pal`, `Pal.Color.Red` binds an outer
             // same-file `Client.Pal`), so continue, don't abandon the search.
-            if self.container_path.starts_with(&module_path) {
+            if self.lexical.container_path.starts_with(&module_path) {
                 continue;
             }
 
@@ -5078,7 +5125,7 @@ impl<'a> Resolver<'a> {
     ///
     /// - `None` — transparent: the prefix supplies no `head` at all, or its
     ///   target **provably** does not own the residual (a *same-file* module
-    ///   target is judged by the complete [`Resolver::container_decls`] view; a
+    ///   target is judged by the complete [`Indexes::container_decls`](crate::resolve::indexes::Indexes::container_decls) view; a
     ///   *cross-file* project target by the complete cross-file value / module /
     ///   namespace / type indexes, probes CF2/CF5; an *assembly* target by the
     ///   complete assembly env) — FCS backtracks past it (probe BK1) and the
@@ -5143,9 +5190,11 @@ impl<'a> Resolver<'a> {
         // not own the residual) keeps the open transparent, so the search
         // backtracks past it exactly as before (probe BK1).
         if self
+            .index
             .module_paths
             .contains_path(self.assemblies.names(), &full)
             || self
+                .index
                 .nested_module_exports
                 .contains_path(self.assemblies.names(), &full)
         {
@@ -5162,7 +5211,7 @@ impl<'a> Resolver<'a> {
             // The open supplying the *current* container (or an ancestor) as the
             // head is the FS0039 own-name shape at one remove — unprobed; defer
             // rather than emit or fall through.
-            if self.container_path.starts_with(&full) {
+            if self.lexical.container_path.starts_with(&full) {
                 return Some(SameFileQualified::DeferStop);
             }
             return self.classify_module_qualified_residual(full, res, in_pattern, use_pos);
@@ -5173,7 +5222,7 @@ impl<'a> Resolver<'a> {
         // total, so its residual classifies exactly like a module's (FCS-probed
         // NS1: `namespace A.Pal; type Color = Red | Blue` + `open A` binds
         // `A.Pal.Color.Red`). The same clean-head / self-ancestor guards apply.
-        if self.namespace_paths.iter().any(|p| p == &full)
+        if self.out.namespace_paths.iter().any(|p| p == &full)
             && !self.preceding.is_namespace(&full)
             && !self.assemblies.has_namespace(&full)
         {
@@ -5183,7 +5232,7 @@ impl<'a> Resolver<'a> {
             {
                 return Some(SameFileQualified::DeferStop);
             }
-            if self.container_path.starts_with(&full) {
+            if self.lexical.container_path.starts_with(&full) {
                 return Some(SameFileQualified::DeferStop);
             }
             return self.classify_module_qualified_residual(full, res, in_pattern, use_pos);
@@ -5221,7 +5270,11 @@ impl<'a> Resolver<'a> {
             // there anyway) — it falls to the conservative handling below.
             if self
                 .preceding
-                .type_qualified_case(self.assemblies.names(), &case_path, &self.container_path)
+                .type_qualified_case(
+                    self.assemblies.names(),
+                    &case_path,
+                    &self.lexical.container_path,
+                )
                 .is_some()
             {
                 return Some(SameFileQualified::Miss);
@@ -5238,7 +5291,7 @@ impl<'a> Resolver<'a> {
             // head is the FS0039 own-name shape at one remove — unprobed for
             // cross-file targets too; defer rather than emit or fall through
             // (mirrors the same-file arms above).
-            if self.container_path.starts_with(&full) {
+            if self.lexical.container_path.starts_with(&full) {
                 return Some(SameFileQualified::DeferStop);
             }
             // THIS file's own declarations under the target (a namespace block
@@ -5257,12 +5310,17 @@ impl<'a> Resolver<'a> {
             let names = self.assemblies.names();
             let ty_key = PathKey::of(names, &ty_path);
             if self
+                .out
                 .items
                 .iter()
                 .any(|i| i.qualified.as_ref().is_some_and(|q| q.is(names, ty_key)))
                 || self
                     .preceding
-                    .lookup_qualified_path(self.assemblies.names(), &ty_path, &self.container_path)
+                    .lookup_qualified_path(
+                        self.assemblies.names(),
+                        &ty_path,
+                        &self.lexical.container_path,
+                    )
                     .is_some()
             {
                 return Some(SameFileQualified::DeferStop);
@@ -5278,6 +5336,7 @@ impl<'a> Resolver<'a> {
             // deferred, except a same-file `module <full…, ty>` *header*, which
             // never enters `container_decls` — hence the `module_paths` check.
             if self
+                .index
                 .module_paths
                 .contains_path(self.assemblies.names(), &ty_path)
                 || self
@@ -5398,10 +5457,10 @@ impl<'a> Resolver<'a> {
                 .classify_module_qualified_segment(path, res.ty, res.case, in_pattern, use_pos);
         };
         let kinds = self.declared_in(&path).and_then(|d| d.get(seg)).copied();
-        let private_reachable = self.container_path.starts_with(&path);
+        let private_reachable = self.lexical.container_path.starts_with(&path);
         let mut next = path;
         next.push(seg.clone());
-        let namespace = self.namespace_paths.iter().any(|p| p == &next);
+        let namespace = self.out.namespace_paths.iter().any(|p| p == &next);
         let rest = QualifiedResidual { mids, ..res };
         match kinds {
             None if !namespace => None,
@@ -5439,7 +5498,7 @@ impl<'a> Resolver<'a> {
     /// comes later and is tried first. The lexical modules and `open`s have
     /// been judged by the time this runs; the rest is [`Self::root_head_rival`].
     ///
-    /// The residual is walked through [`Self::container_decls`]
+    /// The residual is walked through [`Indexes::container_decls`](crate::resolve::indexes::Indexes::container_decls)
     /// ([`classify_module_qualified_residual`](Self::classify_module_qualified_residual)),
     /// which is the namespace's whole content only when nothing else
     /// contributes to it: no earlier file, no referenced assembly, no root
@@ -5457,12 +5516,12 @@ impl<'a> Resolver<'a> {
         use_pos: TextSize,
     ) -> Option<SameFileQualified> {
         let ns = vec![head.to_string()];
-        if !self.namespace_paths[..self.block_namespace_start].contains(&ns) {
+        if !self.out.namespace_paths[..self.lexical.block_namespace_start].contains(&ns) {
             return None;
         }
         let mut qualifier = ns.clone();
         qualifier.extend(res.mids.iter().cloned());
-        let block_header = &self.container_path[..self.block_container_len];
+        let block_header = &self.lexical.container_path[..self.lexical.block_container_len];
         let root_module = self
             .declared_in(&[][..])
             .and_then(|d| d.get(head))
@@ -5507,8 +5566,8 @@ impl<'a> Resolver<'a> {
     /// tier for tier. `Some(DeferStop)` for any other rival, whose contents
     /// are not walked here.
     fn root_head_rival(&self, head: &str, res: QualifiedResidual<'_>) -> Option<SameFileQualified> {
-        for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
-            let mut p = self.container_path[..k].to_vec();
+        for k in (self.lexical.namespace_depth.max(1)..=self.lexical.container_path.len()).rev() {
+            let mut p = self.lexical.container_path[..k].to_vec();
             p.push(head.to_string());
             let mut case_path = p.clone();
             case_path.extend(res.mids.iter().cloned());
@@ -5516,7 +5575,11 @@ impl<'a> Resolver<'a> {
             case_path.push(res.case.to_string());
             if self
                 .preceding
-                .type_qualified_case(self.assemblies.names(), &case_path, &self.container_path)
+                .type_qualified_case(
+                    self.assemblies.names(),
+                    &case_path,
+                    &self.lexical.container_path,
+                )
                 .is_some()
             {
                 return Some(SameFileQualified::Miss);
@@ -5533,11 +5596,11 @@ impl<'a> Resolver<'a> {
                 return Some(SameFileQualified::DeferStop);
             }
         }
-        let same_file_auto_open = self.auto_open_module_paths.iter().any(|(p, _)| {
+        let same_file_auto_open = self.index.auto_open_module_paths.iter().any(|(p, _)| {
             p.split_last()
-                .is_some_and(|(_, parent)| self.container_path.starts_with(parent))
+                .is_some_and(|(_, parent)| self.lexical.container_path.starts_with(parent))
         });
-        let enclosing = &self.container_path[..self.namespace_depth];
+        let enclosing = &self.lexical.container_path[..self.lexical.namespace_depth];
         // Any other contributor to the enclosing namespace — an earlier file's
         // fragment, or a referenced assembly's (an accessible type there, or a
         // dropped one that may be): entering it opens its contents and its
@@ -5550,16 +5613,17 @@ impl<'a> Resolver<'a> {
                     .any_split_of_a_module_path_has_a_dropped_type(enclosing));
         (same_file_auto_open
             || other_contributor
-            || self.unknowables.contains(Unknowable::GlobalBlockOpen))
+            || self.out.unknowables.contains(Unknowable::GlobalBlockOpen))
         .then_some(SameFileQualified::DeferStop)
     }
 
     /// Whether `container` declares a type named `ty` more than once at one
-    /// arity (FS0037): FCS reads the first, [`Self::type_defs`] keeps the
+    /// arity (FS0037): FCS reads the first, [`Indexes::type_defs`](crate::resolve::indexes::Indexes::type_defs) keeps the
     /// latest.
     fn type_name_reused_in(&self, container: &[String], ty: &str) -> bool {
-        self.container_path
-            .get_at(&self.type_decl_counts, container)
+        self.lexical
+            .container_path
+            .get_at(&self.index.type_decl_counts, container)
             .and_then(|m| m.get(ty))
             .is_some_and(|by_arity| by_arity.values().any(|&n| n > 1))
     }
@@ -5573,16 +5637,21 @@ impl<'a> Resolver<'a> {
         let reaches = |p: &[String]| -> bool {
             let mut parent = &p[..p.len().saturating_sub(1)];
             loop {
-                if self.container_path.starts_with(parent) {
+                if self.lexical.container_path.starts_with(parent) {
                     return true;
                 }
-                if !self.lexical_auto_open_paths.iter().any(|q| q == parent) {
+                if !self
+                    .index
+                    .lexical_auto_open_paths
+                    .iter()
+                    .any(|q| q == parent)
+                {
                     return false;
                 }
                 parent = &parent[..parent.len().saturating_sub(1)];
             }
         };
-        self.lexical_auto_open_paths.iter().any(|p| {
+        self.index.lexical_auto_open_paths.iter().any(|p| {
             !p.is_empty()
                 && reaches(p)
                 && self
@@ -5616,7 +5685,7 @@ impl<'a> Resolver<'a> {
     ///   member is not a pattern — FCS-probed), so a type without the case falls
     ///   to the companion checks and then to `None` (outward).
     /// - A companion **submodule** `Pal.Color` declaring `Red`
-    ///   ([`Self::container_decls`] under the extended path — complete, so absence
+    ///   ([`Indexes::container_decls`](crate::resolve::indexes::Indexes::container_decls) under the extended path — complete, so absence
     ///   is provable): same-file. An expression-position companion `let Red` is
     ///   exactly what the qualified-value branch resolves →
     ///   [`Miss`](SameFileQualified::Miss) (delegate to it, stop the walk); any
@@ -5652,30 +5721,38 @@ impl<'a> Resolver<'a> {
         // those downstream branches and misbinds (codex); guarding subtracts exactly
         // the two type-owned emissions and nothing else.
         let type_inaccessible = self
+            .lexical
             .container_path
-            .get_at(&self.type_defs, &module_path)
+            .get_at(&self.index.type_defs, &module_path)
             .is_some_and(|m| m.contains_key(ty))
             && {
                 let mut type_path = module_path.clone();
                 type_path.push(ty.to_string());
                 let access_root = self
+                    .index
                     .type_access_roots
                     .get(&module_path)
                     .and_then(|m| m.get(ty))
                     .copied()
                     .flatten();
-                !super::model::accessible_from(access_root, &type_path, &self.container_path)
+                !super::model::accessible_from(
+                    access_root,
+                    &type_path,
+                    &self.lexical.container_path,
+                )
             };
         if !type_inaccessible {
             if let Some(&case_res) = self
+                .index
                 .type_cases
                 .get(&module_path)
                 .and_then(|m| m.get(ty))
                 .and_then(|c| c.get(case))
             {
                 let Some(&type_id) = self
+                    .lexical
                     .container_path
-                    .get_at(&self.type_defs, &module_path)
+                    .get_at(&self.index.type_defs, &module_path)
                     .and_then(|m| m.get(ty))
                 else {
                     // Defensive: `type_cases` and `type_defs` are populated together,
@@ -5709,8 +5786,9 @@ impl<'a> Resolver<'a> {
                 if let Some(member_def) =
                     self.emittable_type_member(&module_path, ty, case, use_pos)
                     && let Some(&type_id) = self
+                        .lexical
                         .container_path
-                        .get_at(&self.type_defs, &module_path)
+                        .get_at(&self.index.type_defs, &module_path)
                         .and_then(|m| m.get(ty))
                 {
                     if self.lower_arity_namesake_possible(ty, type_id, Some(&module_path)) {
@@ -6051,7 +6129,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether a **project** type or abbreviation of this simple name is in
-    /// scope — this file's own ([`Self::own_type_simple_names`]) or an earlier
+    /// scope — this file's own ([`Prescan::own_type_simple_names`](crate::resolve::prescan::Prescan::own_type_simple_names)) or an earlier
     /// Compile-order file's
     /// ([`ProjectItems::project_type_simple_names`](super::model::ProjectItems)).
     /// FCS binds it over any referenced-assembly entity of the name (chasing a
@@ -6059,7 +6137,7 @@ impl<'a> Resolver<'a> {
     /// pattern position, so an assembly union-case reading must not be committed
     /// while one is in scope.
     fn project_binds_type_simple_name(&self, name: &str) -> bool {
-        self.own_type_simple_names.contains(name)
+        self.prescan.own_type_simple_names.contains(name)
             || self.preceding.project_type_simple_names.contains(name)
     }
 
@@ -6079,10 +6157,12 @@ impl<'a> Resolver<'a> {
                 .preceding
                 .is_real_nested_module(self.assemblies.names(), self.path_key(module)))
             && !self
+                .out
                 .export_decls
                 .iter()
                 .any(|d| d.path.starts_with(self.assemblies.names(), module))
             && !self
+                .index
                 .modules_with_hidden_values
                 .iter()
                 .any(|p| p.starts_with(module))
@@ -6164,10 +6244,11 @@ impl<'a> Resolver<'a> {
     ///   any open, implicit opens included; and no explicitly opened namespace
     ///   could hide an abbreviation the metadata does not show.
     fn head_names_only_the_owner(&self, head: &str, owner: &[String]) -> bool {
-        let this_file_names_it = self.own_type_simple_names.contains(head)
-            || self.own_module_simple_names.contains(head)
-            || self.container_path.iter().any(|s| s == head)
+        let this_file_names_it = self.prescan.own_type_simple_names.contains(head)
+            || self.prescan.own_module_simple_names.contains(head)
+            || self.lexical.container_path.iter().any(|s| s == head)
             || self
+                .out
                 .export_decls
                 .iter()
                 .any(|d| d.path.has_segment(self.assemblies.names(), head));
@@ -6197,9 +6278,9 @@ impl<'a> Resolver<'a> {
             || self
                 .open_reading_prefixes()
                 .map(|(_, prefix)| prefix)
-                .chain((0..=self.container_path.len()).map(|k| PrefixRef {
-                    id: self.container_path.prefix_id(k),
-                    path: &self.container_path[..k],
+                .chain((0..=self.lexical.container_path.len()).map(|k| PrefixRef {
+                    id: self.lexical.container_path.prefix_id(k),
+                    path: &self.lexical.container_path[..k],
                 }))
                 .any(|prefix| {
                     let mut below = prefix.path.to_vec();
@@ -6425,10 +6506,10 @@ impl<'a> Resolver<'a> {
     /// earlier part of this file.
     fn value_resolution_def_range(&self, res: Resolution) -> Option<TextRange> {
         match res {
-            Resolution::Local(id) => Some(self.defs[id.index()].range),
+            Resolution::Local(id) => Some(self.out.defs[id.index()].range),
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
-                Some(self.defs[self.items.get(local)?.def()?.index()].range)
+                Some(self.out.defs[self.out.items.get(local)?.def()?.index()].range)
             }
             // `lookup` only ever yields in-file `Local` / `Item` value-frame
             // entries; other kinds have no in-file value range to compare.
@@ -6449,11 +6530,11 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => id,
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
-                self.items.get(local)?.def()?
+                self.out.items.get(local)?.def()?
             }
             _ => return None,
         };
-        Some(self.defs[def_id.index()].kind)
+        Some(self.out.defs[def_id.index()].kind)
     }
 
     /// For a qualified `Type.Case` path, the `(type_def, case_resolution)` when
@@ -6465,7 +6546,7 @@ impl<'a> Resolver<'a> {
     ///
     /// Walks the container path outward like [`lookup_type_def_at_arity`](Self::lookup_type_def_at_arity):
     /// the **innermost** match of that name fixes the result. A *module-like* name
-    /// (nested module / abbreviation, [`Self::module_like_names`]) at a level
+    /// (nested module / abbreviation, [`Indexes::module_like_names`](crate::resolve::indexes::Indexes::module_like_names)) at a level
     /// shadows any enclosing type for member access, so the path defers there
     /// (its members are unmodelled). Otherwise the innermost in-file *type* fixes
     /// it, and only *its* enum cases — in the same container — are reachable: a
@@ -6484,23 +6565,25 @@ impl<'a> Resolver<'a> {
     ) -> Option<(DefId, Resolution, TypeReach)> {
         let tname = &*id_text(type_name);
         let cname = &*id_text(case_name);
-        for k in (0..=self.container_path.len()).rev() {
-            let prefix = &self.container_path[..k];
+        for k in (0..=self.lexical.container_path.len()).rev() {
+            let prefix = &self.lexical.container_path[..k];
             // A module-like `Color` at this level shadows any enclosing type for
             // member access, unless it provably cannot own `Red`
             // ([`Self::module_like_transparent_for`]) — then F# backtracks past
             // it exactly as it does past a module head whose residual misses.
             if self
+                .index
                 .module_like_names
-                .get(&self.container_path.prefix_id(k))
+                .get(&self.lexical.container_path.prefix_id(k))
                 .is_some_and(|names| names.contains(tname))
                 && !self.module_like_transparent_for(prefix, tname, cname)
             {
                 return None;
             }
             let Some(&type_id) = self
+                .index
                 .type_defs
-                .get(&self.container_path.prefix_id(k))
+                .get(&self.lexical.container_path.prefix_id(k))
                 .and_then(|m| m.get(tname))
             else {
                 continue; // no `Color` of any kind here — try the enclosing container
@@ -6512,6 +6595,7 @@ impl<'a> Resolver<'a> {
             // Innermost type of this name: it shadows enclosing ones, so resolve
             // only when it is the type whose case this is (else the path defers).
             let case_res = self
+                .index
                 .type_cases
                 .get(prefix)
                 .and_then(|m| m.get(tname))
@@ -6544,9 +6628,10 @@ impl<'a> Resolver<'a> {
         // included: one out of lexical reach ([`Self::in_file_type_reach`])
         // may still be in scope through an `open`, which outranks the
         // cross-file index's reading too.
-        (0..=self.container_path.len()).rev().any(|k| {
-            self.type_cases
-                .get(&self.container_path[..k])
+        (0..=self.lexical.container_path.len()).rev().any(|k| {
+            self.index
+                .type_cases
+                .get(&self.lexical.container_path[..k])
                 .and_then(|m| m.get(tname))
                 .is_some_and(|c| c.contains_key(cname))
         })
@@ -6562,7 +6647,7 @@ impl<'a> Resolver<'a> {
     /// ancestor namespace of the current block's included, it is not in
     /// scope without an `open`.
     pub(super) fn in_file_type_reach(&self, k: usize, pos: u32) -> TypeReach {
-        let block_start = self.block_starts.last().copied().unwrap_or(0);
+        let block_start = self.index.block_starts.last().copied().unwrap_or(0);
         if pos >= block_start {
             debug_assert!(
                 k >= self.enclosing_namespace().len(),
@@ -6582,7 +6667,7 @@ impl<'a> Resolver<'a> {
 
     /// [`Self::in_file_type_reach`] for the in-file type `id`.
     pub(super) fn in_file_type_reach_of(&self, k: usize, id: DefId) -> TypeReach {
-        self.in_file_type_reach(k, u32::from(self.defs[id.index()].range.start()))
+        self.in_file_type_reach(k, u32::from(self.out.defs[id.index()].range.start()))
     }
 
     /// Where an in-file type declared at `pos` and reached as `reach` entered
@@ -6640,7 +6725,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether the *module-like* `name` declared directly in `prefix`
-    /// ([`Self::module_like_names`]) provably cannot own `member` at a
+    /// ([`Indexes::module_like_names`](crate::resolve::indexes::Indexes::module_like_names)) provably cannot own `member` at a
     /// 2-segment `Name.member` access, so F# backtracks past it to a same-named
     /// **type** in an enclosing container.
     ///
@@ -6659,7 +6744,7 @@ impl<'a> Resolver<'a> {
     ///   enumerate. A module *abbreviation*'s target is unmodelled, so it is
     ///   never transparent.
     /// - A **recursive** module makes the source-ordered
-    ///   [`Self::container_decls`] view incomplete at the use, so nothing is
+    ///   [`Indexes::container_decls`](crate::resolve::indexes::Indexes::container_decls) view incomplete at the use, so nothing is
     ///   provable while one is active.
     ///
     /// Any declaration of `member` in the module blocks transparency, in either
@@ -6672,8 +6757,9 @@ impl<'a> Resolver<'a> {
     /// Conservative in the safe direction throughout: `false` keeps the caller's
     /// pre-existing defer.
     fn module_like_transparent_for(&self, prefix: &[String], name: &str, member: &str) -> bool {
-        let encloses = self.container_path.starts_with(prefix)
+        let encloses = self.lexical.container_path.starts_with(prefix)
             && self
+                .lexical
                 .container_path
                 .get(prefix.len())
                 .is_some_and(|s| s == name);
@@ -6694,10 +6780,15 @@ impl<'a> Resolver<'a> {
     /// declares a module `name` beside the walk's own path has that module's
     /// path built.
     fn enclosing_module_like_transparent_for(&self, k: usize, name: &str, member: &str) -> bool {
-        self.container_path.get(k).is_some_and(|s| s == name)
+        self.lexical
+            .container_path
+            .get(k)
+            .is_some_and(|s| s == name)
             || self.module_like_transparent_beside(
-                &self.container_path[..k],
-                self.container_decls.get(&self.container_path.prefix_id(k)),
+                &self.lexical.container_path[..k],
+                self.index
+                    .container_decls
+                    .get(&self.lexical.container_path.prefix_id(k)),
                 name,
                 member,
             )
@@ -6779,7 +6870,7 @@ impl<'a> Resolver<'a> {
     /// against every in-scope **type** of that name, deciding [`HeadSlot`]:
     ///
     /// - same-file written types along the container chain
-    ///   ([`Self::type_defs`] — every entry there was declared before this
+    ///   ([`Indexes::type_defs`](crate::resolve::indexes::Indexes::type_defs) — every entry there was declared before this
     ///   use, the resolver walks decls in source order), at their declaration
     ///   position;
     /// - types supplied by an explicit namespace `open` — a project type
@@ -6823,10 +6914,11 @@ impl<'a> Resolver<'a> {
     /// a parameter, a pattern local, a local `let`, anything an expression
     /// binds.
     fn entry_is_expression_local(&self, entry: &ScopeEntry) -> bool {
-        let Some(&module) = self.module_frames.last() else {
+        let Some(&module) = self.lexical.module_frames.last() else {
             return false;
         };
-        self.scopes
+        self.lexical
+            .scopes
             .iter()
             .enumerate()
             .skip(module + 1)
@@ -6866,10 +6958,11 @@ impl<'a> Resolver<'a> {
         // child of that name was never interned holds nothing under it.
         let names = self.assemblies.names();
         let head_name = names.lookup(head);
-        for k in 0..=self.container_path.len() {
+        for k in 0..=self.lexical.container_path.len() {
             for &(pos, class) in self
+                .index
                 .type_slot_history
-                .get(self.container_path.prefix_id(k), head_name, head)
+                .get(self.lexical.container_path.prefix_id(k), head_name, head)
                 .into_iter()
                 .flatten()
             {
@@ -6899,7 +6992,7 @@ impl<'a> Resolver<'a> {
         // block's start.
         let namespace = self.enclosing_namespace();
         if !namespace.is_empty() {
-            let namespace_id = self.container_path.prefix_id(namespace.len());
+            let namespace_id = self.lexical.container_path.prefix_id(namespace.len());
             if let Some(exported) = self.preceding.exported_type_by_id(
                 names,
                 head_name.and_then(|n| names.child(namespace_id, n)),
@@ -6935,19 +7028,20 @@ impl<'a> Resolver<'a> {
             // The `open` brings the type only if it is accessible where the
             // `open` is written, which these prefixes do not record.
             let seen = |slot: TypeSlot| {
-                slot.class_through_scoped_open_in(prefix, namespace, &self.container_path)
+                slot.class_through_scoped_open_in(prefix, namespace, &self.lexical.container_path)
             };
             let class =
                 if let Some((_, _, slot)) = self.latest_type_path_export(path_id, prefix, head) {
                     // This file's type: the open adds this file's earlier blocks
                     // one fragment at a time.
                     let order = self
+                        .index
                         .type_defs
                         .get(&open.id)
                         .and_then(|m| m.get(head))
                         .map(|&id| {
                             self.same_file_fold_order(
-                                self.defs[id.index()].range.start().into(),
+                                self.out.defs[id.index()].range.start().into(),
                                 FoldTier::Types,
                             )
                         });
@@ -6966,6 +7060,7 @@ impl<'a> Resolver<'a> {
                     project_type_opens.push((*pos, order));
                 }
             } else if self
+                .index
                 .type_defs
                 .get(&open.id)
                 .is_some_and(|m| m.contains_key(head))
@@ -6973,7 +7068,7 @@ impl<'a> Resolver<'a> {
                 // A same-file type filed under the opened module's container
                 // path but absent from the exports — an ANONYMOUS-ROOT
                 // module's type (`export_type_path` skips those files). Its
-                // slot class is in `type_slot_classes`, but its access root
+                // slot class is in `type_slot_history`, but its access root
                 // was never exported (probe M20r), so treat the contest as
                 // undecidable rather than trust it.
                 note(*pos, SlotClass::Unknown);
@@ -7031,7 +7126,7 @@ impl<'a> Resolver<'a> {
         // block writes or opens itself follows them all; one that entered
         // there too — the implicit open supplied it, or it is an earlier
         // block's union case the block re-took — is ordered by the fold.
-        let block_start = self.block_starts.last().copied().unwrap_or(0);
+        let block_start = self.index.block_starts.last().copied().unwrap_or(0);
         let (mut evicted_at_start, mut unordered_at_start) = (false, false);
         for &(class, type_at) in &at_block_start {
             let value_later = match value_pos {
@@ -7098,7 +7193,7 @@ impl<'a> Resolver<'a> {
         FoldOrder {
             fragment: (
                 self.preceding.num_files(),
-                self.block_starts.partition_point(|&s| s <= pos),
+                self.index.block_starts.partition_point(|&s| s <= pos),
             ),
             tier,
             rank: pos,
@@ -7149,8 +7244,8 @@ impl<'a> Resolver<'a> {
         };
         match id.index().checked_sub(self.item_base as usize) {
             Some(local) => {
-                let item = self.items.get(local)?;
-                let pos = u32::from(self.defs[item.def()?.index()].range.start());
+                let item = self.out.items.get(local)?;
+                let pos = u32::from(self.out.defs[item.def()?.index()].range.start());
                 let path = item.qualified.as_ref()?;
                 let names = self.assemblies.names();
                 let prefix_key = PathKey::of(names, prefix);
@@ -7210,12 +7305,16 @@ impl<'a> Resolver<'a> {
         head: &str,
     ) -> Option<&(Vec<String>, bool, TypeSlot)> {
         let found = path_id
-            .and_then(|id| self.type_path_export_ids.get(&id))
-            .map(|&i| &self.type_path_exports[i]);
+            .and_then(|id| self.index.type_path_export_ids.get(&id))
+            .map(|&i| &self.index.type_path_exports[i]);
         #[cfg(all(feature = "interning-reference", debug_assertions))]
         {
             let path = child_text(prefix, head);
-            let reference = self.type_path_exports.iter().rfind(|(p, _, _)| *p == path);
+            let reference = self
+                .index
+                .type_path_exports
+                .iter()
+                .rfind(|(p, _, _)| *p == path);
             assert_eq!(
                 found.map(std::ptr::from_ref),
                 reference.map(std::ptr::from_ref),
@@ -7236,9 +7335,10 @@ impl<'a> Resolver<'a> {
     fn lexical_type_is_latest(&self, head: &str, type_pos: u32) -> bool {
         let names = self.assemblies.names();
         let head_name = names.lookup(head);
-        let lexical = (0..=self.container_path.len()).flat_map(|k| {
-            self.type_slot_history
-                .get(self.container_path.prefix_id(k), head_name, head)
+        let lexical = (0..=self.lexical.container_path.len()).flat_map(|k| {
+            self.index
+                .type_slot_history
+                .get(self.lexical.container_path.prefix_id(k), head_name, head)
                 .into_iter()
                 .flatten()
                 .filter_map(move |&(pos, _)| {
@@ -7262,6 +7362,7 @@ impl<'a> Resolver<'a> {
                         .exported_type_by_id(names, path_id, || child_text(&open.path, head))
                         .is_some()
                     || self
+                        .index
                         .type_defs
                         .get(&open.id)
                         .is_some_and(|m| m.contains_key(head))
@@ -7283,7 +7384,7 @@ impl<'a> Resolver<'a> {
             .map(|open| open.pos);
         let enclosing = {
             let ns = self.enclosing_namespace();
-            let ns_id = self.container_path.prefix_id(ns.len());
+            let ns_id = self.lexical.container_path.prefix_id(ns.len());
             (!ns.is_empty()
                 && self
                     .preceding
@@ -7366,17 +7467,20 @@ impl<'a> Resolver<'a> {
         // probes, not `d` copies and hashes of paths up to `d` long.
         let names = self.assemblies.names();
         let path = self.container_prefixes();
-        let written =
-            |k: usize| k == 0 || (self.namespace_depth.max(1)..=path.text.len()).contains(&k);
+        let written = |k: usize| {
+            k == 0 || (self.lexical.namespace_depth.max(1)..=path.text.len()).contains(&k)
+        };
         let head_suffix = [head];
         let head_name = [names.lookup(head)];
         let question = path.extended(names, &head_name, &head_suffix);
         let contests_written = self
+            .index
             .module_paths
             .suffix_member_prefix_lens(names, &question)
             .into_iter()
             .chain(
-                self.real_nested_module_exports
+                self.index
+                    .real_nested_module_exports
                     .suffix_member_prefix_lens(names, &question),
             )
             .chain(
@@ -7396,8 +7500,9 @@ impl<'a> Resolver<'a> {
                 }
                 let parent = PathKey::new(Some(open.id), prefix);
                 let head = NameKey::new(head_name[0], head);
-                self.module_paths.contains_child(names, parent, head)
+                self.index.module_paths.contains_child(names, parent, head)
                     || self
+                        .index
                         .real_nested_module_exports
                         .contains_child(names, parent, head)
                     || self
@@ -7427,10 +7532,10 @@ impl<'a> Resolver<'a> {
         name: &str,
         use_pos: TextSize,
     ) -> Option<DefId> {
-        if self.unindexed_augmented_names.contains(ty) {
+        if self.index.unindexed_augmented_names.contains(ty) {
             return None;
         }
-        let set = self.type_members.get(container)?.get(ty)?;
+        let set = self.index.type_members.get(container)?.get(ty)?;
         if set.emit_suppressed {
             return None;
         }
@@ -7456,18 +7561,20 @@ impl<'a> Resolver<'a> {
     ) -> Option<(DefId, DefId, TypeReach)> {
         let tname = &*id_text(type_name);
         let mname = &*id_text(member_name);
-        for k in (0..=self.container_path.len()).rev() {
-            let prefix = &self.container_path[..k];
+        for k in (0..=self.lexical.container_path.len()).rev() {
+            let prefix = &self.lexical.container_path[..k];
             if self
+                .index
                 .module_like_names
-                .get(&self.container_path.prefix_id(k))
+                .get(&self.lexical.container_path.prefix_id(k))
                 .is_some_and(|names| names.contains(tname))
             {
                 return None;
             }
             let Some(&type_id) = self
+                .index
                 .type_defs
-                .get(&self.container_path.prefix_id(k))
+                .get(&self.lexical.container_path.prefix_id(k))
                 .and_then(|m| m.get(tname))
             else {
                 continue;
@@ -7561,7 +7668,7 @@ impl<'a> Resolver<'a> {
     /// ([`Self::bare_value_decline`]) cannot disagree with the lookup.
     fn latest_entry_noting_withdrawals(&self, name: &str) -> (Option<&ScopeEntry>, bool) {
         let key = NameKey::of(self.assemblies.names(), name);
-        for frame in self.scopes.iter().rev() {
+        for frame in self.lexical.scopes.iter().rev() {
             for entry in frame.named_rev(key) {
                 if entry.pattern_only {
                     continue; // constructor namespace only — not a value here
@@ -7573,7 +7680,7 @@ impl<'a> Resolver<'a> {
                     return (None, true);
                 }
                 if let Resolution::Local(id) = entry.resolution
-                    && self.defs[id.index()].kind == DefKind::ActivePattern
+                    && self.out.defs[id.index()].kind == DefKind::ActivePattern
                 {
                     continue; // pattern-only: not a value in expression position
                 }
