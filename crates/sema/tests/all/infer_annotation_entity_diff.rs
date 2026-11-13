@@ -61,7 +61,7 @@ fn binder_render(source: &str, name: &str) -> Option<String> {
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(&env) == name)
-        .map(|(_, ty)| ty.render())
+        .map(|(_, ty)| ty.render(&env))
 }
 
 /// Infer `source` against the BCL env, run the FCS `binder-types` oracle, and
@@ -86,16 +86,16 @@ fn assert_binder_sound(source: &str) -> usize {
             panic!(
                 "we inferred `{}` for binder `{}` at {key:?} but FCS reports no binder there \
                  in {source:?}",
-                ty.render(),
+                ty.render(&env),
                 def.spelling(&env)
             )
         });
         assert_eq!(
-            &ty.render(),
+            &ty.render(&env),
             fcs_ty,
             "binder-type mismatch for `{}` at {key:?} in {source:?}: ours=`{}`, FCS=`{fcs_ty}`",
             def.spelling(&env),
-            ty.render()
+            ty.render(&env)
         );
         checked += 1;
     }

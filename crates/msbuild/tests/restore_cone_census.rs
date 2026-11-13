@@ -65,6 +65,8 @@
 
 mod common;
 
+use borzoi_msbuild::observed::host_fs;
+use host_fs::HostPath;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -138,7 +140,7 @@ struct Scratch {
 impl Scratch {
     fn new() -> Scratch {
         let dir = tempfile::tempdir().expect("scratch directory");
-        let path = std::fs::canonicalize(dir.path()).unwrap();
+        let path = host_fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir_all(path.join(EMPTY_SOURCE)).unwrap();
         let output = path.join("restore-graph.dg.json");
         Scratch {
@@ -184,10 +186,10 @@ fn generated_by_cli(project: &Path) -> (Executed, Value) {
     }
     let args: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_os_str()).collect();
     dotnet(project.parent().unwrap(), &args);
-    let spec = std::fs::read_to_string(&scratch.output)
+    let spec = host_fs::read_to_string(&scratch.output)
         .unwrap_or_else(|e| panic!("{}: dotnet msbuild wrote no spec: {e}", project.display()));
     let cone: Value =
-        serde_json::from_str(&std::fs::read_to_string(&recorded).unwrap_or_else(|e| {
+        serde_json::from_str(&host_fs::read_to_string(&recorded).unwrap_or_else(|e| {
             panic!("{}: the CLI's logger wrote nothing: {e}", project.display())
         }))
         .expect("the logger writes JSON");
@@ -596,7 +598,7 @@ fn cone_text(cone: &Cone, key: &str) -> ConeText {
         .collect();
     for (name, file) in defined {
         let source = sources.entry(file).or_insert_with(|| {
-            std::fs::read_to_string(file)
+            host_fs::read_to_string(file)
                 .unwrap_or_else(|e| panic!("{key}: read {}: {e}", file.display()))
         });
         let doc = roxmltree::Document::parse(source)
@@ -793,7 +795,7 @@ fn reads(
         false,
     );
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
-    let resolver = |name: &str| {
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         resolve_sdk(
             dotnet_root,
             None,
@@ -805,6 +807,7 @@ fn reads(
                 overrides_present,
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
     let extra: std::collections::HashMap<String, String> = globals
@@ -816,7 +819,7 @@ fn reads(
             )
         })
         .collect();
-    let source = std::fs::read_to_string(&subject.project).unwrap();
+    let source = host_fs::read_to_string(&subject.project).unwrap();
     let probe = ReadProbe {
         properties: properties.iter().map(|p| (*p).to_owned()).collect(),
         item_types: items.iter().map(|i| (*i).to_owned()).collect(),
@@ -977,7 +980,7 @@ impl Subject {
                 .and_then(Path::parent)
                 .unwrap()
                 .to_path_buf(),
-            std::fs::canonicalize(&installed).unwrap(),
+            host_fs::canonicalize(&installed).unwrap(),
             installed,
         ];
         if let Ok(rel) = path.strip_prefix(&cone.sdk_dir) {
@@ -1090,7 +1093,7 @@ fn census(subjects: &[Subject]) -> (Manifest, Manifest, String) {
         // By its real path, which is how the muxer reaches it: under the other
         // spelling MSBuild records paths into the SDK (the runtime identifier
         // graph) that `dotnet msbuild` does not.
-        let sdk_dir = std::fs::canonicalize(dotnet_root_from_env().join("sdk").join(sdk))
+        let sdk_dir = host_fs::canonicalize(dotnet_root_from_env().join("sdk").join(sdk))
             .unwrap_or_else(|e| panic!("SDK {sdk} is not installed under DOTNET_ROOT: {e}"));
         let mut per_sdk = SdkCensus::default();
         for ((subject, resolved), previous) in subjects.iter().zip(&resolved).zip(&mut previous) {
@@ -1235,7 +1238,7 @@ fn pinned_projects() {
         .map(|project| {
             let checkout = project
                 .ancestors()
-                .find(|d| d.join(".git").exists())
+                .find(|d| d.join(".git").host_exists())
                 .unwrap_or_else(|| panic!("{} is not inside a checkout", project.display()));
             let root = checkout.parent().unwrap().to_path_buf();
             Subject {
@@ -1338,7 +1341,7 @@ const HOOKED: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
 #[test]
 fn fixtures() {
     let dir = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let root = host_fs::canonicalize(dir.path()).unwrap();
     let files = [
         ("net10/App.fsproj", NET10),
         ("net10/App.fs", "module App\n"),

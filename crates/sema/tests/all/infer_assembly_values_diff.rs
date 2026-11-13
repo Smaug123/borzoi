@@ -1042,7 +1042,9 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
             let n = rows.len();
             // A value whose type parameter carries `equality` or `comparison`
             // is read but not generalised over: no scheme says `when`.
-            let unloosened = schemes.get(&name).is_some_and(takes_only_surely_sealed)
+            let unloosened = schemes
+                .get(&name)
+                .is_some_and(|ty| takes_only_surely_sealed(env, ty))
                 && !constrained.contains(&name)
                 && !a_type_may_take(&name);
             let spelled = format!("{path}.``{name}``");
@@ -1146,7 +1148,7 @@ fn every_admitted_fsharp_core_module_value_is_the_type_fcs_gives_it() {
 /// parameter, a function, an array, `unit`, a sealed primitive, or one of
 /// FSharp.Core's sealed generics. A closed list rather than inference's own
 /// test, so the obligation it decides does not move with that test.
-fn takes_only_surely_sealed(ty: &borzoi_sema::Ty) -> bool {
+fn takes_only_surely_sealed(env: &borzoi_sema::AssemblyEnv, ty: &borzoi_sema::Ty) -> bool {
     use borzoi_sema::Ty;
     const SEALED: &[&str] = &[
         "System.Int32",
@@ -1168,7 +1170,7 @@ fn takes_only_surely_sealed(ty: &borzoi_sema::Ty) -> bool {
     ];
     let sealed = |t: &Ty| match t {
         Ty::Param(_) | Ty::Fun { .. } | Ty::Array { .. } | Ty::Tuple(_) => true,
-        Ty::Named { path, .. } => SEALED.contains(&path.join(".").as_str()),
+        Ty::Named { path, .. } => SEALED.contains(&path.segments(env).join(".").as_str()),
         Ty::Var(_) | Ty::Project { .. } => false,
     };
     let mut ty = ty;

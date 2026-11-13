@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use super::SdkVersion;
 use super::version_spec::{RollForward, VersionSpec};
+use crate::observed::{self, Observer};
 
 /// Parsed view of a `global.json` document as a whole. `sdk` carries
 /// the `sdk` block (or `None` if absent / set to `null`).
@@ -570,12 +571,12 @@ fn parse_msbuild_sdks(
 ///
 /// Symlinks in the chain are followed by the OS — we don't probe
 /// `file_type()` because we never need to distinguish symlinked vs
-/// real files for this lookup.
-pub fn find_global_json(start_dir: &Path) -> Option<PathBuf> {
+/// real files for this lookup. Every probe goes through `observer`.
+pub fn find_global_json(start_dir: &Path, observer: &Observer) -> Option<PathBuf> {
     let mut cursor = Some(start_dir);
     while let Some(dir) = cursor {
         let candidate = dir.join("global.json");
-        if candidate.is_file() {
+        if observed::is_file(observer, &candidate) {
             return Some(candidate);
         }
         cursor = dir.parent();

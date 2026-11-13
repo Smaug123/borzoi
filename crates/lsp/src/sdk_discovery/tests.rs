@@ -1,4 +1,5 @@
 use crate::observed::host_fs::HostPath as _;
+use borzoi_msbuild::observed::Observer;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -452,7 +453,7 @@ fn pinned_sdk_resolves_from_the_global_packages_folder_a_config_names() {
     let disc = layout.discovery(&layout.env());
     // Both version sources: the per-import pin and the `msbuild-sdks` entry.
     for sdk_ref in ["My.Custom.Sdk/1.2.3", "My.Custom.Sdk"] {
-        let paths = single_root(disc.resolve(sdk_ref).expect("resolves"));
+        let paths = single_root(disc.resolve(sdk_ref, &Observer::new()).expect("resolves"));
         assert_eq!(
             paths.props,
             configured_copy,
@@ -479,7 +480,10 @@ fn a_relative_global_packages_folder_resolves_against_its_config_file() {
     .unwrap();
 
     let disc = layout.discovery(&layout.env());
-    let paths = single_root(disc.resolve("My.Custom.Sdk/1.2.3").expect("resolves"));
+    let paths = single_root(
+        disc.resolve("My.Custom.Sdk/1.2.3", &Observer::new())
+            .expect("resolves"),
+    );
     assert_eq!(paths.props, configured_copy);
 }
 
@@ -497,7 +501,7 @@ fn pinned_sdk_absent_from_the_configured_folder_declines() {
     install_sdk_package(&configured, "My.Custom.Sdk", "1.0.0");
 
     let disc = layout.discovery(&layout.env());
-    match disc.resolve("My.Custom.Sdk/1.2.3") {
+    match disc.resolve("My.Custom.Sdk/1.2.3", &Observer::new()) {
         Err(SdkResolveError::UnsupportedLayout { reason }) => {
             assert!(reason.contains("fallback folders"), "{reason}")
         }
@@ -518,7 +522,10 @@ fn nuget_packages_outranks_a_configured_folder() {
     let mut env = layout.env();
     env.nuget_packages_dir = Some(from_environment);
     let disc = layout.discovery(&env);
-    let paths = single_root(disc.resolve("My.Custom.Sdk/1.2.3").expect("resolves"));
+    let paths = single_root(
+        disc.resolve("My.Custom.Sdk/1.2.3", &Observer::new())
+            .expect("resolves"),
+    );
     assert_eq!(paths.props, environment_copy);
 }
 
@@ -528,7 +535,10 @@ fn nuget_packages_outranks_a_configured_folder() {
 fn pinned_sdk_resolves_from_the_home_default_without_a_config() {
     let layout = PackagesLayout::new();
     let disc = layout.discovery(&layout.env());
-    let paths = single_root(disc.resolve("My.Custom.Sdk/1.2.3").expect("resolves"));
+    let paths = single_root(
+        disc.resolve("My.Custom.Sdk/1.2.3", &Observer::new())
+            .expect("resolves"),
+    );
     assert_eq!(paths.props, layout.home_copy);
 }
 
@@ -549,7 +559,7 @@ fn pinned_sdk_declines_where_the_settings_model_declines() {
 
     let disc = layout.discovery(&layout.env());
     for sdk_ref in ["My.Custom.Sdk/1.2.3", "My.Custom.Sdk"] {
-        match disc.resolve(sdk_ref) {
+        match disc.resolve(sdk_ref, &Observer::new()) {
             Err(SdkResolveError::UnsupportedLayout { reason }) => assert!(
                 reason.contains("global packages folder")
                     && reason.contains("BORZOI_UNSET_VARIABLE"),
@@ -559,7 +569,7 @@ fn pinned_sdk_declines_where_the_settings_model_declines() {
         }
     }
     let paths = single_root(
-        disc.resolve("Microsoft.NET.Sdk")
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
             .expect("in-box SDK resolves"),
     );
     assert!(paths.props.starts_with(&layout.dotnet));
@@ -574,7 +584,7 @@ fn pinned_sdk_declines_without_a_readable_home() {
     env.home_dir = Some(layout.tmp.path().join("no-such-home"));
     let disc = layout.discovery(&env);
     assert!(matches!(
-        disc.resolve("My.Custom.Sdk/1.2.3"),
+        disc.resolve("My.Custom.Sdk/1.2.3", &Observer::new()),
         Err(SdkResolveError::UnsupportedLayout { .. })
     ));
 }
@@ -621,7 +631,10 @@ fn no_global_json_with_vs_host_still_filters_prereleases() {
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
     assert!(!disc.spec().allow_prerelease());
 
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve"),
+    );
     assert!(
         paths.props.starts_with(dotnet.join("sdk").join("8.0.401")),
         "VS host with allow_prerelease=false must pick the stable SDK, got {}",
@@ -803,7 +816,10 @@ fn resolve_picks_global_json_pinned_sdk() {
     let env = env_with(|e| e.dotnet_root = Some(dotnet.clone()));
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve"),
+    );
     assert!(
         paths.props.starts_with(dotnet.join("sdk").join("8.0.401")),
         "should have picked the pinned version, got {}",
@@ -832,7 +848,10 @@ fn resolve_returns_version_not_satisfied_when_pin_unmet() {
     let env = env_with(|e| e.dotnet_root = Some(dotnet));
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    match disc.resolve("Microsoft.NET.Sdk").unwrap_err() {
+    match disc
+        .resolve("Microsoft.NET.Sdk", &Observer::new())
+        .unwrap_err()
+    {
         SdkResolveError::VersionNotSatisfied { .. } => {}
         other => panic!("expected VersionNotSatisfied, got {other:?}"),
     }
@@ -861,7 +880,7 @@ fn e2e_parse_fsproj_with_imports_via_discovery() {
     let env = env_with(|e| e.dotnet_root = Some(dotnet));
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let resolver: &SdkResolver<'_> = &|name| disc.resolve(name);
+    let resolver: &SdkResolver<'_> = &|name, observer| disc.resolve(name, observer);
     let parsed = parse_fsproj_with_imports(
         source,
         &project,
@@ -926,7 +945,10 @@ fn e2e_msbuild_sdks_pin_overrides_caller_spec() {
     });
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let paths = single_root(disc.resolve("My.Custom.Sdk").expect("resolved via NuGet"));
+    let paths = single_root(
+        disc.resolve("My.Custom.Sdk", &Observer::new())
+            .expect("resolved via NuGet"),
+    );
     assert!(
         paths.props.starts_with(&nuget),
         "msbuild-sdks pin should resolve via NuGet, got {}",
@@ -978,7 +1000,10 @@ fn paths_resolved_against_global_json_dir() {
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
     assert_eq!(disc.roots(), std::slice::from_ref(&alt_root));
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve via alt"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve via alt"),
+    );
     assert!(
         paths
             .props
@@ -1009,7 +1034,10 @@ fn host_token_expands_to_discovered_root() {
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
     assert_eq!(disc.roots(), std::slice::from_ref(&dotnet));
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve via host"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve via host"),
+    );
     assert!(paths.props.starts_with(dotnet.join("sdk").join("8.0.401")));
 }
 
@@ -1063,7 +1091,10 @@ fn relative_entry_wins_over_host_when_both_satisfy() {
     let env = env_with(|e| e.dotnet_root = Some(dotnet));
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve"),
+    );
     assert!(
         paths.props.starts_with(alt.join("sdk").join("8.0.401")),
         "first-match-wins: expected 8.0.401 from alt, got {}",
@@ -1093,7 +1124,9 @@ fn empty_paths_list_returns_not_found() {
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
     assert!(disc.roots().is_empty());
-    let err = disc.resolve("Microsoft.NET.Sdk").unwrap_err();
+    let err = disc
+        .resolve("Microsoft.NET.Sdk", &Observer::new())
+        .unwrap_err();
     assert!(
         matches!(err, SdkResolveError::NotFound),
         "expected NotFound for paths: [], got {err:?}"
@@ -1123,7 +1156,10 @@ fn nonexistent_relative_root_falls_through() {
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-host")));
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve via alt"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve via alt"),
+    );
     assert!(paths.props.starts_with(alt.join("sdk").join("8.0.401")));
 }
 
@@ -1156,7 +1192,10 @@ fn host_token_skipped_when_host_resolution_fails() {
         std::slice::from_ref(&alt),
         "$host$ must be dropped, leaving only the explicit alt entry"
     );
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve via alt"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve via alt"),
+    );
     assert!(paths.props.starts_with(alt.join("sdk").join("8.0.401")));
 }
 
@@ -1190,7 +1229,10 @@ fn global_json_version_pin_applies_across_roots() {
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-host")));
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve"),
+    );
     assert!(
         paths.props.starts_with(alt_b.join("sdk").join("8.0.401")),
         "pinned version must skip altA (which has 9.0.100) and \
@@ -1228,7 +1270,9 @@ fn version_not_satisfied_unions_available_across_roots() {
     let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-host")));
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let err = disc.resolve("Microsoft.NET.Sdk").unwrap_err();
+    let err = disc
+        .resolve("Microsoft.NET.Sdk", &Observer::new())
+        .unwrap_err();
     let SdkResolveError::VersionNotSatisfied { available, .. } = err else {
         panic!("expected VersionNotSatisfied, got {err:?}");
     };
@@ -1721,7 +1765,10 @@ fn resolve_workload_locator_exactly_without_global_json_pin() {
     let env = env_with(|e| e.dotnet_root = Some(dotnet_root.clone()));
     let disc = SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env).unwrap();
     let resolved = disc
-        .resolve(workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR)
+        .resolve(
+            workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR,
+            &Observer::new(),
+        )
         .unwrap();
     assert_eq!(resolved, SdkResolution::Roots(vec![manifest_dir]));
 }
@@ -1746,7 +1793,10 @@ fn resolve_degrades_locators_when_global_json_pins_workload_set() {
     let env = env_with(|e| e.dotnet_root = Some(dotnet_root.clone()));
     let disc = SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env).unwrap();
     let err = disc
-        .resolve(workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR)
+        .resolve(
+            workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR,
+            &Observer::new(),
+        )
         .unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
@@ -1806,7 +1856,10 @@ fn empty_home_dir_in_hand_built_env_derives_no_user_root() {
     });
     let disc = SdkDiscovery::for_project(&project_dir.join("App.fsproj"), &env).unwrap();
     let err = disc
-        .resolve(workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR)
+        .resolve(
+            workloads::WORKLOAD_MANIFEST_TARGETS_LOCATOR,
+            &Observer::new(),
+        )
         .unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
@@ -1910,7 +1963,9 @@ fn resolve_declines_when_build_environment_sets_msbuild_sdks_path() {
     });
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let err = disc.resolve("Microsoft.NET.Sdk").unwrap_err();
+    let err = disc
+        .resolve("Microsoft.NET.Sdk", &Observer::new())
+        .unwrap_err();
     assert!(
         matches!(err, SdkResolveError::UnsupportedLayout { .. }),
         "expected an UnsupportedLayout decline, got {err:?}"
@@ -1936,7 +1991,10 @@ fn resolve_unaffected_by_empty_msbuild_sdks_path() {
     });
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
-    let paths = single_root(disc.resolve("Microsoft.NET.Sdk").expect("resolve"));
+    let paths = single_root(
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .expect("resolve"),
+    );
     assert!(paths.props.starts_with(dotnet.join("sdk").join("8.0.401")));
 }
 
@@ -1961,7 +2019,8 @@ fn resolve_declines_for_case_variant_msbuild_sdks_path() {
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
     assert!(matches!(
-        disc.resolve("Microsoft.NET.Sdk").unwrap_err(),
+        disc.resolve("Microsoft.NET.Sdk", &Observer::new())
+            .unwrap_err(),
         SdkResolveError::UnsupportedLayout { .. }
     ));
 }
@@ -2008,13 +2067,14 @@ fn msbuild_sdks_pinned_resolution_declines_under_the_override() {
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
     assert!(matches!(
-        disc.resolve("My.Custom.Sdk").unwrap_err(),
+        disc.resolve("My.Custom.Sdk", &Observer::new()).unwrap_err(),
         SdkResolveError::UnsupportedLayout { .. }
     ));
     // The per-import `Sdk="Name/Version"` pin — the other pinned form — declines
     // for the same reason.
     assert!(matches!(
-        disc.resolve("My.Custom.Sdk/1.2.3").unwrap_err(),
+        disc.resolve("My.Custom.Sdk/1.2.3", &Observer::new())
+            .unwrap_err(),
         SdkResolveError::UnsupportedLayout { .. }
     ));
 }
@@ -2048,7 +2108,10 @@ fn workload_locator_resolution_declines_under_the_override() {
     let disc = SdkDiscovery::for_project(&project, &env).expect("discovery");
 
     assert!(matches!(
-        disc.resolve("Microsoft.NET.SDK.WorkloadAutoImportPropsLocator"),
+        disc.resolve(
+            "Microsoft.NET.SDK.WorkloadAutoImportPropsLocator",
+            &Observer::new()
+        ),
         Err(SdkResolveError::UnsupportedLayout { .. })
     ));
 }

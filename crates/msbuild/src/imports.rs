@@ -42,14 +42,15 @@
 use std::path::{Component, Path, PathBuf};
 
 use super::diagnostic::{Diagnostic, DiagnosticKind, DiagnosticOrigin, ImplicitImportKind};
+use super::observed::{self, Observer};
 
 /// Walk `project_path`'s ancestor directories and return one diagnostic
 /// per implicit-import file kind that exists somewhere on the chain.
 ///
 /// `project_path` does **not** need to exist on disk — only its lexical
 /// ancestry is consulted (via [`Path::ancestors`], which is purely
-/// string-based). Each candidate ancestor *is* stat-ed via
-/// [`Path::is_file`] to confirm the discovered file actually exists
+/// string-based). Each candidate ancestor *is* stat-ed, through
+/// `observer`, to confirm the discovered file actually exists
 /// and is a regular file (not e.g. a directory of the same name).
 ///
 /// **`project_path` must be rooted**: non-rooted paths return an
@@ -78,7 +79,7 @@ use super::diagnostic::{Diagnostic, DiagnosticKind, DiagnosticOrigin, ImplicitIm
 /// [`ImplicitImportKind`]). Returns an empty vector when none of the
 /// well-known files exist on the chain (the common case for projects
 /// outside a configured MSBuild repository).
-pub fn detect_implicit_imports(project_path: &Path) -> Vec<Diagnostic> {
+pub fn detect_implicit_imports(project_path: &Path, observer: &Observer) -> Vec<Diagnostic> {
     // Collapse `.` / `..` so the ancestor walk only visits real
     // parents (see doc above). Done before the root check so a
     // path like `/a/../foo.fsproj` is still recognised as rooted.
@@ -103,7 +104,7 @@ pub fn detect_implicit_imports(project_path: &Path) -> Vec<Diagnostic> {
     for ancestor in project_dir.ancestors() {
         if !found_props {
             let candidate = ancestor.join("Directory.Build.props");
-            if candidate.is_file() {
+            if observed::is_file(observer, &candidate) {
                 out.push(make_diagnostic(
                     candidate,
                     ImplicitImportKind::DirectoryBuildProps,
@@ -113,7 +114,7 @@ pub fn detect_implicit_imports(project_path: &Path) -> Vec<Diagnostic> {
         }
         if !found_targets {
             let candidate = ancestor.join("Directory.Build.targets");
-            if candidate.is_file() {
+            if observed::is_file(observer, &candidate) {
                 out.push(make_diagnostic(
                     candidate,
                     ImplicitImportKind::DirectoryBuildTargets,
@@ -123,7 +124,7 @@ pub fn detect_implicit_imports(project_path: &Path) -> Vec<Diagnostic> {
         }
         if !found_packages {
             let candidate = ancestor.join("Directory.Packages.props");
-            if candidate.is_file() {
+            if observed::is_file(observer, &candidate) {
                 out.push(make_diagnostic(
                     candidate,
                     ImplicitImportKind::DirectoryPackagesProps,

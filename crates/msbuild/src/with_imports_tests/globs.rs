@@ -82,7 +82,7 @@ fn parse_file_capturing_glob(
 ) -> (ParsedProject, Vec<CapturedGlob>) {
     parse_capturing_glob(
         project_path,
-        &std::fs::read_to_string(project_path).unwrap(),
+        &crate::observed::host_fs::read_to_string(project_path).unwrap(),
         out,
     )
 }

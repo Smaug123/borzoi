@@ -30,10 +30,11 @@ use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
 use crate::hash::{HashMap, HashSet};
 use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_named_file};
+use crate::names::NameTable;
 use crate::resolve::{
     ItemId, ProjectFile, ResolvedFile, ResolvedProject, same_tree, signature_partners,
 };
-use crate::ty::Ty;
+use crate::ty::{Ty, TyPath};
 
 /// Why a use of an earlier file's top-level value is not typed: the census's
 /// split of [`Incomplete::PrecedingValue`](crate::Incomplete::PrecedingValue).
@@ -105,7 +106,7 @@ pub struct PrecedingTypes {
     /// identity a later file's
     /// [`Resolution::EarlierFileType`](crate::Resolution::EarlierFileType)
     /// carries — with the path and arity of the [`Ty::Project`] it denotes.
-    types: HashMap<(usize, u32), (Vec<String>, usize)>,
+    types: HashMap<(usize, u32), (TyPath, usize)>,
     /// The cases of each earlier file's unions its inference types, by the
     /// case's item — the handle a later file's use of one resolves to.
     cases: HashMap<ItemId, ProjectCase>,
@@ -117,7 +118,48 @@ pub struct PrecedingTypes {
     records: ProjectRecords,
 }
 
+impl ModuleValue {
+    /// The value with its type's paths translated from `from`'s table to
+    /// `to`'s.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> ModuleValue {
+        match self {
+            ModuleValue::Typed(ty) => ModuleValue::Typed(ty.rekey(from, to)),
+            ModuleValue::Declined(gap) => ModuleValue::Declined(*gap),
+        }
+    }
+}
+
 impl PrecedingTypes {
+    /// The table with every type's paths translated from `from`'s table to
+    /// `to`'s.
+    #[cfg(feature = "test-support")]
+    fn rekey_names(&self, from: &NameTable, to: &NameTable) -> PrecedingTypes {
+        let PrecedingTypes {
+            items,
+            types,
+            cases,
+            constructor_names,
+            records,
+        } = self;
+        PrecedingTypes {
+            items: items
+                .iter()
+                .map(|(id, value)| (*id, value.rekey(from, to)))
+                .collect(),
+            types: types
+                .iter()
+                .map(|(key, (path, arity))| (*key, (path.rekey(from, to), *arity)))
+                .collect(),
+            cases: cases
+                .iter()
+                .map(|(id, case)| (*id, case.rekey(from, to)))
+                .collect(),
+            constructor_names: constructor_names.clone(),
+            records: crate::infer::rekey_records(records, from, to),
+        }
+    }
+
     /// The type a use of the earlier file's item `id` instantiates, or why
     /// there is none. An item no file published is
     /// [`PrecedingGap::NotInferred`]: absence is "not looked at", never
@@ -133,16 +175,14 @@ impl PrecedingTypes {
     /// The path and arity of the [`Ty::Project`] an annotation naming the
     /// type at position `index` of the earlier file `file` denotes; `None` for
     /// a type that file's inference would not bridge either.
-    pub(crate) fn earlier_type(&self, file: usize, index: u32) -> Option<&(Vec<String>, usize)> {
+    pub(crate) fn earlier_type(&self, file: usize, index: u32) -> Option<&(TyPath, usize)> {
         self.types.get(&(file, index))
     }
 
     /// Whether an earlier file published a type at `path` with `arity`
     /// parameters.
-    pub(crate) fn declares_type(&self, path: &[String], arity: usize) -> bool {
-        self.types
-            .values()
-            .any(|(p, a)| *a == arity && p.as_slice() == path)
+    pub(crate) fn declares_type(&self, path: &TyPath, arity: usize) -> bool {
+        self.types.values().any(|(p, a)| *a == arity && p == path)
     }
 
     /// The case of an earlier file's union that the item `id` is, as that
@@ -170,8 +210,8 @@ impl PrecedingTypes {
     /// The record an earlier file declares at `path` with `arity` type
     /// parameters, as that file's inference reads its fields; `None` for
     /// anything else.
-    pub(crate) fn record(&self, path: &[String], arity: usize) -> Option<&ProjectRecord> {
-        self.records.get(&(path.to_vec(), arity))
+    pub(crate) fn record(&self, path: &TyPath, arity: usize) -> Option<&ProjectRecord> {
+        self.records.get(&(path.clone(), arity))
     }
 
     /// Add one file's contribution, in Compile order, after the file is
@@ -226,9 +266,9 @@ pub(crate) struct FileContribution<'a> {
     constructor_names: Vec<(&'a str, usize)>,
     /// Each declared type an annotation bridges, by its position among the
     /// file's types.
-    types: Vec<(u32, &'a (Vec<String>, usize))>,
+    types: Vec<(u32, &'a (TyPath, usize))>,
     cases: Vec<(ItemId, &'a ProjectCase)>,
-    records: Vec<(&'a (Vec<String>, usize), &'a ProjectRecord)>,
+    records: Vec<(&'a (TyPath, usize), &'a ProjectRecord)>,
     /// A verdict for each export the resolver threads forward, in export
     /// order, so every cross-file use reads a verdict this file decided.
     items: Vec<(ItemId, Cow<'a, ModuleValue>)>,
@@ -242,6 +282,7 @@ impl<'a> FileContribution<'a> {
     /// what every later file sees, so its declared types, cases and records
     /// are not published: the signature may declare them differently.
     pub(crate) fn of(
+        names: &NameTable,
         file: usize,
         resolved: &'a ResolvedFile,
         inferred: Option<&'a InferredFile>,
@@ -275,12 +316,13 @@ impl<'a> FileContribution<'a> {
             .map(|(&id, case)| (id, case))
             .collect();
         cases.sort_unstable_by_key(|(id, _)| *id);
-        let mut records: Vec<(&(Vec<String>, usize), &ProjectRecord)> = declared
+        let mut records: Vec<(&(TyPath, usize), &ProjectRecord)> = declared
             .into_iter()
             .flat_map(|inferred| inferred.project_records())
             .filter(|(_, record)| record.publishable())
             .collect();
-        records.sort_unstable_by_key(|&(key, _)| key);
+        // By the path's text: ids are handed out in interning order.
+        records.sort_by_cached_key(|&((path, arity), _)| (path.segments_in(names), *arity));
         let items = resolved
             .exports()
             .iter()
@@ -383,6 +425,23 @@ impl PartialEq for InferredProject {
 impl Eq for InferredProject {}
 
 impl InferredProject {
+    /// This fold with every type's paths translated from `from`'s table to
+    /// `to`'s, so it compares with a fold made against `to`. What the fold
+    /// read is kept as it was: it is how the fold was computed, which
+    /// equality does not compare.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey_names(&self, from: &NameTable, to: &NameTable) -> InferredProject {
+        InferredProject {
+            files: self
+                .files
+                .iter()
+                .map(|f| f.as_ref().map(|f| Arc::new(f.rekey_names(from, to))))
+                .collect(),
+            inputs: self.inputs.clone(),
+            published: self.published.rekey_names(from, to),
+        }
+    }
+
     /// The inferred file at Compile index `idx`, or `None` for a signature
     /// slot or an implementation that repeats an earlier one's identity.
     pub fn file(&self, idx: usize) -> Option<&InferredFile> {
@@ -533,12 +592,14 @@ pub fn infer_project_reusing_with_reuse(
                 ))
             })
         };
-        let contribution = FileContribution::of(idx, rf, inferred.as_deref(), input.screened);
+        let contribution =
+            FileContribution::of(env.names(), idx, rf, inferred.as_deref(), input.screened);
         // A reused file contributes what it contributed before, by
         // construction; a file inferred afresh is compared.
         if in_sync && !reuse {
             in_sync = before.is_some_and(|(p, inferred)| {
-                contribution == FileContribution::of(idx, &p.resolved, inferred, p.screened)
+                contribution
+                    == FileContribution::of(env.names(), idx, &p.resolved, inferred, p.screened)
             });
         }
         published.merge(contribution);

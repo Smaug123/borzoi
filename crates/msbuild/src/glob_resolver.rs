@@ -74,6 +74,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::observed::{self, EntryKind, Observer};
 use crate::{GlobRequest, SpecFragment, Unmodelled};
 
 use crate::glob::{
@@ -299,7 +300,7 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
                 .iter()
                 .filter(|e| e.excludes_from_globs())
                 .any(|e| e.unescape().contains('?'));
-        let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive)?
+        let keys: Vec<String> = enumerate_files(&walk_root, depth, recursive, req.observer)?
             .into_iter()
             .map(|rel| {
                 let shape = match unmodelled_shape(&rel) {
@@ -479,79 +480,90 @@ fn enumerate_files(
     base: &Path,
     max_depth: usize,
     recursive: bool,
+    observer: &Observer,
 ) -> Result<Vec<String>, GlobDecline> {
     let mut out = Vec::new();
-    let mut ancestors: Vec<PathBuf> = std::fs::canonicalize(base).into_iter().collect();
-    walk(base, "", 0, max_depth, recursive, &mut ancestors, &mut out)?;
+    let mut ancestors: Vec<PathBuf> = observed::canonicalize(observer, base).into_iter().collect();
+    let mut walk = Walk {
+        max_depth,
+        recursive,
+        observer,
+        ancestors: &mut ancestors,
+        out: &mut out,
+    };
+    walk.dir(base, "", 0)?;
     Ok(out)
 }
 
-/// One directory of [`enumerate_files`]. `ancestors` holds the canonical path
-/// of every directory on the way down to `dir`, `dir` included, so a link
-/// back to one of them is recognised as a cycle.
-fn walk(
-    dir: &Path,
-    prefix: &str,
-    depth: usize,
+/// [`enumerate_files`]'s walk. `ancestors` holds the canonical path of every
+/// directory on the way down to the one being listed, that one included, so a
+/// link back to one of them is recognised as a cycle.
+struct Walk<'a> {
     max_depth: usize,
     recursive: bool,
-    ancestors: &mut Vec<PathBuf>,
-    out: &mut Vec<String>,
-) -> Result<(), GlobDecline> {
-    if depth >= max_depth {
-        if recursive {
-            return Err(GlobDecline::DepthLimit {
-                dir: dir.to_string_lossy().into_owned(),
-            });
+    observer: &'a Observer,
+    ancestors: &'a mut Vec<PathBuf>,
+    out: &'a mut Vec<String>,
+}
+
+impl Walk<'_> {
+    /// One directory of the walk.
+    fn dir(&mut self, dir: &Path, prefix: &str, depth: usize) -> Result<(), GlobDecline> {
+        let (max_depth, recursive) = (self.max_depth, self.recursive);
+        if depth >= max_depth {
+            if recursive {
+                return Err(GlobDecline::DepthLimit {
+                    dir: dir.to_string_lossy().into_owned(),
+                });
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Ok(()),
-    };
-    for entry in entries.flatten() {
-        // `DirEntry::file_type` does not follow symlinks; `fs::metadata` does.
-        let is_dir = match entry.file_type() {
-            Ok(t) if t.is_file() => false,
-            Ok(t) if t.is_dir() => true,
-            Ok(t) if t.is_symlink() => match std::fs::metadata(entry.path()) {
-                Ok(m) if m.is_file() => false,
-                Ok(m) if m.is_dir() => true,
+        let entries = match observed::read_dir(self.observer, dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(()),
+        };
+        for entry in entries.into_iter().flatten() {
+            // The directory entry's own type does not follow symlinks; `kind` does.
+            let is_dir = match entry.kind {
+                Ok(EntryKind::File) => false,
+                Ok(EntryKind::Dir) => true,
+                Ok(EntryKind::Symlink) => match observed::kind(self.observer, &entry.path) {
+                    Ok(EntryKind::File) => false,
+                    Ok(EntryKind::Dir) => true,
+                    _ => continue,
+                },
                 _ => continue,
-            },
-            _ => continue,
-        };
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let rel = if prefix.is_empty() {
-            name.into_owned()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        if !is_dir {
-            out.push(rel);
-            continue;
+            };
+            let name = entry.name.to_string_lossy();
+            let rel = if prefix.is_empty() {
+                name.into_owned()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if !is_dir {
+                self.out.push(rel);
+                continue;
+            }
+            // Only a directory the walk will actually enter can close a cycle.
+            if depth + 1 >= max_depth && !recursive {
+                continue;
+            }
+            let path = entry.path;
+            let Ok(canonical) = observed::canonicalize(self.observer, &path) else {
+                continue;
+            };
+            if self.ancestors.contains(&canonical) {
+                return Err(GlobDecline::SymlinkCycle {
+                    path: path.to_string_lossy().into_owned(),
+                });
+            }
+            self.ancestors.push(canonical);
+            let walked = self.dir(&path, &rel, depth + 1);
+            self.ancestors.pop();
+            walked?;
         }
-        // Only a directory the walk will actually enter can close a cycle.
-        if depth + 1 >= max_depth && !recursive {
-            continue;
-        }
-        let path = entry.path();
-        let Ok(canonical) = std::fs::canonicalize(&path) else {
-            continue;
-        };
-        if ancestors.contains(&canonical) {
-            return Err(GlobDecline::SymlinkCycle {
-                path: path.to_string_lossy().into_owned(),
-            });
-        }
-        ancestors.push(canonical);
-        let walked = walk(&path, &rel, depth + 1, max_depth, recursive, ancestors, out);
-        ancestors.pop();
-        walked?;
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -593,6 +605,7 @@ mod tests {
             base_dir: base,
             include: &include,
             excludes: &excludes,
+            observer: &Observer::new(),
         };
         resolve(&req)
             .expect("the fixture is decidable")
@@ -677,6 +690,7 @@ mod tests {
             base_dir: base,
             include: &include,
             excludes: &excludes,
+            observer: &Observer::new(),
         })
         .map(|paths| paths.len())
     }
@@ -812,6 +826,7 @@ mod tests {
             base_dir: tmp.path(),
             include: &SpecFragment::split_escaped("a.fs"),
             excludes: &excludes,
+            observer: &Observer::new(),
         };
         assert_eq!(
             resolve(&req).expect("the fixture is decidable"),
@@ -822,7 +837,7 @@ mod tests {
     // ----- Globs rooted outside the project directory -----
 
     fn canon(p: impl AsRef<Path>) -> PathBuf {
-        fs::canonicalize(p.as_ref())
+        crate::observed::host_fs::canonicalize(p.as_ref())
             .unwrap_or_else(|e| panic!("canonicalize {}: {e}", p.as_ref().display()))
     }
 
@@ -838,6 +853,7 @@ mod tests {
             base_dir: base,
             include: &include,
             excludes: &excludes,
+            observer: &Observer::new(),
         };
         resolve(&req)
             .expect("the fixture is decidable")
@@ -1173,6 +1189,7 @@ mod tests {
                     .iter()
                     .flat_map(|e| SpecFragment::split_escaped(e))
                     .collect::<Vec<_>>(),
+                observer: &Observer::new(),
             };
             let got = resolve(&req).expect("the fixture is decidable");
             let want = reference(tmp.path(), &sc.files, &sc.include, &sc.excludes);
@@ -1242,6 +1259,7 @@ mod tests {
             base_dir: tmp.path(),
             include: &SpecFragment::split_escaped("**/*.fs"),
             excludes: &excludes,
+            observer: &Observer::new(),
         };
         assert!(matches!(
             resolve(&req),
@@ -1252,6 +1270,7 @@ mod tests {
             base_dir: tmp.path(),
             include: &SpecFragment::split_escaped("*.fs"),
             excludes: &excludes,
+            observer: &Observer::new(),
         };
         assert_eq!(resolve(&req).unwrap().len(), 4);
     }
@@ -1270,6 +1289,7 @@ mod tests {
             base_dir: tmp.path(),
             include: &SpecFragment::split_escaped("**/*.fs"),
             excludes: &excludes,
+            observer: &Observer::new(),
         };
         assert!(matches!(resolve(&req), Err(GlobDecline::DepthLimit { .. })));
     }

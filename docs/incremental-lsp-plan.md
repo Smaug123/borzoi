@@ -1,8 +1,9 @@
 # An incremental LSP: file state, derived values and the edit loop
 
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness),
-> Stage 1 (the inference cutoff), Stage 2a (counted source reads) and Stage 2b
-> (the `Vfs` owns source text) implemented. Tracks
+> Stage 1 (the inference cutoff), Stage 2a (counted source reads), Stage 2b
+> (the `Vfs` owns source text) and Stage 3a (the MSBuild evaluation records
+> its read set) implemented. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -1135,6 +1136,224 @@ outside the module. Nothing consumes the read set yet.
 
 **Expected gain**: none (the stage is infrastructure). The read set's size per
 corpus project is reported, so Stage 3b's validation cost is known in advance.
+
+**Implemented** (`crates/msbuild/src/observed.rs`, `crates/msbuild/clippy.toml`):
+
+- Every file-system query in `crates/msbuild/src` is one of six functions in
+  `borzoi_msbuild::observed`: `read_to_string`, `kind` (a following `stat`,
+  behind `is_file`, `is_dir` and `exists`), `link_kind` (`lstat`),
+  `read_dir`, and `canonicalize`. Each performs the `std` call, counts it,
+  and records a `Read`: the path and an `Observation`, which is the query
+  together with everything its asker could learn from the answer (a
+  `TextDigest` of length and a 128-bit hash, an `EntryKind`, a listing's
+  names and entry types sorted by name, a canonical path, or a
+  `Failure` carrying the `io::Error`'s kind and message, so absence is
+  `NotFound`). 46 call sites moved: the evaluator (9), `item_spec` (2),
+  `properties` (1), `imports` (3), the glob resolver (4), and SDK
+  resolution (`sdk_resolver` 8, `global_json` 1, `workloads` 18).
+- **The read set is keyed by query, not by path.** The plan's
+  `Observation` was `Text(hash)`, `Listing(names)`, `Absent` or
+  `Stamp(stamp)`. One path is often asked several things (canonicalised,
+  then read; `stat`ed, then listed), and the answer to one does not
+  determine another, so each variant is a query with its answer, and a
+  failure of any query is a `Failure`. `ReadSet::first_stale` asks each
+  query again of the host and compares answers; that is the validator the
+  oracle uses, and Stage 3b replaces "the host" with the `Vfs`. A query
+  asked twice with one answer is one read; with two answers (the file
+  moved during the evaluation) it is two, and the set never validates.
+  The reads are sorted, so the read set is a set: workload manifest
+  resolution probes in a `HashMap`'s order, and two equal evaluations
+  otherwise compared unequal (found by Codex;
+  `the_read_set_does_not_depend_on_the_order_of_its_queries`). Reads compare
+  by the path's raw spelling, since `Path` equality ignores a trailing
+  separator and `p/child/` is a different query from `p/child` (Codex;
+  `a_trailing_separator_is_a_different_query`).
+- The query functions are public, so a caller's own resolver can query
+  through the observer it is handed.
+- **One `Observer` per evaluation, shared by reference.** It lives in the
+  walker's `State` and records through `Cell`/`RefCell`: the evaluator is
+  single-threaded, and the observer is hidden from everything but the one
+  evaluation. `parse_fsproj_with_imports` creates it, so the read set
+  covers every pass `walk_with_imports` makes (the deferred
+  `Directory.Build.props` pass and the `TargetFramework` carve-out
+  included), and `ParsedProject` gains `read_set` and `read_counts`.
+  `parse_fsproj` touches no file; its walker asserts that its observer saw
+  nothing.
+- **The caller's resolvers observe too.** A resolver that reads the disk
+  must record into the evaluation's read set, so `SdkResolver` became
+  `dyn Fn(&str, &Observer)`, and `GlobRequest` carries `observer`. The
+  crate's own resolvers (`resolve_sdk`, `locate_dotnet_sdk`,
+  `glob_resolver::resolve`) and its other public readers
+  (`detect_implicit_imports`, `find_global_json`) take the observer as an
+  argument. In the LSP, `SdkDiscovery::resolve` forwards it. Its own call
+  of `find_global_json` (SDK discovery runs before the evaluation) and its
+  `Microsoft.NET.Sdk` probe for a dotnet root pass
+  `Unobserved::Evaluation.msbuild_observer()`, a fresh observer nobody
+  reads, so the LSP's worklist still names them.
+- The condition evaluator's `Exists` callback and its permission to run
+  `GetDirectoryNameOfFileAbove` were two arguments that had to agree; they
+  are now one `condition::Probes { exists, observer }`, and the property
+  expander's `fs_probes_allowed: bool` is an `Option<&Observer>`.
+- `crates/msbuild/clippy.toml` repeats the workspace's spawn bans verbatim
+  (`clippy_config_repeats_the_workspace_bans`) and bans the same `std::fs`
+  and `Path` probes as `crates/lsp/clippy.toml`. Test code reaches them
+  through `observed::host_fs`, which the integration tests reach through
+  the `test-support` feature: about 130 test call sites were rewritten,
+  as Stage 2a rewrote the LSP's, rather than allowing the lint (which
+  would lift the spawn bans too). No test's assertions changed.
+- The restore-cone read census (`evaluator::reads`, stage A₁.3a of
+  `docs/nuget-dgspec-boundary-plan.md`) is a different kind of read: which
+  properties and item types the restore targets read from the evaluation's
+  end state, against MSBuild's. It records no file-system query, so it
+  neither duplicates the read set nor offers a second record of it. The two
+  meet in one place: the census asserts that a probed walk returns the same
+  `ParsedProject` as an unprobed one, and that comparison now includes the
+  read set.
+- The LSP emits each evaluation's counts and read-set size as an
+  `observed.evaluation` event (`observed::report_evaluation`), and
+  `edit_counts` prints them as `e.open`, `e.stat`, `e.list`, `e.canon` and
+  `e.reads`. `fsproj_msbuild_corpus_diff` prints each corpus project's
+  read-set size and counts.
+
+The oracle (`crates/msbuild/src/observed/soundness.rs`):
+
+- `soundness::sweep(root, evaluate, extra)` perturbs the tree under `root`
+  one change at a time, restoring each, and asserts that the read set is
+  **sound**: if no answer in it moved, evaluating again gives an equal
+  `ParsedProject` (read set and counts included). It counts failures of
+  **precision**: a change that touches no path the read set names (nor an
+  ancestor of one), and adds no entry to a directory it listed, should
+  leave every answer standing. Deciding what a change touches means knowing
+  every spelling the file system accepts for a file (through a symlink, a
+  `..` after one, a case-insensitive volume); after three Codex rounds
+  found one more such spelling each, the check compares lexically and only
+  the generated worlds, which spell each file one way, assert it. An
+  imprecise read set costs a needless re-evaluation, never a wrong one. The
+  changes: every file rewritten (an MSBuild file with a property more),
+  rewritten at the same size, and deleted; a file created in every
+  directory under every name of a vocabulary (the implicit-import names,
+  `global.json`, a fresh `.fs` and `.props`, and every name in the tree or
+  the read set); every recorded absence created; every listed directory
+  grown.
+- The vocabulary rule is chosen without regard to what the read set
+  recorded. The first version created files only where the read set had
+  recorded an absence, and a planted unrecorded `Directory.Build.props`
+  probe passed it: a perturbation chosen from the read set cannot find what
+  the read set left out.
+- It runs over the `with_imports_tests` trees: the helpers every one of
+  those tests goes through (`parse`, `parse_with_extras`,
+  `parse_with_sdk_resolution`, `parse_file_with_sdk_env`) sweep the test's
+  own temporary directory before returning, so 300 tests' trees are swept.
+- `with_imports_tests::read_set` adds generated worlds that reach every
+  query kind at once: SDK resolution through `resolve_sdk` over a fake
+  dotnet root (its version listing and `Sdk.props` probes), the
+  `Directory.Build.*` walk, `Exists()`, a conditional and a wildcard
+  `<Import>`, `GetDirectoryNameOfFileAbove`, a Compile glob, and
+  `@(ProjectReference->Exists())`; plus two perturbations of their own (a
+  newer SDK installed, and an `extra.props` beside an installed
+  `Sdk.props`). `every_perturbation_rule_moves_some_evaluation` is the
+  non-vacuity check: over a fixed sample, each rule moves some evaluation,
+  and some perturbation exercises the precision check.
+  `a_full_world_records_every_kind_of_query` checks that the read set holds
+  a query of each kind, an absence among them.
+- The sweep changes only paths that lie under its root lexically and
+  physically (a read of `../outside/x` is recorded but not perturbed), and
+  does not mistake a dangling symlink for an absent path (Codex found both;
+  `the_sweep_writes_only_under_its_root`, `a_dangling_symlink_is_swept`).
+- A listing is sorted by name, for the reader as for the read set: tmpfs
+  lists in creation order, so a file deleted and written back moved, and an
+  evaluation reading the host's order could change with no entry changing
+  (Codex; `a_listing_is_sorted_by_name`). Every reader sorted or selected
+  by version already, so no result moves.
+- After every perturbation the sweep asserts that the tree is back exactly
+  as it was (each entry's kind, permissions, bytes and symlink target),
+  rather than trusting its undo. Codex's last rounds found the undo
+  changing permissions and failing on unreadable files one shape at a time;
+  the snapshot catches any such infidelity, and the undo now keeps
+  permissions and leaves unreadable files alone
+  (`the_sweep_keeps_permissions`).
+- Workload manifest resolution probes its manifests in key order: a probe
+  that degrades stops the loop, so `HashMap` order decided what the probes
+  before it recorded (Codex;
+  `what_resolution_observes_does_not_depend_on_hash_order`).
+- `fsproj_corpus::fixture_read_sets_are_sound_through_the_real_sdk_chain`
+  copies three of the crate's project fixtures into temporary directories
+  and sweeps them through the real SDK chain and the glob resolver.
+
+Written first, it was run against an observer that records nothing (the
+read set before this stage): 218 of the 301 `with_imports_tests` fail, and
+all three `read_set` tests. Planted, each caught, then removed:
+
+| plant | failing `with_imports_tests` (of 304) |
+|---|---:|
+| the observer records nothing | 285 |
+| failed queries (absences) not recorded | 285 |
+| `detect_implicit_imports` probes through an unread observer | 227 |
+| text digest of length only | 96 |
+| `Exists()` probes through an unread observer | 8 |
+| listings recorded without their entries | 4 |
+| `GetDirectoryNameOfFileAbove` probes through an unread observer | 3 |
+| the glob resolver lists through an unread observer | 2 (`read_set`) |
+| SDK resolution lists the dotnet root through an unread observer | 2 (`read_set`) |
+
+A direct `std::fs::read_to_string` planted in the evaluator fails
+`cargo clippy -p borzoi-msbuild --all-targets --all-features -- -D warnings`.
+
+**Measured** on WoofWare.Incremental, 20 keystrokes per run, the minimum
+over six runs of #638's head (de9cb28d) and three of this stage's.
+
+The evaluation the cold `didOpen E` runs observes 115 opens, 326 `stat`s,
+63 listings and 252 canonicalisations, and its read set holds 534
+distinct reads. The one-off row was 117, 371, 67 and 252. The difference
+is the LSP's own reads around the evaluation, which a temporary trace of
+the `Unobserved` methods and `borzoi_nuget::settings` itemised exactly:
+
+| reader | opens | stats | listings | canon. |
+|---|---:|---:|---:|---:|
+| the evaluation (`ParsedProject::read_counts`) | 115 | 326 | 63 | 252 |
+| the `.fsproj` text (`Unobserved::Evaluation`) | 1 | | | |
+| NuGet settings for the global packages folder: three `nuget.config` spellings in each of 11 ancestors, the user config, its `config` directory and the machine-wide one | 1 | 34 | 3 | |
+| `find_global_json`'s walk of 11 ancestors, into an unread observer | | 11 | | |
+| ownership's listing of the project directory (`Unobserved::Ownership`) | | | 1 | |
+| **total**, the one-off row | **117** | **371** | **67** | **252** |
+
+The cold `semanticTokens E` runs the same evaluation again (115, 326, 63,
+252): the env's project-graph walk (`resolve_node_uncached`) evaluates the
+entry project afresh rather than reading `Workspace::projects`. That is
+not new; the one-off `semanticTokens E` row counted it too.
+
+| message | instructions before | after | allocs before | after |
+|---|---:|---:|---:|---:|
+| `didOpen E` (cold, one evaluation) | 320.9 M | 328.4 M | 102,897 | 104,615 |
+| `semanticTokens E` (cold, one evaluation) | 3,078.8 M | 3,093.7 M | 3,516,099 | 3,517,846 |
+| `semanticTokens L` (cold) | 598.7 M | 598.4 M | 377,500 | 377,500 |
+| `hover L` (cold) | 123.7 M | 123.8 M | 147,139 | 147,139 |
+| keystroke total | 37.12 M | 37.18 M | 28,403 | 28,403 |
+
+Every keystroke row is unchanged within run-to-run noise, allocations
+exactly, and no keystroke runs an evaluation. Recording costs each
+evaluation about 7.5 M instructions and 1,700 allocations, 2.3% of the
+evaluation: one path per call (756 calls) and the listings' names, kept
+until the evaluation ends, then sorted and de-duplicated into the read set.
+The cold rows that read files are kernel-heavy; both binaries' runs agreed
+to within 2%.
+
+Read-set sizes over the 72 projects of the MSBuild corpus differential
+(`fsproj_msbuild_corpus_diff`, which prints them), which bound Stage 3b's
+validation cost:
+
+| per evaluation | min | median | max |
+|---|---:|---:|---:|
+| distinct reads | 402 | 523 | 606 |
+| opens | 98 | 125 | 202 |
+| `stat`s | 344 | 394 | 703 |
+| listings | 64 | 65 | 128 |
+| canonicalisations | 220 | 268 | 454 |
+
+Most of each set is the SDK chain, whose file contents D3 exempts from
+re-validation; its listings (about 65) are validated in full. The corpus
+differential and `sdk_chain_decline_attribution` are unchanged: the
+manifest moved by zero lines and there are no divergences.
 
 ### Stage 3b: evaluations are validated, not trusted
 

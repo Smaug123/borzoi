@@ -292,7 +292,7 @@ impl Run {
             .types()
             .iter()
             .find(|(r, _)| (usize::from(r.start()), usize::from(r.end())) == range)
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&self.env))
     }
 }
 
@@ -375,11 +375,11 @@ fn every_committed_access_is_confirmed_by_the_types_oracle() {
     for (range, ty) in run.inferred.types() {
         let key = (usize::from(range.start()), usize::from(range.end()));
         if let Some(fcs) = run.fcs_types.get(&key)
-            && *fcs != ty.render()
+            && *fcs != ty.render(&run.env)
         {
             wrong.push(format!(
                 "  {key:?}: we typed `{}`, FCS says `{fcs}`",
-                ty.render()
+                ty.render(&run.env)
             ));
         }
     }

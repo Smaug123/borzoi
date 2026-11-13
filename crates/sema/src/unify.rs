@@ -619,7 +619,14 @@ mod tests {
 
     use super::{InferTable, TypeBudget, UnifyError};
     use crate::hash::HashMap;
-    use crate::ty::{Ty, TyVid};
+    use crate::names::NameTable;
+    use crate::ty::{Ty, TyPath, TyVid};
+
+    /// The table every type in these tests is built against.
+    fn names() -> &'static NameTable {
+        static NAMES: std::sync::LazyLock<NameTable> = std::sync::LazyLock::new(NameTable::default);
+        &NAMES
+    }
 
     /// Number of inference variables both solvers share (generated terms draw
     /// `Ty::Var` indices from `0..POOL`).
@@ -812,11 +819,11 @@ mod tests {
                 "System.Boolean",
                 "A.B",
             ])
-            .prop_map(Ty::named),
+            .prop_map(|p| Ty::named_in(names(), p)),
             // Project types, one at the same path as the assembly type `A.B`:
             // the two are different types and never unify.
             prop::sample::select(vec!["A.B", "P.Q"]).prop_map(|p: &str| Ty::Project {
-                path: p.split('.').map(str::to_owned).collect(),
+                path: TyPath::dotted(names(), p),
                 args: Vec::new(),
             }),
         ];
@@ -844,7 +851,7 @@ mod tests {
                     prop::collection::vec(inner.clone(), 1..3),
                 )
                     .prop_map(|(head, args)| Ty::Named {
-                        path: head.split('.').map(str::to_owned).collect(),
+                        path: TyPath::dotted(names(), head),
                         args,
                     }),
                 // An applied project type, at a path an applied `Named` also
@@ -854,7 +861,7 @@ mod tests {
                     prop::collection::vec(inner, 1..3),
                 )
                     .prop_map(|(head, args)| Ty::Project {
-                        path: head.split('.').map(str::to_owned).collect(),
+                        path: TyPath::dotted(names(), head),
                         args,
                     }),
             ]
@@ -870,15 +877,18 @@ mod tests {
         let mut table = InferTable::new();
         let v = table.fresh();
         let applied = |arg: Ty| Ty::Named {
-            path: vec!["G".to_string(), "One".to_string()],
+            path: TyPath::new(names(), &["G", "One"]),
             args: vec![arg],
         };
         table
-            .unify(&applied(Ty::Var(v)), &applied(Ty::named("System.Int32")))
+            .unify(
+                &applied(Ty::Var(v)),
+                &applied(Ty::named_in(names(), "System.Int32")),
+            )
             .expect("same head and arity unify");
         assert_eq!(
             table.resolve(&applied(Ty::Var(v))),
-            applied(Ty::named("System.Int32")),
+            applied(Ty::named_in(names(), "System.Int32")),
             "the argument variable was solved, so it must not survive resolution"
         );
         assert!(
@@ -1184,8 +1194,8 @@ mod tests {
     /// `probe`'s own bindings intact, and the outer commit lands them.
     #[test]
     fn probe_nests_lifo() {
-        let int = Ty::named("System.Int32");
-        let string = Ty::named("System.String");
+        let int = Ty::named_in(names(), "System.Int32");
+        let string = Ty::named_in(names(), "System.String");
         let mut table = InferTable::new();
         let a = table.fresh();
         let b = table.fresh();
@@ -1225,9 +1235,12 @@ mod tests {
         let b = table.fresh();
         table.unify(&Ty::Var(a), &Ty::Var(b)).unwrap();
         table
-            .unify(&Ty::Var(b), &Ty::named("System.Int32"))
+            .unify(&Ty::Var(b), &Ty::named_in(names(), "System.Int32"))
             .unwrap();
-        assert_eq!(table.resolve(&Ty::Var(a)), Ty::named("System.Int32"));
+        assert_eq!(
+            table.resolve(&Ty::Var(a)),
+            Ty::named_in(names(), "System.Int32")
+        );
     }
 
     /// A function type unifies component-wise: `('a -> int)` against
@@ -1246,21 +1259,30 @@ mod tests {
         let b = table.fresh();
         table
             .unify(
-                &fun(Ty::Var(a), Ty::named("System.Int32")),
-                &fun(Ty::named("System.Boolean"), Ty::Var(b)),
+                &fun(Ty::Var(a), Ty::named_in(names(), "System.Int32")),
+                &fun(Ty::named_in(names(), "System.Boolean"), Ty::Var(b)),
             )
             .unwrap();
-        let want = fun(Ty::named("System.Boolean"), Ty::named("System.Int32"));
-        assert_eq!(table.resolve(&Ty::Var(a)), Ty::named("System.Boolean"));
-        assert_eq!(table.resolve(&Ty::Var(b)), Ty::named("System.Int32"));
+        let want = fun(
+            Ty::named_in(names(), "System.Boolean"),
+            Ty::named_in(names(), "System.Int32"),
+        );
         assert_eq!(
-            table.resolve(&fun(Ty::Var(a), Ty::named("System.Int32"))),
+            table.resolve(&Ty::Var(a)),
+            Ty::named_in(names(), "System.Boolean")
+        );
+        assert_eq!(
+            table.resolve(&Ty::Var(b)),
+            Ty::named_in(names(), "System.Int32")
+        );
+        assert_eq!(
+            table.resolve(&fun(Ty::Var(a), Ty::named_in(names(), "System.Int32"))),
             want
         );
 
         let mut occ = InferTable::new();
         let v = occ.fresh();
-        let infinite = fun(Ty::Var(v), Ty::named("System.Int32"));
+        let infinite = fun(Ty::Var(v), Ty::named_in(names(), "System.Int32"));
         assert_eq!(occ.unify(&Ty::Var(v), &infinite), Err(UnifyError::Occurs));
     }
 
@@ -1271,8 +1293,11 @@ mod tests {
     /// structural primitive); the contrast is what the solver relies on.
     #[test]
     fn unify_atomic_rolls_back_partial_bindings() {
-        let lhs = |v| Ty::Tuple(vec![Ty::Var(v), Ty::named("System.String")]);
-        let rhs = Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.Boolean")]);
+        let lhs = |v| Ty::Tuple(vec![Ty::Var(v), Ty::named_in(names(), "System.String")]);
+        let rhs = Ty::Tuple(vec![
+            Ty::named_in(names(), "System.Int32"),
+            Ty::named_in(names(), "System.Boolean"),
+        ]);
 
         let mut atomic = InferTable::new();
         let a = atomic.fresh();
@@ -1287,7 +1312,7 @@ mod tests {
         assert_eq!(plain.unify(&lhs(b), &rhs), Err(UnifyError::Mismatch));
         assert_eq!(
             plain.resolve(&Ty::Var(b)),
-            Ty::named("System.Int32"),
+            Ty::named_in(names(), "System.Int32"),
             "non-atomic unify leaves the partial binding"
         );
     }

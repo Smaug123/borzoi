@@ -10,6 +10,9 @@
 //!   [`GENERATION_EVENT`] `tracing` event. So "a comment keystroke opens no
 //!   file" can be asserted by a test on any platform, reading the log as
 //!   data, and `edit_counts` reports the same counts from the event.
+//! - **MSBuild evaluations** observe through `borzoi_msbuild::observed`, which
+//!   records each one's read set and counts in its `ParsedProject`; the
+//!   server emits the counts as the [`EVALUATION_EVENT`] `tracing` event.
 //! - **Every other observation** is a method of [`Unobserved`], whose variant
 //!   names the reader it belongs to and the plan stage that will route it.
 //!   Those are not counted.
@@ -35,6 +38,26 @@ use crate::vfs::{Disk, Nanos, Stamp};
 /// test's server thread misses every event if a loop in another test of the
 /// same binary reaches this callsite first.
 pub const GENERATION_EVENT: &str = "observed.generation";
+
+/// The name of the event [`report_evaluation`] emits for every MSBuild
+/// evaluation the server runs, whose fields are the evaluation's
+/// [`borzoi_msbuild::observed::ReadCounts`] (`opens`, `stats`, `listings`,
+/// `canonicalizations`) and the size of its read set (`reads`). Like
+/// [`GENERATION_EVENT`], it is for `edit_counts`, not for tests.
+pub const EVALUATION_EVENT: &str = "observed.evaluation";
+
+/// Emit `parsed`'s file-system counts as [`EVALUATION_EVENT`].
+pub fn report_evaluation(parsed: &borzoi_msbuild::ParsedProject) {
+    let counts = parsed.read_counts;
+    tracing::debug!(
+        name: EVALUATION_EVENT,
+        opens = counts.opens,
+        stats = counts.stats,
+        listings = counts.listings,
+        canonicalizations = counts.canonicalizations,
+        reads = parsed.read_set.len() as u64,
+    );
+}
 
 /// What one generation observed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -117,9 +140,10 @@ impl Disk for HostDisk {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unobserved {
     /// The LSP's own reads of project-evaluation inputs: the `.fsproj` text,
-    /// SDK discovery's `global.json` and `dotnet` probes, and the `.fsproj`
-    /// diagnostics' existence probes. Stage 3b validates evaluations against
-    /// their read set.
+    /// SDK discovery's `global.json` walk (through `borzoi-msbuild`, into an
+    /// observer nobody reads) and `dotnet` probes, and the `.fsproj`
+    /// diagnostics' existence probes. The evaluation's own reads are in its
+    /// `ParsedProject::read_set`; Stage 3b validates evaluations against it.
     Evaluation,
     /// The ownership walk's directory listings. Stage 4a.
     Ownership,
@@ -190,6 +214,13 @@ impl Unobserved {
     /// [`Path::is_dir`].
     pub fn is_dir(self, path: impl AsRef<Path>) -> bool {
         path.as_ref().is_dir()
+    }
+
+    /// An observer for a `borzoi-msbuild` function called outside an
+    /// evaluation, such as SDK discovery's `global.json` walk: the function
+    /// records into it, and nothing reads what it recorded.
+    pub fn msbuild_observer(self) -> borzoi_msbuild::observed::Observer {
+        borzoi_msbuild::observed::Observer::new()
     }
 }
 

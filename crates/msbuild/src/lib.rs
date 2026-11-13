@@ -23,6 +23,7 @@ mod evaluator;
 mod glob;
 pub mod glob_resolver;
 mod imports;
+pub mod observed;
 mod properties;
 mod sdk_resolver;
 mod target_frameworks;
@@ -168,7 +169,13 @@ impl From<SdkPaths> for SdkResolution {
 /// own SDK resolver), which is policy the parser stays out of — see
 /// the gospel "dependency rejection" principle. The shell decides
 /// where SDKs come from; the parser only consumes the result.
-pub type SdkResolver<'r> = dyn Fn(&str) -> Result<SdkResolution, SdkResolveError> + 'r;
+///
+/// The resolver is handed the evaluation's [`observed::Observer`], and must
+/// make every file-system query through it (the crate's own resolvers, such
+/// as [`resolve_sdk`], take it as an argument), so that the queries land in
+/// [`ParsedProject::read_set`].
+pub type SdkResolver<'r> =
+    dyn Fn(&str, &observed::Observer) -> Result<SdkResolution, SdkResolveError> + 'r;
 
 /// A request to expand one `<Compile>` / `<ProjectReference>` element's
 /// file set, handed to a caller-supplied [`GlobResolver`].
@@ -202,6 +209,9 @@ pub struct GlobRequest<'a> {
     /// includes alike, though not identically: see
     /// [`SpecFragment::excludes_from_globs`].
     pub excludes: &'a [SpecFragment],
+    /// The evaluation's observer, through which the resolver makes every
+    /// file-system query (see [`SdkResolver`]).
+    pub observer: &'a observed::Observer,
 }
 
 /// Resolver function the caller hands [`parse_fsproj_with_imports`] to
@@ -766,6 +776,18 @@ pub struct ParsedProject {
     /// that — an override whose *value* the evaluator refuses (`@(Items)`,
     /// `%(Meta)`) leaves no entry at all, so absence there proves nothing.
     pub locally_overridable_properties: BTreeSet<String>,
+    /// Every file-system query the evaluation made, with its answer: the
+    /// files it read, the paths it probed (those that were absent included),
+    /// the directories it listed and the paths it canonicalised, through the
+    /// caller's [`SdkResolver`] and [`GlobResolver`] as well as its own walk
+    /// (see [`observed`]). While every answer stands
+    /// ([`observed::ReadSet::first_stale`] is `None`), evaluating the same
+    /// source with the same arguments gives this same `ParsedProject`.
+    /// Empty from [`parse_fsproj`], which touches no file.
+    pub read_set: observed::ReadSet,
+    /// How many file-system calls of each kind the evaluation made, repeats
+    /// included.
+    pub read_counts: observed::ReadCounts,
 }
 
 impl ParsedProject {
@@ -1105,10 +1127,11 @@ pub(crate) fn parse_fsproj_probed(
     // keeps the conservative "central versions not folded in" cause
     // whenever it never reached the file (no resolver, non-SDK project,
     // or a break anywhere along the chain).
+    let observer = observed::Observer::new();
     let mut implicit_props = None;
     let mut implicit_targets = None;
     let mut cpm_props_path = None;
-    for diag in imports::detect_implicit_imports(project_path) {
+    for diag in imports::detect_implicit_imports(project_path, &observer) {
         if let DiagnosticKind::ImplicitImportPresent { path, kind } = diag.kind {
             match kind {
                 ImplicitImportKind::DirectoryBuildProps => implicit_props = Some(path),
@@ -1118,7 +1141,7 @@ pub(crate) fn parse_fsproj_probed(
         }
     }
     let doc = roxmltree::Document::parse(source)?;
-    Ok(evaluator::walk_with_imports(
+    let mut walked = evaluator::walk_with_imports(
         &doc,
         project_path,
         extra_properties,
@@ -1128,9 +1151,14 @@ pub(crate) fn parse_fsproj_probed(
         cpm_props_path.as_deref(),
         sdk_resolver,
         glob_resolver,
+        &observer,
         #[cfg(any(test, feature = "test-support"))]
         probe,
-    ))
+    );
+    let (read_set, read_counts) = observer.finish();
+    walked.project.read_set = read_set;
+    walked.project.read_counts = read_counts;
+    Ok(walked)
 }
 
 /// Input-validation shared between the pure and with-imports entry

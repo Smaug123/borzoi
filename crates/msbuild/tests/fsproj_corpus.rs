@@ -26,7 +26,13 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use borzoi_msbuild::{ItemKind, ParsedProject, ResolvedItem, parse_fsproj};
+mod common;
+
+use borzoi_msbuild::observed::soundness::sweep;
+use borzoi_msbuild::{
+    GlobResolver, ItemKind, ParsedProject, ResolvedItem, glob_resolver, parse_fsproj,
+    parse_fsproj_with_imports, resolve_sdk, workloads,
+};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fsproj-corpus")
@@ -73,6 +79,71 @@ fn fsharp_compiler_service_release() {
     );
 }
 
+/// The read-set soundness oracle (`borzoi_msbuild::observed::soundness`)
+/// over each fixture, copied into a temporary directory and evaluated through
+/// the real SDK chain with the glob resolver: every perturbation of the copy
+/// that leaves the read set standing leaves the evaluation unchanged.
+#[test]
+fn fixture_read_sets_are_sound_through_the_real_sdk_chain() {
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workloads::WorkloadEnvironment {
+                user_dotnet_root: user_dotnet_root.as_deref(),
+                overrides_present,
+                global_json_pins_workload_set: false,
+            },
+            observer,
+        )
+    };
+    let glob: &GlobResolver<'_> = &glob_resolver::resolve;
+    for (rel, extras) in [
+        ("AssemblyCheck/AssemblyCheck.fsproj", vec![]),
+        ("fslex/fslex.fsproj", vec![]),
+        (
+            "FSharp.Core/FSharp.Core.fsproj",
+            vec![("Configuration", "Release")],
+        ),
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = borzoi_msbuild::observed::host_fs::canonicalize(tmp.path()).unwrap();
+        let project = root.join(rel);
+        std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+        let source =
+            borzoi_msbuild::observed::host_fs::read_to_string(fixtures_root().join(rel)).unwrap();
+        std::fs::write(&project, &source).unwrap();
+        std::fs::write(project.parent().unwrap().join("Local.fs"), "module M\n").unwrap();
+        let extras: HashMap<String, String> = extras
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let evaluate = || {
+            parse_fsproj_with_imports(
+                &source,
+                &project,
+                &extras,
+                &common::oracle_environment(),
+                Some(&resolver as &borzoi_msbuild::SdkResolver<'_>),
+                Some(glob),
+            )
+            .unwrap_or_else(|e| panic!("parse {rel}: {e}"))
+        };
+        let parsed = evaluate();
+        assert!(
+            parsed.read_set.len() > 100,
+            "{rel}: the SDK chain was not reached ({} reads)",
+            parsed.read_set.len()
+        );
+        sweep(&root, &evaluate, &[]);
+    }
+}
+
 fn run_snapshot(rel_fsproj: &str, extras: &[(&str, &str)], snap_name: &str) {
     let root = fixtures_root();
     let fsproj_path = root.join(rel_fsproj);
@@ -80,7 +151,7 @@ fn run_snapshot(rel_fsproj: &str, extras: &[(&str, &str)], snap_name: &str) {
         .parent()
         .expect("fsproj path has a parent")
         .to_path_buf();
-    let source = fs::read_to_string(&fsproj_path)
+    let source = borzoi_msbuild::observed::host_fs::read_to_string(&fsproj_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", fsproj_path.display()));
 
     let mut props: HashMap<String, String> = HashMap::new();
@@ -222,7 +293,7 @@ fn compare_or_bless(actual: &str, snap_path: &Path) {
             .unwrap_or_else(|e| panic!("write {}: {e}", snap_path.display()));
         return;
     }
-    let expected = match fs::read_to_string(snap_path) {
+    let expected = match borzoi_msbuild::observed::host_fs::read_to_string(snap_path) {
         Ok(s) => s,
         Err(_) => panic!(
             "snapshot {} missing — run `UPDATE_FSPROJ_SNAPSHOTS=1 cargo test --test fsproj_corpus` to create it",

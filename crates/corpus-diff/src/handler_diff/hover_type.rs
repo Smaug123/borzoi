@@ -42,7 +42,7 @@
 
 use std::collections::BTreeMap;
 
-use borzoi_sema::Ty;
+use borzoi_sema::{AssemblyEnv, Ty, TyPath};
 use serde::ser::{Serialize, SerializeMap, Serializer};
 
 use crate::{ProjectUse, UseDecl, ValueKind};
@@ -511,7 +511,12 @@ pub fn assembly_withheld(body: &str) -> Option<Withheld> {
 /// gave none or [`parse_canonical`] cannot read what it gave.
 pub fn displayed(u: &ProjectUse) -> Option<String> {
     let canon = u.value.as_ref()?.type_canon.as_deref()?;
-    Some(alpha_normalise(&parse_canonical(canon)?.render_fsharp()))
+    // FCS's type names no entity of ours, so it is read into a table of its
+    // own: rendering reads a path's segments, whichever table holds them.
+    let env = AssemblyEnv::default();
+    Some(alpha_normalise(
+        &parse_canonical(&env, canon)?.render_fsharp(&env),
+    ))
 }
 
 /// Grade `shown`, the type a hover displays for `u`, against FCS's.
@@ -538,6 +543,8 @@ pub fn grade_shown(u: &ProjectUse, shown: &str) -> Result<TypeVerdict, String> {
 /// A parameter is a `'` that does not continue an identifier, followed by an
 /// identifier.
 pub fn alpha_normalise(text: &str) -> String {
+    // A parameter names no path, so its rendering reads no table.
+    let env = AssemblyEnv::default();
     let mut names: Vec<String> = Vec::new();
     let mut out = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
@@ -567,7 +574,7 @@ pub fn alpha_normalise(text: &str) -> String {
                 names.len() - 1
             }
         };
-        out.push_str(&Ty::Param(u32::try_from(index).expect("few parameters")).render_fsharp());
+        out.push_str(&Ty::Param(u32::try_from(index).expect("few parameters")).render_fsharp(&env));
         i = j;
     }
     out
@@ -581,9 +588,12 @@ pub fn alpha_normalise(text: &str) -> String {
 /// display-text fallback — since a type read wrongly would grade a right hover
 /// wrong or a wrong one right.
 ///
-/// Type parameters become [`Ty::Param`]s numbered by first appearance.
-pub fn parse_canonical(text: &str) -> Option<Ty> {
+/// Type parameters become [`Ty::Param`]s numbered by first appearance, and
+/// names are interned in `env`'s table, which the type is then rendered
+/// through.
+pub fn parse_canonical(env: &AssemblyEnv, text: &str) -> Option<Ty> {
     let mut parser = Parser {
+        env,
         text,
         at: 0,
         params: Vec::new(),
@@ -593,6 +603,7 @@ pub fn parse_canonical(text: &str) -> Option<Ty> {
 }
 
 struct Parser<'a> {
+    env: &'a AssemblyEnv,
     text: &'a str,
     at: usize,
     params: Vec<&'a str>,
@@ -699,7 +710,10 @@ impl<'a> Parser<'a> {
                 return None;
             }
         }
-        Some(Ty::Named { path, args })
+        Some(Ty::Named {
+            path: TyPath::of(self.env, &path),
+            args,
+        })
     }
 
     /// A dotted name: everything up to a delimiter or a space.
@@ -727,27 +741,34 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// The table every type in these tests is read into.
+    fn env() -> &'static AssemblyEnv {
+        static ENV: std::sync::OnceLock<AssemblyEnv> = std::sync::OnceLock::new();
+        ENV.get_or_init(AssemblyEnv::default)
+    }
+
     fn named(path: &str, args: Vec<Ty>) -> Ty {
         Ty::Named {
-            path: path.split('.').map(str::to_string).collect(),
+            path: TyPath::of(env(), &path.split('.').collect::<Vec<_>>()),
             args,
         }
     }
 
     #[test]
     fn the_oracle_currency_reads_back() {
-        let int = || Ty::named("System.Int32");
-        assert_eq!(parse_canonical("System.Int32"), Some(int()));
+        let int = || Ty::named(env(), "System.Int32");
+        assert_eq!(parse_canonical(env(), "System.Int32"), Some(int()));
         assert_eq!(
             parse_canonical(
+                env(),
                 "('a -> 'b) -> Microsoft.FSharp.Collections.FSharpList<'a> -> \
                  Microsoft.FSharp.Collections.FSharpList<'b>"
             )
-            .map(|t| t.render_fsharp()),
+            .map(|t| t.render_fsharp(env())),
             Some("('a -> 'b) -> list<'a> -> list<'b>".to_string())
         );
         assert_eq!(
-            parse_canonical("System.Int32 * System.Int32 -> System.Int32"),
+            parse_canonical(env(), "System.Int32 * System.Int32 -> System.Int32"),
             Some(Ty::Fun {
                 arg: Box::new(Ty::Tuple(vec![int(), int()])),
                 ret: Box::new(int()),
@@ -755,20 +776,21 @@ mod tests {
         );
         assert_eq!(
             parse_canonical(
+                env(),
                 "Microsoft.FSharp.Collections.FSharpList<System.Int32 -> System.String>"
             )
-            .map(|t| t.render_fsharp()),
+            .map(|t| t.render_fsharp(env())),
             Some("list<int -> string>".to_string())
         );
         assert_eq!(
-            parse_canonical("(System.Int32 * System.String)[,]"),
+            parse_canonical(env(), "(System.Int32 * System.String)[,]"),
             Some(Ty::Array {
-                elem: Box::new(Ty::Tuple(vec![int(), Ty::named("System.String")])),
+                elem: Box::new(Ty::Tuple(vec![int(), Ty::named(env(), "System.String")])),
                 rank: 2,
             })
         );
         assert_eq!(
-            parse_canonical("Zoo.Outer/Inner"),
+            parse_canonical(env(), "Zoo.Outer/Inner"),
             Some(named("Zoo.Outer/Inner", vec![]))
         );
     }
@@ -787,7 +809,7 @@ mod tests {
             "System.Int32 *",
             "",
         ] {
-            assert_eq!(parse_canonical(text), None, "{text:?}");
+            assert_eq!(parse_canonical(env(), text), None, "{text:?}");
         }
     }
 
@@ -820,7 +842,7 @@ mod tests {
                 "Microsoft.FSharp.Core.Unit",
                 "A.B/C",
             ])
-            .prop_map(Ty::named),
+            .prop_map(|p| Ty::named(env(), p)),
             (0u32..4).prop_map(Ty::Param),
         ];
         leaf.prop_recursive(4, 24, 3, |inner| {
@@ -853,13 +875,13 @@ mod tests {
         /// displays as that type does.
         #[test]
         fn a_rendered_type_reads_back(ty in arb_ty()) {
-            let read = parse_canonical(&ty.render());
-            prop_assert!(read.is_some(), "{:?} did not read back", ty.render());
+            let read = parse_canonical(env(), &ty.render(env()));
+            prop_assert!(read.is_some(), "{:?} did not read back", ty.render(env()));
             let read = read.expect("checked");
-            prop_assert_eq!(read.render(), alpha_normalise(&ty.render()));
+            prop_assert_eq!(read.render(env()), alpha_normalise(&ty.render(env())));
             prop_assert_eq!(
-                alpha_normalise(&read.render_fsharp()),
-                alpha_normalise(&ty.render_fsharp())
+                alpha_normalise(&read.render_fsharp(env())),
+                alpha_normalise(&ty.render_fsharp(env()))
             );
         }
     }

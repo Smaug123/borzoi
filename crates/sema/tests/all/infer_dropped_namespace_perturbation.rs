@@ -156,12 +156,12 @@ fn published(env: &AssemblyEnv, src: &str) -> HashMap<String, String> {
 
     let mut out = HashMap::new();
     for (range, ty) in inferred.types() {
-        out.insert(format!("expr@{range:?}"), ty.render());
+        out.insert(format!("expr@{range:?}"), ty.render(env));
     }
     for (def, ty) in inferred.def_types() {
         out.insert(
             format!("def:{}", resolved.def(*def).spelling(env)),
-            ty.render(),
+            ty.render(env),
         );
     }
     for (range, res) in inferred.member_resolutions() {

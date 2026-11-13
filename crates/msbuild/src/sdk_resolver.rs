@@ -70,6 +70,7 @@
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
+use crate::observed::{self, Observer};
 use crate::{SdkPaths, SdkResolution};
 use version_spec::{RollForward, VersionSpec, select_sdk_version};
 
@@ -248,8 +249,8 @@ impl std::error::Error for SdkResolveError {}
 ///
 /// let dotnet_root = PathBuf::from("/usr/local/share/dotnet");
 /// let nuget = PathBuf::from("/Users/me/.nuget/packages");
-/// let resolver = |name: &str| {
-///     locate_dotnet_sdk(&dotnet_root, Some(&nuget), name, None, None)
+/// let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+///     locate_dotnet_sdk(&dotnet_root, Some(&nuget), name, None, None, observer)
 /// };
 /// // pass `Some(&resolver)` to parse_fsproj_with_imports.
 /// # let _ = resolver;
@@ -260,6 +261,7 @@ pub fn locate_dotnet_sdk(
     sdk_name: &str,
     spec: Option<&VersionSpec>,
     msbuild_sdks: Option<&std::collections::BTreeMap<String, SdkVersion>>,
+    observer: &Observer,
 ) -> Result<SdkPaths, SdkResolveError> {
     // MSBuild allows `Sdk="Name/Version"` (e.g.
     // `Sdk="Microsoft.Build.NoTargets/1.0.80"`). The per-import
@@ -295,9 +297,9 @@ pub fn locate_dotnet_sdk(
         return Err(SdkResolveError::NotFound);
     }
 
-    let dotnet_candidates = collect_from_dotnet_root(dotnet_root, name);
+    let dotnet_candidates = collect_from_dotnet_root(dotnet_root, name, observer);
     let nuget_candidates = match nuget_packages_dir {
-        Some(dir) => collect_from_nuget(dir, name),
+        Some(dir) => collect_from_nuget(dir, name, observer),
         None => Vec::new(),
     };
 
@@ -446,21 +448,27 @@ pub fn locate_dotnet_sdk(
 /// A missing or unreadable `sdk/` directory yields an empty vector —
 /// not an error. [`locate_dotnet_sdk`] decides whether the empty union
 /// across both roots constitutes `NotFound`.
-fn collect_from_dotnet_root(dotnet_root: &Path, sdk_name: &str) -> Vec<(SdkVersion, PathBuf)> {
+fn collect_from_dotnet_root(
+    dotnet_root: &Path,
+    sdk_name: &str,
+    observer: &Observer,
+) -> Vec<(SdkVersion, PathBuf)> {
     let sdk_dir = dotnet_root.join("sdk");
-    let Ok(entries) = std::fs::read_dir(&sdk_dir) else {
+    let Ok(entries) = observed::read_dir(observer, &sdk_dir) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let Some(dir_name) = entry.file_name().to_str().map(str::to_owned) else {
+    for entry in entries.into_iter().flatten() {
+        let Some(dir_name) = entry.name.to_str().map(str::to_owned) else {
             continue;
         };
         let Some(version) = SdkVersion::parse(&dir_name) else {
             continue;
         };
-        let sdk_root = entry.path().join("Sdks").join(sdk_name).join("Sdk");
-        if !sdk_root.join("Sdk.props").is_file() || !sdk_root.join("Sdk.targets").is_file() {
+        let sdk_root = entry.path.join("Sdks").join(sdk_name).join("Sdk");
+        if !observed::is_file(observer, &sdk_root.join("Sdk.props"))
+            || !observed::is_file(observer, &sdk_root.join("Sdk.targets"))
+        {
             continue;
         }
         out.push((version, sdk_root));
@@ -493,24 +501,31 @@ fn collect_from_dotnet_root(dotnet_root: &Path, sdk_name: &str) -> Vec<(SdkVersi
 ///
 /// A missing or unreadable package directory yields an empty vector —
 /// same fall-through contract as [`collect_from_dotnet_root`].
-fn collect_from_nuget(nuget_packages_dir: &Path, sdk_name: &str) -> Vec<(SdkVersion, PathBuf)> {
+fn collect_from_nuget(
+    nuget_packages_dir: &Path,
+    sdk_name: &str,
+    observer: &Observer,
+) -> Vec<(SdkVersion, PathBuf)> {
     let pkg_dir = nuget_packages_dir.join(sdk_name.to_ascii_lowercase());
-    let Ok(entries) = std::fs::read_dir(&pkg_dir) else {
+    let Ok(entries) = observed::read_dir(observer, &pkg_dir) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let Some(dir_name) = entry.file_name().to_str().map(str::to_owned) else {
+    for entry in entries.into_iter().flatten() {
+        let Some(dir_name) = entry.name.to_str().map(str::to_owned) else {
             continue;
         };
         let Some(version) = SdkVersion::parse(&dir_name) else {
             continue;
         };
-        let version_dir = entry.path();
+        let version_dir = entry.path;
         let sdk_root = ["Sdk", "sdk"]
             .iter()
             .map(|c| version_dir.join(c))
-            .find(|p| p.join("Sdk.props").is_file() && p.join("Sdk.targets").is_file());
+            .find(|p| {
+                observed::is_file(observer, &p.join("Sdk.props"))
+                    && observed::is_file(observer, &p.join("Sdk.targets"))
+            });
         if let Some(sdk_root) = sdk_root {
             out.push((version, sdk_root));
         }
@@ -768,14 +783,16 @@ pub fn resolve_sdk(
     spec: Option<&VersionSpec>,
     msbuild_sdks: Option<&std::collections::BTreeMap<String, SdkVersion>>,
     workload_env: &workloads::WorkloadEnvironment<'_>,
+    observer: &Observer,
 ) -> Result<SdkResolution, SdkResolveError> {
     if workloads::is_workload_locator(sdk_name) {
-        let version_dir = select_host_sdk_version_dir(dotnet_root, spec)?;
+        let version_dir = select_host_sdk_version_dir(dotnet_root, spec, observer)?;
         return workloads::resolve_workload_locator(
             sdk_name,
             dotnet_root,
             &version_dir,
             workload_env,
+            observer,
         );
     }
     locate_dotnet_sdk(
@@ -784,6 +801,7 @@ pub fn resolve_sdk(
         sdk_name,
         spec,
         msbuild_sdks,
+        observer,
     )
     .map(SdkResolution::from)
 }
@@ -823,21 +841,22 @@ pub fn nuget_package_version(
 fn select_host_sdk_version_dir(
     dotnet_root: &Path,
     spec: Option<&VersionSpec>,
+    observer: &Observer,
 ) -> Result<PathBuf, SdkResolveError> {
     let sdk_dir = dotnet_root.join("sdk");
-    let entries = std::fs::read_dir(&sdk_dir).map_err(|_| SdkResolveError::NotFound)?;
+    let entries = observed::read_dir(observer, &sdk_dir).map_err(|_| SdkResolveError::NotFound)?;
     let mut candidates: Vec<(SdkVersion, PathBuf)> = Vec::new();
-    for entry in entries.flatten() {
-        let Some(dir_name) = entry.file_name().to_str().map(str::to_owned) else {
+    for entry in entries.into_iter().flatten() {
+        let Some(dir_name) = entry.name.to_str().map(str::to_owned) else {
             continue;
         };
         let Some(version) = SdkVersion::parse(&dir_name) else {
             continue;
         };
-        if !entry.path().is_dir() {
+        if !observed::is_dir(observer, &entry.path) {
             continue;
         }
-        candidates.push((version, entry.path()));
+        candidates.push((version, entry.path));
     }
     if candidates.is_empty() {
         return Err(SdkResolveError::NotFound);

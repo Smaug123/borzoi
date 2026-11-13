@@ -39,6 +39,11 @@
 //!   perform them (`docs/incremental-lsp-plan.md`, D3), where a test can
 //!   assert them on any platform; the server's other reads
 //!   (`borzoi::observed::Unobserved`) are not counted yet.
+//! - **e.open**, **e.stat**, **e.list**, **e.canon** and **e.reads**: what
+//!   the MSBuild evaluations the message ran observed, as each one's
+//!   `ParsedProject::read_counts` reports it (files opened, paths `stat`ed,
+//!   directories listed, paths canonicalised), and the size of their read
+//!   sets, from [`EVALUATION_EVENT`].
 //!
 //! The counts describe the project fold only if the requests take it, and a
 //! handler that falls back to single-file analysis still answers. So the run
@@ -83,7 +88,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
 
-use borzoi::observed::GENERATION_EVENT;
+use borzoi::observed::{EVALUATION_EVENT, GENERATION_EVENT};
 use borzoi::semantic::ProjectId;
 use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
 use borzoi::uri::UriExt as _;
@@ -223,8 +228,13 @@ static EMPTY_ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 static OPENS: AtomicU64 = AtomicU64::new(0);
 static STATS: AtomicU64 = AtomicU64::new(0);
 
+/// What every MSBuild evaluation observed, from each [`EVALUATION_EVENT`]:
+/// opens, stats, listings, canonicalisations, and the read-set size.
+static EVALUATION: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+const EVALUATION_FIELDS: [&str; 5] = ["opens", "stats", "listings", "canonicalizations", "reads"];
+
 /// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
-/// [`ENV_BUILD_SPAN`] and [`GENERATION_EVENT`] alone. Every
+/// [`ENV_BUILD_SPAN`], [`GENERATION_EVENT`] and [`EVALUATION_EVENT`] alone. Every
 /// other callsite is registered as never interesting, so it costs what it
 /// costs with no subscriber, and observing allocates nothing.
 struct FoldObserver;
@@ -281,6 +291,22 @@ impl tracing::field::Visit for ReadFields {
     fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
 }
 
+/// An evaluation event's fields, in [`EVALUATION_FIELDS`] order.
+#[derive(Default)]
+struct EvaluationFields([Option<u64>; 5]);
+
+impl tracing::field::Visit for EvaluationFields {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if let Some(i) = EVALUATION_FIELDS
+            .iter()
+            .position(|name| *name == field.name())
+        {
+            self.0[i] = Some(value);
+        }
+    }
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+}
+
 /// An env build's `count` field.
 struct DllCount(Option<u64>);
 
@@ -311,7 +337,8 @@ impl tracing::Subscriber for FoldObserver {
     }
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         (metadata.is_span() && matches!(metadata.name(), PROJECT_LOOKUP_SPAN | ENV_BUILD_SPAN))
-            || (metadata.is_event() && metadata.name() == GENERATION_EVENT)
+            || (metadata.is_event()
+                && matches!(metadata.name(), GENERATION_EVENT | EVALUATION_EVENT))
     }
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         if counted() && span.metadata().name() == ENV_BUILD_SPAN {
@@ -336,7 +363,16 @@ impl tracing::Subscriber for FoldObserver {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
-        if counted() {
+        if counted() && event.metadata().name() == EVALUATION_EVENT {
+            let mut fields = EvaluationFields::default();
+            event.record(&mut fields);
+            for (counter, value) in EVALUATION.iter().zip(fields.0) {
+                counter.fetch_add(
+                    value.expect("an evaluation event carries every field"),
+                    Relaxed,
+                );
+            }
+        } else if counted() {
             let mut fields = ReadFields::default();
             event.record(&mut fields);
             OPENS.fetch_add(
@@ -367,6 +403,8 @@ struct Cost {
     allocated_bytes: u64,
     opens: u64,
     stats: u64,
+    /// The MSBuild evaluations' counts, in [`EVALUATION_FIELDS`] order.
+    evaluation: [u64; 5],
 }
 
 impl Cost {
@@ -384,6 +422,7 @@ impl Cost {
             allocated_bytes: self.allocated_bytes + other.allocated_bytes,
             opens: self.opens + other.opens,
             stats: self.stats + other.stats,
+            evaluation: std::array::from_fn(|i| self.evaluation[i] + other.evaluation[i]),
         }
     }
 }
@@ -396,6 +435,7 @@ struct Reading {
     allocated_bytes: u64,
     opens: u64,
     stats: u64,
+    evaluation: [u64; 5],
 }
 
 impl Reading {
@@ -410,6 +450,7 @@ impl Reading {
             allocated_bytes: ALLOCATED_BYTES.load(Relaxed),
             opens: OPENS.load(Relaxed),
             stats: STATS.load(Relaxed),
+            evaluation: std::array::from_fn(|i| EVALUATION[i].load(Relaxed)),
         }
     }
 
@@ -429,6 +470,7 @@ impl Reading {
             allocated_bytes: later.allocated_bytes - self.allocated_bytes,
             opens: later.opens - self.opens,
             stats: later.stats - self.stats,
+            evaluation: std::array::from_fn(|i| later.evaluation[i] - self.evaluation[i]),
         }
     }
 }
@@ -788,16 +830,27 @@ fn columns(cost: &Cost) -> String {
     let instructions = cost
         .instructions
         .map_or_else(|| "n/a".to_string(), |i| i.to_string());
+    let [e_opens, e_stats, e_listings, e_canon, e_reads] = cost.evaluation;
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6}",
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {e_opens:>7} {e_stats:>7} {e_listings:>7} {e_canon:>7} {e_reads:>7}",
         cost.allocations, cost.allocated_bytes, cost.opens, cost.stats,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6}",
-        "message", "instructions", "allocs", "alloc-bytes", "opens", "stats"
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "message",
+        "instructions",
+        "allocs",
+        "alloc-bytes",
+        "opens",
+        "stats",
+        "e.open",
+        "e.stat",
+        "e.list",
+        "e.canon",
+        "e.reads"
     )
 }
 
@@ -813,6 +866,7 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             allocated_bytes: f(a.allocated_bytes, b.allocated_bytes),
             opens: f(a.opens, b.opens),
             stats: f(a.stats, b.stats),
+            evaluation: std::array::from_fn(|i| f(a.evaluation[i], b.evaluation[i])),
         })
     };
     (pick(u64::min), pick(u64::max))

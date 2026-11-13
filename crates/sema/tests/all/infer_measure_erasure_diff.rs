@@ -42,6 +42,7 @@ use borzoi_sema::{
 
 struct Run {
     corpus: Corpus,
+    env: AssemblyEnv,
     inferred: InferredFile,
     /// The lines on which we recorded a member resolution.
     member_lines: HashSet<usize>,
@@ -127,6 +128,7 @@ fn run() -> Run {
 
     Run {
         corpus,
+        env,
         inferred,
         member_lines,
         fcs_types,
@@ -141,7 +143,7 @@ impl Run {
             .types()
             .iter()
             .find(|(r, _)| (usize::from(r.start()), usize::from(r.end())) == range)
-            .map(|(_, ty)| ty.render())
+            .map(|(_, ty)| ty.render(&self.env))
     }
 }
 
@@ -154,12 +156,12 @@ fn every_published_type_is_the_one_fcs_infers() {
     for (range, ty) in run.inferred.types() {
         let key = (usize::from(range.start()), usize::from(range.end()));
         if let Some(fcs) = run.fcs_types.get(&key)
-            && *fcs != ty.render()
+            && *fcs != ty.render(&run.env)
         {
             let text = &run.corpus.probe[key.0..key.1];
             wrong.push(format!(
                 "  `{text}` {key:?}: we typed `{}`, FCS says `{fcs}`",
-                ty.render()
+                ty.render(&run.env)
             ));
         }
     }

@@ -363,7 +363,7 @@ fn project_hover(
     let root = impl_file.syntax();
     let (range, ty) = innermost_inferred_type_with_range(inferred, root, byte)?;
     Some(make_hover(
-        literal_hover_body(text, root, range, ty),
+        literal_hover_body(&env, text, root, range, ty),
         text,
         range,
     ))
@@ -403,7 +403,7 @@ fn single_file_hover(
             .resolved_def_id(res)
             .and_then(|d| inferred.def_type(d));
         return Some(make_hover(
-            format_def(&def.spelling(&env), def.kind, ty),
+            format_def(&env, &def.spelling(&env), def.kind, ty),
             text,
             range,
         ));
@@ -413,7 +413,7 @@ fn single_file_hover(
     // orphan buffer from the single-file resolution we just computed.
     let (range, ty) = innermost_inferred_type_with_range(&inferred, file.syntax(), byte)?;
     Some(make_hover(
-        literal_hover_body(text, file.syntax(), range, ty),
+        literal_hover_body(&env, text, file.syntax(), range, ty),
         text,
         range,
     ))
@@ -439,11 +439,11 @@ fn hover_body(
     match res {
         Resolution::Local(id) => {
             let def = file.def(id);
-            Some(format_def(&def.spelling(env), def.kind, ty).into())
+            Some(format_def(env, &def.spelling(env), def.kind, ty).into())
         }
         Resolution::Item(_) | Resolution::EarlierFileType { .. } => {
             let (_, def) = resolved.item_def(res)?;
-            Some(format_def(&def.spelling(env), def.kind, ty).into())
+            Some(format_def(env, &def.spelling(env), def.kind, ty).into())
         }
         Resolution::Entity(handle) => {
             let mut body = entity_hover_label(env, handle);
@@ -1144,8 +1144,8 @@ fn entity_kind_word(kind: EntityKind) -> &'static str {
 /// from 3.2c-2b (`` `f : bool -> int` — function ``). A polymorphic function, a
 /// parameter (whose type is surfaced only inside its function's signature, not
 /// standalone), or any binder inference never grounds, passes `None` (the bare
-/// `` `name` — kind `` form).
-fn format_def(name: &str, kind: DefKind, ty: Option<&Ty>) -> String {
+/// `` `name` — kind `` form). `env` is the one `ty` was inferred against.
+fn format_def(env: &AssemblyEnv, name: &str, kind: DefKind, ty: Option<&Ty>) -> String {
     let kind_label = match kind {
         DefKind::Value { is_function: true } => "function",
         DefKind::Value { is_function: false } => "value",
@@ -1163,7 +1163,7 @@ fn format_def(name: &str, kind: DefKind, ty: Option<&Ty>) -> String {
     match ty {
         Some(ty) => format!(
             "{} — {kind_label}",
-            code_span(&format!("{name} : {}", ty.render_fsharp()))
+            code_span(&format!("{name} : {}", ty.render_fsharp(env)))
         ),
         None => format!("{} — {kind_label}", code_span(name)),
     }
@@ -1178,8 +1178,14 @@ fn format_def(name: &str, kind: DefKind, ty: Option<&Ty>) -> String {
 /// would misdescribe it — see [`covers_literal`]. The source text is taken
 /// verbatim from `range`; a string literal carrying a backtick could nominally
 /// unbalance the code span, but that is a cosmetic rendering edge, never wrong
-/// information.
-fn literal_hover_body(text: &str, root: &SyntaxNode, range: TextRange, ty: &Ty) -> String {
+/// information. `env` is the one `ty` was inferred against.
+fn literal_hover_body(
+    env: &AssemblyEnv,
+    text: &str,
+    root: &SyntaxNode,
+    range: TextRange,
+    ty: &Ty,
+) -> String {
     let value = &text[usize::from(range.start())..usize::from(range.end())];
     // A *literal* keeps its descriptor (`` `42` — int literal ``); any other
     // inferred expression — a tuple today, a call once 3.2c lands — shows just
@@ -1188,7 +1194,7 @@ fn literal_hover_body(text: &str, root: &SyntaxNode, range: TextRange, ty: &Ty) 
     // guessed from the `Ty` (a `Ty::Named` is produced by both a literal and a
     // future call).
     let value = code_span(value);
-    let ty = code_span(&ty.render_fsharp());
+    let ty = code_span(&ty.render_fsharp(env));
     if covers_literal(root, range) {
         format!("{value} — {ty} literal")
     } else {

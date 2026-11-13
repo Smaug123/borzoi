@@ -367,7 +367,7 @@ fn grade(programs: &[(String, String)], expect_errors: bool) -> Graded {
             if dump.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render();
+            let ours = ty.render(env);
             match dump.types.get(&key) {
                 Some(theirs) if *theirs == ours => g.graded += 1,
                 theirs => g.wrong.push(format!(
@@ -383,7 +383,7 @@ fn grade(programs: &[(String, String)], expect_errors: bool) -> Graded {
             if dump.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render();
+            let ours = ty.render(env);
             match dump.binders.get(&key) {
                 Some(theirs) if *theirs == ours && !dump.hides_constraint(key, &ours) => {
                     g.graded += 1;

@@ -464,8 +464,10 @@ impl Workspace {
     /// uses that instead, so the probe's multi-root ambiguity never bites.
     fn probe_dotnet_root(&self, project_path: &Path) -> Option<PathBuf> {
         let disc = SdkDiscovery::for_project(project_path, &self.env).ok()?;
-        if let Ok(SdkResolution::Single(paths)) = disc.resolve("Microsoft.NET.Sdk")
-            && let Some(install_root) = install_root_from_sdk_path(&paths.root)
+        if let Ok(SdkResolution::Single(paths)) = disc.resolve(
+            "Microsoft.NET.Sdk",
+            &Unobserved::Evaluation.msbuild_observer(),
+        ) && let Some(install_root) = install_root_from_sdk_path(&paths.root)
         {
             return Some(install_root.to_path_buf());
         }
@@ -1766,7 +1768,7 @@ fn parse_with_optional_sdk(
     let glob_resolver: &GlobResolver<'_> = &borzoi_msbuild::glob_resolver::resolve;
     match disc {
         Some(d) => {
-            let resolver: &SdkResolver<'_> = &|name| d.resolve(name);
+            let resolver: &SdkResolver<'_> = &|name, observer| d.resolve(name, observer);
             parse_fsproj_with_imports(
                 source,
                 project_path,
@@ -1787,6 +1789,7 @@ fn parse_with_optional_sdk(
         )
         .ok(),
     }
+    .inspect(crate::observed::report_evaluation)
 }
 
 /// Recover the dotnet install root from an `SdkPaths::root`.

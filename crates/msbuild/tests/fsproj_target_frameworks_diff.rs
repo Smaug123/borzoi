@@ -17,6 +17,7 @@
 
 mod common;
 
+use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
@@ -66,11 +67,15 @@ fn fsharp_compiler_service_release() {
 fn run_diff(rel_fsproj: &str, extras: &[(&str, &str)]) {
     let corpus = common::corpus_root();
     let joined = corpus.join(rel_fsproj);
-    assert!(joined.is_file(), "missing fixture {}", joined.display());
-    let fsproj = std::fs::canonicalize(&joined)
+    assert!(
+        joined.host_is_file(),
+        "missing fixture {}",
+        joined.display()
+    );
+    let fsproj = borzoi_msbuild::observed::host_fs::canonicalize(&joined)
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", joined.display()));
 
-    let source = std::fs::read_to_string(&fsproj)
+    let source = borzoi_msbuild::observed::host_fs::read_to_string(&fsproj)
         .unwrap_or_else(|e| panic!("read {}: {e}", fsproj.display()));
     let mut props: HashMap<String, String> = HashMap::new();
     for (k, v) in extras {

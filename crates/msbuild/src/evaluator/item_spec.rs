@@ -54,6 +54,8 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+use crate::observed::{self, EntryKind, Observer};
+
 /// Whether `identity` is inside the domain both functions share (see the
 /// module docs).
 fn in_domain(identity: &str) -> bool {
@@ -188,10 +190,10 @@ pub(super) fn include_spelling<'a>(raw: &str, expanded: &'a str) -> Option<Cow<'
 /// [`exists_probe`]: whether anything is there, following symlinks. `None` for a
 /// symlink at the leaf whose target is missing, where .NET's `lstat` and our
 /// `stat` may disagree.
-pub(super) fn probe_exists(path: &Path) -> Option<bool> {
-    match std::fs::symlink_metadata(path) {
+pub(super) fn probe_exists(observer: &Observer, path: &Path) -> Option<bool> {
+    match observed::link_kind(observer, path) {
         Err(_) => Some(false),
-        Ok(leaf) if leaf.file_type().is_symlink() => path.metadata().is_ok().then_some(true),
+        Ok(EntryKind::Symlink) => observed::exists(observer, path).then_some(true),
         Ok(_) => Some(true),
     }
 }

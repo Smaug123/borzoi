@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 79bdcd6d1b6e5fd714e39c6d33e0b8bbf04f30fa03e249124268e210db5a0fdb # shrinks to world = World { sdk_versions: [], uses_sdk: false, repo_props: false, src_props: false, src_targets: false, shared_props: false, imports: [], marker_in_repo: false, marker_in_app: true, sources: [], lib_project: false }
+cc ab79311e73e94a7d65fd84f787018bc68295d577e0dd462a61229b0717ec4d99 # shrinks to world = World { sdk_versions: [], uses_sdk: false, repo_props: false, src_props: false, src_targets: false, shared_props: false, imports: [], marker_in_repo: false, marker_in_app: false, sources: ["sub/deep/D.fs"], lib_project: false }

@@ -30,6 +30,13 @@ use borzoi_sema::{
     AssemblyEnv, InferredFile, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
 };
 
+/// One [`bcl_env`] for the helpers that hand back an inference, whose types
+/// are read through the env they were inferred against.
+fn shared_bcl_env() -> &'static AssemblyEnv {
+    static ENV: std::sync::OnceLock<AssemblyEnv> = std::sync::OnceLock::new();
+    ENV.get_or_init(bcl_env)
+}
+
 /// An [`AssemblyEnv`] over the real BCL `System.Runtime.dll` — so `System.String`
 /// / `System.Math` / `System.Char` / `System.GC` (and their static methods) are
 /// present, with no FSharp.Core (whose implicit auto-opens would trip the
@@ -44,7 +51,7 @@ fn bcl_env() -> AssemblyEnv {
 /// Infer `src` against the BCL env, returning the inference output and the
 /// binder-name → rendered-type map.
 fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
-    let env = bcl_env();
+    let env = shared_bcl_env();
     let parsed = parse(src);
     assert!(
         parsed.errors.is_empty(),
@@ -53,17 +60,17 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(
         &file,
         &resolved,
-        &env,
+        env,
         &borzoi_sema::PrecedingTypes::default(),
     );
     let def_types = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.render()))
+        .map(|(id, ty)| (resolved.def(*id).spelling(env).into_owned(), ty.render(env)))
         .collect();
     (inferred, def_types)
 }
@@ -101,12 +108,12 @@ fn assert_sound(src: &str) -> usize {
         let fcs_ty = fcs.get(&(start, end)).unwrap_or_else(|| {
             panic!(
                 "we typed {start}..{end} as {} but FCS has no node there\nsrc={src:?}\nfcs keys={:?}",
-                ty.render(),
+                ty.render(&env),
                 fcs.keys().collect::<Vec<_>>()
             )
         });
         assert_eq!(
-            &ty.render(),
+            &ty.render(&env),
             fcs_ty,
             "type mismatch at {start}..{end} in {src:?}"
         );
@@ -315,6 +322,7 @@ fn static_call_member_resolution_recorded() {
 
 #[test]
 fn math_abs_int_defers() {
+    let env = shared_bcl_env();
     // `System.Math.Abs 3` — an `Int32` argument leaves `Abs(Int32)` *and* the
     // TDC-reachable `Abs(Int64)` / `Abs(Double)` / `Abs(Decimal)` / `Abs(IntPtr)`
     // as `may_apply` survivors; FCS picks `Abs(Int32)` by exact-match betterness,
@@ -326,7 +334,7 @@ fn math_abs_int_defers() {
         !inferred
             .types()
             .values()
-            .any(|t| t.render().contains("Int")),
+            .any(|t| t.render(env).contains("Int")),
         "no type leaks from a deferred static call"
     );
 }
@@ -638,7 +646,7 @@ fn inherited_static_commits_through_the_derived_name() {
         inferred
             .types()
             .values()
-            .any(|t| t.render() == "System.Boolean"),
+            .any(|t| t.render(&env) == "System.Boolean"),
         "the inherited static commits its return type through the derived name"
     );
     assert!(
@@ -692,7 +700,7 @@ fn cross_level_static_overload_with_unrefutable_loser_defers() {
     let inferred = infer_with(&env, src);
     assert!(
         inferred.types().values().all(|t| {
-            let r = t.render();
+            let r = t.render(&env);
             r != "System.Int32" && r != "System.Boolean"
         }),
         "a cross-level static overload with an un-refutable loser defers"
@@ -734,7 +742,7 @@ fn possibly_curried_static_defers_and_single_group_commits() {
         inferred
             .types()
             .values()
-            .map(|t| t.render())
+            .map(|t| t.render(&env))
             .find(|r| r == "System.Boolean")
     };
     assert_eq!(
@@ -777,7 +785,7 @@ fn unit_call_on_one_param_instance_single_candidate_commits() {
         inferred
             .types()
             .values()
-            .any(|t| t.render() == "System.Int32"),
+            .any(|t| t.render(&env) == "System.Int32"),
         "the instance unit call against the 1-param single candidate commits"
     );
 }
@@ -840,14 +848,14 @@ fn namespace_precedence_honours_inherited_statics() {
         inferred
             .types()
             .values()
-            .all(|t| t.render() != "System.Int32"),
+            .all(|t| t.render(&env) != "System.Int32"),
         "the lower-priority root D's Int32 must never be published"
     );
     assert!(
         inferred
             .types()
             .values()
-            .any(|t| t.render() == "System.Boolean"),
+            .any(|t| t.render(&env) == "System.Boolean"),
         "the inherited static through the enclosing-namespace X.D commits Boolean"
     );
 }
@@ -903,7 +911,7 @@ fn namespace_precedence_honours_instance_only_names() {
         inferred
             .types()
             .values()
-            .map(|t| t.render())
+            .map(|t| t.render(&env))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -991,7 +999,7 @@ fn namespace_precedence_owns_interface_rooted_paths() {
         inferred
             .types()
             .values()
-            .map(|t| t.render())
+            .map(|t| t.render(&env))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -1030,7 +1038,7 @@ fn module_function_application_declines_the_static_path() {
         inferred
             .types()
             .values()
-            .all(|t| t.render() != "System.Int32"),
+            .all(|t| t.render(&env) != "System.Int32"),
         "a module-function application does not ride the static method engine"
     );
     assert_eq!(

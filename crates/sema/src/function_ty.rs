@@ -57,7 +57,7 @@ use borzoi_assembly::{
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::infer::{constrained_parameter, rejected_by_attributes};
 use crate::member_ty::primitive_to_ty;
-use crate::ty::{FSHARP_CORE_RENAMED, Ty};
+use crate::ty::{FSHARP_CORE_RENAMED, Ty, TyPath};
 
 /// FSharp.Core's public-key token.
 const FSHARP_CORE_PUBLIC_KEY_TOKEN: [u8; 8] = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a];
@@ -264,7 +264,7 @@ pub(crate) fn builtin_operator(
         Shape::Bitwise => (Builtin::Bitwise, fun(p(0), fun(p(0), p(0)))),
         Shape::Shift => (
             Builtin::Shift,
-            fun(p(0), fun(Ty::named("System.Int32"), p(0))),
+            fun(p(0), fun(Ty::named(env, "System.Int32"), p(0))),
         ),
         Shape::Negate => (Builtin::Negate, fun(p(0), p(0))),
         Shape::Convert => {
@@ -272,7 +272,7 @@ pub(crate) fn builtin_operator(
                 return None;
             };
             let target = (**ret).clone();
-            if !crate::infer::is_conversion_target(&target) {
+            if !crate::infer::is_conversion_target(env.names(), &target) {
                 return None;
             }
             (
@@ -412,14 +412,14 @@ fn signature_ty(
     };
     let ret = match &method.signature.return_type {
         // An F# function returning `unit` compiles to a `void` method.
-        TypeRef::Primitive(Primitive::Void) => Ty::named(UNIT),
+        TypeRef::Primitive(Primitive::Void) => Ty::named(env, UNIT),
         ret => bridge.ty(ret)?,
     };
     let params = params
         .iter()
         .map(|p| bridge.ty(&p.ty))
         .collect::<Result<Vec<_>, _>>()?;
-    let domains = curried_domains(method, &params)?;
+    let domains = curried_domains(env, method, &params)?;
     Ok(domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
         arg: Box::new(arg),
         ret: Box::new(ret),
@@ -578,7 +578,7 @@ pub(crate) fn union_case_scheme(
 /// renamed generics (`Result` is `FSharpResult`) the compiled path that
 /// [`Ty::render_fsharp`] shows by its F# name. `None` where the bridge
 /// declines.
-pub(crate) fn applied_type_path(env: &AssemblyEnv, handle: EntityHandle) -> Option<Vec<String>> {
+pub(crate) fn applied_type_path(env: &AssemblyEnv, handle: EntityHandle) -> Option<TyPath> {
     let entity = env.entity(handle);
     Bridge {
         env,
@@ -600,7 +600,11 @@ pub(crate) fn applied_type_path(env: &AssemblyEnv, handle: EntityHandle) -> Opti
 /// others (F# pickles one only as a function's sole group) are all a
 /// [`FunctionTyGap::Groups`]. A value has no group, and a function at least
 /// one, which the pickle's value flag must agree with.
-fn curried_domains(method: &MethodLike, params: &[Ty]) -> Result<Vec<Ty>, FunctionTyGap> {
+fn curried_domains(
+    env: &AssemblyEnv,
+    method: &MethodLike,
+    params: &[Ty],
+) -> Result<Vec<Ty>, FunctionTyGap> {
     let ArgGroups::Read(curried) = &method.arg_groups else {
         return Err(FunctionTyGap::Groups);
     };
@@ -616,7 +620,7 @@ fn curried_domains(method: &MethodLike, params: &[Ty]) -> Result<Vec<Ty>, Functi
         .groups
         .iter()
         .map(|group| match group {
-            [] if sole => Ok(Ty::named(UNIT)),
+            [] if sole => Ok(Ty::named(env, UNIT)),
             [] => Err(FunctionTyGap::Groups),
             [one] => Ok(one.clone()),
             many => Ok(Ty::Tuple(many.to_vec())),
@@ -661,7 +665,7 @@ impl Bridge<'_> {
     fn ty(&self, ty: &TypeRef) -> Result<Ty, FunctionTyGap> {
         match ty {
             TypeRef::Primitive(Primitive::Void) => Err(FunctionTyGap::Type),
-            TypeRef::Primitive(p) => Ok(primitive_to_ty(*p)),
+            TypeRef::Primitive(p) => Ok(primitive_to_ty(self.env.names(), *p)),
             TypeRef::Var {
                 index,
                 is_method: true,
@@ -700,7 +704,7 @@ impl Bridge<'_> {
                         arg: Box::new(self.ty(&arg.ty)?),
                         ret: Box::new(self.ty(&ret.ty)?),
                     }),
-                    ("Unit", [0], []) => Ok(Ty::named(UNIT)),
+                    ("Unit", [0], []) => Ok(Ty::named(self.env, UNIT)),
                     _ => Err(FunctionTyGap::Type),
                 }
             }
@@ -788,8 +792,11 @@ impl Bridge<'_> {
                     .sole_type_referenced(&scope.name, namespace, name)
                     .ok_or(FunctionTyGap::Type)?;
                 let entity = self.env.entity(handle);
-                let mut path = namespace.clone();
-                path.push(name.clone());
+                let path: Vec<&str> = namespace
+                    .iter()
+                    .map(String::as_str)
+                    .chain([name.as_str()])
+                    .collect();
                 // The env indexes types by source name, so the entity found
                 // must also carry the IL name as its compiled one: a type whose
                 // source name is another's IL name is not the type referenced.
@@ -806,7 +813,7 @@ impl Bridge<'_> {
                 {
                     return Err(FunctionTyGap::Type);
                 }
-                Ok(Ty::named_path(path))
+                Ok(Ty::named_path(self.env.names(), &path))
             }
             // A vector `T[]`. A multidimensional or bounded array declines.
             TypeRef::Array {
@@ -850,7 +857,7 @@ impl Bridge<'_> {
     ///
     /// A type with a measure parameter never gets here: IL erases the
     /// parameter, and the val's measure check declines first.
-    fn generic_path(&self, handle: EntityHandle) -> Result<Vec<String>, FunctionTyGap> {
+    fn generic_path(&self, handle: EntityHandle) -> Result<TyPath, FunctionTyGap> {
         let entity = self.env.entity(handle);
         if entity.is_byref_like
             || matches!(
@@ -860,13 +867,14 @@ impl Bridge<'_> {
         {
             return Err(FunctionTyGap::Type);
         }
-        let mut path = entity.namespace.clone();
-        path.push(entity.name.clone());
+        let path: Vec<&str> = entity
+            .namespace
+            .iter()
+            .map(String::as_str)
+            .chain([entity.name.as_str()])
+            .collect();
         if matches!(
-            path.iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .as_slice(),
+            path.as_slice(),
             ["System", "Tuple"]
                 | ["System", "ValueTuple"]
                 | ["Microsoft", "FSharp", "Core", "FSharpFunc"]
@@ -895,7 +903,7 @@ impl Bridge<'_> {
         if entity.generic_parameters.iter().any(constrained_parameter) {
             return Err(FunctionTyGap::Constrained);
         }
-        Ok(path)
+        Ok(TyPath::new(self.env.names(), &path))
     }
 }
 

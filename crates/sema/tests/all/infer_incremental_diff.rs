@@ -392,6 +392,7 @@ fn a_type_preserving_body_edit_reuses_the_suffix() {
 /// `B` reads `A.a`'s new type, and `C` reads `B.b`'s.
 #[test]
 fn a_type_changing_body_edit_reinfers_the_suffix() {
+    let env = full_bcl_env();
     let prev = fold_of(&[
         "module A\nlet a = 1\n",
         "module B\nlet b = A.a\n",
@@ -402,7 +403,7 @@ fn a_type_changing_body_edit_reinfers_the_suffix() {
     assert_eq!(reuse.infer, vec![false, false, false]);
     assert_eq!(reuse.withheld_and_changed, 2);
     let c = after.inferred.file(2).expect("C is inferred");
-    let rendered: Vec<String> = c.def_types().values().map(|t| t.render()).collect();
+    let rendered: Vec<String> = c.def_types().values().map(|t| t.render(env)).collect();
     assert_eq!(
         rendered,
         vec!["System.String".to_string()],
