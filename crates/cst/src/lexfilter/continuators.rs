@@ -7,10 +7,10 @@
 //! the surrounding `Filter` state — they don't touch `self`, only the token
 //! they're asked about.
 
-use super::{Filter, TokenContent, Virtual};
-use crate::lexer::{LexError, Span, Token};
+use super::{DummyInner, Filter, TokenContent, TokenTup, Virtual};
+use crate::lexer::TokenKind;
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
+impl<'a> Filter<'a> {
     /// FCS's `isLetContinuator` (LexFilter.fs:336). When the incoming token may
     /// align with the `let`'s column without closing the `CtxtLetDecl`, the
     /// LetDecl offside-pop guard bumps from `tokenStartCol <= offsidePos` to
@@ -20,13 +20,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// Without the virtual cases, a `done` aligned with `let` would pop
     /// CtxtLetDecl on the reprocessed ODECLEND and emit a duplicate ODECLEND
     /// at `done`'s range rather than at EOF.
-    pub(super) fn is_let_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_let_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_let_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_let_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::And)
+            TokenContent::Real(TokenKind::And)
                 | TokenContent::Virtual(
                     Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
                 )
@@ -48,16 +48,21 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// aligned with `type`. Virtual reprocessed endings are the same set
     /// as `is_let_continuator` for the same reason — a virtual block-end
     /// cascading up to a CtxtTypeDefns must not be treated as offside.
-    pub(super) fn is_type_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_type_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_type_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_type_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::And | Token::Bar | Token::End | Token::With | Token::RBrace,)
-                | TokenContent::Virtual(
-                    Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
-                )
+            TokenContent::Real(
+                TokenKind::And
+                    | TokenKind::Bar
+                    | TokenKind::End
+                    | TokenKind::With
+                    | TokenKind::RBrace,
+            ) | TokenContent::Virtual(
+                Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
+            )
         )
     }
 
@@ -68,15 +73,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// SeqBlock column. Used by the BAR grace=2 (L1813) and the grace=-1
     /// special case (L1823) — both gate on this predicate to keep the
     /// SeqBlock alive across leading-bar arms.
-    pub(super) fn is_type_seq_block_element_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_type_seq_block_element_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_type_seq_block_element_continuator(&TokenContent::Real(
-                (**inner).clone(),
-            ));
+            return Self::is_type_seq_block_element_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::Bar)
+            TokenContent::Real(TokenKind::Bar)
                 | TokenContent::Virtual(
                     Virtual::BlockBegin
                         | Virtual::BlockEnd
@@ -95,9 +98,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// a virtual `ODECLEND` that cascades up through the surrounding
     /// `CtxtIf`; without recognising the virtual we'd pop the conditional
     /// before a trailing `else` can balance it.
-    pub(super) fn is_if_block_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_if_block_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_if_block_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_if_block_continuator(&inner.content());
         }
         // FCS LexFilter.fs:202 also lists END and RPAREN as continuators. END
         // prevents CtxtIf from popping when `end` is aligned with `if` (e.g.
@@ -106,10 +109,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // CtxtParen mechanism above, so adding it here is harmless but inert.
         matches!(
             token,
-            TokenContent::Real(Token::Then | Token::Else | Token::Elif | Token::End)
-                | TokenContent::Virtual(
-                    Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
-                )
+            TokenContent::Real(
+                TokenKind::Then | TokenKind::Else | TokenKind::Elif | TokenKind::End
+            ) | TokenContent::Virtual(
+                Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
+            )
         )
     }
 
@@ -120,9 +124,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// the reprocessed virtual; the next aligned `else` then finds no
     /// surrounding `CtxtIf` to balance against (it has been popped too) and
     /// the filtered stream gains a spurious `OffsideBlockSep`.
-    pub(super) fn is_then_block_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_then_block_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_then_block_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_then_block_continuator(&inner.content());
         }
         matches!(
             token,
@@ -136,13 +140,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// rarely changes the observable token stream — but for FCS parity, and
     /// to match the surrounding for/do/if/then continuator extensions made
     /// for DONE reprocessing, the virtual cases belong here too.
-    pub(super) fn is_while_block_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_while_block_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_while_block_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_while_block_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::Done)
+            TokenContent::Real(TokenKind::Done)
                 | TokenContent::Virtual(
                     Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
                 )
@@ -156,13 +160,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// virtual cases, an aligned `done` (replaced by `Virtual::DeclEnd`) pops
     /// the surrounding `CtxtFor`, which lets later tokens (e.g. a real `in`)
     /// hit the wrong balance arm.
-    pub(super) fn is_for_loop_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_for_loop_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_for_loop_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_for_loop_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::Done)
+            TokenContent::Real(TokenKind::Done)
                 | TokenContent::Virtual(
                     Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
                 )
@@ -175,13 +179,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// CtxtMatch open until WITH balances it). The virtual reprocessed
     /// endings cover the same DONE-cascade case as the other continuator
     /// predicates.
-    pub(super) fn is_match_block_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_match_block_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_match_block_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_match_block_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::With)
+            TokenContent::Real(TokenKind::With)
                 | TokenContent::Virtual(
                     Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
                 )
@@ -191,13 +195,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// FCS's `isTryBlockContinuator` (LexFilter.fs:236). Aligned `with` or
     /// `finally` keeps the surrounding `CtxtTry` open until the balance arm
     /// fires; reprocessed virtual endings (DONE-cascade) likewise.
-    pub(super) fn is_try_block_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_try_block_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_try_block_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_try_block_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::With | Token::Finally)
+            TokenContent::Real(TokenKind::With | TokenKind::Finally)
                 | TokenContent::Virtual(
                     Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
                 )
@@ -210,13 +214,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// `do` open when a nested loop's `done` reprocesses an aligned virtual
     /// past it (e.g. nested `do ... do ... done` where the inner `done` lands
     /// at the outer `do`'s column).
-    pub(super) fn is_do_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_do_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_do_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_do_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::Done)
+            TokenContent::Real(TokenKind::Done)
                 | TokenContent::Virtual(
                     Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
                 )
@@ -239,11 +243,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// by `token_forces_head_context_closure`, so this predicate keeps
     /// WithAsAugment open just long enough for the force-closure path to
     /// emit OEND through `end_token_for_a_ctxt`.
-    pub(super) fn is_with_augment_block_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_with_augment_block_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_with_augment_block_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_with_augment_block_continuator(&inner.content());
         }
-        matches!(token, TokenContent::Real(Token::End))
+        matches!(token, TokenContent::Real(TokenKind::End))
     }
 
     /// FCS's `isInterfaceContinuator` (LexFilter.fs:266-275). An aligned
@@ -252,13 +256,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// END balance arm and emits `OEND`). Reprocessed virtual endings
     /// (DONE-cascade tail) likewise keep the head open until the
     /// surrounding force-closure dispatch fires.
-    pub(super) fn is_interface_continuator(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_interface_continuator(token: &TokenContent) -> bool {
         if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_interface_continuator(&TokenContent::Real((**inner).clone()));
+            return Self::is_interface_continuator(&inner.content());
         }
         matches!(
             token,
-            TokenContent::Real(Token::End)
+            TokenContent::Real(TokenKind::End)
                 | TokenContent::Virtual(
                     Virtual::BlockEnd | Virtual::RightBlockEnd | Virtual::DeclEnd,
                 )
@@ -270,31 +274,34 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// starting a new statement. OBLOCKSEP is suppressed for these.
     ///
     /// The predicate is `isInfix token || <explicit list>` (LexFilter.fs:360-381).
-    pub(super) fn is_seq_block_element_continuator(token: &TokenContent<'_>) -> bool {
-        if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_seq_block_element_continuator(&TokenContent::Real((**inner).clone()));
+    pub(super) fn is_seq_block_element_continuator(&self, tt: &TokenTup) -> bool {
+        if let TokenContent::Dummy { inner, .. } = tt.token {
+            return self.is_seq_block_element_continuator(&TokenTup {
+                token: inner.content(),
+                ..*tt
+            });
         }
         // `isInfix token || <explicit list>` (LexFilter.fs:360-381). The infix
         // half is shared with [`Self::token_is_infix`].
-        if Self::token_is_infix(token) {
+        if self.token_is_infix(tt) {
             return true;
         }
-        match token {
+        match tt.token {
             TokenContent::Real(t) => matches!(
                 t,
                 // Non-infix continuators (LexFilter.fs:376): closing tokens
                 // and keywords that close or continue the current expression.
-                Token::End
-                    | Token::And
-                    | Token::With
-                    | Token::Then
-                    | Token::RParen
-                    | Token::RBrace
-                    | Token::RBrack
-                    | Token::BarRBrack
-                    | Token::BarRBrace
-                    | Token::RQuote
-                    | Token::RQuoteRaw
+                TokenKind::End
+                    | TokenKind::And
+                    | TokenKind::With
+                    | TokenKind::Then
+                    | TokenKind::RParen
+                    | TokenKind::RBrace
+                    | TokenKind::RBrack
+                    | TokenKind::BarRBrack
+                    | TokenKind::BarRBrace
+                    | TokenKind::RQuote
+                    | TokenKind::RQuoteRaw
             ),
             // Virtual reprocessed endings (LexFilter.fs:378-381):
             // ORIGHT_BLOCK_END / OBLOCKEND / ODECLEND arriving from a
@@ -308,39 +315,14 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         }
     }
 
-    /// FCS's `isInfix` (LexFilter.fs:118-151): the infix operators and
-    /// punctuation that, when they end a line, continue the expression onto the
-    /// next line (the "r.h.s. of an infix token begins a new block" rule,
-    /// LexFilter.fs:2330 — see [`Filter::infix_rhs_pushes`]).
-    ///
-    /// FCS deliberately **excludes** `<`, `>`, and `=` (LexFilter.fs:129-138):
-    /// treating them as infix would conflict with `f<int>` and `let f x = …`. In
-    /// our token model bare `<`/`>`/`=` are the dedicated `Token::Less` /
-    /// `Token::Greater` / `Token::Equals` (never `Token::Op`), so they simply do
-    /// not appear below; multi-char `<=`/`>=`/`<<<` arrive as `Token::Op` and
-    /// *are* infix. Also excluded: `BANG`, `PREFIX_OP` (`!`-/`~`-prefixed), and
-    /// `PERCENT_OP` (`%`/`%%`) — all handled by [`Self::op_str_is_infix`].
-    pub(super) fn token_is_infix(token: &TokenContent<'_>) -> bool {
-        if let TokenContent::Dummy { inner, .. } = token {
-            return Self::token_is_infix(&TokenContent::Real((**inner).clone()));
-        }
-        match token {
-            TokenContent::Real(t) => match t {
-                Token::Op(s) if Self::op_str_is_infix(s) => true,
-                Token::Comma        // COMMA
-                | Token::BarBar     // BAR_BAR
-                | Token::AmpAmp     // AMP_AMP
-                | Token::Amp        // AMP (single &)
-                | Token::Or         // OR keyword
-                | Token::Mod        // MOD keyword → INFIX_STAR_DIV_MOD_OP
-                | Token::ColonColon     // COLON_COLON
-                | Token::ColonGreater   // COLON_GREATER `:>`
-                | Token::ColonQMarkGreater // COLON_QMARK_GREATER `:?>`
-                | Token::ColonEquals    // COLON_EQUALS
-                | Token::QMarkQMark // QMARK_QMARK `??`
-                | Token::Dollar => true, // DOLLAR `$`
-                _ => false,
-            },
+    /// FCS's `isInfix` (LexFilter.fs:118-151) of `tt`: see [`kind_is_infix`].
+    pub(super) fn token_is_infix(&self, tt: &TokenTup) -> bool {
+        match tt.token {
+            TokenContent::Real(kind) => kind_is_infix(kind, || self.text(tt)),
+            TokenContent::Dummy { inner, .. } => self.token_is_infix(&TokenTup {
+                token: inner.content(),
+                ..*tt
+            }),
             _ => false,
         }
     }
@@ -350,34 +332,37 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// LexFilter.fs:1854) that lets a leading infix operator sit left of the
     /// block's anchor without closing it. Only meaningful for tokens that
     /// [`Self::token_is_infix`] accepts; an operator's length is its source width.
-    pub(super) fn infix_token_length(token: &TokenContent<'_>) -> u32 {
-        if let TokenContent::Dummy { inner, .. } = token {
-            return Self::infix_token_length(&TokenContent::Real((**inner).clone()));
-        }
-        match token {
-            TokenContent::Real(Token::Op(s)) => s.chars().count() as u32,
-            TokenContent::Real(Token::Comma | Token::Amp | Token::Or | Token::Dollar) => 1,
+    pub(super) fn infix_token_length(&self, tt: &TokenTup) -> u32 {
+        match tt.token {
+            TokenContent::Dummy { inner, .. } => self.infix_token_length(&TokenTup {
+                token: inner.content(),
+                ..*tt
+            }),
+            TokenContent::Real(TokenKind::Op) => self.text(tt).chars().count() as u32,
             TokenContent::Real(
-                Token::BarBar
-                | Token::AmpAmp
-                | Token::ColonColon
-                | Token::ColonGreater
-                | Token::ColonEquals
-                | Token::QMarkQMark,
+                TokenKind::Comma | TokenKind::Amp | TokenKind::Or | TokenKind::Dollar,
+            ) => 1,
+            TokenContent::Real(
+                TokenKind::BarBar
+                | TokenKind::AmpAmp
+                | TokenKind::ColonColon
+                | TokenKind::ColonGreater
+                | TokenKind::ColonEquals
+                | TokenKind::QMarkQMark,
             ) => 2,
             // `:?>` (COLON_QMARK_GREATER); `mod` is `INFIX_STAR_DIV_MOD_OP "mod"`.
-            TokenContent::Real(Token::ColonQMarkGreater | Token::Mod) => 3,
+            TokenContent::Real(TokenKind::ColonQMarkGreater | TokenKind::Mod) => 3,
             _ => 1,
         }
     }
 
-    /// Whether `token` is an operator that FCS's lexer relexes to
+    /// Whether `tt` is an operator that FCS's lexer relexes to
     /// `ADJACENT_PREFIX_OP` when it is glued to the following token — a
     /// term-starting *prefix* use rather than an infix one. FCS's set (per
     /// `lex.fsl` / `PrettyNaming`) is `+`, `-`, `+.`, `-.`, `%`, `%%`, `&`, `&&`
     /// (note: *not* `&&&`/`|||`/`*`/`/`, which are infix-only). `%`/`%%` and the
     /// `~`/`!`-prefixed ops already classify as non-infix in
-    /// [`Self::op_str_is_infix`], so only the ops that would otherwise be infix
+    /// [`op_str_is_infix`], so only the ops that would otherwise be infix
     /// continuators need listing here: `+`/`-`/`+.`/`-.` and the dedicated
     /// `Amp`/`AmpAmp` tokens.
     ///
@@ -386,50 +371,19 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// op *can* be an adjacent prefix. Our lexer emits one `Op`/`Amp`/`AmpAmp`
     /// token regardless of spacing (sign-folding happens later), so the offside
     /// filter reconstructs FCS's adjacency distinction itself.
-    pub(super) fn is_adjacent_prefix_capable_op(token: &TokenContent<'_>) -> bool {
-        if let TokenContent::Dummy { inner, .. } = token {
-            return Self::is_adjacent_prefix_capable_op(&TokenContent::Real((**inner).clone()));
-        }
-        match token {
-            TokenContent::Real(Token::Amp | Token::AmpAmp) => true,
-            TokenContent::Real(Token::Op(s)) => matches!(*s, "+" | "-" | "+." | "-."),
+    pub(super) fn is_adjacent_prefix_capable_op(&self, tt: &TokenTup) -> bool {
+        match tt.token {
+            TokenContent::Dummy { inner, .. } => self.is_adjacent_prefix_capable_op(&TokenTup {
+                token: inner.content(),
+                ..*tt
+            }),
+            TokenContent::Real(TokenKind::Amp | TokenKind::AmpAmp) => true,
+            TokenContent::Real(TokenKind::Op) => {
+                matches!(self.text(tt), "+" | "-" | "+." | "-.")
+            }
             _ => false,
         }
     }
-
-    /// Whether an operator string maps to FCS's `isInfix` categories.
-    /// Strips leading FCS `ignored_op_chars` (`.`, `?`) — but NOT `$`, because
-    /// `$` is simultaneously an ignored_op_char and an INFIX_COMPARE_OP head
-    /// character, so the lexer classifies `$!`/`.$!` etc. as INFIX_COMPARE_OP.
-    /// Non-infix: PREFIX_OP (`!`-prefixed except `!=`, all `~`-prefixed),
-    /// PERCENT_OP (`%`/`%%`). Single `<`/`>` are dedicated `Token::Less`/
-    /// `Token::Greater` variants and never reach this function. Multi-char
-    /// `<`/`>`-prefixed forms (`<=`, `>=`, `<>`, `>>`, …) do, and are infix.
-    fn op_str_is_infix(s: &str) -> bool {
-        // FCS exact carve-outs that produce non-infix token kinds.
-        if matches!(s, "%" | "%%") {
-            return false;
-        }
-        let bytes = s.as_bytes();
-        // Strip leading FCS ignored_op_chars. Only `.` and `?` are "purely"
-        // ignored; `$` is also an INFIX_COMPARE_OP head so we stop before it.
-        let mut i = 0;
-        while i < bytes.len() && matches!(bytes[i], b'.' | b'?') {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            return false;
-        }
-        match bytes[i] {
-            // Only `!=` → INFIX_COMPARE_OP; all other `!`-prefixed → PREFIX_OP.
-            b'!' => bytes.get(i + 1) == Some(&b'='),
-            // PREFIX_OP.
-            b'~' => false,
-            // Everything else (*, /, %, +, -, @, ^, &, |, =, $, <, >, …) → infix.
-            _ => true,
-        }
-    }
-
     /// The token half of FCS's `relaxWhitespace2OffsideRule`
     /// (LexFilter.fs:1473-1500): whether the current token is an `ODUMMY`
     /// wrapping a `TokenRExprParen` (LexFilter.fs:194-198: END / RPAREN /
@@ -446,21 +400,87 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// `TokenRExprParen` closing a `CtxtParen`; and the
     /// END+CtxtWithAsAugment arm queues `Dummy(End)` (`End` is in
     /// `TokenRExprParen`, so this predicate fires).
-    pub(super) fn is_rexpr_paren_dummy(token: &TokenContent<'_>) -> bool {
+    pub(super) fn is_rexpr_paren_dummy(token: &TokenContent) -> bool {
         let TokenContent::Dummy { inner, .. } = token else {
             return false;
         };
         matches!(
-            **inner,
-            Token::End
-                | Token::RParen
-                | Token::RBrace
-                | Token::BarRBrace
-                | Token::RBrack
-                | Token::BarRBrack
-                | Token::RQuote
-                | Token::RQuoteRaw
-                | Token::Greater(true)
+            inner,
+            DummyInner::Real(
+                TokenKind::End
+                    | TokenKind::RParen
+                    | TokenKind::RBrace
+                    | TokenKind::BarRBrace
+                    | TokenKind::RBrack
+                    | TokenKind::BarRBrack
+                    | TokenKind::RQuote
+                    | TokenKind::RQuoteRaw
+            ) | DummyInner::TyparGreater
         )
+    }
+}
+
+/// FCS's `isInfix` (LexFilter.fs:118-151) of a lexed token of kind `kind`
+/// whose text `text` returns: the infix operators and punctuation that, when
+/// they end a line, continue the expression onto the next line (the "r.h.s. of
+/// an infix token begins a new block" rule, LexFilter.fs:2330 — see
+/// [`Filter::infix_rhs_pushes`]). `text` is asked for only for an operator.
+///
+/// FCS deliberately **excludes** `<`, `>`, and `=` (LexFilter.fs:129-138):
+/// treating them as infix would conflict with `f<int>` and `let f x = …`. In
+/// our token model bare `<`/`>`/`=` are the dedicated `Token::Less` /
+/// `Token::Greater` / `Token::Equals` (never `Token::Op`), so they simply do
+/// not appear below; multi-char `<=`/`>=`/`<<<` arrive as `Token::Op` and
+/// *are* infix. Also excluded: `BANG`, `PREFIX_OP` (`!`-/`~`-prefixed), and
+/// `PERCENT_OP` (`%`/`%%`) — all handled by [`op_str_is_infix`].
+pub(super) fn kind_is_infix<'t>(kind: TokenKind, text: impl FnOnce() -> &'t str) -> bool {
+    match kind {
+        TokenKind::Op => op_str_is_infix(text()),
+        TokenKind::Comma        // COMMA
+        | TokenKind::BarBar     // BAR_BAR
+        | TokenKind::AmpAmp     // AMP_AMP
+        | TokenKind::Amp        // AMP (single &)
+        | TokenKind::Or         // OR keyword
+        | TokenKind::Mod        // MOD keyword → INFIX_STAR_DIV_MOD_OP
+        | TokenKind::ColonColon     // COLON_COLON
+        | TokenKind::ColonGreater   // COLON_GREATER `:>`
+        | TokenKind::ColonQMarkGreater // COLON_QMARK_GREATER `:?>`
+        | TokenKind::ColonEquals    // COLON_EQUALS
+        | TokenKind::QMarkQMark // QMARK_QMARK `??`
+        | TokenKind::Dollar => true, // DOLLAR `$`
+        _ => false,
+    }
+}
+
+/// Whether an operator string maps to FCS's `isInfix` categories.
+/// Strips leading FCS `ignored_op_chars` (`.`, `?`) — but NOT `$`, because
+/// `$` is simultaneously an ignored_op_char and an INFIX_COMPARE_OP head
+/// character, so the lexer classifies `$!`/`.$!` etc. as INFIX_COMPARE_OP.
+/// Non-infix: PREFIX_OP (`!`-prefixed except `!=`, all `~`-prefixed),
+/// PERCENT_OP (`%`/`%%`). Single `<`/`>` are dedicated `Token::Less`/
+/// `Token::Greater` variants and never reach this function. Multi-char
+/// `<`/`>`-prefixed forms (`<=`, `>=`, `<>`, `>>`, …) do, and are infix.
+fn op_str_is_infix(s: &str) -> bool {
+    // FCS exact carve-outs that produce non-infix token kinds.
+    if matches!(s, "%" | "%%") {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    // Strip leading FCS ignored_op_chars. Only `.` and `?` are "purely"
+    // ignored; `$` is also an INFIX_COMPARE_OP head so we stop before it.
+    let mut i = 0;
+    while i < bytes.len() && matches!(bytes[i], b'.' | b'?') {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return false;
+    }
+    match bytes[i] {
+        // Only `!=` → INFIX_COMPARE_OP; all other `!`-prefixed → PREFIX_OP.
+        b'!' => bytes.get(i + 1) == Some(&b'='),
+        // PREFIX_OP.
+        b'~' => false,
+        // Everything else (*, /, %, +, -, @, ^, &, |, =, $, <, >, …) → infix.
+        _ => true,
     }
 }

@@ -41,6 +41,7 @@ use borzoi_cst::lexfilter::{FilteredToken, OffsideSeverity, Virtual, filter_coll
 use borzoi_cst::parser::{
     FileKind, ParseOptions, parse, parse_sig, parse_with_options, parse_with_symbols,
 };
+use borzoi_cst::tokens::RawTokens;
 use borzoi_oracle_harness::{BatchChild, BoundedCommand};
 
 /// The sweeps here silence their *expected* panics; the implementation is shared
@@ -1914,7 +1915,7 @@ fn filtered_streams_match(source: &str, parser: ParserFs0058) {
         // The filter consumes trivia internally (for offside line/column
         // tracking) and never emits Raw whitespace/comments — so no trivia
         // filter is needed on the output.
-        let run = filter_collect(source, lang, lex(source));
+        let run = filter_collect(&RawTokens::from_active(source, lex(source)), lang);
         let rust_tokens: Vec<NormalisedToken> = run
             .tokens
             .into_items()

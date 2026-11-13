@@ -2154,7 +2154,7 @@ mod tests {
         let lex_errs: Vec<_> = items
             .iter()
             .filter_map(|(t, _)| match t {
-                Err(PreprocError::Lex(e)) => Some(e.clone()),
+                Err(PreprocError::Lex(e)) => Some(*e),
                 _ => None,
             })
             .collect();
@@ -2210,7 +2210,7 @@ mod tests {
         let lex_errs: Vec<_> = items
             .iter()
             .filter_map(|(t, _)| match t {
-                Err(PreprocError::Lex(e)) => Some(e.clone()),
+                Err(PreprocError::Lex(e)) => Some(*e),
                 _ => None,
             })
             .collect();

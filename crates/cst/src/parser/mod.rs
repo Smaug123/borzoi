@@ -380,7 +380,7 @@ pub fn context_pushes(
     lang: LanguageVersion,
 ) -> Vec<ContextPush> {
     let lexed = lex_full_trivia(source, symbols);
-    crate::lexfilter::context_pushes(source, lang, lexed.tokens.active())
+    crate::lexfilter::context_pushes(&lexed.tokens, lang)
 }
 
 fn parse_inner(
@@ -434,7 +434,7 @@ fn parse_inner_stopping_at(
     // productions consume. Directive / inactive-code trivia are not active
     // code, so they are dropped here; the parser still emits them from
     // `raw_tokens` for losslessness.
-    let filter_run = filter_collect(source, lang, raw_tokens.active());
+    let filter_run = filter_collect(&raw_tokens, lang);
     let mut filtered_tokens = filter_run.tokens;
     let offside_diagnostics: Vec<OffsideDiagnostic> = filter_run.diagnostics;
     let shape_depends_on_language_version = filter_run.shape_depends_on_language_version;

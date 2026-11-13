@@ -36,7 +36,7 @@ pub fn filtered_stream<'src>(
         .collect();
     let active = raw.iter().filter_map(|(res, span)| match res {
         Ok(TriviaToken::Lexed(t)) => Some((Ok(t.clone()), span.clone())),
-        Err(PreprocError::Lex(e)) => Some((Err(e.clone()), span.clone())),
+        Err(PreprocError::Lex(e)) => Some((Err(*e), span.clone())),
         _ => None,
     });
     let mut run = lexfilter::filter_collect(source, lang, active);
