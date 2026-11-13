@@ -1493,15 +1493,23 @@ What it does not cover:
 
 `tools/msbuild-condition-oracle`'s `restoreCone` op runs the census build
 with `LogTaskInputs` set, and records the `RestoreGraphItems` that
-`WriteRestoreGraphTask` is handed: each item's spec and custom metadata, read
-as the task reads them. It also returns the `RestoreRecursive` property its
-flag comes from. Because these are the writer's own inputs, they arrive after
-`RemoveDuplicates` and after any target hooked in before the writer.
+`WriteRestoreGraphTask` is handed, grouped by invocation. The census takes
+the one invocation that wrote the requested `RestoreGraphOutputPath`: its
+items, with their spec and custom metadata read as the task reads them, and
+its `RestoreRecursive` as it was handed. Because these are that writer's own
+inputs, they arrive after `RemoveDuplicates`, after any target hooked in
+before the writer, apart from any other writer a hook runs, and unaffected by
+a hook that changes a property afterwards.
 
 Review of a first cut found that this is the only sound source. That cut
 built `_GenerateRestoreGraph` separately and modelled `RemoveDuplicates`, so
-it missed hooks and .NET's case folding. The `hooked` fixture now edits the
-entries before the writer runs and carries an escaped `;` in its metadata.
+it missed hooks and .NET's case folding. Review then found two more ways to hand the census the wrong inputs: a
+second writer that a hook runs for another file, and a hook that changes
+`RestoreRecursive` after the writer. The fixtures now reproduce all of these:
+- the `hooked` fixture edits the entries before the writer, runs a side
+  writer first, and carries an escaped `;` in its metadata;
+- the central-package-management fixture flips the `RestoreRecursive` global
+  after the writer, through `TreatAsLocalProperty`.
 
 `restore_cone_census.rs` puts every cone's entries through
 `write_restore_graph` with two further inputs:

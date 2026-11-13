@@ -62,16 +62,19 @@
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"msbuildDirectory":s,
 ///         "sdkVersion":s,"targets":[..],"tasks":[..],"files":{..},
 ///         "assemblies":{..},"loadedDuringBuilds":[..],"dgspec":s|null,
-///         "restoreRecursive":s,"entries":[{"identity":s,"metadata":{..}}, ..]}
+///         "writer":{"restoreRecursive":s|null,"invocations":n,
+///                   "entries":[{"identity":s,"metadata":{..}}, ..]}|null}
 ///     The restore-cone census of docs/nuget-dgspec-boundary-plan.md (stage
 ///     8): builds `GenerateRestoreGraphFile` on the project file in-process,
 ///     under exactly `globals`, and reports every target and task that
 ///     executed, the SHA-256 of each file they come from, each task assembly's
 ///     identity, and the spec written to `RestoreGraphOutputPath`. See
-///     `restoreCone` below. `entries` are the items `WriteRestoreGraphTask` was
-///     handed, with their custom metadata as it reads them (unescaped), and
-///     `restoreRecursive` the property its flag comes from: the item seam of
-///     A₁. Unlike the evaluation ops this one *executes*
+///     `restoreCone` below. `writer` is the inputs of the one
+///     `WriteRestoreGraphTask` invocation that wrote `RestoreGraphOutputPath`,
+///     as it was handed them: its items with their custom metadata as it reads
+///     them (unescaped), and its `RestoreRecursive` (null when unset). It is
+///     null unless exactly one invocation wrote that path. This is the item
+///     seam of A₁. Unlike the evaluation ops this one *executes*
 ///     targets, so it reaches the SDK's task code.
 ///
 ///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
@@ -491,7 +494,10 @@ type ConeLogger() =
     let errors = ResizeArray<string>()
     let targetNames = Collections.Generic.Dictionary<struct (int * int * int), string>()
     let taskNames = Collections.Generic.Dictionary<struct (int * int * int * int), string>()
-    let entries = ResizeArray<Microsoft.Build.Framework.ITaskItem>()
+    let writers =
+        Collections.Generic.Dictionary<struct (int * int * int * int), Collections.Generic.Dictionary<string, obj list>>()
+
+    let writerOrder = ResizeArray<struct (int * int * int * int)>()
     let mutable verbosity = Microsoft.Build.Framework.LoggerVerbosity.Normal
     let mutable parameters: string = null
 
@@ -501,9 +507,10 @@ type ConeLogger() =
     member internal _.Targets = List.ofSeq targets
     member internal _.Tasks = List.ofSeq tasks
     member internal _.Errors = List.ofSeq errors
-    /// The items `WriteRestoreGraphTask` was handed as `RestoreGraphItems`, as
-    /// MSBuild logs a task's inputs (only when the build sets `LogTaskInputs`).
-    member internal _.RestoreGraphEntries = List.ofSeq entries
+    /// Each `WriteRestoreGraphTask` invocation's inputs, by parameter, in the
+    /// order the invocations started, as MSBuild logs a task's inputs (only when
+    /// the build sets `LogTaskInputs`). An unset parameter is absent.
+    member internal _.WriterInvocations = writerOrder |> Seq.map (fun key -> writers[key]) |> List.ofSeq
 
     interface Microsoft.Build.Framework.ILogger with
         member _.Verbosity
@@ -542,14 +549,17 @@ type ConeLogger() =
                 match e with
                 | :? Microsoft.Build.Framework.TaskParameterEventArgs as p when
                     p.Kind = Microsoft.Build.Framework.TaskParameterMessageKind.TaskInput
-                    && p.ItemType = "RestoreGraphItems"
                     ->
                     let c = p.BuildEventContext
+                    let key = struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)
 
-                    match taskNames.TryGetValue(struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)) with
+                    match taskNames.TryGetValue key with
                     | true, "WriteRestoreGraphTask" ->
-                        for item in p.Items do
-                            entries.Add(item :?> Microsoft.Build.Framework.ITaskItem)
+                        if not (writers.ContainsKey key) then
+                            writers[key] <- Collections.Generic.Dictionary<string, obj list>()
+                            writerOrder.Add key
+
+                        writers[key][p.ItemType] <- p.Items |> Seq.cast<obj> |> List.ofSeq
                     | _ -> ()
                 | _ -> ())
 
@@ -659,6 +669,50 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
         | true, path when File.Exists path -> File.ReadAllText path
         | _ -> null
 
+    // The inputs of the writer invocation that wrote the requested spec: a
+    // hook may run the task again for another file, and change the properties
+    // its inputs come from after it ran. Every input is as the invocation was
+    // handed it. `null` unless exactly one invocation wrote the requested path.
+    let writer =
+        let scalar (inputs: Collections.Generic.Dictionary<string, obj list>) name =
+            match inputs.TryGetValue name with
+            | true, [ :? string as value ] -> Some value
+            | true, [ :? Microsoft.Build.Framework.ITaskItem as item ] -> Some item.ItemSpec
+            | _ -> None
+
+        let requested =
+            match globals.TryGetValue "RestoreGraphOutputPath" with
+            | true, path -> Some(Path.GetFullPath path)
+            | _ -> None
+
+        let writing =
+            logger.WriterInvocations
+            |> List.filter (fun inputs ->
+                requested.IsSome
+                && (scalar inputs "RestoreGraphOutputPath" |> Option.map Path.GetFullPath) = requested)
+
+        match writing with
+        | [ inputs ] ->
+            let items =
+                match inputs.TryGetValue "RestoreGraphItems" with
+                | true, items -> items |> List.map (fun item -> item :?> Microsoft.Build.Framework.ITaskItem)
+                | _ -> []
+
+            box
+                {| restoreRecursive = scalar inputs "RestoreRecursive" |> Option.toObj
+                   invocations = logger.WriterInvocations.Length
+                   entries =
+                    items
+                    |> List.map (fun item ->
+                        {| identity = item.ItemSpec
+                           metadata =
+                            item.CloneCustomMetadata().Keys
+                            |> Seq.cast<string>
+                            |> Seq.sort
+                            |> Seq.map (fun name -> (name, item.GetMetadata name))
+                            |> dict |}) |}
+        | _ -> null
+
     {| ok = true
        succeeded = (result.OverallResult = BuildResultCode.Success)
        errors = logger.Errors
@@ -677,17 +731,7 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
                informationalVersion = Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductVersion |})
         |> List.ofSeq
        dgspec = dgspec
-       restoreRecursive = property "RestoreRecursive"
-       entries =
-        logger.RestoreGraphEntries
-        |> List.map (fun item ->
-            {| identity = item.ItemSpec
-               metadata =
-                item.CloneCustomMetadata().Keys
-                |> Seq.cast<string>
-                |> Seq.sort
-                |> Seq.map (fun name -> (name, item.GetMetadata name))
-                |> dict |}) |}
+       writer = writer |}
 
 let private respondRestoreCone (root: JsonElement) : string =
     let project = root.GetProperty("project").GetString()

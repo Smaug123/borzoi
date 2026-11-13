@@ -451,7 +451,13 @@ fn seam(project: &Path, answer: &Value, loaded: &BTreeMap<PathBuf, String>) -> S
         NuGetIdentity, RestoreGraphItem, RestoreItemsDecline, write_restore_graph,
     };
 
-    let items: Vec<RestoreGraphItem> = answer["entries"]
+    let writer = &answer["writer"];
+    if writer.is_null() {
+        // Either a hook ran the writer again for the same file, or nothing
+        // wrote it: which inputs made the spec is not knowable from here.
+        return "decline: no single writer invocation wrote the spec".to_owned();
+    }
+    let items: Vec<RestoreGraphItem> = writer["entries"]
         .as_array()
         .expect("entries")
         .iter()
@@ -465,11 +471,12 @@ fn seam(project: &Path, answer: &Value, loaded: &BTreeMap<PathBuf, String>) -> S
                 .collect(),
         })
         .collect();
-    // The task's bool parameter, as MSBuild converts the property.
-    let recursive = match answer["restoreRecursive"].as_str().unwrap_or_default() {
-        v if v.eq_ignore_ascii_case("true") => true,
-        v if v.is_empty() || v.eq_ignore_ascii_case("false") => false,
-        other => panic!("RestoreRecursive is {other:?}, which the census does not convert"),
+    // The invocation's own bool parameter: unset is the task's default, false.
+    let recursive = match writer["restoreRecursive"].as_str() {
+        None => false,
+        Some(v) if v.eq_ignore_ascii_case("true") => true,
+        Some(v) if v.eq_ignore_ascii_case("false") => false,
+        Some(other) => panic!("RestoreRecursive is {other:?}, which the census does not convert"),
     };
     let nuget = loaded
         .values()
@@ -814,7 +821,7 @@ const CPM_PACKAGES: &str = r#"<Project>
 </Project>
 "#;
 
-const CPM_APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
+const CPM_APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="RestoreRecursive">
   <PropertyGroup>
     <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -824,6 +831,14 @@ const CPM_APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
     <PackageReference Include="System.Text.Json" />
     <ProjectReference Include="../lib/Lib.fsproj" />
   </ItemGroup>
+  <!-- Changes the writer's RestoreRecursive (a restore global, false) after the
+       writer ran: the item seam must take the flag the writer was handed, which
+       decides whether the referenced project is restored too. -->
+  <Target Name="UserHookAfterRestoreGraphFile" AfterTargets="GenerateRestoreGraphFile">
+    <PropertyGroup>
+      <RestoreRecursive>true</RestoreRecursive>
+    </PropertyGroup>
+  </Target>
 </Project>
 "#;
 
@@ -861,6 +876,11 @@ const HOOKED: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <!-- Edits the entries after `_GenerateRestoreGraph` and before the writer runs:
        the item seam must be graded on what the writer is handed. -->
   <Target Name="UserHookEditsRestoreGraphEntries" BeforeTargets="GenerateRestoreGraphFile">
+    <!-- A second writer, for another file, handed the entries before the edit
+         below: the item seam must take the inputs of the writer that wrote the
+         spec. -->
+    <WriteRestoreGraphTask RestoreGraphItems="@(_RestoreGraphEntry)"
+                           RestoreGraphOutputPath="$(MSBuildProjectDirectory)/side.dg.json" />
     <ItemGroup>
       <_RestoreGraphEntry Condition="'%(_RestoreGraphEntry.Type)' == 'ProjectSpec'">
         <Version>9.9.9</Version>
