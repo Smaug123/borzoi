@@ -63,6 +63,7 @@ use lsp_types::Uri;
 use borzoi_msbuild::observed::{Failure, TextDigest};
 
 use crate::observed::{EvaluationCounts, GENERATION_EVENT, Generation, HostDisk, ReadCounts};
+use crate::parses::ParseCounts;
 use crate::paths::{lexically_normalize, path_dedup_key};
 use crate::uri::UriExt as _;
 
@@ -562,23 +563,26 @@ impl<D: Disk> Vfs<D> {
         self.log = Some(log);
     }
 
-    /// End the current generation, in which no project evaluation was read
-    /// and no file's owner was looked for.
+    /// End the current generation, in which no project evaluation was read,
+    /// no file's owner was looked for and nothing was parsed.
     pub fn end_generation(&mut self) -> Generation {
         self.end_generation_with(
             EvaluationCounts::default(),
             borzoi_msbuild::observed::ReadCounts::default(),
+            ParseCounts::default(),
         )
     }
 
     /// End the current generation, in which reading project evaluations
-    /// cost `evaluations` and finding the projects that own files cost
-    /// `ownership`: send it to the log, if one is attached, emit its counts
-    /// as [`GENERATION_EVENT`], and return it.
+    /// cost `evaluations`, finding the projects that own files cost
+    /// `ownership` and the parse memo did `parses`: send it to the log, if
+    /// one is attached, emit its counts as [`GENERATION_EVENT`], and return
+    /// it.
     pub fn end_generation_with(
         &mut self,
         evaluations: EvaluationCounts,
         ownership: borzoi_msbuild::observed::ReadCounts,
+        parses: ParseCounts,
     ) -> Generation {
         let (number, counts) = self.disk.end_generation();
         let generation = Generation {
@@ -586,6 +590,7 @@ impl<D: Disk> Vfs<D> {
             counts,
             evaluations,
             ownership,
+            parses,
         };
         if let Some(log) = &self.log
             && log.send(generation).is_err()
@@ -606,6 +611,8 @@ impl<D: Disk> Vfs<D> {
             v_canonicalizations = checks.canonicalizations,
             o_listings = ownership.listings,
             o_stats = ownership.stats,
+            parsed = parses.parsed,
+            parses_reused = parses.reused,
         );
         generation
     }

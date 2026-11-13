@@ -26,14 +26,15 @@
 //! panics the parser contributes nothing rather than crashing the server.
 
 use crate::uri::UriExt as _;
+use borzoi_cst::parser::FileKind;
 use borzoi_sema::SyntaxRecovery;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use lsp_types::{SymbolInformation, Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse};
 
-use crate::cst_panic_safe::parse_with_symbols;
 use crate::handlers::{file_export_symbols, symbol_information};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::server::State;
@@ -44,7 +45,7 @@ use crate::server::State;
 struct OpenSource {
     uri: Uri,
     path: Option<PathBuf>,
-    text: String,
+    text: Arc<str>,
 }
 
 /// Run the workspace-symbol handler. Always returns `Some` (an empty list when
@@ -67,7 +68,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         .map(|(uri, text)| OpenSource {
             uri: uri.clone(),
             path: uri.to_file_path().ok(),
-            text: text.to_string(),
+            text: Arc::clone(text),
         })
         .collect();
     open_sources.sort_by(|a, b| a.uri.as_str().cmp(b.uri.as_str()));
@@ -162,13 +163,12 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
                 continue;
             }
         }
-        let symbols = state.symbols_for_uri(&src.uri);
-        let lang = state.lang_version_for_uri(&src.uri);
-        let Some(parse) = parse_with_symbols(&src.text, &symbols, lang) else {
+        let source = state.parse_buffer(&src.uri, &src.text, FileKind::Impl);
+        let Some(parse) = source.parse() else {
             continue;
         };
         let recovery = SyntaxRecovery::without_inference();
-        let Some(file) = ImplFile::cast(parse.root) else {
+        let Some(file) = ImplFile::cast(parse.root.clone()) else {
             continue;
         };
         collect_matching(

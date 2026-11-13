@@ -39,7 +39,7 @@ pub fn parse_sig_with_symbols(
     parse_kind_with_symbols(text, symbols, lang, FileKind::Sig)
 }
 
-fn parse_kind_with_symbols(
+pub(crate) fn parse_kind_with_symbols(
     text: &str,
     symbols: &HashSet<String>,
     lang: LanguageVersion,

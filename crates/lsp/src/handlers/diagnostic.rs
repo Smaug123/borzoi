@@ -109,15 +109,27 @@ pub(crate) fn diagnose_file(
         if previous_result_id == Some(result_id.as_str()) {
             return FileOutcome::Unchanged(result_id);
         }
-        let groups = grouped_for_uri_linked(uri, &text, &mut state.workspace, linking_project)
-            .unwrap_or_default();
+        let groups = grouped_for_uri_linked(
+            uri,
+            &text,
+            &mut state.workspace,
+            state.semantic.parses_mut(),
+            linking_project,
+        )
+        .unwrap_or_default();
         return FileOutcome::Full {
             groups,
             result_id: Some(result_id),
         };
     }
-    let groups = grouped_for_uri_linked(uri, &text, &mut state.workspace, linking_project)
-        .unwrap_or_default();
+    let groups = grouped_for_uri_linked(
+        uri,
+        &text,
+        &mut state.workspace,
+        state.semantic.parses_mut(),
+        linking_project,
+    )
+    .unwrap_or_default();
     FileOutcome::Full {
         groups,
         result_id: None,

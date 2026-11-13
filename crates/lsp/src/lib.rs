@@ -8,6 +8,7 @@ pub mod goto_source;
 pub mod handlers;
 pub mod logging;
 pub mod observed;
+pub mod parses;
 pub mod paths;
 pub mod position;
 pub mod project_assets;

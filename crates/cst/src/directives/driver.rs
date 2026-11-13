@@ -428,16 +428,51 @@ pub fn lex_with_symbols_full_trivia<'a, 'b>(
 
 /// Run the full-trivia state machine over `source` to the end, writing every
 /// item into `sink` as it is produced, and return the `#elif` spans
-/// ([`FullTriviaDriver::elif_directives`]). The items are exactly those
-/// [`lex_with_symbols_full_trivia`] yields, in the same order.
+/// ([`FullTriviaDriver::elif_directives`]) and the active-branch `#line`
+/// directives ([`FullTriviaDriver::line_directives`]). The items are exactly
+/// those [`lex_with_symbols_full_trivia`] yields, in the same order.
 pub(crate) fn lex_full_trivia_into<'a>(
     source: &'a str,
     symbols: &HashSet<String>,
     sink: &mut impl Sink<'a>,
-) -> Vec<Range<usize>> {
+) -> (Vec<Range<usize>>, LineDirectiveStore) {
     let mut core = DriverCore::new(source, symbols, true);
     while core.step(sink) {}
-    core.elif_directives
+    (core.elif_directives, core.line_directives)
+}
+
+/// What the preprocessor reports about a source under a symbol set, beside
+/// its tokens: every error, and the `#line` directives that relocate
+/// diagnostics.
+///
+/// A parse records it ([`crate::parser::Parse::preprocessor`]) from the one
+/// lex it makes, so a consumer of both the tree and these needs no second
+/// lex; [`preprocess`] computes it alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Preprocessed {
+    /// Every error the preprocessor reported, lexer errors in active code
+    /// included, in stream order, each with the span the driver paired it
+    /// with: the `Err` items [`lex_with_symbols`] yields.
+    pub errors: Vec<(PreprocError, Range<usize>)>,
+    /// The active-branch `#line` directives, in source order: what
+    /// [`Driver::line_directives`] holds once the driver is drained.
+    pub line_directives: LineDirectiveStore,
+}
+
+/// [`Preprocessed`] for `source` under `symbols`, by draining the
+/// swallow-mode driver ([`lex_with_symbols`]). The full-trivia lex a parse
+/// makes reports the same (checked under the `token-reference` feature on
+/// every lex, and by `preprocessed_reference` over generated sources).
+pub fn preprocess(source: &str, symbols: &HashSet<String>) -> Preprocessed {
+    let mut driver = lex_with_symbols(source, symbols);
+    let errors = driver
+        .by_ref()
+        .filter_map(|(res, span)| res.err().map(|err| (err, span)))
+        .collect();
+    Preprocessed {
+        errors,
+        line_directives: driver.line_directives().clone(),
+    }
 }
 
 /// Full-trivia preprocessor iterator (FCS `skip=false`). Unlike [`Driver`],

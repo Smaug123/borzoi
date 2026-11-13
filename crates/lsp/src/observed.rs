@@ -109,6 +109,9 @@ pub struct Generation {
     /// What finding the projects that own files observed: the directories
     /// the ownership walk listed.
     pub ownership: borzoi_msbuild::observed::ReadCounts,
+    /// The sources parsed, and the parses handed back again
+    /// ([`crate::parses::ParseMemo`]).
+    pub parses: crate::parses::ParseCounts,
 }
 
 /// The host's file system, as the [`crate::vfs::Vfs`] reads it.

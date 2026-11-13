@@ -23,7 +23,7 @@ use std::ops::{Bound, Range, RangeBounds};
 use crate::directives::driver::{CoreItem, Sink};
 #[cfg(feature = "token-reference")]
 use crate::directives::lex_with_symbols_full_trivia;
-use crate::directives::{PreprocError, TriviaToken};
+use crate::directives::{LineDirectiveStore, PreprocError, Preprocessed, TriviaToken};
 use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{FilteredItem, FilteredToken, Virtual};
 use crate::syntax::SyntaxKind;
@@ -347,6 +347,11 @@ pub struct LexedSource<'src> {
     /// The `#elif` directives FCS feature-checks; see
     /// [`crate::directives::FullTriviaDriver::elif_directives`].
     pub elif_directives: Vec<Range<usize>>,
+    /// Every preprocessor error in stream order, the lexer errors that are
+    /// also entries among them, and the active-branch `#line` directives:
+    /// what the swallow-mode driver reports for the same source and symbols
+    /// ([`crate::directives::preprocess`]).
+    pub preprocessed: Preprocessed,
 }
 
 /// Lex `source` in full-trivia mode under the conditional-compilation
@@ -365,9 +370,9 @@ pub struct LexedSource<'src> {
 /// lossless syntax tree depends on.
 pub fn lex_full_trivia<'src>(source: &'src str, symbols: &HashSet<String>) -> LexedSource<'src> {
     let mut writer = TableWriter::new(source);
-    let elif_directives =
+    let (elif_directives, line_directives) =
         crate::directives::driver::lex_full_trivia_into(source, symbols, &mut writer);
-    let lexed = writer.finish(elif_directives);
+    let lexed = writer.finish(elif_directives, line_directives);
     #[cfg(feature = "token-reference")]
     {
         let mut driver = lex_with_symbols_full_trivia(source, symbols);
@@ -386,6 +391,11 @@ pub fn lex_full_trivia<'src>(source: &'src str, symbols: &HashSet<String>) -> Le
                 && lexed.elif_directives == driver.elif_directives(),
             "the token table does not rebuild the driver's stream for {source:?}"
         );
+        assert_eq!(
+            lexed.preprocessed,
+            crate::directives::preprocess(source, symbols),
+            "the full-trivia lex does not report what the swallow-mode driver does for {source:?}"
+        );
     }
     lexed
 }
@@ -397,6 +407,8 @@ struct TableWriter<'src> {
     kinds: Vec<RawKind>,
     starts: Vec<u32>,
     preproc_errors: Vec<(PreprocError, Range<usize>)>,
+    /// Every error, entries and not, in stream order.
+    errors: Vec<(PreprocError, Range<usize>)>,
     /// The end of the last entry: where the next must start.
     covered: usize,
 }
@@ -409,11 +421,16 @@ impl<'src> TableWriter<'src> {
             kinds: Vec::new(),
             starts: Vec::new(),
             preproc_errors: Vec::new(),
+            errors: Vec::new(),
             covered: 0,
         }
     }
 
-    fn finish(mut self, elif_directives: Vec<Range<usize>>) -> LexedSource<'src> {
+    fn finish(
+        mut self,
+        elif_directives: Vec<Range<usize>>,
+        line_directives: LineDirectiveStore,
+    ) -> LexedSource<'src> {
         assert_eq!(
             self.covered,
             self.source.len(),
@@ -428,12 +445,19 @@ impl<'src> TableWriter<'src> {
             },
             preproc_errors: self.preproc_errors,
             elif_directives,
+            preprocessed: Preprocessed {
+                errors: self.errors,
+                line_directives,
+            },
         }
     }
 }
 
 impl<'src> Sink<'src> for TableWriter<'src> {
     fn push(&mut self, (res, span): CoreItem<'src>) {
+        if let Err(err) = &res {
+            self.errors.push((err.clone(), span.clone()));
+        }
         let Some(kind) = RawKind::of(&res) else {
             let Err(err) = res else {
                 unreachable!("every token is an entry")

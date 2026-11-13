@@ -47,6 +47,7 @@ use crate::handlers::definition::{
 };
 use crate::handlers::workspace_diagnostic::{Step, Sweep};
 use crate::observed::Unobserved;
+use crate::parses::ParseMemo;
 use crate::project_deferral;
 use crate::publish::PublishState;
 use crate::semantic::{ProjectId, SemanticState};
@@ -258,14 +259,16 @@ impl State {
         let now = self.clock.now();
         self.docs.begin_generation(now);
         self.workspace.begin_generation(now);
+        self.semantic.parses_mut().begin_generation();
     }
 
     /// End the generation, logging what its source reads, its project
-    /// evaluations and its ownership walks cost.
+    /// evaluations, its ownership walks and its parses cost.
     pub fn end_generation(&mut self) -> crate::observed::Generation {
         let counts = self.workspace.end_generation();
+        let parses = self.semantic.parses_mut().end_generation();
         self.docs
-            .end_generation_with(counts.evaluations, counts.ownership)
+            .end_generation_with(counts.evaluations, counts.ownership, parses)
     }
 
     /// Record the capabilities the client advertised at `initialize`. Called
@@ -368,6 +371,25 @@ impl State {
             Ok(path) => self.workspace.lang_version_for(&path),
             Err(()) => LanguageVersion::Preview,
         }
+    }
+
+    /// The parse of `text`, the buffer the client holds for `uri`, under the
+    /// grammar `file_kind` and the buffer's symbols and language version
+    /// ([`Self::symbols_for_uri`], [`Self::lang_version_for_uri`]): the parse
+    /// memo's ([`ParseMemo`]), so a handler shares it with the diagnostics
+    /// and the fold.
+    pub fn parse_buffer(
+        &mut self,
+        uri: &Uri,
+        text: &Arc<str>,
+        file_kind: borzoi_cst::parser::FileKind,
+    ) -> Arc<crate::parses::SourceParse> {
+        let symbols = self.symbols_for_uri(uri);
+        let lang = self.lang_version_for_uri(uri);
+        let path = uri.to_file_path().ok();
+        self.semantic
+            .parses_mut()
+            .parse(path.as_deref(), text, file_kind, &symbols, lang)
     }
 
     /// Drop the semantic caches for **every** cached project that lists this
@@ -1354,7 +1376,12 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Uri) {
     let Some(text) = state.docs.get(uri).cloned() else {
         return;
     };
-    let Some(groups) = grouped_for_uri(uri, &text, &mut state.workspace) else {
+    let Some(groups) = grouped_for_uri(
+        uri,
+        &text,
+        &mut state.workspace,
+        state.semantic.parses_mut(),
+    ) else {
         return;
     };
     // The pure planner turns the per-file partition into the exact set of
@@ -1634,15 +1661,16 @@ fn report_deferral(
 /// Pick the right diagnostic producer for the URI's file extension, returning
 /// the per-file partition the publish planner consumes.
 ///
-/// `.fs` / `.fsi` / `.fsx` → token-stream diagnostics (lexer, symbol-aware)
-/// concatenated with parser structural diagnostics, both resolved against
-/// the active preprocessor symbol set from the workspace, then **grouped by
-/// the virtual file** each diagnostic's `#line` directive relocates it onto
-/// ([`diagnostics::grouped_diagnostics`]). All three are lexed by the same F#
-/// lexer; the parser runs panic-safely on top. A `.fsi` is parsed under the
-/// *signature* grammar ([`diagnostics::SourceKind::Signature`]) so a body-less
-/// member signature isn't mis-flagged as an implementation "expected `=`"
-/// error; `.fs` / `.fsx` use the implementation grammar.
+/// `.fs` / `.fsi` / `.fsx` → the syntactic diagnostics of the buffer's parse
+/// ([`diagnostics::syntactic_diagnostics`]): the preprocessor's (lexer,
+/// symbol-aware) concatenated with the parser's structural diagnostics, both
+/// under the active preprocessor symbol set from the workspace, then
+/// **grouped by the virtual file** each diagnostic's `#line` directive
+/// relocates it onto. The parse is `parses`'s, so the fold and the other
+/// handlers share it ([`ParseMemo`]). A `.fsi` is parsed under the
+/// *signature* grammar ([`diagnostics::SourceKind::Signature`]) so a
+/// body-less member signature isn't mis-flagged as an implementation
+/// "expected `=`" error; `.fs` / `.fsx` use the implementation grammar.
 ///
 /// `.fsproj` → fsproj-parser diagnostics in a single same-file group (no
 /// `#line` handling), requiring the URL to convert to a filesystem path (the
@@ -1654,10 +1682,11 @@ fn report_deferral(
 /// publish is cleared.
 pub(crate) fn grouped_for_uri(
     uri: &Uri,
-    text: &str,
+    text: &Arc<str>,
     workspace: &mut Workspace,
+    parses: &mut ParseMemo,
 ) -> Option<Vec<FileDiagnostics>> {
-    grouped_for_uri_linked(uri, text, workspace, None)
+    grouped_for_uri_linked(uri, text, workspace, parses, None)
 }
 
 /// [`grouped_for_uri`] with an optional *linking project* — a `.fsproj` the
@@ -1668,8 +1697,9 @@ pub(crate) fn grouped_for_uri(
 /// through [`grouped_for_uri`].
 pub(crate) fn grouped_for_uri_linked(
     uri: &Uri,
-    text: &str,
+    text: &Arc<str>,
     workspace: &mut Workspace,
+    parses: &mut ParseMemo,
     linking_project: Option<&Path>,
 ) -> Option<Vec<FileDiagnostics>> {
     match path_extension(uri).as_deref() {
@@ -1687,7 +1717,9 @@ pub(crate) fn grouped_for_uri_linked(
             } else {
                 diagnostics::SourceKind::Implementation
             };
-            Some(diagnostics::grouped_diagnostics(text, &symbols, kind, lang))
+            let path = uri.to_file_path().ok();
+            let source = parses.parse(path.as_deref(), text, kind.file_kind(), &symbols, lang);
+            Some(diagnostics::syntactic_diagnostics(&source))
         }
         Some("fsproj") => {
             let path: PathBuf = uri.to_file_path().ok()?;
@@ -1982,6 +2014,11 @@ mod tests {
     };
     use std::fs;
     use tempfile::TempDir;
+
+    /// [`grouped_for_uri`] of `text` with a parse memo of its own.
+    fn grouped(uri: &Uri, text: &str, ws: &mut Workspace) -> Option<Vec<FileDiagnostics>> {
+        grouped_for_uri(uri, &Arc::from(text), ws, &mut ParseMemo::default())
+    }
 
     fn url(s: &str) -> Uri {
         Uri::parse(s).unwrap()
@@ -2280,7 +2317,7 @@ mod tests {
     #[test]
     fn dispatch_routes_fs_to_lexer() {
         let mut ws = Workspace::default();
-        let groups = grouped_for_uri(
+        let groups = grouped(
             &url("file:///tmp/Library.fs"),
             "let x = \"unterminated",
             &mut ws,
@@ -2309,8 +2346,7 @@ mod tests {
             "file:///tmp/script.fsx",
             "file:///tmp/Mixed.FSI",
         ] {
-            let groups =
-                grouped_for_uri(&url(uri), "let x = \"unterminated", &mut ws).expect("Some");
+            let groups = grouped(&url(uri), "let x = \"unterminated", &mut ws).expect("Some");
             let diags = only_same_file(groups);
             assert!(
                 diags.iter().any(|d| d.message.contains("unterminated")),
@@ -2338,9 +2374,8 @@ mod tests {
 
         // `.fsi` → signature parser: no impl-only "expected `=`" squiggle, and
         // nothing lands on a docstring line.
-        let fsi = only_same_file(
-            grouped_for_uri(&url("file:///tmp/Library.fsi"), src, &mut ws).expect("Some"),
-        );
+        let fsi =
+            only_same_file(grouped(&url("file:///tmp/Library.fsi"), src, &mut ws).expect("Some"));
         assert!(
             !fsi.iter().any(|d| d.message.contains("expected `=`")),
             "the sig parser must not emit the impl-only member-body error: {fsi:#?}"
@@ -2354,9 +2389,8 @@ mod tests {
 
         // Contrast: the *same* text as a `.fs` implementation file still hits
         // the impl member parser, which rejects the body-less member.
-        let fs = only_same_file(
-            grouped_for_uri(&url("file:///tmp/Library.fs"), src, &mut ws).expect("Some"),
-        );
+        let fs =
+            only_same_file(grouped(&url("file:///tmp/Library.fs"), src, &mut ws).expect("Some"));
         assert!(
             fs.iter().any(|d| d.message.contains("expected `=`")),
             "the impl parser still rejects a body-less member: {fs:#?}"
@@ -2368,7 +2402,7 @@ mod tests {
         let mut ws = Workspace::default();
         // Malformed XML triggers the single-error path in
         // fsproj_diagnostics. We don't need an SDK installed for that.
-        let groups = grouped_for_uri(
+        let groups = grouped(
             &url("file:///tmp/App.fsproj"),
             "<Project this is broken",
             &mut ws,
@@ -2382,8 +2416,7 @@ mod tests {
     #[test]
     fn dispatch_returns_empty_for_unknown_extension() {
         let mut ws = Workspace::default();
-        let groups =
-            grouped_for_uri(&url("file:///tmp/notes.txt"), "anything", &mut ws).expect("Some");
+        let groups = grouped(&url("file:///tmp/notes.txt"), "anything", &mut ws).expect("Some");
         assert!(only_same_file(groups).is_empty());
     }
 
@@ -2405,7 +2438,7 @@ mod tests {
         .unwrap();
 
         let mut ws = Workspace::default();
-        let groups = grouped_for_uri(&Uri::from_file_path(&a).unwrap(), a_text, &mut ws)
+        let groups = grouped(&Uri::from_file_path(&a).unwrap(), a_text, &mut ws)
             .expect("dispatch returned Some");
         let diags = only_same_file(groups);
         assert!(
@@ -2436,7 +2469,7 @@ mod tests {
             .unwrap();
             let mut ws = Workspace::default();
             let buffer = format!("{buffer_bom}{a_text}");
-            let groups = grouped_for_uri(&Uri::from_file_path(&a).unwrap(), &buffer, &mut ws)
+            let groups = grouped(&Uri::from_file_path(&a).unwrap(), &buffer, &mut ws)
                 .expect("dispatch returned Some");
             only_same_file(groups)
                 .into_iter()
@@ -2486,8 +2519,7 @@ mod tests {
         let buffer =
             r#"<Project><ItemGroup><ProjectReference Include="C.fsproj" /></ItemGroup></Project>"#;
         let mut ws = Workspace::default();
-        let groups =
-            grouped_for_uri(&Uri::from_file_path(&a).unwrap(), buffer, &mut ws).expect("Some");
+        let groups = grouped(&Uri::from_file_path(&a).unwrap(), buffer, &mut ws).expect("Some");
         let diags = only_same_file(groups);
         assert!(
             diags
@@ -2522,7 +2554,7 @@ mod tests {
         fs::write(&a, a_acyclic).unwrap();
         let mut ws = Workspace::default();
         let url_a = Uri::from_file_path(&a).unwrap();
-        let first = only_same_file(grouped_for_uri(&url_a, a_acyclic, &mut ws).expect("Some"));
+        let first = only_same_file(grouped(&url_a, a_acyclic, &mut ws).expect("Some"));
         assert!(
             first
                 .iter()
@@ -2535,7 +2567,7 @@ mod tests {
         let a_cyclic =
             r#"<Project><ItemGroup><ProjectReference Include="B.fsproj" /></ItemGroup></Project>"#;
         fs::write(&a, a_cyclic).unwrap();
-        let second = only_same_file(grouped_for_uri(&url_a, a_cyclic, &mut ws).expect("Some"));
+        let second = only_same_file(grouped(&url_a, a_cyclic, &mut ws).expect("Some"));
         assert!(
             second
                 .iter()
@@ -2549,7 +2581,7 @@ mod tests {
         // `untitled:` schemes (common in editors for unsaved buffers)
         // can't convert to a filesystem path; skip rather than guess.
         let mut ws = Workspace::default();
-        let result = grouped_for_uri(&url("untitled:Untitled-1.fsproj"), "<Project/>", &mut ws);
+        let result = grouped(&url("untitled:Untitled-1.fsproj"), "<Project/>", &mut ws);
         assert!(result.is_none(), "expected None for non-file URL");
     }
 

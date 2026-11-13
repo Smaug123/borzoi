@@ -11,8 +11,8 @@ pub mod line;
 pub mod line_store;
 
 pub use driver::{
-    Driver, FullTriviaDriver, PreprocError, TriviaToken, lex_with_symbols,
-    lex_with_symbols_full_trivia,
+    Driver, FullTriviaDriver, PreprocError, Preprocessed, TriviaToken, lex_with_symbols,
+    lex_with_symbols_full_trivia, preprocess,
 };
 pub use expr::{Expr, ParseError, ParseErrorKind, parse_if_expr};
 pub use line::{

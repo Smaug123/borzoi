@@ -42,6 +42,7 @@
 
 use crate::uri::UriExt as _;
 use borzoi_cst::lexer::{Token, lex};
+use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, SyntaxRecovery, resolve_file};
@@ -50,7 +51,6 @@ use lsp_types::{
     SemanticTokensResult, Uri,
 };
 
-use crate::cst_panic_safe::parse_with_symbols;
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::server::{State, path_extension};
 
@@ -464,11 +464,9 @@ fn single_file_tokens(state: &mut State, uri: &Uri) -> Option<Vec<SemanticToken>
         return None;
     }
     let text = state.docs.get(uri)?.clone();
-    let symbols = state.symbols_for_uri(uri);
-    let lang = state.lang_version_for_uri(uri);
-    let parse = parse_with_symbols(&text, &symbols, lang)?;
+    let source = state.parse_buffer(uri, &text, FileKind::Impl);
     let recovery = SyntaxRecovery::without_inference();
-    let file = ImplFile::cast(parse.root)?;
+    let file = ImplFile::cast(source.parse()?.root.clone())?;
     let resolved = resolve_file(
         &file,
         &ProjectItems::default(),

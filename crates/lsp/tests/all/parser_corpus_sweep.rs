@@ -1,10 +1,14 @@
 //! Corpus sweep: the LSP parser path must survive real-world F# source.
 //!
-//! Runs [`parse_diagnostics`] over every `.fs` file in an F# source tree. The
+//! Runs [`grouped_diagnostics`] over every `.fs` file in an F# source tree. The
 //! parser is intentionally very incomplete, so it produces many diagnostics and
 //! may even panic on some constructs — that's expected. The load-bearing
 //! guarantee is that the LSP wrapper *never* panics (it catches parser panics
 //! internally), so a server stays alive whatever the user opens.
+//!
+//! It also holds the diagnostics read from one parse to the producer they
+//! replace, which lexed each file three times beside the parse
+//! (`common::diagnostics_reference`): every file's must be the same.
 //!
 //! The tree is `BORZOI_CORPUS` — the pinned `fsharp-src` flake input under
 //! `nix develop`, the same corpus every other sweep walks — falling back to the
@@ -23,7 +27,7 @@ use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
-use borzoi::diagnostics::{SourceKind, parse_diagnostics};
+use borzoi::diagnostics::{SourceKind, grouped_diagnostics};
 use borzoi_cst::language_version::LanguageVersion;
 
 /// Where the sweep is pointed, and how it was chosen — the caller reports the
@@ -103,9 +107,10 @@ fn parser_path_survives_fsharp_compiler_corpus() {
 
     let symbols = HashSet::from(["COMPILED".to_string()]);
 
-    // Per file, whether the raw parser panicked and how many diagnostics the
-    // LSP path produced (`Err` where a panic escaped it); `None` for a file
-    // that does not read as UTF-8.
+    // Per file, whether the raw parser panicked, how many diagnostics the
+    // LSP path produced (`Err` where a panic escaped it), and whether they
+    // differ from the reference's; `None` for a file that does not read as
+    // UTF-8.
     let swept = borzoi_oracle_harness::par_map::par_map(files.len(), |i| {
         let text = crate::common::host_fs::read_to_string(&files[i]).ok()?;
         // Silence per-file panic backtraces; we count panics ourselves.
@@ -121,27 +126,40 @@ fn parser_path_survives_fsharp_compiler_corpus() {
 
         // The guarantee: the LSP path never panics, whatever the raw parser does.
         // The corpus is all `.fs` files, so parse under the implementation grammar.
-        let diags = catch_unwind(AssertUnwindSafe(|| {
-            parse_diagnostics(
+        let groups = catch_unwind(AssertUnwindSafe(|| {
+            grouped_diagnostics(
                 &text,
                 &symbols,
                 SourceKind::Implementation,
                 LanguageVersion::Preview,
             )
-            .len()
         }))
         .map_err(|_| ());
-        Some((raw_panicked, diags))
+        let differs = groups.as_ref().is_ok_and(|groups| {
+            *groups
+                != crate::common::diagnostics_reference::grouped_diagnostics(
+                    &text,
+                    &symbols,
+                    SourceKind::Implementation,
+                    LanguageVersion::Preview,
+                )
+        });
+        let diags = groups.map(|groups| groups.iter().map(|g| g.diagnostics.len()).sum::<usize>());
+        Some((raw_panicked, diags, differs))
     });
 
     let mut raw_panics = Vec::new();
     let mut wrapper_panics = Vec::new();
+    let mut differing = Vec::new();
     let mut total_diags = 0usize;
     let mut files_with_diags = 0usize;
     for (path, outcome) in files.iter().zip(swept) {
-        let Some((raw_panicked, diags)) = outcome else {
+        let Some((raw_panicked, diags, differs)) = outcome else {
             continue;
         };
+        if differs {
+            differing.push(path.clone());
+        }
         if raw_panicked {
             raw_panics.push(path.clone());
         }
@@ -169,7 +187,13 @@ fn parser_path_survives_fsharp_compiler_corpus() {
 
     assert!(
         wrapper_panics.is_empty(),
-        "parse_diagnostics let a panic escape on {} file(s) — the catch_unwind guard is not holding",
+        "grouped_diagnostics let a panic escape on {} file(s) — the catch_unwind guard is not holding",
         wrapper_panics.len()
+    );
+    assert!(
+        differing.is_empty(),
+        "the diagnostics of one parse differ from the reference's on {} file(s), e.g. {:?}",
+        differing.len(),
+        &differing[..differing.len().min(5)]
     );
 }

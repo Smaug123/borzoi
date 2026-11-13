@@ -11,13 +11,13 @@
 //! is wire-compatible with adding them as `children` later — no client-side
 //! change required.
 
+use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::SyntaxRecovery;
 use lsp_types::{
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, SymbolInformation, SymbolKind,
 };
 
-use crate::cst_panic_safe::parse_with_symbols;
 use crate::handlers::{file_export_symbols, symbol_information};
 use crate::server::State;
 
@@ -34,11 +34,9 @@ use crate::server::State;
 pub fn handle(state: &mut State, params: DocumentSymbolParams) -> Option<DocumentSymbolResponse> {
     let uri = params.text_document.uri;
     let text = state.docs.get(&uri).cloned()?;
-    let symbols = state.symbols_for_uri(&uri);
-    let lang = state.lang_version_for_uri(&uri);
-    let parse = parse_with_symbols(&text, &symbols, lang)?;
+    let source = state.parse_buffer(&uri, &text, FileKind::Impl);
     let recovery = SyntaxRecovery::without_inference();
-    let file = ImplFile::cast(parse.root)?;
+    let file = ImplFile::cast(source.parse()?.root.clone())?;
     let exports = file_export_symbols(&text, &file, &recovery);
 
     if state.supports_hierarchical_document_symbols() {

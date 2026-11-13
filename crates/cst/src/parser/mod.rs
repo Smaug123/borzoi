@@ -40,7 +40,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use crate::directives::{PreprocError, TriviaToken};
+use crate::directives::{PreprocError, Preprocessed, TriviaToken};
 use crate::language_version::LanguageVersion;
 use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{
@@ -217,6 +217,13 @@ pub struct Parse {
     /// diagnostics can still differ by version (FS0058 severity, `#elif`
     /// legality) — only the *shape* guarantee is claimed.
     pub shape_depends_on_language_version: bool,
+    /// What the preprocessor reported during the lex this parse made: every
+    /// error in stream order, and the active-branch `#line` directives.
+    /// The same as [`crate::directives::preprocess`] of the source under the
+    /// parse's symbols, so a consumer that reports lexer errors beside the
+    /// parse's (the LSP's diagnostics) need not lex again. A function of the
+    /// source and the symbols alone, never of [`Parse::lang`].
+    pub preprocessor: Preprocessed,
 }
 
 /// The message of FCS's FS0597, reported on an application argument that
@@ -429,6 +436,7 @@ fn parse_inner_stopping_at(
     // separator required); `langversion_diagnostics` turns them into errors
     // when `lang` predates 11.0.
     let elif_directives: &[Range<usize>] = &lexed.elif_directives;
+    let preprocessor = lexed.preprocessed;
     let raw_tokens = lexed.tokens;
     // The active-branch real tokens are the substream LexFilter and the
     // productions consume. Directive / inactive-code trivia are not active
@@ -511,6 +519,7 @@ fn parse_inner_stopping_at(
             warnings: Vec::new(),
             lang,
             shape_depends_on_language_version,
+            preprocessor,
         };
     }
     // Build the root now: the feature gates below walk it for constructs a
@@ -558,6 +567,7 @@ fn parse_inner_stopping_at(
         warnings,
         lang,
         shape_depends_on_language_version,
+        preprocessor,
     }
 }
 
