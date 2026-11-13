@@ -468,6 +468,28 @@ fn compile_update_compile_order_declines_a_stranded_prefix() {
     assert!(stranded("/repo/proj/./A.fs;/repo/proj/A.fs"));
 }
 
+/// A strand survives across `Update`s when no batch is pending to flush it
+/// (found by `fsproj_compile_order_generative_diff`): the first `Update`
+/// leaves the batch at its escaped second fragment, stranding `./A.fs`; the
+/// second leaves at `A.fs`, stranding `B.fs` with `CompileFirst`, which the
+/// final flush applies over the later `CompileAfter`. MSBuild compiles `B`
+/// first; the walk must decline rather than order it last.
+#[test]
+fn compile_update_strand_without_a_pending_batch_declines() {
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Update="./A.fs;S%3bq.fs" Visible="false" />
+    <Compile Update="B.fs;A.fs">
+      <CompileOrder>CompileFirst</CompileOrder>
+    </Compile>
+    <Compile Include="B.fs;C.fs" />
+    <Compile Update="B.fs" CompileOrder="CompileAfter" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(p.items_uncertain, "{:?}", p.diagnostics);
+}
+
 #[test]
 fn compile_update_compile_order_keeps_original_order_within_bucket() {
     let src = r#"<Project>
