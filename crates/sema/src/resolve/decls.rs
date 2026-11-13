@@ -1473,11 +1473,14 @@ impl<'a> Resolver<'a> {
                                 gp.clone(),
                             ));
                             if !(project_readings_only && !project_ns) {
-                                self.scope.open_shortening_prefixes.push(ShorteningPrefix {
-                                    path: gp.clone(),
-                                    namespace_reading: true,
-                                    module_reading: false,
-                                });
+                                self.scope
+                                    .open_shortening_prefixes
+                                    .push(ShorteningPrefix::new(
+                                        self.assemblies.names(),
+                                        gp.clone(),
+                                        true,
+                                        false,
+                                    ));
                                 self.scope.explicit_open_prefixes.push(OpenedPrefix::new(
                                     self.assemblies.names(),
                                     pos,
@@ -1502,11 +1505,14 @@ impl<'a> Resolver<'a> {
                         // -- The assembly *module* half's dotted-head bookkeeping —
                         // keyed on the module handles, not the namespace surface.
                         if !handles.is_empty() {
-                            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
-                                path: gp.clone(),
-                                namespace_reading: false,
-                                module_reading: true,
-                            });
+                            self.scope
+                                .open_shortening_prefixes
+                                .push(ShorteningPrefix::new(
+                                    self.assemblies.names(),
+                                    gp.clone(),
+                                    false,
+                                    true,
+                                ));
                             // Only a prefix that could hide a whole nested *module*
                             // (a dropped type, an unknowable pickle) can make a
                             // later `open Sub` name something we cannot see
@@ -1626,11 +1632,14 @@ impl<'a> Resolver<'a> {
                             // the project half lends no prefix (task #30). Where an
                             // assembly module shares the FQN, the module-half push
                             // above covers it.
-                            self.scope.open_shortening_prefixes.push(ShorteningPrefix {
-                                path: gp.clone(),
-                                namespace_reading: false,
-                                module_reading: false,
-                            });
+                            self.scope
+                                .open_shortening_prefixes
+                                .push(ShorteningPrefix::new(
+                                    self.assemblies.names(),
+                                    gp.clone(),
+                                    false,
+                                    false,
+                                ));
                             if !resolved_alias
                                 && !has_assembly_module
                                 && !assembly_ns_applies

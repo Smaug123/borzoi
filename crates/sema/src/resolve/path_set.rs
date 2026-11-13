@@ -267,6 +267,14 @@ impl PathSet {
         found
     }
 
+    /// Whether the path whose id is `id` is a member, `false` when the table
+    /// never interned it. The caller holds no spelling to check against, so
+    /// the reference is the caller's to assert.
+    pub(super) fn contains_id(&self, names: &NameTable, id: Option<PathId>) -> bool {
+        self.check_table(names);
+        self.member(id)
+    }
+
     /// [`Self::contains`] by the path's segments, looked up only when the
     /// set has a member.
     pub(super) fn contains_path(&self, names: &NameTable, path: &[String]) -> bool {

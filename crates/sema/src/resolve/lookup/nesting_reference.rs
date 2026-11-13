@@ -371,7 +371,7 @@ impl Resolver<'_> {
         let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
             match self
                 .preceding
-                .type_qualified_case(&full, &self.container_path)
+                .type_qualified_case(self.assemblies.names(), &full, &self.container_path)
                 .filter(|_| !self.value_shadows_case(&full))
             {
                 None => None,
