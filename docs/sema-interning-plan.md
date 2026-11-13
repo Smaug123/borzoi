@@ -623,6 +623,15 @@ Not converted, and why:
   same breath (`assembly_path_records`'s `project_shadow_cause`, the
   `open type` target walk) still build it: the project side is 5a/5b's.
 
+**Measured** (5c): resolve 1245.1 → 1134.2 instructions per byte (−8.9%),
+allocations 1.267 → 1.186 per byte; infer 174.7 → 175.4. A first cut that
+converted the indexes but left most callers on the string API measured
+1214.4: a string probe now costs a table lookup per segment, more than
+hashing a `Vec<String>` once, so the gain is in the callers that hold ids.
+The whole-corpus dump of Stage 4 (resolutions, decline sites, definitions,
+diagnostics, inferred types; each file alone and each directory as a
+project) is byte-identical before and after.
+
 ### Stage 6 (optional): published names
 
 **Dependencies**: Stage 5. **Implements**: D3 at the public API.
