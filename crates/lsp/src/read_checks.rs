@@ -178,6 +178,20 @@ impl<D: Probe> ReadChecks<D> {
         self.files.generation()
     }
 
+    /// The open generation's time, or `None` between generations.
+    pub fn now(&self) -> Option<Nanos> {
+        self.files.now()
+    }
+
+    /// The stamp of the file at `path` now (a counted `stat`), or `None`
+    /// when it has none.
+    pub fn stamp(&self, path: &Path) -> Option<Stamp> {
+        let mut counts = self.counts.get();
+        counts.stats += 1;
+        self.counts.set(counts);
+        self.files.disk().stat(path).ok()
+    }
+
     /// Watch events named `paths`: forget what the files there held, so the
     /// next check reads them again whatever their stamps say.
     pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
@@ -276,35 +290,41 @@ impl<D: Probe> ReadChecks<D> {
     /// follows more symlinks than the kernel does or meets anything but a
     /// directory, a symlink, or the absence or final entry it stops at.
     fn resolution(&self, path: &Path, follow_last: bool) -> Option<Vec<PathBuf>> {
-        use std::path::Component;
         if !path.is_absolute() {
             return None;
         }
         let mut current = PathBuf::from("/");
         let mut dirs: Vec<PathBuf> = Vec::new();
         let mut links = 0;
-        // Components still to resolve, last first, as owned names.
-        let mut rest: Vec<std::ffi::OsString> = Vec::new();
-        let push_all = |rest: &mut Vec<std::ffi::OsString>, of: &Path| {
-            for component in of.components().rev() {
-                match component {
-                    Component::Normal(name) => rest.push(name.to_os_string()),
-                    Component::ParentDir => rest.push("..".into()),
-                    Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        // Segments still to resolve, last first, split on separators as the
+        // kernel splits them (`Path::components` would drop a `.`, which
+        // the kernel looks up). A path that is not UTF-8 has no witness.
+        let mut rest: Vec<String> = Vec::new();
+        let push_all = |rest: &mut Vec<String>, of: &Path| -> Option<()> {
+            for segment in of.to_str()?.split('/').rev() {
+                // An empty segment (a doubled or trailing separator) names
+                // no entry.
+                if !segment.is_empty() {
+                    rest.push(segment.to_string());
                 }
             }
+            Some(())
         };
-        push_all(&mut rest, path);
+        push_all(&mut rest, path)?;
         while let Some(name) = rest.pop() {
-            // Every name, `..` included, is looked up in the directory
-            // reached, which takes search permission there: a `chmod` moves
-            // its stamp.
+            // Every segment, `.` and `..` included, is looked up in the
+            // directory reached, which takes search permission there: a
+            // `chmod` moves its stamp.
             if !dirs.contains(&current) {
                 dirs.push(current.clone());
             }
-            if name == ".." {
-                current.pop();
-                continue;
+            match name.as_str() {
+                "." => continue,
+                ".." => {
+                    current.pop();
+                    continue;
+                }
+                _ => {}
             }
             let child = current.join(&name);
             let last = rest.is_empty();
@@ -321,7 +341,7 @@ impl<D: Probe> ReadChecks<D> {
                     if target.is_absolute() {
                         current = PathBuf::from("/");
                     }
-                    push_all(&mut rest, &target);
+                    push_all(&mut rest, &target)?;
                 }
                 Ok(_) if last => return Some(dirs),
                 // A file in the middle of the path: the query fails, as no
@@ -464,45 +484,55 @@ mod host_tests {
         ]
     }
 
-    /// A `..` is looked up in the directory it leaves, which needs search
-    /// permission there: taking it away changes where a link through it
-    /// leads without changing any directory the link's target names after
-    /// the `..` (Codex).
+    /// A `..` is looked up in the directory it leaves, and a `.` in the
+    /// directory it names, each needing search permission there: taking it
+    /// away changes where the path leads without changing any directory the
+    /// rest of the path names (Codex, twice). Each case is a path, or a link
+    /// whose target is that path, to a directory through `gate`.
     #[test]
-    fn a_directory_left_by_dot_dot_is_witnessed() {
+    fn a_directory_a_dot_is_looked_up_in_is_witnessed() {
         use std::os::unix::fs::PermissionsExt as _;
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = host_fs::canonicalize(tmp.path()).unwrap();
-        std::fs::create_dir(root.join("gate")).unwrap();
-        std::fs::create_dir(root.join("target")).unwrap();
-        std::os::unix::fs::symlink("gate/../target", root.join("through")).unwrap();
-        let path = root.join("through");
-        let check = Check::new(Read {
-            observation: HostDisk.answer(&path, &Observation::Kind(Ok(EntryKind::Dir))),
-            path,
-        });
-        let mut checker = ReadChecks::<HostDisk>::default();
-        let mut at = Nanos(i128::MAX / 2);
-        for _ in 0..2 {
+        for (spelling, through_link) in [
+            ("gate/../target", true),
+            ("gate/.", true),
+            ("gate/.", false),
+        ] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = host_fs::canonicalize(tmp.path()).unwrap();
+            std::fs::create_dir(root.join("gate")).unwrap();
+            std::fs::create_dir(root.join("target")).unwrap();
+            let path = if through_link {
+                std::os::unix::fs::symlink(spelling, root.join("through")).unwrap();
+                root.join("through")
+            } else {
+                PathBuf::from(format!("{}/{spelling}", root.display()))
+            };
+            let check = Check::new(Read {
+                observation: HostDisk.answer(&path, &Observation::Kind(Ok(EntryKind::Dir))),
+                path,
+            });
+            let mut checker = ReadChecks::<HostDisk>::default();
+            let mut at = Nanos(i128::MAX / 2);
+            for _ in 0..2 {
+                checker.begin_generation(at);
+                assert!(checker.holds(&check));
+                checker.end_generation();
+                at = Nanos(at.0 + 1);
+            }
+            let gate = root.join("gate");
+            std::fs::set_permissions(&gate, std::fs::Permissions::from_mode(0o644)).unwrap();
             checker.begin_generation(at);
-            assert!(checker.holds(&check));
+            let truth = HostDisk.answer(&check.read().path, &check.read().observation);
+            let holds = checker.holds(&check);
             checker.end_generation();
-            at = Nanos(at.0 + 1);
+            std::fs::set_permissions(&gate, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_ne!(
+                truth,
+                check.read().observation,
+                "{spelling}: the permission did not matter"
+            );
+            assert!(!holds, "{spelling} (through a link: {through_link}) held");
         }
-        std::fs::set_permissions(root.join("gate"), std::fs::Permissions::from_mode(0o644))
-            .unwrap();
-        checker.begin_generation(at);
-        let truth = HostDisk.answer(&check.read().path, &check.read().observation);
-        let holds = checker.holds(&check);
-        checker.end_generation();
-        std::fs::set_permissions(root.join("gate"), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
-        assert_ne!(
-            truth,
-            check.read().observation,
-            "the permission did not matter"
-        );
-        assert!(!holds, "the check held");
     }
 
     proptest! {
@@ -531,6 +561,7 @@ mod host_tests {
                 paths.push(PathBuf::from(format!("{}/{}/", root.display(), NAMES[a])));
                 paths.push(root.join("l/..").join(NAMES[a]));
                 paths.push(root.join("a/..").join(NAMES[a]));
+                paths.push(PathBuf::from(format!("{}/{}/.", root.display(), NAMES[a])));
                 for b in 0..NAMES.len() {
                     paths.push(root.join(NAMES[a]).join(NAMES[b]));
                 }

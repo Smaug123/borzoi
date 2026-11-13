@@ -1428,7 +1428,15 @@ dozen, and the counts report it.
   read inside it got an answer) is trusted, and the entry then confirms that
   it still does; a read inside a version no read showed to exist (an
   `Exists` probe of one not installed) is confirmed like any other
-  (`Evaluation::checks`, found by Codex).
+  (`Evaluation::checks`, found by Codex). A NuGet package is extracted in
+  place, and is complete only once NuGet writes its `.nupkg.metadata`, so a
+  package version is trusted only when that file was written before the
+  evaluation began, outside the racy window (`nuget_committed_before`;
+  Codex: an evaluation racing an extraction would otherwise keep a half
+  package). An SDK, pack or workload manifest installed *while* an
+  evaluation reads it has no such marker; that race is the axiom's
+  boundary, as an in-place rewrite of a version is, and a watch event or a
+  restart covers it.
 - **Confirming a read costs a `stat`** (`read_checks`). A whole-file read is
   confirmed through a `vfs::DiskCache` (factored out of the `Vfs`, which keeps
   one for sources), by the file's stamp. Any other read, the first time it is
@@ -1440,17 +1448,19 @@ dozen, and the counts report it.
   it is there, and its canonical spelling are witnessed by every directory
   its resolution looks an entry up in, walked as the kernel walks it: one
   resolver, which takes a link's target component by component and each
-  `..` from the directory reached. A path not spelt as its components (a
-  trailing separator, which makes `lstat` follow a final symlink; a `.` or
-  `..`; a doubled separator) has no witness and is asked in every
-  generation. Codex found two spellings a narrower witness missed
+  `..` from the directory reached, splitting a path on separators as the
+  kernel does: a `.` is looked up too, and with each `.` and `..` the
+  directory it is looked up in is witnessed (its search permission decides
+  the lookup, and a `chmod` moves its stamp). An `lstat` of a path ending
+  in a separator follows a final symlink, so such a spelling has no
+  `LinkKind` witness. Codex found two spellings a narrower witness missed
   (`Exists('link/')`, and a link whose target ends with a separator, to
   another link); the narrower witnesses went, and a property on the host's
   file system now generates trees with symlinks of every such spelling.
-  Codex's next finding, a `..` whose directory lost its search permission,
-  is in the same walk: the directory a `..` leaves is looked up in too, so it
-  is stamped (a `chmod` moves its ctime). The host property now takes search
-  permissions away and gives them back.
+  Codex's next two findings, a `..` and a trailing `.` whose directory lost
+  its search permission, were in the same walk: it split paths with
+  `Path::components`, which drops a `.`. It now splits on separators, and
+  the host property takes search permissions away and gives them back.
 - **The graph walk reads the confirmed entry.** The env's project-graph walk
   evaluated the entry project afresh, a second evaluation on every cold env
   build. It now reads the cached evaluation when this generation has
@@ -1567,7 +1577,9 @@ Planted, each caught, then removed:
 | a version's alias inferred from a canonicalisation below it (Codex) | `only_a_version_directory_canonicalised_gives_an_alias` |
 | a witness for a trailing-separator spelling (Codex) | `a_spelling_the_stamps_cannot_follow_is_asked_every_time` |
 | a `Kind` witnessed by its link chain's parents, not its resolution (Codex) | the spelling test, the model property and its non-vacuity check |
-| the directory a `..` leaves not stamped (Codex) | `a_directory_left_by_dot_dot_is_witnessed` |
+| the directory a `..` leaves not stamped (Codex) | `a_directory_a_dot_is_looked_up_in_is_witnessed` |
+| a `.` dropped from the walk (Codex) | `a_directory_a_dot_is_looked_up_in_is_witnessed` |
+| a package version trusted without its commit marker (Codex) | `a_package_is_trusted_only_once_committed_before_the_evaluation` |
 
 Three plants first passed every test: the canonical-spelling witness (the
 model could not move a directory), the seeded pass's reads and the graph walk

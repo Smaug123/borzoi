@@ -249,13 +249,26 @@ impl Evaluation {
     /// still does. A read inside a version no read showed to exist (an
     /// `Exists` probe of a version not installed) is confirmed like any
     /// other, since installing the version moves it.
-    fn checks(&self) -> Vec<Check> {
+    ///
+    /// A package under the NuGet folder is extracted in place, and the
+    /// extraction is complete only once it writes `.nupkg.metadata`; an
+    /// evaluation that ran during one may have seen part of it. So a package
+    /// version is trusted only where `committed` says its extraction was
+    /// complete before the evaluation began ([`nuget_committed_before`]).
+    fn checks(&self, committed: impl Fn(&Path) -> bool) -> Vec<Check> {
         let reads = self.reads.reads();
         let versions = self.immutable.versions(reads);
+        let is_package = |version: &Path| {
+            self.immutable
+                .nuget
+                .iter()
+                .any(|root| version.starts_with(root))
+        };
         let shown: std::collections::BTreeSet<PathBuf> = reads
             .iter()
             .filter(|read| answered(&read.observation))
             .filter_map(|read| versions.containing(&read.path))
+            .filter(|version| !is_package(version) || committed(version))
             .collect();
         let trusted = |read: &&Read| {
             versions
@@ -274,6 +287,18 @@ impl Evaluation {
             .map(Check::new)
             .collect()
     }
+}
+
+/// Whether the package version at `version` under the NuGet folder was
+/// extracted completely before `started`: its `.nupkg.metadata`, which NuGet
+/// writes last, is there with a stamp no later than [`crate::vfs::RACY_WINDOW`]
+/// before `started`. Never outside a generation, where there is no `started`.
+fn nuget_committed_before(checker: &ReadChecks, version: &Path, started: Option<Nanos>) -> bool {
+    started.is_some_and(|started| {
+        checker
+            .stamp(&version.join(".nupkg.metadata"))
+            .is_some_and(|stamp| !stamp.is_racy(started))
+    })
 }
 
 /// Whether a query got an answer, rather than failing.
@@ -359,7 +384,8 @@ impl ImmutableRoots {
                     return None;
                 };
                 let (dir, below) = self.version_of(&lexically_normalize(&read.path))?;
-                (below == 0 && *canonical != dir).then(|| canonical.clone())
+                let installed = self.dotnet.iter().any(|root| dir.starts_with(root));
+                (below == 0 && installed && *canonical != dir).then(|| canonical.clone())
             })
             .collect();
         VersionDirs {
@@ -1107,13 +1133,17 @@ impl Workspace {
         let extra_build_properties = &self.extra_build_properties;
         let evaluated = &self.evaluated;
         let generation = self.checker.generation();
+        // Read before the evaluation starts, as the generation's time is.
+        let started = self.checker.now();
+        let checker = &self.checker;
         self.projects
             .entry(project.clone())
             .or_insert_with(|| {
                 let evaluation =
                     evaluate_project(project.as_path(), env, extra_build_properties, evaluated);
                 CachedEvaluation {
-                    checks: evaluation.checks(),
+                    checks: evaluation
+                        .checks(|version| nuget_committed_before(checker, version, started)),
                     evaluated: evaluation.evaluated,
                     // Read in this generation, so confirmed for it.
                     validated_in: generation,
@@ -5901,7 +5931,7 @@ mod tests {
                     let evaluation =
                         evaluate_project(&project, &env, &HashMap::new(), &Cell::new(0));
                     let read_set: ReadSet = evaluation
-                        .checks()
+                        .checks(|_| false)
                         .into_iter()
                         .map(|check| check.read().clone())
                         .collect();
@@ -5941,6 +5971,55 @@ mod tests {
                 versions.containing(Path::new("/real/sdk/1.0.0/x.props")),
                 Some(PathBuf::from("/real/sdk/1.0.0"))
             );
+        }
+
+        /// A package version's contents are trusted only once its
+        /// extraction was committed (`.nupkg.metadata` written) before the
+        /// evaluation began: an evaluation racing an extraction confirms
+        /// what it read inside it, so finishing the extraction is noticed
+        /// (Codex).
+        #[test]
+        fn a_package_is_trusted_only_once_committed_before_the_evaluation() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let nuget = root.join("nuget");
+            let version = nuget.join("pkg/1.0.0");
+            write_file(&version.join("Sdk/Sdk.props"), "<Project />");
+            let observer = Observer::new();
+            let _ = msbuild_observed::read_to_string(&observer, &version.join("Sdk/Sdk.props"));
+            let _ = msbuild_observed::kind(&observer, &version.join("Sdk/Sdk.targets"));
+            let evaluation = Evaluation {
+                evaluated: None,
+                reads: observer.finish().0,
+                immutable: ImmutableRoots {
+                    dotnet: vec![],
+                    nuget: vec![nuget.clone()],
+                },
+            };
+            let inside = |checks: &[Check]| {
+                checks
+                    .iter()
+                    .filter(|check| check.read().path.starts_with(&version))
+                    .map(|check| check.read().path.clone())
+                    .collect::<Vec<_>>()
+            };
+            let mut checker = ReadChecks::default();
+            let mut checks_at = |at: Nanos| {
+                checker.begin_generation(at);
+                let started = checker.now();
+                let checks = evaluation.checks(|v| nuget_committed_before(&checker, v, started));
+                checker.end_generation();
+                inside(&checks)
+            };
+            // Mid-extraction: no marker, so both reads are confirmed.
+            assert_eq!(checks_at(Nanos(i128::MAX / 2)).len(), 2);
+            write_file(&version.join(".nupkg.metadata"), "{}");
+            // Committed just now: the evaluation may have raced it.
+            let now = Nanos::of(std::time::SystemTime::now());
+            assert_eq!(checks_at(now).len(), 2);
+            // Committed long before: the reads inside are trusted, and the
+            // version's existence is what is confirmed.
+            assert_eq!(checks_at(Nanos(i128::MAX / 2)), vec![version.clone()]);
         }
 
         /// The served pass of `evaluated`, or for a failed evaluation the
