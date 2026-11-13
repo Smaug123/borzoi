@@ -566,7 +566,7 @@ fn ns(segments: &[&str]) -> Vec<String> {
 /// provides it.
 fn fsharp_core_env() -> AssemblyEnv {
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let entities = Ecma335Assembly::parse(&bytes)
         .expect("parse FSharp.Core")
         .enumerate_type_defs()
@@ -579,7 +579,7 @@ fn fsharp_core_env() -> AssemblyEnv {
 /// `entity_definition_document` to locate and read the PDB.
 fn fsharp_core_env_with_path() -> AssemblyEnv {
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let entities = Ecma335Assembly::parse(&bytes)
         .expect("parse FSharp.Core")
         .enumerate_type_defs()

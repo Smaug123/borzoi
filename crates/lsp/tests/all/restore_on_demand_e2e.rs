@@ -12,7 +12,7 @@
 //! Requires the .NET SDK + the vendored NuGet cache — the Nix devShell provides
 //! both.
 
-use std::collections::HashMap;
+use crate::common::host_fs::HostPath as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borzoi::server::State;
@@ -40,7 +40,7 @@ fn write_unrestored_project(tag: &str) -> std::path::PathBuf {
     // By its real path: the on-demand restore declines a project whose
     // directory is reached through a symlink, and the temporary directory is
     // one on macOS.
-    let root = std::fs::canonicalize(&root).unwrap();
+    let root = crate::common::host_fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         format!(
@@ -63,7 +63,7 @@ fn write_unrestored_project(tag: &str) -> std::path::PathBuf {
     .unwrap();
     std::fs::write(root.join("App.fs"), "module App\n\nlet answer = 42\n").unwrap();
     assert!(
-        !root.join("obj").join("project.assets.json").exists(),
+        !root.join("obj").join("project.assets.json").host_exists(),
         "fixture must have no project.assets.json"
     );
     root
@@ -77,7 +77,7 @@ fn on_demand_restore_populates_the_env_without_a_project_assets_json() {
     let mut state = State::default();
     // On-demand restore is a trust opt-in, off by default; enable it for the test.
     state.semantic.set_on_demand_restore_enabled(true);
-    let docs = HashMap::new();
+    let docs = borzoi::observed::Sources::new();
 
     // Resolving the project builds and caches its assembly env; with no assets
     // file this runs the on-demand restore.
@@ -117,7 +117,7 @@ fn on_demand_restore_populates_the_env_without_a_project_assets_json() {
     // The restore ran against a scratch dir — the project's own `obj/` must be
     // untouched, so a later real build/restore starts clean.
     assert!(
-        !root.join("obj").join("project.assets.json").exists(),
+        !root.join("obj").join("project.assets.json").host_exists(),
         "on-demand restore must not write the project's obj/"
     );
 
@@ -159,7 +159,7 @@ fn the_workspace_entry_point_restores_on_its_own() {
         env.len()
     );
     assert!(
-        !root.join("obj").join("project.assets.json").exists(),
+        !root.join("obj").join("project.assets.json").host_exists(),
         "on-demand restore must not write the project's obj/"
     );
 
@@ -175,7 +175,7 @@ fn on_demand_restore_is_off_by_default() {
     let fsproj = root.join("App.fsproj");
 
     let mut state = State::default(); // on-demand restore NOT enabled
-    let docs = HashMap::new();
+    let docs = borzoi::observed::Sources::new();
     state
         .semantic
         .resolved_project_for(&fsproj, &mut state.workspace, &docs);
@@ -212,7 +212,7 @@ fn write_unrestored_pair_behind_a_symlink(tag: &str) -> std::path::PathBuf {
     let real = root.join("real");
     std::fs::create_dir_all(real.join("lib")).unwrap();
     // By its real path, so `<root>/real` is the only symlink-free spelling.
-    let root = std::fs::canonicalize(&root).unwrap();
+    let root = crate::common::host_fs::canonicalize(&root).unwrap();
     let real = root.join("real");
     std::fs::write(
         real.join("App.fsproj"),

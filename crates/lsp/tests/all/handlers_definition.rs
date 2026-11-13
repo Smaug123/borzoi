@@ -575,7 +575,6 @@ fn cross_file_definition_prefers_open_buffer_uri() {
 #[test]
 fn invalidate_owning_project_clears_every_project_containing_the_file() {
     use borzoi::semantic::SemanticState;
-    use std::collections::HashMap;
 
     let tmp = TempDir::new().unwrap();
     // Two projects, both listing the same shared file as a link.
@@ -622,11 +621,12 @@ fn invalidate_owning_project_clears_every_project_containing_the_file() {
     }
     // Sanity: both projects are cached. Verify by counting cache hits — a
     // second lookup against an empty docs map must not re-build.
-    let probe = |sema: &mut SemanticState, p: &Path, ws: &mut _, docs: &HashMap<_, _>| {
-        sema.parses_for_project(p, ws, docs)
-            .map(|p| p.len())
-            .unwrap_or(0)
-    };
+    let probe =
+        |sema: &mut SemanticState, p: &Path, ws: &mut _, docs: &borzoi::observed::Sources| {
+            sema.parses_for_project(p, ws, docs)
+                .map(|p| p.len())
+                .unwrap_or(0)
+        };
     {
         let State {
             semantic,

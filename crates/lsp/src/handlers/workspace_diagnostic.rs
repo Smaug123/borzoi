@@ -47,6 +47,7 @@
 //! change owes, which the loop holds until this sweep has replied so that it
 //! cannot overtake the report it invalidates.
 
+use crate::observed::Unobserved;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -321,7 +322,7 @@ fn enumerate_project(
 /// directories are skipped, and symlinks are never followed (so the walk
 /// cannot cycle).
 fn discover_in(dir: &Path, pending: &mut Vec<PathBuf>, found: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = Unobserved::WorkspaceSweep.read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -992,7 +993,7 @@ mod tests {
                 if !visited.insert(dir.clone()) {
                     continue;
                 }
-                let Ok(entries) = std::fs::read_dir(&dir) else {
+                let Ok(entries) = crate::observed::host_fs::read_dir(&dir) else {
                     continue;
                 };
                 for entry in entries.flatten() {

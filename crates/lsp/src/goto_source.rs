@@ -14,6 +14,7 @@
 //! core emits, rather than an effect the core performs, is what lets the whole
 //! mapping be tested in a sandbox with no network.
 
+use crate::observed::Unobserved;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -618,7 +619,7 @@ pub fn plan_source(source: DefinitionSource, cache_dir: &Path) -> std::io::Resul
             // different assemblies/versions never collide; an existing cache file
             // means the same URL was already fetched.
             let dest = cache_path(cache_dir, &document, url.as_bytes());
-            if dest.exists() {
+            if Unobserved::GoToDefinition.exists(&dest) {
                 Ok(SourcePlan::Ready(SourceTarget::File {
                     path: dest,
                     line,
@@ -673,7 +674,7 @@ fn cache_path(cache_dir: &Path, document: &str, identity: &[u8]) -> PathBuf {
 /// content (harmless), and an already-published destination — which on Windows
 /// makes `rename` error rather than replace — is treated as success.
 pub fn write_if_absent(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if path.exists() {
+    if Unobserved::GoToDefinition.exists(path) {
         return Ok(());
     }
     if let Some(parent) = path.parent() {
@@ -689,7 +690,11 @@ pub fn write_if_absent(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             // `rename` refuses to replace an existing file, so a race always
             // errors here). If the destination now exists, the cache entry is
             // complete and content-correct — success, not a URL fallback.
-            if path.exists() { Ok(()) } else { Err(err) }
+            if Unobserved::GoToDefinition.exists(path) {
+                Ok(())
+            } else {
+                Err(err)
+            }
         }
     }
 }
@@ -809,7 +814,10 @@ mod tests {
         match target {
             SourceTarget::File { path, line, column } => {
                 assert_eq!((line, column), (3, 5));
-                assert_eq!(std::fs::read_to_string(&path).unwrap(), "let x = 1\n");
+                assert_eq!(
+                    crate::observed::host_fs::read_to_string(&path).unwrap(),
+                    "let x = 1\n"
+                );
                 // The cache file keeps the document's basename.
                 assert_eq!(path.file_name().unwrap(), "Lib.fs");
             }
@@ -857,7 +865,7 @@ mod tests {
             SourceTarget::File { path, line, column } => {
                 assert_eq!((line, column), (42, 7));
                 assert_eq!(
-                    std::fs::read_to_string(&path).unwrap(),
+                    crate::observed::host_fs::read_to_string(&path).unwrap(),
                     "let printfn fmt = ...\n"
                 );
                 path
@@ -905,8 +913,14 @@ mod tests {
             panic!("both embedded → File");
         };
         assert_ne!(pa, pb, "distinct content must not share a cache file");
-        assert_eq!(std::fs::read_to_string(pa).unwrap(), "// assembly A\n");
-        assert_eq!(std::fs::read_to_string(pb).unwrap(), "// assembly B\n");
+        assert_eq!(
+            crate::observed::host_fs::read_to_string(pa).unwrap(),
+            "// assembly A\n"
+        );
+        assert_eq!(
+            crate::observed::host_fs::read_to_string(pb).unwrap(),
+            "// assembly B\n"
+        );
     }
 
     #[test]
@@ -948,7 +962,10 @@ mod tests {
         match plan_source(source, dir.path()).unwrap() {
             SourcePlan::Ready(SourceTarget::File { path, line, column }) => {
                 assert_eq!((line, column), (3, 5));
-                assert_eq!(std::fs::read_to_string(&path).unwrap(), "let x = 1\n");
+                assert_eq!(
+                    crate::observed::host_fs::read_to_string(&path).unwrap(),
+                    "let x = 1\n"
+                );
             }
             other => panic!("expected Ready(File), got {other:?}"),
         }
@@ -1011,9 +1028,12 @@ mod tests {
         let dir = cache_dir();
         let dest = dir.path().join("sub").join("Lib.fs");
         write_if_absent(&dest, b"complete\n").unwrap();
-        assert_eq!(std::fs::read(&dest).unwrap(), b"complete\n");
+        assert_eq!(
+            crate::observed::host_fs::read(&dest).unwrap(),
+            b"complete\n"
+        );
         // The temp file used for the atomic rename must not linger.
-        let leftovers: Vec<_> = std::fs::read_dir(dest.parent().unwrap())
+        let leftovers: Vec<_> = crate::observed::host_fs::read_dir(dest.parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .filter(|n| n.to_string_lossy().contains(".tmp."))
@@ -1032,7 +1052,7 @@ mod tests {
         // Content-keyed cache: a present file already holds the right bytes, so a
         // second write is a no-op (and must not truncate/replace it).
         write_if_absent(&dest, b"second\n").unwrap();
-        assert_eq!(std::fs::read(&dest).unwrap(), b"first\n");
+        assert_eq!(crate::observed::host_fs::read(&dest).unwrap(), b"first\n");
     }
 
     #[test]
@@ -1050,11 +1070,11 @@ mod tests {
             }
             // Concurrent readers: a present file must already be complete.
             for _ in 0..64 {
-                if let Ok(seen) = std::fs::read(&dest) {
+                if let Ok(seen) = crate::observed::host_fs::read(&dest) {
                     assert_eq!(seen.len(), body.len(), "observed a torn cache file");
                 }
             }
         });
-        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert_eq!(crate::observed::host_fs::read(&dest).unwrap(), body);
     }
 }

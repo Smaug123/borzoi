@@ -3,6 +3,7 @@
 //! Split out of the former single-file `csharp_sidecar.rs`.
 
 use super::support::*;
+use crate::common::host_fs::HostPath as _;
 
 #[test]
 fn handshake_and_shutdown() {
@@ -58,7 +59,7 @@ fn build_metadata_empty_fixture_emits_a_loadable_dll() {
         result.metadata_dll_path,
     );
     assert!(
-        result.metadata_dll_path.exists(),
+        result.metadata_dll_path.host_exists(),
         "metadata DLL should exist at {:?}",
         result.metadata_dll_path,
     );
@@ -98,7 +99,7 @@ fn build_metadata_empty_fixture_emits_a_loadable_dll() {
     // workspace-wide and shared across tests, so a direct stray-temp scan
     // would still race against any other test publishing into the same
     // prefix; the parse oracle sidesteps that.)
-    let bytes = std::fs::read(&result.metadata_dll_path).expect("read DLL");
+    let bytes = crate::common::host_fs::read(&result.metadata_dll_path).expect("read DLL");
     let view = Ecma335Assembly::parse(&bytes).expect("parse DLL");
     let entities = view.enumerate_type_defs().expect("enumerate type defs");
     let fqns: Vec<String> = entities

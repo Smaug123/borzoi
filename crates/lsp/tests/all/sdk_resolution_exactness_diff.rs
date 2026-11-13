@@ -37,7 +37,8 @@ use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRng, Tes
 use tempfile::TempDir;
 
 fn canon(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
+    crate::common::host_fs::canonicalize(path)
+        .unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
 }
 
 /// Canonical, NuGet-normalised version strings used for the *on-disk*

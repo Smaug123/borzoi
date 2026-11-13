@@ -12,6 +12,7 @@
 //! repeated invocations). The first invocation in a fresh checkout will
 //! restore NuGet packages — that can take a couple of minutes.
 
+use crate::common::host_fs::HostPath as _;
 use std::io::Write;
 use std::path::Path;
 
@@ -60,7 +61,7 @@ fn fcs_dump_emits_parse_tree_for_a_trivial_source() {
 fn fcs_dump_handles_a_non_trivial_source() {
     let project = project_dir();
     let path = project.join("Program.fs");
-    assert!(path.is_file(), "expected {} to exist", path.display());
+    assert!(path.host_is_file(), "expected {} to exist", path.display());
 
     let json = run_fcs_dump(&path);
     let v: Value = serde_json::from_str(&json).expect("fcs-dump output is JSON");

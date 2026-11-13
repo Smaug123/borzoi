@@ -16,6 +16,7 @@
 //! nix develop -c cargo test -p borzoi --test all xml_doc_inheritdoc_sweep:: -- --ignored --nocapture
 //! ```
 
+use crate::common::host_fs::HostPath as _;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -30,7 +31,7 @@ use crate::common::inheritdoc_diff::{Census, build_env, compare_assembly};
 const ASPNET_EXPANDED: usize = 2106;
 
 fn dlls_in(dir: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut out: Vec<PathBuf> = crate::common::host_fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(Result::ok)
                 .map(|e| e.path())
@@ -73,7 +74,7 @@ fn packs() -> (PathBuf, PathBuf) {
         .join("ref")
         .join("net10.0");
     assert!(
-        aspnet.is_dir(),
+        aspnet.host_is_dir(),
         "no ASP.NET Core pack at {}",
         aspnet.display()
     );
@@ -143,7 +144,7 @@ fn package_dirs(root: &Path) -> Vec<PathBuf> {
         "netstandard2.0",
     ];
     let children = |dir: &Path| -> Vec<PathBuf> {
-        let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        let mut v: Vec<PathBuf> = crate::common::host_fs::read_dir(dir)
             .map(|rd| rd.filter_map(Result::ok).map(|e| e.path()).collect())
             .unwrap_or_default();
         v.sort();
@@ -165,7 +166,7 @@ fn package_dirs(root: &Path) -> Vec<PathBuf> {
     for package in children(root) {
         let Some(version) = children(&package)
             .into_iter()
-            .filter(|p| p.is_dir())
+            .filter(|p| p.host_is_dir())
             .max_by_key(|v| version_key(v))
         else {
             continue;
@@ -173,11 +174,11 @@ fn package_dirs(root: &Path) -> Vec<PathBuf> {
         let chosen = ["lib", "ref"].iter().find_map(|kind| {
             TFMS.iter()
                 .map(|tfm| version.join(kind).join(tfm))
-                .find(|d| d.is_dir())
+                .find(|d| d.host_is_dir())
         });
         let Some(dir) = chosen else { continue };
         let documents_inheritdoc = dlls_in(&dir).iter().any(|dll| {
-            std::fs::read(dll.with_extension("xml"))
+            crate::common::host_fs::read(dll.with_extension("xml"))
                 .is_ok_and(|bytes| bytes.windows(11).any(|w| w == b"<inheritdoc"))
         });
         if documents_inheritdoc {

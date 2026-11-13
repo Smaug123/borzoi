@@ -16,6 +16,7 @@
 //! `#[ignore]`d by default: it is slow. Run with
 //! `cargo test -p borzoi --test all parser_corpus_sweep:: -- --ignored`.
 
+use crate::common::host_fs::HostPath as _;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 
 use std::collections::HashSet;
@@ -44,13 +45,13 @@ fn sweep_root() -> SweepRoot {
     if let Some(pinned) = std::env::var_os("BORZOI_CORPUS") {
         let pinned = PathBuf::from(pinned);
         assert!(
-            pinned.is_dir(),
+            pinned.host_is_dir(),
             "F# corpus root {pinned:?} (from BORZOI_CORPUS) is not a directory."
         );
         return SweepRoot::Pinned(pinned);
     }
     let sibling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fsharp/src");
-    if sibling.is_dir() {
+    if sibling.host_is_dir() {
         SweepRoot::SiblingCheckout(sibling)
     } else {
         SweepRoot::Absent
@@ -58,12 +59,12 @@ fn sweep_root() -> SweepRoot {
 }
 
 fn collect_fs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::common::host_fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if path.host_is_dir() {
             collect_fs_files(&path, out);
         } else if path.extension().and_then(|s| s.to_str()) == Some("fs") {
             out.push(path);
@@ -106,7 +107,7 @@ fn parser_path_survives_fsharp_compiler_corpus() {
     // LSP path produced (`Err` where a panic escaped it); `None` for a file
     // that does not read as UTF-8.
     let swept = borzoi_oracle_harness::par_map::par_map(files.len(), |i| {
-        let text = std::fs::read_to_string(&files[i]).ok()?;
+        let text = crate::common::host_fs::read_to_string(&files[i]).ok()?;
         // Silence per-file panic backtraces; we count panics ourselves.
         // Per-thread, so it is taken on the worker, and a concurrent test's
         // genuine panic still prints (see `panic_silence`). It is not held

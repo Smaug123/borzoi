@@ -1,3 +1,4 @@
+use crate::observed::Unobserved;
 use std::path::{Path, PathBuf};
 
 use crate::project_assets::error::ProjectAssetsError;
@@ -122,10 +123,14 @@ pub fn resolve_framework(
 
     let ref_dir = version_dir.join("ref").join(tfm);
     let mut dlls = Vec::new();
-    for entry in std::fs::read_dir(&ref_dir).map_err(|e| ProjectAssetsError::Io {
-        path: ref_dir.clone(),
-        source: e,
-    })? {
+    for entry in
+        Unobserved::EnvResolution
+            .read_dir(&ref_dir)
+            .map_err(|e| ProjectAssetsError::Io {
+                path: ref_dir.clone(),
+                source: e,
+            })?
+    {
         let entry = entry.map_err(|e| ProjectAssetsError::Io {
             path: ref_dir.clone(),
             source: e,
@@ -149,14 +154,18 @@ fn package_ref_dlls(
 ) -> Result<Option<Vec<PathBuf>>, ProjectAssetsError> {
     for folder in package_folders {
         let ref_dir = folder.join(package_ref_dir);
-        if !ref_dir.is_dir() {
+        if !Unobserved::EnvResolution.is_dir(&ref_dir) {
             continue;
         }
         let mut dlls = Vec::new();
-        for entry in std::fs::read_dir(&ref_dir).map_err(|e| ProjectAssetsError::Io {
-            path: ref_dir.clone(),
-            source: e,
-        })? {
+        for entry in
+            Unobserved::EnvResolution
+                .read_dir(&ref_dir)
+                .map_err(|e| ProjectAssetsError::Io {
+                    path: ref_dir.clone(),
+                    source: e,
+                })?
+        {
             let entry = entry.map_err(|e| ProjectAssetsError::Io {
                 path: ref_dir.clone(),
                 source: e,
@@ -183,7 +192,7 @@ fn best_version_with_tfm(
     let mut best: Option<(VersionKey, PathBuf)> = None;
     let mut any_root_existed = false;
     for root in roots {
-        let entries = match std::fs::read_dir(root) {
+        let entries = match Unobserved::EnvResolution.read_dir(root) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
@@ -203,7 +212,7 @@ fn best_version_with_tfm(
             let Some(version) = parse_version(entry.file_name().to_string_lossy().as_ref()) else {
                 continue;
             };
-            if !path.join("ref").join(tfm).is_dir() {
+            if !Unobserved::EnvResolution.is_dir(path.join("ref").join(tfm)) {
                 continue;
             }
             match &best {

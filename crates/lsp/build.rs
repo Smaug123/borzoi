@@ -219,6 +219,9 @@ fn try_build(
 /// either edit `build.rs` (or `cargo clean -p borzoi`) to
 /// invalidate.
 fn watch_sidecar_inputs(dir: &Path) {
+    // The build script's listing is not the server observing a workspace,
+    // which is what the crate's clippy.toml routes through `borzoi::observed`.
+    #[allow(clippy::disallowed_methods)]
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

@@ -12,6 +12,7 @@
 //!
 //! Requires the .NET SDK on PATH — run under `nix develop`.
 
+use crate::common::host_fs::HostPath as _;
 use borzoi::uri::UriExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -50,7 +51,7 @@ fn sibling_rebuild_refreshes_the_assembly_env_after_watched_dll_change() {
     // The sibling's public surface moves; a rebuild rewrites its output DLL.
     std::fs::write(&lib_source, lib_module("RefreshV2")).expect("rewrite sibling source");
     build(&app);
-    assert!(lib_dll.is_file(), "rebuilt sibling output exists");
+    assert!(lib_dll.host_is_file(), "rebuilt sibling output exists");
 
     // Without the watched change the env is (deliberately) still the cached V1
     // — this is the staleness the file-watch class exists to end.

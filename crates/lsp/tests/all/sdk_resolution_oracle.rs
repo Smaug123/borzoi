@@ -21,7 +21,8 @@ use tempfile::TempDir;
 /// Canonicalise so the macOS `/var` ↔ `/private/var` symlink (and any
 /// normalisation MSBuild applies) can't desync the two sides.
 fn canon(path: &Path) -> std::path::PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
+    crate::common::host_fs::canonicalize(path)
+        .unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
 }
 
 #[test]

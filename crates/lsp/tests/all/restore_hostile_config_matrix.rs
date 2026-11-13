@@ -29,6 +29,7 @@
 //! Requires the .NET SDK + the vendored NuGet cache — the Nix devShell provides
 //! both.
 
+use crate::common::host_fs::HostPath as _;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,12 +53,12 @@ fn tree_snapshot(root: &Path) -> BTreeSet<PathBuf> {
     let mut files = BTreeSet::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = crate::common::host_fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            if path.host_is_dir() {
                 stack.push(path);
             } else {
                 files.insert(path);
@@ -86,7 +87,7 @@ fn scratch_folder(tag: &str) -> PathBuf {
         .as_nanos();
     let root = std::env::temp_dir().join(format!("borzoi-hostile-{tag}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::canonicalize(&root).unwrap()
+    crate::common::host_fs::canonicalize(&root).unwrap()
 }
 
 /// Write a hazard project (`App.fsproj` body + optional sibling files), run the
@@ -179,7 +180,7 @@ fn env_choosing_the_folder_by_config(home: &Path) -> SdkDiscoveryEnv {
 /// Copy the folder `from` into `to`, recursively.
 fn copy_folder(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
+    for entry in crate::common::host_fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
         let target = to.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
@@ -348,7 +349,7 @@ fn config_global_packages_folder_inside_the_repository_declines() {
     );
     assert_outcome("config-gpf-repository", Expect::Declines, &outcome);
     assert!(
-        !repository.join(".packages").exists(),
+        !repository.join(".packages").host_exists(),
         "the restore must not create the repository's package folder"
     );
     std::fs::remove_dir_all(&repository).ok();
@@ -423,15 +424,15 @@ fn config_global_packages_folder_stays_in_cache() {
 /// `RestoreSources` says. The folder holds one package.
 fn library_packs_fsharp_core_version() -> String {
     let sdks = dotnet_root().join("sdk");
-    let newest = std::fs::read_dir(&sdks)
+    let newest = crate::common::host_fs::read_dir(&sdks)
         .unwrap()
         .flatten()
-        .filter(|sdk| sdk.path().join("FSharp").is_dir())
+        .filter(|sdk| sdk.path().join("FSharp").host_is_dir())
         .max_by_key(|sdk| version_parts(&sdk.file_name().to_string_lossy()))
         .unwrap_or_else(|| panic!("no SDK with an F# toolset under {}", sdks.display()))
         .path();
     let packs = newest.join("FSharp").join("library-packs");
-    let versions: Vec<String> = std::fs::read_dir(&packs)
+    let versions: Vec<String> = crate::common::host_fs::read_dir(&packs)
         .unwrap()
         .flatten()
         .filter_map(|pack| {

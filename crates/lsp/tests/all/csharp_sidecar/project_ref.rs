@@ -3,6 +3,7 @@
 //! Split out of the former single-file `csharp_sidecar.rs`.
 
 use super::support::*;
+use crate::common::host_fs::HostPath as _;
 
 /// Phase 5 closure walk: a `buildMetadata` request on a project with a
 /// `<ProjectReference>` returns the referenced project's emitted metadata
@@ -38,17 +39,17 @@ fn build_metadata_proj_ref_surfaces_leaf_in_transitive_refs() {
     let entry = &result.transitive_project_refs[0];
     let entry_canon = entry
         .csproj_path
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", entry.csproj_path.display()));
     let leaf_canon = leaf_csproj
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", leaf_csproj.display()));
     assert_eq!(
         entry_canon, leaf_canon,
         "transitive entry should point at Leaf.csproj",
     );
     assert!(
-        entry.metadata_dll_path.exists(),
+        entry.metadata_dll_path.host_exists(),
         "leaf metadata DLL should exist at {}",
         entry.metadata_dll_path.display(),
     );
@@ -62,7 +63,7 @@ fn build_metadata_proj_ref_surfaces_leaf_in_transitive_refs() {
         entry.metadata_dll_path.display(),
     );
 
-    let bytes = std::fs::read(&entry.metadata_dll_path).expect("read leaf DLL");
+    let bytes = crate::common::host_fs::read(&entry.metadata_dll_path).expect("read leaf DLL");
     let view = Ecma335Assembly::parse(&bytes).expect("parse leaf DLL");
     let entities = view
         .enumerate_type_defs()
@@ -149,7 +150,7 @@ fn build_metadata_matches_dotnet_ref_assembly_proj_ref_leaf() {
     // dedicated leaf build.
     let dotnet_leaf_ref = build_ref_assembly(&dotnet, &leaf_dir, "LeafFixture", "Debug", "net10.0");
     assert!(
-        dotnet_leaf_ref.exists(),
+        dotnet_leaf_ref.host_exists(),
         "expected dotnet leaf ref assembly at {}",
         dotnet_leaf_ref.display(),
     );
@@ -208,14 +209,14 @@ fn build_metadata_proj_ref_aggregates_transitive_warnings() {
         .expect("closure walk should emit successfully despite #warning");
 
     let leaf_canon = leaf_cs
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", leaf_cs.display()));
 
     let leaf_warning = result.diagnostics.iter().find(|d| {
         d.id == "CS1030"
             && d.file_path
                 .as_deref()
-                .and_then(|p| std::fs::canonicalize(p).ok())
+                .and_then(|p| crate::common::host_fs::canonicalize(p).ok())
                 .as_ref()
                 == Some(&leaf_canon)
     });

@@ -5,6 +5,7 @@ pub mod framework;
 pub mod raw;
 pub mod tfm;
 
+use crate::observed::Unobserved;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -118,17 +119,21 @@ fn resolve_assemblies_impl(
     let mut worklist: Vec<PathBuf> = vec![root_assets_path.to_path_buf()];
 
     while let Some(assets_path) = worklist.pop() {
-        let canon = std::fs::canonicalize(&assets_path).map_err(|e| ProjectAssetsError::Io {
-            path: assets_path.clone(),
-            source: e,
-        })?;
+        let canon = Unobserved::EnvResolution
+            .canonicalize(&assets_path)
+            .map_err(|e| ProjectAssetsError::Io {
+                path: assets_path.clone(),
+                source: e,
+            })?;
         if !visited.insert(canon.clone()) {
             continue;
         }
-        let text = std::fs::read_to_string(&canon).map_err(|e| ProjectAssetsError::Io {
-            path: canon.clone(),
-            source: e,
-        })?;
+        let text = Unobserved::EnvResolution
+            .read_to_string(&canon)
+            .map_err(|e| ProjectAssetsError::Io {
+                path: canon.clone(),
+                source: e,
+            })?;
         let assets: RawAssets =
             serde_json::from_str(&text).map_err(|e| ProjectAssetsError::Json {
                 path: canon.clone(),
@@ -159,7 +164,9 @@ fn resolve_assemblies_impl(
                     // the whole point of root-only is that callers don't
                     // depend on the transitive closure.
                     if !recurse {
-                        if let Ok(canon_proj) = std::fs::canonicalize(&project_path) {
+                        if let Ok(canon_proj) =
+                            Unobserved::EnvResolution.canonicalize(&project_path)
+                        {
                             if let Some(name) = assembly_name {
                                 project_ref_assembly_names.insert(canon_proj.clone(), name);
                             }
@@ -167,18 +174,20 @@ fn resolve_assemblies_impl(
                         }
                         continue;
                     }
-                    let canon_proj = std::fs::canonicalize(&project_path).map_err(|e| {
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            ProjectAssetsError::MissingTransitiveAssets {
-                                project_path: project_path.clone(),
+                    let canon_proj = Unobserved::EnvResolution
+                        .canonicalize(&project_path)
+                        .map_err(|e| {
+                            if e.kind() == std::io::ErrorKind::NotFound {
+                                ProjectAssetsError::MissingTransitiveAssets {
+                                    project_path: project_path.clone(),
+                                }
+                            } else {
+                                ProjectAssetsError::Io {
+                                    path: project_path.clone(),
+                                    source: e,
+                                }
                             }
-                        } else {
-                            ProjectAssetsError::Io {
-                                path: project_path.clone(),
-                                source: e,
-                            }
-                        }
-                    })?;
+                        })?;
                     let next_assets = canon_proj
                         .parent()
                         .expect("project file has parent")
@@ -188,7 +197,7 @@ fn resolve_assemblies_impl(
                         project_ref_assembly_names.insert(canon_proj.clone(), name);
                     }
                     project_ref_tfms.insert(canon_proj.clone(), tfm);
-                    if !next_assets.exists() {
+                    if !Unobserved::EnvResolution.exists(&next_assets) {
                         return Err(ProjectAssetsError::MissingTransitiveAssets {
                             project_path: canon_proj,
                         });
@@ -338,10 +347,12 @@ fn assets_path_for(csproj_path: &Path) -> PathBuf {
 }
 
 fn read_raw_assets(path: &Path) -> Result<RawAssets, ProjectAssetsError> {
-    let text = std::fs::read_to_string(path).map_err(|e| ProjectAssetsError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    let text = Unobserved::EnvResolution
+        .read_to_string(path)
+        .map_err(|e| ProjectAssetsError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
     serde_json::from_str(&text).map_err(|e| ProjectAssetsError::Json {
         path: path.to_path_buf(),
         source: e,
@@ -358,7 +369,7 @@ fn read_raw_assets(path: &Path) -> Result<RawAssets, ProjectAssetsError> {
 /// and otherwise emits one candidate per folder.
 fn pick_existing(candidates: &[PathBuf]) -> PathBuf {
     for c in candidates {
-        if c.exists() {
+        if Unobserved::EnvResolution.exists(c) {
             return c.clone();
         }
     }
@@ -631,7 +642,7 @@ mod tests {
         let result = resolve_assemblies(&root.join("A/obj/project.assets.json"), &dotnet_root)
             .expect("resolve_assemblies");
 
-        let canon_proj_b = fs::canonicalize(&proj_b).unwrap();
+        let canon_proj_b = crate::observed::host_fs::canonicalize(&proj_b).unwrap();
         assert_eq!(
             result.project_ref_tfms.keys().collect::<Vec<_>>(),
             vec![&canon_proj_b]
@@ -721,7 +732,7 @@ mod tests {
             &root.join("dotnet"),
         )
         .expect("resolve_assemblies_root_only");
-        let canon_b = fs::canonicalize(&proj_b).unwrap();
+        let canon_b = crate::observed::host_fs::canonicalize(&proj_b).unwrap();
         assert_eq!(
             result.project_ref_tfms.keys().collect::<Vec<_>>(),
             vec![&canon_b]
@@ -849,8 +860,8 @@ mod tests {
         )
         .expect("resolve_assemblies");
 
-        let canon_a = fs::canonicalize(&proj_a).unwrap();
-        let canon_b = fs::canonicalize(&proj_b).unwrap();
+        let canon_a = crate::observed::host_fs::canonicalize(&proj_a).unwrap();
+        let canon_b = crate::observed::host_fs::canonicalize(&proj_b).unwrap();
         let mut expected = vec![canon_a, canon_b];
         expected.sort();
         assert_eq!(
@@ -938,7 +949,10 @@ mod tests {
             &root.join("dotnet"),
         ) {
             Err(ProjectAssetsError::MissingTransitiveAssets { project_path }) => {
-                assert_eq!(project_path, fs::canonicalize(&proj_b).unwrap());
+                assert_eq!(
+                    project_path,
+                    crate::observed::host_fs::canonicalize(&proj_b).unwrap()
+                );
             }
             other => panic!("expected MissingTransitiveAssets, got {other:?}"),
         }

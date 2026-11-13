@@ -1028,7 +1028,7 @@ fn base_refs() -> Vec<PathBuf> {
     let pack = runtime
         .parent()
         .expect("System.Runtime.dll sits in a ref dir");
-    let mut framework: Vec<PathBuf> = fs::read_dir(pack)
+    let mut framework: Vec<PathBuf> = crate::common::host_fs::read_dir(pack)
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|x| x == "dll"))

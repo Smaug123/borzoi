@@ -11,6 +11,7 @@
 //! loop, with pull-diagnostic capabilities so the only server-initiated
 //! notification in flight is the one under test.
 
+use crate::common::host_fs::HostPath as _;
 use borzoi::uri::UriExt as _;
 use std::path::PathBuf;
 use std::thread;
@@ -283,7 +284,7 @@ const CERTAIN_PROJECT: &str = r#"<Project>
 /// an aliasing residual that is documented and out of scope here.
 fn real_path(tmp: &TempDir) -> PathBuf {
     tmp.path()
-        .canonicalize()
+        .host_canonicalize()
         .expect("the temp dir exists on disk")
 }
 

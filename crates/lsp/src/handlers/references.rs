@@ -23,7 +23,7 @@
 //! sticking with the previous answer.
 
 use crate::uri::UriExt as _;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use borzoi_cst::syntax::TextRange;
 use borzoi_cst::syntax::{AppExpr, AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
@@ -35,6 +35,7 @@ use lsp_types::{Location, ReferenceParams, Uri};
 
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::handlers::{indexed_range_to_lsp, preferred_uri, smallest_resolution_with_range};
+use crate::observed::Sources;
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
 use crate::position::position_to_offset;
@@ -225,7 +226,7 @@ fn collect_locations(
     target_res: Resolution,
     decl_anchor: Option<(usize, TextRange)>,
     include_declaration: bool,
-    docs: &HashMap<Uri, String>,
+    docs: &Sources,
 ) -> ReferenceScan {
     let target_key = decl_anchor.map_or(target_res, |(file, _)| {
         occurrence_key(resolved.file(file), file, target_res)

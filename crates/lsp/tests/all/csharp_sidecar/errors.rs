@@ -3,6 +3,7 @@
 //! Split out of the former single-file `csharp_sidecar.rs`.
 
 use super::support::*;
+use crate::common::host_fs::HostPath as _;
 
 #[test]
 fn build_metadata_missing_csproj_reports_not_found() {
@@ -96,12 +97,12 @@ fn build_metadata_tolerates_body_level_errors() {
         "first emit on a nonce-mutated fixture must miss the cache so diagnostics surface",
     );
     assert!(
-        result.metadata_dll_path.exists(),
+        result.metadata_dll_path.host_exists(),
         "expected metadata DLL at {}",
         result.metadata_dll_path.display(),
     );
 
-    let bytes = std::fs::read(&result.metadata_dll_path).expect("read DLL");
+    let bytes = crate::common::host_fs::read(&result.metadata_dll_path).expect("read DLL");
     let view = Ecma335Assembly::parse(&bytes).expect("parse DLL");
     let entities = view.enumerate_type_defs().expect("enumerate type defs");
     let fqns: Vec<String> = entities
@@ -224,7 +225,7 @@ fn failed_re_emit_returns_build_failed_without_dll_path() {
         .build_metadata(&csproj, "Debug", "net10.0", &project_tfms_for(&csproj))
         .expect("first emit on valid source should succeed");
     assert!(
-        first.metadata_dll_path.exists(),
+        first.metadata_dll_path.host_exists(),
         "first emit should produce a DLL at {}",
         first.metadata_dll_path.display(),
     );
@@ -290,7 +291,7 @@ fn failed_re_emit_returns_build_failed_without_dll_path() {
     // answer for those source bytes — and a caller is expected to ignore it
     // because the second call's BuildFailed response carries no path.
     assert!(
-        first.metadata_dll_path.exists(),
+        first.metadata_dll_path.host_exists(),
         "first DLL should still be on disk after a different-key failure; \
          content-addressing means the failed second key never collided with \
          the first key's path",
@@ -349,7 +350,7 @@ fn failed_re_load_returns_load_failed_without_dll_path() {
         .build_metadata(&csproj, "Debug", "net10.0", &project_tfms)
         .expect("first emit on valid csproj should succeed");
     assert!(
-        first.metadata_dll_path.exists(),
+        first.metadata_dll_path.host_exists(),
         "first emit should produce a DLL at {}",
         first.metadata_dll_path.display(),
     );
@@ -371,7 +372,7 @@ fn failed_re_load_returns_load_failed_without_dll_path() {
     // As with the emit-failure case: the first DLL is still correct for its
     // inputs and stays on disk; the LoadFailed wire payload carries no path.
     assert!(
-        first.metadata_dll_path.exists(),
+        first.metadata_dll_path.host_exists(),
         "first DLL should still exist after a LoadFailed on different csproj bytes"
     );
 
@@ -412,11 +413,11 @@ fn build_metadata_missing_project_tfm_for_top_returns_hard_error() {
             // diagnostic). Compare via std::fs::canonicalize on both sides
             // to defend against tmpfs symlink resolution differences.
             let expected = csproj
-                .canonicalize()
+                .host_canonicalize()
                 .unwrap_or_else(|e| panic!("canonicalize {}: {e}", csproj.display()));
             let reported = std::path::PathBuf::from(csproj_path);
             let reported_canon = reported
-                .canonicalize()
+                .host_canonicalize()
                 .unwrap_or_else(|e| panic!("canonicalize reported {}: {e}", reported.display()));
             assert_eq!(reported_canon, expected);
         }
