@@ -84,8 +84,9 @@ struct PathNode {
 
 /// Storage that only grows, read by index without a lock. Slot `i` sits in
 /// chunk `k`, which holds `FIRST_CHUNK << k` slots, so no slot ever moves
-/// once written and a reader holding `&self` can borrow it.
-struct AppendOnly<T> {
+/// once written and a reader holding `&self` can borrow it. The type table
+/// ([`crate::ty::TyTable`]) keeps its nodes in one too.
+pub(crate) struct AppendOnly<T> {
     chunks: [OnceLock<Box<[OnceLock<T>]>>; CHUNKS],
 }
 
@@ -113,19 +114,27 @@ impl<T> AppendOnly<T> {
         (chunk, index - start)
     }
 
-    fn get(&self, index: u32) -> Option<&T> {
+    pub(crate) fn get(&self, index: u32) -> Option<&T> {
         let (chunk, offset) = Self::locate(index);
         self.chunks[chunk].get()?.get(offset)?.get()
     }
 
+    /// Slot `index`, written with `init()` if it is empty.
+    pub(crate) fn get_or_init(&self, index: u32, init: impl FnOnce() -> T) -> &T {
+        let (chunk, offset) = Self::locate(index);
+        let slots = self.chunks[chunk]
+            .get_or_init(|| (0..FIRST_CHUNK << chunk).map(|_| OnceLock::new()).collect());
+        slots[offset].get_or_init(init)
+    }
+
     /// Write slot `index`, which must be empty.
-    fn set(&self, index: u32, value: T) {
+    pub(crate) fn set(&self, index: u32, value: T) {
         let (chunk, offset) = Self::locate(index);
         let slots = self.chunks[chunk]
             .get_or_init(|| (0..FIRST_CHUNK << chunk).map(|_| OnceLock::new()).collect());
         assert!(
             slots[offset].set(value).is_ok(),
-            "a name table slot is written once"
+            "an append-only slot is written once"
         );
     }
 }

@@ -776,6 +776,40 @@ enum PackageItemKind {
 }
 
 fn walk_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
+    // MSBuild's batch of `Update`s, followed for the types whose `Update`s the
+    // walk models, before any condition: see [`update_strands_late`].
+    let batched = match package_item_kind_for_element(node) {
+        Some(PackageItemKind::PackageReference) => Some("PackageReference"),
+        Some(_) => None,
+        None => {
+            (modelled_item_kind_for_element(node) == Some(ItemKind::Compile)).then_some("Compile")
+        }
+    };
+    if let Some(item_type) = batched
+        && update_strands_late(node, item_type, state)
+    {
+        let update = node.attribute("Update").unwrap_or_default().to_string();
+        if item_type == "Compile" {
+            let previous = state.compile_context;
+            state.compile_context = true;
+            state.push(
+                DiagnosticKind::StrandedUpdatePrefix {
+                    update,
+                    fragment: String::new(),
+                },
+                node.range(),
+            );
+            state.compile_context = previous;
+        } else {
+            let previous = state.package_context;
+            state.package_context = true;
+            state.note_package_uncertain(
+                PackageReferenceUncertaintyCauseKind::DuplicateUpdateIdentity { id: update },
+                node.range(),
+            );
+            state.package_context = previous;
+        }
+    }
     // PackageReference/FrameworkReference are the NuGet dependency set — a
     // separate concern from Compile order / project edges, with their own
     // bucket, metadata, and uncertainty flag. SDK dependency items participate
@@ -1768,13 +1802,12 @@ fn resolve_compile_update_targets(
 /// items, so only stranding changes the answer.
 ///
 /// Wildcards and item references never get here (they decline earlier), and
-/// a `$(` cannot survive expansion unescaped. Keys from *earlier* `Update`s
-/// in the batch are not tracked: a collision with one comes straight after
-/// that `Update` batched, and the flush that follows applies the stranded
-/// fragments at once, to the items this `Update` reaches anyway. For the same
-/// reason a strand within the spec is harmless when the Compile operation
-/// before it was a batched `Update`; it declines all the same, which is only
-/// conservative.
+/// a `$(` cannot survive expansion unescaped. This model sees one spec alone;
+/// keys from *earlier* `Update`s, which a strand needs no pending batch to
+/// survive, are [`update_strands_late`]'s, which every `Compile` element
+/// feeds. A strand within the spec is harmless when the operation before it
+/// was a batched `Update` (the flush applies it at once); this declines all
+/// the same, which is only conservative.
 #[derive(Default)]
 struct UpdateBatch {
     /// The keys batched so far, by [`match_shape`]: a key can collide only
@@ -2218,12 +2251,7 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     // capture has read the package names already, and nothing else may steer
     // the walk.
     #[cfg(any(test, feature = "test-support"))]
-    let exact = {
-        let previous = state.quiet_target_framework_reads.replace(true);
-        let exact = read_generic_item_metadata(node, state);
-        state.quiet_target_framework_reads.set(previous);
-        exact
-    };
+    let exact = read_exact_metadata_quietly(node, state);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let origin = state.current_origin();
@@ -2276,13 +2304,7 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
                 #[cfg(any(test, feature = "test-support"))]
                 row: match op {
                     PackageRefOp::Include => {
-                        let mut row = source.row.clone();
-                        if source.direct {
-                            row.exact_metadata =
-                                with_definitions(state, "PackageReference", &row.exact_metadata);
-                        }
-                        row.definitions_applied = source.direct;
-                        row.with_metadata_applied(&exact)
+                        included_row(state, "PackageReference", &source, &exact)
                     }
                     PackageRefOp::Update => EvaluatedItem::bare(&id).with_metadata_applied(&exact),
                 },
@@ -2295,6 +2317,124 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     if op == PackageRefOp::Include && state.captured_package_references.len() > package_count_before
     {
         state.mark_untracked_item_list("PackageReference");
+    }
+}
+
+/// MSBuild's batch of `Update`s for one item type, as far as the walk follows
+/// it ([`update_strands_late`]).
+#[derive(Debug, Default)]
+pub(super) struct UpdateBatchRun {
+    /// The comparison keys the batch holds.
+    keys: HashSet<String>,
+    /// Some fragment the batch may hold has no key the walk can compute, so
+    /// any later fragment may collide with it.
+    unknown: bool,
+    /// Whether the last `Update` joined the batch, so that the next operation
+    /// flushes it.
+    pending: bool,
+}
+
+/// Whether `node`, an element of an item type whose `Update`s the walk models
+/// (`Compile`, `PackageReference`), leaves entries in MSBuild's batch of
+/// updates that it applies late, out of document order; feeding the batch as
+/// it goes. Run for every such element, before its condition: MSBuild batches
+/// a condition-false `Update` too (probed).
+///
+/// The mechanism is `LazyItemList.ComputeItems`. Consecutive `Update`s of one
+/// type join a batch keyed by full path (`NormalizePathForComparisonNoThrow`,
+/// `OrdinalIgnoreCase`). An `Update` leaves the batch at the first fragment
+/// holding an expansion character (`*`, `?`, `$(`, `@(`, `%`, in the escaped
+/// text) or one whose key the batch already holds. Leaving removes its earlier
+/// fragments by their text rather than their key, so they stay *stranded*,
+/// and is followed by a flush only when an earlier `Update` had joined
+/// (`pending`). A flush then applies the strands at once, to the items the
+/// `Update` itself reaches, which is harmless. Without one they stay until a
+/// later flush, past `Include`s and `Update`s in between: probed (dotnet 10),
+/// `Update="Alpha;Alpha"` then `Update="Beta;Alpha" VersionOverride="1.0"`
+/// then `Include="Alpha;Beta"` gives `Beta` the override.
+///
+/// So this answers true when an `Update` leaves the batch at its second
+/// fragment or later, with one of those before it strandable (its written text
+/// not its key, ignoring case) and no batch pending. It over-approximates, as the
+/// conservative reading: a fragment without a computable key may collide with
+/// anything, and an operation whose condition the walk cannot
+/// decide does not flush.
+fn update_strands_late(node: Node<'_, '_>, item_type: &str, state: &mut State<'_>) -> bool {
+    let key = item_key(item_type);
+    let update = match (node.attribute("Include"), node.attribute("Update")) {
+        (None, Some(update)) => update,
+        _ => {
+            // Another operation flushes a pending batch, if it runs.
+            let runs = matches!(
+                evaluate_item_condition_silent(node, state),
+                (CondGate::Run, false)
+            );
+            if runs
+                && let Some(run) = state.update_batches.get_mut(&key)
+                && run.pending
+            {
+                *run = UpdateBatchRun::default();
+            }
+            return false;
+        }
+    };
+    let expansion = expand_silent(update, state);
+    let project_dir = state.entry_project_dir.clone();
+    let run = state.update_batches.entry(key).or_default();
+    let fragments: Vec<&str> = spec_fragments(&expansion.value).collect();
+    // Whether the walk cannot tell if the fragment it stopped at joined.
+    let mut undecided = false;
+    let mut left_at = None;
+    // Whether a fragment that joined is one leaving would strand: its written
+    // text is not its key, so removing it by text misses. (A spelling MSBuild
+    // compares unnormalised is its own key.)
+    let mut strandable = false;
+    for (i, fragment) in fragments.iter().enumerate() {
+        let expands = ["*", "?", "$(", "@(", "%"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        let fragment_key = (!expands && !expansion.had_issue())
+            .then(|| item_spec::comparison_key(&fragment_identity(fragment), &project_dir))
+            .flatten();
+        let joins = match &fragment_key {
+            Some(fragment_key) => !run.unknown && run.keys.insert(fragment_key.clone()),
+            None => {
+                // A fragment without a key may have joined, and may collide
+                // with any later one.
+                if !expands {
+                    run.unknown = true;
+                    undecided = true;
+                }
+                false
+            }
+        };
+        if !joins {
+            left_at = Some(i);
+            break;
+        }
+        let decoded = fragment_identity(fragment);
+        strandable |= !crate::glob::compares_unnormalised(&decoded)
+            && fragment_key.is_some_and(|key| key != fragment.to_ascii_lowercase());
+    }
+    match left_at {
+        None => {
+            run.pending = true;
+            false
+        }
+        Some(i) if undecided => {
+            // It may have joined (no flush) or left (a flush, if pending): keep
+            // every key, take no batch as pending, and count a strand whether
+            // or not one was.
+            run.pending = false;
+            i > 0 && strandable
+        }
+        Some(i) => {
+            let strands_late = i > 0 && strandable && !run.pending;
+            if run.pending {
+                *run = UpdateBatchRun::default();
+            }
+            strands_late
+        }
     }
 }
 
@@ -2701,23 +2841,59 @@ fn walk_framework_reference(node: Node<'_, '_>, state: &mut State<'_>) {
         }
         return;
     };
+    #[cfg(any(test, feature = "test-support"))]
+    let exact = read_exact_metadata_quietly(node, state);
     state.note_package_uncertain_from_sdk_property_taint(target);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let framework_count_before = state.framework_references.len();
     for source in resolve_dependency_identity_sources(target, node, state) {
-        let name = source.identity;
-        if excluded.contains(&name.to_ascii_lowercase()) {
+        if excluded.contains(&source.identity.to_ascii_lowercase()) {
             continue;
         }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let row = included_row(state, "FrameworkReference", &source, &exact);
+            state.framework_reference_rows.push(row);
+        }
         state.framework_references.push(FrameworkReference {
-            name: name.to_owned(),
+            name: source.identity,
             span: span.clone(),
         });
     }
     if state.framework_references.len() > framework_count_before {
         state.mark_untracked_item_list("FrameworkReference");
     }
+}
+
+/// Every metadatum `node` declares, as an item table reads it. Quietly: the
+/// dependency capture has read the names it reads already, and nothing else
+/// may steer the walk.
+#[cfg(any(test, feature = "test-support"))]
+fn read_exact_metadata_quietly(node: Node<'_, '_>, state: &mut State<'_>) -> GenericItemMetadata {
+    let previous = state.quiet_target_framework_reads.replace(true);
+    let exact = read_generic_item_metadata(node, state);
+    state.quiet_target_framework_reads.set(previous);
+    exact
+}
+
+/// The row an `Include` of a dependency item of `item_type` adds for
+/// `source`: a literal identity takes the type's definitions, a helper copy
+/// carries the helper item's metadata, and the element's own metadata goes on
+/// top.
+#[cfg(any(test, feature = "test-support"))]
+fn included_row(
+    state: &State<'_>,
+    item_type: &str,
+    source: &DependencyIdentitySource,
+    exact: &GenericItemMetadata,
+) -> EvaluatedItem {
+    let mut row = source.row.clone();
+    if source.direct {
+        row.exact_metadata = with_definitions(state, item_type, &row.exact_metadata);
+    }
+    row.definitions_applied = source.direct;
+    row.with_metadata_applied(exact)
 }
 
 /// The identity set to remove from a package/framework reference's

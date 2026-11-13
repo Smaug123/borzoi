@@ -87,9 +87,11 @@ impl Census {
 impl Resolver<'_> {
     /// Whether `prefix + [head]` is a module that could contest a dotted head.
     fn reference_is_contesting_module(&self, path: &[String]) -> bool {
-        self.module_paths
+        self.index
+            .module_paths
             .contains_path(self.assemblies.names(), path)
             || self
+                .index
                 .real_nested_module_exports
                 .contains_path(self.assemblies.names(), path)
             || self
@@ -110,7 +112,7 @@ impl Resolver<'_> {
     ) -> bool {
         let mut mp = prefix.to_vec();
         mp.push(name.to_string());
-        if self.container_path.starts_with(&mp) {
+        if self.lexical.container_path.starts_with(&mp) {
             return true;
         }
         if self.scope.recursive_module_active {
@@ -143,10 +145,11 @@ impl Resolver<'_> {
     /// path, each built afresh: the written ones (the enclosing containers
     /// from the namespace depth in, and the root), then the opened ones.
     fn reference_head_contested(&self, head: &str, residual: &str) -> bool {
-        let relative = (self.namespace_depth.max(1)..=self.container_path.len()).rev();
+        let relative =
+            (self.lexical.namespace_depth.max(1)..=self.lexical.container_path.len()).rev();
         let written = relative
             .chain(std::iter::once(0))
-            .map(|k| (self.container_path[..k].to_vec(), false));
+            .map(|k| (self.lexical.container_path[..k].to_vec(), false));
         let opened = self
             .scope
             .explicit_open_prefixes
@@ -159,7 +162,7 @@ impl Resolver<'_> {
             let mut path = prefix.clone();
             path.push(head.to_string());
             let module = self.reference_is_contesting_module(&path);
-            let own = self.container_path.starts_with(&path);
+            let own = self.lexical.container_path.starts_with(&path);
             if self.reference_module_like_transparent_for(&prefix, head, residual) || own {
                 passed_a_module |= module;
                 passed_beside |= module && !own;
@@ -176,7 +179,7 @@ impl Resolver<'_> {
             census.passed_a_module += usize::from(contested_by.is_none() && passed_a_module);
             census.passed_beside += usize::from(contested_by.is_none() && passed_beside);
             census.contested_by_open += usize::from(contested_by == Some(true));
-            census.deep += usize::from(self.container_path.len() >= 3);
+            census.deep += usize::from(self.lexical.container_path.len() >= 3);
             c.set(census);
         });
         contested_by.is_some()
@@ -190,8 +193,8 @@ impl Resolver<'_> {
             reference,
             "head_contested_by_project_module({head}, {residual}) under {:?} (namespace depth \
              {}, opens {:?})",
-            &self.container_path[..],
-            self.namespace_depth,
+            &self.lexical.container_path[..],
+            self.lexical.namespace_depth,
             self.scope.explicit_open_prefixes
         );
     }
@@ -222,10 +225,11 @@ impl Resolver<'_> {
                 full.extend_from_slice(written);
                 out.push((full, true));
             }
-            for k in (self.namespace_depth.max(1)..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
+            for k in (self.lexical.namespace_depth.max(1)..=self.lexical.container_path.len()).rev()
+            {
+                let mut full = self.lexical.container_path[..k].to_vec();
                 full.extend_from_slice(written);
-                out.push((full, k == self.namespace_depth));
+                out.push((full, k == self.lexical.namespace_depth));
             }
         }
         out.push((written.to_vec(), true));
@@ -246,10 +250,10 @@ impl Resolver<'_> {
             fast,
             &reference[..],
             "open_interpretations({written:?}, rooted {rooted}) under {:?}",
-            &self.container_path[..]
+            &self.lexical.container_path[..]
         );
-        let tier_2 = (self.namespace_depth.max(1)..=self.container_path.len())
-            .map(|k| [&self.container_path[..k], written].concat())
+        let tier_2 = (self.lexical.namespace_depth.max(1)..=self.lexical.container_path.len())
+            .map(|k| [&self.lexical.container_path[..k], written].concat())
             .collect::<Vec<_>>();
         let enclosing_assembly_module = fast.iter().any(
             |i| matches!(i, OpenInterpretation::AssemblyModule(p) if !rooted && tier_2.contains(p)),
@@ -288,7 +292,7 @@ impl Resolver<'_> {
             uncovered,
             reference,
             "open_names_an_uncovered_dropped_path({written:?}, rooted {rooted}) under {:?}",
-            &self.container_path[..]
+            &self.lexical.container_path[..]
         );
         let listed = candidates.paths.iter().any(|(full, _)| raises(full));
         CENSUS.with(|c| {
@@ -323,8 +327,8 @@ impl Resolver<'_> {
                     return Some(full);
                 }
             }
-            for k in (1..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
+            for k in (1..=self.lexical.container_path.len()).rev() {
+                let mut full = self.lexical.container_path[..k].to_vec();
                 full.extend_from_slice(written);
                 if self.is_project_module_path(&full) {
                     CENSUS.with(|c| {
@@ -354,7 +358,7 @@ impl Resolver<'_> {
             fast,
             &self.reference_resolved_project_module(written, rooted),
             "resolved_project_module({written:?}, rooted {rooted}) under {:?}",
-            &self.container_path[..]
+            &self.lexical.container_path[..]
         );
     }
 
@@ -371,7 +375,7 @@ impl Resolver<'_> {
         let hit = |full: Vec<String>, tier: CaseTier| -> Option<(CrossFileCase, Vec<String>)> {
             match self
                 .preceding
-                .type_qualified_case(self.assemblies.names(), &full, &self.container_path)
+                .type_qualified_case(self.assemblies.names(), &full, &self.lexical.container_path)
                 .filter(|_| !self.value_shadows_case(&full))
             {
                 None => None,
@@ -396,8 +400,8 @@ impl Resolver<'_> {
                     return Some(found);
                 }
             }
-            for k in (1..=self.container_path.len()).rev() {
-                let mut full = self.container_path[..k].to_vec();
+            for k in (1..=self.lexical.container_path.len()).rev() {
+                let mut full = self.lexical.container_path[..k].to_vec();
                 full.extend_from_slice(written);
                 if let Some(found) = hit(full, CaseTier::Namespace) {
                     CENSUS.with(|c| {
@@ -430,7 +434,7 @@ impl Resolver<'_> {
             fast,
             &reference,
             "cross_file_type_case_located({written:?}, rooted {rooted}) under {:?}",
-            &self.container_path[..]
+            &self.lexical.container_path[..]
         );
     }
 }

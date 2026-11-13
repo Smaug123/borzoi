@@ -50,6 +50,7 @@ mod parser_diff_colon_equals;
 mod parser_diff_compexpr;
 mod parser_diff_cons;
 mod parser_diff_control_flow;
+mod parser_diff_decl_sequence_grid;
 mod parser_diff_dot_access;
 mod parser_diff_dot_index_spacing;
 mod parser_diff_dot_lambda;

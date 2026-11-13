@@ -149,7 +149,7 @@ fn run() -> Run {
     let def_types = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), ty.clone()))
+        .map(|(id, ty)| (resolved.def(*id).spelling(&env).into_owned(), *ty))
         .collect();
 
     let line_starts = line_starts(&corpus.fsharp);
@@ -596,10 +596,7 @@ fn arg_types(env: &AssemblyEnv, site: &Site) -> Vec<Ty> {
     site.arg_types
         .iter()
         .map(|canon| match canon.strip_suffix("[]") {
-            Some(elem) => Ty::Array {
-                elem: Box::new(Ty::named(env, elem)),
-                rank: 1,
-            },
+            Some(elem) => Ty::array(env, Ty::named(env, elem), 1),
             None => Ty::named(env, canon),
         })
         .collect()

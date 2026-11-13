@@ -27,7 +27,7 @@ use borzoi_assembly::{Access, Member, MethodLike, ParamDefault, Parameter, Primi
 
 use crate::assembly_env::{AssemblyEnv, BaseEdge, EntityHandle, MemberIndex};
 use crate::names::NameTable;
-use crate::ty::Ty;
+use crate::ty::{Ty, TyKind, TyTable};
 
 /// The inclusive caller-argument-count window `[min, max]` at which a candidate
 /// *could* be FCS-applicable — the arity half of `may_apply`'s
@@ -204,15 +204,15 @@ fn dotted_of(namespace: &[String], name: &str) -> String {
 impl ClosedTy {
     /// The closed-set classification of an inference [`Ty`] (a caller argument),
     /// or `None` if it is outside the set.
-    fn of_ty(names: &NameTable, ty: &Ty) -> Option<ClosedTy> {
-        match ty {
+    fn of_ty(names: &NameTable, tys: &TyTable, ty: Ty) -> Option<ClosedTy> {
+        match tys.kind(ty) {
             // A generic application is never a sealed primitive, so it falls
             // out of the closed set and declines.
-            Ty::Named { path, args } if args.is_empty() => {
+            TyKind::Named { path, args } if args.is_empty() => {
                 sealed_canon_path(&path.segments_in(names)).map(ClosedTy::Prim)
             }
-            Ty::Array { elem, rank: 1 } => match elem.as_ref() {
-                Ty::Named { path, args } if args.is_empty() => {
+            TyKind::Array { elem, rank: 1 } => match tys.kind(*elem) {
+                TyKind::Named { path, args } if args.is_empty() => {
                     sealed_canon_path(&path.segments_in(names)).map(ClosedTy::Vector)
                 }
                 _ => None,
@@ -287,7 +287,21 @@ impl AssemblyEnv {
     ///   interpretations both fail, and — when fewer args than the fixed
     ///   parameters are supplied (a leading optional omitted, ambiguous alignment)
     ///   — it is conservatively kept.
+    ///
+    /// `args` are types of the env's type table, as a published type is.
+    /// Inference asks it of a session's terms through `may_apply_in`.
     pub fn may_apply(&self, method: &MethodLike, declaring: &str, args: &[Ty]) -> bool {
+        self.may_apply_in(method, declaring, self.types(), args)
+    }
+
+    /// [`Self::may_apply`] over `args`, types of `tys`.
+    pub(crate) fn may_apply_in(
+        &self,
+        method: &MethodLike,
+        declaring: &str,
+        tys: &TyTable,
+        args: &[Ty],
+    ) -> bool {
         let window = arity_window(method);
         let n = args.len();
         // Arity prong.
@@ -299,7 +313,7 @@ impl AssemblyEnv {
             // Non-params: the sole interpretation aligns args[i] to params[i] for
             // i < n (any trailing optional/out run is omitted). Refute iff a
             // leading position is provably unconvertible.
-            return !(0..n).any(|i| self.position_refuted(&args[i], &params[i]));
+            return !(0..n).any(|i| self.position_refuted(tys, args[i], &params[i]));
         }
         // Params method. Fewer args than the fixed parameters means a leading
         // optional/out was omitted, so which argument lands on which parameter is
@@ -311,8 +325,8 @@ impl AssemblyEnv {
         // Otherwise the candidate survives if EITHER interpretation is unrefuted:
         // the expanded form (surplus args as elements) or, at exact arity, the
         // direct-array form (the trailing array passed whole).
-        let expanded_ok = !self.expanded_refuted(method, declaring, args);
-        let direct_ok = n == k && !(0..n).any(|i| self.position_refuted(&args[i], &params[i]));
+        let expanded_ok = !self.expanded_refuted(method, declaring, tys, args);
+        let direct_ok = n == k && !(0..n).any(|i| self.position_refuted(tys, args[i], &params[i]));
         expanded_ok || direct_ok
     }
 
@@ -320,11 +334,17 @@ impl AssemblyEnv {
     /// position: any leading fixed parameter, or any surplus argument against the
     /// trailing array's element type. Caller guarantees the trailing parameter is
     /// a param array and `args.len() + 1 >= params.len()`.
-    fn expanded_refuted(&self, method: &MethodLike, _declaring: &str, args: &[Ty]) -> bool {
+    fn expanded_refuted(
+        &self,
+        method: &MethodLike,
+        _declaring: &str,
+        tys: &TyTable,
+        args: &[Ty],
+    ) -> bool {
         let params = &method.signature.parameters;
         let k = params.len();
         for i in 0..k - 1 {
-            if self.position_refuted(&args[i], &params[i]) {
+            if self.position_refuted(tys, args[i], &params[i]) {
                 return true;
             }
         }
@@ -341,8 +361,8 @@ impl AssemblyEnv {
             && lower_bounds.is_empty()
             && let Some(elem) = ClosedTy::of_type_ref(&element.ty)
         {
-            for a in &args[k - 1..] {
-                if let Some(arg) = ClosedTy::of_ty(self.names(), a)
+            for &a in &args[k - 1..] {
+                if let Some(arg) = ClosedTy::of_ty(self.names(), tys, a)
                     && self.no_conversion_channel(&arg, &elem)
                 {
                     return true;
@@ -355,12 +375,12 @@ impl AssemblyEnv {
     /// Whether the argument `a` at parameter `p` is provably beyond every
     /// conversion channel (both closed-set, `p` not byref). A byref or open-typed
     /// position can never refute — its channels are open-ended.
-    fn position_refuted(&self, a: &Ty, p: &Parameter) -> bool {
+    fn position_refuted(&self, tys: &TyTable, a: Ty, p: &Parameter) -> bool {
         if p.is_byref {
             return false;
         }
         match (
-            ClosedTy::of_ty(self.names(), a),
+            ClosedTy::of_ty(self.names(), tys, a),
             ClosedTy::of_type_ref(&p.ty),
         ) {
             (Some(arg), Some(param)) => self.no_conversion_channel(&arg, &param),
@@ -471,7 +491,21 @@ impl AssemblyEnv {
     /// Applicability only: the caller (OV-6) separately bridges the return type
     /// (or records a `void` identity) at commit — a return the bridge declines
     /// defers there, not here.
+    ///
+    /// `args` are types of the env's type table, as a published type is.
+    /// Inference asks it of a session's terms through `must_apply_in`.
     pub fn must_apply(&self, method: &MethodLike, declaring: &str, args: &[Ty]) -> bool {
+        self.must_apply_in(method, declaring, self.types(), args)
+    }
+
+    /// [`Self::must_apply`] over `args`, types of `tys`.
+    pub(crate) fn must_apply_in(
+        &self,
+        method: &MethodLike,
+        declaring: &str,
+        tys: &TyTable,
+        args: &[Ty],
+    ) -> bool {
         // Deferred winner shapes (§5): generic, constructor, any byref/out param.
         if !method.generic_parameters.is_empty() || method.is_constructor {
             return false;
@@ -481,32 +515,38 @@ impl AssemblyEnv {
             return false;
         }
         // Every caller argument must be ground (no unsolved inference variable).
-        if !args.iter().all(Ty::is_ground) {
+        if !args.iter().all(|&a| tys.is_ground(a)) {
             return false;
         }
         if params.last().is_some_and(|p| p.is_param_array) {
-            return self.must_apply_expanded(method, declaring, args);
+            return self.must_apply_expanded(method, declaring, tys, args);
         }
         // Direct form: fully supplied, exact arity, every argument affirmed.
         args.len() == params.len()
             && args
                 .iter()
                 .zip(params)
-                .all(|(a, p)| self.arg_affirms(a, &p.ty, declaring))
+                .all(|(&a, p)| self.arg_affirms(tys, a, &p.ty, declaring))
     }
 
     /// The expanded-params affirmation: leading fixed parameters affirmed 1:1 and
     /// every surplus argument affirmed against the trailing array's element type
     /// (which must itself be closed — §5). Caller guarantees the trailing
     /// parameter is a param array.
-    fn must_apply_expanded(&self, method: &MethodLike, declaring: &str, args: &[Ty]) -> bool {
+    fn must_apply_expanded(
+        &self,
+        method: &MethodLike,
+        declaring: &str,
+        tys: &TyTable,
+        args: &[Ty],
+    ) -> bool {
         let params = &method.signature.parameters;
         let k = params.len();
         if args.len() + 1 < k {
             return false; // need at least k - 1 supplied
         }
         for i in 0..k - 1 {
-            if !self.arg_affirms(&args[i], &params[i].ty, declaring) {
+            if !self.arg_affirms(tys, args[i], &params[i].ty, declaring) {
                 return false;
             }
         }
@@ -529,13 +569,13 @@ impl AssemblyEnv {
         }
         args[k - 1..]
             .iter()
-            .all(|a| self.arg_affirms(a, &element.ty, declaring))
+            .all(|&a| self.arg_affirms(tys, a, &element.ty, declaring))
     }
 
     /// Whether argument `a` affirms parameter type `p`: structural type-equality
     /// or provable subsumption `a :> p`. No type-directed conversion (§4.3).
     ///
-    /// A **named** argument's identity is *assembly-qualified*, but [`Ty::Named`]
+    /// A **named** argument's identity is *assembly-qualified*, but [`TyKind::Named`]
     /// carries only a dotted path (no assembly — a §7 representational limit) and
     /// the env's first-wins index collapses a colliding FQN onto one handle. So a
     /// named type whose identity we cannot prove — one whose FQN two referenced
@@ -543,15 +583,15 @@ impl AssemblyEnv {
     /// sibling may have been dropped, making the "unique" count unreliable) — must
     /// not affirm ([`Self::ty_named_unprovable`]); an `A::N.X` argument must not
     /// affirm a `B::N.X` parameter. This is checked **recursively**, so it also
-    /// covers a named type nested inside a `Ty::Array` (`A::N.X[]`), which
+    /// covers a named type nested inside a `TyKind::Array` (`A::N.X[]`), which
     /// [`ty_equiv`] would otherwise compare element-vs-element with no assembly
     /// identity. A sealed BCL primitive (and `System.Object`) is CLR-unique, so the
     /// common literal-argument path is unaffected (review, GPT-5.6).
-    fn arg_affirms(&self, a: &Ty, p: &TypeRef, declaring: &str) -> bool {
-        if self.ty_named_unprovable(a) {
+    fn arg_affirms(&self, tys: &TyTable, a: Ty, p: &TypeRef, declaring: &str) -> bool {
+        if self.ty_named_unprovable(tys, a) {
             return false;
         }
-        ty_equiv(self.names(), a, p) || self.is_subtype(a, p, declaring)
+        ty_equiv(self.names(), tys, a, p) || self.is_subtype(tys, a, p, declaring)
     }
 
     /// Whether the argument type `a` contains (at any depth) a **named type whose
@@ -559,14 +599,14 @@ impl AssemblyEnv {
     /// by two referenced assemblies, or its namespace had a dropped type (a
     /// same-FQN sibling may have been dropped, so a lone surviving entry need not
     /// be the argument's actual type). A **sealed BCL primitive** (and
-    /// `System.Object`) is CLR-unique and always provable; a `Ty::Array` recurses
+    /// `System.Object`) is CLR-unique and always provable; a `TyKind::Array` recurses
     /// into its element.
-    fn ty_named_unprovable(&self, a: &Ty) -> bool {
-        match a {
-            Ty::Named { path, args } => {
+    fn ty_named_unprovable(&self, tys: &TyTable, a: Ty) -> bool {
+        match tys.kind(a) {
+            TyKind::Named { path, args } => {
                 // A generic ARGUMENT is a named type too, and just as able to be
                 // unprovable — so it is asked before the head's own shortcut.
-                if args.iter().any(|a| self.ty_named_unprovable(a)) {
+                if args.iter().any(|&a| self.ty_named_unprovable(tys, a)) {
                     return true;
                 }
                 let path = path.spelled(self.names());
@@ -584,7 +624,7 @@ impl AssemblyEnv {
                 self.public_types_named(namespace, name).len() > 1
                     || self.namespace_has_dropped_type(namespace)
             }
-            Ty::Array { elem, .. } => self.ty_named_unprovable(elem),
+            TyKind::Array { elem, .. } => self.ty_named_unprovable(tys, *elem),
             _ => false,
         }
     }
@@ -594,8 +634,8 @@ impl AssemblyEnv {
     /// ([`AssemblyEnv::super_types`]). Only named argument types resolve; an
     /// array/tuple/function argument, or a `p` that cannot be resolved to an
     /// entity (generic, nested, absent), declines (`false`, hence a deferral).
-    fn is_subtype(&self, a: &Ty, p: &TypeRef, declaring: &str) -> bool {
-        let Ty::Named { path, args } = a else {
+    fn is_subtype(&self, tys: &TyTable, a: Ty, p: &TypeRef, declaring: &str) -> bool {
+        let TyKind::Named { path, args } = tys.kind(a) else {
             return false;
         };
         // A generic application's base/interface closure is instantiation-
@@ -613,7 +653,7 @@ impl AssemblyEnv {
         self.super_types(a_handle).contains(&p_handle)
     }
 
-    /// Resolve a `Ty::Named` dotted path to its interned handle.
+    /// Resolve a `TyKind::Named` dotted path to its interned handle.
     fn lookup_path(&self, path: &[String]) -> Option<EntityHandle> {
         let (name, namespace) = path.split_last()?;
         self.lookup_type(namespace, name, 0)
@@ -662,11 +702,12 @@ impl AssemblyEnv {
     pub(crate) fn resolve_overload<'g>(
         &self,
         group: &[(EntityHandle, MemberIndex, &'g MethodLike)],
+        tys: &TyTable,
         args: &[Ty],
     ) -> Option<(EntityHandle, MemberIndex, &'g MethodLike)> {
-        let mut survivors = group
-            .iter()
-            .filter(|(level, _, m)| self.may_apply(m, &self.entity(*level).assembly.name, args));
+        let mut survivors = group.iter().filter(|(level, _, m)| {
+            self.may_apply_in(m, &self.entity(*level).assembly.name, tys, args)
+        });
         let &(level, idx, m) = survivors.next()?;
         // A second `may_apply` survivor means ≥ 2 candidates could be applicable,
         // so FCS would run betterness (which v1 does not model) — defer.
@@ -675,27 +716,29 @@ impl AssemblyEnv {
         }
         // The lone survivor must be provably applicable (the winner affirmation),
         // not merely un-refuted; otherwise it is a §5 deferral shape.
-        self.must_apply(m, &self.entity(level).assembly.name, args)
+        self.must_apply_in(m, &self.entity(level).assembly.name, tys, args)
             .then_some((level, idx, m))
     }
 }
 
 /// Structural type-equality between an inference [`Ty`] and a metadata
 /// [`TypeRef`] — the `typeEquiv` half of affirmation (§4.3). Named/primitive
-/// types compare by canonical dotted path (so `Ty::Named(System.Int32)` equals
+/// types compare by canonical dotted path (so `TyKind::Named(System.Int32)` equals
 /// `TypeRef::Primitive(I4)`); a plain vector compares by rank and element.
 /// Anything else (generic instantiation, byref, bounded array, tuple/function
 /// argument) is *not* affirmed here — conservative, hence a deferral.
-fn ty_equiv(names: &NameTable, a: &Ty, p: &TypeRef) -> bool {
-    match a {
-        Ty::Named { path, args } => args.is_empty() && named_matches(&path.segments_in(names), p),
-        Ty::Array { elem, rank } => matches!(
+fn ty_equiv(names: &NameTable, tys: &TyTable, a: Ty, p: &TypeRef) -> bool {
+    match tys.kind(a) {
+        TyKind::Named { path, args } => {
+            args.is_empty() && named_matches(&path.segments_in(names), p)
+        }
+        TyKind::Array { elem, rank } => matches!(
             p,
             TypeRef::Array { element, rank: r2, sizes, lower_bounds }
                 if sizes.is_empty()
                     && lower_bounds.is_empty()
                     && *rank == u32::from(*r2)
-                    && ty_equiv(names, elem, &element.ty)
+                    && ty_equiv(names, tys, *elem, &element.ty)
         ),
         _ => false,
     }
@@ -726,7 +769,7 @@ fn named_matches(path: &[&str], p: &TypeRef) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ty::TyVid;
+    use crate::ty::{TyTable, TyVid};
     use borzoi_assembly::{
         AssemblyIdentity, Entity, EntityKind, MethodSignature, Nullability, NullableType,
         TypeParameter, UnionCases, Variance, Version,
@@ -1367,7 +1410,7 @@ mod tests {
         );
         let group = vec![(h, MemberIndex::new(0), &m1), (h, MemberIndex::new(1), &m2)];
         let (_, idx, _) = env
-            .resolve_overload(&group, &[int_ty(&env)])
+            .resolve_overload(&group, env.types(), &[int_ty(&env)])
             .expect("a unique arity-surviving candidate commits");
         assert_eq!(idx.index(), 0, "the one-argument overload is chosen");
     }
@@ -1392,7 +1435,8 @@ mod tests {
             (h, MemberIndex::new(1), &m_str),
         ];
         assert!(
-            env.resolve_overload(&group, &[str_ty(&env)]).is_none(),
+            env.resolve_overload(&group, env.types(), &[str_ty(&env)])
+                .is_none(),
             "two may_apply survivors defer (betterness would run)"
         );
     }
@@ -1414,14 +1458,15 @@ mod tests {
         );
         let group = vec![(h, MemberIndex::new(0), &m)];
         assert!(
-            env.resolve_overload(&group, &[int_ty(&env)]).is_none(),
+            env.resolve_overload(&group, env.types(), &[int_ty(&env)])
+                .is_none(),
             "a widening-only survivor is not affirmed, so the group defers"
         );
     }
 
     #[test]
     fn must_apply_declines_an_ambiguous_named_argument() {
-        // OV-6 review (GPT-5.6): a bare `Ty::Named` lost its assembly, and the env's
+        // OV-6 review (GPT-5.6): a bare `TyKind::Named` lost its assembly, and the env's
         // first-wins index collapses a colliding FQN. When two referenced assemblies
         // both declare `N.X`, an `A::N.X` argument must not affirm a `B::N.X`
         // parameter — `must_apply` declines. A *uniquely*-named argument still
@@ -1466,13 +1511,10 @@ mod tests {
         );
 
         // The ambiguity guard is **recursive**: an ambiguous named type nested in a
-        // `Ty::Array` (`N.X[]`) must also decline — `ty_equiv` would otherwise
+        // `TyKind::Array` (`N.X[]`) must also decline — `ty_equiv` would otherwise
         // compare element paths with no assembly identity.
         let m_x_arr = method("M", vec![param(vector(named(&["N"], "X")))], int_ty_ref());
-        let arg_arr = Ty::Array {
-            elem: Box::new(Ty::named(&env, "N.X")),
-            rank: 1,
-        };
+        let arg_arr = Ty::array(&env, Ty::named(&env, "N.X"), 1);
         assert!(
             !env.must_apply(&m_x_arr, ASM, std::slice::from_ref(&arg_arr)),
             "an array of an ambiguous named type cannot affirm either"
@@ -1606,16 +1648,26 @@ mod tests {
         ]
     }
 
+    /// The inference session's table the generated arguments are interned in,
+    /// over [`shared_bcl`]'s names: a variable is never the env's.
+    fn session() -> &'static TyTable {
+        static SESSION: std::sync::OnceLock<TyTable> = std::sync::OnceLock::new();
+        SESSION.get_or_init(TyTable::session)
+    }
+
     /// A ground closed argument type, plus an occasional non-ground `Var` (to
-    /// exercise the `must_apply` groundness gate) and `obj`.
+    /// exercise the `must_apply` groundness gate) and `obj`, in [`session`].
     fn arb_arg() -> impl Strategy<Value = Ty> {
+        let named = |p| {
+            session().named(
+                shared_bcl().names(),
+                primitive_canon(p).unwrap_or("System.Object"),
+            )
+        };
         prop_oneof![
-            8 => arb_prim().prop_map(|p| Ty::named(shared_bcl(), primitive_canon(p).unwrap_or("System.Object"))),
-            2 => arb_prim().prop_map(|p| Ty::Array {
-                elem: Box::new(Ty::named(shared_bcl(), primitive_canon(p).unwrap_or("System.Object"))),
-                rank: 1,
-            }),
-            1 => (0u32..4).prop_map(|v| Ty::Var(TyVid(v))),
+            8 => arb_prim().prop_map(named),
+            2 => arb_prim().prop_map(move |p| session().array(named(p), 1)),
+            1 => (0u32..4).prop_map(|v| session().var(TyVid(v))),
         ]
     }
 
@@ -1663,8 +1715,8 @@ mod tests {
         #[test]
         fn must_implies_may(m in arb_method(), args in prop::collection::vec(arb_arg(), 0..4)) {
             let env = shared_bcl();
-            if env.must_apply(&m, ASM, &args) {
-                prop_assert!(env.may_apply(&m, ASM, &args));
+            if env.must_apply_in(&m, ASM, session(), &args) {
+                prop_assert!(env.may_apply_in(&m, ASM, session(), &args));
             }
         }
 
@@ -1698,7 +1750,7 @@ mod tests {
             args in prop::collection::vec(arb_arg(), 0..4),
         ) {
             let env = shared_bcl();
-            if env.must_apply(&m, ASM, &args) {
+            if env.must_apply_in(&m, ASM, session(), &args) {
                 prop_assert!(arity_window(&m).contains(args.len()));
             }
         }
@@ -1730,7 +1782,7 @@ mod tests {
             }
             let m = method("M", params, TypeRef::Primitive(Primitive::I4));
             prop_assert_eq!(
-                env.may_apply(&m, ASM, &args),
+                env.may_apply_in(&m, ASM, session(), &args),
                 arity_window(&m).contains(args.len())
             );
         }

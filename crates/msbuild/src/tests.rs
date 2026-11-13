@@ -468,6 +468,28 @@ fn compile_update_compile_order_declines_a_stranded_prefix() {
     assert!(stranded("/repo/proj/./A.fs;/repo/proj/A.fs"));
 }
 
+/// A strand survives across `Update`s when no batch is pending to flush it
+/// (found by `fsproj_compile_order_generative_diff`): the first `Update`
+/// leaves the batch at its escaped second fragment, stranding `./A.fs`; the
+/// second leaves at `A.fs`, stranding `B.fs` with `CompileFirst`, which the
+/// final flush applies over the later `CompileAfter`. MSBuild compiles `B`
+/// first; the walk must decline rather than order it last.
+#[test]
+fn compile_update_strand_without_a_pending_batch_declines() {
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Update="./A.fs;S%3bq.fs" Visible="false" />
+    <Compile Update="B.fs;A.fs">
+      <CompileOrder>CompileFirst</CompileOrder>
+    </Compile>
+    <Compile Include="B.fs;C.fs" />
+    <Compile Update="B.fs" CompileOrder="CompileAfter" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(p.items_uncertain, "{:?}", p.diagnostics);
+}
+
 #[test]
 fn compile_update_compile_order_keeps_original_order_within_bucket() {
     let src = r#"<Project>
@@ -4536,6 +4558,47 @@ fn duplicate_identity_package_update_marks_the_set_uncertain() {
             "an Update before the Include is a no-op for spec {update:?}"
         );
     }
+}
+
+#[test]
+fn an_update_leaving_batched_entries_marks_the_set_uncertain() {
+    // Found by the generative oracle; the mechanism is MSBuild's
+    // `LazyItemList.ComputeItems`. An `Update` that cannot join the batch of
+    // updates at its second fragment or later (here: a fragment an earlier
+    // `Update` named) removes its earlier fragments by text, not by the
+    // batch's full-path key, so they stay and are applied at the next
+    // flush, after the `Include`. Probed (dotnet 10): `Beta` gets the
+    // override. The leaving `Update` need not write a package metadatum,
+    // and need not run: a condition-false one is batched too.
+    for first in [
+        r#"<PackageReference Update="Alpha;Alpha" />"#,
+        r#"<PackageReference Update="Alpha;Alpha" Condition="'$(NeverSet)' == 'true'" />"#,
+    ] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    {first}
+    <PackageReference Update="Beta;Alpha" VersionOverride="1.0" />
+    <PackageReference Include="Alpha;Beta" Version="1.0" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert!(
+            p.package_references_uncertain,
+            "{first}: the second Update leaves Beta's override in the batch"
+        );
+    }
+    // Two single-fragment Updates of one identity leave nothing: the second
+    // fails at its first fragment, before adding any.
+    let src = r#"<Project>
+  <ItemGroup>
+    <PackageReference Update="Alpha" VersionOverride="1.0" />
+    <PackageReference Update="Alpha" VersionOverride="2.0" />
+    <PackageReference Include="Alpha" Version="1.0" />
+  </ItemGroup>
+</Project>"#;
+    assert!(!parse(src).package_references_uncertain);
 }
 
 #[test]

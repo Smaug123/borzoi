@@ -5,9 +5,10 @@
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
 > product on ids), 5 (the remaining path and name keys, in three parts), 6a
 > (export-declaration paths on ids), 6b (definitions' names on ids), 6c
-> (exports' published names on ids), 7 (`Ty` paths on ids), 9
-> (`OpenScope`) and 10 (file-wide unknowables and windows) implemented;
-> Stage 8's gate re-measured at Stage 7 and not met.
+> (exports' published names on ids), 7 (`Ty` paths on ids), 8
+> (hash-consed `Ty`, built at the user's direction past its unmet gate), 9
+> (`OpenScope`), 10 (file-wide unknowables and windows) and 11 (the
+> resolver split) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -301,6 +302,17 @@ With the groups as separate fields, a method can borrow the indexes while
 writing the output, which replaces clones made only to satisfy the borrow
 checker. This is a refactor, and it is worth doing for local reasoning, not
 for counts.
+
+Two corrections, settled when Stage 11 split the fields:
+
+- **The walk's position is a group too.** The scope stacks, the container
+  path, the current block's facts and the parked frames of other containers
+  are none of the above. They are pushed, popped and replaced as the walk
+  enters and leaves declarations, so they form a sixth group, `Lexical`.
+- **The indexes are not only grown.** A redefined type's cases and members
+  are removed before the new ones are filed, and every keyed insert is
+  last-wins. What sets the indexes apart from `Lexical` is that nothing in
+  them is undone when the walk leaves the scope that recorded it.
 
 ### D7. Keeping the differentials meaningful
 
@@ -1054,7 +1066,7 @@ not-converted list (`namespace_paths`, the hidden-value and opaque-case
 sets, the simple-name indexes): a follow-up to 5a, to be taken when a profile
 of resolve shows them, which none has.
 
-### Stage 8 (gated): hash-consed `Ty`
+### Stage 8: hash-consed `Ty`
 
 **Dependencies**: Stage 7. **Implements**: D4's second half.
 
@@ -1073,6 +1085,124 @@ classification over Stage 7's premise profile at `7cf250bd` gives 7.4%; the
 `Vec<String>` and `String` clones that profile counted at 3.5% each were the
 paths', and are 0.6% each now, none of them `Ty`'s. Infer is 159.5
 instructions per byte beside resolve's 865.5.
+
+**Built at the user's direction.** The gate is not met, and the stage was
+built anyway. Another session ran a larger test showing that it pays off once
+the type checker covers more of F#, where inference builds and compares far
+more types than the 5,554 published nodes the census counts today. The
+measurement above stays as the record of where the gate stood.
+
+**Implemented** (`ty.rs`, `ty/table.rs`, `ty/reference.rs`, `unify.rs`):
+
+- **`Ty` is an id.** A `Ty` is a `Copy` index into a `TyTable`, whose node
+  is a `TyKind` (the variants `Ty` had, children as ids). The table interns a
+  node and returns the id it already holds for an equal one, so equality and
+  hashing compare ids. Like the name table's ids, `Ty` has no `Ord`, and in
+  a debug build it carries its table's tag: comparing ids of two tables, or
+  reading one against the wrong table, panics. Each node records its tree's
+  size and depth and whether a variable occurs in it, so `size` and
+  `is_ground` are constant-time.
+- **Two kinds of table.** An inference session (`infer_file`) builds its
+  terms in a table of its own, which dies with it. The env's table
+  (`AssemblyEnv::types`) holds what a file publishes and every scheme: the
+  project's cases and records, and the module functions, union cases and
+  conversion targets the bridge reads off assemblies. All of it is ground,
+  and interning a variable into it panics. A scheme the env holds reaches a
+  session through instantiation, which reads from the table it names
+  (`Gen::instantiate`), and what a session publishes is copied out once, at
+  `finish`, through a memo. **Departure:** D4 says only ground published
+  types can be env-scoped. The schemes are env-scoped too, since they are
+  ground and the session reads both its own file's and earlier files' through
+  the one instantiation; a session-scoped scheme would need a second path for
+  the files before it.
+- **What the tags caught.** While the stage was built, a conversion's
+  target (`int x`'s `int`, an env scheme) was unified into a session's terms
+  without being copied in. Seven tests of the sema suite failed on the tag
+  check, none of them written for it.
+- **The type budget.** A shared subterm is one node in the table and many
+  in the tree, and the budget bounds trees: every walk that resolves, unifies
+  or renders a type visits each place a subterm occurs. So the counts stay
+  the tree's. A node's recorded size is its tree's, saturating. The walks of
+  the unification table count a variable-free subterm (which resolves to
+  itself, holds no occurrence, and unifies with itself) in one step when its
+  whole tree fits what is left of the budget, and node by node otherwise, in
+  the order the walk would visit it, so the bound reported is the walk's.
+  A unification of a variable-free type with itself is then one step, which
+  is what an id comparison buys a unifier.
+- **Interning.** A session's table is probed once, under its lock; the
+  env's, shared by test threads, under the read lock first. A variable's node
+  is read by the variable's index, without hashing.
+- **The LSP's cap.** `AssemblyEnv::interned_count` counts the type table
+  beside the name table, and the server checks the cap after an inference
+  fold as well as after a resolution fold, since inference is what grows the
+  type table (`an_env_an_inference_takes_past_its_cap_is_rebuilt`).
+- **Outside sema.** The LSP and corpus-diff read a published type through
+  `Ty::kind(env)` and build one through `Ty::named`, `Ty::app`, `Ty::tuple`
+  and their siblings, which intern into the env's table.
+  `AssemblyEnv::may_apply` and `must_apply` keep their signatures, over the
+  env's table, beside `_in` variants that take a session's.
+- **Lockstep.** Under `interning-reference` in a debug build, the table keeps
+  a reference index keyed by each node's spelling (its paths' carried
+  segments and its children's ids), apart from `TyKind`'s own `Hash` and
+  `Eq`, and asserts on every intern that the two agree and that the id holds
+  the node. Both renderers stay held to the string form, now walking the
+  table.
+- **Oracles.** `ty::spelled_form` holds the interned form to `SpelledTy`, an
+  owned tree, over generated types that share subterms, in tables pre-filled
+  with decoy paths and types: converting is the identity, two types are one
+  id exactly when their trees are equal, a node's recorded size and
+  groundness are a walk's, copying between tables keeps the tree, and the
+  renderings are the tree's. The unifier's reference MGU now works on owned
+  trees, so it shares nothing with the table.
+  `ground_subterms_count_as_their_nodes_do` holds the one-step counting to
+  node-by-node counting (answers, bounds and recorded walks). The interning-order test
+  fills the second env's type table first with every type the first run
+  published plus decoys, shuffled, and has each of its inference sessions
+  intern them too, in another order, before it starts.
+
+**Planted bugs.** Fourteen, each run against the library suite and the
+inference and interning-order groups of the integration suite:
+
+| planted bug | caught by |
+|---|---|
+| a node's depth not one more than its deepest child's | the size property, the shared-subterm test, the one-step counting property, `infer_type_budget` |
+| a node's count its children's number, not their trees' | the size property, the shared-subterm test, the one-step counting property |
+| a child's variable not making its parent non-ground | 36 library tests and 78 integration tests (the ground table refuses the published variable) |
+| one-step counting a subterm's depth one short | the one-step counting property |
+| one-step counting a subterm a variable occurs in | 56 library and 129 integration tests |
+| a variable-free term unifying in one step with any other | the reference MGU and five other unifier properties, eight inference differentials |
+| interning that never finds a node it holds | the reference index, in 97 library and 151 integration tests |
+| interning that finds an array of another rank | the reference index, the conversion, size, import and render properties, `infer_binder_types_diff`, the interning-order corpus sample |
+| a conversion's target unified without being copied in | the tag check, in five inference differentials and the interning-order corpus sample |
+| receiver types published as the session's ids | the tag check, in the interning-order test's whole-fold comparison |
+| a project record's fields published as the session's ids | the tag check, in six record and union differentials and the interning-order test |
+| a scheme's parameters numbered by their variables' ids | two generalisation unit tests and eight FCS differentials; **passed the interning-order test**, whose sessions moved every id by the same offset and whose generated programs had no generic function. Each session now also interns its first 512 variables in a shuffled order before it starts, and the generated programs declare two generic functions: the test fails on it, and passes on it without the shuffled variables |
+| the env's table taking a variable | `a_ground_table_refuses_an_inference_variable` |
+| a copy between tables memoised under the copy's id | the tag check, in 36 library and 130 integration tests |
+
+**Measured** (on main at `aad4bca5`, after Stage 11): `infer_file` 159.0 →
+160.6 instructions per byte (+1.0%), allocations 0.093 → 0.062 per byte
+(−33%), reallocations 0.008 → 0.009, bytes allocated 7.5 → 8.7 per byte;
+`resolve_file` 865.1 → 863.8 and `resolve_project` 867.0 → 864.1, their code
+unchanged; parse 509.8 → 510.1. A first cut that probed a session's table
+twice per node and hashed every variable's node measured 163.0; probing once
+and reading a variable's node by its index brought it to 160.6. Counting a
+variable-free subterm in one step is neutral on the corpus (160.1 without
+it), whose largest walked type is 54 nodes: it bounds what a large shared type
+costs a walk, which the corpus does not yet hold. The whole-corpus dump of
+Stage 7 (resolutions, attribute resolutions, decline sites, definitions,
+diagnostics, exports, opaque binders and regions, namespace paths and
+inferred types; each file alone, each directory as a project, and each signed
+directory's implementation files inferred as one project) is byte-identical
+before and after, each type printed in Stage 7's Debug layout.
+
+**The gate's profile, after.** The same classification over a Time Profiler
+run of `sema_counts` (six repetitions; 1,129 samples in `infer_file`, 1,504
+before) puts `Ty`'s drop and clone at 0% (2.2% and 1.8% before) and leaves
+1.2% under hashing, all of it the type table hashing a node to intern it; the
+union is 1.2%, against 4.0% before. The table itself — interning, its map's
+growth, copying out — is 5.1% of the samples, about what the instruction count
+says it adds.
 
 ### Stage 9: `OpenScope`
 
@@ -1212,6 +1342,131 @@ are final. **Implements**: D6.
 **Oracle**: the compiler, and every gate unchanged, `walk_stack_bound`
 included. Any clone removed because borrows can now be split shows up in
 Stage 0's allocation column.
+
+**Implemented** (`resolve/state.rs`, `resolve/prescan.rs`,
+`resolve/lexical.rs`, `resolve/indexes.rs`, `resolve/output.rs`):
+
+- **The groups.** `Resolver`'s 86 fields are now ten. Five are the borrowed
+  inputs: `preceding`, `assemblies`, `item_base`, `recovery` and `prescan`.
+  Two are D5's `scope` and `windows`. The other three are new groups:
+  `lexical` (`Lexical`, 15 fields), `index` (`Indexes`, 32) and `out`
+  (`Output`, 19). The field accesses were rewritten from the compiler's
+  errors, and the intra-doc links from rustdoc's, so no hand edit moved a
+  field into the wrong group.
+- **`Prescan`** holds every fact computed before the walk. That is the ten
+  whole-file name scans Stage 10 left (`own_type_simple_names`,
+  `own_binder_simple_names` and their siblings), the namespace-dropped
+  declarations and the implicit-open count. It also holds the part of
+  `FileContributions` the walk used to have written into its output before
+  it started: the extension statics, the custom operations and the two
+  alias flags. The walk reads them through `&'a Prescan`, so writing one is
+  a compile error. The extension statics were collected twice, once for the
+  walk and once for the output. They are now collected once and published
+  at the end.
+- **`Output`** is exactly what the `ResolvedFile` publishes.
+  `Output::into_resolved_file` moves it there with the prescan's published
+  facts, and destructures it exhaustively, so a field added to `Output`
+  fails to compile until it is published. The walk's half of the
+  contributions is `OpenContributions`. `Unknowables` is published, so it is
+  part of `Output`.
+- **`Lexical`** is where the walk is: the value and type-parameter scope
+  stacks, the module frames, the container path and namespace depth, the
+  current block's facts, and the frames of the containers the walk is not in.
+  `module_frame` and the replay of the block's own namespace fold are its
+  methods, so they borrow nothing else.
+- **`Indexes`** is everything else the walk records for its own lookups.
+  `member_decl_counts`, which counts the output's declaration list but is
+  not published, is one of them.
+- **Deleted**: `type_slot_classes`, which every type definition wrote and
+  nothing read. `type_slot_history` answers every question it was kept for.
+
+**The borrows split.** These clones and intermediate vectors existed so that a
+`&mut self` call could follow a read of `self`:
+
+- `earlier_block_contributions` cloned this file's root contribution to push
+  it into the block's frame. `push_contribution` now takes only the scope and
+  `Lexical`, so the contribution is borrowed from `Output`.
+- `replay_own_namespace_fold` cloned the whole recorded fold.
+  `Lexical::replay_own_namespace_fold` reads it beside the frame it writes.
+- Both callers of `add_type_members` cloned the container path to pass it in.
+  The method reads it from `Lexical` beside the index it writes.
+- Seven vectors of scope entries were collected so that the push could
+  borrow `self` mutably: `push_contribution`'s marks, `open_type_statics`'s
+  entries, the implicit union cases, an opened union type's cases, an
+  `[<AutoOpen>]` module's recognizer cases, the signatured slot marks and a
+  namespace fold's evicting types. They now stream into the frame.
+- Three clones were never needed, because their source is a shared input,
+  not `self`: `block_start_contributions` cloned the earlier files' root
+  contribution, `open_auto_open_modules_in` copied the env's handle list, and
+  three lookups copied the container path only to lend it as a slice.
+- `recovery` is borrowed, and cloned once when the file is published, not
+  twice.
+
+**Not taken**: `insert_member` still clones the container path for each
+member, as the owned key of `entry`. That cost comes from the key's type, a
+`Vec<String>`, which belongs with 5a's not-converted list.
+
+**Oracle and planted bugs.** Every gate is unchanged, `walk_stack_bound` and
+its ignored cases included, and the `interning-reference` lockstep stays. The
+whole-corpus dump of Stage 7 is byte-identical before and after. Two planted
+bugs are the compiler's to catch, and eleven were run against the whole sema
+suite:
+
+- the walk writing a prescan fact: E0596, since the walk holds the prescan
+  by shared reference;
+- a field added to `Output` that nothing publishes: E0027, from the
+  exhaustive destructure;
+- this file's earlier blocks' root contribution read from the earlier files'
+  instead: `assembly_union_case_table`;
+- the replayed own-namespace fold keeping the generations it was recorded at:
+  **passed the whole suite**. A test that an explicit `open N` after a
+  barrier re-adds an earlier file's `[<AutoOpen>]` value
+  (`a_self_open_after_a_barrier_re_adds_at_its_own_generation`) now fails on
+  it;
+- the replayed fold raising none of its barriers: **passed the whole suite
+  and the sema corpus sweeps, and is not caught**. The corpus dump moves 945
+  lines under it, and the commits it adds are in FSharp.Core's own sources
+  resolved as one project, which no gate grades against FCS. In `printf.fs`,
+  `open Microsoft.FSharp.Core` inside that namespace replays a fold whose
+  `[<AutoOpen>] Operators` fragment hides names, so the referenced
+  FSharp.Core's operators must go stale behind its barrier. Without the
+  barrier, `+` commits to the referenced `Operators.(+)` where FCS binds the
+  project's own. The synthetic shapes probed (an earlier file's
+  `[<AutoOpen>]` module with an active pattern or an `extern`) do not
+  reach it. A test for it needs an implicitly opened name that a project
+  fragment redefines out of the walk's sight, as FSharp.Core's sources do;
+- an unlisted contribution that stales nothing: `assembly_union_case_table`
+  and `unmodelled_contributor_grid`;
+- a type's members filed under the block's header container instead of the
+  current one: 4 cases of `resolve_type_members` and
+  `resolve_type_qualified_cases`;
+- the prescan's extension statics left unpublished: **passed the whole
+  suite**, since every route the contributor grid had used the probe file's
+  own augmentations. A route with an earlier file's augmentation
+  (`OpenTypeEarlierFileExtension`) now gives 22 wrong cells on it;
+- the walk's root contribution left unpublished: `assembly_union_case_table`,
+  `contributor_name_oracle` and `unmodelled_contributor_grid`;
+- the unplaced types counted against no placed type: 52 cases;
+- the prescanned custom operations ignoring the file's own
+  `CustomOperationAttribute` abbreviation: **passed the whole suite**. A test
+  with the abbreviation in the file
+  (`an_abbreviation_the_file_declares_may_name_its_augmentations_operations`)
+  now fails on it;
+- the caller's recovery left unpublished: 46 cases;
+- an implicitly opened namespace's `[<AutoOpen>]` modules opened in reverse:
+  **passed the whole suite**, and the corpus dump is identical under it. The
+  stage changed only how that loop borrows the handles, not their order.
+
+**Measured** on the build box, each phase the median of five processes
+(the box's counts are lower than this machine's for the same code):
+`resolve_file` 773.3 → 776.6 instructions per byte (+0.4%), allocations
+0.686 → 0.683 per byte (−0.4%), bytes allocated 50.1 → 49.6 per byte; the
+whole tree as one project (`resolve_project`) 788.1 → 790.6 (+0.3%),
+allocations 0.609 → 0.606, bytes allocated 53.4 → 52.7; infer 149.9 → 147.7
+with its code unchanged; parse 509.1 before and after. The allocations the
+removed clones and vectors cost are gone; the instruction change is the size
+of infer's with no code change, as at Stages 4 and 10. About 0, as D6 says:
+the stage buys the lifetimes, not speed.
 
 ### Stage 12: retire the string reference
 

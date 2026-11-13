@@ -65,7 +65,7 @@ impl<'a> Resolver<'a> {
         // scope but `open_module_values` does not enumerate, so opening this module
         // may shadow earlier opens (see [`Self::modules_with_hidden_values`]).
         if prepared.iter().any(|p| !p.eager_entries.is_empty()) {
-            self.note_hidden_value_module(self.container_path.to_vec());
+            self.note_hidden_value_module(self.lexical.container_path.to_vec());
         }
 
         // Active-pattern cases follow the same `rec` discipline as ordinary value
@@ -130,7 +130,7 @@ impl<'a> Resolver<'a> {
             .unwrap_or_default();
         let pushed_typars = !typar_frame.is_empty();
         if pushed_typars {
-            self.typar_scopes.push(typar_frame.clone());
+            self.lexical.typar_scopes.push(typar_frame.clone());
         }
         if let Some(head) = binding.pat() {
             // Type annotations in the head (`let f (x : T) = …`) name types, not
@@ -162,7 +162,7 @@ impl<'a> Resolver<'a> {
             let names = pattern_names(
                 &head,
                 BinderRole::Let,
-                &self.excluded_param_ranges,
+                &self.index.excluded_param_ranges,
                 self.assemblies,
             );
             let mut aliases = AliasTargets::default();
@@ -177,7 +177,7 @@ impl<'a> Resolver<'a> {
                 // whichever kind it is — before the alias and `provisional`
                 // branches — leaving that expression resolution intact and no
                 // scope entry.
-                if self.excluded_param_ranges.contains(&pat_name.range()) {
+                if self.index.excluded_param_ranges.contains(&pat_name.range()) {
                     continue;
                 }
                 let def = match pat_name {
@@ -215,11 +215,11 @@ impl<'a> Resolver<'a> {
                 if is_value {
                     // Project-global handle: this file's items occupy the
                     // contiguous range starting at `item_base`.
-                    let item_idx = self.items.len();
+                    let item_idx = self.out.items.len();
                     let item_id = ItemId::new(self.item_base as usize + item_idx);
                     let decl_path = self.decl_path(&[name]);
                     let qualified = self.value_export_path(&decl_path);
-                    self.items.push(ExportedItem {
+                    self.out.items.push(ExportedItem {
                         name: self.export_name(id, name),
                         qualified,
                         id: item_id,
@@ -276,7 +276,7 @@ impl<'a> Resolver<'a> {
             self.resolve_type(&ret);
         }
         if pushed_typars {
-            self.typar_scopes.pop();
+            self.lexical.typar_scopes.pop();
         }
         PreparedBinding {
             item_entries,
@@ -312,7 +312,7 @@ impl<'a> Resolver<'a> {
             && e.is_rec()
             && let Some(kw) = e.keyword()
         {
-            self.diagnostics.push(SemaDiagnostic {
+            self.out.diagnostics.push(SemaDiagnostic {
                 range: kw.text_range(),
                 kind: SemaDiagnosticKind::UseAndRec,
             });
@@ -333,16 +333,16 @@ impl<'a> Resolver<'a> {
         // body, popped below. The `if`/`else` (not two sequential `if`s) moves
         // `value_entries` down exactly one path.
         if e.is_rec() {
-            self.scopes.push(Frame::new(value_entries));
+            self.lexical.scopes.push(Frame::new(value_entries));
             self.resolve_local_let_rhss(&per_binding);
         } else {
             self.resolve_local_let_rhss(&per_binding);
-            self.scopes.push(Frame::new(value_entries));
+            self.lexical.scopes.push(Frame::new(value_entries));
         }
         if let Some(body) = e.body() {
             self.resolve_expr(&body);
         }
-        self.scopes.pop();
+        self.lexical.scopes.pop();
     }
 
     /// Intern the binders of a `let`/`let rec` group (block-`let` or a type's
@@ -378,7 +378,7 @@ impl<'a> Resolver<'a> {
                 .unwrap_or_default();
             let pushed_typars = !typar_frame.is_empty();
             if pushed_typars {
-                self.typar_scopes.push(typar_frame.clone());
+                self.lexical.typar_scopes.push(typar_frame.clone());
             }
             if let Some(head) = b.pat() {
                 // Annotations in the head (`let (x : T) = …`) are type uses. The
@@ -403,7 +403,7 @@ impl<'a> Resolver<'a> {
                 let names = pattern_names(
                     &head,
                     BinderRole::Let,
-                    &self.excluded_param_ranges,
+                    &self.index.excluded_param_ranges,
                     self.assemblies,
                 );
                 let mut aliases = AliasTargets::default();
@@ -412,7 +412,7 @@ impl<'a> Resolver<'a> {
                     // first alternative's binder, as in `prepare_binding`.
                     // An active-pattern *parameter* argument: excluded whichever
                     // kind it is, as in `prepare_binding`.
-                    if self.excluded_param_ranges.contains(&pat_name.range()) {
+                    if self.index.excluded_param_ranges.contains(&pat_name.range()) {
                         continue;
                     }
                     let def = match pat_name {
@@ -464,7 +464,7 @@ impl<'a> Resolver<'a> {
                 self.resolve_type(&ret);
             }
             if pushed_typars {
-                self.typar_scopes.pop();
+                self.lexical.typar_scopes.pop();
             }
             per_binding.push((params, ap_cases, typar_frame, b.expr()));
         }
@@ -480,9 +480,9 @@ impl<'a> Resolver<'a> {
             // inside the RHS resolves (and shadows an enclosing same-named typar).
             let pushed_typars = !typar_frame.is_empty();
             if pushed_typars {
-                self.typar_scopes.push(typar_frame.clone());
+                self.lexical.typar_scopes.push(typar_frame.clone());
             }
-            self.scopes.push(Frame::new(params.clone()));
+            self.lexical.scopes.push(Frame::new(params.clone()));
             // Mark the binding's own case names for its RHS (mirrors the
             // module-level [`resolve_rhss`]): a bare body use of the recognizer's
             // own case name declines rather than commit an outer value or the case.
@@ -491,9 +491,9 @@ impl<'a> Resolver<'a> {
                     r.resolve_expr(rhs);
                 }
             });
-            self.scopes.pop();
+            self.lexical.scopes.pop();
             if pushed_typars {
-                self.typar_scopes.pop();
+                self.lexical.typar_scopes.pop();
             }
         }
     }
@@ -508,7 +508,7 @@ impl<'a> Resolver<'a> {
                 // stop on the same-file binder); for a `rec` group it is before, as the
                 // binder is in scope in its own RHS. Mirrors the scope-frame timing.
                 self.mark_decl(self.assemblies.names().text(e.name)).value = true;
-                self.module_frame().push(e.clone());
+                self.lexical.module_frame().push(e.clone());
             }
         }
     }
@@ -522,7 +522,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn add_eager_entries(&mut self, prepared: &[PreparedBinding]) {
         for p in prepared {
             for e in &p.eager_entries {
-                self.module_frame().push(e.clone());
+                self.lexical.module_frame().push(e.clone());
             }
         }
     }
@@ -533,9 +533,11 @@ impl<'a> Resolver<'a> {
             // `prepare_binding`) so a `'T` annotation *inside* the RHS resolves.
             let pushed_typars = !p.typar_frame.is_empty();
             if pushed_typars {
-                self.typar_scopes.push(p.typar_frame.clone());
+                self.lexical.typar_scopes.push(p.typar_frame.clone());
             }
-            self.scopes.push(Frame::new(p.param_entries.clone()));
+            self.lexical
+                .scopes
+                .push(Frame::new(p.param_entries.clone()));
             // A recognizer's own case name used *bare* in its own body is ambiguous
             // — a result-case construction (`let (|A|B|) x = … then A …`, FCS
             // `ActivePatternCase`) or a fresh uppercase pattern rebinding (`match n
@@ -549,24 +551,10 @@ impl<'a> Resolver<'a> {
                     r.resolve_expr(rhs);
                 }
             });
-            self.scopes.pop();
+            self.lexical.scopes.pop();
             if pushed_typars {
-                self.typar_scopes.pop();
+                self.lexical.typar_scopes.pop();
             }
         }
-    }
-
-    /// The frame top-level bindings of the *current* module are added to. At
-    /// decl-processing time the scope stack is exactly the chain of enclosing
-    /// module frames (every transient frame — lambda params, match clauses,
-    /// let-RHS params — is pushed and popped within a single expression
-    /// resolution), so the innermost is the current module's frame: the base
-    /// frame for a top-level module, or the frame [`Self::nested_module`] pushed
-    /// for a `module M = …` body. Adding to the innermost (not the base) keeps a
-    /// nested module's bindings out of the enclosing scope.
-    pub(super) fn module_frame(&mut self) -> &mut Frame {
-        self.scopes
-            .last_mut()
-            .expect("module frame pushed in resolve_file")
     }
 }

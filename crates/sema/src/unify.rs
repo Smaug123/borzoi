@@ -8,25 +8,27 @@
 //! substitution. Generation (in [`crate::infer`]) produces an inert
 //! `Vec<Constraint>`; the solver replays each equality through
 //! [`InferTable::unify_atomic`] (so a rejected constraint leaves no trace).
+//! The terms are ids of the inference session's [`TyTable`], which the
+//! table borrows and builds resolved terms in.
 //!
 //! The table's value type is `Option<Binding>` — `None` for an unbound
 //! variable, `Some(t)` for one bound to a term `t` (which may itself contain
-//! variables, and is shared, so reading it is a pointer copy). `ena` merges
-//! two values via [`ena::unify::UnifyValue`]; we make [`Binding`] an
-//! [`EqUnifyValue`] so a `Some`/`Some` merge succeeds only on syntactic
-//! equality. That branch is in fact never reached: every call here resolves
-//! both operands to a *root* before unioning, so the table only ever merges an
-//! unbound (`None`) root with something — structural unification of two bound
-//! terms is our job, done by [`InferTable::unify`], not `ena`'s. This is the standard
-//! way `rustc` (whence `ena` comes) layers an HM unifier over the union-find.
+//! variables). `ena` merges two values via [`ena::unify::UnifyValue`]; we make
+//! [`Binding`] an [`EqUnifyValue`] so a `Some`/`Some` merge succeeds only on
+//! syntactic equality. That branch is in fact never reached: every call here
+//! resolves both operands to a *root* before unioning, so the table only ever
+//! merges an unbound (`None`) root with something — structural unification of
+//! two bound terms is our job, done by [`InferTable::unify`], not `ena`'s. This
+//! is the standard way `rustc` (whence `ena` comes) layers an HM unifier over
+//! the union-find.
 //!
 //! [`type-checker-plan`]: ../../../docs/type-checker-plan.md
 
-use std::rc::Rc;
-
 use ena::unify::{EqUnifyValue, InPlaceUnificationTable, UnifyKey};
 
-use crate::ty::{MAX_TYPE_DEPTH, MAX_TYPE_NODES, Ty, TySize, TyVid, TypeBudgetExceeded};
+use crate::ty::{
+    MAX_TYPE_DEPTH, MAX_TYPE_NODES, Ty, TyKind, TySize, TyTable, TyVid, TypeBudgetExceeded,
+};
 
 impl UnifyKey for TyVid {
     type Value = Option<Binding>;
@@ -44,14 +46,13 @@ impl UnifyKey for TyVid {
     }
 }
 
-/// The term a variable is bound to: never itself a [`Ty::Var`] (a variable
-/// meeting a variable is a union, not a binding), and shared, so that reading
-/// a binding is a pointer copy rather than a copy of the term.
+/// The term a variable is bound to: never itself a [`TyKind::Var`] (a
+/// variable meeting a variable is a union, not a binding).
 ///
 /// `pub` only because it is [`TyVid`]'s `UnifyKey::Value`; the module is
 /// private.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Binding(Rc<Ty>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Binding(Ty);
 
 // A `Some`/`Some` merge succeeds only when the two bound terms are syntactically
 // equal. Our algorithm resolves to roots before unioning, so this is never hit
@@ -151,13 +152,27 @@ impl Walk {
             depth: self.depth,
         }
     }
+
+    /// Count a visit to every node of a tree of `size` whose root sits at
+    /// `depth`, as [`Self::visit`] on each would, when none of those visits
+    /// would pass a bound; `false`, counting nothing, when one would.
+    fn visit_tree(&mut self, depth: usize, size: TySize) -> bool {
+        let deepest = depth.saturating_add(size.depth.saturating_sub(1));
+        let nodes = self.nodes.saturating_add(size.nodes);
+        if deepest > self.max_depth || nodes > self.max_nodes {
+            return false;
+        }
+        self.nodes = nodes;
+        self.depth = self.depth.max(deepest);
+        true
+    }
 }
 
 /// What a term is at its top, once a variable is looked through: the term
-/// itself, the term a variable is bound to, or a variable's unbound root.
-enum Head<'t> {
-    Term(&'t Ty),
-    Bound(Rc<Ty>),
+/// itself or the term a variable is bound to, or a variable's unbound root.
+#[derive(Clone, Copy)]
+enum Head {
+    Term(Ty),
     Root(TyVid),
 }
 
@@ -185,25 +200,41 @@ pub(crate) struct TableSnapshot(ena::unify::Snapshot<ena::unify::InPlace<TyVid>>
 /// speculation in progress. A caller that reads the table's answers into a
 /// result must therefore discard the result once the record is set;
 /// inference discards the whole file's ([`crate::infer_file`]).
-#[derive(Debug, Default)]
-pub(crate) struct InferTable {
+#[derive(Debug)]
+pub(crate) struct InferTable<'t> {
+    /// The session's type table, whose ids the terms are.
+    tys: &'t TyTable,
+    /// Whether a walk counts a variable-free subterm in one step
+    /// ([`Self::walk_ground`]) rather than node by node. Off only in the test
+    /// that holds the two to the same answers.
+    #[cfg(test)]
+    ground_in_one_step: bool,
     table: InPlaceUnificationTable<TyVid>,
     budget: TypeBudget,
     exceeded: Option<TypeBudgetExceeded>,
     walks: TypeWalks,
 }
 
-impl InferTable {
-    pub(crate) fn new() -> Self {
-        InferTable::default()
+impl<'t> InferTable<'t> {
+    /// A table over the terms of `tys`, a session's type table.
+    pub(crate) fn new(tys: &'t TyTable) -> Self {
+        InferTable {
+            tys,
+            #[cfg(test)]
+            ground_in_one_step: true,
+            table: InPlaceUnificationTable::default(),
+            budget: TypeBudget::default(),
+            exceeded: None,
+            walks: TypeWalks::default(),
+        }
     }
 
     /// A table whose walks are held to `budget` rather than the crate's.
     #[cfg(test)]
-    pub(crate) fn with_budget(budget: TypeBudget) -> Self {
+    pub(crate) fn with_budget(tys: &'t TyTable, budget: TypeBudget) -> Self {
         InferTable {
             budget,
-            ..InferTable::default()
+            ..InferTable::new(tys)
         }
     }
 
@@ -269,32 +300,80 @@ impl InferTable {
         self.table.find(v)
     }
 
+    /// Count a walk's visit to `ty`, at `depth`, and to every node below it,
+    /// when no variable occurs in `ty`: the walk then finds nothing to look
+    /// through or bind there, so resolving it gives `ty`, it holds no
+    /// occurrence, and it unifies with itself. `None` when a variable occurs
+    /// in `ty`, which the walk must visit node by node.
+    ///
+    /// The count is the tree's ([`TyTable::size`]): a subterm the table holds
+    /// once counts at each place it occurs, as a walk visits it. Where the
+    /// whole tree fits the budget it is counted in one step; otherwise it is
+    /// walked node by node, in the order the walk would, so the bound passed
+    /// is the one the walk would report.
+    fn walk_ground(
+        &self,
+        ty: Ty,
+        depth: usize,
+        walk: &mut Walk,
+    ) -> Option<Result<(), TypeBudgetExceeded>> {
+        if !self.tys.is_ground(ty) {
+            return None;
+        }
+        #[cfg(test)]
+        if !self.ground_in_one_step {
+            return None;
+        }
+        if walk.visit_tree(depth, self.tys.size(ty)) {
+            return Some(Ok(()));
+        }
+        Some(self.walk_nodes(ty, depth, walk))
+    }
+
+    /// Count a visit to `ty`, at `depth`, and to each node below it, in the
+    /// order the walks visit them, until one passes the budget.
+    fn walk_nodes(&self, ty: Ty, depth: usize, walk: &mut Walk) -> Result<(), TypeBudgetExceeded> {
+        walk.visit(depth)?;
+        let below = depth + 1;
+        match self.tys.kind(ty) {
+            TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => args
+                .iter()
+                .try_for_each(|&a| self.walk_nodes(a, below, walk)),
+            TyKind::Array { elem, .. } => self.walk_nodes(*elem, below, walk),
+            TyKind::Fun { arg, ret } => {
+                self.walk_nodes(*arg, below, walk)?;
+                self.walk_nodes(*ret, below, walk)
+            }
+            TyKind::Param(_) | TyKind::Var(_) => Ok(()),
+        }
+    }
+
     /// Look through `ty` one level: a variable to the term it is bound to, or
     /// to its canonical unbound root; any other term to itself.
-    fn head<'t>(&mut self, ty: &'t Ty) -> Head<'t> {
-        match ty {
-            Ty::Var(v) => match self.table.probe_value(*v) {
+    fn head(&mut self, ty: Ty) -> Head {
+        match self.tys.kind(ty) {
+            TyKind::Var(v) => match self.table.probe_value(*v) {
                 Some(Binding(bound)) => {
                     debug_assert!(
-                        !matches!(*bound, Ty::Var(_)),
+                        !matches!(self.tys.kind(bound), TyKind::Var(_)),
                         "a variable is bound to a term, never to a variable"
                     );
-                    Head::Bound(bound)
+                    Head::Term(bound)
                 }
                 None => Head::Root(self.table.find(*v)),
             },
-            other => Head::Term(other),
+            _ => Head::Term(ty),
         }
     }
 
     /// Fully resolve `ty` against the current substitution, recursing into
-    /// compound types. An unbound variable stays a [`Ty::Var`] (the "unknown"
-    /// that the read-off in [`crate::infer`] turns into silence).
+    /// compound types. An unbound variable stays a [`TyKind::Var`] (the
+    /// "unknown" that the read-off in [`crate::infer`] turns into silence).
     ///
     /// A type past the budget is not built: the walk stops at the first node
     /// over it, the table records it ([`Self::over_budget`]), and `ty` comes
     /// back unresolved — as it does from every call once that is recorded.
-    pub(crate) fn resolve(&mut self, ty: &Ty) -> Ty {
+    pub(crate) fn resolve(&mut self, ty: Ty) -> Ty {
         if self.exceeded.is_none() {
             let mut walk = Walk::new(self.budget.nodes, self.budget.depth);
             let resolved = self.resolve_in(ty, 1, &mut walk);
@@ -304,58 +383,65 @@ impl InferTable {
                 Err(e) => self.exceed(e),
             }
         }
-        ty.clone()
+        ty
     }
 
     /// [`Self::resolve`]'s walk, of `ty` at `depth`.
     fn resolve_in(
         &mut self,
-        ty: &Ty,
+        ty: Ty,
         depth: usize,
         walk: &mut Walk,
     ) -> Result<Ty, TypeBudgetExceeded> {
+        if let Some(counted) = self.walk_ground(ty, depth, walk) {
+            return counted.map(|()| ty);
+        }
         walk.visit(depth)?;
-        let head = self.head(ty);
-        let term = match &head {
-            Head::Root(v) => return Ok(Ty::Var(*v)),
-            Head::Term(t) => *t,
-            Head::Bound(t) => &**t,
+        let term = match self.head(ty) {
+            Head::Root(v) => return Ok(self.tys.var(v)),
+            Head::Term(t) => t,
         };
+        let tys = self.tys;
         let below = depth + 1;
-        Ok(match term {
-            Ty::Array { elem, rank } => Ty::Array {
-                elem: Box::new(self.resolve_in(elem, below, walk)?),
-                rank: *rank,
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| self.resolve_in(e, below, walk))
-                    .collect::<Result<_, _>>()?,
-            ),
-            Ty::Fun { arg, ret } => Ty::Fun {
-                arg: Box::new(self.resolve_in(arg, below, walk)?),
-                ret: Box::new(self.resolve_in(ret, below, walk)?),
-            },
+        Ok(match tys.kind(term) {
+            TyKind::Array { elem, rank } => {
+                let elem = self.resolve_in(*elem, below, walk)?;
+                tys.array(elem, *rank)
+            }
+            TyKind::Tuple(elems) => {
+                let elems = self.resolve_all(elems, below, walk)?;
+                tys.tuple(elems)
+            }
+            TyKind::Fun { arg, ret } => {
+                let arg = self.resolve_in(*arg, below, walk)?;
+                let ret = self.resolve_in(*ret, below, walk)?;
+                tys.fun(arg, ret)
+            }
             // An application's ARGUMENTS are types and can hold solved
             // variables; only its head is a leaf.
-            Ty::Named { path, args } => Ty::Named {
-                path: path.clone(),
-                args: args
-                    .iter()
-                    .map(|a| self.resolve_in(a, below, walk))
-                    .collect::<Result<_, _>>()?,
-            },
-            Ty::Project { path, args } => Ty::Project {
-                path: path.clone(),
-                args: args
-                    .iter()
-                    .map(|a| self.resolve_in(a, below, walk))
-                    .collect::<Result<_, _>>()?,
-            },
-            Ty::Param(i) => Ty::Param(*i),
-            Ty::Var(_) => unreachable!("a variable's head is its binding or its root"),
+            TyKind::Named { path, args } => {
+                let args = self.resolve_all(args, below, walk)?;
+                tys.app(path.clone(), args)
+            }
+            TyKind::Project { path, args } => {
+                let args = self.resolve_all(args, below, walk)?;
+                tys.project(path.clone(), args)
+            }
+            TyKind::Param(_) => term,
+            TyKind::Var(_) => unreachable!("a variable's head is its binding or its root"),
         })
+    }
+
+    /// [`Self::resolve_in`] over each of `args`, in order.
+    fn resolve_all(
+        &mut self,
+        args: &[Ty],
+        depth: usize,
+        walk: &mut Walk,
+    ) -> Result<Vec<Ty>, TypeBudgetExceeded> {
+        args.iter()
+            .map(|&a| self.resolve_in(a, depth, walk))
+            .collect()
     }
 
     /// Whether `v`'s equivalence class occurs anywhere within `ty` (after
@@ -365,36 +451,38 @@ impl InferTable {
     fn occurs_in(
         &mut self,
         v: TyVid,
-        ty: &Ty,
+        ty: Ty,
         depth: usize,
         walk: &mut Walk,
     ) -> Result<bool, TypeBudgetExceeded> {
+        if let Some(counted) = self.walk_ground(ty, depth, walk) {
+            return counted.map(|()| false);
+        }
         walk.visit(depth)?;
-        let head = self.head(ty);
-        let term = match &head {
-            Head::Root(v2) => return Ok(self.table.unioned(v, *v2)),
-            Head::Term(t) => *t,
-            Head::Bound(t) => &**t,
+        let term = match self.head(ty) {
+            Head::Root(v2) => return Ok(self.table.unioned(v, v2)),
+            Head::Term(t) => t,
         };
         let below = depth + 1;
-        match term {
+        match self.tys.kind(term) {
             // A `Param` is a rigid constant, so it cannot contain a variable's
             // equivalence class. A `Named`'s own path cannot either, but its
             // generic ARGUMENTS are types and can.
-            Ty::Param(_) => Ok(false),
-            Ty::Named { args, .. } | Ty::Project { args, .. } | Ty::Tuple(args) => {
-                for a in args {
+            TyKind::Param(_) => Ok(false),
+            TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => {
+                for &a in args.iter() {
                     if self.occurs_in(v, a, below, walk)? {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
-            Ty::Array { elem, .. } => self.occurs_in(v, elem, below, walk),
-            Ty::Fun { arg, ret } => {
+            TyKind::Array { elem, .. } => self.occurs_in(v, *elem, below, walk),
+            TyKind::Fun { arg, ret } => {
+                let (arg, ret) = (*arg, *ret);
                 Ok(self.occurs_in(v, arg, below, walk)? || self.occurs_in(v, ret, below, walk)?)
             }
-            Ty::Var(_) => unreachable!("a variable's head is its binding or its root"),
+            TyKind::Var(_) => unreachable!("a variable's head is its binding or its root"),
         }
     }
 
@@ -407,7 +495,7 @@ impl InferTable {
     /// failures, an un-rolled-back partial binding would leak into read-off. So
     /// the solver unifies through this wrapper: a rejected constraint leaves no
     /// trace.
-    pub(crate) fn unify_atomic(&mut self, a: &Ty, b: &Ty) -> Result<(), UnifyError> {
+    pub(crate) fn unify_atomic(&mut self, a: Ty, b: Ty) -> Result<(), UnifyError> {
         self.probe(|t| t.unify(a, b))
     }
 
@@ -479,7 +567,7 @@ impl InferTable {
     /// **May leave partial bindings on failure** (a compound that mismatches
     /// after an earlier sub-term bound); a caller that discards the result needs
     /// [`Self::unify_atomic`] instead.
-    pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), UnifyError> {
+    pub(crate) fn unify(&mut self, a: Ty, b: Ty) -> Result<(), UnifyError> {
         if let Some(e) = self.exceeded {
             return Err(UnifyError::OverBudget(e));
         }
@@ -493,68 +581,66 @@ impl InferTable {
     }
 
     /// [`Self::unify`]'s walk, of `a` and `b` at `depth`.
-    fn unify_in(
-        &mut self,
-        a: &Ty,
-        b: &Ty,
-        depth: usize,
-        walk: &mut Walk,
-    ) -> Result<(), UnifyError> {
+    fn unify_in(&mut self, a: Ty, b: Ty, depth: usize, walk: &mut Walk) -> Result<(), UnifyError> {
+        // A variable-free term unifies with itself, binding nothing; the walk
+        // pairs each of its nodes with itself.
+        if a == b
+            && let Some(counted) = self.walk_ground(a, depth, walk)
+        {
+            return Ok(counted?);
+        }
         walk.visit(depth)?;
-        let a = self.head(a);
-        let b = self.head(b);
-        let (ta, tb) = match (&a, &b) {
+        let (ta, tb) = match (self.head(a), self.head(b)) {
             (Head::Root(va), Head::Root(vb)) => {
                 // Both unbound roots (values `None`), so the merge is
                 // infallible — see the module docs.
                 self.table
-                    .unify_var_var(*va, *vb)
+                    .unify_var_var(va, vb)
                     .expect("merging two unbound variables is infallible");
                 return Ok(());
             }
-            (Head::Root(v), _) => return self.bind(*v, &b, depth, walk),
-            (_, Head::Root(v)) => return self.bind(*v, &a, depth, walk),
-            (Head::Term(ta), Head::Term(tb)) => (*ta, *tb),
-            (Head::Term(ta), Head::Bound(tb)) => (*ta, &**tb),
-            (Head::Bound(ta), Head::Term(tb)) => (&**ta, *tb),
-            (Head::Bound(ta), Head::Bound(tb)) => (&**ta, &**tb),
+            (Head::Root(v), Head::Term(t)) | (Head::Term(t), Head::Root(v)) => {
+                return self.bind(v, t, depth, walk);
+            }
+            (Head::Term(ta), Head::Term(tb)) => (ta, tb),
         };
         let below = depth + 1;
-        match (ta, tb) {
+        match (self.tys.kind(ta), self.tys.kind(tb)) {
             // Two applications are equal when their heads are and their
             // arguments unify pairwise. A differing arity is a mismatch, not a
             // partial match: `Dictionary<int>` is not a `Dictionary<int, string>`.
-            (Ty::Named { path: pa, args: aa }, Ty::Named { path: pb, args: ab })
-            | (Ty::Project { path: pa, args: aa }, Ty::Project { path: pb, args: ab }) => {
+            (TyKind::Named { path: pa, args: aa }, TyKind::Named { path: pb, args: ab })
+            | (TyKind::Project { path: pa, args: aa }, TyKind::Project { path: pb, args: ab }) => {
                 if pa != pb || aa.len() != ab.len() {
                     return Err(UnifyError::Mismatch);
                 }
-                for (x, y) in aa.iter().zip(ab.iter()) {
+                for (&x, &y) in aa.iter().zip(ab.iter()) {
                     self.unify_in(x, y, below, walk)?;
                 }
                 Ok(())
             }
-            (Ty::Array { elem: ea, rank: ra }, Ty::Array { elem: eb, rank: rb }) => {
+            (TyKind::Array { elem: ea, rank: ra }, TyKind::Array { elem: eb, rank: rb }) => {
                 if ra != rb {
                     return Err(UnifyError::Mismatch);
                 }
-                self.unify_in(ea, eb, below, walk)
+                self.unify_in(*ea, *eb, below, walk)
             }
-            (Ty::Tuple(ea), Ty::Tuple(eb)) => {
+            (TyKind::Tuple(ea), TyKind::Tuple(eb)) => {
                 // Tuples unify element-wise; differing arity is a mismatch (an
                 // n-tuple is not an m-tuple).
                 if ea.len() != eb.len() {
                     return Err(UnifyError::Mismatch);
                 }
-                for (a, b) in ea.iter().zip(eb.iter()) {
+                for (&a, &b) in ea.iter().zip(eb.iter()) {
                     self.unify_in(a, b, below, walk)?;
                 }
                 Ok(())
             }
-            (Ty::Fun { arg: aa, ret: ra }, Ty::Fun { arg: ab, ret: rb }) => {
+            (TyKind::Fun { arg: aa, ret: ra }, TyKind::Fun { arg: ab, ret: rb }) => {
                 // Function types unify component-wise (domain with domain, range
                 // with range) — the standard congruence rule.
-                self.unify_in(aa, ab, below, walk)?;
+                let (ra, rb) = (*ra, *rb);
+                self.unify_in(*aa, *ab, below, walk)?;
                 self.unify_in(ra, rb, below, walk)
             }
             // Two quantified parameters unify iff they are the same parameter — a
@@ -564,7 +650,7 @@ impl InferTable {
             // practice — schemes are instantiated to fresh `Var`s before their
             // bodies touch the table — but kept total (and property-tested as
             // rigid constants against the reference MGU).
-            (Ty::Param(i), Ty::Param(j)) => {
+            (TyKind::Param(i), TyKind::Param(j)) => {
                 if i == j {
                     Ok(())
                 } else {
@@ -575,34 +661,22 @@ impl InferTable {
         }
     }
 
-    /// Bind the unbound root `v` to the term `head` names, which sits at
-    /// `depth` of the unification: occurs-check it, then bind.
+    /// Bind the unbound root `v` to `term`, which sits at `depth` of the
+    /// unification: occurs-check it, then bind.
     fn bind(
         &mut self,
         v: TyVid,
-        head: &Head<'_>,
+        term: Ty,
         depth: usize,
         walk: &mut Walk,
     ) -> Result<(), UnifyError> {
-        let binding = match head {
-            Head::Root(_) => unreachable!("a variable is bound to a term"),
-            Head::Term(term) => {
-                if self.occurs_in(v, term, depth, walk)? {
-                    return Err(UnifyError::Occurs);
-                }
-                Binding(Rc::new((*term).clone()))
-            }
-            Head::Bound(term) => {
-                if self.occurs_in(v, term, depth, walk)? {
-                    return Err(UnifyError::Occurs);
-                }
-                Binding(Rc::clone(term))
-            }
-        };
+        if self.occurs_in(v, term, depth, walk)? {
+            return Err(UnifyError::Occurs);
+        }
         // `v` is an unbound root (value `None`), so binding it cannot
         // conflict — see the module docs.
         self.table
-            .unify_var_value(v, Some(binding))
+            .unify_var_value(v, Some(Binding(term)))
             .expect("binding an unbound variable is infallible");
         Ok(())
     }
@@ -614,23 +688,108 @@ mod tests {
     //! reference (gospel principle 4 / the `property-based-testing` skill): the
     //! reference *is* the spec, and the `ena`-backed table must agree with it on
     //! arbitrary constraint sequences.
+    //!
+    //! The reference works on owned trees ([`SpelledTy`]), the representation
+    //! types had before they were interned, so it shares nothing with the
+    //! table's: the table's answers are read back into trees to compare.
 
     use proptest::prelude::*;
 
     use super::{InferTable, TypeBudget, UnifyError};
     use crate::hash::HashMap;
     use crate::names::NameTable;
-    use crate::ty::{Ty, TyPath, TyVid};
+    use crate::ty::reference::SpelledTy;
+    use crate::ty::{Ty, TyKind, TyTable, TyVid};
 
-    /// The table every type in these tests is built against.
+    /// The name table every type in these tests is built against.
     fn names() -> &'static NameTable {
         static NAMES: std::sync::LazyLock<NameTable> = std::sync::LazyLock::new(NameTable::default);
         &NAMES
     }
 
     /// Number of inference variables both solvers share (generated terms draw
-    /// `Ty::Var` indices from `0..POOL`).
+    /// `Var` indices from `0..POOL`).
     const POOL: u32 = 5;
+
+    fn var(v: u32) -> SpelledTy {
+        SpelledTy::Var(TyVid(v))
+    }
+
+    fn named(dotted: &str) -> SpelledTy {
+        SpelledTy::Named {
+            path: dotted.split('.').map(str::to_owned).collect(),
+            args: Vec::new(),
+        }
+    }
+
+    fn applied(dotted: &str, args: Vec<SpelledTy>) -> SpelledTy {
+        SpelledTy::Named {
+            path: dotted.split('.').map(str::to_owned).collect(),
+            args,
+        }
+    }
+
+    fn fun(arg: SpelledTy, ret: SpelledTy) -> SpelledTy {
+        SpelledTy::Fun {
+            arg: Box::new(arg),
+            ret: Box::new(ret),
+        }
+    }
+
+    /// A session's table and an inference table over it, as one value, so a
+    /// test reads and writes trees.
+    struct Session<'t> {
+        tys: &'t TyTable,
+        table: InferTable<'t>,
+    }
+
+    impl<'t> Session<'t> {
+        fn new(tys: &'t TyTable, budget: Option<TypeBudget>) -> Session<'t> {
+            let table = match budget {
+                Some(budget) => InferTable::with_budget(tys, budget),
+                None => InferTable::new(tys),
+            };
+            Session { tys, table }
+        }
+
+        /// A table with `POOL` fresh variables pre-allocated, so a generated
+        /// `Var(k)` (`k < POOL`) names a real table key.
+        fn pooled(tys: &'t TyTable, budget: Option<TypeBudget>) -> Session<'t> {
+            let mut s = Session::new(tys, budget);
+            for _ in 0..POOL {
+                s.table.fresh();
+            }
+            s
+        }
+
+        fn ty(&self, t: &SpelledTy) -> Ty {
+            t.to_ty(names(), self.tys)
+        }
+
+        fn spell(&self, t: Ty) -> SpelledTy {
+            SpelledTy::of(names(), self.tys, t)
+        }
+
+        fn unify(&mut self, a: &SpelledTy, b: &SpelledTy) -> Result<(), UnifyError> {
+            let (a, b) = (self.ty(a), self.ty(b));
+            self.table.unify(a, b)
+        }
+
+        fn unify_atomic(&mut self, a: &SpelledTy, b: &SpelledTy) -> Result<(), UnifyError> {
+            let (a, b) = (self.ty(a), self.ty(b));
+            self.table.unify_atomic(a, b)
+        }
+
+        fn resolve(&mut self, t: &SpelledTy) -> SpelledTy {
+            let t = self.ty(t);
+            let resolved = self.table.resolve(t);
+            self.spell(resolved)
+        }
+
+        fn pool(&mut self) -> Vec<SpelledTy> {
+            (0..POOL).map(|k| self.resolve(&var(k))).collect()
+        }
+    }
 
     // ----- Reference: textbook Robinson MGU over a substitution map -----
 
@@ -639,15 +798,15 @@ mod tests {
     /// so it is the oracle the `ena`-backed table is diffed against.
     #[derive(Default)]
     struct RefSubst {
-        map: HashMap<u32, Ty>,
+        map: HashMap<u32, SpelledTy>,
     }
 
     impl RefSubst {
         /// Follow a chain of variable bindings to its end (a concrete head or an
         /// unbound variable).
-        fn walk(&self, ty: &Ty) -> Ty {
+        fn walk(&self, ty: &SpelledTy) -> SpelledTy {
             match ty {
-                Ty::Var(v) => match self.map.get(&v.index()) {
+                SpelledTy::Var(v) => match self.map.get(&v.index()) {
                     Some(bound) => self.walk(&bound.clone()),
                     None => ty.clone(),
                 },
@@ -655,22 +814,24 @@ mod tests {
             }
         }
 
-        fn resolve(&self, ty: &Ty) -> Ty {
+        fn resolve(&self, ty: &SpelledTy) -> SpelledTy {
             match self.walk(ty) {
-                Ty::Array { elem, rank } => Ty::Array {
+                SpelledTy::Array { elem, rank } => SpelledTy::Array {
                     elem: Box::new(self.resolve(&elem)),
                     rank,
                 },
-                Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| self.resolve(e)).collect()),
-                Ty::Fun { arg, ret } => Ty::Fun {
+                SpelledTy::Tuple(elems) => {
+                    SpelledTy::Tuple(elems.iter().map(|e| self.resolve(e)).collect())
+                }
+                SpelledTy::Fun { arg, ret } => SpelledTy::Fun {
                     arg: Box::new(self.resolve(&arg)),
                     ret: Box::new(self.resolve(&ret)),
                 },
-                Ty::Named { path, args } => Ty::Named {
+                SpelledTy::Named { path, args } => SpelledTy::Named {
                     path,
                     args: args.iter().map(|a| self.resolve(a)).collect(),
                 },
-                Ty::Project { path, args } => Ty::Project {
+                SpelledTy::Project { path, args } => SpelledTy::Project {
                     path,
                     args: args.iter().map(|a| self.resolve(a)).collect(),
                 },
@@ -678,31 +839,38 @@ mod tests {
             }
         }
 
-        fn occurs(&self, v: u32, ty: &Ty) -> bool {
+        fn occurs(&self, v: u32, ty: &SpelledTy) -> bool {
             match self.walk(ty) {
-                Ty::Var(v2) => v2.index() == v,
-                Ty::Param(_) => false,
-                Ty::Named { args, .. } => args.iter().any(|a| self.occurs(v, a)),
-                Ty::Project { args, .. } => args.iter().any(|a| self.occurs(v, a)),
-                Ty::Array { elem, .. } => self.occurs(v, &elem),
-                Ty::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
-                Ty::Fun { arg, ret } => self.occurs(v, &arg) || self.occurs(v, &ret),
+                SpelledTy::Var(v2) => v2.index() == v,
+                SpelledTy::Param(_) => false,
+                SpelledTy::Named { args, .. } => args.iter().any(|a| self.occurs(v, a)),
+                SpelledTy::Project { args, .. } => args.iter().any(|a| self.occurs(v, a)),
+                SpelledTy::Array { elem, .. } => self.occurs(v, &elem),
+                SpelledTy::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
+                SpelledTy::Fun { arg, ret } => self.occurs(v, &arg) || self.occurs(v, &ret),
             }
         }
 
-        fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), UnifyError> {
+        fn unify(&mut self, a: &SpelledTy, b: &SpelledTy) -> Result<(), UnifyError> {
             let a = self.walk(a);
             let b = self.walk(b);
             match (a, b) {
-                (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
-                (Ty::Var(x), term) | (term, Ty::Var(x)) => {
+                (SpelledTy::Var(x), SpelledTy::Var(y)) if x == y => Ok(()),
+                (SpelledTy::Var(x), term) | (term, SpelledTy::Var(x)) => {
                     if self.occurs(x.index(), &term) {
                         return Err(UnifyError::Occurs);
                     }
                     self.map.insert(x.index(), term);
                     Ok(())
                 }
-                (Ty::Named { path: pa, args: aa }, Ty::Named { path: pb, args: ab }) => {
+                (
+                    SpelledTy::Named { path: pa, args: aa },
+                    SpelledTy::Named { path: pb, args: ab },
+                )
+                | (
+                    SpelledTy::Project { path: pa, args: aa },
+                    SpelledTy::Project { path: pb, args: ab },
+                ) => {
                     if pa != pb || aa.len() != ab.len() {
                         return Err(UnifyError::Mismatch);
                     }
@@ -711,23 +879,17 @@ mod tests {
                     }
                     Ok(())
                 }
-                (Ty::Project { path: pa, args: aa }, Ty::Project { path: pb, args: ab }) => {
-                    if pa != pb || aa.len() != ab.len() {
-                        return Err(UnifyError::Mismatch);
-                    }
-                    for (x, y) in aa.iter().zip(ab.iter()) {
-                        self.unify(x, y)?;
-                    }
-                    Ok(())
-                }
-                (Ty::Array { elem: ea, rank: ra }, Ty::Array { elem: eb, rank: rb }) => {
+                (
+                    SpelledTy::Array { elem: ea, rank: ra },
+                    SpelledTy::Array { elem: eb, rank: rb },
+                ) => {
                     if ra == rb {
                         self.unify(&ea, &eb)
                     } else {
                         Err(UnifyError::Mismatch)
                     }
                 }
-                (Ty::Tuple(ea), Ty::Tuple(eb)) => {
+                (SpelledTy::Tuple(ea), SpelledTy::Tuple(eb)) => {
                     if ea.len() != eb.len() {
                         return Err(UnifyError::Mismatch);
                     }
@@ -736,13 +898,13 @@ mod tests {
                     }
                     Ok(())
                 }
-                (Ty::Fun { arg: aa, ret: ra }, Ty::Fun { arg: ab, ret: rb }) => {
+                (SpelledTy::Fun { arg: aa, ret: ra }, SpelledTy::Fun { arg: ab, ret: rb }) => {
                     self.unify(&aa, &ab)?;
                     self.unify(&ra, &rb)
                 }
                 // Quantified parameters are rigid constants: equal only to the
                 // same index, mismatched against anything else.
-                (Ty::Param(i), Ty::Param(j)) => {
+                (SpelledTy::Param(i), SpelledTy::Param(j)) => {
                     if i == j {
                         Ok(())
                     } else {
@@ -759,7 +921,7 @@ mod tests {
     /// choice of equivalence-class representative then washes out, so equal
     /// canonical forms mean equal substitutions (same ground parts, same
     /// partition of the unbound variables).
-    fn canonicalize(types: &[Ty]) -> Vec<Ty> {
+    fn canonicalize(types: &[SpelledTy]) -> Vec<SpelledTy> {
         let mut rename: HashMap<u32, u32> = HashMap::default();
         let mut next = 0u32;
         types
@@ -768,36 +930,37 @@ mod tests {
             .collect()
     }
 
-    fn canon_one(t: &Ty, rename: &mut HashMap<u32, u32>, next: &mut u32) -> Ty {
+    fn canon_one(t: &SpelledTy, rename: &mut HashMap<u32, u32>, next: &mut u32) -> SpelledTy {
+        let mut all = |args: &[SpelledTy]| -> Vec<SpelledTy> {
+            args.iter().map(|a| canon_one(a, rename, next)).collect()
+        };
         match t {
-            Ty::Var(v) => {
+            SpelledTy::Var(v) => {
                 let id = *rename.entry(v.index()).or_insert_with(|| {
                     let i = *next;
                     *next += 1;
                     i
                 });
-                Ty::Var(TyVid(id))
+                SpelledTy::Var(TyVid(id))
             }
             // A `Param` is a rigid constant, not a variable — it is not renamed
             // by first appearance (only free `Var`s are), so it passes through
             // like a `Named`.
-            Ty::Named { path, args } => Ty::Named {
+            SpelledTy::Named { path, args } => SpelledTy::Named {
                 path: path.clone(),
-                args: args.iter().map(|a| canon_one(a, rename, next)).collect(),
+                args: all(args),
             },
-            Ty::Project { path, args } => Ty::Project {
+            SpelledTy::Project { path, args } => SpelledTy::Project {
                 path: path.clone(),
-                args: args.iter().map(|a| canon_one(a, rename, next)).collect(),
+                args: all(args),
             },
-            Ty::Param(i) => Ty::Param(*i),
-            Ty::Array { elem, rank } => Ty::Array {
+            SpelledTy::Param(i) => SpelledTy::Param(*i),
+            SpelledTy::Array { elem, rank } => SpelledTy::Array {
                 elem: Box::new(canon_one(elem, rename, next)),
                 rank: *rank,
             },
-            Ty::Tuple(elems) => {
-                Ty::Tuple(elems.iter().map(|e| canon_one(e, rename, next)).collect())
-            }
-            Ty::Fun { arg, ret } => Ty::Fun {
+            SpelledTy::Tuple(elems) => SpelledTy::Tuple(all(elems)),
+            SpelledTy::Fun { arg, ret } => SpelledTy::Fun {
                 arg: Box::new(canon_one(arg, rename, next)),
                 ret: Box::new(canon_one(ret, rename, next)),
             },
@@ -806,24 +969,24 @@ mod tests {
 
     // ----- Generators -----
 
-    fn ty_strategy() -> impl Strategy<Value = Ty> {
+    fn ty_strategy() -> impl Strategy<Value = SpelledTy> {
         let leaf = prop_oneof![
-            (0u32..POOL).prop_map(|v| Ty::Var(TyVid(v))),
+            (0u32..POOL).prop_map(var),
             // Quantified parameters over a small index pool, so `Param`/`Param`
             // unify (equal-index success, distinct-index mismatch) and
             // `Param`/other (mismatch) arms get exercised as rigid constants.
-            (0u32..3).prop_map(Ty::Param),
+            (0u32..3).prop_map(SpelledTy::Param),
             prop::sample::select(vec![
                 "System.Int32",
                 "System.String",
                 "System.Boolean",
                 "A.B",
             ])
-            .prop_map(|p| Ty::named_in(names(), p)),
+            .prop_map(named),
             // Project types, one at the same path as the assembly type `A.B`:
             // the two are different types and never unify.
-            prop::sample::select(vec!["A.B", "P.Q"]).prop_map(|p: &str| Ty::Project {
-                path: TyPath::dotted(names(), p),
+            prop::sample::select(vec!["A.B", "P.Q"]).prop_map(|p: &str| SpelledTy::Project {
+                path: p.split('.').map(str::to_owned).collect(),
                 args: Vec::new(),
             }),
         ];
@@ -832,38 +995,35 @@ mod tests {
         // `Array` / `Tuple` / `Fun` / applied-`Named` unify arms.
         //
         // The applied `Named` arm is what makes a variable reachable *inside* a
-        // named type. Without it every `Ty::Named` the generator produced was a
+        // named type. Without it every named type the generator produced was a
         // leaf, so any operation that treated `Named` as a leaf — the occurs
         // check, either resolver — agreed with the reference vacuously.
         leaf.prop_recursive(3, 24, 3, |inner| {
             prop_oneof![
-                (inner.clone(), 1u32..3).prop_map(|(elem, rank)| Ty::Array {
+                (inner.clone(), 1u32..3).prop_map(|(elem, rank)| SpelledTy::Array {
                     elem: Box::new(elem),
                     rank,
                 }),
-                prop::collection::vec(inner.clone(), 2..4).prop_map(Ty::Tuple),
-                (inner.clone(), inner.clone()).prop_map(|(arg, ret)| Ty::Fun {
-                    arg: Box::new(arg),
-                    ret: Box::new(ret),
-                }),
+                prop::collection::vec(inner.clone(), 2..4).prop_map(SpelledTy::Tuple),
+                (inner.clone(), inner.clone()).prop_map(|(arg, ret)| fun(arg, ret)),
                 (
                     prop::sample::select(vec!["G.One", "G.Two"]),
                     prop::collection::vec(inner.clone(), 1..3),
                 )
-                    .prop_map(|(head, args)| Ty::Named {
-                        path: TyPath::dotted(names(), head),
-                        args,
-                    }),
+                    .prop_map(|(head, args)| applied(head, args)),
                 // An applied project type, at a path an applied `Named` also
                 // takes, so a variable is reachable inside one.
                 (
                     prop::sample::select(vec!["G.One", "P.R"]),
-                    prop::collection::vec(inner, 1..3),
+                    prop::collection::vec(inner.clone(), 1..3),
                 )
-                    .prop_map(|(head, args)| Ty::Project {
-                        path: TyPath::dotted(names(), head),
+                    .prop_map(|(head, args)| SpelledTy::Project {
+                        path: head.split('.').map(str::to_owned).collect(),
                         args,
                     }),
+                // Two copies of one subterm: one node in the table, two places
+                // in the tree, which every walk counts twice.
+                inner.prop_map(|t| SpelledTy::Tuple(vec![t.clone(), t])),
             ]
         })
     }
@@ -874,67 +1034,42 @@ mod tests {
     /// give `N<int>` and not the stale `N<'a>`.
     #[test]
     fn resolve_substitutes_inside_a_named_types_arguments() {
-        let mut table = InferTable::new();
-        let v = table.fresh();
-        let applied = |arg: Ty| Ty::Named {
-            path: TyPath::new(names(), &["G", "One"]),
-            args: vec![arg],
-        };
-        table
-            .unify(
-                &applied(Ty::Var(v)),
-                &applied(Ty::named_in(names(), "System.Int32")),
-            )
+        let s_tys = TyTable::session();
+        let mut s = Session::new(&s_tys, None);
+        let v = s.table.fresh();
+        let app = |arg| applied("G.One", vec![arg]);
+        s.unify(&app(var(v.index())), &app(named("System.Int32")))
             .expect("same head and arity unify");
         assert_eq!(
-            table.resolve(&applied(Ty::Var(v))),
-            applied(Ty::named_in(names(), "System.Int32")),
+            s.resolve(&app(var(v.index()))),
+            app(named("System.Int32")),
             "the argument variable was solved, so it must not survive resolution"
         );
+        let resolved = s.table.resolve(s.ty(&app(var(v.index()))));
         assert!(
-            table.resolve(&applied(Ty::Var(v))).is_ground(),
+            s.tys.is_ground(resolved),
             "a fully-solved application is ground"
         );
     }
 
     /// Every variable still standing in a resolved type, in traversal order.
-    fn free_vars(ty: &Ty, out: &mut Vec<TyVid>) {
+    fn free_vars(ty: &SpelledTy, out: &mut Vec<TyVid>) {
         match ty {
-            Ty::Var(v) => out.push(*v),
-            Ty::Named { args, .. } | Ty::Project { args, .. } => {
-                args.iter().for_each(|a| free_vars(a, out))
-            }
-            Ty::Array { elem, .. } => free_vars(elem, out),
-            Ty::Tuple(elems) => elems.iter().for_each(|e| free_vars(e, out)),
-            Ty::Fun { arg, ret } => {
+            SpelledTy::Var(v) => out.push(*v),
+            SpelledTy::Named { args, .. }
+            | SpelledTy::Project { args, .. }
+            | SpelledTy::Tuple(args) => args.iter().for_each(|a| free_vars(a, out)),
+            SpelledTy::Array { elem, .. } => free_vars(elem, out),
+            SpelledTy::Fun { arg, ret } => {
                 free_vars(arg, out);
                 free_vars(ret, out);
             }
-            Ty::Param(_) => {}
+            SpelledTy::Param(_) => {}
         }
     }
 
-    fn constraint_list() -> impl Strategy<Value = Vec<(Ty, Ty)>> {
+    fn constraint_list() -> impl Strategy<Value = Vec<(SpelledTy, SpelledTy)>> {
         prop::collection::vec((ty_strategy(), ty_strategy()), 0..12)
-    }
-
-    /// A table with `POOL` fresh variables pre-allocated, so a generated
-    /// `Ty::Var(TyVid(k))` (`k < POOL`) names a real table key.
-    fn pooled_table() -> InferTable {
-        let mut table = InferTable::new();
-        for _ in 0..POOL {
-            table.fresh();
-        }
-        table
-    }
-
-    /// [`pooled_table`], held to `budget`.
-    fn budgeted_pool(budget: TypeBudget) -> InferTable {
-        let mut table = InferTable::with_budget(budget);
-        for _ in 0..POOL {
-            table.fresh();
-        }
-        table
     }
 
     proptest! {
@@ -944,23 +1079,24 @@ mod tests {
         /// independent implementations of the same recursion, so a shape either
         /// one treats as a leaf is a shape they agree about vacuously, and
         /// `matches_reference_mgu` cannot see it. (That is exactly what happened
-        /// when `Ty::Named` gained arguments: both resolvers stopped at the head
+        /// when named types gained arguments: both resolvers stopped at the head
         /// and the differential stayed green.)
         #[test]
         fn resolution_leaves_no_solved_variable(constraints in constraint_list()) {
-            let mut table = pooled_table();
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, None);
             for (a, b) in &constraints {
-                if table.unify(a, b).is_err() {
+                if s.unify(a, b).is_err() {
                     break;
                 }
                 for t in [a, b] {
-                    let resolved = table.resolve(t);
+                    let resolved = s.resolve(t);
                     let mut vars = Vec::new();
                     free_vars(&resolved, &mut vars);
                     for v in vars {
-                        let again = table.resolve(&Ty::Var(v));
+                        let again = s.resolve(&SpelledTy::Var(v));
                         prop_assert_eq!(
-                            &again, &Ty::Var(v),
+                            &again, &SpelledTy::Var(v),
                             "resolved {:?} still holds {:?}, which the table solves to {:?}",
                             resolved, v, again
                         );
@@ -977,15 +1113,14 @@ mod tests {
         /// fails the test on the spot.
         #[test]
         fn matches_reference_mgu(constraints in constraint_list()) {
-            let mut table = pooled_table();
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, None);
             let mut reference = RefSubst::default();
 
             // Replay the same sequence into both, stopping the moment a
-            // constraint is rejected. With this term grammar (vars / named /
-            // single-child arrays) a failing `unify` never partially mutates,
-            // so the surviving substitution is exactly the successful prefix's.
+            // constraint is rejected.
             for (i, (a, b)) in constraints.iter().enumerate() {
-                let table_err = table.unify(a, b).is_err();
+                let table_err = s.unify(a, b).is_err();
                 let ref_err = reference.unify(a, b).is_err();
                 prop_assert_eq!(
                     table_err, ref_err,
@@ -996,9 +1131,8 @@ mod tests {
                 }
             }
 
-            let pool: Vec<Ty> = (0..POOL).map(|k| Ty::Var(TyVid(k))).collect();
-            let table_resolved: Vec<Ty> = pool.iter().map(|t| table.resolve(t)).collect();
-            let ref_resolved: Vec<Ty> = pool.iter().map(|t| reference.resolve(t)).collect();
+            let table_resolved = s.pool();
+            let ref_resolved: Vec<SpelledTy> = (0..POOL).map(|k| reference.resolve(&var(k))).collect();
             prop_assert_eq!(canonicalize(&table_resolved), canonicalize(&ref_resolved));
         }
 
@@ -1007,18 +1141,19 @@ mod tests {
         /// before and after, whatever the speculative body did.
         #[test]
         fn probe_rollback_is_identity(pre in constraint_list(), extra in constraint_list()) {
-            let mut table = pooled_table();
-            for (a, b) in &pre { let _ = table.unify_atomic(a, b); }
-            let pool: Vec<Ty> = (0..POOL).map(|k| Ty::Var(TyVid(k))).collect();
-            let before: Vec<Ty> = pool.iter().map(|t| table.resolve(t)).collect();
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, None);
+            for (a, b) in &pre { let _ = s.unify_atomic(a, b); }
+            let before = s.pool();
 
-            let out: Result<(), ()> = table.probe(|t| {
-                for (a, b) in &extra { let _ = t.unify(a, b); }
+            let extra: Vec<(Ty, Ty)> = extra.iter().map(|(a, b)| (s.ty(a), s.ty(b))).collect();
+            let out: Result<(), ()> = s.table.probe(|t| {
+                for &(a, b) in &extra { let _ = t.unify(a, b); }
                 Err(())
             });
             prop_assert!(out.is_err());
 
-            let after: Vec<Ty> = pool.iter().map(|t| table.resolve(t)).collect();
+            let after = s.pool();
             prop_assert_eq!(canonicalize(&before), canonicalize(&after));
         }
 
@@ -1027,22 +1162,22 @@ mod tests {
         /// probe of the same mutation sequence lands the table in the same state.
         #[test]
         fn probe_commit_equals_direct(pre in constraint_list(), extra in constraint_list()) {
-            let mut spec = pooled_table();
-            let mut direct = pooled_table();
+            let spec_tys = TyTable::session();
+            let mut spec = Session::pooled(&spec_tys, None);
+            let direct_tys = TyTable::session();
+            let mut direct = Session::pooled(&direct_tys, None);
             for (a, b) in &pre {
                 let _ = spec.unify_atomic(a, b);
                 let _ = direct.unify_atomic(a, b);
             }
-            let _: Result<(), ()> = spec.probe(|t| {
-                for (a, b) in &extra { let _ = t.unify(a, b); }
+            let spec_extra: Vec<(Ty, Ty)> = extra.iter().map(|(a, b)| (spec.ty(a), spec.ty(b))).collect();
+            let _: Result<(), ()> = spec.table.probe(|t| {
+                for &(a, b) in &spec_extra { let _ = t.unify(a, b); }
                 Ok(())
             });
             for (a, b) in &extra { let _ = direct.unify(a, b); }
 
-            let pool: Vec<Ty> = (0..POOL).map(|k| Ty::Var(TyVid(k))).collect();
-            let spec_r: Vec<Ty> = pool.iter().map(|t| spec.resolve(t)).collect();
-            let direct_r: Vec<Ty> = pool.iter().map(|t| direct.resolve(t)).collect();
-            prop_assert_eq!(canonicalize(&spec_r), canonicalize(&direct_r));
+            prop_assert_eq!(canonicalize(&spec.pool()), canonicalize(&direct.pool()));
         }
 
         /// **The budget is exact for resolution.** Under a small budget, a
@@ -1057,10 +1192,11 @@ mod tests {
             depth in 1usize..6,
         ) {
             let budget = TypeBudget { nodes, depth };
-            let mut table = budgeted_pool(budget);
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, Some(budget));
             let mut reference = RefSubst::default();
             for (a, b) in &constraints {
-                let ours = table.unify(a, b);
+                let ours = s.unify(a, b);
                 if matches!(ours, Err(UnifyError::OverBudget(_))) {
                     break;
                 }
@@ -1071,18 +1207,18 @@ mod tests {
                 }
             }
             for k in 0..POOL {
-                if table.over_budget().is_some() {
+                if s.table.over_budget().is_some() {
                     break;
                 }
-                let v = Ty::Var(TyVid(k));
+                let v = var(k);
                 let want = reference.resolve(&v);
                 let size = want.size();
-                let got = table.resolve(&v);
+                let got = s.resolve(&v);
                 if size.nodes <= nodes && size.depth <= depth {
-                    prop_assert_eq!(table.over_budget(), None);
+                    prop_assert_eq!(s.table.over_budget(), None);
                     prop_assert_eq!(canonicalize(&[got]), canonicalize(&[want]));
                 } else {
-                    prop_assert!(table.over_budget().is_some(), "{:?} is past {:?}", size, budget);
+                    prop_assert!(s.table.over_budget().is_some(), "{:?} is past {:?}", size, budget);
                     prop_assert_eq!(got, v);
                 }
             }
@@ -1100,14 +1236,15 @@ mod tests {
             depth in 1usize..6,
         ) {
             let budget = TypeBudget { nodes, depth };
-            let mut table = budgeted_pool(budget);
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, Some(budget));
             let mut reference = RefSubst::default();
             for (a, b) in &constraints {
-                if table.over_budget().is_some() {
+                if s.table.over_budget().is_some() {
                     break;
                 }
                 let theirs = reference.unify(a, b);
-                let ours = table.unify(a, b);
+                let ours = s.unify(a, b);
                 let size = reference.resolve(a).size();
                 if theirs.is_ok() && size.nodes <= nodes && size.depth <= depth {
                     prop_assert!(
@@ -1126,48 +1263,86 @@ mod tests {
         /// walk for, and undoing a speculation does not forget it.
         #[test]
         fn the_budget_record_is_sticky(constraints in constraint_list()) {
-            let mut table = budgeted_pool(TypeBudget { nodes: 1, depth: 1 });
-            let _ = table.probe(|t| {
-                for (a, b) in &constraints {
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, Some(TypeBudget { nodes: 1, depth: 1 }));
+            let pairs: Vec<(Ty, Ty)> = constraints.iter().map(|(a, b)| (s.ty(a), s.ty(b))).collect();
+            let _ = s.table.probe(|t| {
+                for &(a, b) in &pairs {
                     let _ = t.unify(a, b);
                 }
                 Err::<(), ()>(())
             });
-            if table.over_budget().is_some() {
-                for (a, b) in &constraints {
-                    prop_assert!(matches!(table.unify(a, b), Err(UnifyError::OverBudget(_))));
-                    prop_assert_eq!(&table.resolve(a), a);
+            if s.table.over_budget().is_some() {
+                for &(a, b) in &pairs {
+                    prop_assert!(matches!(s.table.unify(a, b), Err(UnifyError::OverBudget(_))));
+                    prop_assert_eq!(s.table.resolve(a), a);
                 }
+            }
+        }
+
+        /// **Counting a variable-free subterm in one step is counting it node
+        /// by node.** Two tables, one counting each variable-free subterm in
+        /// one step and one walking it node by node, replay the same
+        /// constraints under the same budget: every unification answers
+        /// alike (the bound it passes included), every resolution builds the
+        /// same type, and the two record the same walks. The budget ranges
+        /// from below the generated types to above them, so a subterm
+        /// sometimes fits and sometimes does not.
+        #[test]
+        fn ground_subterms_count_as_their_nodes_do(
+            constraints in constraint_list(),
+            nodes in 1usize..40,
+            depth in 1usize..8,
+        ) {
+            let budget = Some(TypeBudget { nodes, depth });
+            let fast_tys = TyTable::session();
+            let slow_tys = TyTable::session();
+            let mut fast = Session::pooled(&fast_tys, budget);
+            let mut slow = Session::pooled(&slow_tys, budget);
+            slow.table.ground_in_one_step = false;
+            for (a, b) in &constraints {
+                prop_assert_eq!(fast.unify(a, b), slow.unify(a, b));
+                prop_assert_eq!(fast.table.over_budget(), slow.table.over_budget());
+                for t in [a, b] {
+                    prop_assert_eq!(fast.resolve(t), slow.resolve(t));
+                    prop_assert_eq!(fast.table.over_budget(), slow.table.over_budget());
+                }
+                prop_assert_eq!(fast.pool(), slow.pool());
+                prop_assert_eq!(fast.table.walks(), slow.table.walks());
             }
         }
 
         /// Unifying any term with itself succeeds (reflexivity).
         #[test]
         fn unify_is_reflexive(t in ty_strategy()) {
-            let mut table = pooled_table();
-            prop_assert!(table.unify(&t, &t).is_ok());
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, None);
+            prop_assert!(s.unify(&t, &t).is_ok());
         }
 
         /// `unify(a, b)` succeeds iff `unify(b, a)` does (symmetry), on
         /// independent fresh tables.
         #[test]
         fn unify_is_symmetric(a in ty_strategy(), b in ty_strategy()) {
-            let mut forward = pooled_table();
-            let mut backward = pooled_table();
+            let forward_tys = TyTable::session();
+            let mut forward = Session::pooled(&forward_tys, None);
+            let backward_tys = TyTable::session();
+            let mut backward = Session::pooled(&backward_tys, None);
             prop_assert_eq!(forward.unify(&a, &b).is_ok(), backward.unify(&b, &a).is_ok());
         }
 
         /// `resolve` is idempotent, and the identity on an already-ground type.
         #[test]
         fn resolve_is_idempotent(constraints in constraint_list()) {
-            let mut table = pooled_table();
+            let s_tys = TyTable::session();
+            let mut s = Session::pooled(&s_tys, None);
             for (a, b) in &constraints {
-                let _ = table.unify(a, b);
+                let _ = s.unify(a, b);
             }
             for k in 0..POOL {
-                let once = table.resolve(&Ty::Var(TyVid(k)));
-                let twice = table.resolve(&once);
-                prop_assert_eq!(&once, &twice);
+                let once = s.table.resolve(s.tys.var(TyVid(k)));
+                let twice = s.table.resolve(once);
+                prop_assert_eq!(once, twice);
             }
         }
     }
@@ -1175,17 +1350,18 @@ mod tests {
     /// The occurs check rejects an infinite type in both solvers.
     #[test]
     fn occurs_check_rejects_infinite_type() {
-        let mut table = InferTable::new();
-        let v = table.fresh();
-        let infinite = Ty::Array {
-            elem: Box::new(Ty::Var(v)),
+        let s_tys = TyTable::session();
+        let mut s = Session::new(&s_tys, None);
+        let v = s.table.fresh();
+        let infinite = SpelledTy::Array {
+            elem: Box::new(var(v.index())),
             rank: 1,
         };
-        assert_eq!(table.unify(&Ty::Var(v), &infinite), Err(UnifyError::Occurs));
+        assert_eq!(s.unify(&var(v.index()), &infinite), Err(UnifyError::Occurs));
 
         let mut reference = RefSubst::default();
         assert_eq!(
-            reference.unify(&Ty::Var(TyVid(v.index())), &infinite),
+            reference.unify(&var(v.index()), &infinite),
             Err(UnifyError::Occurs)
         );
     }
@@ -1194,33 +1370,36 @@ mod tests {
     /// `probe`'s own bindings intact, and the outer commit lands them.
     #[test]
     fn probe_nests_lifo() {
-        let int = Ty::named_in(names(), "System.Int32");
-        let string = Ty::named_in(names(), "System.String");
-        let mut table = InferTable::new();
-        let a = table.fresh();
-        let b = table.fresh();
-        let c = table.fresh();
+        let s_tys = TyTable::session();
+        let mut s = Session::new(&s_tys, None);
+        let int = s.ty(&named("System.Int32"));
+        let string = s.ty(&named("System.String"));
+        let a = s.table.fresh();
+        let b = s.table.fresh();
+        let c = s.table.fresh();
+        let (va, vb, vc) = (s.tys.var(a), s.tys.var(b), s.tys.var(c));
 
-        let out: Result<(), ()> = table.probe(|t| {
-            t.unify(&Ty::Var(a), &int).unwrap(); // outer binding
+        let out: Result<(), ()> = s.table.probe(|t| {
+            t.unify(va, int).unwrap(); // outer binding
             // Inner speculation binds `b`, then rejects → rolled back.
             let inner: Result<(), ()> = t.probe(|t2| {
-                t2.unify(&Ty::Var(b), &string).unwrap();
+                t2.unify(vb, string).unwrap();
                 Err(())
             });
             assert!(inner.is_err());
-            t.unify(&Ty::Var(c), &string).unwrap(); // outer binding after inner
+            t.unify(vc, string).unwrap(); // outer binding after inner
             Ok(())
         });
 
         assert!(out.is_ok());
-        assert_eq!(table.resolve(&Ty::Var(a)), int, "outer binding committed");
+        assert_eq!(s.table.resolve(va), int, "outer binding committed");
+        let rb = s.table.resolve(vb);
         assert!(
-            matches!(table.resolve(&Ty::Var(b)), Ty::Var(_)),
+            matches!(s.tys.kind(rb), TyKind::Var(_)),
             "inner speculative binding rolled back"
         );
         assert_eq!(
-            table.resolve(&Ty::Var(c)),
+            s.table.resolve(vc),
             string,
             "outer binding after the inner rollback committed"
         );
@@ -1230,17 +1409,13 @@ mod tests {
     /// through the union-find.
     #[test]
     fn transitive_chain_resolves_to_ground() {
-        let mut table = InferTable::new();
-        let a = table.fresh();
-        let b = table.fresh();
-        table.unify(&Ty::Var(a), &Ty::Var(b)).unwrap();
-        table
-            .unify(&Ty::Var(b), &Ty::named_in(names(), "System.Int32"))
-            .unwrap();
-        assert_eq!(
-            table.resolve(&Ty::Var(a)),
-            Ty::named_in(names(), "System.Int32")
-        );
+        let s_tys = TyTable::session();
+        let mut s = Session::new(&s_tys, None);
+        let a = s.table.fresh();
+        let b = s.table.fresh();
+        s.unify(&var(a.index()), &var(b.index())).unwrap();
+        s.unify(&var(b.index()), &named("System.Int32")).unwrap();
+        assert_eq!(s.resolve(&var(a.index())), named("System.Int32"));
     }
 
     /// A function type unifies component-wise: `('a -> int)` against
@@ -1249,41 +1424,31 @@ mod tests {
     /// (`'a = 'a -> int` is infinite).
     #[test]
     fn function_types_unify_component_wise() {
-        let fun = |a: Ty, b: Ty| Ty::Fun {
-            arg: Box::new(a),
-            ret: Box::new(b),
-        };
-
-        let mut table = InferTable::new();
-        let a = table.fresh();
-        let b = table.fresh();
-        table
-            .unify(
-                &fun(Ty::Var(a), Ty::named_in(names(), "System.Int32")),
-                &fun(Ty::named_in(names(), "System.Boolean"), Ty::Var(b)),
-            )
-            .unwrap();
-        let want = fun(
-            Ty::named_in(names(), "System.Boolean"),
-            Ty::named_in(names(), "System.Int32"),
-        );
+        let s_tys = TyTable::session();
+        let mut s = Session::new(&s_tys, None);
+        let a = s.table.fresh();
+        let b = s.table.fresh();
+        let (va, vb) = (var(a.index()), var(b.index()));
+        s.unify(
+            &fun(va.clone(), named("System.Int32")),
+            &fun(named("System.Boolean"), vb.clone()),
+        )
+        .unwrap();
+        assert_eq!(s.resolve(&va), named("System.Boolean"));
+        assert_eq!(s.resolve(&vb), named("System.Int32"));
         assert_eq!(
-            table.resolve(&Ty::Var(a)),
-            Ty::named_in(names(), "System.Boolean")
-        );
-        assert_eq!(
-            table.resolve(&Ty::Var(b)),
-            Ty::named_in(names(), "System.Int32")
-        );
-        assert_eq!(
-            table.resolve(&fun(Ty::Var(a), Ty::named_in(names(), "System.Int32"))),
-            want
+            s.resolve(&fun(va, named("System.Int32"))),
+            fun(named("System.Boolean"), named("System.Int32"))
         );
 
-        let mut occ = InferTable::new();
-        let v = occ.fresh();
-        let infinite = fun(Ty::Var(v), Ty::named_in(names(), "System.Int32"));
-        assert_eq!(occ.unify(&Ty::Var(v), &infinite), Err(UnifyError::Occurs));
+        let occ_tys = TyTable::session();
+        let mut occ = Session::new(&occ_tys, None);
+        let v = occ.table.fresh();
+        let infinite = fun(var(v.index()), named("System.Int32"));
+        assert_eq!(
+            occ.unify(&var(v.index()), &infinite),
+            Err(UnifyError::Occurs)
+        );
     }
 
     /// `unify_atomic` rolls back the partial binding a compound mismatch leaves:
@@ -1293,26 +1458,29 @@ mod tests {
     /// structural primitive); the contrast is what the solver relies on.
     #[test]
     fn unify_atomic_rolls_back_partial_bindings() {
-        let lhs = |v| Ty::Tuple(vec![Ty::Var(v), Ty::named_in(names(), "System.String")]);
-        let rhs = Ty::Tuple(vec![
-            Ty::named_in(names(), "System.Int32"),
-            Ty::named_in(names(), "System.Boolean"),
-        ]);
+        let lhs = |v: TyVid| SpelledTy::Tuple(vec![var(v.index()), named("System.String")]);
+        let rhs = SpelledTy::Tuple(vec![named("System.Int32"), named("System.Boolean")]);
 
-        let mut atomic = InferTable::new();
-        let a = atomic.fresh();
+        let atomic_tys = TyTable::session();
+        let mut atomic = Session::new(&atomic_tys, None);
+        let a = atomic.table.fresh();
         assert_eq!(
             atomic.unify_atomic(&lhs(a), &rhs),
             Err(UnifyError::Mismatch)
         );
-        assert_eq!(atomic.resolve(&Ty::Var(a)), Ty::Var(a), "rolled back");
+        assert_eq!(
+            atomic.resolve(&var(a.index())),
+            var(a.index()),
+            "rolled back"
+        );
 
-        let mut plain = InferTable::new();
-        let b = plain.fresh();
+        let plain_tys = TyTable::session();
+        let mut plain = Session::new(&plain_tys, None);
+        let b = plain.table.fresh();
         assert_eq!(plain.unify(&lhs(b), &rhs), Err(UnifyError::Mismatch));
         assert_eq!(
-            plain.resolve(&Ty::Var(b)),
-            Ty::named_in(names(), "System.Int32"),
+            plain.resolve(&var(b.index())),
+            named("System.Int32"),
             "non-atomic unify leaves the partial binding"
         );
     }

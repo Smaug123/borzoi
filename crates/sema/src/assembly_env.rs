@@ -28,6 +28,7 @@ use crate::def::SemanticClass;
 use crate::hash::{HashMap, HashSet};
 use crate::names::{NameKey, NameTable, PathIdSet, PathKey, PathMap};
 use crate::resolve::{ActivePatternShape, DeclineCause};
+use crate::ty::TyTable;
 
 mod il_types;
 mod type_index;
@@ -1090,9 +1091,23 @@ pub struct AssemblyEnv {
     /// across clones, like the memo caches: a clone holds the same entities,
     /// so the same ids mean the same text.
     names: std::sync::Arc<NameTable>,
-    /// How many entries [`Self::names`] held once the env's indexes were
-    /// built: its seed, which [`Self::interned_count`] leaves out.
+    /// The ground types inference publishes against this env, and the schemes
+    /// the files it infers declare ([`Self::types`]). Shared across clones,
+    /// like [`Self::names`], whose ids its paths hold.
+    types: std::sync::Arc<TyTable>,
+    /// How many entries [`Self::names`] and [`Self::types`] held once the
+    /// env's indexes were built: their seed, which [`Self::interned_count`]
+    /// leaves out.
     seeded_entries: usize,
+    /// Types every inference session against this env interns before it
+    /// starts, in order, then the inference variables `session_vars` names,
+    /// so that a test can move the ids a session hands out
+    /// ([`crate::test_support::names::with_fresh_names_and_types`]).
+    #[cfg(feature = "test-support")]
+    session_seed: std::sync::Arc<[crate::Ty]>,
+    /// See [`Self::session_seed`].
+    #[cfg(feature = "test-support")]
+    session_vars: std::sync::Arc<[u32]>,
 }
 
 /// The top-level type index key: namespace segments, simple name, and generic
@@ -1391,17 +1406,58 @@ impl AssemblyEnv {
         &self.names
     }
 
+    /// The type table of this env (`docs/sema-interning-plan.md`, D4): every
+    /// type an inference against this env publishes is an id into it. It
+    /// holds ground types only.
+    pub(crate) fn types(&self) -> &TyTable {
+        &self.types
+    }
+
+    /// The types an inference session against this env interns first
+    /// ([`Self::with_fresh_names_and_types`]).
+    #[cfg(feature = "test-support")]
+    pub(crate) fn session_seed(&self) -> (&[crate::Ty], &[u32]) {
+        (&self.session_seed, &self.session_vars)
+    }
+
     /// A copy of this env with a name table of its own, for tests that
     /// resolve the same input against two tables: the table interns `first`,
     /// in order, and then the env's indexes are re-keyed onto it, so its seed
     /// takes ids after `first`'s.
     #[cfg(feature = "test-support")]
     pub(crate) fn with_fresh_names(&self, first: &[Vec<String>]) -> Self {
+        self.with_fresh_names_and_types(first, None, &[], &[], &[])
+    }
+
+    /// [`Self::with_fresh_names`], whose type table also interns `first_types`
+    /// (types of `types_from`) in order before anything else, and whose
+    /// inference sessions intern `session_seed` (also `types_from`'s) and
+    /// then the variables `session_vars` first.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn with_fresh_names_and_types(
+        &self,
+        first: &[Vec<String>],
+        types_from: Option<&AssemblyEnv>,
+        first_types: &[crate::Ty],
+        session_seed: &[crate::Ty],
+        session_vars: &[u32],
+    ) -> Self {
         let names = std::sync::Arc::new(NameTable::default());
         for path in first {
             names.intern_path(path);
         }
         let from = self.names();
+        let types = std::sync::Arc::new(TyTable::ground());
+        let rekeyed = |tys: &[crate::Ty]| -> Vec<crate::Ty> {
+            tys.iter()
+                .map(|&ty| {
+                    let source = types_from.expect("types come with the env they are of");
+                    types.rekey(source.types(), source.names(), &names, ty)
+                })
+                .collect()
+        };
+        rekeyed(first_types);
+        let session_seed = rekeyed(session_seed).into();
         AssemblyEnv {
             types_by_namespace: self.types_by_namespace.rekey(from, &names),
             auto_open_modules: self.auto_open_modules.rekey(from, &names),
@@ -1411,8 +1467,11 @@ impl AssemblyEnv {
             dropped_type_namespace_prefixes: self
                 .dropped_type_namespace_prefixes
                 .rekey(from, &names),
-            seeded_entries: names.entry_count(),
+            seeded_entries: names.entry_count() + types.len(),
             names,
+            types,
+            session_seed,
+            session_vars: session_vars.into(),
             ..self.clone()
         }
     }
@@ -1423,7 +1482,12 @@ impl AssemblyEnv {
     /// so a long-lived host bounds it by dropping the env once this passes a
     /// cap.
     pub fn interned_count(&self) -> usize {
-        self.names.entry_count().saturating_sub(self.seeded_entries)
+        self.entry_count().saturating_sub(self.seeded_entries)
+    }
+
+    /// How many names, paths and types this env's tables hold.
+    fn entry_count(&self) -> usize {
+        self.names.entry_count() + self.types.len()
     }
 
     /// Build the env from already-enumerated top-level entities (the pure core).
@@ -1743,7 +1807,7 @@ impl AssemblyEnv {
             self.index_first_type(key, handle);
         }
         self.index_union_case_carriers();
-        self.seeded_entries = self.names.entry_count();
+        self.seeded_entries = self.entry_count();
     }
 
     /// Record every **union-case carrier**: the compiler-generated nested type a
@@ -5056,7 +5120,7 @@ impl AssemblyEnv {
         }
         self.namespaces_with_dropped_types
             .insert(&self.names, &namespace);
-        self.seeded_entries = self.names.entry_count();
+        self.seeded_entries = self.entry_count();
         // The core library is named only over a `System` with no drop.
         self.core_library = Default::default();
         self.invalidate_bare_value_index();
@@ -5933,7 +5997,7 @@ impl AssemblyEnv {
             .then_some(target)
     }
 
-    /// The top-level type a generic [`Ty::Named`](crate::Ty::Named) path names
+    /// The top-level type a generic [`TyKind::Named`](crate::TyKind::Named) path names
     /// — `namespace` and the IL `name`, at `arity` — when exactly one type in
     /// the env has that compiled path and no type there was dropped. The read
     /// back of [`Self::sole_generic_type_referenced`]'s path, for a question

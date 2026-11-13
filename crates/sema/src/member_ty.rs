@@ -1,7 +1,7 @@
 //! The `TypeRef → Ty` bridge for member-access typing (Stage 3.3a).
 //!
 //! When a suspended [`HasMember`](crate::infer) constraint wakes — its receiver
-//! resolves to a concrete [`Ty::Named`] whose entity has a single unambiguous
+//! resolves to a concrete [`TyKind::Named`](crate::TyKind::Named) whose entity has a single unambiguous
 //! public instance field / non-indexer property named as accessed — the member's
 //! signature ([`TypeRef`], the assembly crate's owned type model) must be brought
 //! into this crate's [`Ty`]. That is a **partial** function: v1 models only the
@@ -10,15 +10,15 @@
 //! guess).
 //!
 //! What converts:
-//! - [`TypeRef::Primitive`] → the canonical BCL [`Ty::Named`] (`I4` ⇒
+//! - [`TypeRef::Primitive`] → the canonical BCL [`TyKind::Named`](crate::TyKind::Named) (`I4` ⇒
 //!   `System.Int32`), the same FQN convention [`Ty::render`](crate::Ty::render)
 //!   emits, so a bridged type compares against the FCS oracle by string equality.
 //! - A **non-generic, non-nested** [`TypeRef::Named`] (empty `type_args`, a single
-//!   arity-`0` segment, so a plain dotted `Namespace.Name`) → [`Ty::Named`]. A
-//!   generic instantiation or an open/nested generic is deferred — [`Ty::Named`]
+//!   arity-`0` segment, so a plain dotted `Namespace.Name`) → [`TyKind::Named`](crate::TyKind::Named). A
+//!   generic instantiation or an open/nested generic is deferred — [`TyKind::Named`](crate::TyKind::Named)
 //!   has no generic-argument list yet (that arrives with a later slice).
 //! - A **plain vector** [`TypeRef::Array`] (`rank == 1`, empty `sizes` /
-//!   `lower_bounds`) whose element converts → [`Ty::Array`] of rank 1. A
+//!   `lower_bounds`) whose element converts → [`TyKind::Array`](crate::TyKind::Array) of rank 1. A
 //!   multidimensional or bounded array is deferred (the element convention is
 //!   still the same, but v1 keeps the array corner minimal).
 //!
@@ -30,22 +30,22 @@
 use borzoi_assembly::{Primitive, TypeRef};
 
 use crate::names::NameTable;
-use crate::ty::Ty;
+use crate::ty::{Ty, TyTable};
 
 /// Convert a member-signature [`TypeRef`] to a [`Ty`], or `None` when the shape
 /// is one this stage does not model (so the access defers, D5). Total over
 /// [`TypeRef`]; the unmodelled arms are explicit `None`s. See the module docs for
-/// the modelled corner.
-pub(crate) fn type_ref_to_ty(names: &NameTable, ty: &TypeRef) -> Option<Ty> {
+/// the modelled corner. The type is interned in `tys`.
+pub(crate) fn type_ref_to_ty(names: &NameTable, tys: &TyTable, ty: &TypeRef) -> Option<Ty> {
     match ty {
         // A primitive maps to its canonical BCL FQN — the same convention
         // `Ty::render` / the FCS oracle emit.
-        TypeRef::Primitive(p) => Some(primitive_to_ty(names, *p)),
+        TypeRef::Primitive(p) => Some(primitive_to_ty(names, tys, *p)),
         // A non-generic, non-nested named type: empty `type_args`, and a single
         // segment that introduces no generics (`segment_arities == [0]`, i.e. the
         // name has no `/` and declares arity 0). A generic instantiation (non-empty
         // `type_args`), an *open* generic (non-zero arity with empty args), or a
-        // nested type (multiple segments) all defer. [`Ty::Named`] can carry
+        // nested type (multiple segments) all defer. [`TyKind::Named`](crate::TyKind::Named) can carry
         // arguments, but this bridge does not yet build them: an instantiation's
         // `type_args` are `TypeRef`s needing the same conversion recursively, and
         // an *open* generic has no arguments to convert at all.
@@ -71,7 +71,7 @@ pub(crate) fn type_ref_to_ty(names: &NameTable, ty: &TypeRef) -> Option<Ty> {
                 .map(String::as_str)
                 .chain([name.as_str()])
                 .collect();
-            Some(Ty::named_path(names, &path))
+            Some(tys.named_path(names, &path))
         }
         // A plain vector (`T[]`): rank 1, no explicit sizes or lower bounds, and a
         // convertible element. A multidimensional (`rank != 1`) or bounded
@@ -85,11 +85,8 @@ pub(crate) fn type_ref_to_ty(names: &NameTable, ty: &TypeRef) -> Option<Ty> {
             if *rank != 1 || !sizes.is_empty() || !lower_bounds.is_empty() {
                 return None;
             }
-            let elem = type_ref_to_ty(names, &element.ty)?;
-            Some(Ty::Array {
-                elem: Box::new(elem),
-                rank: 1,
-            })
+            let elem = type_ref_to_ty(names, tys, &element.ty)?;
+            Some(tys.array(elem, 1))
         }
         // A type variable, a pointer, or a byref is not a member type this stage
         // renders.
@@ -97,11 +94,11 @@ pub(crate) fn type_ref_to_ty(names: &NameTable, ty: &TypeRef) -> Option<Ty> {
     }
 }
 
-/// The canonical BCL [`Ty::Named`] for an ECMA-335 primitive — the same
+/// The canonical BCL [`TyKind::Named`](crate::TyKind::Named) for an ECMA-335 primitive — the same
 /// `(namespace, name)` mapping the assembly crate's display layer uses, kept in
 /// this crate so the bridge does not depend on a private helper there. `Void`
 /// maps to `System.Void` for totality; a real member type is never `Void`.
-pub(crate) fn primitive_to_ty(names: &NameTable, p: Primitive) -> Ty {
+pub(crate) fn primitive_to_ty(names: &NameTable, tys: &TyTable, p: Primitive) -> Ty {
     let path = match p {
         Primitive::Void => "System.Void",
         Primitive::Bool => "System.Boolean",
@@ -121,7 +118,7 @@ pub(crate) fn primitive_to_ty(names: &NameTable, p: Primitive) -> Ty {
         Primitive::Object => "System.Object",
         Primitive::String => "System.String",
     };
-    Ty::named_in(names, path)
+    tys.named(names, path)
 }
 
 #[cfg(test)]
@@ -130,7 +127,7 @@ mod tests {
 
     use super::type_ref_to_ty;
     use crate::names::NameTable;
-    use crate::ty::Ty;
+    use crate::ty::TyTable;
 
     fn named(ns: &[&str], name: &str) -> TypeRef {
         TypeRef::Named {
@@ -145,6 +142,7 @@ mod tests {
     #[test]
     fn primitives_map_to_canonical_fqns() {
         let names = NameTable::default();
+        let tys = TyTable::session();
         for (p, want) in [
             (Primitive::I4, "System.Int32"),
             (Primitive::String, "System.String"),
@@ -154,8 +152,8 @@ mod tests {
             (Primitive::U4, "System.UInt32"),
         ] {
             assert_eq!(
-                type_ref_to_ty(&names, &TypeRef::Primitive(p)),
-                Some(Ty::named_in(&names, want)),
+                type_ref_to_ty(&names, &tys, &TypeRef::Primitive(p)),
+                Some(tys.named(&names, want)),
                 "{p:?}"
             );
         }
@@ -164,20 +162,22 @@ mod tests {
     #[test]
     fn non_generic_named_maps_to_dotted_path() {
         let names = NameTable::default();
+        let tys = TyTable::session();
         assert_eq!(
-            type_ref_to_ty(&names, &named(&["System"], "Guid")),
-            Some(Ty::named_in(&names, "System.Guid"))
+            type_ref_to_ty(&names, &tys, &named(&["System"], "Guid")),
+            Some(tys.named(&names, "System.Guid"))
         );
         // No namespace → a bare name.
         assert_eq!(
-            type_ref_to_ty(&names, &named(&[], "Thing")),
-            Some(Ty::named_path(&names, &["Thing"]))
+            type_ref_to_ty(&names, &tys, &named(&[], "Thing")),
+            Some(tys.named_path(&names, &["Thing"]))
         );
     }
 
     #[test]
     fn generic_named_defers() {
         let names = NameTable::default();
+        let tys = TyTable::session();
         // A generic instantiation (`List<int>`): non-empty type_args.
         let generic = TypeRef::Named {
             assembly: None,
@@ -186,7 +186,7 @@ mod tests {
             type_args: vec![NullableType::oblivious(TypeRef::Primitive(Primitive::I4))],
             segment_arities: vec![1],
         };
-        assert_eq!(type_ref_to_ty(&names, &generic), None);
+        assert_eq!(type_ref_to_ty(&names, &tys, &generic), None);
 
         // An *open* generic: arity 1, empty args (still deferred — non-zero arity).
         let open = TypeRef::Named {
@@ -196,12 +196,13 @@ mod tests {
             type_args: vec![],
             segment_arities: vec![1],
         };
-        assert_eq!(type_ref_to_ty(&names, &open), None);
+        assert_eq!(type_ref_to_ty(&names, &tys, &open), None);
     }
 
     #[test]
     fn nested_named_defers() {
         let names = NameTable::default();
+        let tys = TyTable::session();
         // A nested type (`Outer/Inner`): two segments in the `/`-joined name.
         let nested = TypeRef::Named {
             assembly: None,
@@ -210,12 +211,13 @@ mod tests {
             type_args: vec![],
             segment_arities: vec![0, 0],
         };
-        assert_eq!(type_ref_to_ty(&names, &nested), None);
+        assert_eq!(type_ref_to_ty(&names, &tys, &nested), None);
     }
 
     #[test]
     fn plain_vector_array_maps_and_multidim_defers() {
         let names = NameTable::default();
+        let tys = TyTable::session();
         let vector = TypeRef::Array {
             element: Box::new(NullableType::oblivious(TypeRef::Primitive(Primitive::U1))),
             rank: 1,
@@ -223,11 +225,8 @@ mod tests {
             lower_bounds: vec![],
         };
         assert_eq!(
-            type_ref_to_ty(&names, &vector),
-            Some(Ty::Array {
-                elem: Box::new(Ty::named_in(&names, "System.Byte")),
-                rank: 1,
-            })
+            type_ref_to_ty(&names, &tys, &vector),
+            Some(tys.array(tys.named(&names, "System.Byte"), 1))
         );
 
         // A rank-2 array defers.
@@ -237,7 +236,7 @@ mod tests {
             sizes: vec![],
             lower_bounds: vec![],
         };
-        assert_eq!(type_ref_to_ty(&names, &md), None);
+        assert_eq!(type_ref_to_ty(&names, &tys, &md), None);
 
         // A bounded vector (non-empty sizes) defers.
         let bounded = TypeRef::Array {
@@ -246,12 +245,13 @@ mod tests {
             sizes: vec![4],
             lower_bounds: vec![],
         };
-        assert_eq!(type_ref_to_ty(&names, &bounded), None);
+        assert_eq!(type_ref_to_ty(&names, &tys, &bounded), None);
     }
 
     #[test]
     fn nullability_is_ignored() {
         let names = NameTable::default();
+        let tys = TyTable::session();
         // An `Annotated` (`string?`) element still bridges to `System.String`.
         let annotated = TypeRef::Array {
             element: Box::new(NullableType {
@@ -263,20 +263,19 @@ mod tests {
             lower_bounds: vec![],
         };
         assert_eq!(
-            type_ref_to_ty(&names, &annotated),
-            Some(Ty::Array {
-                elem: Box::new(Ty::named_in(&names, "System.String")),
-                rank: 1,
-            })
+            type_ref_to_ty(&names, &tys, &annotated),
+            Some(tys.array(tys.named(&names, "System.String"), 1))
         );
     }
 
     #[test]
     fn pointer_and_byref_defer() {
         let names = NameTable::default();
+        let tys = TyTable::session();
         assert_eq!(
             type_ref_to_ty(
                 &names,
+                &tys,
                 &TypeRef::Ptr(Some(Box::new(TypeRef::Primitive(Primitive::I4))))
             ),
             None
@@ -284,6 +283,7 @@ mod tests {
         assert_eq!(
             type_ref_to_ty(
                 &names,
+                &tys,
                 &TypeRef::ByRef {
                     inner: Box::new(TypeRef::Primitive(Primitive::I4)),
                     readonly: false
@@ -294,6 +294,7 @@ mod tests {
         assert_eq!(
             type_ref_to_ty(
                 &names,
+                &tys,
                 &TypeRef::Var {
                     index: 0,
                     is_method: false

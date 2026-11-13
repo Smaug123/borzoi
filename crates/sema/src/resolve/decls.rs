@@ -121,7 +121,7 @@ impl Resolver<'_> {
             return SlotClass::Keeps;
         }
         let aliases = self.assemblies.slot_attribute_aliases();
-        let trusted = !self.contributions.declares_slot_attribute_alias
+        let trusted = !self.prescan.declares_slot_attribute_alias
             && !self.preceding.slot_attribute_alias_declared
             && !aliases.certain;
         let may_change_slot = |attr: &Attribute| {
@@ -177,7 +177,7 @@ impl<'a> Resolver<'a> {
     pub(super) fn module_path(&self) -> Option<&[String]> {
         self.scope
             .in_exporting_module
-            .then_some(&*self.container_path)
+            .then_some(&*self.lexical.container_path)
     }
 
     /// Export a value-namespace **constructor case** (a non-qualified union case
@@ -192,7 +192,7 @@ impl<'a> Resolver<'a> {
     /// cross-file open — which keeps find-references / rename intact, exactly
     /// as a top-level `let` does).
     ///
-    /// The path is built from [`container_path`](Self::container_path), not
+    /// The path is built from [`container_path`](crate::resolve::lexical::Lexical::container_path), not
     /// [`module_path`](Self::module_path) (which is `None` for a `namespace`): a
     /// union/exception case **can** be declared directly under a namespace
     /// (`namespace Lib; type Color = Red | …`), and F# exposes its constructors
@@ -212,11 +212,11 @@ impl<'a> Resolver<'a> {
         debug_assert!(
             self.scope
                 .access_floor
-                .is_none_or(|f| f <= self.container_path.len()),
+                .is_none_or(|f| f <= self.lexical.container_path.len()),
             "access_floor must be a prefix length of the current container_path"
         );
         if own_private {
-            Some(self.container_path.len())
+            Some(self.lexical.container_path.len())
         } else {
             self.scope.access_floor
         }
@@ -225,7 +225,11 @@ impl<'a> Resolver<'a> {
     /// The name an export of `def` publishes, which the walk spelled
     /// `text`: the definition's own name.
     pub(super) fn export_name(&self, def: DefId, text: &str) -> ExportName {
-        ExportName::new(self.assemblies.names(), self.defs[def.index()].name(), text)
+        ExportName::new(
+            self.assemblies.names(),
+            self.out.defs[def.index()].name(),
+            text,
+        )
     }
 
     pub(super) fn export_case(
@@ -237,8 +241,8 @@ impl<'a> Resolver<'a> {
         kind: CaseKind,
     ) -> Option<ItemId> {
         let decl_path = self.decl_path(&[name]);
-        let pos = self.defs[def.index()].range.start();
-        if self.anonymous_root {
+        let pos = self.out.defs[def.index()].range.start();
+        if self.lexical.anonymous_root {
             // No cross-file `ExportedItem`, but the case is still recorded (with
             // `item: None`) so its container derives into `modules_with_hidden_values`
             // — the anonymous-root union/exception hidden-value marker (plan
@@ -255,9 +259,9 @@ impl<'a> Resolver<'a> {
             );
             return None;
         }
-        let item_idx = self.items.len();
+        let item_idx = self.out.items.len();
         let item_id = ItemId::new(self.item_base as usize + item_idx);
-        self.items.push(ExportedItem {
+        self.out.items.push(ExportedItem {
             name: self.export_name(def, name),
             qualified: Some(decl_path.clone()),
             id: item_id,
@@ -292,7 +296,7 @@ impl<'a> Resolver<'a> {
     /// producer sites (a non-RQA union case, and [`Self::export_require_qualified_case`]),
     /// so that decl is always the trailing one.
     pub(super) fn export_type_qualified_case(&mut self, type_name: &str, case_name: &str) {
-        if self.anonymous_root {
+        if self.lexical.anonymous_root {
             return;
         }
         let path = self.decl_path(&[type_name, case_name]);
@@ -309,16 +313,19 @@ impl<'a> Resolver<'a> {
     /// `false` (present, but case-opaque). Skipped in an anonymous-root file (no
     /// real cross-file container path), like [`Self::export_case`].
     pub(super) fn export_type_path(&mut self, name: &str, cases_enumerable: bool, slot: TypeSlot) {
-        if self.anonymous_root {
+        if self.lexical.anonymous_root {
             return;
         }
         let names = self.assemblies.names();
-        let id = names.intern_child(self.container_path.id(), names.logical(name));
-        let mut path = self.container_path.to_vec();
+        let id = names.intern_child(self.lexical.container_path.id(), names.logical(name));
+        let mut path = self.lexical.container_path.to_vec();
         path.push(name.to_string());
-        self.type_path_export_ids
-            .insert(id, self.type_path_exports.len());
-        self.type_path_exports.push((path, cases_enumerable, slot));
+        self.index
+            .type_path_export_ids
+            .insert(id, self.index.type_path_exports.len());
+        self.index
+            .type_path_exports
+            .push((path, cases_enumerable, slot));
     }
 
     /// Give a **require-qualified** case (an enum case, or an
@@ -341,15 +348,15 @@ impl<'a> Resolver<'a> {
         repr_access_root: Option<Vec<String>>,
         kind: CaseKind,
     ) -> Option<ItemId> {
-        if self.anonymous_root {
+        if self.lexical.anonymous_root {
             // No cross-file handle and — unlike `export_case` — no hidden-value
             // marker: an RQA/enum case is not in the value namespace, so an `open`
             // of the (anonymous, unmodelled) container brings no bare name.
             return None;
         }
-        let item_idx = self.items.len();
+        let item_idx = self.out.items.len();
         let item_id = ItemId::new(self.item_base as usize + item_idx);
-        self.items.push(ExportedItem {
+        self.out.items.push(ExportedItem {
             name: self.export_name(def, name),
             qualified: None,
             id: item_id,
@@ -365,7 +372,7 @@ impl<'a> Resolver<'a> {
         // The export-decl-list twin: a case `Item` decl (no value path). Its
         // type-qualified path is threaded by `export_type_qualified_case` below,
         // which sets it on this just-pushed decl.
-        let pos = self.defs[def.index()].range.start();
+        let pos = self.out.defs[def.index()].range.start();
         self.push_export_decl(
             self.decl_path(&[name]),
             pos,
@@ -388,14 +395,20 @@ impl<'a> Resolver<'a> {
         // nested member left out of it would resolve to a colliding assembly
         // type instead. `resolve_project_assembly_diff.rs` is the FCS guard, but
         // its corpus is hand-written, so add a colliding nested-module case there.
-        if self.dropped_decls.contains(&decl.syntax().text_range()) {
+        if self
+            .prescan
+            .dropped_decls
+            .contains(&decl.syntax().text_range())
+        {
             // FCS drops it whole, binders, attributes and right-hand side
             // alike, so the walk enters none of it: its names stay out of
             // every scope, export and contribution, and a use inside it
             // commits nothing, as FCS answers nothing there.
-            self.opaque_regions.push(super::model::OpaqueRegion::Range(
-                decl.syntax().text_range(),
-            ));
+            self.out
+                .opaque_regions
+                .push(super::model::OpaqueRegion::Range(
+                    decl.syntax().text_range(),
+                ));
             return;
         }
         match decl {
@@ -446,8 +459,8 @@ impl<'a> Resolver<'a> {
                     // The alias is cross-file-resolvable only with a real root (an
                     // anonymous-root alias is not in `nested_module_exports`, so an
                     // `open X` of it falls to the conservative path regardless).
-                    if !self.anonymous_root && !segs.is_empty() {
-                        let mut alias_path = self.container_path.to_vec();
+                    if !self.lexical.anonymous_root && !segs.is_empty() {
+                        let mut alias_path = self.lexical.container_path.to_vec();
                         alias_path.extend(segs.iter().cloned());
                         // Always mark `X` hidden. This is the only marker exported
                         // cross-file (`module_aliases` is same-file), so a *later*
@@ -463,7 +476,7 @@ impl<'a> Resolver<'a> {
                         // unresolvable target (an assembly module) records no
                         // mapping — the hidden marker above keeps it conservative.
                         if let Some(target) = target {
-                            self.module_aliases.insert(alias_path, target);
+                            self.index.module_aliases.insert(alias_path, target);
                         }
                     }
                     // The export-decl-list twin: one `ModuleAbbrev` decl whose
@@ -576,7 +589,7 @@ impl<'a> Resolver<'a> {
                         // wiring reads it via `project_ns_hidden` below).
                         let type_auto_open = attrs_auto_open(defn.attributes());
                         if type_auto_open {
-                            self.note_hidden_value_module(self.container_path.to_vec());
+                            self.note_hidden_value_module(self.lexical.container_path.to_vec());
                         }
                         let slot = self.type_slot_class(defn);
                         // The type's access-root (own `private` plus any enclosing
@@ -588,24 +601,25 @@ impl<'a> Resolver<'a> {
                         let arity = defn.typar_decls().map_or(0, |t| t.typars().count());
                         self.define_type(&name, arity, slot, type_access_root);
                         if let Some(own) = self
+                            .index
                             .type_defs_by_arity
-                            .get(&self.container_path.id())
+                            .get(&self.lexical.container_path.id())
                             .and_then(|m| m.get(&(id_text(&name).to_string(), arity)))
                             .copied()
                         {
                             // Placed for later files wherever it has a real
                             // path, with the scope its `private`s leave it.
-                            if !self.anonymous_root {
-                                let mut path = self.container_path.to_vec();
+                            if !self.lexical.anonymous_root {
+                                let mut path = self.lexical.container_path.to_vec();
                                 path.push(id_text(&name).to_string());
-                                self.placed_types.push(DeclaredType {
+                                self.out.placed_types.push(DeclaredType {
                                     def: own,
                                     path,
                                     arity,
                                     access_root: type_access_root,
                                 });
                             }
-                            self.block_type_defs.insert(own);
+                            self.lexical.block_type_defs.insert(own);
                             let covered_kind = match defn.repr() {
                                 Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => true,
                                 Some(TypeDefnRepr::ObjectModel(om)) => {
@@ -618,7 +632,7 @@ impl<'a> Resolver<'a> {
                             };
                             if arity == 0 && covered_kind && !self.may_auto_open(defn.attributes())
                             {
-                                self.augmentable_types.insert(own);
+                                self.index.augmentable_types.insert(own);
                             }
                         }
                         // The cross-file type index: any genuine non-abbreviation
@@ -671,7 +685,9 @@ impl<'a> Resolver<'a> {
                         // `define_union_cases` and `define_enum_cases` run for the
                         // same defn (only one matches the repr) and must not clobber
                         // the other's just-added cases.
-                        if let Some(by_type) = self.type_cases.get_mut(&*self.container_path) {
+                        if let Some(by_type) =
+                            self.index.type_cases.get_mut(&*self.lexical.container_path)
+                        {
                             by_type.remove(&*id_text(&name));
                         }
                         // A union's cases enter the container-scoped case index
@@ -774,7 +790,7 @@ impl<'a> Resolver<'a> {
             ModuleDecl::Exception(exn) => {
                 // The walk does not enter an exception's members, so it
                 // commits no use there that their binders could capture.
-                self.opaque_regions.extend(
+                self.out.opaque_regions.extend(
                     exn.members()
                         .map(|m| super::model::OpaqueRegion::Range(m.syntax().text_range())),
                 );
@@ -871,7 +887,7 @@ impl<'a> Resolver<'a> {
                 // name is an opaque binder, declined by the contribution below.
                 // Its arguments are too, trivially: a prototype has no body for
                 // one to be in scope in.
-                self.opaque_binders.extend(
+                self.out.opaque_binders.extend(
                     ext.name()
                         .and_then(|name| name.idents().last())
                         .into_iter()
@@ -897,7 +913,7 @@ impl<'a> Resolver<'a> {
                 // rare (P/Invoke), and every other unenumerable value producer
                 // (union cases / exception ctors / active patterns / aliases)
                 // already marks its module hidden.
-                self.note_hidden_value_module(self.container_path.to_vec());
+                self.note_hidden_value_module(self.lexical.container_path.to_vec());
                 // The export-decl-list twin: `path` = the container (its
                 // hidden-value path, recorded unconditionally as above); `shadow`
                 // is the container extended by the function segments, the
@@ -1041,7 +1057,7 @@ impl<'a> Resolver<'a> {
                     // — but a name-keyed claim about that surface would have to
                     // enumerate the opened type's members, which we do not do here.
                     // Defer wholesale; the coverage cost is a rare `open type`.
-                    self.unknowables.raise(Unknowable::OpenExtensionSurface);
+                    self.out.unknowables.raise(Unknowable::OpenExtensionSurface);
                 } else if let Some(li) = open.long_ident() {
                     let idents: Vec<SyntaxToken> = li.idents().collect();
                     let mut path: Vec<String> =
@@ -1313,11 +1329,11 @@ impl<'a> Resolver<'a> {
                     if clean_assembly_namespace_open {
                         for interp in &interps {
                             if let OpenInterpretation::Reading(r) = interp {
-                                self.open_extension_namespaces.push(r.clone());
+                                self.out.open_extension_namespaces.push(r.clone());
                             }
                         }
                     } else if !path.is_empty() {
-                        self.unknowables.raise(Unknowable::OpenExtensionSurface);
+                        self.out.unknowables.raise(Unknowable::OpenExtensionSurface);
                     }
 
                     // Apply the interpretations **lowest priority first** (the list
@@ -1430,12 +1446,13 @@ impl<'a> Resolver<'a> {
                         // bring, so a clean subtree is what makes the rescue's
                         // soundness argument closed rather than a list of
                         // leak paths.
-                        let resolved_alias = self.module_aliases.contains_key(gp.as_slice());
+                        let resolved_alias = self.index.module_aliases.contains_key(gp.as_slice());
                         let project_module_bump = has_project_module
                             && !resolved_alias
                             && self.module_has_hidden_values(gp);
                         let bump_covered_by_screen = project_module_bump
                             && !self
+                                .index
                                 .modules_with_hidden_values
                                 .iter()
                                 .any(|path| path.starts_with(gp.as_slice()))
@@ -1656,7 +1673,7 @@ impl<'a> Resolver<'a> {
                 // open flipped false→true (snapshot at the arm's start). Both the
                 // `open type` and plain-`open` branches fall through to here.
                 let opacity = self.open_opacity_since(&trace_before);
-                self.trace_opens.push(OpenTrace {
+                self.out.trace_opens.push(OpenTrace {
                     range: trace_range,
                     path: trace_path,
                     is_type: trace_is_type,
@@ -1747,8 +1764,8 @@ impl<'a> Resolver<'a> {
         let decl_path = self.decl_path(&segs);
         if nm_auto_open {
             let qualified = decl_path.spell(self.assemblies.names());
-            self.lexical_auto_open_paths.push(qualified.clone());
-            if !self.anonymous_root {
+            self.index.lexical_auto_open_paths.push(qualified.clone());
+            if !self.lexical.anonymous_root {
                 self.record_auto_open_module(qualified, nm_private);
             }
         }
@@ -1757,9 +1774,10 @@ impl<'a> Resolver<'a> {
         // abbreviations, and `extern`s share), this answers "is there a genuine
         // module at this path?" for a later file's open-target classification.
         // The same real-root guard as the shadow's cross-file half.
-        if !self.anonymous_root {
+        if !self.lexical.anonymous_root {
             let names = self.assemblies.names();
-            self.real_nested_module_exports
+            self.index
+                .real_nested_module_exports
                 .insert_id(names, decl_path.id(), || decl_path.reference_text(names));
         }
         // The export-decl-list twin: one nested-module decl (`header: false`)
@@ -1790,9 +1808,9 @@ impl<'a> Resolver<'a> {
         // (File-level accumulators — `items`, `defs`, `resolutions`,
         // `nested_module_exports` — are the file's contribution and persist.)
         let outer = self.scope.clone();
-        let saved_container = self.container_path.mark();
-        let saved_nested_locals = self.nested_module_locals.mark();
-        let saved_augmentation_locals = self.augmentation_head_locals.mark();
+        let saved_container = self.lexical.container_path.mark();
+        let saved_nested_locals = self.lexical.nested_module_locals.mark();
+        let saved_augmentation_locals = self.lexical.augmentation_head_locals.mark();
 
         // The nested module's full path = enclosing container + its own name(s)
         // (`module A.B = …` contributes both), the container for the body's own
@@ -1806,15 +1824,15 @@ impl<'a> Resolver<'a> {
         // no-cross-file-export invariant. Intra-file resolution is unaffected
         // either way (it goes through the scope frame, not `module_path`).
         for segment in segs {
-            self.container_path.push(segment);
+            self.lexical.container_path.push(segment);
         }
-        self.scope.in_exporting_module = !self.anonymous_root;
+        self.scope.in_exporting_module = !self.lexical.anonymous_root;
         // A `module private Sub` scopes its contents to its parent (this module's
         // container); stacked private modules take the deepest floor (see
         // [`OpenScope::access_floor`]). A non-private module inherits the
         // enclosing floor unchanged.
         if header_is_private(nm.syntax()) {
-            let parent_len = self.container_path.len().saturating_sub(1);
+            let parent_len = self.lexical.container_path.len().saturating_sub(1);
             self.scope.access_floor =
                 Some(outer.access_floor.map_or(parent_len, |f| f.max(parent_len)));
         }
@@ -1833,9 +1851,9 @@ impl<'a> Resolver<'a> {
         // and qualified to later cross-file references) and are dropped from
         // lexical scope when the frame is popped, so they never leak unqualified
         // into the enclosing module. The frame is the innermost, so
-        // [`Self::module_frame`] targets it for this module's exports.
-        self.module_frames.push(self.scopes.len());
-        self.scopes.push(Frame::default());
+        // `Lexical::module_frame` targets it for this module's exports.
+        self.lexical.module_frames.push(self.lexical.scopes.len());
+        self.lexical.scopes.push(Frame::default());
         // Inside a `rec` block every binder the module declares is in scope
         // from its start, ahead of the walk reaching it.
         if self.scope.recursive_module_active {
@@ -1844,10 +1862,10 @@ impl<'a> Resolver<'a> {
         for decl in nm.decls() {
             self.module_decl(&decl);
         }
-        self.scopes.pop();
-        self.module_frames.pop();
+        self.lexical.scopes.pop();
+        self.lexical.module_frames.pop();
 
-        self.container_path.leave_to(saved_container);
+        self.lexical.container_path.leave_to(saved_container);
         // An `[<AutoOpen>]` nested module opens into the remainder of its
         // container's scope; a plain module's imports stay inside it.
         let exit = if attrs_auto_open(nm.attributes()) {
@@ -1867,7 +1885,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ModuleExit::AutoOpen(AutoOpenExit {
-                parent_depth: self.container_path.len(),
+                parent_depth: self.lexical.container_path.len(),
                 private: header_is_private(nm.syntax()),
                 import_pos: u32::from(nm.syntax().text_range().start()),
                 own_types,
@@ -1876,8 +1894,11 @@ impl<'a> Resolver<'a> {
             ModuleExit::Plain
         };
         self.scope = outer.leave(&mut self.scope, exit);
-        self.nested_module_locals.rollback(saved_nested_locals);
-        self.augmentation_head_locals
+        self.lexical
+            .nested_module_locals
+            .rollback(saved_nested_locals);
+        self.lexical
+            .augmentation_head_locals
             .rollback(saved_augmentation_locals);
         // An `[<AutoOpen>]` module folds back into the rest of its container
         // (`AddLocalSubModule`), which the walk does not model.
@@ -1905,7 +1926,7 @@ impl<'a> Resolver<'a> {
     ///   wrongly shadow an unrelated module's path in a later file (over-deferring
     ///   a valid assembly resolution), so no cross-file shadow is recorded.
     ///
-    /// The guard is [`Self::anonymous_root`], **not** `container_path.is_empty()`:
+    /// The guard is [`Lexical::anonymous_root`](crate::resolve::lexical::Lexical::anonymous_root), **not** `container_path.is_empty()`:
     /// the two diverge for a nested module under an anonymous file (where
     /// `container_path` is `["Calc"]` but the path is still filename-relative) and
     /// for `namespace global` (empty `container_path` but a real root). It is the
@@ -1915,19 +1936,21 @@ impl<'a> Resolver<'a> {
         if segs.is_empty() {
             return;
         }
-        if !self.anonymous_root {
-            let mut qualified = self.container_path.to_vec();
+        if !self.lexical.anonymous_root {
+            let mut qualified = self.lexical.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
-            self.nested_module_exports
+            self.index
+                .nested_module_exports
                 .insert(self.assemblies.names(), &qualified);
         }
-        self.nested_module_locals
+        self.lexical
+            .nested_module_locals
             .insert(self.assemblies.names(), &segs);
     }
 
     /// The **augmentation-head** counterpart of [`Self::record_project_name_shadow`]:
     /// same two forms, recorded under the same `anonymous_root` condition, into
-    /// the value-namespace-only sets ([`Self::augmentation_head_locals`], which
+    /// the value-namespace-only sets ([`Lexical::augmentation_head_locals`](crate::resolve::lexical::Lexical::augmentation_head_locals), which
     /// explains why they are separate).
     ///
     /// The qualified form is `container_path` + the head as written, which is the
@@ -1940,47 +1963,53 @@ impl<'a> Resolver<'a> {
         if segs.is_empty() {
             return;
         }
-        if !self.anonymous_root {
-            let mut qualified = self.container_path.to_vec();
+        if !self.lexical.anonymous_root {
+            let mut qualified = self.lexical.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
-            self.augmentation_head_exports
+            self.index
+                .augmentation_head_exports
                 .insert(self.assemblies.names(), &qualified);
         }
-        self.augmentation_head_locals
+        self.lexical
+            .augmentation_head_locals
             .insert(self.assemblies.names(), &segs);
     }
 
     /// Note `name` as a *module-like* declaration (nested module / abbreviation)
     /// in the current container, so member access through it shadows a same-named
-    /// enclosing type (see [`Self::module_like_names`]). `name` is already a
+    /// enclosing type (see [`Indexes::module_like_names`](crate::resolve::indexes::Indexes::module_like_names)). `name` is already a
     /// name ([`id_text`]), not a token's text.
     pub(super) fn note_module_like_name(&mut self, name: &str) {
-        self.module_like_names
-            .entry(self.container_path.id())
+        self.index
+            .module_like_names
+            .entry(self.lexical.container_path.id())
             .or_default()
             .insert(name.to_string());
     }
 
     /// The [`DeclKinds`](super::state::DeclKinds) slot for `name` in the current
-    /// container ([`Self::container_decls`]), inserting an empty one if absent. The
+    /// container ([`Indexes::container_decls`](crate::resolve::indexes::Indexes::container_decls)), inserting an empty one if absent. The
     /// single mutation point for the per-container declared-name view: each definition
     /// site sets the relevant namespace flag (`mark_decl(name).value = true`, …).
     /// `name` is already a name ([`id_text`]), not a token's text.
     pub(super) fn mark_decl(&mut self, name: &str) -> &mut super::state::DeclKinds {
-        self.container_decls
-            .entry(self.container_path.id())
+        self.index
+            .container_decls
+            .entry(self.lexical.container_path.id())
             .or_default()
             .entry(name.to_string())
             .or_default()
     }
 
-    /// What [`Self::container_decls`] holds for the container `path`: nothing
+    /// What [`Indexes::container_decls`](crate::resolve::indexes::Indexes::container_decls) holds for the container `path`: nothing
     /// when the walk has not entered it.
     pub(super) fn declared_in(
         &self,
         path: &[String],
     ) -> Option<&crate::hash::HashMap<String, super::state::DeclKinds>> {
-        self.container_path.get_at(&self.container_decls, path)
+        self.lexical
+            .container_path
+            .get_at(&self.index.container_decls, path)
     }
 }
 
@@ -2005,15 +2034,15 @@ impl Resolver<'_> {
         else {
             return;
         };
-        let names_a_type = match self.resolutions.get(&case.text_range()) {
-            Some(Resolution::Local(id)) => self.defs[id.index()].kind == DefKind::Type,
+        let names_a_type = match self.out.resolutions.get(&case.text_range()) {
+            Some(Resolution::Local(id)) => self.out.defs[id.index()].kind == DefKind::Type,
             Some(Resolution::Entity(_)) => true,
             _ => false,
         };
         if names_a_type {
             return;
         }
-        self.opaque_binders.insert(case.text_range());
+        self.out.opaque_binders.insert(case.text_range());
         // A case of the container's, for the declared-name view.
         let rqa = self.require_qualified_access(defn.attributes());
         let decl = self.mark_decl(&id_text(&case));

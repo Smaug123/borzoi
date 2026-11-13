@@ -272,6 +272,10 @@ enum Route {
     /// `open type` of a referenced type the probe file augments with the
     /// static: FCS opens the extension members in scope for the type.
     OpenTypeSourceExtension,
+    /// The same, with the augmentation in an earlier file's module the probe
+    /// opens: the probe learns its names from that file's published
+    /// contributions, not its own prescan.
+    OpenTypeEarlierFileExtension,
     /// `open type` of a referenced type a referenced `[<AutoOpen>]` module
     /// augments with the static, in scope through an `open`.
     OpenTypeAssemblyExtension,
@@ -400,7 +404,7 @@ enum Route {
 }
 
 impl Route {
-    const ALL: [Route; 92] = [
+    const ALL: [Route; 93] = [
         Route::Nothing,
         Route::AutoOpenModule,
         Route::AutoOpenAliased,
@@ -448,6 +452,7 @@ impl Route {
         Route::OpenTypeInherited,
         Route::OpenTypeDropped,
         Route::OpenTypeSourceExtension,
+        Route::OpenTypeEarlierFileExtension,
         Route::OpenTypeAssemblyExtension,
         Route::OpenTypeAssemblyExtensionProperty,
         Route::OpenTypeAssemblyExtensionRenamed,
@@ -879,6 +884,13 @@ impl Route {
             Route::OpenTypeSourceExtension => (
                 vec![],
                 "module GridProbe\n@OWN\ntype GridFix.Plain with\n    @STATIC\nopen type GridFix.Plain\n@USE\n",
+            ),
+            Route::OpenTypeEarlierFileExtension => (
+                vec![(
+                    "GridExt.fs",
+                    "module GridExt\ntype GridFix.Plain with\n    @STATIC\n",
+                )],
+                "module GridProbe\n@OWN\nopen GridExt\nopen type GridFix.Plain\n@USE\n",
             ),
             Route::OpenTypeAssemblyExtensionProperty => (
                 vec![],

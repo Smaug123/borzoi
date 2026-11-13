@@ -250,7 +250,7 @@ fn infer_facts(src: &str, env: &AssemblyEnv) -> Facts {
         .types()
         .values()
         .chain(inferred.def_types().values())
-        .map(|ty| ty.size())
+        .map(|ty| ty.size(env))
         .max_by_key(|size| (size.nodes, size.depth))
         .unwrap_or_default();
     let walks = inferred.type_walks();
