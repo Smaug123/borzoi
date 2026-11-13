@@ -1692,6 +1692,13 @@ struct State<'r> {
     /// `true` for `TargetFramework` — an answer
     /// [`TargetFrameworkReads::CarvedOut`] would have withheld.
     target_framework_read_exempted: Cell<bool>,
+    /// Set while the item pass reads a generic item's metadatum that no
+    /// dependency consumer reads (anything but NuGet's package metadata
+    /// names). An undefined `$(TargetFramework)` read then counts as inexact
+    /// without marking [`Self::target_framework_read_exempted`]: the walk's
+    /// choice of pass, and so its [`ParsedProject`], must not turn on a value
+    /// only a target reads.
+    quiet_target_framework_reads: Cell<bool>,
     /// The root each root-surfacing diagnostic stood for, by its index in
     /// `diagnostics`, captured when it was pushed. A diagnostic carries only a
     /// name, and that name's root may change later in the walk;
@@ -1702,7 +1709,20 @@ struct State<'r> {
 #[derive(Debug, Clone)]
 struct EvaluatedItem {
     identity: String,
+    /// NuGet's package metadata names only, each value trimmed as the
+    /// dependency capture reads it.
     metadata: HashMap<String, String>,
+    /// Every metadatum, exactly as MSBuild evaluates it (untrimmed), for a
+    /// reader of the item table itself ([`reads`]). `None` where that value
+    /// cannot be known: a body holding more than text and comments, or a value
+    /// MSBuild's Unix path fixup may rewrite, depending on its working
+    /// directory. The dependency capture keeps its own reading of those.
+    exact_metadata: HashMap<String, Option<String>>,
+    /// Whether `exact_metadata` names every metadatum the item carries. False
+    /// for an item copied from a type whose metadata this crate models
+    /// elsewhere (`@(ProjectReference)`), where a name it lacks is unknown
+    /// rather than absent.
+    metadata_complete: bool,
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
 }
 
@@ -2051,6 +2071,7 @@ impl<'r> State<'r> {
             walk_opaque: None,
             target_framework_reads: TargetFrameworkReads::CarvedOut,
             target_framework_read_exempted: Cell::new(false),
+            quiet_target_framework_reads: Cell::new(false),
             diagnostic_roots: HashMap::new(),
         }
     }
@@ -2090,6 +2111,9 @@ impl<'r> State<'r> {
             && self.trust_of(name).is_certain()
             && !is_toolset_initial_property_name(&lower);
         if lower == "targetframework" {
+            if self.quiet_target_framework_reads.get() {
+                return false;
+            }
             match self.target_framework_reads {
                 TargetFrameworkReads::CarvedOut => return false,
                 TargetFrameworkReads::Exact if exact => {
@@ -2585,6 +2609,7 @@ impl<'r> State<'r> {
             walk_opaque: _,
             target_framework_reads: _,
             target_framework_read_exempted: _,
+            quiet_target_framework_reads: _,
             diagnostic_roots: _,
         } = self;
         // Central Package Management opt-in: a versionless

@@ -93,8 +93,11 @@ This is a Cargo workspace with nine members:
   unchanged. The other is the end of MSBuild's, through the `evaluated` op,
   which evaluates without building. A trusted value MSBuild disagrees with
   panics. Every other verdict (unset, inexact, untrusted, an item table's
-  identities and taint) is pinned in `restore_cone_reads_*.txt`. That is the
-  worklist for A₁.3's executor.
+  identities and taint, and their metadata) is pinned in
+  `restore_cone_reads_*.txt`. That is the worklist for A₁.3's executor.
+  `fsproj_generic_items_generative_diff` holds the generic item tables the
+  probe reads, metadata included, to the `itemsMeta` op on generated
+  projects.
 - `crates/assembly/` — `borzoi-assembly`. F#-flavoured reader for
   ECMA-335 assemblies: owned `Entity`/`Member`/`TypeRef` model, the
   `EcmaView` trait, and a projector over an *in-crate* ECMA-335 reader
