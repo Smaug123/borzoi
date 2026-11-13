@@ -531,15 +531,19 @@ impl<'a> PathKey<'a> {
     }
 
     /// Assert, under `interning-reference` in a debug build, that the id
-    /// spells the segments.
+    /// spells the segments. A `None` may since have been interned by another
+    /// walk sharing the table, which changes no index this key is asked of:
+    /// an index is filled before it is queried.
     pub(crate) fn check(&self, names: &NameTable) {
         #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            self.id,
-            names.lookup_path(self.text),
-            "a PathKey's id does not spell {:?}",
-            self.text
-        );
+        if let Some(id) = self.id {
+            assert_eq!(
+                Some(id),
+                names.lookup_path(self.text),
+                "a PathKey's id does not spell {:?}",
+                self.text
+            );
+        }
         #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
         let _ = names;
     }
@@ -568,15 +572,18 @@ impl<'a> NameKey<'a> {
     }
 
     /// Assert, under `interning-reference` in a debug build, that the id
-    /// spells the text.
+    /// spells the text. A `None` may since have been interned, as for a
+    /// [`PathKey`].
     pub(crate) fn check(&self, names: &NameTable) {
         #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            self.id,
-            names.lookup(self.text),
-            "a NameKey's id does not spell {:?}",
-            self.text
-        );
+        if let Some(id) = self.id {
+            assert_eq!(
+                Some(id),
+                names.lookup(self.text),
+                "a NameKey's id does not spell {:?}",
+                self.text
+            );
+        }
         #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
         let _ = names;
     }
@@ -584,11 +591,13 @@ impl<'a> NameKey<'a> {
 
 /// `path`'s id in `to`, given its id in `from`: the same segments, interned
 /// in `to`. What re-keying an index onto another table maps each key by.
+#[cfg(feature = "test-support")]
 pub(crate) fn rekey_path(from: &NameTable, to: &NameTable, path: PathId) -> PathId {
     to.intern_path(&from.segments(path))
 }
 
 /// `name`'s id in `to`, given its id in `from`.
+#[cfg(feature = "test-support")]
 pub(crate) fn rekey_name(from: &NameTable, to: &NameTable, name: Name) -> Name {
     to.logical(from.text(name))
 }
@@ -669,6 +678,7 @@ impl PathIdSet {
     }
 
     /// The same set, keyed by `to`'s ids.
+    #[cfg(feature = "test-support")]
     pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
         let mut ids = crate::hash::HashSet::default();
         for &id in &self.ids {
@@ -794,6 +804,7 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     }
 
     /// The same map, keyed by `to`'s ids.
+    #[cfg(feature = "test-support")]
     pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
         let mut by_id = HashMap::default();
         for (&id, v) in &self.by_id {
@@ -1060,6 +1071,23 @@ mod tests {
                 prop_assert_eq!(rekeyed.contains_path(&other, p), expected);
             }
         }
+    }
+
+    /// A key looked up before another walk sharing the table interned its
+    /// path still checks: the interleaving of a query on one env racing a
+    /// mark on its clone, which shares the table.
+    #[test]
+    fn a_key_looked_up_before_its_path_was_interned_still_checks() {
+        let table = NameTable::default();
+        let set = PathIdSet::default();
+        let path = vec!["A".to_string(), "B".to_string()];
+        let key = PathKey::of(&table, &path);
+        let name = NameKey::of(&table, "A");
+        assert_eq!((key.id, name.id), (None, None));
+        table.intern_path(&path);
+        key.check(&table);
+        name.check(&table);
+        assert!(!set.contains(&table, key));
     }
 
     /// The entry count grows with paths that reuse names the table holds.
