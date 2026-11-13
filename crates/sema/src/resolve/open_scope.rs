@@ -20,6 +20,7 @@ use std::rc::Rc;
 use crate::hash::{HashMap, HashSet};
 use crate::names::{NameTable, PathId, PathKey};
 
+use super::contributors::RecBlock;
 use super::model::{ItemId, OpenOpacity};
 use super::state::{AutoOpenTypeShadow, DottedOpacity, OpenGroup, ShorteningPrefix};
 #[cfg(doc)]
@@ -201,6 +202,12 @@ pub(super) struct OpenScope {
     /// declarations are in scope for earlier type annotations there, so a bare
     /// single-segment type name must defer unless already resolved in-file.
     pub(super) recursive_module_active: bool,
+    /// The active `rec` blocks' contributions, re-pushed where FCS's
+    /// `TcMutRecDefns_Phase1` order puts them above what the walk just pushed:
+    /// every binder after each `open`, and the nested modules' `[<AutoOpen>]`
+    /// contents after each type or exception definition. A nested `rec`
+    /// module's binders join the enclosing block's for its body only.
+    pub(super) rec_block: Option<RecBlock>,
 }
 
 /// An `open`'s prefix in [`OpenScope::explicit_open_prefixes`] or
@@ -294,6 +301,7 @@ impl OpenScope {
             access_floor: header.access_floor,
             in_exporting_module: header.in_exporting_module,
             recursive_module_active: header.recursive,
+            rec_block: None,
         }
     }
 

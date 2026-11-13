@@ -900,11 +900,16 @@ impl<'a> Resolver<'a> {
         // such argument resolutions here (the binder exclusion still runs); a
         // `match`-clause pattern (`BinderRole::Pattern`) keeps full resolution
         // against the enclosing scope, which is FCS's rule there. See
-        // [`Self::decline_binding_head_param_exprs`].
-        let saved = std::mem::replace(
-            &mut self.decline_binding_head_param_exprs,
-            role == BinderRole::Param,
-        );
+        // [`Windows::in_binding_head`](super::windows::Windows::in_binding_head).
+        self.with_binding_head(role == BinderRole::Param, |r| r.pattern_binders(pats, role))
+    }
+
+    /// [`Self::pattern_locals`]' walk, with the binding-head window set.
+    fn pattern_binders(
+        &mut self,
+        pats: impl Iterator<Item = Pat>,
+        role: BinderRole,
+    ) -> Vec<ScopeEntry> {
         let mut entries = Vec::new();
         for pat in pats {
             // Annotations in the pattern (`fun (x : T) -> …`, `match … with
@@ -967,7 +972,6 @@ impl<'a> Resolver<'a> {
                 ));
             }
         }
-        self.decline_binding_head_param_exprs = saved;
         entries
     }
 
@@ -1020,7 +1024,7 @@ impl<'a> Resolver<'a> {
             return false;
         }
         // A bare use of a name that is one of the *currently-being-resolved*
-        // active-pattern recognizer's own cases (see [`Resolver::ap_body_case_names`]):
+        // active-pattern recognizer's own cases (see [`Windows::is_ap_body_case`](super::windows::Windows::is_ap_body_case)):
         // inside the recognizer's own body this is ambiguous between constructing
         // the result case (FCS `ActivePatternCase`) and a fresh uppercase pattern
         // rebinding (`match n with A -> A`, FCS a fresh local), which a
@@ -1028,7 +1032,7 @@ impl<'a> Resolver<'a> {
         // commit an outer same-named value (the AP-body-shadow bug) or the case —
         // sound either way. Only *bare* single-ident uses reach here; a qualified
         // head (`A.X`) goes through [`Self::resolve_long_ident`], which ignores this.
-        if self.ap_body_case_names.contains(&*id_text(tok)) {
+        if self.windows.is_ap_body_case(&id_text(tok)) {
             return false;
         }
         // Every name an `open` brings into scope is an *opened* entry in the value

@@ -579,7 +579,7 @@ enum PatPos {
     /// resolve an active-pattern argument's *value* use here — in a curried
     /// head an earlier parameter that should shadow the name is not yet in
     /// scope, so committing would risk the wrong target
-    /// (`Resolver::decline_binding_head_param_exprs`). That is a stated coverage
+    /// (the resolver's binding-head window). That is a stated coverage
     /// gap, not a defect, so the generator makes no claim about such a use: it
     /// only ever writes a *literal* argument here.
     BindingHead,
