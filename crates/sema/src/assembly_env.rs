@@ -2195,7 +2195,7 @@ impl AssemblyEnv {
     /// The top-level types declared in exactly `namespace` whose logical name
     /// matches `segment` ([`seg_name_matches`]), in interning order: what the
     /// test-only `types_at_logical_segment_by_scan` reference finds, read off
-    /// [`NamespaceTypes::by_il_or_source_name`] rather than a scan of every
+    /// [`TypeIndex::il_or_source_named`] rather than a scan of every
     /// top-level type.
     ///
     /// A segment matches through its own spelling or, when it is

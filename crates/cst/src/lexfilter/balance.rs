@@ -9,19 +9,19 @@
 //! (LexFilter.fs:1510-1521).
 
 use super::{AddBlockEnd, Context, Filter, Opener, TokenContent, TokenTup, Virtual};
-use crate::lexer::{InterpKind, LexError, Span, Token};
+use crate::lexer::TokenKind;
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
+impl<'a> Filter<'a> {
     /// FCS's `tokenBalancesHeadContext` (LexFilter.fs:1260) — does `tt`
     /// "match" the head context, so it should be swallowed rather than
     /// pass through? Only the arms exercised by ported rules are populated.
-    pub(super) fn token_balances_head_context(&self, tt: &TokenTup<'a>, stack: &[Context]) -> bool {
+    pub(super) fn token_balances_head_context(&self, tt: &TokenTup, stack: &[Context]) -> bool {
         // FCS LexFilter.fs:1268 brace-shape: WITH balances `CtxtSeqBlock ::
         // CtxtParen(LBRACE | LBRACE_BAR) :: _` — i.e. an inner `with` inside
         // a record-update / object expression like `{ r with A = 1 }` must
         // *not* force-close the surrounding match/let. Checked before the
         // single-head match so it can inspect the top two stack entries.
-        if matches!(&tt.token, TokenContent::Real(Token::With))
+        if matches!(&tt.token, TokenContent::Real(TokenKind::With))
             && let [
                 ..,
                 Context::Paren {
@@ -39,7 +39,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // whole-file module body when a top-level `;;` arrives — those
         // contexts are the file-wide host and `;;` is a sibling separator
         // in their inner SeqBlock, not a terminator.
-        if matches!(&tt.token, TokenContent::Real(Token::SemiSemi)) {
+        if matches!(&tt.token, TokenContent::Real(TokenKind::SemiSemi)) {
             if let [.., Context::NamespaceBody { .. }, Context::SeqBlock { .. }] = stack {
                 return true;
             }
@@ -66,7 +66,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // `in` must survive the enclosing `for … do`. Checked before the head
         // match because the join head is `Vanilla`, which that match does not
         // cover. (LexFilter.fs:1281.)
-        if matches!(&tt.token, TokenContent::Real(Token::In)) && Self::detect_join_in_ctxt(stack) {
+        if matches!(&tt.token, TokenContent::Real(TokenKind::In))
+            && Self::detect_join_in_ctxt(stack)
+        {
             return true;
         }
         let Some(head) = stack.last() else {
@@ -75,11 +77,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // Will grow into a multi-arm match (END/DONE/WITH/FINALLY, record-
         // bracket cases, parenTokensBalance) as those rules land.
         match (&tt.token, head) {
-            (TokenContent::Real(Token::In), Context::LetDecl { .. } | Context::For { .. }) => true,
-            (TokenContent::Real(Token::Else | Token::Elif), Context::If { .. }) => true,
+            (TokenContent::Real(TokenKind::In), Context::LetDecl { .. } | Context::For { .. }) => {
+                true
+            }
+            (TokenContent::Real(TokenKind::Else | TokenKind::Elif), Context::If { .. }) => true,
             // DONE balances CtxtDo (LexFilter.fs:1264) — even a non-offside
             // `done` closes its `do`.
-            (TokenContent::Real(Token::Done), Context::Do { .. }) => true,
+            (TokenContent::Real(TokenKind::Done), Context::Do { .. }) => true,
             // WITH balances CtxtMatch / CtxtException / CtxtTry /
             // CtxtTypeDefns / CtxtMemberHead / CtxtMemberBody /
             // CtxtInterfaceHead (LexFilter.fs:1266). The brace-shape
@@ -95,7 +99,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // force-close down to the host context and the dedicated WITH+
             // (host) dispatch above (FCS L2362) would never fire.
             (
-                TokenContent::Real(Token::With),
+                TokenContent::Real(TokenKind::With),
                 Context::Match { .. }
                 | Context::Exception { .. }
                 | Context::Try { .. }
@@ -107,39 +111,39 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // FINALLY balances CtxtTry (LexFilter.fs:1269). The only
             // continuator for CtxtTry besides WITH; `try … finally …` parses
             // the same way.
-            (TokenContent::Real(Token::Finally), Context::Try { .. }) => true,
+            (TokenContent::Real(TokenKind::Finally), Context::Try { .. }) => true,
             // parenTokensBalance pairs (LexFilter.fs:408). Each closer matches
             // only the CtxtParen pushed by its corresponding opener.
             (
-                TokenContent::Real(Token::RParen),
+                TokenContent::Real(TokenKind::RParen),
                 Context::Paren {
                     opener: Opener::Paren,
                     ..
                 },
             ) => true,
             (
-                TokenContent::Real(Token::RBrace),
+                TokenContent::Real(TokenKind::RBrace),
                 Context::Paren {
                     opener: Opener::Brace,
                     ..
                 },
             ) => true,
             (
-                TokenContent::Real(Token::RBrack),
+                TokenContent::Real(TokenKind::RBrack),
                 Context::Paren {
                     opener: Opener::Brack,
                     ..
                 },
             ) => true,
             (
-                TokenContent::Real(Token::BarRBrack),
+                TokenContent::Real(TokenKind::BarRBrack),
                 Context::Paren {
                     opener: Opener::BrackBar,
                     ..
                 },
             ) => true,
             (
-                TokenContent::Real(Token::BarRBrace),
+                TokenContent::Real(TokenKind::BarRBrace),
                 Context::Paren {
                     opener: Opener::BraceBar,
                     ..
@@ -148,7 +152,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // BEGIN/CLASS/SIG/STRUCT/INTERFACE all close with END per
             // parenTokensBalance (LexFilter.fs:414-424).
             (
-                TokenContent::Real(Token::End),
+                TokenContent::Real(TokenKind::End),
                 Context::Paren {
                     opener:
                         Opener::Begin | Opener::Sig | Opener::Class | Opener::Struct | Opener::Interface,
@@ -162,18 +166,18 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // *balances* the augment block, `tokenForcesHeadContextClosure`
             // (L1556) excludes END from forcing closure here — the
             // dedicated arm at L1717-1722 instead pops and emits OEND.
-            (TokenContent::Real(Token::End), Context::WithAsAugment { .. }) => true,
+            (TokenContent::Real(TokenKind::End), Context::WithAsAugment { .. }) => true,
             // LQUOTE q1, RQUOTE q2 when q1 = q2 (LexFilter.fs:425): typed and
             // untyped quotations have separate openers so the balance is exact.
             (
-                TokenContent::Real(Token::RQuote),
+                TokenContent::Real(TokenKind::RQuote),
                 Context::Paren {
                     opener: Opener::Quote,
                     ..
                 },
             ) => true,
             (
-                TokenContent::Real(Token::RQuoteRaw),
+                TokenContent::Real(TokenKind::RQuoteRaw),
                 Context::Paren {
                     opener: Opener::QuoteRaw,
                     ..
@@ -182,7 +186,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // Typar angle: `Less(true)` opened CtxtParen with TyparAngle;
             // `Greater(true)` from the matching scan closes it.
             (
-                TokenContent::Real(Token::Greater(true)),
+                TokenContent::TyparGreater,
                 Context::Paren {
                     opener: Opener::TyparAngle,
                     ..
@@ -195,7 +199,9 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             //   INTERP_STRING_PART,       INTERP_STRING_{END,PART}
             // Our `InterpFill` opener subsumes both BEGIN_PART and PART.
             (
-                TokenContent::Real(Token::InterpString(InterpKind::End { .. } | InterpKind::Part)),
+                TokenContent::Real(
+                    TokenKind::InterpEnd | TokenKind::InterpEndBytes | TokenKind::InterpPart,
+                ),
                 Context::Paren {
                     opener: Opener::InterpFill,
                     ..
@@ -207,7 +213,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
 
     /// FCS's `suffixExists` (LexFilter.fs:1258): true if `p` holds for any
     /// strict suffix (tail) of `stack`.
-    pub(super) fn suffix_exists_balances(&self, tt: &TokenTup<'a>, stack: &[Context]) -> bool {
+    pub(super) fn suffix_exists_balances(&self, tt: &TokenTup, stack: &[Context]) -> bool {
         let mut i = 1;
         while i <= stack.len() {
             if self.token_balances_head_context(tt, &stack[..stack.len() - i]) {
@@ -223,7 +229,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// only close if they *don't* balance the head but balance some deeper
     /// context — otherwise they'd fall through to the parser as a stray
     /// token and trip recovery.
-    pub(super) fn token_forces_head_context_closure(&self, tt: &TokenTup<'a>) -> bool {
+    pub(super) fn token_forces_head_context_closure(&self, tt: &TokenTup) -> bool {
         if self.offside_stack.is_empty() {
             return false;
         }
@@ -239,20 +245,22 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // INTERP_STRING_* follow the same rule but require their balance
             // arms to land first.
             TokenContent::Real(
-                Token::In
-                | Token::Else
-                | Token::Elif
-                | Token::Done
-                | Token::Finally
-                | Token::RParen
-                | Token::RBrace
-                | Token::RBrack
-                | Token::BarRBrack
-                | Token::BarRBrace
-                | Token::End
-                | Token::RQuote
-                | Token::RQuoteRaw
-                | Token::InterpString(InterpKind::End { .. } | InterpKind::Part),
+                TokenKind::In
+                | TokenKind::Else
+                | TokenKind::Elif
+                | TokenKind::Done
+                | TokenKind::Finally
+                | TokenKind::RParen
+                | TokenKind::RBrace
+                | TokenKind::RBrack
+                | TokenKind::BarRBrack
+                | TokenKind::BarRBrace
+                | TokenKind::End
+                | TokenKind::RQuote
+                | TokenKind::RQuoteRaw
+                | TokenKind::InterpEnd
+                | TokenKind::InterpEndBytes
+                | TokenKind::InterpPart,
             ) => {
                 !self.token_balances_head_context(tt, &self.offside_stack)
                     && self.suffix_exists_balances(tt, &self.offside_stack)
@@ -264,14 +272,14 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // and never reaches the outer CtxtMatchClauses. Earlier, before
             // CtxtTry existed, this arm carried a defensive shim refusing to
             // pop through MatchClauses — see git history for context.
-            TokenContent::Real(Token::With) => {
+            TokenContent::Real(TokenKind::With) => {
                 !self.token_balances_head_context(tt, &self.offside_stack)
                     && self.suffix_exists_balances(tt, &self.offside_stack)
             }
             // `Greater(true)` is `TokenRExprParen` in FCS: force-close any
             // inner SeqBlock/Fun/Vanilla so the CtxtParen(TyparAngle) at the
             // typar opener is at the head when we reach the closer arm above.
-            TokenContent::Real(Token::Greater(true)) => {
+            TokenContent::TyparGreater => {
                 !self.token_balances_head_context(tt, &self.offside_stack)
                     && self.suffix_exists_balances(tt, &self.offside_stack)
             }
@@ -283,7 +291,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // body) or empties. Unlike the IN/ELSE/... arm, FCS does NOT
             // require `suffix_exists_balances` — `;;` pops unconditionally
             // when not balanced, even all the way to an empty stack.
-            TokenContent::Real(Token::SemiSemi) => {
+            TokenContent::Real(TokenKind::SemiSemi) => {
                 !self.token_balances_head_context(tt, &self.offside_stack)
             }
             _ => false,

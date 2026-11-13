@@ -18,9 +18,11 @@
 //!   internal stream (`fcs-dump tokens-lexfilter-internal-batch`), where the
 //!   `OBLOCKEND_IS_HERE` token marks it.
 
+use std::ops::Range;
+
 use crate::language_version::LanguageVersion;
-use crate::lexer::{LexError, Span, Token};
-use crate::tokens::FilteredTokens;
+use crate::lexer::{LexError, Span, Token, TokenKind};
+use crate::tokens::{FilteredKind, FilteredTokens, RawKind, RawTokens};
 
 mod balance;
 mod continuators;
@@ -36,6 +38,7 @@ mod position_tests;
 #[cfg(test)]
 mod undentation_tests;
 
+use continuators::kind_is_infix;
 use typars_close_op::{
     TyparScanAction, classify_typar_scan_token, is_typar_application_trigger, typars_close_op_split,
 };
@@ -119,7 +122,7 @@ pub enum Virtual {
     /// `OLAZY` — replaces `lazy` when its operand is offside (on a later line)
     /// or a control-flow keyword, in which case a `CtxtSeqBlock` is also pushed
     /// so the whole operand block is the argument. The same-line, non-control
-    /// case keeps the raw `Token::Lazy`. (LexFilter.fs:2232-2237,
+    /// case keeps the raw `TokenKind::Lazy`. (LexFilter.fs:2232-2237,
     /// ServiceLexing.fs → `FSharpTokenKind.OffsideLazy`.)
     Lazy,
     /// `OASSERT` — replaces `assert` under the same `isControlFlowOrNotSameLine`
@@ -142,7 +145,7 @@ pub enum Virtual {
     /// (LexFilter.fs:747) — so the rewrite is tied to the enclosing `{ … }`,
     /// **not** to the `join`/`on` words (even `query { a in b }` is a
     /// `JoinIn`). Like [`Virtual::With`] this is a *backed-by-raw* relabel: the
-    /// raw `Token::In` stays in the stream at the same span, so the parser
+    /// raw `TokenKind::In` stays in the stream at the same span, so the parser
     /// emits an `IN_TOK` for it. Surfaces as `FSharpTokenKind.JoinIn`
     /// (ServiceLexing.fs:1508), so the lexfilter diff names it `"JoinIn"`.
     /// (LexFilter.fs:1674.)
@@ -601,11 +604,25 @@ impl Opener {
     }
 }
 
-#[derive(Debug, Clone)]
-enum TokenContent<'a> {
-    Real(Token<'a>),
+/// What a [`TokenTup`] carries: a token's kind, without its text. A lexed
+/// token's text is `source[span]`, which [`Filter::text`] reads for the few
+/// rules that inspect it (operators, and the `1..` split), so the filter
+/// moves no payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenContent {
+    /// A lexed token from the input, or a piece the filter split off one.
+    /// A [`TokenKind::Less`] / [`TokenKind::Greater`] is the lexer's
+    /// comparison `<` / `>` (FCS's `LESS false` / `GREATER false`).
+    Real(TokenKind),
+    /// A `<` the typar scan promoted to open a type application: FCS's
+    /// `LESS true`. A lexed token like [`TokenContent::Real`], so every rule
+    /// that asks whether a token is real asks [`TokenContent::is_real`].
+    TyparLess,
+    /// A `>` the typar scan promoted to close a type application: FCS's
+    /// `GREATER true`. See [`TokenContent::TyparLess`].
+    TyparGreater,
     Err(LexError),
-    /// Synthetic EOF — emitted once the underlying iterator is exhausted, then
+    /// Synthetic EOF — emitted once the token table is exhausted, then
     /// repeatedly until the offside stack drains.
     Eof,
     Virtual(Virtual),
@@ -635,42 +652,135 @@ enum TokenContent<'a> {
     /// OBLOCKSEP span must point at the whitespace BEFORE Greater (i.e.
     /// from the prior real token's end), not the empty span after it.
     Dummy {
-        prev_end: usize,
-        inner: Box<Token<'a>>,
+        prev_end: u32,
+        inner: DummyInner,
     },
 }
 
-#[derive(Debug, Clone)]
-struct TokenTup<'a> {
-    token: TokenContent<'a>,
-    span: Span,
+impl TokenContent {
+    /// Whether this is a lexed token: [`TokenContent::Real`] or a promoted
+    /// angle bracket.
+    fn is_real(self) -> bool {
+        matches!(
+            self,
+            TokenContent::Real(_) | TokenContent::TyparLess | TokenContent::TyparGreater
+        )
+    }
+
+    /// FCS's `LESS res`: the typar scan's verdict on a `<`.
+    fn less(res: bool) -> TokenContent {
+        if res {
+            TokenContent::TyparLess
+        } else {
+            TokenContent::Real(TokenKind::Less)
+        }
+    }
+
+    /// FCS's `GREATER res`: the typar scan's verdict on a `>`.
+    fn greater(res: bool) -> TokenContent {
+        if res {
+            TokenContent::TyparGreater
+        } else {
+            TokenContent::Real(TokenKind::Greater)
+        }
+    }
+}
+
+/// The token an `ODUMMY` wraps ([`TokenContent::Dummy`]): a lexed token, which
+/// the filter queues a dummy for only after an `in`, a closer, or an `end`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DummyInner {
+    Real(TokenKind),
+    /// FCS's `GREATER true`, a `TokenRExprParen` closer.
+    TyparGreater,
+}
+
+impl DummyInner {
+    /// The dummy for `token`, if it is a lexed token.
+    fn of(token: TokenContent) -> Option<DummyInner> {
+        match token {
+            TokenContent::Real(kind) => Some(DummyInner::Real(kind)),
+            TokenContent::TyparGreater => Some(DummyInner::TyparGreater),
+            _ => None,
+        }
+    }
+
+    /// The wrapped token, for the predicates that see through a dummy.
+    fn content(self) -> TokenContent {
+        match self {
+            DummyInner::Real(kind) => TokenContent::Real(kind),
+            DummyInner::TyparGreater => TokenContent::TyparGreater,
+        }
+    }
+}
+
+/// A token's byte span in `u32` offsets: the token tables bound a source
+/// below 4 GiB ([`RawTokens`]), and the filter moves a [`TokenTup`] through
+/// every rule, so it keeps the tuple small.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TokSpan {
+    start: u32,
+    end: u32,
+}
+
+impl TokSpan {
+    /// The span `range`.
+    ///
+    /// # Panics
+    ///
+    /// If an end of `range` is 4 GiB or more, which no token table holds.
+    fn new(range: Range<usize>) -> TokSpan {
+        TokSpan {
+            start: u32::try_from(range.start).expect("a source is shorter than 4 GiB"),
+            end: u32::try_from(range.end).expect("a source is shorter than 4 GiB"),
+        }
+    }
+
+    /// The span as byte offsets.
+    fn range(self) -> Span {
+        self.start as usize..self.end as usize
+    }
+}
+
+/// A token as the rules see it: its kind and where it is. `Copy`, and with no
+/// payload, so moving one between rules is a few words.
+#[derive(Debug, Clone, Copy)]
+struct TokenTup {
+    token: TokenContent,
+    span: TokSpan,
     start: Pos,
     end: Pos,
 }
 
+// Every rule takes and returns one by value, so its size is what each step of
+// `hw_token_fetch` moves.
+const _: () = assert!(std::mem::size_of::<TokenTup>() == 32);
+
 /// Control-flow outcome of a single `hw_token_fetch` dispatch rule. A rule
 /// either passes the still-unconsumed token to the next rule, restarts the
 /// dispatch loop, or yields a token to emit.
-enum Step<'a> {
+enum Step {
     /// Rule did not apply; the untouched token flows to the next rule.
-    Pass(TokenTup<'a>),
+    Pass(TokenTup),
     /// Rule consumed or delayed the token; restart the dispatch loop.
     Restart,
     /// Rule produced a token to emit from `hw_token_fetch`.
-    Emit(TokenTup<'a>),
+    Emit(TokenTup),
 }
 
 /// One element of the filtered stream: the (possibly-[`Virtual`]) token — or a
 /// lexer error passed through from the input — together with its byte span.
 pub type FilteredItem<'a> = (Result<FilteredToken<'a>, LexError>, Span);
 
-/// Apply the offside-rule filter to a raw lexer stream. Trivia (whitespace,
-/// newlines, comments) is consumed internally for position tracking and does
-/// not appear in the output.
+/// Apply the offside-rule filter to an active-code token stream. Trivia
+/// (whitespace, newlines, comments) is consumed internally for position
+/// tracking and does not appear in the output.
 ///
-/// `source` is the original text the token spans index into; the filter scans
-/// each token's bytes to keep its line/column cursor honest across multi-line
-/// tokens (block comments, triple/verbatim/continuation strings).
+/// `source` is the original text the token spans index into. The tokens need
+/// not cover it: a gap between two (a directive line, or inactive code a
+/// preprocessor removed) is code the filter skips, though it still counts the
+/// gap's line breaks. A caller holding a [`RawTokens`] table calls
+/// [`filter_collect`] directly.
 pub fn filter<'a, I>(source: &'a str, tokens: I) -> impl Iterator<Item = FilteredItem<'a>>
 where
     I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>,
@@ -682,44 +792,46 @@ where
     // default language version — the same "latest" surface the offside
     // arithmetic has always assumed. A caller that needs the offside
     // diagnostics uses [`filter_collect`] instead.
-    filter_collect(source, LanguageVersion::DEFAULT, tokens)
+    let raw = RawTokens::from_active(source, tokens);
+    filter_collect(&raw, LanguageVersion::DEFAULT)
         .tokens
         .into_items()
 }
 
-/// Run the offside filter to completion, returning the full token stream, the
-/// offside/indentation diagnostics ([`OffsideDiagnostic`], all FS0058) it
-/// accumulated, **and** whether the stream's shape depends on the language
-/// version ([`FilterRun::shape_depends_on_language_version`]). The streaming
-/// [`filter`] cannot return these (it hands the `Filter` out as an opaque
-/// iterator), so the parser — which needs them — uses this. `lang` resolves
-/// the severity/presence gates
+/// Run the offside filter over the active code of `tokens` to completion,
+/// returning the full token stream, the offside/indentation diagnostics
+/// ([`OffsideDiagnostic`], all FS0058) it accumulated, **and** whether the
+/// stream's shape depends on the language version
+/// ([`FilterRun::shape_depends_on_language_version`]). The streaming
+/// [`filter`] cannot return these, so the parser — which needs them — uses
+/// this. `lang` resolves the severity/presence gates
 /// ([`LanguageVersion::strict_indentation_is_error`],
 /// [`LanguageVersion::reports_invalid_decls_in_type_definitions`]).
-pub fn filter_collect<'a, I>(source: &'a str, lang: LanguageVersion, tokens: I) -> FilterRun<'a>
-where
-    I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>,
-{
-    let mut f = Filter::new(source, lang, tokens);
-    let tokens = FilteredTokens::from_items(source, f.by_ref());
+///
+/// The filter reads the table by index: it skips trivia, directive lines and
+/// inactive code by kind, and reads a token's text from the source only for
+/// the rules that inspect it.
+pub fn filter_collect<'src>(tokens: &RawTokens<'src>, lang: LanguageVersion) -> FilterRun<'src> {
+    let mut f = Filter::new(tokens, lang);
+    let mut table = FilteredTokens::new(tokens.source());
+    while let Some((kind, span)) = f.next_filtered() {
+        table.push_kind(kind, span);
+    }
     FilterRun {
-        tokens,
+        tokens: table,
         diagnostics: f.diagnostics,
         shape_depends_on_language_version: f.shape_depends_on_language_version,
     }
 }
 
-/// Run the offside filter to completion and return every context it pushed,
-/// in push order (see [`ContextPush`]). A diagnostic view of the filter's
-/// layout decisions, for callers that must know where the filter, rather than
-/// a parser, put a block's offside line.
-pub fn context_pushes<'a, I>(source: &'a str, lang: LanguageVersion, tokens: I) -> Vec<ContextPush>
-where
-    I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>,
-{
-    let mut f = Filter::new(source, lang, tokens);
+/// Run the offside filter over the active code of `tokens` to completion and
+/// return every context it pushed, in push order (see [`ContextPush`]). A
+/// diagnostic view of the filter's layout decisions, for callers that must
+/// know where the filter, rather than a parser, put a block's offside line.
+pub fn context_pushes(tokens: &RawTokens<'_>, lang: LanguageVersion) -> Vec<ContextPush> {
+    let mut f = Filter::new(tokens, lang);
     f.pushes = Some(Vec::new());
-    f.by_ref().for_each(drop);
+    while f.next_filtered().is_some() {}
     f.pushes.expect("set above")
 }
 
@@ -837,14 +949,18 @@ pub struct OffsideDiagnostic {
     pub severity: OffsideSeverity,
 }
 
-struct Filter<'a, I> {
-    raw: I,
+struct Filter<'a> {
+    /// The full-trivia token table the filter reads.
+    raw: &'a RawTokens<'a>,
+    /// The index of the next entry of `raw` that [`Self::pull_raw`] reads.
+    next_raw: usize,
     /// Original source the token spans index into; scanned by `pull_raw` to
-    /// count embedded newlines for the line/column cursor.
+    /// count embedded newlines for the line/column cursor, and read for the
+    /// text of a lexed token ([`Self::text`]).
     source: &'a str,
     /// LIFO stack of tokens to consume before pulling from `raw`. FCS's
     /// `delayedStack`.
-    delayed: Vec<TokenTup<'a>>,
+    delayed: Vec<TokenTup>,
     offside_stack: Vec<Context>,
     /// Parallel to `offside_stack`: `undentation_skip[i]` is the index of the
     /// nearest context at-or-below `i` that is *not* "pure-skip" — i.e. the one
@@ -877,10 +993,10 @@ struct Filter<'a, I> {
     /// time so that `->` inside `(g: int -> int)` doesn't open a body block.
     paren_depth: u32,
     /// End byte offset of the last real (non-virtual, non-trivia) token
-    /// returned from `Iterator::next`. Used by `insert_token_from_prev_to_current`
+    /// emitted by [`Self::next_filtered`]. Used by `insert_token_from_prev_to_current`
     /// to compute the synthetic start of OBLOCKSEP: FCS uses prevEnd+1.
-    last_real_end: usize,
-    /// Whether the last real token returned from `Iterator::next` was an
+    last_real_end: u32,
+    /// Whether the last real token emitted by [`Self::next_filtered`] was an
     /// [`is_atomic_expr_end`] token. FCS's `prevWasAtomicEnd`: a glued-left op
     /// after such a token is infix, so the offside `ADJACENT_PREFIX_OP` rule must
     /// not treat it as a term-starter.
@@ -934,6 +1050,13 @@ struct Filter<'a, I> {
     match_ghost: Option<Pos>,
     /// Every context pushed so far, when [`context_pushes`] asked for them.
     pushes: Option<Vec<ContextPush>>,
+    /// The tokens [`Self::is_long_ident_equals_loop`] pops and re-queues,
+    /// kept between calls (empty) so the lookahead, which runs for most
+    /// identifiers, does not allocate.
+    long_ident_scratch: Vec<TokenTup>,
+    /// The scanned tokens of [`Self::peek_adjacent_typars`], kept between
+    /// calls (empty) for the same reason.
+    typar_scan_scratch: Vec<(TokenTup, bool)>,
 }
 
 /// The language-version gates [`Filter::undentation_limit`] consults, both
@@ -967,7 +1090,7 @@ enum PushStrictness {
 /// Mirrors FCS's `isAdjacent` (LexFilter.fs:1059-1062): two tokens are
 /// adjacent when there is no whitespace, comment, or newline between them.
 /// We work in byte spans; trivia between them would have widened the gap.
-fn is_adjacent(left: &TokenTup<'_>, right: &TokenTup<'_>) -> bool {
+fn is_adjacent(left: &TokenTup, right: &TokenTup) -> bool {
     left.span.end == right.span.start
 }
 
@@ -975,9 +1098,11 @@ fn is_adjacent(left: &TokenTup<'_>, right: &TokenTup<'_>) -> bool {
 /// set, LexFilter.fs:153-179): at the head of a line it continues the
 /// expression before it, rather than beginning anything of its own.
 pub(crate) fn is_infix(tok: &Token<'_>) -> bool {
-    Filter::<'_, std::iter::Empty<(Result<Token<'_>, LexError>, Span)>>::token_is_infix(
-        &TokenContent::Real(tok.clone()),
-    )
+    let text = match tok {
+        Token::Op(s) => s,
+        _ => "",
+    };
+    kind_is_infix(tok.kind(), || text)
 }
 
 /// Port of FCS's `isAtomicExprEndToken` (`LexFilter.fs:394`): the token kinds
@@ -987,39 +1112,46 @@ pub(crate) fn is_infix(tok: &Token<'_>) -> bool {
 /// sign-fold pass (which folds `-1`/`+1` only when *not* glued to such an end).
 /// `KEYWORD_STRING` and `INT32_DOT_DOT` are deliberately absent — FCS omits them.
 pub(crate) fn is_atomic_expr_end(tok: &Token<'_>) -> bool {
+    kind_is_atomic_expr_end(tok.kind())
+}
+
+/// [`is_atomic_expr_end`] of a token of kind `kind`. A promoted `>` is not a
+/// lexed kind, so it is not an atomic end, like every `>`.
+fn kind_is_atomic_expr_end(kind: TokenKind) -> bool {
     matches!(
-        tok,
-        Token::Ident(_)
-            | Token::QuotedIdent(_)
-            | Token::Int(_)
-            | Token::XInt(_)
-            | Token::IntSuffixed(_)
-            | Token::XIntSuffixed(_)
-            | Token::Float64(_)
-            | Token::Float32(_)
-            | Token::XIEEE64(_)
-            | Token::XIEEE32(_)
-            | Token::Decimal(_)
-            | Token::BigNum(_)
-            | Token::String
-            | Token::VerbatimString
-            | Token::TripleString
-            | Token::Char(_)
-            | Token::RParen
-            | Token::RBrack
-            | Token::RBrace
-            | Token::BarRBrace
-            | Token::BarRBrack
-            | Token::End
-            | Token::Null
-            | Token::False
-            | Token::True
-            | Token::Underscore
+        kind,
+        TokenKind::Ident
+            | TokenKind::QuotedIdent
+            | TokenKind::Int
+            | TokenKind::XInt
+            | TokenKind::IntSuffixed
+            | TokenKind::XIntSuffixed
+            | TokenKind::Float64
+            | TokenKind::Float32
+            | TokenKind::XIEEE64
+            | TokenKind::XIEEE32
+            | TokenKind::Decimal
+            | TokenKind::BigNum
+            | TokenKind::String
+            | TokenKind::VerbatimString
+            | TokenKind::TripleString
+            | TokenKind::Char
+            | TokenKind::RParen
+            | TokenKind::RBrack
+            | TokenKind::RBrace
+            | TokenKind::BarRBrace
+            | TokenKind::BarRBrack
+            | TokenKind::End
+            | TokenKind::Null
+            | TokenKind::False
+            | TokenKind::True
+            | TokenKind::Underscore
     )
 }
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
-    fn new(source: &'a str, lang: LanguageVersion, raw: I) -> Self {
+impl<'a> Filter<'a> {
+    fn new(raw: &'a RawTokens<'a>, lang: LanguageVersion) -> Self {
+        let source = raw.source();
         // FCS strips a file-start UTF-8 BOM (`U+FEFF`, 3 bytes) so it never shifts
         // the offside column of line 1. We keep it as leading trivia (for
         // losslessness) but start line-1 columns *after* it — otherwise line 1 is
@@ -1036,6 +1168,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         };
         Self {
             raw,
+            next_raw: 0,
             source,
             delayed: Vec::new(),
             offside_stack: Vec::new(),
@@ -1058,14 +1191,17 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             shape_depends_on_language_version: false,
             match_ghost: None,
             pushes: None,
+            long_ident_scratch: Vec::new(),
+            typar_scan_scratch: Vec::new(),
         }
     }
 
-    fn is_trivia_real(t: &Token<'_>) -> bool {
-        matches!(
-            t,
-            Token::Whitespace | Token::Newline | Token::LineComment | Token::BlockComment
-        )
+    /// A lexed token's text: `source[span]`. Only a lexed token's span is a
+    /// slice of the source (a virtual token's may start inside a multi-byte
+    /// character), so this asserts the token is lexed.
+    fn text(&self, tt: &TokenTup) -> &'a str {
+        debug_assert!(tt.token.is_real(), "{:?} has no text", tt.token);
+        &self.source[tt.span.range()]
     }
 
     /// Advance the line/column cursor to absolute byte offset `to`, scanning the
@@ -1113,71 +1249,77 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         }
     }
 
-    /// Pull a single token from the underlying lexer, updating line/column
-    /// state via [`Self::advance_cursor_to`]. Trivia tokens are consumed for
-    /// position tracking and skipped; the next non-trivia token (or synthetic
-    /// EOF) is returned.
-    fn pull_raw(&mut self) -> Option<TokenTup<'a>> {
-        loop {
-            match self.raw.next() {
-                Some((res, span)) => {
-                    // Cross any filtered gap before this token, then its own
-                    // bytes — the two are disjoint and partition `last_byte ..
-                    // span.end`, so newlines are counted exactly once.
-                    let start = self.advance_cursor_to(span.start);
-                    let end = self.advance_cursor_to(span.end);
-                    if let Ok(ref t) = res
-                        && Self::is_trivia_real(t)
-                    {
-                        continue;
-                    }
-                    let token = match res {
-                        Ok(t) => TokenContent::Real(t),
-                        Err(e) => TokenContent::Err(e),
-                    };
-                    return Some(TokenTup {
-                        token,
-                        span,
-                        start,
-                        end,
-                    });
+    /// Pull the next token of active code from the table, updating
+    /// line/column state via [`Self::advance_cursor_to`]. Trivia, directive
+    /// lines and inactive code are skipped by kind (their line breaks are
+    /// still counted, as part of the gap before the next token); the next
+    /// significant token (or synthetic EOF) is returned.
+    fn pull_raw(&mut self) -> Option<TokenTup> {
+        while self.next_raw < self.raw.len() {
+            let i = self.next_raw;
+            self.next_raw += 1;
+            let token = match self.raw.kind(i) {
+                RawKind::Lexed(kind) if !RawKind::Lexed(kind).is_trivia() => {
+                    TokenContent::Real(kind)
                 }
-                None => {
-                    if self.eof_pulled {
-                        return None;
-                    }
-                    self.eof_pulled = true;
-                    // Anchor EOF at the true end of file, advancing across any
-                    // trailing filtered gap (an inactive `#if` region or
-                    // directive that runs to EOF). FCS's lexbuf reaches
-                    // `source.len()`; stopping at the last active token would
-                    // put an EOF-anchored offside squiggle before that region.
-                    let pos = self.advance_cursor_to(self.source.len());
-                    return Some(TokenTup {
-                        token: TokenContent::Eof,
-                        span: self.source.len()..self.source.len(),
-                        start: pos,
-                        end: pos,
-                    });
-                }
-            }
+                RawKind::UnterminatedString => TokenContent::Err(LexError::UnterminatedString),
+                RawKind::UnterminatedComment => TokenContent::Err(LexError::UnterminatedComment),
+                RawKind::UnknownToken => TokenContent::Err(LexError::Unknown),
+                RawKind::Lexed(_)
+                | RawKind::HashLine
+                | RawKind::WarnDirective
+                | RawKind::HashIf
+                | RawKind::HashElse
+                | RawKind::HashElif
+                | RawKind::HashEndif
+                | RawKind::InactiveCode => continue,
+            };
+            let span = self.raw.span(i);
+            let tok_span = TokSpan::new(span.clone());
+            // Cross the gap before this token, then its own bytes — the two
+            // are disjoint and partition `last_byte .. span.end`, so newlines
+            // are counted exactly once.
+            let start = self.advance_cursor_to(span.start);
+            let end = self.advance_cursor_to(span.end);
+            return Some(TokenTup {
+                token,
+                span: tok_span,
+                start,
+                end,
+            });
         }
+        if self.eof_pulled {
+            return None;
+        }
+        self.eof_pulled = true;
+        // Anchor EOF at the true end of file, advancing across any trailing
+        // trivia or filtered gap (an inactive `#if` region or directive that
+        // runs to EOF). FCS's lexbuf reaches `source.len()`; stopping at the
+        // last active token would put an EOF-anchored offside squiggle before
+        // that region.
+        let pos = self.advance_cursor_to(self.source.len());
+        Some(TokenTup {
+            token: TokenContent::Eof,
+            span: TokSpan::new(self.source.len()..self.source.len()),
+            start: pos,
+            end: pos,
+        })
     }
 
-    fn pop_next_token_tup(&mut self) -> Option<TokenTup<'a>> {
+    fn pop_next_token_tup(&mut self) -> Option<TokenTup> {
         self.delayed.pop().or_else(|| self.pull_raw())
     }
 
-    fn peek_next_token_tup(&mut self) -> Option<TokenTup<'a>> {
+    fn peek_next_token_tup(&mut self) -> Option<TokenTup> {
         if let Some(tt) = self.delayed.last() {
-            return Some(tt.clone());
+            return Some(*tt);
         }
         let fresh = self.pull_raw()?;
-        self.delayed.push(fresh.clone());
+        self.delayed.push(fresh);
         Some(fresh)
     }
 
-    fn delay_token(&mut self, tt: TokenTup<'a>) {
+    fn delay_token(&mut self, tt: TokenTup) {
         self.delayed.push(tt);
     }
 
@@ -1188,7 +1330,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// (LexFilter.fs:2179-2195) for the saved trigger keyword and every
     /// synthetic END inserted on the way down — they're computed eagerly
     /// at unwind time and must not re-trigger offside rules when popped.
-    fn delay_token_no_processing(&mut self, tt: TokenTup<'a>) {
+    fn delay_token_no_processing(&mut self, tt: TokenTup) {
         self.delayed.push(tt);
         self.tokens_that_need_no_processing += 1;
     }
@@ -1200,7 +1342,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// block. Used by the EQUALS/LARROW arms inside record-update and let-
     /// binding contexts to decide between `AddBlockEnd` (push OBLOCKBEGIN +
     /// match with OBLOCKEND) and `NoAddBlockEnd` (silent inner SeqBlock).
-    fn is_control_flow_or_not_same_line(&mut self, tt: &TokenTup<'a>) -> bool {
+    fn is_control_flow_or_not_same_line(&mut self, tt: &TokenTup) -> bool {
         // FCS's `EOF _ -> false` arm tests the *current* dispatch token, not
         // the lookahead — so a synthetic EOF lookahead does NOT short-circuit
         // (LexFilter.fs:1320-1324). For an EQUALS at end of line followed by
@@ -1222,19 +1364,19 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // | WHILE_BANG`. `LET _` matches `LET(false)` (`let`) and `LET(true)`
         // (`use`) per LexHelpers.fs:336-362 — both reach the same parser path.
         // `let!` is the separate `LET_BANG` token and is *not* in the pattern,
-        // so `Token::LetBang` / `Token::UseBang` must stay out.
+        // so `TokenKind::LetBang` / `TokenKind::UseBang` must stay out.
         matches!(
             &next.token,
             TokenContent::Real(
-                Token::Try
-                    | Token::Match
-                    | Token::MatchBang
-                    | Token::If
-                    | Token::Let
-                    | Token::Use
-                    | Token::For
-                    | Token::While
-                    | Token::WhileBang
+                TokenKind::Try
+                    | TokenKind::Match
+                    | TokenKind::MatchBang
+                    | TokenKind::If
+                    | TokenKind::Let
+                    | TokenKind::Use
+                    | TokenKind::For
+                    | TokenKind::While
+                    | TokenKind::WhileBang
             )
         )
     }
@@ -1249,7 +1391,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// LHS may be qualified (`{ r with M.A = 1 }`), so that the EQUALS
     /// dispatch arm at LexFilter.fs:2253-2263 can push an inner SeqBlock
     /// when the binding is in fact a long-ident assignment.
-    fn is_long_ident_equals(&mut self, token: &Token<'_>) -> bool {
+    fn is_long_ident_equals(&mut self, token: TokenContent) -> bool {
         // FCS's `IDENT _` pattern covers both regular and backtick-quoted
         // identifiers; our lexer splits them into `Token::Ident` and
         // `Token::QuotedIdent`, so both must be accepted here. Without
@@ -1258,7 +1400,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // multi-line updates would miss OBLOCKSEPs between bindings.
         if !matches!(
             token,
-            Token::Ident(_) | Token::QuotedIdent(_) | Token::Global
+            TokenContent::Real(TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Global)
         ) {
             return false;
         }
@@ -1274,17 +1416,18 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// (`a.b.c.…`) cannot overflow the stack. The tokens are popped and
     /// re-queued in the order the recursion pops and re-queues them.
     fn is_long_ident_equals_loop(&mut self) -> bool {
-        let mut popped = Vec::new();
+        let mut popped = std::mem::take(&mut self.long_ident_scratch);
+        debug_assert!(popped.is_empty());
         let res = loop {
             let Some(tt) = self.pop_next_token_tup() else {
                 break false;
             };
             let is_dot = match &tt.token {
-                TokenContent::Real(Token::Equals) => {
+                TokenContent::Real(TokenKind::Equals) => {
                     popped.push(tt);
                     break true;
                 }
-                TokenContent::Real(Token::Dot) => true,
+                TokenContent::Real(TokenKind::Dot) => true,
                 _ => false,
             };
             popped.push(tt);
@@ -1296,7 +1439,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             };
             let is_ident = matches!(
                 &after_dot.token,
-                TokenContent::Real(Token::Ident(_) | Token::QuotedIdent(_))
+                TokenContent::Real(TokenKind::Ident | TokenKind::QuotedIdent)
             );
             popped.push(after_dot);
             if !is_ident {
@@ -1306,27 +1449,28 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         while let Some(tt) = popped.pop() {
             self.delay_token(tt);
         }
+        self.long_ident_scratch = popped;
         res
     }
 
     /// FCS's `nextTokenIsAdjacentLParen` (LexFilter.fs:1070-1074). Used inside
     /// `peek_adjacent_typars` to detect `f<int>(x)` and inject
     /// `HighPrecedenceParenApp` between the closing `>` and the `(`.
-    fn next_token_is_adjacent_lparen(&mut self, tt: &TokenTup<'a>) -> bool {
+    fn next_token_is_adjacent_lparen(&mut self, tt: &TokenTup) -> bool {
         let Some(next) = self.peek_next_token_tup() else {
             return false;
         };
-        matches!(&next.token, TokenContent::Real(Token::LParen)) && is_adjacent(tt, &next)
+        matches!(&next.token, TokenContent::Real(TokenKind::LParen)) && is_adjacent(tt, &next)
     }
 
     /// FCS's `nextTokenIsAdjacentLBrack` (LexFilter.fs:1064-1068). Used by
     /// the IDENT-adjacent-LBRACK dispatch to detect `f[i]` and inject
     /// `HighPrecedenceBrackApp` between the IDENT and the `[`.
-    fn next_token_is_adjacent_lbrack(&mut self, tt: &TokenTup<'a>) -> bool {
+    fn next_token_is_adjacent_lbrack(&mut self, tt: &TokenTup) -> bool {
         let Some(next) = self.peek_next_token_tup() else {
             return false;
         };
-        matches!(&next.token, TokenContent::Real(Token::LBrack)) && is_adjacent(tt, &next)
+        matches!(&next.token, TokenContent::Real(TokenKind::LBrack)) && is_adjacent(tt, &next)
     }
 
     /// FCS's `peekAdjacentTypars` (LexFilter.fs:1080-1247). Lookahead pass
@@ -1356,14 +1500,14 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// The `indentation` flag enables an additional check that no scanned
     /// token sits left of `head`'s end column; FCS uses `false` at the
     /// top-level IDENT call site.
-    fn peek_adjacent_typars(&mut self, indentation: bool, head: &TokenTup<'a>) -> bool {
+    fn peek_adjacent_typars(&mut self, indentation: bool, head: &TokenTup) -> bool {
         let Some(lookahead) = self.peek_next_token_tup() else {
             return false;
         };
-        let is_opener = match &lookahead.token {
-            TokenContent::Real(Token::Less(_)) => true,
-            TokenContent::Real(Token::LQuote) => true,
-            TokenContent::Real(Token::Op(s)) => *s == "</" || *s == "<^",
+        let is_opener = match lookahead.token {
+            TokenContent::Real(TokenKind::Less) | TokenContent::TyparLess => true,
+            TokenContent::Real(TokenKind::LQuote) => true,
+            TokenContent::Real(TokenKind::Op) => matches!(self.text(&lookahead), "</" | "<^"),
             _ => false,
         };
         if !is_opener {
@@ -1376,7 +1520,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         let head_end_line = head.end.line;
         let head_end_col = head.end.col;
 
-        let mut stack: Vec<(TokenTup<'a>, bool)> = Vec::new();
+        let mut stack = std::mem::take(&mut self.typar_scan_scratch);
+        debug_assert!(stack.is_empty());
         // The opener was already in `delayed` from the peek above; pop it.
         let opener = self
             .pop_next_token_tup()
@@ -1404,8 +1549,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // Dispatch. Borrow the just-pushed entry for further inspection;
             // we may also need its location for the adjacent-LParen probe.
             let outcome = {
-                let token_ref = &stack[idx].0.token;
-                classify_typar_scan_token(token_ref)
+                let scanned = &stack[idx].0;
+                classify_typar_scan_token(scanned.token, || self.text(scanned))
             };
 
             match outcome {
@@ -1469,19 +1614,17 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                         // (e.g., from the IDENT preceding the inner `<`)
                         // will re-pop and smash the pair into
                         // `Greater(true) + BarRBrack`/`BarRBrace`.
-                        let tail_is_pipe = matches!(
-                            &stack[idx].0.token,
-                            TokenContent::Real(Token::Op(s))
-                                if typars_close_op_split(s)
-                                    .is_some_and(|sp| matches!(sp.tail, Some(Token::Op("|"))))
-                        );
+                        let tail_is_pipe =
+                            matches!(stack[idx].0.token, TokenContent::Real(TokenKind::Op))
+                                && typars_close_op_split(self.text(&stack[idx].0))
+                                    .is_some_and(|sp| matches!(sp.tail, Some(Token::Op("|"))));
                         if tail_is_pipe {
                             let trailer_info = self.peek_next_token_tup().and_then(|t| {
                                 if is_adjacent(&stack[idx].0, &t)
                                     && matches!(
                                         t.token,
-                                        TokenContent::Real(Token::RBrack)
-                                            | TokenContent::Real(Token::RBrace)
+                                        TokenContent::Real(TokenKind::RBrack)
+                                            | TokenContent::Real(TokenKind::RBrace)
                                     )
                                 {
                                     Some(())
@@ -1526,7 +1669,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 .expect("adj_lparen_after_close ⇒ LParen still in delayed");
             let hpp_app = TokenTup {
                 token: TokenContent::Virtual(Virtual::HighPrecedenceParenApp),
-                span: lparen.span.clone(),
+                span: lparen.span,
                 start: lparen.start,
                 end: lparen.end,
             };
@@ -1544,6 +1687,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 self.delay_token(tt);
             }
         }
+        self.typar_scan_scratch = stack;
 
         res
     }
@@ -1552,28 +1696,43 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// per-arm smashing logic (LexFilter.fs:1194-1240). `res` is the bool
     /// payload to embed into LESS/GREATER outputs — `true` on a successful
     /// typar parse, `false` on backtrack.
-    fn smash_typar_token(&mut self, tt: TokenTup<'a>, res: bool) {
-        match &tt.token {
+    fn smash_typar_token(&mut self, tt: TokenTup, res: bool) {
+        // An operator's text decides how it splits; no other token has any.
+        let op_text = match tt.token {
+            TokenContent::Real(TokenKind::Op) => self.text(&tt),
+            _ => "",
+        };
+        match tt.token {
             // Fused openers `</`, `<^`: split into LESS res + (`/` or `^`).
-            TokenContent::Real(Token::Op(s)) if *s == "</" || *s == "<^" => {
-                let tail_op: &'static str = if *s == "</" { "/" } else { "^" };
-                self.delay_pair_split_at_1(&tt, Token::Less(res), Token::Op(tail_op));
+            // The tail is an operator whose text is the opener's second byte.
+            TokenContent::Real(TokenKind::Op) if op_text == "</" || op_text == "<^" => {
+                self.delay_pair_split_at_1(
+                    &tt,
+                    TokenContent::less(res),
+                    TokenContent::Real(TokenKind::Op),
+                );
             }
             // Typed-quotation opener `<@`: split into LESS res + `@`.
-            TokenContent::Real(Token::LQuote) => {
-                self.delay_pair_split_at_1(&tt, Token::Less(res), Token::Op("@"));
+            TokenContent::Real(TokenKind::LQuote) => {
+                self.delay_pair_split_at_1(
+                    &tt,
+                    TokenContent::less(res),
+                    TokenContent::Real(TokenKind::Op),
+                );
             }
             // Fused closer `>]`: split into GREATER res + `]`.
-            TokenContent::Real(Token::GreaterRBrack) => {
-                self.delay_pair_split_at_1(&tt, Token::Greater(res), Token::RBrack);
+            TokenContent::Real(TokenKind::GreaterRBrack) => {
+                self.delay_pair_split_at_1(
+                    &tt,
+                    TokenContent::greater(res),
+                    TokenContent::Real(TokenKind::RBrack),
+                );
             }
             // Bare GREATER: re-emit with the bool replaced.
-            TokenContent::Real(Token::Greater(_)) => {
+            TokenContent::Real(TokenKind::Greater) | TokenContent::TyparGreater => {
                 self.delay_token(TokenTup {
-                    token: TokenContent::Real(Token::Greater(res)),
-                    span: tt.span.clone(),
-                    start: tt.start,
-                    end: tt.end,
+                    token: TokenContent::greater(res),
+                    ..tt
                 });
             }
             // `Op(s)` with `s` starting with `>`: split the leading run of
@@ -1584,11 +1743,15 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // COLON` — even though `TyparsCloseOp` rejects `>:`. Mirror that
             // here so the post-smash stream matches FCS when a successful
             // scan included `>:` (necessarily at n_paren > 1 via OtherToken).
-            TokenContent::Real(Token::Op(">:")) => {
-                self.delay_pair_split_at_1(&tt, Token::Greater(res), Token::Colon);
+            TokenContent::Real(TokenKind::Op) if op_text == ">:" => {
+                self.delay_pair_split_at_1(
+                    &tt,
+                    TokenContent::greater(res),
+                    TokenContent::Real(TokenKind::Colon),
+                );
             }
-            TokenContent::Real(Token::Op(s)) if s.starts_with('>') => {
-                let Some(split) = typars_close_op_split(s) else {
+            TokenContent::Real(TokenKind::Op) if op_text.starts_with('>') => {
+                let Some(split) = typars_close_op_split(op_text) else {
                     // This can be reached via the `OtherToken` scan path for
                     // other `>`-prefixed ops that `typars_close_op_split`
                     // rejects (none currently in F# beyond `>:`, which is
@@ -1597,7 +1760,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                     self.delay_token(tt);
                     return;
                 };
-                let start_byte = tt.span.start;
+                let start_byte = tt.span.start as usize;
                 let start_col = tt.start.col;
                 let line = tt.start.line;
                 let tail_start_byte = start_byte + split.greater_count;
@@ -1610,39 +1773,38 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 // and fuse here so the post-replay stream matches FCS.
                 // (Mirrors FCS's GREATER_BAR_RBRACK / GREATER_BAR_RBRACE
                 // handling at LexFilter.fs:1228-1236.)
-                let mut tail_to_emit: Option<TokenTup<'a>> = match split.tail {
-                    None => None,
-                    Some(tail_tok) => Some(TokenTup {
-                        token: TokenContent::Real(tail_tok),
-                        span: tail_start_byte..tt.span.end,
+                // The tail's text is the rest of the operator's, which its span
+                // covers.
+                let mut tail_to_emit: Option<TokenTup> =
+                    split.tail.as_ref().map(|tail_tok| TokenTup {
+                        token: TokenContent::Real(tail_tok.kind()),
+                        span: TokSpan::new(tail_start_byte..tt.span.end as usize),
                         start: Pos {
                             col: tail_start_col,
                             line,
                         },
                         end: tt.end,
-                    }),
-                };
-                if matches!(
-                    tail_to_emit.as_ref().map(|t| &t.token),
-                    Some(TokenContent::Real(Token::Op("|")))
-                ) && let Some(next) = self.peek_next_token_tup()
+                    });
+                if matches!(split.tail, Some(Token::Op("|")))
+                    && let Some(next) = self.peek_next_token_tup()
                     && next.span.start == tt.span.end
                     && matches!(
                         next.token,
-                        TokenContent::Real(Token::RBrack) | TokenContent::Real(Token::RBrace)
+                        TokenContent::Real(TokenKind::RBrack)
+                            | TokenContent::Real(TokenKind::RBrace)
                     )
                 {
                     let next = self
                         .pop_next_token_tup()
                         .expect("peek_next_token_tup returned Some");
                     let fused_tok = match next.token {
-                        TokenContent::Real(Token::RBrack) => Token::BarRBrack,
-                        TokenContent::Real(Token::RBrace) => Token::BarRBrace,
+                        TokenContent::Real(TokenKind::RBrack) => TokenKind::BarRBrack,
+                        TokenContent::Real(TokenKind::RBrace) => TokenKind::BarRBrace,
                         _ => unreachable!("matched in the peek guard above"),
                     };
                     tail_to_emit = Some(TokenTup {
                         token: TokenContent::Real(fused_tok),
-                        span: tail_start_byte..next.span.end,
+                        span: TokSpan::new(tail_start_byte..next.span.end as usize),
                         start: Pos {
                             col: tail_start_col,
                             line,
@@ -1656,8 +1818,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 for i in (0..split.greater_count).rev() {
                     let byte_start = start_byte + i;
                     self.delay_token(TokenTup {
-                        token: TokenContent::Real(Token::Greater(res)),
-                        span: byte_start..byte_start + 1,
+                        token: TokenContent::greater(res),
+                        span: TokSpan::new(byte_start..byte_start + 1),
                         start: Pos {
                             col: start_col + i as u32,
                             line,
@@ -1689,14 +1851,17 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// next pop. Both halves are real tokens.
     fn delay_pair_split_at_1(
         &mut self,
-        tt: &TokenTup<'a>,
-        head_tok: Token<'a>,
-        tail_tok: Token<'a>,
+        tt: &TokenTup,
+        head_tok: TokenContent,
+        tail_tok: TokenContent,
     ) {
         let mid_byte = tt.span.start + 1;
         let tail = TokenTup {
-            token: TokenContent::Real(tail_tok),
-            span: mid_byte..tt.span.end,
+            token: tail_tok,
+            span: TokSpan {
+                start: mid_byte,
+                end: tt.span.end,
+            },
             start: Pos {
                 col: tt.start.col + 1,
                 line: tt.start.line,
@@ -1705,8 +1870,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         };
         self.delay_token(tail);
         let head = TokenTup {
-            token: TokenContent::Real(head_tok),
-            span: tt.span.start..mid_byte,
+            token: head_tok,
+            span: TokSpan {
+                start: tt.span.start,
+                end: mid_byte,
+            },
             start: tt.start,
             end: Pos {
                 col: tt.end.col - 1,
@@ -1728,7 +1896,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// *dispatch* token, which is never EOF (the EOF force-closure cascade empties
     /// the stack before any push runs). The lookahead-anchored pushes that *can*
     /// see EOF go through [`Self::try_push_ctxt`] directly.
-    fn push_ctxt(&mut self, trigger: Span, ctxt: Context) {
+    fn push_ctxt(&mut self, trigger: TokSpan, ctxt: Context) {
         self.try_push_ctxt(PushStrictness::AlwaysLenient, false, false, trigger, ctxt);
     }
 
@@ -1796,7 +1964,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         strictness: PushStrictness,
         ignore_indent: bool,
         anchor_is_eof: bool,
-        trigger: Span,
+        trigger: TokSpan,
         ctxt: Context,
     ) -> bool {
         // A push with a `CtxtMatch` outstanding in one version world only lands
@@ -1804,7 +1972,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if self.match_ghost.take().is_some() {
             self.shape_depends_on_language_version = true;
         }
-        let correct = self.is_correct_indent(ignore_indent, anchor_is_eof, &trigger, &ctxt);
+        let correct = self.is_correct_indent(ignore_indent, anchor_is_eof, trigger, &ctxt);
         let strict = match strictness {
             PushStrictness::AlwaysLenient => false,
             PushStrictness::VersionGated => {
@@ -1875,7 +2043,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         &mut self,
         ignore_indent: bool,
         anchor_is_eof: bool,
-        trigger: &Span,
+        trigger: TokSpan,
         ctxt: &Context,
     ) -> bool {
         if Self::indent_is_exempt(ignore_indent, ctxt) {
@@ -1908,7 +2076,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 limit.pos.line,
                 self.utf16_col(limit.pos) + 1,
             ),
-            span: trigger.clone(),
+            span: trigger.range(),
             severity,
         });
         false
@@ -2639,7 +2807,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// at once, as that rule would.
     ///
     /// Must run before anything else consults the stack for `tt`.
-    fn resolve_match_ghost(&mut self, tt: &TokenTup<'a>) {
+    fn resolve_match_ghost(&mut self, tt: &TokenTup) {
         let Some(pos) = self.match_ghost.take() else {
             return;
         };
@@ -2653,8 +2821,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         if restore {
             self.offside_stack.pop();
         }
-        let offside = !matches!(tt.token, TokenContent::Real(Token::In))
-            && (matches!(tt.token, TokenContent::Real(Token::SemiSemi))
+        let offside = !matches!(tt.token, TokenContent::Real(TokenKind::In))
+            && (matches!(tt.token, TokenContent::Real(TokenKind::SemiSemi))
                 || tt.start.col + u32::from(Self::is_match_block_continuator(&tt.token))
                     <= pos.col);
         if !(forced || offside) {
@@ -2682,7 +2850,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         &mut self,
         strictness: PushStrictness,
         use_fallback: bool,
-        fallback: &TokenTup<'a>,
+        fallback: &TokenTup,
         add_block_end: AddBlockEnd,
     ) {
         let target = self.peek_next_token_tup();
@@ -2692,7 +2860,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 strictness,
                 false,
                 anchor_is_eof,
-                t.span.clone(),
+                t.span,
                 Context::SeqBlock {
                     first: true,
                     pos: t.start,
@@ -2707,7 +2875,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             // `NotFirstInSeqBlock` (no first-element flip), so a subsequent
             // EOF / offside token doesn't try to anchor virtuals here.
             self.push_ctxt(
-                fallback.span.clone(),
+                fallback.span,
                 Context::SeqBlock {
                     first: false,
                     pos: fallback.start,
@@ -2729,7 +2897,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             };
             let bb = TokenTup {
                 token: TokenContent::Virtual(Virtual::BlockBegin),
-                span: anchor.span.clone(),
+                span: anchor.span,
                 start: anchor.start,
                 end: anchor.end,
             };
@@ -2749,7 +2917,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// severity gate ([`Self::is_correct_indent`]) and this push decision are the
     /// same boolean in FCS — the *tree* depends on the language version, not just
     /// the diagnostic. See [`LanguageVersion::strict_indentation_is_error`].
-    fn push_ctxt_seq_block(&mut self, fallback: &TokenTup<'a>, add_block_end: AddBlockEnd) {
+    fn push_ctxt_seq_block(&mut self, fallback: &TokenTup, add_block_end: AddBlockEnd) {
         self.push_ctxt_seq_block_at(PushStrictness::VersionGated, true, fallback, add_block_end);
     }
 
@@ -2759,7 +2927,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// alone (no spurious recovery SeqBlock, no OBLOCKBEGIN). `fallback` is
     /// unused but kept for symmetry. Threads `strictIndentation` for the same
     /// reason as [`Self::push_ctxt_seq_block`].
-    fn try_push_ctxt_seq_block(&mut self, fallback: &TokenTup<'a>, add_block_end: AddBlockEnd) {
+    fn try_push_ctxt_seq_block(&mut self, fallback: &TokenTup, add_block_end: AddBlockEnd) {
         self.push_ctxt_seq_block_at(PushStrictness::VersionGated, false, fallback, add_block_end);
     }
 
@@ -2776,7 +2944,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             return;
         };
         let pos = first.start;
-        let span = first.span.clone();
+        let span = first.span;
         self.delay_token(first);
         self.push_ctxt(
             span,
@@ -2792,10 +2960,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// return a synthetic carrying `virt` at the trigger's full range —
     /// FCS uses `(startPosOfTokenTup tokenTup, tokenTup.LexbufState.EndPos)`
     /// as the inserted token's lexbuf state.
-    fn insert_token(&mut self, virt: Virtual, tt: TokenTup<'a>) -> TokenTup<'a> {
+    fn insert_token(&mut self, virt: Virtual, tt: TokenTup) -> TokenTup {
         let synth = TokenTup {
             token: TokenContent::Virtual(virt),
-            span: tt.span.clone(),
+            span: tt.span,
             start: tt.start,
             end: tt.end,
         };
@@ -2809,11 +2977,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// start. When the prev token ends at EOL and the current token starts at
     /// the first non-whitespace of the next line, this is a non-empty span
     /// covering the leading indentation (e.g. `\n    x` → span = `[prevEnd+1..x.start)`).
-    fn insert_token_from_prev_to_current(
-        &mut self,
-        virt: Virtual,
-        tt: TokenTup<'a>,
-    ) -> TokenTup<'a> {
+    fn insert_token_from_prev_to_current(&mut self, virt: Virtual, tt: TokenTup) -> TokenTup {
         let pos = tt.start;
         // ODUMMY preserves the prev-end snapshot from when it was queued —
         // mirrors FCS's per-`TokenTup` `LastTokenPos` (LexFilter.fs:1368
@@ -2826,11 +2990,13 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             TokenContent::Dummy { prev_end, .. } => *prev_end,
             _ => self.last_real_end,
         };
-        let span_start = (prev_end + 1).min(tt.span.start);
-        let span = span_start..tt.span.start;
+        let span_start = prev_end.saturating_add(1).min(tt.span.start);
         let synth = TokenTup {
             token: TokenContent::Virtual(virt),
-            span,
+            span: TokSpan {
+                start: span_start,
+                end: tt.span.start,
+            },
             start: pos,
             end: pos,
         };
@@ -2841,7 +3007,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     /// FCS's `hwTokenFetch` (LexFilter.fs:1642) — the rule-dispatch loop.
     /// Returns one positioned token per call; recursive cases (`reprocess`,
     /// `reprocessWithoutBlockRule`) are inlined as a `continue`.
-    fn hw_token_fetch(&mut self, mut use_block_rule: bool) -> Option<TokenTup<'a>> {
+    fn hw_token_fetch(&mut self, mut use_block_rule: bool) -> Option<TokenTup> {
         loop {
             let tt = self.pop_next_token_tup()?;
 
@@ -2901,27 +3067,37 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
     }
 }
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Iterator for Filter<'a, I> {
-    type Item = (Result<FilteredToken<'a>, LexError>, Span);
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl Filter<'_> {
+    /// The next token of the filtered stream, as the kind and span the
+    /// filtered table stores, or `None` once the stream is done.
+    fn next_filtered(&mut self) -> Option<(FilteredKind, Span)> {
         if !self.initialized {
             self.peek_initial();
         }
         let tt = self.hw_token_fetch(true)?;
-        let span = tt.span;
-        match tt.token {
-            TokenContent::Real(t) => {
-                self.last_real_end = span.end;
-                self.last_real_was_atomic_end = is_atomic_expr_end(&t);
-                Some((Ok(FilteredToken::Raw(t)), span))
+        let span = tt.span.range();
+        let kind = match tt.token {
+            TokenContent::Real(kind) => {
+                debug_assert!(
+                    !RawKind::Lexed(kind).is_trivia(),
+                    "the filter emits no trivia, but has {kind:?}"
+                );
+                FilteredKind::Token(kind)
             }
-            TokenContent::Virtual(v) => Some((Ok(FilteredToken::Virtual(v)), span)),
-            TokenContent::Err(e) => Some((Err(e), span)),
-            TokenContent::Eof => None,
+            TokenContent::TyparLess => FilteredKind::TyparLess,
+            TokenContent::TyparGreater => FilteredKind::TyparGreater,
+            TokenContent::Virtual(v) => return Some((FilteredKind::Virtual(v), span)),
+            TokenContent::Err(e) => return Some((FilteredKind::of_error(e), span)),
+            TokenContent::Eof => return None,
             // hw_token_fetch's ODUMMY arm consumes dummies in-loop; one
             // reaching here means a rule above this loop bypassed it.
             TokenContent::Dummy { .. } => unreachable!("ODUMMY escaped hw_token_fetch"),
-        }
+        };
+        self.last_real_end = tt.span.end;
+        self.last_real_was_atomic_end = match tt.token {
+            TokenContent::Real(kind) => kind_is_atomic_expr_end(kind),
+            _ => false,
+        };
+        Some((kind, span))
     }
 }

@@ -1,14 +1,16 @@
 //! Pre-dispatch `hw_token_fetch` rules: token rewriting that runs before any
 //! context handler. See `super::Filter::hw_token_fetch` for the dispatch order.
 
-use super::{Filter, Pos, Step, TokenContent, TokenTup, Virtual, is_typar_application_trigger};
-use crate::lexer::{LexError, Span, Token};
+use super::{
+    Filter, Pos, Step, TokSpan, TokenContent, TokenTup, Virtual, is_typar_application_trigger,
+};
+use crate::lexer::TokenKind;
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
+impl<'a> Filter<'a> {
     /// Pre-dispatch token rewriting: the no-processing passthrough, compound
     /// quote-close splitting, high-precedence app injection, head-context
     /// force-closure, and the empty-stack `;;` reset.
-    pub(super) fn predispatch(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn predispatch(&mut self, tt: TokenTup) -> Step {
         // FCS's `tokensThatNeedNoProcessingCount > 0` guard
         // (LexFilter.fs:1644-1646). Tokens queued via
         // `delay_token_no_processing` (synthetic ENDs from the
@@ -18,7 +20,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // the guard as the first arm of its dispatch match.
         if self.tokens_that_need_no_processing > 0 {
             self.tokens_that_need_no_processing -= 1;
-            if matches!(&tt.token, TokenContent::Real(_)) {
+            if tt.token.is_real() {
                 self.last_real_end = tt.span.end;
             }
             return Step::Emit(tt);
@@ -37,32 +39,36 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         //   RQUOTE_BAR_RBRACE: RQUOTE=[start, end-2), BAR_RBRACE=[start+1, end)
         //                      (FCS UseShiftedLocation(..., 1, 0) for BAR_RBRACE)
         if let TokenContent::Real(
-            Token::RQuoteDot
-            | Token::RQuoteRawDot
-            | Token::RQuoteBarRBrace
-            | Token::RQuoteRawBarRBrace,
+            TokenKind::RQuoteDot
+            | TokenKind::RQuoteRawDot
+            | TokenKind::RQuoteBarRBrace
+            | TokenKind::RQuoteRawBarRBrace,
         ) = &tt.token
         {
             let is_bar = matches!(
                 &tt.token,
-                TokenContent::Real(Token::RQuoteBarRBrace | Token::RQuoteRawBarRBrace)
+                TokenContent::Real(TokenKind::RQuoteBarRBrace | TokenKind::RQuoteRawBarRBrace)
             );
             let is_raw = matches!(
                 &tt.token,
-                TokenContent::Real(Token::RQuoteRawDot | Token::RQuoteRawBarRBrace)
+                TokenContent::Real(TokenKind::RQuoteRawDot | TokenKind::RQuoteRawBarRBrace)
             );
             let close_tok = if is_raw {
-                Token::RQuoteRaw
+                TokenKind::RQuoteRaw
             } else {
-                Token::RQuote
+                TokenKind::RQuote
             };
-            let suffix_tok = if is_bar { Token::BarRBrace } else { Token::Dot };
+            let suffix_tok = if is_bar {
+                TokenKind::BarRBrace
+            } else {
+                TokenKind::Dot
+            };
             // RQUOTE ends: 1 byte before end for DOT cases (LexFilter.fs:2690
             // `UseShiftedLocation(..., 0, -1)`), 2 bytes for BAR_RBRACE cases
             // (LexFilter.fs:2757 `UseShiftedLocation(..., 0, -2)`).
             let close_trim = if is_bar { 2 } else { 1 };
             let close_end_byte = tt.span.end - close_trim;
-            let close_end_col = tt.end.col - close_trim as u32;
+            let close_end_col = tt.end.col - close_trim;
             // DOT suffix starts at close_end; BAR_RBRACE starts at start+1.
             let suffix_start_byte = if is_bar {
                 tt.span.start + 1
@@ -76,7 +82,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             };
             let suffix_tt = TokenTup {
                 token: TokenContent::Real(suffix_tok),
-                span: suffix_start_byte..tt.span.end,
+                span: TokSpan {
+                    start: suffix_start_byte,
+                    end: tt.span.end,
+                },
                 start: Pos {
                     line: tt.start.line,
                     col: suffix_start_col,
@@ -85,7 +94,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
             };
             let close_tt = TokenTup {
                 token: TokenContent::Real(close_tok),
-                span: tt.span.start..close_end_byte,
+                span: TokSpan {
+                    start: tt.span.start,
+                    end: close_end_byte,
+                },
                 start: tt.start,
                 end: Pos {
                     line: tt.end.line,
@@ -110,8 +122,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // an `INT32_DOT_DOT` never spans a line, so the split point is `end-2`
         // in both byte offset and column. LIFO: delay `DOT_DOT` first so the
         // `INT32` comes out first (matching `1..10` → `INT32 / DOT_DOT / INT32`).
-        if let TokenContent::Real(Token::IntDotDot(text)) = &tt.token {
-            let int_text = &text[..text.len() - 2];
+        if let TokenContent::Real(TokenKind::IntDotDot) = tt.token {
             let split_byte = tt.span.end - 2;
             let split_col = tt.end.col - 2;
             let split_pos = Pos {
@@ -119,14 +130,20 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 col: split_col,
             };
             let dotdot_tt = TokenTup {
-                token: TokenContent::Real(Token::DotDot),
-                span: split_byte..tt.span.end,
+                token: TokenContent::Real(TokenKind::DotDot),
+                span: TokSpan {
+                    start: split_byte,
+                    end: tt.span.end,
+                },
                 start: split_pos,
                 end: tt.end,
             };
             let int_tt = TokenTup {
-                token: TokenContent::Real(Token::Int(int_text)),
-                span: tt.span.start..split_byte,
+                token: TokenContent::Real(TokenKind::Int),
+                span: TokSpan {
+                    start: tt.span.start,
+                    end: split_byte,
+                },
                 start: tt.start,
                 end: split_pos,
             };
@@ -151,11 +168,15 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // longest-match lexer instead split off `..^` already, so leave that token
         // unsplit — the parser has no production for a bare `DOT_DOT_HAT`, so it
         // errors, matching FCS rather than accepting `.. (^ (+1))`.
-        if let TokenContent::Real(Token::DotDotHat) = &tt.token
-            && !self.source.as_bytes().get(tt.span.end).is_some_and(|b| {
-                matches!(
-                    b,
-                    b'!' | b'$'
+        if let TokenContent::Real(TokenKind::DotDotHat) = &tt.token
+            && !self
+                .source
+                .as_bytes()
+                .get(tt.span.end as usize)
+                .is_some_and(|b| {
+                    matches!(
+                        b,
+                        b'!' | b'$'
                         | b'%'
                         | b'&'
                         | b'*'
@@ -174,8 +195,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                         // `:` continues a symbolic operator after the first char
                         // (`..^:`, `..^::`), so it too keeps `..^` fused.
                         | b':'
-                )
-            })
+                    )
+                })
         {
             let split_byte = tt.span.end - 1;
             let split_col = tt.end.col - 1;
@@ -184,14 +205,20 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 col: split_col,
             };
             let hat_tt = TokenTup {
-                token: TokenContent::Real(Token::Op("^")),
-                span: split_byte..tt.span.end,
+                token: TokenContent::Real(TokenKind::Op),
+                span: TokSpan {
+                    start: split_byte,
+                    end: tt.span.end,
+                },
                 start: split_pos,
                 end: tt.end,
             };
             let dotdot_tt = TokenTup {
-                token: TokenContent::Real(Token::DotDot),
-                span: tt.span.start..split_byte,
+                token: TokenContent::Real(TokenKind::DotDot),
+                span: TokSpan {
+                    start: tt.span.start,
+                    end: split_byte,
+                },
                 start: tt.start,
                 end: split_pos,
             };
@@ -215,14 +242,14 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // every token inside `module [< … >]` straight through, so
         // `module [<Foo(Name = "x")>] M` would lose its HPA and
         // `module [<A(typeof<int>)>] M` its HPT.
-        if let TokenContent::Real(Token::Ident(_) | Token::QuotedIdent(_)) = &tt.token {
+        if let TokenContent::Real(TokenKind::Ident | TokenKind::QuotedIdent) = &tt.token {
             if self.next_token_is_adjacent_lbrack(&tt) {
                 let bracket = self
                     .peek_next_token_tup()
                     .expect("next_token_is_adjacent_lbrack succeeded ⇒ peek has bracket");
                 let hpb = TokenTup {
                     token: TokenContent::Virtual(Virtual::HighPrecedenceBrackApp),
-                    span: bracket.span.clone(),
+                    span: bracket.span,
                     start: bracket.start,
                     end: bracket.end,
                 };
@@ -236,7 +263,7 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                     .expect("next_token_is_adjacent_lparen succeeded ⇒ peek has paren");
                 let hpp = TokenTup {
                     token: TokenContent::Virtual(Virtual::HighPrecedenceParenApp),
-                    span: paren.span.clone(),
+                    span: paren.span,
                     start: paren.start,
                     end: paren.end,
                 };
@@ -255,18 +282,21 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // inner smash pass leaves this outer `<` for us to canonicalise),
         // then the trigger itself. On failure the scan has restored the
         // stream untouched.
-        if is_typar_application_trigger(&tt.token) && self.peek_adjacent_typars(false, &tt) {
+        if is_typar_application_trigger(tt.token) && self.peek_adjacent_typars(false, &tt) {
             let less_tt = self
                 .pop_next_token_tup()
                 .expect("peek_adjacent_typars success ⇒ Less is on top of delayed");
             debug_assert!(
-                matches!(&less_tt.token, TokenContent::Real(Token::Less(_))),
+                matches!(
+                    less_tt.token,
+                    TokenContent::Real(TokenKind::Less) | TokenContent::TyparLess
+                ),
                 "peek_adjacent_typars success ⇒ the candidate opener is a `<`: {:?}",
                 less_tt.token,
             );
             self.delay_token(TokenTup {
-                token: TokenContent::Real(Token::Less(true)),
-                ..less_tt.clone()
+                token: TokenContent::TyparLess,
+                ..less_tt
             });
             self.delay_token(TokenTup {
                 token: TokenContent::Virtual(Virtual::HighPrecedenceTyApp),
@@ -297,11 +327,11 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
 
         // FCS L1660-1671: `;;` with an empty offside stack resets the
         // filter — emit `;;` as a real token and re-arm `peek_initial`
-        // so the next `next()` call pushes a fresh outer SeqBlock
+        // so the next `next_filtered()` call pushes a fresh outer SeqBlock
         // anchored at the upcoming real token's position. FCS schedules
         // an `ORESET` synthetic for this; we collapse the two-step
         // dance into a single `initialized = false` flag flip because
-        // our `next()` re-runs `peek_initial` whenever the flag clears.
+        // our `next_filtered()` re-runs `peek_initial` whenever the flag clears.
         //
         // Reachable shape: a `;;` between top-level declarations runs
         // the per-arm `isSemiSemi ||` cascade through every layer of
@@ -311,7 +341,8 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // landing the same `;;` back here with an empty stack. Without
         // the re-seed, the following `let y` would arrive with no
         // context and surface as a raw `Let` instead of `OffsideLet`.
-        if matches!(&tt.token, TokenContent::Real(Token::SemiSemi)) && self.offside_stack.is_empty()
+        if matches!(&tt.token, TokenContent::Real(TokenKind::SemiSemi))
+            && self.offside_stack.is_empty()
         {
             self.initialized = false;
             self.last_real_end = tt.span.end;

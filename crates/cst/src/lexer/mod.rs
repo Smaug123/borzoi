@@ -76,7 +76,7 @@ pub fn is_reserved_ident(word: &str) -> bool {
     RESERVED_IDENTS.contains(&word)
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum LexError {
     UnterminatedString,
     UnterminatedComment,

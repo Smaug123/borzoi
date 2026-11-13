@@ -10,7 +10,9 @@
 use std::sync::OnceLock;
 
 use crate::hash::HashMap;
-use crate::names::{Name, NameKey, NameTable, PathId, PathKey, rekey_name, rekey_path};
+use crate::names::{Name, NameKey, NameTable, PathId, PathKey};
+#[cfg(feature = "test-support")]
+use crate::names::{rekey_name, rekey_path};
 
 use super::{EntityHandle, OpenFoldSurface};
 
@@ -271,6 +273,7 @@ impl TypeIndex {
     }
 
     /// The same index, keyed by `to`'s ids, its memos dropped.
+    #[cfg(feature = "test-support")]
     pub(super) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
         let namespaces = self
             .namespaces
@@ -296,6 +299,7 @@ impl TypeIndex {
 }
 
 /// `map` with each key re-keyed from `from`'s ids to `to`'s.
+#[cfg(feature = "test-support")]
 fn rekey_names<V: Clone>(
     from: &NameTable,
     to: &NameTable,

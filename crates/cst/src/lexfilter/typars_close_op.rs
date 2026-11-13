@@ -7,7 +7,7 @@
 //! points but the helpers themselves don't touch `Filter` state.
 
 use super::TokenContent;
-use crate::lexer::Token;
+use crate::lexer::{Token, TokenKind};
 
 /// Result of [`typars_close_op_split`]: a leading run of `>` characters
 /// (each becoming a `Greater(false)` token) followed by an optional tail
@@ -104,23 +104,23 @@ pub(super) fn typars_close_op_split(op_text: &str) -> Option<TyparsCloseSplit<'_
 /// Tokens that, when followed by an adjacent `<`, trigger the typar
 /// application disambiguation pass. Mirrors FCS LexFilter.fs:2659
 /// (`DELEGATE | IDENT _ | IEEE64 _ | … | BIGNUM _`).
-pub(super) fn is_typar_application_trigger(t: &TokenContent<'_>) -> bool {
+pub(super) fn is_typar_application_trigger(t: TokenContent) -> bool {
     match t {
         TokenContent::Real(real) => matches!(
             real,
-            Token::Ident(_)
-                | Token::QuotedIdent(_)
-                | Token::Delegate
-                | Token::Int(_)
-                | Token::IntSuffixed(_)
-                | Token::XInt(_)
-                | Token::XIntSuffixed(_)
-                | Token::XIEEE32(_)
-                | Token::XIEEE64(_)
-                | Token::Float32(_)
-                | Token::Float64(_)
-                | Token::Decimal(_)
-                | Token::BigNum(_)
+            TokenKind::Ident
+                | TokenKind::QuotedIdent
+                | TokenKind::Delegate
+                | TokenKind::Int
+                | TokenKind::IntSuffixed
+                | TokenKind::XInt
+                | TokenKind::XIntSuffixed
+                | TokenKind::XIEEE32
+                | TokenKind::XIEEE64
+                | TokenKind::Float32
+                | TokenKind::Float64
+                | TokenKind::Decimal
+                | TokenKind::BigNum
         ),
         _ => false,
     }
@@ -161,79 +161,98 @@ pub(super) enum TyparScanAction {
 }
 
 /// Per-token dispatch inside the typar scan loop. Pure function over
-/// `TokenContent`; doesn't touch lexer state.
-pub(super) fn classify_typar_scan_token(t: &TokenContent<'_>) -> TyparScanAction {
+/// `TokenContent` and, for an operator, the text `text` returns; doesn't touch
+/// lexer state.
+pub(super) fn classify_typar_scan_token<'t>(
+    t: TokenContent,
+    text: impl FnOnce() -> &'t str,
+) -> TyparScanAction {
     match t {
         TokenContent::Eof => TyparScanAction::Fail,
-        TokenContent::Real(real) => match real {
-            Token::SemiSemi => TyparScanAction::Fail,
-            // Openers.
-            Token::LParen | Token::LBrack | Token::LBrackLess | Token::Less(_) | Token::LQuote => {
+        // A `<` / `>` an earlier scan promoted is still a `<` / `>`.
+        TokenContent::TyparLess => TyparScanAction::OpenParen,
+        TokenContent::TyparGreater => TyparScanAction::CloseGreater,
+        TokenContent::Real(TokenKind::Op) => {
+            let s = text();
+            if s == "</" || s == "<^" {
                 TyparScanAction::OpenParen
+            } else if s.starts_with('>') {
+                // `>`-prefixed fused operator: split + classify.
+                match typars_close_op_split(s) {
+                    Some(split) => TyparScanAction::CloseOpSplit {
+                        greater_count: split.greater_count,
+                        has_tail: split.tail.is_some(),
+                    },
+                    None => TyparScanAction::OtherToken,
+                }
+            } else if matches!(s, "^" | "^-" | "/" | "*" | "-") {
+                // FCS-permitted infix-operator strings inside the typar
+                // grammar at depth 1 (LexFilter.fs:1165-1179): `^`, `^-`, `/`,
+                // `*`, `-`. Notably `+` and `**` are NOT in the FCS whitelist —
+                // they make the scan backtrack (caller sees comparison, not
+                // typar).
+                TyparScanAction::Continue
+            } else {
+                TyparScanAction::OtherToken
             }
-            Token::Op(s) if *s == "</" || *s == "<^" => TyparScanAction::OpenParen,
+        }
+        TokenContent::Real(real) => match real {
+            TokenKind::SemiSemi => TyparScanAction::Fail,
+            // Openers.
+            TokenKind::LParen
+            | TokenKind::LBrack
+            | TokenKind::LBrackLess
+            | TokenKind::Less
+            | TokenKind::LQuote => TyparScanAction::OpenParen,
             // Plain closers that fail at depth 0.
-            Token::RParen | Token::RBrack => TyparScanAction::ClosePlain,
+            TokenKind::RParen | TokenKind::RBrack => TyparScanAction::ClosePlain,
             // Greater closers.
-            Token::Greater(_) => TyparScanAction::CloseGreater,
-            Token::GreaterRBrack => TyparScanAction::CloseGreaterWithAfter,
-            // `>`-prefixed fused operator: split + classify.
-            Token::Op(s) if s.starts_with('>') => match typars_close_op_split(s) {
-                Some(split) => TyparScanAction::CloseOpSplit {
-                    greater_count: split.greater_count,
-                    has_tail: split.tail.is_some(),
-                },
-                None => TyparScanAction::OtherToken,
-            },
+            TokenKind::Greater => TyparScanAction::CloseGreater,
+            TokenKind::GreaterRBrack => TyparScanAction::CloseGreaterWithAfter,
             // Whitelisted in-grammar tokens (FCS LexFilter.fs:1158-1180).
-            Token::Default
-            | Token::Colon
-            | Token::ColonGreater
-            | Token::Struct
-            | Token::Null
-            | Token::Delegate
-            | Token::And
-            | Token::When
-            | Token::Amp
-            | Token::Bar
-            | Token::DotDot
-            | Token::New
-            | Token::LBraceBar
-            | Token::Semi
-            | Token::BarRBrace
-            | Token::Global
-            | Token::Const
-            | Token::Dot
-            | Token::Underscore
-            | Token::Equals
-            | Token::Comma
-            | Token::RArrow
-            | Token::Hash
-            | Token::Quote
-            | Token::True
-            | Token::False
-            | Token::Ident(_)
-            | Token::QuotedIdent(_)
-            | Token::KeywordString(_)
-            | Token::Int(_)
-            | Token::IntSuffixed(_)
-            | Token::XInt(_)
-            | Token::XIntSuffixed(_)
-            | Token::XIEEE32(_)
-            | Token::XIEEE64(_)
-            | Token::Float32(_)
-            | Token::Float64(_)
-            | Token::Decimal(_)
-            | Token::BigNum(_)
-            | Token::String
-            | Token::TripleString
-            | Token::VerbatimString
-            | Token::Char(_) => TyparScanAction::Continue,
-            // FCS-permitted infix-operator strings inside the typar grammar
-            // at depth 1 (LexFilter.fs:1165-1179): `^`, `^-`, `/`, `*`, `-`.
-            // Notably `+` and `**` are NOT in the FCS whitelist — they make
-            // the scan backtrack (caller sees comparison, not typar).
-            Token::Op(s) if matches!(*s, "^" | "^-" | "/" | "*" | "-") => TyparScanAction::Continue,
+            TokenKind::Default
+            | TokenKind::Colon
+            | TokenKind::ColonGreater
+            | TokenKind::Struct
+            | TokenKind::Null
+            | TokenKind::Delegate
+            | TokenKind::And
+            | TokenKind::When
+            | TokenKind::Amp
+            | TokenKind::Bar
+            | TokenKind::DotDot
+            | TokenKind::New
+            | TokenKind::LBraceBar
+            | TokenKind::Semi
+            | TokenKind::BarRBrace
+            | TokenKind::Global
+            | TokenKind::Const
+            | TokenKind::Dot
+            | TokenKind::Underscore
+            | TokenKind::Equals
+            | TokenKind::Comma
+            | TokenKind::RArrow
+            | TokenKind::Hash
+            | TokenKind::Quote
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Ident
+            | TokenKind::QuotedIdent
+            | TokenKind::KeywordString
+            | TokenKind::Int
+            | TokenKind::IntSuffixed
+            | TokenKind::XInt
+            | TokenKind::XIntSuffixed
+            | TokenKind::XIEEE32
+            | TokenKind::XIEEE64
+            | TokenKind::Float32
+            | TokenKind::Float64
+            | TokenKind::Decimal
+            | TokenKind::BigNum
+            | TokenKind::String
+            | TokenKind::TripleString
+            | TokenKind::VerbatimString
+            | TokenKind::Char => TyparScanAction::Continue,
             _ => TyparScanAction::OtherToken,
         },
         TokenContent::Err(_) | TokenContent::Virtual(_) | TokenContent::Dummy { .. } => {
@@ -515,8 +534,8 @@ mod tests {
         // FCS LexFilter.fs:2659 omits INT32_DOT_DOT from the typar
         // trigger list. Codex review caught a divergence where our
         // implementation accepted IntDotDot — fixed by removal.
-        let tok = TokenContent::Real(Token::IntDotDot("1.."));
-        assert!(!is_typar_application_trigger(&tok));
+        let tok = TokenContent::Real(TokenKind::IntDotDot);
+        assert!(!is_typar_application_trigger(tok));
     }
 
     #[test]
@@ -524,9 +543,9 @@ mod tests {
         // FCS LexFilter.fs:1173-1175 omits INT32_DOT_DOT from the
         // depth-1 whitelist. An IntDotDot reached inside a scan must
         // dispatch to OtherToken (rejected at n_paren <= 1).
-        let tok = TokenContent::Real(Token::IntDotDot("1.."));
+        let tok = TokenContent::Real(TokenKind::IntDotDot);
         assert!(matches!(
-            classify_typar_scan_token(&tok),
+            classify_typar_scan_token(tok, || "1.."),
             TyparScanAction::OtherToken
         ));
     }

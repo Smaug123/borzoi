@@ -65,8 +65,12 @@
 //!   follows them (probed), and listed under the link's name. A link back to
 //!   a directory already on the walk's path is a cycle, which declines
 //!   ([`GlobDecline::SymlinkCycle`]) rather than guess what MSBuild does.
-//! - Selection and order decline where ASCII case or a non-ASCII name would
-//!   decide them (see `crate::glob`).
+//! - A literal include meets its excludes ignoring ASCII case on every host,
+//!   as MSBuild's `FileSpecMatcherTester` does. Against a glob include,
+//!   selection and order decline where ASCII case or a non-ASCII name would
+//!   decide them (see `crate::glob`): the file matcher's case rule there
+//!   depends on which directories exist and on the include's walk root
+//!   (#607).
 
 use std::path::{Path, PathBuf};
 
@@ -149,6 +153,36 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
         })
         .collect();
 
+    // The same excludes, each with its fixed directory as absolute segments
+    // and the directory segments its wildcard part names after its first
+    // `**`. MSBuild applies those only to directories its walk enters, which
+    // start below the include's own fixed directory
+    // (`Unmodelled::GlobstarExcludeAboveIncludeRoot`).
+    let globstar_excludes: Vec<(String, Vec<String>, Vec<String>)> = glob_exclude_anchoring
+        .iter()
+        .filter_map(|(norm, absolute)| {
+            let (_, wildcard_dir, _) = split_filespec(norm);
+            let dirs = split_segments(&wildcard_dir);
+            let globstar = dirs.iter().position(|seg| *seg == "**")?;
+            let after: Vec<String> = dirs[globstar + 1..]
+                .iter()
+                .filter(|seg| **seg != "**")
+                .map(|seg| seg.to_string())
+                .collect();
+            let prefix = split_glob_root(norm).prefix;
+            let base: Vec<String> = if *absolute {
+                prefix
+            } else {
+                base_segs
+                    .iter()
+                    .map(|s| s.to_string())
+                    .chain(prefix)
+                    .collect()
+            };
+            Some((norm.clone(), base, after))
+        })
+        .collect();
+
     let mut out: Vec<PathBuf> = Vec::new();
     // The evaluator already split, trimmed and $()-expanded each fragment
     // and stripped `@()`/`%()` references, so each is a literal or wildcard
@@ -210,6 +244,29 @@ pub fn resolve(req: &GlobRequest<'_>) -> Result<Vec<PathBuf>, GlobDecline> {
                 .chain(frag_root.prefix.iter().cloned())
                 .collect()
         };
+        // Where the include's walk starts below an exclude's base, the
+        // directories between are never walked, so a segment the exclude names
+        // after a `**` cannot take one of them; matched by full path, it
+        // would (`**/Deep/**` against `sub/Deep/*.fs`). Decline where it
+        // could, ignoring case, the conservative direction.
+        if let Some((exclude, _, _)) = globstar_excludes.iter().find(|(_, base, after)| {
+            anchor_segs.len() > base.len()
+                && anchor_segs
+                    .iter()
+                    .zip(base)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+                && after.iter().any(|named| {
+                    let named = Pattern::parse(named);
+                    anchor_segs[base.len()..]
+                        .iter()
+                        .any(|walked_past| named.matches_ignoring_ascii_case(walked_past))
+                })
+        }) {
+            return Err(GlobDecline::OutsideModelledShape {
+                spec: exclude.clone(),
+                shape: Unmodelled::GlobstarExcludeAboveIncludeRoot,
+            });
+        }
         // The pattern keeps the base literal for relative specs; an absolute
         // fragment is parsed on its own (its own wildcards are wildcards). A
         // filename part of `*.*` matches every file, as MSBuild's does.
@@ -343,9 +400,11 @@ fn lexical_full_path(base_segs: &[&str], spelling: &str) -> String {
 ///   (`./a.fs` is `a.fs`), unless either is a spelling MSBuild does not
 ///   normalise ([`compares_unnormalised`]), which is compared as written.
 ///
-/// Comparison ignores case in MSBuild. Where folding ASCII case would change
-/// the verdict, the host decides, so it declines
-/// ([`GlobDecline::CaseAmbiguous`]).
+/// Comparison ignores ASCII case, directories included, on every host:
+/// `FileSpecMatcherTester` compares names `OrdinalIgnoreCase` and its
+/// `GlobPattern` folds the whole path (oracle-pinned on Linux, and in neither
+/// is the comparison the host's). The allow-list keeps both sides ASCII below
+/// the project directory, so ASCII folding is the whole of it.
 fn literal_survives_excludes(
     item: &str,
     excludes: &[SpecFragment],
@@ -354,7 +413,7 @@ fn literal_survives_excludes(
     let item_full = lexical_full_path(base_segs, item);
     for exclude in excludes {
         let spelling = exclude.unescape();
-        let (exact, folded) = if exclude.is_wildcard() {
+        let excluded = if exclude.is_wildcard() {
             let norm = spelling.replace('\\', "/");
             if !is_legal_filespec(&norm) {
                 return Err(GlobDecline::IllegalFilespec { pattern: norm });
@@ -372,10 +431,7 @@ fn literal_survives_excludes(
             if !is_recursive_filename_pattern(&norm) {
                 pattern = pattern.with_all_files_rule();
             }
-            (
-                pattern.matches(&item_full),
-                pattern.matches_ignoring_ascii_case(&item_full),
-            )
+            pattern.matches_ignoring_ascii_case(&item_full)
         } else {
             // Each operand is normalised, or not, on its own spelling
             // (`NormalizePathForComparisonNoThrow` is applied to each side).
@@ -386,15 +442,9 @@ fn literal_survives_excludes(
                     format!("/{}", lexical_full_path(base_segs, spelling))
                 }
             };
-            let (ours, theirs) = (operand(item), operand(&spelling));
-            (ours == theirs, ours.eq_ignore_ascii_case(&theirs))
+            operand(item).eq_ignore_ascii_case(&operand(&spelling))
         };
-        if exact != folded {
-            return Err(GlobDecline::CaseAmbiguous {
-                path: item.to_string(),
-            });
-        }
-        if exact {
+        if excluded {
             return Ok(false);
         }
     }
@@ -631,16 +681,42 @@ mod tests {
         .map(|paths| paths.len())
     }
 
-    /// A literal include survives an exclude regardless of case, unless case
-    /// is the only difference — then the host decides, and it declines.
+    /// A directory an exclude names after `**` is taken only where the
+    /// include's walk enters it; an include rooted inside such a directory
+    /// declines rather than lose its files (#615). The SDK's `**/.*/**` still
+    /// meets `sub/*.fs`, whose root `.*` cannot match.
     #[test]
-    fn a_literal_exclude_differing_only_in_case_declines() {
+    fn a_globstar_exclude_above_the_include_root_declines() {
+        let tmp = fixture();
+        assert!(matches!(
+            try_resolve(tmp.path(), "sub/deep/*.fs", &["**/deep/**"]),
+            Err(GlobDecline::OutsideModelledShape {
+                shape: Unmodelled::GlobstarExcludeAboveIncludeRoot,
+                ..
+            })
+        ));
+        assert_eq!(
+            try_resolve(tmp.path(), "sub/**/*.fs", &["**/deep/**"]),
+            Ok(1)
+        );
+        assert_eq!(
+            try_resolve(tmp.path(), "sub/deep/*.fs", &["**/d.fs"]),
+            Ok(0)
+        );
+        assert_eq!(try_resolve(tmp.path(), "sub/*.fs", &["**/.*/**"]), Ok(1));
+    }
+
+    /// Against a literal include, every exclude ignores ASCII case, directories
+    /// included, on every host (`FileSpecMatcherTester`; oracle-pinned).
+    #[test]
+    fn a_literal_include_meets_its_excludes_ignoring_case() {
         let tmp = fixture();
         assert_eq!(try_resolve(tmp.path(), "a.fs", &["b.fs"]), Ok(1));
-        assert!(matches!(
-            try_resolve(tmp.path(), "a.fs", &["A.fs"]),
-            Err(GlobDecline::CaseAmbiguous { .. })
-        ));
+        assert_eq!(try_resolve(tmp.path(), "a.fs", &["A.fs"]), Ok(0));
+        assert_eq!(try_resolve(tmp.path(), "sub/c.fs", &["SUB/C.FS"]), Ok(0));
+        assert_eq!(try_resolve(tmp.path(), "sub/c.fs", &["S*/c.fs"]), Ok(0));
+        assert_eq!(try_resolve(tmp.path(), "sub/c.fs", &["SUB/*.fs"]), Ok(0));
+        assert_eq!(try_resolve(tmp.path(), "a.fs;b.fs", &["**/A.fs"]), Ok(1));
     }
 
     /// Against a literal include, ordinary names compare as full paths and a

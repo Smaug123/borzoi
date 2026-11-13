@@ -848,6 +848,10 @@ fn render_diagnostic_kind(kind: &DiagnosticKind) -> String {
         DiagnosticKind::UnsupportedItemOperation { operation } => {
             format!("an item operation I don't apply: `{operation}`")
         }
+        DiagnosticKind::StrandedUpdatePrefix { update, fragment } => format!(
+            "a `<Compile Update=\"{update}\">` that MSBuild applies out of order (it stops \
+             batching at `{fragment}`)"
+        ),
         DiagnosticKind::SdkNotFound { name } => {
             format!("the SDK `{name}` isn't installed where I can find it")
         }

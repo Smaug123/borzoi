@@ -69,12 +69,16 @@ const FILES: &[&str] = &[
     "ab",
     // Below the project, so recursive globs and `..` spellings reach it.
     "sub/c.fs",
+    // A directory a glob include can be rooted inside, below an exclude's base.
+    "sub/Deep/d.fs",
     // A name a wildcard directory segment (`*/a%3bb.fs`) would reach.
     "sub/a;b.fs",
     // A hidden directory, which the SDK's `**/.*/**` exclude skips.
     ".hidden/h.fs",
     // An output file, which the SDK's `bin\/**` exclude skips.
     "bin/x.fs",
+    // A capitalised name, so the case of a pattern's filename part matters.
+    "Up.fs",
     // Names outside the resolver's allow-list, kept in a sibling of the
     // project directory so only the fragments that name it meet them (two
     // non-ASCII matches leave .NET's order between them, which would decline
@@ -158,6 +162,17 @@ const FRAGMENTS: &[&str] = &[
     "$(MSBuildProjectDirectory)/sub/*.fs",
     "$(MSBuildProjectDirectory)/**/*.fs",
     "ab",
+    // A glob rooted inside a directory a `**` exclude names (#615).
+    "sub/Deep/*.fs",
+    "**/Deep/**",
+    // Case variants. MSBuild ignores ASCII case against a literal include,
+    // directories included, on every host. Against a glob include the resolver
+    // declines where case would decide the answer (#607).
+    "PLAIN.FS",
+    "up.fs",
+    "SUB/c.fs",
+    "sub/C.FS",
+    "$(MSBuildProjectDirectory)/SUB/c.fs",
 ];
 
 /// Fragments outside the resolver's allow-list: each must decline through the
@@ -185,14 +200,47 @@ const PROP_VALUES: &[&str] = &[
     "a%20b.fs", "a%3bb.fs", "a%2ab.fs", "plain.fs", "pct%", "a%2a*.fs",
 ];
 
+/// A fragment built from a small grammar of path shapes — a fixed directory,
+/// a wildcard directory, a filename, each optional but the last — rather than
+/// picked from [`FRAGMENTS`]. The hand-written list holds the shapes someone
+/// thought of; this crosses fixed include roots with wildcard exclude
+/// directories, which is where #615's wrong commit lived and which no listed
+/// pair reached.
+fn structural(rng: &mut SplitMix64) -> String {
+    const FIXED: &[&str] = &[
+        "sub",
+        "sub/Deep",
+        ".hidden",
+        "bin",
+        "sub/..",
+        "$(MSBuildProjectDirectory)",
+        "$(MSBuildProjectDirectory)/sub",
+    ];
+    const WILD: &[&str] = &[
+        "**", "*", "D*", ".*", "s*", "**/Deep", "*/Deep", "**/*", "Deep/**",
+    ];
+    const NAME: &[&str] = &["*.fs", "*.*", "*", "d.fs", "c.fs", "x.fs", "?.fs", "**"];
+    let mut parts: Vec<&str> = Vec::new();
+    if rng.below(2) == 0 {
+        parts.push(rng.pick(FIXED));
+    }
+    if rng.below(2) == 0 {
+        parts.push(rng.pick(WILD));
+    }
+    parts.push(rng.pick(NAME));
+    parts.join("/")
+}
+
 fn gen_spec(rng: &mut SplitMix64) -> String {
     let n = 1 + rng.below(2);
     (0..n)
         .map(|_| {
             if rng.below(12) == 0 {
-                *rng.pick(OUTSIDE_ALLOW_LIST)
+                rng.pick(OUTSIDE_ALLOW_LIST).to_string()
+            } else if rng.below(4) == 0 {
+                structural(rng)
             } else {
-                *rng.pick(FRAGMENTS)
+                rng.pick(FRAGMENTS).to_string()
             }
         })
         .collect::<Vec<_>>()
@@ -487,6 +535,16 @@ fn hand_picked_corners() {
             "*.fs",
             Some("$(MSBuildProjectDirectory)/a*b.fs"),
         ),
+        // A directory an exclude names after `**` is taken only where the
+        // include's walk enters it (#615): `sub/Deep/*.fs` starts inside
+        // `Deep`, so MSBuild keeps its files and the resolver declines.
+        corner("plain.fs", "sub/Deep/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "sub/**/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "**/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "*/Deep/*.fs", Some("**/Deep/**")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("**/d.fs")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("sub/D*/d.fs")),
+        corner("plain.fs", "sub/Deep/*.fs", Some("*/Deep/d.fs")),
     ];
     // Each corner must commit through the resolver seam, which globs and
     // applies `Exclude`; a decline there would leave unexercised exactly the
@@ -504,6 +562,67 @@ fn hand_picked_corners() {
     }
 }
 
+/// How MSBuild's matching treats case, from the oracle table on #607.
+///
+/// Against a literal include, every exclude ignores ASCII case, directories
+/// included, on every host (`FileSpecMatcherTester` compares names
+/// `OrdinalIgnoreCase` and its `GlobPattern` folds the whole path). Those
+/// corners must commit, and match MSBuild.
+///
+/// Against a glob include the file matcher's rule turns on which directories
+/// exist and on the include's walk root, which the resolver does not model, so
+/// those corners may decline by name; where one commits it must match.
+#[test]
+fn case_corners() {
+    let mut oracle = Oracle::spawn();
+    let corner = |include: &str, exclude: Option<&str>| Fixture {
+        esc: "plain.fs".to_string(),
+        pct: "pct%".to_string(),
+        includes: vec![include.to_string()],
+        exclude: exclude.map(str::to_string),
+    };
+    let literal = [
+        corner("plain.fs;z.fs", Some("PLAIN.FS")),
+        corner("sub/c.fs;z.fs", Some("SUB/c.fs")),
+        corner("sub/c.fs;z.fs", Some("SUB/*.fs")),
+        corner("sub/c.fs;z.fs", Some("S*/c.fs")),
+        corner("plain.fs;z.fs", Some("**/PLAIN.fs")),
+        corner("plain.fs;z.fs", Some("$(MSBuildProjectDirectory)/P*")),
+        corner("plain.fs;z.fs", Some("$(MSBuildProjectDirectory)/PLAIN.fs")),
+    ];
+    for fixture in &literal {
+        assert_eq!(
+            check_with(&mut oracle, fixture, true),
+            Outcome::Committed,
+            "a literal-include case corner did not commit:\n{}",
+            fixture.xml()
+        );
+    }
+    let glob = [
+        corner("sub/*.fs", Some("sub/C.fs")),
+        corner("sub/*.fs", Some("SUB/c.fs")),
+        corner("**/*.fs", Some("SUB/c.fs")),
+        corner("**/*.fs", Some("S*/c.fs")),
+        corner("**/*.fs", Some("SUB/*.fs")),
+        corner("**/*.fs", Some("**/C.fs")),
+        corner("*.fs", Some("$(MSBuildProjectDirectory)/PLAIN.fs")),
+        corner("*.fs", Some("u*")),
+        corner("SUB/*.fs", None),
+        corner("S*/*.fs", None),
+        corner("u*.fs", None),
+        corner("*.FS", None),
+        corner("sub/**/C.fs", None),
+    ];
+    for fixture in &glob {
+        assert_ne!(
+            check_with(&mut oracle, fixture, true),
+            Outcome::Declined,
+            "{}",
+            fixture.xml()
+        );
+    }
+}
+
 /// The sweep. Every case that commits is checked against MSBuild; the floor
 /// keeps a decline-everything model from passing vacuously.
 #[test]
@@ -513,7 +632,10 @@ fn generated_item_specs_are_certain_implies_exact() {
     let mut fast_committed = 0usize;
     let mut resolver_committed = 0usize;
     let mut declined_through_resolver = Vec::new();
-    const CASES: usize = 300;
+    // The oracle answers in well under a millisecond a case, so the sweep runs
+    // thousands: a rare pairing (an include rooted inside a directory a `**`
+    // exclude names, #615) needs that many to turn up.
+    const CASES: usize = 2000;
     for _ in 0..CASES {
         let fixture = Fixture::generate(&mut rng);
         if check_with(&mut oracle, &fixture, false) == Outcome::Committed {
