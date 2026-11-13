@@ -13,6 +13,7 @@
 
 pub mod companion_corpus;
 pub mod corpus_manifest;
+pub mod edit_script;
 pub mod fold_matrix;
 pub mod fsharp_member_corpus;
 pub mod generator;

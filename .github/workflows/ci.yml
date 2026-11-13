@@ -859,6 +859,20 @@ jobs:
           nix develop --command cargo test -p borzoi-sema --test all \
             infer_corpus_diff:: -- --ignored --nocapture
 
+      - name: Gate on incremental inference over a corpus sample
+        if: steps.gate.outputs.run == 'true'
+        # Inference's incremental fold must equal the cold fold after edits to
+        # every file of windows of the corpus's real Compile lists, and a
+        # comment edit must leave every other file's inference reused. The
+        # generated edit scripts run in the crate's ordinary suite; this is the
+        # same equation over real code.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-sema --test all \
+            infer_incremental_diff::incremental_equals_batch_over_a_corpus_sample \
+            -- --ignored --nocapture
+
       - name: Report the slowest tests
         if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
         run: bash tools/ci/slowest-tests.sh | tee -a "$GITHUB_STEP_SUMMARY"

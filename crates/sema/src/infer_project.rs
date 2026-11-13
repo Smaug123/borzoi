@@ -23,13 +23,16 @@
 //!
 //! [`Resolution::Item`]: crate::Resolution::Item
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::assembly_env::AssemblyEnv;
 use crate::def::{DefId, DefKind};
-use crate::hash::HashMap;
+use crate::hash::{HashMap, HashSet};
 use crate::infer::{InferredFile, ProjectCase, ProjectRecord, ProjectRecords, infer_named_file};
-use crate::resolve::{ItemId, ProjectFile, ResolvedFile, ResolvedProject, signature_partners};
+use crate::resolve::{
+    ItemId, ProjectFile, ResolvedFile, ResolvedProject, same_tree, signature_partners,
+};
 use crate::ty::Ty;
 
 /// Why a use of an earlier file's top-level value is not typed: the census's
@@ -75,7 +78,7 @@ pub enum PrecedingGap {
 }
 
 /// What one file publishes for a top-level binder, before the export boundary
-/// decides what a later file sees ([`PrecedingTypes::publish`]).
+/// decides what a later file sees ([`FileContribution::of`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ModuleValue {
     /// The binder's certain type: ground, or a generalised scheme over
@@ -89,11 +92,12 @@ pub(crate) enum ModuleValue {
 /// top-level values, keyed by the resolver's project-global [`ItemId`] — the
 /// handle a cross-file [`Resolution::Item`](crate::Resolution::Item) carries.
 ///
-/// Built only by [`PrecedingTypes::publish`], one file at a time in Compile
-/// order ([`infer_project`] is the fold). [`Default`] is the empty table: a
-/// file with nothing before it, or a single file inferred on its own, where
-/// every cross-file use declines as [`PrecedingGap::NotInferred`].
-#[derive(Debug, Default, Clone)]
+/// Built only by [`PrecedingTypes::merge`], one file's [`FileContribution`] at
+/// a time in Compile order ([`infer_project`] is the fold). [`Default`] is the
+/// empty table: a file with nothing before it, or a single file inferred on
+/// its own, where every cross-file use declines as
+/// [`PrecedingGap::NotInferred`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PrecedingTypes {
     items: HashMap<ItemId, ModuleValue>,
     /// The types each earlier file's annotations bridge, keyed by the file's
@@ -170,84 +174,187 @@ impl PrecedingTypes {
         self.records.get(&(path.to_vec(), arity))
     }
 
-    /// Publish one file's exports, in Compile order, after the file is
-    /// inferred. `file` is its Compile index; `inferred` is `None` for a file
-    /// that was not inferred (a signature slot); `screened` says the file has
-    /// a paired signature ([`signature_partners`]), which is then what every
-    /// later file sees.
-    ///
-    /// Each export the resolver threads forward gets an entry, so every
-    /// cross-file use reads a verdict this file decided. A screened file's
-    /// types are not published: the signature may declare them differently.
-    pub fn publish(
-        &mut self,
-        file: usize,
-        resolved: &ResolvedFile,
-        inferred: Option<&InferredFile>,
-        screened: bool,
-    ) {
-        if let Some(inferred) = inferred {
-            for (name, n) in inferred.constructor_names() {
-                *self.constructor_names.entry(name.clone()).or_default() += n;
-            }
+    /// Add one file's contribution, in Compile order, after the file is
+    /// inferred.
+    pub(crate) fn merge(&mut self, contribution: FileContribution<'_>) {
+        let FileContribution {
+            file,
+            constructor_names,
+            types,
+            cases,
+            records,
+            items,
+        } = contribution;
+        for (name, n) in constructor_names {
+            *self.constructor_names.entry(name.to_owned()).or_default() += n;
         }
-        if let Some(inferred) = inferred.filter(|_| !screened) {
-            for (index, def) in resolved.placed_type_defs().enumerate() {
-                if let Some(ty) = inferred.project_types().get(&def) {
-                    let index = u32::try_from(index).expect("more than u32::MAX types in a file");
-                    self.types.insert((file, index), ty.clone());
-                }
-            }
-            self.cases.extend(
-                inferred
-                    .project_cases()
-                    .iter()
-                    .filter(|(_, case)| case.publishable())
-                    .map(|(&id, case)| (id, case.clone())),
-            );
-            self.records.extend(
-                inferred
-                    .project_records()
-                    .iter()
-                    .filter(|(_, record)| record.publishable())
-                    .map(|(key, record)| (key.clone(), record.clone())),
-            );
+        for (index, ty) in types {
+            self.types.insert((file, index), ty.clone());
         }
-        for export in resolved.exports().iter() {
-            let verdict = match (export.case_kind(), export.def()) {
-                (Some(_), _) => ModuleValue::Declined(PrecedingGap::NotAValue),
-                // A signature-derived export: its def is the `.fsi`'s ident.
-                (None, None) => ModuleValue::Declined(PrecedingGap::Signature),
-                (None, Some(_)) if screened => ModuleValue::Declined(PrecedingGap::Signature),
-                (None, Some(def)) => Self::own_value(resolved, inferred, def),
-            };
-            let previous = self.items.insert(export.id(), verdict);
+        self.cases
+            .extend(cases.into_iter().map(|(id, case)| (id, case.clone())));
+        self.records.extend(
+            records
+                .into_iter()
+                .map(|(key, record)| (key.clone(), record.clone())),
+        );
+        for (id, verdict) in items {
+            let previous = self.items.insert(id, verdict.into_owned());
             debug_assert!(
                 previous.is_none(),
-                "item {:?} published twice: the fold must publish each file once",
-                export.id()
+                "item {id:?} published twice: the fold must publish each file once"
             );
+        }
+    }
+}
+
+/// What one file adds to [`PrecedingTypes`]: a function of its Compile index,
+/// its resolution and inference, and whether a signature screens it, and of
+/// nothing else.
+///
+/// Merging equal contributions into equal tables gives equal tables. That is
+/// what lets the fold decide that the files after an edited one see what they
+/// saw before by comparing one file's contribution with the one the same file
+/// made before ([`infer_project_reusing`]), and never whole tables. So a
+/// contribution holds everything [`PrecedingTypes::merge`] reads, and the
+/// constructor names, cases and records are sorted by key, since the maps they
+/// come from iterate in no fixed order.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct FileContribution<'a> {
+    /// The Compile index, which keys [`PrecedingTypes::types`].
+    file: usize,
+    constructor_names: Vec<(&'a str, usize)>,
+    /// Each declared type an annotation bridges, by its position among the
+    /// file's types.
+    types: Vec<(u32, &'a (Vec<String>, usize))>,
+    cases: Vec<(ItemId, &'a ProjectCase)>,
+    records: Vec<(&'a (Vec<String>, usize), &'a ProjectRecord)>,
+    /// A verdict for each export the resolver threads forward, in export
+    /// order, so every cross-file use reads a verdict this file decided.
+    items: Vec<(ItemId, Cow<'a, ModuleValue>)>,
+}
+
+impl<'a> FileContribution<'a> {
+    /// The contribution of the file at Compile index `file`. `inferred` is
+    /// `None` for a file that was not inferred (a signature slot, or an
+    /// implementation repeating an earlier one's identity); `screened` says
+    /// the file has a paired signature ([`signature_partners`]), which is then
+    /// what every later file sees, so its declared types, cases and records
+    /// are not published: the signature may declare them differently.
+    pub(crate) fn of(
+        file: usize,
+        resolved: &'a ResolvedFile,
+        inferred: Option<&'a InferredFile>,
+        screened: bool,
+    ) -> Self {
+        let mut constructor_names: Vec<(&str, usize)> = inferred
+            .into_iter()
+            .flat_map(|inferred| inferred.constructor_names())
+            .map(|(name, &n)| (name.as_str(), n))
+            .collect();
+        constructor_names.sort_unstable();
+        let declared = inferred.filter(|_| !screened);
+        let types = declared
+            .map(|inferred| {
+                resolved
+                    .placed_type_defs()
+                    .enumerate()
+                    .filter_map(|(index, def)| {
+                        let ty = inferred.project_types().get(&def)?;
+                        let index =
+                            u32::try_from(index).expect("more than u32::MAX types in a file");
+                        Some((index, ty))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut cases: Vec<(ItemId, &ProjectCase)> = declared
+            .into_iter()
+            .flat_map(|inferred| inferred.project_cases())
+            .filter(|(_, case)| case.publishable())
+            .map(|(&id, case)| (id, case))
+            .collect();
+        cases.sort_unstable_by_key(|(id, _)| *id);
+        let mut records: Vec<(&(Vec<String>, usize), &ProjectRecord)> = declared
+            .into_iter()
+            .flat_map(|inferred| inferred.project_records())
+            .filter(|(_, record)| record.publishable())
+            .collect();
+        records.sort_unstable_by_key(|&(key, _)| key);
+        let items = resolved
+            .exports()
+            .iter()
+            .map(|export| {
+                let verdict = match (export.case_kind(), export.def()) {
+                    (Some(_), _) => Cow::Owned(ModuleValue::Declined(PrecedingGap::NotAValue)),
+                    // A signature-derived export: its def is the `.fsi`'s ident.
+                    (None, None) => Cow::Owned(ModuleValue::Declined(PrecedingGap::Signature)),
+                    (None, Some(_)) if screened => {
+                        Cow::Owned(ModuleValue::Declined(PrecedingGap::Signature))
+                    }
+                    (None, Some(def)) => Self::own_value(resolved, inferred, def),
+                };
+                (export.id(), verdict)
+            })
+            .collect();
+        FileContribution {
+            file,
+            constructor_names,
+            types,
+            cases,
+            records,
+            items,
         }
     }
 
     /// The verdict for an unscreened export bound in the file's own arena.
     fn own_value(
         resolved: &ResolvedFile,
-        inferred: Option<&InferredFile>,
+        inferred: Option<&'a InferredFile>,
         def: DefId,
-    ) -> ModuleValue {
+    ) -> Cow<'a, ModuleValue> {
         if !matches!(resolved.def(def).kind, DefKind::Value { .. }) {
-            return ModuleValue::Declined(PrecedingGap::NotAValue);
+            return Cow::Owned(ModuleValue::Declined(PrecedingGap::NotAValue));
         }
         let Some(inferred) = inferred else {
-            return ModuleValue::Declined(PrecedingGap::NotInferred);
+            return Cow::Owned(ModuleValue::Declined(PrecedingGap::NotInferred));
         };
-        inferred
-            .module_value(def)
-            .cloned()
-            // A `let`-bound export the walk never met as a module-level
-            // binder: not looked at.
-            .unwrap_or(ModuleValue::Declined(PrecedingGap::NotWalked))
+        // A `let`-bound export the walk never met as a module-level binder:
+        // not looked at.
+        inferred.module_value(def).map_or(
+            Cow::Owned(ModuleValue::Declined(PrecedingGap::NotWalked)),
+            Cow::Borrowed,
+        )
+    }
+}
+
+/// What a file's inference read, besides the env and what the files before it
+/// published: the key under which [`infer_project_reusing`] reuses it.
+#[derive(Debug, Clone)]
+struct FileInputs {
+    /// The resolution, by allocation. The resolver shares one only for a file
+    /// whose tree and threaded prefix are unchanged.
+    resolved: Arc<ResolvedFile>,
+    /// The Compile item: its tree, by identity, and its QNOF, which names a
+    /// headerless file's implicit module.
+    file: ProjectFile,
+    /// Whether a signature screens the file, which decides what it publishes.
+    screened: bool,
+    /// Whether the file is an implementation with the [`QualifiedNameOfFile`]
+    /// of an earlier one: FCS rejects it (FS0239, an implementation of the
+    /// file or module already given) and checks nothing in it, so it is not
+    /// inferred, and what it exports declines as [`PrecedingGap::NotInferred`].
+    ///
+    /// [`QualifiedNameOfFile`]: crate::QualifiedNameOfFile
+    repeats: bool,
+}
+
+impl FileInputs {
+    fn same_as(&self, other: &FileInputs) -> bool {
+        Arc::ptr_eq(&self.resolved, &other.resolved)
+            && same_tree(&self.file, &other.file)
+            && self.screened == other.screened
+            && self.repeats == other.repeats
     }
 }
 
@@ -258,11 +365,22 @@ impl PrecedingTypes {
 #[derive(Debug, Default)]
 pub struct InferredProject {
     files: Vec<Option<Arc<InferredFile>>>,
-    /// The resolved file each file was inferred from, by pointer
-    /// ([`Self::shared_prefix`]).
-    resolved: Vec<Arc<ResolvedFile>>,
+    /// What each file's inference read ([`infer_project_reusing`],
+    /// [`Self::shared_prefix`]).
+    inputs: Vec<FileInputs>,
     published: PrecedingTypes,
 }
+
+/// Two folds are equal when they inferred the same thing: each file's result,
+/// and what the files published. Which inputs a fold read, by allocation and
+/// identity, is how it was computed, not what it computed.
+impl PartialEq for InferredProject {
+    fn eq(&self, other: &Self) -> bool {
+        self.files == other.files && self.published == other.published
+    }
+}
+
+impl Eq for InferredProject {}
 
 impl InferredProject {
     /// The inferred file at Compile index `idx`, or `None` for a signature
@@ -278,10 +396,10 @@ impl InferredProject {
     /// ran against: a file's inference reads only its tree and resolution, the
     /// env, and what the files before it published.
     pub fn shared_prefix(&self, resolved: &ResolvedProject) -> usize {
-        self.resolved
+        self.inputs
             .iter()
             .zip(resolved.files())
-            .take_while(|(a, b)| Arc::ptr_eq(a, b))
+            .take_while(|(a, b)| Arc::ptr_eq(&a.resolved, b))
             .count()
     }
 
@@ -321,10 +439,21 @@ pub fn infer_project(
     infer_project_reusing(files, resolved, env, &InferredProject::default())
 }
 
-/// [`infer_project`], reusing each leading file of `prev` inferred from the
-/// same resolved file as `resolved`'s ([`InferredProject::shared_prefix`]) —
-/// the incremental form an editor's fold takes after an edit, which leaves
-/// every file before the edited one as it was.
+/// [`infer_project`], reusing `prev`'s inference of each file that nothing it
+/// reads has changed for: the incremental form an editor's fold takes after an
+/// edit.
+///
+/// A file's inference reads its tree, its resolution, its pairing, the env,
+/// and what the files before it published. So the fold carries a flag that
+/// holds while the table entering the file equals the one `prev` had entering
+/// it, as the resolver's incremental fold carries `in_sync`. While the flag
+/// holds, a file whose resolution is the same allocation as the one `prev`
+/// inferred it from, with the same tree and pairing, is reused. A file
+/// inferred afresh while the flag holds keeps it set only if its
+/// [`FileContribution`] equals the one `prev`'s inference of it made,
+/// recomputed from `prev`'s own resolution and inference rather than stored.
+/// So after a body edit that changes no export's name or type, only the
+/// edited file is inferred afresh.
 ///
 /// `prev` must have been inferred against `env`: the env is the one input a
 /// file's result depends on that this cannot check by pointer.
@@ -338,20 +467,60 @@ pub fn infer_project_reusing(
     env: &AssemblyEnv,
     prev: &InferredProject,
 ) -> InferredProject {
+    infer_project_reusing_with_reuse(files, resolved, env, prev).0
+}
+
+/// [`infer_project_reusing`], also returning, per file, whether `prev`'s
+/// inference of it was reused (`true`) or the file was inferred afresh.
+///
+/// The reuse vector is what the cutoff exists to produce, and a result that
+/// equals a cold fold's holds even when nothing is reused, so tests read it
+/// to assert the reuse happens.
+///
+/// # Panics
+///
+/// Panics when `resolved` holds more files than `files`.
+pub fn infer_project_reusing_with_reuse(
+    files: &[ProjectFile],
+    resolved: &ResolvedProject,
+    env: &AssemblyEnv,
+    prev: &InferredProject,
+) -> (InferredProject, Vec<bool>) {
     assert!(
         resolved.len() <= files.len(),
         "a resolved prefix of {} files cannot come from a Compile list of {}",
         resolved.len(),
         files.len()
     );
-    let reuse = prev.shared_prefix(resolved);
     let partners = signature_partners(files);
     let mut published = PrecedingTypes::default();
     let mut out = Vec::with_capacity(resolved.len());
+    let mut inputs = Vec::with_capacity(resolved.len());
+    let mut reused = Vec::with_capacity(resolved.len());
+    // True while `published` equals the table `prev` had entering this file.
+    // Monotone true → false: once a file's contribution differs, every later
+    // file reads a different table.
+    let mut in_sync = true;
+    // The QNOFs of the implementations so far ([`FileInputs::repeats`]).
+    let mut implementations: HashSet<&str> = HashSet::default();
     for (idx, rf) in resolved.files().iter().enumerate() {
-        let inferred = if idx < reuse {
+        let is_impl = files[idx].file.as_impl().is_some();
+        let input = FileInputs {
+            resolved: Arc::clone(rf),
+            file: files[idx].clone(),
+            // An implementation's partner is the signature screening it; a
+            // signature slot exports nothing of its own.
+            screened: is_impl && partners[idx].is_some(),
+            repeats: is_impl && !implementations.insert(files[idx].qnof.text()),
+        };
+        let before = prev
+            .inputs
+            .get(idx)
+            .map(|p| (p, prev.files[idx].as_deref()));
+        let reuse = in_sync && before.is_some_and(|(p, _)| p.same_as(&input));
+        let inferred = if reuse {
             prev.files[idx].clone()
-        } else if repeats_an_implementation(files, idx) {
+        } else if input.repeats {
             None
         } else {
             files[idx].file.as_impl().map(|impl_file| {
@@ -364,28 +533,25 @@ pub fn infer_project_reusing(
                 ))
             })
         };
-        // An implementation's partner is the signature screening it; a
-        // signature slot exports nothing of its own.
-        let screened = files[idx].file.as_impl().is_some() && partners[idx].is_some();
-        published.publish(idx, rf, inferred.as_deref(), screened);
+        let contribution = FileContribution::of(idx, rf, inferred.as_deref(), input.screened);
+        // A reused file contributes what it contributed before, by
+        // construction; a file inferred afresh is compared.
+        if in_sync && !reuse {
+            in_sync = before.is_some_and(|(p, inferred)| {
+                contribution == FileContribution::of(idx, &p.resolved, inferred, p.screened)
+            });
+        }
+        published.merge(contribution);
         out.push(inferred);
+        inputs.push(input);
+        reused.push(reuse);
     }
-    InferredProject {
-        files: out,
-        resolved: resolved.files().to_vec(),
-        published,
-    }
-}
-
-/// Whether the implementation at `idx` has the [`QualifiedNameOfFile`] of an
-/// earlier implementation: FCS rejects it (FS0239, an implementation of the
-/// file or module already given) and checks nothing in it, so it is not
-/// inferred, and what it exports declines as [`PrecedingGap::NotInferred`].
-///
-/// [`QualifiedNameOfFile`]: crate::QualifiedNameOfFile
-fn repeats_an_implementation(files: &[ProjectFile], idx: usize) -> bool {
-    files[idx].file.as_impl().is_some()
-        && files[..idx]
-            .iter()
-            .any(|f| f.file.as_impl().is_some() && f.qnof.text() == files[idx].qnof.text())
+    (
+        InferredProject {
+            files: out,
+            inputs,
+            published,
+        },
+        reused,
+    )
 }
