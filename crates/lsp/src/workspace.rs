@@ -3934,6 +3934,29 @@ mod tests {
         assert_eq!(ws.projects_generation(), projects_generation);
     }
 
+    /// Outside a generation nothing confirms an answer, so none is served
+    /// from memory: a project created between two asks is seen, whether or
+    /// not a generation remembered the file's owner before.
+    #[test]
+    fn outside_a_generation_every_ask_walks() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("P.fsproj");
+        let o = tmp.path().join("O.fsproj");
+        let file = tmp.path().join("Foo.fs");
+        write_file(&p, &fsproj_with_compile("Foo.fs"));
+        write_file(&file, "let x = 1");
+
+        let mut ws = Workspace::default();
+        ws.begin_generation(Nanos(i128::MAX / 2));
+        assert_eq!(ws.owning_project(&file), Some(p.clone()));
+        ws.end_generation();
+        assert_eq!(ws.owning_project(&file), Some(p.clone()));
+        write_file(&o, &fsproj_with_compile("Foo.fs"));
+        assert_eq!(ws.owning_project(&file), Some(o.clone()));
+        fs::remove_file(&o).unwrap();
+        assert_eq!(ws.owning_project(&file), Some(p));
+    }
+
     #[test]
     fn owning_project_nearest_member_wins_over_farther_member() {
         // Both an ancestor `Root.fsproj` and the nearer `src/Inner.fsproj`

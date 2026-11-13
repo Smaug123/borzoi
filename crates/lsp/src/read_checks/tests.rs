@@ -44,6 +44,10 @@ struct Model {
     /// A change made at the next query: one that lands between a check's
     /// stamps and its question.
     interleaved: Option<Op>,
+    /// A change made at the next `stat`, just before it takes its stamp:
+    /// one that lands between a query and a stamp taken after it, which
+    /// the stamp sees and the query did not.
+    interleaved_at_stat: Option<Op>,
     /// Every listing also reports an entry it could not read, as a
     /// transient I/O error during iteration does.
     unreadable_entry: bool,
@@ -61,6 +65,7 @@ impl Model {
             granularity,
             next_ino: 1,
             interleaved: None,
+            interleaved_at_stat: None,
             unreadable_entry: false,
         };
         model.entries.insert(
@@ -194,6 +199,7 @@ impl Model {
                 self.create(&from, Node::Link(to));
             }
             Op::Interleave(op) => self.interleaved = Some((**op).clone()),
+            Op::InterleaveAtStat(op) => self.interleaved_at_stat = Some((**op).clone()),
             Op::Unreadable(on) => self.unreadable_entry = *on,
             Op::Generation => {}
         }
@@ -301,6 +307,10 @@ impl Model {
 
 impl Disk for Rc<RefCell<Model>> {
     fn stat(&self, path: &Path) -> io::Result<Stamp> {
+        let pending = self.borrow_mut().interleaved_at_stat.take();
+        if let Some(op) = pending {
+            self.borrow_mut().apply(&op);
+        }
         self.borrow().stamp(path)
     }
 
@@ -373,6 +383,8 @@ enum Op {
     MoveAndLink(usize),
     /// Make this change at the next query a check asks.
     Interleave(Box<Op>),
+    /// Make this change at the next `stat`, just before it takes its stamp.
+    InterleaveAtStat(Box<Op>),
     /// Make every listing report an entry it could not read, or stop. The
     /// generator does not make it: a transient failure appearing is no
     /// change to the disk, and nothing stamped can see it; what the checker
@@ -401,6 +413,7 @@ fn op() -> impl Strategy<Value = Op> {
         3 => prop_oneof![1u32..50, 50u32..1_500, 1_500u32..4_000].prop_map(Op::Advance),
         6 => change(),
         1 => change().prop_map(|op| Op::Interleave(Box::new(op))),
+        1 => change().prop_map(|op| Op::InterleaveAtStat(Box::new(op))),
         4 => Just(Op::Generation),
     ]
 }
@@ -474,6 +487,9 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
             })
             .collect();
         checker.begin_generation(Nanos(now));
+        // First in the generation, so that a pending interleaved change
+        // lands around its stamp and its listing.
+        let listed = checker.list(&path(born.len() % PATHS.len()));
         for (check, before) in checks.iter().zip(&before) {
             let holds = checker.holds(check);
             let truth = model
@@ -520,9 +536,6 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
                 seen.born_moved += 1;
             }
         }
-        checker.begin_generation(Nanos(now));
-        let listed = checker.list(&path(born.len() % PATHS.len()));
-        checker.end_generation();
         born.push(listed);
     }
     Ok(())
