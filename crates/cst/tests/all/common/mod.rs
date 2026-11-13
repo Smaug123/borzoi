@@ -36,12 +36,12 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use borzoi_cst::language_version::LanguageVersion;
-use borzoi_cst::lexer::{Token, lex};
+use borzoi_cst::lexer::Token;
 use borzoi_cst::lexfilter::{FilteredToken, OffsideSeverity, Virtual, filter_collect};
 use borzoi_cst::parser::{
     FileKind, ParseOptions, parse, parse_sig, parse_with_options, parse_with_symbols,
 };
-use borzoi_cst::tokens::RawTokens;
+use borzoi_cst::tokens::lex_full_trivia;
 use borzoi_oracle_harness::{BatchChild, BoundedCommand};
 
 /// The sweeps here silence their *expected* panics; the implementation is shared
@@ -1921,10 +1921,12 @@ fn filtered_streams_at(
     let fcs_json = fcs_tokens_parser_stream_batch_at(path, lang_text);
     let fcs_tokens = parse_fcs_parser_stream(&fcs_json, source);
 
-    // The filter consumes trivia internally (for offside line/column
-    // tracking) and never emits Raw whitespace/comments — so no trivia
-    // filter is needed on the output.
-    let run = filter_collect(&RawTokens::from_active(source, lex(source)), lang);
+    // The filter reads the token table the parser reads: the directive
+    // driver's, in which a `#nowarn`/`#warnon` line, a `#line` and an
+    // inactive `#if` region are trivia, as FCS's lexer skips them. The
+    // filter consumes trivia internally (for offside line/column tracking)
+    // and never emits it, so no trivia filter is needed on the output.
+    let run = filter_collect(&lex_full_trivia(source, &HashSet::new()).tokens, lang);
     let rust_offside: Offside = run
         .diagnostics
         .iter()
