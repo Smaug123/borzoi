@@ -40,7 +40,7 @@ use crate::project_graph::{NodeTfm, ProjectGraph, ProjectKind};
 use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
 use crate::sidecar_manager::SidecarManager;
-use crate::workspace::{ServedTfm, Workspace};
+use crate::workspace::{ProjectsGeneration, ServedTfm, Workspace};
 use crate::xml_doc::inherit::{Expansion, expand};
 use crate::xml_doc::key::DocTarget;
 use crate::xml_doc::lookup::{DocLookup, DocSources};
@@ -425,6 +425,13 @@ pub struct SemanticState {
     /// invalidations into one refresh is correct — and it can't loop, since the
     /// refresh's own re-requests are ordinary requests, not invalidations.
     wants_refresh: bool,
+    /// The [`Workspace::projects_generation`] every cache here was computed
+    /// in, `None` before the first [`Self::sync_with_evaluations`]. Every
+    /// cache derived from a project evaluation (the parses' Compile items
+    /// and symbols, the env's references and TFM, and the folds over them)
+    /// is dropped when it moves: the workspace dropped an evaluation one of
+    /// them may have been computed from.
+    evaluations_seen: Option<ProjectsGeneration>,
     /// The portable-PDB *metadata image* (embedded, or a validated sidecar) for
     /// each referenced DLL go-to-definition has navigated into, keyed by DLL
     /// path. `None` caches the negative result (a DLL with no usable PDB) so a
@@ -935,6 +942,11 @@ impl SemanticState {
         // every other env input they are read fresh from disk on a miss, and a
         // `.fsproj` edit reaches this cache the same way a restore does —
         // through [`Self::invalidate_all`].
+        // The env's references and TFM come from project evaluations, which
+        // the caller confirmed for this generation in reading `dotnet_root`
+        // and `target_framework`; an env built before the workspace dropped
+        // one of them goes.
+        self.sync_with_evaluations(workspace.projects_generation());
         let id = ProjectId::new(project);
         // Built, restored and reported as the key spells it, so the entry holds
         // exactly the env of the project it names.
@@ -1070,7 +1082,7 @@ impl SemanticState {
             cached_files = tracing::field::Empty,
         );
         let _lookup_guard = lookup_span.enter();
-        self.validate_cached_fold(&key, docs);
+        self.validate_cached_fold(&key, workspace, docs);
         let cached_files = self
             .resolved_projects
             .get(&key)
@@ -1424,7 +1436,7 @@ impl SemanticState {
         docs: &Vfs,
     ) -> Option<&'a ProjectParses> {
         let key = ProjectId::new(project);
-        self.validate_cached_fold(&key, docs);
+        self.validate_cached_fold(&key, workspace, docs);
         if !self.project_parses.contains_key(&key) {
             let parses = self.fold(project, workspace, docs).ok()?;
             self.project_parses.insert(
@@ -1439,17 +1451,41 @@ impl SemanticState {
         self.project_parses.get(&key).map(|cached| &cached.parses)
     }
 
+    /// Drop every cache derived from a project evaluation, as a structural
+    /// watch event does ([`Self::invalidate_all`]), when `evaluations` is not
+    /// the [`Workspace::projects_generation`] they were computed in: the
+    /// workspace has dropped an evaluation one of them may have been
+    /// computed from. Idempotent for one generation.
+    pub fn sync_with_evaluations(&mut self, evaluations: ProjectsGeneration) {
+        match self.evaluations_seen {
+            Some(seen) if seen == evaluations => {}
+            // Nothing has been computed yet, so nothing is stale.
+            None => self.evaluations_seen = Some(evaluations),
+            Some(_) => {
+                self.invalidate_all();
+                self.evaluations_seen = Some(evaluations);
+            }
+        }
+    }
+
     /// Drop `key`'s cached parses and resolved fold, exactly as
     /// [`Self::invalidate_file`] would, if any Compile item's text is no longer
     /// the text they were built from. Called by every read of a cached fold,
     /// and costs nothing after the first call in a generation.
+    ///
+    /// First, `key`'s evaluation is confirmed for the generation
+    /// ([`Workspace::validate`]), and every cache is dropped if the workspace
+    /// has since dropped an evaluation ([`Self::sync_with_evaluations`]): the
+    /// parses were built from the evaluation's Compile items and symbols.
     ///
     /// Each item is asked of `docs` again: the open buffer, or a disk read the
     /// [`Vfs`] confirms with one `stat` per generation and answers with the
     /// allocation it gave before. So an unchanged item compares by pointer,
     /// and only a re-read compares bytes. Comparing texts rather than stamps
     /// keeps the fold when an item is rewritten to the text it had.
-    fn validate_cached_fold(&mut self, key: &ProjectId, docs: &Vfs) {
+    fn validate_cached_fold(&mut self, key: &ProjectId, workspace: &mut Workspace, docs: &Vfs) {
+        workspace.validate(key);
+        self.sync_with_evaluations(workspace.projects_generation());
         let Some(cached) = self.project_parses.get_mut(key) else {
             return;
         };

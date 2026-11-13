@@ -63,7 +63,6 @@
 //! [`locate_dotnet_sdk`]: borzoi_msbuild::locate_dotnet_sdk
 //! [`SdkResolver`]: borzoi_msbuild::SdkResolver
 
-use crate::observed::Unobserved;
 use borzoi_msbuild::observed::Observer;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -96,7 +95,7 @@ pub enum DiscoveryError {
     /// `find_global_json` found a `global.json` but reading it failed.
     GlobalJsonRead {
         path: PathBuf,
-        source: std::io::Error,
+        source: borzoi_msbuild::observed::Failure,
     },
     /// `parse_global_json` rejected the document.
     GlobalJsonParse {
@@ -391,7 +390,15 @@ impl SdkDiscovery {
     /// ancestors, so a `global.json` higher up would be silently
     /// missed. `project_path` itself is not required to exist on
     /// disk — only its ancestor directories are probed.
-    pub fn for_project(project_path: &Path, env: &SdkDiscoveryEnv) -> Result<Self, DiscoveryError> {
+    ///
+    /// Every file-system query it makes goes through `observer`: an
+    /// evaluation that resolves its SDKs through this discovery depends on
+    /// them as on its own reads.
+    pub fn for_project(
+        project_path: &Path,
+        env: &SdkDiscoveryEnv,
+        observer: &Observer,
+    ) -> Result<Self, DiscoveryError> {
         if !project_path.has_root() {
             return Err(DiscoveryError::RelativeProjectPath(
                 project_path.to_path_buf(),
@@ -412,6 +419,11 @@ impl SdkDiscovery {
         // NuGet's SDK resolver loads its settings with the project file as
         // the root; the walk's first folder holding a config file can only
         // be the project's directory (see the module docs).
+        //
+        // `borzoi-nuget` reads the config files itself, not through
+        // `observer`, so an evaluation's read set does not hold them: a
+        // `nuget.config` edit that moves the global packages folder reaches
+        // a cached evaluation only through a watch event.
         let nuget_packages =
             global_packages_folder(&walk_start, &crate::restore::restore_environment(env))
                 .map(|found| found.folder);
@@ -421,14 +433,14 @@ impl SdkDiscovery {
         // alternatives that don't need the host). The decision lives
         // in [`expand_sdk_paths`] so this site doesn't have to know.
         let (roots, spec, msbuild_sdks, global_json_path, global_json_pins_workload_set) =
-            match find_global_json(&walk_start, &Unobserved::Evaluation.msbuild_observer()) {
+            match find_global_json(&walk_start, observer) {
                 Some(path) => {
-                    let text = Unobserved::Evaluation
-                        .read_to_string(&path)
-                        .map_err(|source| DiscoveryError::GlobalJsonRead {
+                    let text = borzoi_msbuild::observed::read_to_string(observer, &path).map_err(
+                        |source| DiscoveryError::GlobalJsonRead {
                             path: path.clone(),
                             source,
-                        })?;
+                        },
+                    )?;
                     let parsed = parse_global_json(&text).map_err(|source| {
                         DiscoveryError::GlobalJsonParse {
                             path: path.clone(),
@@ -445,7 +457,7 @@ impl SdkDiscovery {
                             VersionSpec::any_version(env.host_default_allow_prerelease),
                         ),
                     };
-                    let roots = expand_sdk_paths(env, &path, paths)?;
+                    let roots = expand_sdk_paths(env, &path, paths, observer)?;
                     (
                         roots,
                         spec,
@@ -455,8 +467,8 @@ impl SdkDiscovery {
                     )
                 }
                 None => {
-                    let host_root =
-                        resolve_dotnet_root(env).ok_or(DiscoveryError::MissingDotnetRoot)?;
+                    let host_root = resolve_dotnet_root(env, observer)
+                        .ok_or(DiscoveryError::MissingDotnetRoot)?;
                     (
                         vec![host_root],
                         VersionSpec::any_version(env.host_default_allow_prerelease),
@@ -614,6 +626,18 @@ impl SdkDiscovery {
         &self.roots
     }
 
+    /// The user-local dotnet root workload resolution consults, when it
+    /// could be named.
+    pub fn user_dotnet_root(&self) -> Option<&Path> {
+        self.user_dotnet_root.as_deref()
+    }
+
+    /// The global packages folder NuGet's SDK resolver reads versioned SDK
+    /// references from, when it could be said.
+    pub fn nuget_packages(&self) -> Option<&Path> {
+        self.nuget_packages.as_deref().ok()
+    }
+
     /// The constraint applied during resolution. Always present (see
     /// the struct field's doc for why `None` would be unsafe). To
     /// distinguish "from a `global.json`" from "synthesised from host
@@ -674,10 +698,12 @@ fn expand_sdk_paths(
     env: &SdkDiscoveryEnv,
     global_json_path: &Path,
     paths: Option<Vec<SdkPathEntry>>,
+    observer: &Observer,
 ) -> Result<Vec<PathBuf>, DiscoveryError> {
     let Some(entries) = paths else {
         // No `paths` field in `global.json` ⇒ host-only, strict.
-        let host_root = resolve_dotnet_root(env).ok_or(DiscoveryError::MissingDotnetRoot)?;
+        let host_root =
+            resolve_dotnet_root(env, observer).ok_or(DiscoveryError::MissingDotnetRoot)?;
         return Ok(vec![host_root]);
     };
     let global_json_dir = global_json_path
@@ -690,7 +716,7 @@ fn expand_sdk_paths(
     let host_root = entries
         .iter()
         .any(|entry| matches!(entry, SdkPathEntry::Host))
-        .then(|| resolve_dotnet_root(env))
+        .then(|| resolve_dotnet_root(env, observer))
         .flatten();
     let roots = entries
         .into_iter()
@@ -722,23 +748,22 @@ fn expand_sdk_paths(
 /// repository's `global.json` `sdk.paths` can choose. A shim-only `$PATH`
 /// with no `$DOTNET_ROOT` yields `None`.
 ///
-/// Touches the filesystem (`is_file`, `canonicalize`, `is_dir`) and
-/// nothing else.
-fn resolve_dotnet_root(env: &SdkDiscoveryEnv) -> Option<PathBuf> {
+/// Touches the filesystem (`is_file`, `canonicalize`, `is_dir`), through
+/// `observer`, and nothing else.
+fn resolve_dotnet_root(env: &SdkDiscoveryEnv, observer: &Observer) -> Option<PathBuf> {
+    use borzoi_msbuild::observed;
     if let Some(root) = &env.dotnet_root {
         return Some(root.clone());
     }
     let path = env.search_path.as_ref()?;
     std::env::split_paths(path).find_map(|dir| {
         let candidate = dir.join(DOTNET_BIN);
-        if !Unobserved::Evaluation.is_file(&candidate) {
+        if !observed::is_file(observer, &candidate) {
             return None;
         }
-        let resolved = Unobserved::Evaluation.canonicalize(&candidate).ok()?;
+        let resolved = observed::canonicalize(observer, &candidate).ok()?;
         let parent = resolved.parent()?;
-        Unobserved::Evaluation
-            .is_dir(parent.join("sdk"))
-            .then(|| parent.to_path_buf())
+        observed::is_dir(observer, &parent.join("sdk")).then(|| parent.to_path_buf())
     })
 }
 

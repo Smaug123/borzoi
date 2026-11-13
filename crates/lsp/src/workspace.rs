@@ -33,9 +33,12 @@
 //! [`crate::fsproj_diagnostics`]), but evaluation still completes and the
 //! body's own `<DefineConstants>` are still collected.
 
-use crate::observed::Unobserved;
+use crate::observed::{EvaluationCounts, Unobserved};
+use crate::vfs::{DiskCache, Nanos};
+use borzoi_msbuild::observed::{self as msbuild_observed, Observation, Observer, Read, ReadSet};
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_msbuild::{
@@ -100,16 +103,27 @@ fn is_script_path(file: &Path) -> bool {
 pub struct ProjectsGeneration(u64);
 
 pub struct Workspace {
-    /// Keyed by [`ProjectId`], whose spelling is what was evaluated. The value is `None`
-    /// when evaluation failed for any reason (IO, malformed XML,
-    /// reserved-property collision in `extra_properties`) — caching
-    /// the failure means we don't re-attempt on every keystroke.
-    projects: HashMap<ProjectId, Option<EvaluatedProject>>,
-    /// Bumped by every [`Self::invalidate_projects`], so a caller that read
-    /// several evaluations across a span of time can tell whether they all
-    /// came from one generation of the cache — see
-    /// [`Self::projects_generation`].
+    /// Keyed by [`ProjectId`], whose spelling is what was evaluated. The
+    /// evaluation is `None` when it failed for any reason (IO, malformed
+    /// XML, reserved-property collision in `extra_properties`) — caching
+    /// the failure means we don't re-attempt on every keystroke. Each entry
+    /// carries what it read, and is confirmed against the disk once per
+    /// generation that reads it ([`Self::validate`]).
+    projects: HashMap<ProjectId, CachedEvaluation>,
+    /// Bumped whenever an evaluation the cache served is dropped: by
+    /// [`Self::invalidate_projects`], and by a validation that finds an
+    /// entry's reads moved. So a caller that read several evaluations across
+    /// a span of time can tell whether they all came from one generation of
+    /// the cache — see [`Self::projects_generation`].
     projects_generation: ProjectsGeneration,
+    /// What the evaluations' files held when a generation last looked at
+    /// them, stamped, so confirming an unchanged file costs one `stat`.
+    files: DiskCache,
+    /// The open generation's validation queries other than whole-file
+    /// reads (which `files` counts).
+    queries: Cell<msbuild_observed::ReadCounts>,
+    /// MSBuild evaluations run in the open generation.
+    evaluated: Cell<u64>,
     /// SDK-resolution environment used to build a [`SdkDiscovery`] per
     /// project on first evaluation. Held by value so tests can supply
     /// a hermetic env without mutating the host's environment.
@@ -200,6 +214,125 @@ struct EvaluatedProject {
     not_an_inner_build: bool,
 }
 
+/// One cached project evaluation and what it depends on.
+#[derive(Debug)]
+struct CachedEvaluation {
+    evaluated: Option<EvaluatedProject>,
+    /// The reads to confirm before serving `evaluated` again: everything the
+    /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
+    /// less the immutable contents ([`immutable_content`]).
+    checks: Vec<Read>,
+    /// The generation that last confirmed `checks` (or that evaluated it);
+    /// `None` when it was evaluated outside a generation.
+    validated_in: Option<u64>,
+}
+
+/// What [`evaluate_project`] produced and read.
+struct Evaluation {
+    evaluated: Option<EvaluatedProject>,
+    /// Every file-system query the result depends on, with its answer: the
+    /// `.fsproj` read and SDK discovery's, and each evaluation pass's own
+    /// read set ([`ParsedProject::read_set`]). A pass that fails
+    /// (`ParseError`) fails on the source text and the caller's arguments
+    /// alone, so its reads are not needed.
+    reads: ReadSet,
+    /// Where the immutable contents its reads may include live.
+    immutable: ImmutableRoots,
+}
+
+impl Evaluation {
+    /// The reads a cached copy must confirm.
+    fn checks(&self) -> Vec<Read> {
+        self.reads
+            .reads()
+            .iter()
+            .filter(|read| !immutable_content(&read.path, &self.immutable))
+            .cloned()
+            .collect()
+    }
+}
+
+/// The install roots whose versioned directories hold immutable contents
+/// (`docs/incremental-lsp-plan.md`, D3): every .NET install root the
+/// evaluation's SDK discovery consulted, and the NuGet global packages folder
+/// it resolves SDK references from.
+#[derive(Debug, Default)]
+struct ImmutableRoots {
+    dotnet: Vec<PathBuf>,
+    nuget: Vec<PathBuf>,
+}
+
+/// Whether a read of `path` is of an immutable content: `path` lies strictly
+/// inside a versioned directory under one of `roots`, spelt without `.` or
+/// `..` below the root. Those directories are
+/// `<dotnet>/sdk/<version>/`, `<dotnet>/packs/<pack>/<version>/` and
+/// `<dotnet>/sdk-manifests/<band>/<manifest>/<version>/` under a .NET install
+/// root, and `<id>/<version>/` under the NuGet global packages folder; a
+/// version starts with an ASCII digit. An installer writes a new version
+/// beside the old ones and never changes one in place, so whatever an
+/// evaluation saw inside one, the file's text, what a path names, a listing,
+/// an absence, stands for as long as the version does.
+///
+/// What installing or removing a version does change is the listing of the
+/// directory holding the versions, and whether a version directory exists.
+/// Neither path lies strictly inside a version, so both are confirmed like
+/// any other read. So are the band and manifest directories of
+/// `sdk-manifests`, which a workload update writes into.
+fn immutable_content(path: &Path, roots: &ImmutableRoots) -> bool {
+    fn below<'p>(path: &'p Path, root: &Path) -> Option<Vec<&'p std::ffi::OsStr>> {
+        let rest = path.strip_prefix(root).ok()?;
+        rest.components()
+            .map(|component| match component {
+                Component::Normal(name) => Some(name),
+                _ => None,
+            })
+            .collect()
+    }
+    let version = |name: &std::ffi::OsStr| {
+        name.as_encoded_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_digit)
+    };
+    let dotnet = roots
+        .dotnet
+        .iter()
+        .filter_map(|root| below(path, root))
+        .any(|names| match names.as_slice() {
+            [sdk, v, _, ..] if *sdk == "sdk" => version(v),
+            [packs, _, v, _, ..] if *packs == "packs" => version(v),
+            [manifests, _, _, v, _, ..] if *manifests == "sdk-manifests" => version(v),
+            _ => false,
+        });
+    dotnet
+        || roots
+            .nuget
+            .iter()
+            .filter_map(|root| below(path, root))
+            .any(|names| matches!(names.as_slice(), [_, v, _, ..] if version(v)))
+}
+
+/// Whether `read`'s query, asked now, gets the answer recorded: a whole-file
+/// read through `files`, whose stamp confirms an unchanged file, and every
+/// other query asked of the host, counted in `queries`.
+fn answer_holds(
+    files: &DiskCache,
+    queries: &Cell<msbuild_observed::ReadCounts>,
+    read: &Read,
+) -> bool {
+    if let Observation::Text(recorded) = &read.observation {
+        return files.text_answer(&read.path) == *recorded;
+    }
+    let mut counts = queries.get();
+    match read.observation {
+        Observation::Text(_) => {}
+        Observation::Kind(_) | Observation::LinkKind(_) => counts.stats += 1,
+        Observation::Listing(_) => counts.listings += 1,
+        Observation::Canonical(_) => counts.canonicalizations += 1,
+    }
+    queries.set(counts);
+    msbuild_observed::answer_now(&read.path, &read.observation) == read.observation
+}
+
 /// The workspace's served-TFM verdict for an entry project
 /// ([`Workspace::served_tfm_for_project`], fsproj 3.3d round 19). The
 /// assembly-env layer keys its assets-target selection on this, and the
@@ -282,6 +415,9 @@ impl Workspace {
         Self {
             projects: HashMap::new(),
             projects_generation: ProjectsGeneration(0),
+            files: DiskCache::default(),
+            queries: Cell::new(msbuild_observed::ReadCounts::default()),
+            evaluated: Cell::new(0),
             env,
             extra_build_properties,
         }
@@ -328,15 +464,85 @@ impl Workspace {
         self.projects_generation.0 += 1;
     }
 
+    /// Watch events named `paths`: forget what the evaluations' files held at
+    /// each, so the next validation re-reads it whatever its stamp says.
+    pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        self.files.hint(paths);
+    }
+
     /// Which generation of the project-evaluation cache lookups are served
     /// from now. Two lookups observed under one generation read the same
     /// on-disk project state — the cache is the only path to an evaluation,
-    /// and a generation ends only when [`Self::invalidate_projects`] drops
-    /// every entry — so a consumer accumulating facts across many lookups
-    /// (the stepped `workspace/diagnostic` sweep) checks it to know its facts
-    /// are mutually consistent.
+    /// and a generation ends whenever an evaluation it served is dropped
+    /// ([`Self::invalidate_projects`], or a validation that finds its reads
+    /// moved) — so a consumer accumulating facts across many lookups (the
+    /// stepped `workspace/diagnostic` sweep, the semantic layer's folds)
+    /// checks it to know its facts are mutually consistent.
     pub fn projects_generation(&self) -> ProjectsGeneration {
         self.projects_generation
+    }
+
+    /// Start a dispatch-loop generation at time `now`
+    /// ([`crate::vfs`]): from now until [`Self::end_generation`], the first
+    /// lookup of each cached evaluation confirms its reads against the disk,
+    /// and every later lookup in the generation trusts that answer.
+    ///
+    /// Outside a generation (the server's work before its loop starts, and
+    /// code that drives the workspace directly, as unit tests do) a cached
+    /// evaluation is served as it is.
+    pub fn begin_generation(&mut self, now: Nanos) {
+        self.files.begin_generation(now);
+        self.queries.set(msbuild_observed::ReadCounts::default());
+        self.evaluated.set(0);
+    }
+
+    /// End the generation, returning what reading evaluations cost it.
+    pub fn end_generation(&mut self) -> EvaluationCounts {
+        let (_, files) = self.files.end_generation();
+        let queries = self.queries.get();
+        EvaluationCounts {
+            evaluated: self.evaluated.get(),
+            validation: msbuild_observed::ReadCounts {
+                opens: files.opens,
+                stats: files.stats + queries.stats,
+                listings: queries.listings,
+                canonicalizations: queries.canonicalizations,
+            },
+        }
+    }
+
+    /// Confirm the cached evaluation of `project` for the open generation:
+    /// every read it depends on (bar the immutable contents it was told it
+    /// may skip, see [`immutable_content`]) is asked again, once per
+    /// generation, and an entry any of whose answers moved is dropped, so the
+    /// lookup that follows evaluates afresh. Dropping it ends the
+    /// [`Self::projects_generation`]. Nothing happens outside a generation, or
+    /// for a project not cached.
+    pub fn validate(&mut self, project: &ProjectId) {
+        let Some(generation) = self.files.generation() else {
+            return;
+        };
+        let Some(cached) = self.projects.get_mut(project) else {
+            return;
+        };
+        if cached.validated_in == Some(generation) {
+            return;
+        }
+        let (files, queries) = (&self.files, &self.queries);
+        if cached
+            .checks
+            .iter()
+            .all(|read| answer_holds(files, queries, read))
+        {
+            cached.validated_in = Some(generation);
+        } else {
+            tracing::info!(
+                project = %project.as_path().display(),
+                "a project evaluation's inputs moved; evaluating it again"
+            );
+            self.projects.remove(project);
+            self.projects_generation.0 += 1;
+        }
     }
 
     /// The target framework the project at `project_path` was evaluated
@@ -463,11 +669,10 @@ impl Workspace {
     /// absent — when an SDK *was* resolved, [`Self::dotnet_root_for_project`]
     /// uses that instead, so the probe's multi-root ambiguity never bites.
     fn probe_dotnet_root(&self, project_path: &Path) -> Option<PathBuf> {
-        let disc = SdkDiscovery::for_project(project_path, &self.env).ok()?;
-        if let Ok(SdkResolution::Single(paths)) = disc.resolve(
-            "Microsoft.NET.Sdk",
-            &Unobserved::Evaluation.msbuild_observer(),
-        ) && let Some(install_root) = install_root_from_sdk_path(&paths.root)
+        let observer = Unobserved::EnvResolution.msbuild_observer();
+        let disc = SdkDiscovery::for_project(project_path, &self.env, &observer).ok()?;
+        if let Ok(SdkResolution::Single(paths)) = disc.resolve("Microsoft.NET.Sdk", &observer)
+            && let Some(install_root) = install_root_from_sdk_path(&paths.root)
         {
             return Some(install_root.to_path_buf());
         }
@@ -792,7 +997,23 @@ impl Workspace {
     /// deferral refresh runs after every dispatched message and already holds
     /// [`ProjectId`]s, so re-deriving them would be pure cost there.
     pub fn project_evaluation_of(&mut self, project: &ProjectId) -> ProjectEvaluation<'_> {
-        match self.evaluated_of(project) {
+        self.validate(project);
+        self.project_evaluation_as_last_confirmed(project)
+    }
+
+    /// [`Self::project_evaluation_of`] without confirming a cached evaluation
+    /// for the open generation: what the last generation that read it found.
+    ///
+    /// For the deferral refresh, which runs after every dispatched message: a
+    /// message that read the project has confirmed it already, and one that
+    /// did not (a `didChange`, a refresh reply) would otherwise pay a
+    /// validation for a report. A report built on a project whose files moved
+    /// unwatched is corrected by the next message that reads the project.
+    pub fn project_evaluation_as_last_confirmed(
+        &mut self,
+        project: &ProjectId,
+    ) -> ProjectEvaluation<'_> {
+        match self.cached_or_evaluated(project) {
             Some(evaluated) => ProjectEvaluation::Evaluated {
                 parsed: &evaluated.parsed,
                 not_an_inner_build: evaluated.not_an_inner_build,
@@ -815,11 +1036,31 @@ impl Workspace {
     /// that path are, and the entry can never hold another spelling's
     /// evaluation.
     fn evaluated_of(&mut self, project: &ProjectId) -> Option<&EvaluatedProject> {
+        self.validate(project);
+        self.cached_or_evaluated(project)
+    }
+
+    /// The cached evaluation of `project` as it is, without confirming it for
+    /// the open generation; evaluated, as [`Self::evaluated_of`] would, if
+    /// none is cached.
+    fn cached_or_evaluated(&mut self, project: &ProjectId) -> Option<&EvaluatedProject> {
         let env = &self.env;
         let extra_build_properties = &self.extra_build_properties;
+        let evaluated = &self.evaluated;
+        let generation = self.files.generation();
         self.projects
             .entry(project.clone())
-            .or_insert_with(|| evaluate_project(project.as_path(), env, extra_build_properties))
+            .or_insert_with(|| {
+                let evaluation =
+                    evaluate_project(project.as_path(), env, extra_build_properties, evaluated);
+                CachedEvaluation {
+                    checks: evaluation.checks(),
+                    evaluated: evaluation.evaluated,
+                    // Read in this generation, so confirmed for it.
+                    validated_in: generation,
+                }
+            })
+            .evaluated
             .as_ref()
     }
 
@@ -921,6 +1162,18 @@ impl Workspace {
         // through an already-normalised edge target. Compare normalised so an
         // entry spelled with `.`/`..` still recognises itself.
         let entry_key = lexically_normalize(entry);
+        // The entry's own cached evaluation, when this generation has
+        // confirmed it and it is of exactly this spelling: the walk's
+        // seedless evaluation of the entry is the same computation, so it
+        // reads the cache rather than evaluating again.
+        let generation = self.files.generation();
+        let entry_id = ProjectId::new(entry);
+        let confirmed_entry = self
+            .projects
+            .get(&entry_id)
+            .filter(|cached| generation.is_some() && cached.validated_in == generation)
+            .filter(|_| entry_id.as_path() == entry)
+            .map(|cached| cached.evaluated.as_ref());
         build_graph(entry, |path| {
             // The map's keys are canonicalised; graph paths are only
             // lexically normalised. A path that fails to canonicalise (not
@@ -930,13 +1183,16 @@ impl Workspace {
                 .ok()
                 .and_then(|canon| producer_tfms.get(&canon))
                 .map(String::as_str);
+            let is_entry = lexically_normalize(path) == entry_key;
             resolve_node_uncached(
                 path,
                 &self.env,
                 &self.extra_build_properties,
                 seed_tfm,
                 purpose,
-                lexically_normalize(path) == entry_key,
+                is_entry,
+                confirmed_entry.filter(|_| is_entry && path == entry),
+                &self.evaluated,
             )
         })
     }
@@ -1070,6 +1326,8 @@ fn resolve_node_uncached(
     seed_tfm: Option<&str>,
     purpose: GraphWalkPurpose,
     is_entry: bool,
+    cached: Option<Option<&EvaluatedProject>>,
+    evaluated: &Cell<u64>,
 ) -> NodeResult {
     if !Unobserved::EnvResolution.exists(path) {
         return NodeResult::NotFound;
@@ -1079,8 +1337,17 @@ fn resolve_node_uncached(
     }
     // Outer (seedless) evaluation first: its first-pass view is the source of
     // truth for what the project currently declares, and its edges are the
-    // first-declared inner build's (via `select_target_framework`).
-    let Some(outer) = evaluate_project(path, env, extra_build_properties) else {
+    // first-declared inner build's (via `select_target_framework`). `cached`
+    // is that evaluation when the caller already holds it confirmed.
+    let fresh;
+    let outer = match cached {
+        Some(cached) => cached,
+        None => {
+            fresh = evaluate_project(path, env, extra_build_properties, evaluated).evaluated;
+            fresh.as_ref()
+        }
+    };
+    let Some(outer) = outer else {
         return NodeResult::resolved(Vec::new());
     };
     let outer_edges = edges_of(&outer, purpose, is_entry);
@@ -1191,7 +1458,7 @@ fn resolve_node_uncached(
             }
             let mut map = extra_build_properties.clone();
             seed_target_framework_global(&mut map, current);
-            return match evaluate_project(path, env, &map) {
+            return match evaluate_project(path, env, &map, evaluated).evaluated {
                 // The label describes the evaluation, as everywhere else: this
                 // seeded pass may itself turn out not to be an inner build,
                 // and only *it* can tell us — a `TreatAsLocalProperty` reached
@@ -1252,7 +1519,7 @@ fn resolve_node_uncached(
             for tfm in declared.iter().skip(1) {
                 let mut map = extra_build_properties.clone();
                 seed_target_framework_global(&mut map, tfm);
-                let Some(branch) = evaluate_project(path, env, &map) else {
+                let Some(branch) = evaluate_project(path, env, &map, evaluated).evaluated else {
                     return NodeResult::Resolved {
                         edges: Vec::new(),
                         tfm: NodeTfm::Unresolved,
@@ -1492,9 +1759,10 @@ pub(crate) fn asset_list_covers_compile(v: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case("compile") || part.eq_ignore_ascii_case("all"))
 }
 
-/// Read and evaluate `project_path`. Returns `None` on any failure
-/// (IO, XML, or evaluation) — the caller caches the `None` so we don't
-/// retry on every keystroke.
+/// Read and evaluate `project_path`, and say what that read. The evaluation
+/// is `None` on any failure (IO, XML, or evaluation) — the caller caches the
+/// `None` so we don't retry on every keystroke. Each MSBuild evaluation pass
+/// it runs is counted in `evaluated`.
 ///
 /// Builds a per-project [`SdkDiscovery`] from `env`; on
 /// [`crate::sdk_discovery::DiscoveryError`] (e.g. missing `$DOTNET_ROOT`,
@@ -1505,14 +1773,23 @@ fn evaluate_project(
     project_path: &Path,
     env: &SdkDiscoveryEnv,
     extra_build_properties: &HashMap<String, String>,
-) -> Option<EvaluatedProject> {
+    evaluated: &Cell<u64>,
+) -> Evaluation {
     let _span =
         tracing::info_span!("evaluate_project", project = %project_path.display()).entered();
-    let source = Unobserved::Evaluation
-        .read_to_string(project_path)
-        .map(crate::disk_text::without_bom)
-        .ok()?;
-    let disc = SdkDiscovery::for_project(project_path, env)
+    // The reads that prepare the evaluation: the project's text, and SDK
+    // discovery's `global.json` walk and `dotnet` probes.
+    let preparation = Observer::new();
+    let source = msbuild_observed::read_to_string(&preparation, project_path)
+        .map(crate::disk_text::without_bom);
+    let Ok(source) = source else {
+        return Evaluation {
+            evaluated: None,
+            reads: preparation.finish().0,
+            immutable: ImmutableRoots::default(),
+        };
+    };
+    let disc = SdkDiscovery::for_project(project_path, env, &preparation)
         .inspect_err(|err| {
             crate::log_warn!(
                 "SDK discovery failed; evaluating without resolver",
@@ -1521,14 +1798,38 @@ fn evaluate_project(
             );
         })
         .ok();
+    let immutable = disc
+        .as_ref()
+        .map_or_else(ImmutableRoots::default, |disc| ImmutableRoots {
+            dotnet: disc
+                .roots()
+                .iter()
+                .cloned()
+                .chain(disc.user_dotnet_root().map(Path::to_path_buf))
+                .collect(),
+            nuget: disc
+                .nuget_packages()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect(),
+        });
+    let reads = preparation.finish().0;
     let extras = build_properties(extra_build_properties);
-    let parsed = parse_with_optional_sdk(
+    let Some(parsed) = parse_with_optional_sdk(
         &source,
         project_path,
         &extras,
         &env.build_environment,
         disc.as_ref(),
-    )?;
+        evaluated,
+    ) else {
+        return Evaluation {
+            evaluated: None,
+            reads,
+            immutable,
+        };
+    };
+    let reads = reads.union(parsed.read_set.clone());
     // First-pass views, captured before any first-declared re-evaluation
     // (a `TfmChoice::Reseed` replaces `parsed` with an inner-build pass in
     // which an outer-gated `<TargetFrameworks>` may no longer exist).
@@ -1542,7 +1843,10 @@ fn evaluate_project(
         &extras,
         &env.build_environment,
         disc.as_ref(),
+        evaluated,
     );
+    // The served pass, when it is a second one, read on its own account.
+    let reads = reads.union(served.parsed.read_set.clone());
     let parsed = served.parsed;
     let chosen_tfm = served.chosen_tfm;
     // Pass 1's provenance verdict cannot see a write that only pass 2 performs,
@@ -1561,15 +1865,19 @@ fn evaluate_project(
         .as_deref()
         .and_then(install_root_from_sdk_path)
         .map(Path::to_path_buf);
-    Some(EvaluatedProject {
-        parsed,
-        sdk_install_root,
-        chosen_tfm,
-        declared_tfms,
-        body_target_framework,
-        tfm_untrusted,
-        not_an_inner_build,
-    })
+    Evaluation {
+        evaluated: Some(EvaluatedProject {
+            parsed,
+            sdk_install_root,
+            chosen_tfm,
+            declared_tfms,
+            body_target_framework,
+            tfm_untrusted,
+            not_an_inner_build,
+        }),
+        reads,
+        immutable,
+    }
 }
 
 /// Mark an outer dispatch build served in place of a discarded inner one as
@@ -1623,6 +1931,7 @@ fn select_target_framework(
     extras: &HashMap<String, String>,
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
+    evaluated: &Cell<u64>,
 ) -> ServedEvaluation {
     let choice = tfm_policy::tfm_choice(&pass1, extras);
     let Some(seed) = choice.reseed() else {
@@ -1658,7 +1967,7 @@ fn select_target_framework(
     let mut seeded = extras.clone();
     tfm_policy::seed_target_framework_global(&mut seeded, seed);
     let seed = seed.to_string();
-    match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
+    match parse_with_optional_sdk(source, project_path, &seeded, environment, disc, evaluated) {
         Some(pass2) => match tfm_policy::reseed_outcome(&pass2) {
             tfm_policy::ReseedOutcome::AsSeeded => ServedEvaluation {
                 parsed: pass2,
@@ -1761,7 +2070,9 @@ fn parse_with_optional_sdk(
     extras: &HashMap<String, String>,
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
+    evaluated: &Cell<u64>,
 ) -> Option<ParsedProject> {
+    evaluated.set(evaluated.get() + 1);
     // Glob resolution is independent of SDK discovery, so both arms get the
     // filesystem-backed resolver. It borrows nothing, so it lives for the
     // whole function.

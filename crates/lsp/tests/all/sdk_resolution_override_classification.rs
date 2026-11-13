@@ -167,7 +167,12 @@ fn discovery_with_override(project_path: &Path, gpf: &Path, override_sdks: &Path
         )]),
         ..SdkDiscoveryEnv::default()
     };
-    SdkDiscovery::for_project(project_path, &env).expect("discovery")
+    SdkDiscovery::for_project(
+        project_path,
+        &env,
+        &borzoi_msbuild::observed::Observer::new(),
+    )
+    .expect("discovery")
 }
 
 /// Set up a scenario directory (offline nuget.config + the project) and run the

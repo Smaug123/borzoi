@@ -60,7 +60,9 @@ use std::time::{Duration, SystemTime};
 
 use lsp_types::Uri;
 
-use crate::observed::{GENERATION_EVENT, Generation, HostDisk, ReadCounts};
+use borzoi_msbuild::observed::{Failure, TextDigest};
+
+use crate::observed::{EvaluationCounts, GENERATION_EVENT, Generation, HostDisk, ReadCounts};
 use crate::paths::{lexically_normalize, path_dedup_key};
 use crate::uri::UriExt as _;
 
@@ -146,46 +148,69 @@ impl Clock {
     }
 }
 
-/// What the disk held for one path, as the [`Vfs`] last saw it.
+/// What the disk held for one path, as a [`DiskCache`] last saw it.
 #[derive(Debug)]
 enum DiskEntry {
-    /// The file exists. `text` is `None` when it is not UTF-8.
+    /// The file exists.
     Present {
         stamp: Stamp,
         /// The time of the generation that took `stamp`.
         taken: Nanos,
-        text: Option<Arc<str>>,
+        /// The text without a leading byte-order mark, or why the bytes are
+        /// no text (they are not UTF-8).
+        text: Result<Arc<str>, Failure>,
+        /// Whether the bytes began with a byte-order mark, which `text` has
+        /// dropped.
+        bom: bool,
     },
-    /// A `stat` or an open found nothing at the path.
-    Absent,
+    /// A `stat` or an open found nothing at the path, failing so.
+    Absent(Failure),
     /// The file could not be stamped or read for another reason (a
-    /// permission, a directory). Re-read in every generation.
-    Failed,
+    /// permission, a directory), failing so. Re-read in every generation.
+    Failed(Failure),
 }
 
 impl DiskEntry {
     fn text(&self) -> Option<Arc<str>> {
         match self {
-            DiskEntry::Present { text, .. } => text.clone(),
-            DiskEntry::Absent | DiskEntry::Failed => None,
+            DiskEntry::Present { text, .. } => text.as_ref().ok().cloned(),
+            DiskEntry::Absent(_) | DiskEntry::Failed(_) => None,
+        }
+    }
+
+    /// What a whole-file read of the bytes this entry saw answers, as
+    /// `borzoi_msbuild::observed::read_to_string` would record it.
+    fn text_answer(&self) -> Result<TextDigest, Failure> {
+        match self {
+            DiskEntry::Present {
+                text: Ok(text),
+                bom: false,
+                ..
+            } => Ok(TextDigest::of(text)),
+            DiskEntry::Present {
+                text: Ok(text),
+                bom: true,
+                ..
+            } => Ok(TextDigest::of(&format!("\u{feff}{text}"))),
+            DiskEntry::Present {
+                text: Err(failure), ..
+            }
+            | DiskEntry::Absent(failure)
+            | DiskEntry::Failed(failure) => Err(failure.clone()),
         }
     }
 }
 
-/// The client's open buffers, and what every other source held on disk.
-#[derive(Debug, Default)]
-pub struct Vfs<D: Disk = HostDisk> {
+/// What files held on disk when a generation last looked, each stamped, so a
+/// later generation confirms an unchanged file with one `stat` (see the
+/// module docs). The [`Vfs`] reads unopened sources through one; the
+/// [`crate::workspace::Workspace`] confirms what its evaluations read through
+/// another.
+#[derive(Debug)]
+pub struct DiskCache<D: Disk = HostDisk> {
     disk: D,
-    /// The client's text for each open document, keyed by the URI it was
-    /// opened under. Whatever it holds is what the client's positions count,
-    /// so it is never touched.
-    buffers: HashMap<Uri, Arc<str>>,
-    /// The open `file:` documents by [`path_dedup_key`] of their lexically
-    /// normalised path, in the order they were opened: the buffer a path
-    /// reads is the first of them.
-    buffer_paths: HashMap<String, Vec<Uri>>,
-    /// What each path read from disk held, keyed by the spelling it was read
-    /// under, with the generation that last confirmed it.
+    /// What each path read held, keyed by the spelling it was read under,
+    /// with the generation that last confirmed it.
     entries: RefCell<HashMap<PathBuf, (DiskEntry, u64)>>,
     /// The latest generation's number. Generation 0 is the work done before
     /// the first one begins.
@@ -194,6 +219,188 @@ pub struct Vfs<D: Disk = HostDisk> {
     open: Option<Nanos>,
     /// What the current generation has observed so far.
     counts: Cell<ReadCounts>,
+}
+
+impl<D: Disk + Default> Default for DiskCache<D> {
+    fn default() -> Self {
+        Self::with_disk(D::default())
+    }
+}
+
+impl<D: Disk> DiskCache<D> {
+    /// A cache over `disk`, with nothing read.
+    pub fn with_disk(disk: D) -> Self {
+        DiskCache {
+            disk,
+            entries: RefCell::new(HashMap::new()),
+            generation: 0,
+            open: None,
+            counts: Cell::new(ReadCounts::default()),
+        }
+    }
+
+    /// `path`'s text on disk without a leading byte-order mark; `None` if it
+    /// is absent, unreadable or not UTF-8. Within a generation, the same
+    /// answer every time.
+    pub fn disk_text(&self, path: &Path) -> Option<Arc<str>> {
+        self.with_entry(path, DiskEntry::text)
+    }
+
+    /// What a whole-file read of `path` answers now, as
+    /// `borzoi_msbuild::observed::read_to_string` records it: within a
+    /// generation the same answer every time, and across generations
+    /// confirmed by the file's stamp as [`Self::disk_text`] is.
+    pub fn text_answer(&self, path: &Path) -> Result<TextDigest, Failure> {
+        self.with_entry(path, DiskEntry::text_answer)
+    }
+
+    /// `answer` of the entry for `path`: outside a generation a fresh read,
+    /// inside one the entry this generation confirmed or read.
+    fn with_entry<R>(&self, path: &Path, answer: impl FnOnce(&DiskEntry) -> R) -> R {
+        let Some(now) = self.open else {
+            return answer(&self.read(path, Nanos(0), None));
+        };
+        let mut entries = self.entries.borrow_mut();
+        match entries.get_mut(path) {
+            Some((entry, checked)) => {
+                if *checked != self.generation {
+                    if let Some(fresh) = self.revalidate(path, now, entry) {
+                        *entry = fresh;
+                    }
+                    *checked = self.generation;
+                }
+                answer(entry)
+            }
+            None => {
+                let entry = self.read(path, now, None);
+                let result = answer(&entry);
+                entries.insert(path.to_path_buf(), (entry, self.generation));
+                result
+            }
+        }
+    }
+
+    /// What `path` holds now, given what an earlier generation saw there:
+    /// `None` when a `stat` confirms `previous`, otherwise a fresh entry.
+    fn revalidate(&self, path: &Path, now: Nanos, previous: &DiskEntry) -> Option<DiskEntry> {
+        match previous {
+            DiskEntry::Present {
+                stamp, taken, text, ..
+            } if !stamp.is_racy(*taken) => match self.stat(path) {
+                Ok(current) if current == *stamp => None,
+                Ok(_) => Some(self.read(path, now, text.as_ref().ok())),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    Some(DiskEntry::Absent(Failure::of(&err)))
+                }
+                Err(_) => Some(self.read(path, now, None)),
+            },
+            DiskEntry::Present { text, .. } => Some(self.read(path, now, text.as_ref().ok())),
+            DiskEntry::Absent(_) => match self.stat(path) {
+                Ok(_) => Some(self.read(path, now, None)),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+                Err(_) => Some(self.read(path, now, None)),
+            },
+            DiskEntry::Failed(_) => Some(self.read(path, now, None)),
+        }
+    }
+
+    /// `stat` `path`, counted.
+    fn stat(&self, path: &Path) -> io::Result<Stamp> {
+        let mut counts = self.counts.get();
+        counts.stats += 1;
+        self.counts.set(counts);
+        self.disk.stat(path)
+    }
+
+    /// Read `path` (stamp, then read), counted, as an entry stamped at `now`.
+    /// When the text is `old`'s, `old`'s allocation is kept, so an unchanged
+    /// file keeps its pointer identity across a racy re-read.
+    fn read(&self, path: &Path, now: Nanos, old: Option<&Arc<str>>) -> DiskEntry {
+        let mut counts = self.counts.get();
+        counts.opens += 1;
+        self.counts.set(counts);
+        match self.disk.read(path) {
+            Ok((stamp, bytes)) => {
+                let text = borzoi_msbuild::observed::text_answer(Ok(bytes));
+                let bom = text
+                    .as_deref()
+                    .is_ok_and(|text| text.starts_with('\u{feff}'));
+                let text = text.map(|text| {
+                    let text = crate::disk_text::without_bom(text);
+                    match old {
+                        Some(old) if **old == *text => Arc::clone(old),
+                        _ => Arc::from(text),
+                    }
+                });
+                DiskEntry::Present {
+                    stamp,
+                    taken: now,
+                    text,
+                    bom,
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                DiskEntry::Absent(Failure::of(&err))
+            }
+            Err(err) => DiskEntry::Failed(Failure::of(&err)),
+        }
+    }
+
+    /// Forget what the disk held at every remembered spelling path-equal to
+    /// one of `paths`, so the next read re-reads it whatever its stamp says.
+    pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        let keys: std::collections::HashSet<String> = paths
+            .into_iter()
+            .map(|path| path_dedup_key(&lexically_normalize(path)))
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        self.entries
+            .borrow_mut()
+            .retain(|spelling, _| !keys.contains(&path_dedup_key(&lexically_normalize(spelling))));
+    }
+
+    /// Start a new generation at time `now`, with nothing observed yet. `now`
+    /// must be read before any stamp the generation takes, as the racy rule
+    /// assumes.
+    pub fn begin_generation(&mut self, now: Nanos) {
+        self.generation += 1;
+        self.open = Some(now);
+        self.counts.set(ReadCounts::default());
+    }
+
+    /// End the current generation, returning its number and what it
+    /// observed.
+    pub fn end_generation(&mut self) -> (u64, ReadCounts) {
+        self.open = None;
+        (self.generation, self.counts.get())
+    }
+
+    /// The open generation's number, or `None` between generations.
+    pub fn generation(&self) -> Option<u64> {
+        self.open.map(|_| self.generation)
+    }
+
+    /// What the current generation has observed so far.
+    pub fn generation_counts(&self) -> ReadCounts {
+        self.counts.get()
+    }
+}
+
+/// The client's open buffers, and what every other source held on disk.
+#[derive(Debug, Default)]
+pub struct Vfs<D: Disk = HostDisk> {
+    /// The client's text for each open document, keyed by the URI it was
+    /// opened under. Whatever it holds is what the client's positions count,
+    /// so it is never touched.
+    buffers: HashMap<Uri, Arc<str>>,
+    /// The open `file:` documents by [`path_dedup_key`] of their lexically
+    /// normalised path, in the order they were opened: the buffer a path
+    /// reads is the first of them.
+    buffer_paths: HashMap<String, Vec<Uri>>,
+    /// What every unopened source read held on disk.
+    disk: DiskCache<D>,
     /// Where each ended generation is sent, if a caller asked for them
     /// ([`Self::log_generations`]).
     log: Option<Sender<Generation>>,
@@ -220,13 +427,9 @@ impl<D: Disk> Vfs<D> {
     /// A `Vfs` over `disk`, with nothing open and nothing read.
     pub fn with_disk(disk: D) -> Self {
         Vfs {
-            disk,
             buffers: HashMap::new(),
             buffer_paths: HashMap::new(),
-            entries: RefCell::new(HashMap::new()),
-            generation: 0,
-            open: None,
-            counts: Cell::new(ReadCounts::default()),
+            disk: DiskCache::with_disk(disk),
             log: None,
         }
     }
@@ -321,83 +524,7 @@ impl<D: Disk> Vfs<D> {
     /// absent, unreadable or not UTF-8. Within a generation, the same answer
     /// every time (see the module docs).
     pub fn disk_text(&self, path: &Path) -> Option<Arc<str>> {
-        let Some(now) = self.open else {
-            return self.read(path, Nanos(0), None).text();
-        };
-        let mut entries = self.entries.borrow_mut();
-        match entries.get_mut(path) {
-            Some((entry, checked)) => {
-                if *checked != self.generation {
-                    let previous = std::mem::replace(entry, DiskEntry::Failed);
-                    *entry = self.revalidate(path, now, previous);
-                    *checked = self.generation;
-                }
-                entry.text()
-            }
-            None => {
-                let entry = self.read(path, now, None);
-                let text = entry.text();
-                entries.insert(path.to_path_buf(), (entry, self.generation));
-                text
-            }
-        }
-    }
-
-    /// What `path` holds now, given what an earlier generation saw there:
-    /// `previous` kept if a `stat` confirms it, otherwise a fresh read.
-    fn revalidate(&self, path: &Path, now: Nanos, previous: DiskEntry) -> DiskEntry {
-        match previous {
-            DiskEntry::Present { stamp, taken, text } if !stamp.is_racy(taken) => {
-                match self.stat(path) {
-                    Ok(current) if current == stamp => DiskEntry::Present { stamp, taken, text },
-                    Ok(_) => self.read(path, now, text.as_ref()),
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => DiskEntry::Absent,
-                    Err(_) => DiskEntry::Failed,
-                }
-            }
-            DiskEntry::Present { text, .. } => self.read(path, now, text.as_ref()),
-            DiskEntry::Absent => match self.stat(path) {
-                Ok(_) => self.read(path, now, None),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => DiskEntry::Absent,
-                Err(_) => DiskEntry::Failed,
-            },
-            DiskEntry::Failed => self.read(path, now, None),
-        }
-    }
-
-    /// `stat` `path`, counted.
-    fn stat(&self, path: &Path) -> io::Result<Stamp> {
-        let mut counts = self.counts.get();
-        counts.stats += 1;
-        self.counts.set(counts);
-        self.disk.stat(path)
-    }
-
-    /// Read `path` (stamp, then read), counted, as an entry stamped at `now`.
-    /// When the text is `old`'s, `old`'s allocation is kept, so an unchanged
-    /// file keeps its pointer identity across a racy re-read.
-    fn read(&self, path: &Path, now: Nanos, old: Option<&Arc<str>>) -> DiskEntry {
-        let mut counts = self.counts.get();
-        counts.opens += 1;
-        self.counts.set(counts);
-        match self.disk.read(path) {
-            Ok((stamp, bytes)) => {
-                let text = String::from_utf8(bytes).ok().map(|text| {
-                    let text = crate::disk_text::without_bom(text);
-                    match old {
-                        Some(old) if **old == *text => Arc::clone(old),
-                        _ => Arc::from(text),
-                    }
-                });
-                DiskEntry::Present {
-                    stamp,
-                    taken: now,
-                    text,
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => DiskEntry::Absent,
-            Err(_) => DiskEntry::Failed,
-        }
+        self.disk.disk_text(path)
     }
 
     /// Watch events named `paths`: forget what the disk held at each, so the
@@ -405,25 +532,14 @@ impl<D: Disk> Vfs<D> {
     /// stamp cannot see (see the module docs). Every remembered spelling that
     /// is path-equal to one of `paths` is forgotten.
     pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
-        let keys: std::collections::HashSet<String> = paths
-            .into_iter()
-            .map(|path| path_dedup_key(&lexically_normalize(path)))
-            .collect();
-        if keys.is_empty() {
-            return;
-        }
-        self.entries
-            .borrow_mut()
-            .retain(|spelling, _| !keys.contains(&path_dedup_key(&lexically_normalize(spelling))));
+        self.disk.hint(paths);
     }
 
     /// Start a new generation at time `now`, with nothing observed yet. `now`
     /// must be read before any stamp the generation takes, as the racy rule
     /// assumes.
     pub fn begin_generation(&mut self, now: Nanos) {
-        self.generation += 1;
-        self.open = Some(now);
-        self.counts.set(ReadCounts::default());
+        self.disk.begin_generation(now);
     }
 
     /// Send every generation that ends from now on to `log`, replacing any
@@ -436,13 +552,20 @@ impl<D: Disk> Vfs<D> {
         self.log = Some(log);
     }
 
-    /// End the current generation: send it to the log, if one is attached,
-    /// emit its counts as [`GENERATION_EVENT`], and return it.
+    /// End the current generation, in which no project evaluation was read.
     pub fn end_generation(&mut self) -> Generation {
-        self.open = None;
+        self.end_generation_with(EvaluationCounts::default())
+    }
+
+    /// End the current generation, in which reading project evaluations
+    /// cost `evaluations`: send it to the log, if one is attached, emit its
+    /// counts as [`GENERATION_EVENT`], and return it.
+    pub fn end_generation_with(&mut self, evaluations: EvaluationCounts) -> Generation {
+        let (number, counts) = self.disk.end_generation();
         let generation = Generation {
-            number: self.generation,
-            counts: self.counts.get(),
+            number,
+            counts,
+            evaluations,
         };
         if let Some(log) = &self.log
             && log.send(generation).is_err()
@@ -450,23 +573,29 @@ impl<D: Disk> Vfs<D> {
             // The receiver hung up: nobody reads the log any more.
             self.log = None;
         }
+        let checks = evaluations.validation;
         tracing::debug!(
             name: GENERATION_EVENT,
             generation = generation.number,
             opens = generation.counts.opens,
             stats = generation.counts.stats,
+            evaluated = evaluations.evaluated,
+            v_opens = checks.opens,
+            v_stats = checks.stats,
+            v_listings = checks.listings,
+            v_canonicalizations = checks.canonicalizations,
         );
         generation
     }
 
     /// The open generation's number, or `None` between generations.
     pub fn generation(&self) -> Option<u64> {
-        self.open.map(|_| self.generation)
+        self.disk.generation()
     }
 
     /// What the current generation has observed so far.
     pub fn generation_counts(&self) -> ReadCounts {
-        self.counts.get()
+        self.disk.generation_counts()
     }
 }
 

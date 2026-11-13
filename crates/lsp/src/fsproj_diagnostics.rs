@@ -67,7 +67,11 @@ pub fn diagnostics_for(
     env: &SdkDiscoveryEnv,
     build_properties: &HashMap<String, String>,
 ) -> Vec<Diagnostic> {
-    let discovery = SdkDiscovery::for_project(project_path, env);
+    let discovery = SdkDiscovery::for_project(
+        project_path,
+        env,
+        &Unobserved::FsprojDiagnostics.msbuild_observer(),
+    );
     let discovery_failure = discovery.as_ref().err();
     match evaluate_buffer(
         text,
@@ -336,7 +340,7 @@ fn reference_problem(target: &Path) -> Option<String> {
             normalized.display(),
         )),
         ProjectKind::FSharp | ProjectKind::CSharp => {
-            if Unobserved::Evaluation.exists(&normalized) {
+            if Unobserved::FsprojDiagnostics.exists(&normalized) {
                 None
             } else {
                 Some(format!(
@@ -473,7 +477,9 @@ fn reference_diagnostic(text: &str, span: &std::ops::Range<usize>, message: Stri
 fn assets_present(project_path: &Path) -> bool {
     project_path
         .parent()
-        .map(|dir| Unobserved::Evaluation.exists(dir.join("obj").join("project.assets.json")))
+        .map(|dir| {
+            Unobserved::FsprojDiagnostics.exists(dir.join("obj").join("project.assets.json"))
+        })
         .unwrap_or(false)
 }
 
@@ -1991,9 +1997,13 @@ mod tests {
 
             // The fixture must produce the failure it is named for, or the
             // assertions below grade some other path.
-            let err = SdkDiscovery::for_project(&project, &env)
-                .err()
-                .unwrap_or_else(|| panic!("{failure:?}: discovery unexpectedly succeeded"));
+            let err = SdkDiscovery::for_project(
+                &project,
+                &env,
+                &borzoi_msbuild::observed::Observer::new(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{failure:?}: discovery unexpectedly succeeded"));
             assert!(
                 failure.matches(&err),
                 "{failure:?}: discovery failed with {err:?}"
@@ -2052,9 +2062,10 @@ mod tests {
         .unwrap();
         let project = tmp.path().join("App.fsproj");
         let env = env_with(|_| {});
-        let cause = SdkDiscovery::for_project(&project, &env)
-            .expect_err("no dotnet root")
-            .to_string();
+        let cause =
+            SdkDiscovery::for_project(&project, &env, &borzoi_msbuild::observed::Observer::new())
+                .expect_err("no dotnet root")
+                .to_string();
 
         let diags = diagnostics_for("<Project />", &project, &env, &default_extras());
         let reported: Vec<_> = diags
@@ -2073,9 +2084,13 @@ mod tests {
             failure.install(tmp.path());
             let project = tmp.path().join("App.fsproj");
             let env = env_with(|_| {});
-            let cause = SdkDiscovery::for_project(&project, &env)
-                .expect_err("fixture fails discovery")
-                .to_string();
+            let cause = SdkDiscovery::for_project(
+                &project,
+                &env,
+                &borzoi_msbuild::observed::Observer::new(),
+            )
+            .expect_err("fixture fails discovery")
+            .to_string();
             let diags = diagnostics_for(
                 "<Project>\n  <ItemGroup><Compile Include=\"X.fs\"/></ItemGroup>\n</Project>",
                 &project,
