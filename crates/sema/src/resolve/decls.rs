@@ -1748,7 +1748,8 @@ impl<'a> Resolver<'a> {
             if nm_auto_open {
                 self.record_auto_open_module(qualified.clone(), nm_private);
             }
-            self.real_nested_module_exports.insert(qualified.clone());
+            self.real_nested_module_exports
+                .insert(self.assemblies.names(), &qualified);
         }
         // The export-decl-list twin: one nested-module decl (`header: false`)
         // carrying its `[<AutoOpen>]`/`private` bits. Every derivation off it
@@ -1908,9 +1909,11 @@ impl<'a> Resolver<'a> {
         if !self.anonymous_root {
             let mut qualified = self.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
-            self.nested_module_exports.insert(qualified);
+            self.nested_module_exports
+                .insert(self.assemblies.names(), &qualified);
         }
-        self.nested_module_locals.insert(segs);
+        self.nested_module_locals
+            .insert(self.assemblies.names(), &segs);
     }
 
     /// The **augmentation-head** counterpart of [`Self::record_project_name_shadow`]:
@@ -1931,9 +1934,11 @@ impl<'a> Resolver<'a> {
         if !self.anonymous_root {
             let mut qualified = self.container_path.to_vec();
             qualified.extend(segs.iter().cloned());
-            self.augmentation_head_exports.insert(qualified);
+            self.augmentation_head_exports
+                .insert(self.assemblies.names(), &qualified);
         }
-        self.augmentation_head_locals.insert(segs);
+        self.augmentation_head_locals
+            .insert(self.assemblies.names(), &segs);
     }
 
     /// Note `name` as a *module-like* declaration (nested module / abbreviation)

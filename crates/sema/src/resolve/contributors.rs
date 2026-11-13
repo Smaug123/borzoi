@@ -602,7 +602,9 @@ impl Resolver<'_> {
                     .iter()
                     .map(|name| (name, MarkReach::Both)),
             )
-            .map(|(name, reach)| ScopeEntry::contributor_mark(name.clone(), reach, generation, pos))
+            .map(|(name, reach)| {
+                ScopeEntry::contributor_mark(self.assemblies.names(), &name, reach, generation, pos)
+            })
             .collect();
         self.module_frame().extend(marks);
     }
@@ -718,8 +720,13 @@ impl Resolver<'_> {
                 let marks: Vec<ScopeEntry> = active_pattern_cases(nm.decls())
                     .into_iter()
                     .map(|name| {
-                        let mut mark =
-                            ScopeEntry::contributor_mark(name, MarkReach::Both, generation, end);
+                        let mut mark = ScopeEntry::contributor_mark(
+                            self.assemblies.names(),
+                            &name,
+                            MarkReach::Both,
+                            generation,
+                            end,
+                        );
                         mark.pattern_only = true;
                         mark
                     })

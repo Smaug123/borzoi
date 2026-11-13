@@ -490,8 +490,13 @@ impl<'a> Resolver<'a> {
             }
             if !require_qualified {
                 let generation = self.scope.open_generation;
-                self.module_frame()
-                    .push(ScopeEntry::binding(name, res, generation));
+                let assemblies = self.assemblies;
+                self.module_frame().push(ScopeEntry::binding(
+                    assemblies.names(),
+                    &name,
+                    res,
+                    generation,
+                ));
             }
         }
     }
@@ -547,8 +552,12 @@ impl<'a> Resolver<'a> {
         }
         if !require_qualified {
             let generation = self.scope.open_generation;
-            self.module_frame()
-                .push(ScopeEntry::undecided_case(case, generation));
+            let assemblies = self.assemblies;
+            self.module_frame().push(ScopeEntry::undecided_case(
+                assemblies.names(),
+                &case,
+                generation,
+            ));
         }
     }
 
@@ -650,8 +659,13 @@ impl<'a> Resolver<'a> {
         // *head* it does not commit member access (see [`DeclKinds::exception_ctor`]).
         self.mark_decl(&entry_name).exception_ctor = true;
         let generation = self.scope.open_generation;
-        self.module_frame()
-            .push(ScopeEntry::binding(entry_name, res, generation));
+        let assemblies = self.assemblies;
+        self.module_frame().push(ScopeEntry::binding(
+            assemblies.names(),
+            &entry_name,
+            res,
+            generation,
+        ));
     }
 
     /// Intern an active-pattern definition's recognizer and cases
@@ -846,7 +860,12 @@ impl<'a> Resolver<'a> {
             // root / a local recognizer); `case_reference` (pattern position) still
             // finds it. Without this an `Item`-backed case would leak into
             // expression lookup and shadow a same-named ordinary value.
-            let mut entry = ScopeEntry::binding(case_name, case_res, self.scope.open_generation);
+            let mut entry = ScopeEntry::binding(
+                self.assemblies.names(),
+                &case_name,
+                case_res,
+                self.scope.open_generation,
+            );
             entry.pattern_only = true;
             entries.push(entry);
         }
@@ -984,10 +1003,17 @@ impl<'a> Resolver<'a> {
                 cases
                     .iter()
                     .map(|(name, res)| match res {
-                        Resolution::Deferred(_) => {
-                            ScopeEntry::undecided_case(name.clone(), self.scope.open_generation)
-                        }
-                        _ => ScopeEntry::binding(name.clone(), *res, self.scope.open_generation),
+                        Resolution::Deferred(_) => ScopeEntry::undecided_case(
+                            self.assemblies.names(),
+                            &name,
+                            self.scope.open_generation,
+                        ),
+                        _ => ScopeEntry::binding(
+                            self.assemblies.names(),
+                            &name,
+                            *res,
+                            self.scope.open_generation,
+                        ),
                     })
                     .collect()
             })
@@ -1004,7 +1030,8 @@ impl<'a> Resolver<'a> {
             let name = id_text(&name).to_string();
             if self.type_in_scope_may_take_slot(&name) {
                 cases.push(ScopeEntry::binding(
-                    name,
+                    self.assemblies.names(),
+                    &name,
                     Resolution::Deferred(DeferredReason::UnboundName),
                     self.scope.open_generation,
                 ));
@@ -1610,7 +1637,8 @@ impl<'a> Resolver<'a> {
     ) -> Vec<ScopeEntry> {
         let unmodelled = |name: &str, generation| {
             ScopeEntry::binding(
-                name.to_string(),
+                self.assemblies.names(),
+                &name,
                 Resolution::Deferred(DeferredReason::UnboundName),
                 generation,
             )
@@ -1644,7 +1672,12 @@ impl<'a> Resolver<'a> {
         });
         let res = Resolution::Local(id);
         self.record(range, res);
-        Some(ScopeEntry::binding(name, res, self.scope.open_generation))
+        Some(ScopeEntry::binding(
+            self.assemblies.names(),
+            &name,
+            res,
+            self.scope.open_generation,
+        ))
     }
 
     /// Resolve the type-name uses inside a [`Type`], recursing structurally
@@ -2956,12 +2989,16 @@ impl<'a> Resolver<'a> {
     /// conservative defer is for proper descents like `Calc.Inner`.
     fn type_path_descends_into_nested_module(&self, names: &[String]) -> bool {
         self.nested_module_locals
-            .has_strict_nonempty_prefix_of(names)
+            .has_strict_nonempty_prefix_of_path(self.assemblies.names(), names)
             || self
                 .nested_module_exports
-                .has_strict_nonempty_prefix_of(names)
-            || (self.preceding.is_rooted_at_nested_module(names)
-                && !self.preceding.is_exact_nested_module(names))
+                .has_strict_nonempty_prefix_of_path(self.assemblies.names(), names)
+            || (self
+                .preceding
+                .is_rooted_at_nested_module_path(self.assemblies.names(), names)
+                && !self
+                    .preceding
+                    .is_exact_nested_module(self.assemblies.names(), self.path_key(names)))
     }
 
     /// In-file-only type-path resolution for an augmentation head: record a

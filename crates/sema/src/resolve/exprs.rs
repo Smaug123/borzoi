@@ -531,7 +531,8 @@ impl<'a> Resolver<'a> {
                         let args: Vec<Pat> = p.args().collect();
                         entries.extend(self.pattern_locals(args.into_iter(), BinderRole::Pattern));
                         entries.push(ScopeEntry::binding(
-                            id_text(only).to_string(),
+                            self.assemblies.names(),
+                            &id_text(only).to_string(),
                             Resolution::Deferred(DeferredReason::UnboundName),
                             self.scope.open_generation,
                         ));
@@ -638,7 +639,12 @@ impl<'a> Resolver<'a> {
                     let id = self.intern(def);
                     let res = Resolution::Local(id);
                     self.record(range, res);
-                    entries.push(ScopeEntry::binding(name, res, self.scope.open_generation));
+                    entries.push(ScopeEntry::binding(
+                        self.assemblies.names(),
+                        &name,
+                        res,
+                        self.scope.open_generation,
+                    ));
                 }
                 self.scopes.push(Frame::new(entries));
                 if let Some(body) = e.body() {
@@ -802,7 +808,8 @@ impl<'a> Resolver<'a> {
                         .is_some_and(|r| !matches!(r, Resolution::Deferred(_)));
                     if !a_case {
                         entries.push(ScopeEntry::binding(
-                            name,
+                            self.assemblies.names(),
+                            &name,
                             Resolution::Deferred(DeferredReason::UnboundName),
                             self.scope.open_generation,
                         ));
@@ -813,7 +820,12 @@ impl<'a> Resolver<'a> {
                 let range = def.range;
                 let res = Resolution::Local(self.intern(def));
                 self.record(range, res);
-                entries.push(ScopeEntry::binding(name, res, self.scope.open_generation));
+                entries.push(ScopeEntry::binding(
+                    self.assemblies.names(),
+                    &name,
+                    res,
+                    self.scope.open_generation,
+                ));
             }
         }
         entries
@@ -940,7 +952,12 @@ impl<'a> Resolver<'a> {
                 let res = Resolution::Local(id);
                 self.record(range, res);
                 aliases.interned(range, res);
-                entries.push(ScopeEntry::binding(name, res, self.scope.open_generation));
+                entries.push(ScopeEntry::binding(
+                    self.assemblies.names(),
+                    &name,
+                    res,
+                    self.scope.open_generation,
+                ));
             }
         }
         self.decline_binding_head_param_exprs = saved;
