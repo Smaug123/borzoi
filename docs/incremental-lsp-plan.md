@@ -1436,13 +1436,17 @@ dozen, and the counts report it.
   whose entries decide its answer, taken before the question. While they hold
   (and none is racy), so does the answer, and each directory is `stat`ed once
   per generation however many reads share it. A listing's witness is the
-  directory; what a path names, its parent (and each link target's parent
-  along a symlink chain); a canonical spelling, every directory its
-  resolution looks an entry up in, walked as the kernel walks it. A path not
-  spelt as its components (a trailing separator, which follows a final
-  symlink; a `.` or `..`; a doubled separator) has no witness and is asked
-  in every generation (found by Codex: `Exists('link/')` was witnessed by
-  the link's directory alone).
+  directory listed; what a path names (following symlinks or not), whether
+  it is there, and its canonical spelling are witnessed by every directory
+  its resolution looks an entry up in, walked as the kernel walks it: one
+  resolver, which takes a link's target component by component and each
+  `..` from the directory reached. A path not spelt as its components (a
+  trailing separator, which makes `lstat` follow a final symlink; a `.` or
+  `..`; a doubled separator) has no witness and is asked in every
+  generation. Codex found two spellings a narrower witness missed
+  (`Exists('link/')`, and a link whose target ends with a separator, to
+  another link); the narrower witnesses went, and a property on the host's
+  file system now generates trees with symlinks of every such spelling.
 - **The graph walk reads the confirmed entry.** The env's project-graph walk
   evaluated the entry project afresh, a second evaluation on every cold env
   build. It now reads the cached evaluation when this generation has
@@ -1528,6 +1532,12 @@ The oracle:
   may be seen or not within it, never after it). Its non-vacuity check counts
   generations confirmed by witnesses alone and checks that found the disk
   moved; a step-by-step test walks a same-tick change past a racy stamp.
+  Beside the model, `a_check_that_holds_is_right_on_the_host` generates
+  trees on the host's file system with symlinks whose targets are relative,
+  absolute, end with a separator or hold a `..`, and asks every query at
+  plain and irregular spellings, pausing after each change for longer than a
+  coarse filesystem tick (it runs ahead of the files' clock, so that the
+  witnesses are used).
 - `observed_counts` gains evaluation counts: no request after the project
   opens evaluates it (the cold env build reads the confirmed evaluation),
   confirming it opens nothing and `stat`s something, and on a racy clock it
@@ -1552,6 +1562,7 @@ Planted, each caught, then removed:
 | reads inside a version trusted before any showed it exists (Codex) | `a_version_installed_after_the_evaluation_is_seen` |
 | a version's alias inferred from a canonicalisation below it (Codex) | `only_a_version_directory_canonicalised_gives_an_alias` |
 | a witness for a trailing-separator spelling (Codex) | `a_spelling_the_stamps_cannot_follow_is_asked_every_time` |
+| a `Kind` witnessed by its link chain's parents, not its resolution (Codex) | the spelling test, the model property and its non-vacuity check |
 
 Three plants first passed every test: the canonical-spelling witness (the
 model could not move a directory), the seeded pass's reads and the graph walk
