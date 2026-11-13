@@ -1394,6 +1394,10 @@ struct State<'r> {
     /// on every row.
     #[cfg(any(test, feature = "test-support"))]
     package_reference_unknown_names: HashSet<String>,
+    /// Lowercased identities named by the `PackageReference` `Update`s walked
+    /// so far: what MSBuild's batched updates may still hold when a later
+    /// `Update` arrives ([`item_pass`]'s `note_update_batch_leftovers`).
+    package_update_fragments: HashSet<String>,
     package_versions: Vec<PackageVersion>,
     package_versions_untracked: bool,
     global_package_references: Vec<GlobalPackageReference>,
@@ -2100,6 +2104,7 @@ impl<'r> State<'r> {
             package_reference_unknown_names: HashSet::new(),
             package_versions: Vec::new(),
             package_versions_untracked: false,
+            package_update_fragments: HashSet::new(),
             global_package_references: Vec::new(),
             framework_references: Vec::new(),
             evaluated_items: HashMap::new(),
@@ -2642,6 +2647,7 @@ impl<'r> State<'r> {
                 package_reference_rows: _,
             #[cfg(any(test, feature = "test-support"))]
                 package_reference_unknown_names: _,
+            package_update_fragments: _,
             package_versions,
             package_versions_untracked,
             global_package_references,

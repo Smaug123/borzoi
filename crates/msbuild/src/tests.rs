@@ -4539,6 +4539,47 @@ fn duplicate_identity_package_update_marks_the_set_uncertain() {
 }
 
 #[test]
+fn an_update_leaving_batched_entries_marks_the_set_uncertain() {
+    // Found by the generative oracle; the mechanism is MSBuild's
+    // `LazyItemList.ComputeItems`. An `Update` that cannot join the batch of
+    // updates at its second fragment or later (here: a fragment an earlier
+    // `Update` named) removes its earlier fragments by text, not by the
+    // batch's full-path key, so they stay and are applied at the next
+    // flush, after the `Include`. Probed (dotnet 10): `Beta` gets the
+    // override. The leaving `Update` need not write a package metadatum,
+    // and need not run: a condition-false one is batched too.
+    for first in [
+        r#"<PackageReference Update="Alpha;Alpha" />"#,
+        r#"<PackageReference Update="Alpha;Alpha" Condition="'$(NeverSet)' == 'true'" />"#,
+    ] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    {first}
+    <PackageReference Update="Beta;Alpha" VersionOverride="1.0" />
+    <PackageReference Include="Alpha;Beta" Version="1.0" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert!(
+            p.package_references_uncertain,
+            "{first}: the second Update leaves Beta's override in the batch"
+        );
+    }
+    // Two single-fragment Updates of one identity leave nothing: the second
+    // fails at its first fragment, before adding any.
+    let src = r#"<Project>
+  <ItemGroup>
+    <PackageReference Update="Alpha" VersionOverride="1.0" />
+    <PackageReference Update="Alpha" VersionOverride="2.0" />
+    <PackageReference Include="Alpha" Version="1.0" />
+  </ItemGroup>
+</Project>"#;
+    assert!(!parse(src).package_references_uncertain);
+}
+
+#[test]
 fn project_reference_carries_include_and_private_assets() {
     // `IncludeAssets` / `PrivateAssets` control what flows *through* a
     // `<ProjectReference>` (dotnet 10 probes: a non-entry edge whose compile

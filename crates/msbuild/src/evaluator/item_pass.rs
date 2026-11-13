@@ -2109,6 +2109,13 @@ fn insert_ordered_compile_item(
 /// expands to a corrupt/item-referencing value flips
 /// [`State::package_references_uncertain`].
 fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
+    // Before the element's own condition: MSBuild batches an `Update`'s
+    // fragments whether or not its condition holds (probed).
+    if node.attribute("Include").is_none()
+        && let Some(target) = node.attribute("Update")
+    {
+        note_update_batch_leftovers(target, node, state);
+    }
     state.note_package_uncertain_if_condition_uses_sdk_taint(node);
     match evaluate_item_condition(node, state) {
         CondGate::Run => {}
@@ -2296,6 +2303,55 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     {
         state.mark_untracked_item_list("PackageReference");
     }
+}
+
+/// Decline the dependency set when this `PackageReference` `Update` may leave
+/// entries in MSBuild's batch of updates, which it then applies at its next
+/// flush, out of document order.
+///
+/// MSBuild's lazy evaluator (`LazyItemList.ComputeItems`) batches consecutive
+/// `Update`s whose fragments are plain paths in a dictionary keyed by full
+/// path. An `Update` that cannot batch (a fragment already in the dictionary,
+/// or one holding a wildcard, item or property character) removes its
+/// earlier fragments again, but by their text rather than their key, so they
+/// stay. When no batch is flushed before the next `Include`, the leftover
+/// entries reach `Include`s declared after the `Update`: probed (dotnet 10),
+/// `Update="Alpha;Alpha"` then `Update="Beta;Alpha" VersionOverride="1.0"`
+/// then `Include="Alpha;Beta"` gives `Beta` the override.
+///
+/// Only an `Update` that fails at its second fragment or later can leave
+/// anything, so this declines when one with several fragments has one outside
+/// the package-id shape (which may be a wildcard, an item, or spelled
+/// otherwise as a path) or a later fragment naming an identity this `Update`
+/// or an earlier one named. That over-approximates the dictionary, which a
+/// flush empties. It runs for every `Update` element, before its condition and
+/// the inert shortcut: MSBuild batches a condition-false `Update`'s fragments
+/// too (probed), and an `Update` that writes no package metadatum can still
+/// leave entries for one that does.
+fn note_update_batch_leftovers(target: &str, node: Node<'_, '_>, state: &mut State<'_>) {
+    let expansion = expand_silent(target, state);
+    let fragments: Vec<String> = spec_fragments(&expansion.value)
+        .map(|fragment| fragment.to_ascii_lowercase())
+        .collect();
+    if fragments.len() > 1 {
+        let leaves_entries = expansion.had_issue()
+            || fragments
+                .iter()
+                .any(|fragment| !is_package_id_shape(fragment))
+            || fragments.iter().enumerate().skip(1).any(|(i, fragment)| {
+                fragments[..i].contains(fragment)
+                    || state.package_update_fragments.contains(fragment)
+            });
+        if leaves_entries {
+            state.note_package_uncertain(
+                PackageReferenceUncertaintyCauseKind::DuplicateUpdateIdentity {
+                    id: target.to_string(),
+                },
+                node.range(),
+            );
+        }
+    }
+    state.package_update_fragments.extend(fragments);
 }
 
 /// Whether `id` has NuGet's package-id shape: ASCII `[A-Za-z0-9._-]`, non-empty,

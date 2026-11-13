@@ -677,8 +677,12 @@ fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError>
 #[test]
 fn certain_capture_matches_msbuild() {
     let mut runner = TestRunner::new(ProptestConfig {
-        // The resident oracle answers a case in milliseconds.
-        cases: 1000,
+        // The resident oracle answers a case in milliseconds. `PROPTEST_CASES`
+        // raises it for a soak.
+        cases: std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|cases| cases.parse().ok())
+            .unwrap_or(1000),
         source_file: Some(file!()),
         ..ProptestConfig::default()
     });
