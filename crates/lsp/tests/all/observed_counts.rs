@@ -438,6 +438,8 @@ fn second_pull_listings(depth: usize, keystroke: bool) -> u64 {
     );
     let kind = if keystroke { "full" } else { "unchanged" };
     assert_eq!(second["kind"], kind, "{second}");
+    // The loop answers before it ends the request's generation.
+    client.settle();
     let listings = client.generations()[mark..]
         .iter()
         .map(|g| g.ownership.listings)
