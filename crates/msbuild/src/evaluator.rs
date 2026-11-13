@@ -5478,6 +5478,12 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             .and_then(simple_property_reference)
             .is_some_and(|name| name.eq_ignore_ascii_case("DirectoryBuildPropsPath"));
         if is_props_rediscovery {
+            // What the real import here would take, decided before the splice
+            // runs: the spliced file can rewrite what decides it.
+            #[cfg(any(test, feature = "test-support"))]
+            let real_import = (!state.directory_build_splices.props_spliced)
+                .then(|| props_import_point_names(node, current_file_dir, state))
+                .flatten();
             if !state.in_entry_body && state.directory_build_props_splice_pending {
                 fire_entry_directory_build_props_splice(state);
             } else if state.in_entry_body && state.pending_directory_build_props.take().is_some() {
@@ -5489,8 +5495,10 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // no-op afterwards.
                 fire_entry_directory_build_props_splice(state);
             }
+            // The splice stands for this import only if it ran here, for the
+            // first time, on the file the import names.
             #[cfg(any(test, feature = "test-support"))]
-            if props_import_point_imports_splice(node, current_file_dir, state) {
+            if real_import.is_some() && real_import == state.directory_build_props_splice_path {
                 state.directory_build_splices.props_point_reached = true;
             }
         }
@@ -6603,20 +6611,17 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     state.exit_this_file(frame);
 }
 
-/// Whether the `Microsoft.Common.props` import of `$(DirectoryBuildPropsPath)`
-/// at `node` imports the file the walk spliced in for it: its condition
-/// decides true exactly, and the trusted path it names is that file. Read
-/// quietly ([`State::quiet_target_framework_reads`]): only the target probe
-/// asks.
+/// The file the `Microsoft.Common.props` import of `$(DirectoryBuildPropsPath)`
+/// at `node` takes, canonical as [`State::directory_build_props_splice_path`]
+/// holds it, when that is decided: its condition decides true exactly, and
+/// the path it names is trusted. Read quietly
+/// ([`State::quiet_target_framework_reads`]): only the target probe asks.
 #[cfg(any(test, feature = "test-support"))]
-fn props_import_point_imports_splice(
+fn props_import_point_names(
     node: Node<'_, '_>,
     current_file_dir: &Path,
     state: &State<'_>,
-) -> bool {
-    let Some(spliced) = state.directory_build_props_splice_path.as_ref() else {
-        return false;
-    };
+) -> Option<PathBuf> {
     let previous = state.quiet_target_framework_reads.replace(true);
     let condition_holds = node.attribute("Condition").is_none_or(|condition| {
         let exists = |path: &str| condition_exists(state.observer, path, current_file_dir);
@@ -6634,18 +6639,17 @@ fn props_import_point_imports_splice(
             })
     });
     state.quiet_target_framework_reads.set(previous);
-    let names_the_splice = !state
-        .trust_of("DirectoryBuildPropsPath")
-        .reference_is_untrusted()
-        && state
-            .lookup
-            .get_unescaped("DirectoryBuildPropsPath")
-            .map(|path| path.trim().to_owned())
-            .filter(|path| !path.is_empty())
-            .is_some_and(|path| {
-                canonicalise_or_normalise(state.observer, &current_file_dir.join(path)) == *spliced
-            });
-    condition_holds && names_the_splice
+    if !condition_holds
+        || state
+            .trust_of("DirectoryBuildPropsPath")
+            .reference_is_untrusted()
+    {
+        return None;
+    }
+    let path = state.lookup.get_unescaped("DirectoryBuildPropsPath")?;
+    let path = path.trim();
+    (!path.is_empty())
+        .then(|| canonicalise_or_normalise(state.observer, &current_file_dir.join(path)))
 }
 
 fn walk_directory_build_file(

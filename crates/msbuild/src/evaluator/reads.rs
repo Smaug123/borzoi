@@ -803,6 +803,19 @@ mod spliced_target_tests {
     /// `Sdk.props` and `Sdk.targets` bodies are given, beside a
     /// `Directory.Build.props` that defines it.
     pub(super) fn read_phantom(sdk_props: &str, sdk_targets: &str) -> TargetRead {
+        read_phantom_beside(
+            sdk_props,
+            sdk_targets,
+            "<Project><Target Name=\"Phantom\" /></Project>",
+        )
+    }
+
+    /// [`read_phantom`] beside a `Directory.Build.props` of `beside`.
+    pub(super) fn read_phantom_beside(
+        sdk_props: &str,
+        sdk_targets: &str,
+        beside: &str,
+    ) -> TargetRead {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::observed::host_fs::canonicalize(dir.path()).unwrap();
         let sdk = root.join("sdk");
@@ -811,11 +824,7 @@ mod spliced_target_tests {
         std::fs::write(sdk.join("Sdk.targets"), sdk_targets).unwrap();
         let project = root.join("p").join("p.fsproj");
         std::fs::create_dir(project.parent().unwrap()).unwrap();
-        std::fs::write(
-            root.join("p").join("Directory.Build.props"),
-            "<Project><Target Name=\"Phantom\" /></Project>",
-        )
-        .unwrap();
+        std::fs::write(root.join("p").join("Directory.Build.props"), beside).unwrap();
         let source = "<Project Sdk=\"S\"></Project>";
         std::fs::write(&project, source).unwrap();
         let resolver = |_: &str, _: &crate::observed::Observer| {
@@ -858,11 +867,14 @@ mod spliced_target_tests {
     }
 
     /// The same SDK with the props import point, as `Microsoft.Common.props`
-    /// writes it: the splice stands for a real import.
+    /// writes it, path first: the splice stands for a real import.
     #[test]
     fn a_props_splice_at_a_reached_import_point_is_exact() {
         let read = read_phantom(
-            "<Project><Import Project=\"$(DirectoryBuildPropsPath)\" \
+            "<Project><PropertyGroup><DirectoryBuildPropsPath>\
+             $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildProjectDirectory)'))\
+             </DirectoryBuildPropsPath></PropertyGroup>\
+             <Import Project=\"$(DirectoryBuildPropsPath)\" \
              Condition=\"Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
             "<Project />",
         );
@@ -883,6 +895,26 @@ mod spliced_target_condition_tests {
             "<Project><Import Project=\"$(DirectoryBuildPropsPath)\" \
              Condition=\"false And Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
             "<Project />",
+        );
+        assert!(!read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod spliced_target_order_tests {
+    use super::spliced_target_tests::read_phantom_beside;
+
+    /// The import's condition is false until the spliced file runs: MSBuild
+    /// decides it first and imports nothing.
+    #[test]
+    fn a_props_import_decided_before_the_splice_runs_declines() {
+        let read = read_phantom_beside(
+            "<Project><PropertyGroup><Gate>false</Gate></PropertyGroup>\
+             <Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"'$(Gate)' == 'true' And Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
+            "<Project />",
+            "<Project><PropertyGroup><Gate>true</Gate></PropertyGroup>\
+             <Target Name=\"Phantom\" /></Project>",
         );
         assert!(!read.exact, "{read:?}");
     }

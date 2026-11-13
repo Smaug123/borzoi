@@ -1916,12 +1916,19 @@ target's XML from that file and range. The answer is exact only when:
 - every `Directory.Build.*` file the walk spliced in itself stands for an
   import an SDK chain really makes: the walk reached that file's import
   point in `Microsoft.Common.props` or `.targets`, and, for the props file,
-  that import's condition decides true exactly and it names the file
-  spliced. Otherwise MSBuild imports no such file there, and whatever it
+  the splice first ran there, and that import's condition, decided before
+  the splice ran, is exactly true and names the file spliced. Otherwise MSBuild imports no such file there, and whatever it
   defines or steers is the walk's alone;
 - the name, and every name defined, is plain: printable ASCII, no `%`, no
   whitespace. MSBuild compares names unescaped, untrimmed and
   `OrdinalIgnoreCase`, which on plain names is ASCII case folding.
+
+
+None of this makes a read more exact than the walk's import graph, and that
+graph has known divergences from MSBuild's (#677: a re-import through a
+symlink alias, which the walk dedupes by canonical path and MSBuild by
+lexical path). They bound the property table equally. #677 proposes the
+systematic fix, a differential over generated SDK import graphs.
 
 The oracle's `evaluated` op reports where MSBuild's own target table keeps
 each definition (file, line, column).
