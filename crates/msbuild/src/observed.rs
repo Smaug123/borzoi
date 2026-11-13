@@ -55,9 +55,8 @@ impl Observer {
     /// the evaluation), it is two, and the read set can never validate again.
     ///
     /// The reads are sorted, so the read set is a set: the order an
-    /// evaluation happened to ask its queries in (a walk over a `HashMap`, a
-    /// directory listed in the host's order) does not tell two equal read
-    /// sets apart.
+    /// evaluation happened to ask its queries in (a walk over a `HashMap`,
+    /// say) does not tell two equal read sets apart.
     pub fn finish(self) -> (ReadSet, ReadCounts) {
         let mut reads = self.reads.into_inner();
         reads.sort();
@@ -191,7 +190,7 @@ pub enum Observation {
     Kind(Result<EntryKind, Failure>),
     /// What the path itself is, not following a final symlink (`lstat`).
     LinkKind(Result<EntryKind, Failure>),
-    /// The directory's entries, in the order the host listed them, each with
+    /// The directory's entries, sorted by name (see [`read_dir`]), each with
     /// the type its directory entry reports (which does not follow symlinks).
     Listing(Result<Vec<Listed>, Failure>),
     /// The path with every symlink resolved (`realpath`).
@@ -376,8 +375,13 @@ pub fn exists(observer: &Observer, path: &Path) -> bool {
     kind(observer, path).is_ok()
 }
 
-/// [`std::fs::read_dir`], read to the end. An entry the listing could not
-/// read is an `Err` in its place.
+/// [`std::fs::read_dir`], read to the end, with the entries sorted by name and
+/// any the listing could not read after them, as `Err`s.
+///
+/// Sorted because the host's order is not a property of the directory's
+/// contents: tmpfs lists in creation order, so deleting a file and writing it
+/// back moves it. An evaluation that read the host's order could change with
+/// no entry changing, and its read set would have to record that order.
 #[allow(clippy::disallowed_methods)]
 pub fn read_dir(
     observer: &Observer,
@@ -398,7 +402,16 @@ pub fn read_dir(
                             .map_err(|e| Failure::of(&e)),
                     })
                 })
-                .collect()
+                .collect::<Vec<_>>()
+        })
+        .map(|mut entries| {
+            entries.sort_by(|a, b| match (a, b) {
+                (Ok(a), Ok(b)) => a.name.cmp(&b.name),
+                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+            });
+            entries
         });
     let listing = result.as_ref().map_err(Clone::clone).map(|entries| {
         entries
@@ -592,6 +605,23 @@ mod tests {
         std::fs::create_dir(dir.join("p")).unwrap();
         std::fs::write(dir.join("p/child"), "").unwrap();
         assert!(read_set.first_stale().is_some());
+    }
+
+    /// A listing is sorted by name whatever order the entries were created
+    /// in, which some file systems (tmpfs) list them in.
+    #[test]
+    fn a_listing_is_sorted_by_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        for name in ["m", "z", "a", "q", "b"] {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        let names: Vec<_> = read_dir(&Observer::new(), &dir)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.unwrap().name)
+            .collect();
+        assert_eq!(names, ["a", "b", "m", "q", "z"]);
     }
 
     /// Two evaluations that ask the same queries in different orders (a walk

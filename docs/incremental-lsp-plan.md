@@ -1146,7 +1146,7 @@ corpus project is reported, so Stage 3b's validation cost is known in advance.
   and records a `Read`: the path and an `Observation`, which is the query
   together with everything its asker could learn from the answer (a
   `TextDigest` of length and a 128-bit hash, an `EntryKind`, a listing's
-  names and entry types in the host's order, a canonical path, or a
+  names and entry types sorted by name, a canonical path, or a
   `Failure` carrying the `io::Error`'s kind and message, so absence is
   `NotFound`). 46 call sites moved: the evaluator (9), `item_spec` (2),
   `properties` (1), `imports` (3), the glob resolver (4), and SDK
@@ -1252,6 +1252,11 @@ The oracle (`crates/msbuild/src/observed/soundness.rs`):
   physically (a read of `../outside/x` is recorded but not perturbed), and
   does not mistake a dangling symlink for an absent path (Codex found both;
   `the_sweep_writes_only_under_its_root`, `a_dangling_symlink_is_swept`).
+- A listing is sorted by name, for the reader as for the read set: tmpfs
+  lists in creation order, so a file deleted and written back moved, and an
+  evaluation reading the host's order could change with no entry changing
+  (Codex; `a_listing_is_sorted_by_name`). Every reader sorted or selected
+  by version already, so no result moves.
 - Workload manifest resolution probes its manifests in key order: a probe
   that degrades stops the loop, so `HashMap` order decided what the probes
   before it recorded (Codex;
