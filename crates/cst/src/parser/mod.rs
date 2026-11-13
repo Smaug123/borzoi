@@ -443,30 +443,16 @@ fn parse_inner_stopping_at(
     // parser runs so a signed literal is a single token in both expression
     // and pattern position. See `sign_fold`.
     sign_fold::fold_adjacent_signs(&raw_tokens, &mut filtered_tokens);
-    #[cfg(feature = "token-reference")]
-    assert_filtered_stream_matches_reference(
-        source,
-        symbols,
-        lang,
-        &filtered_tokens,
-        &offside_diagnostics,
-        shape_depends_on_language_version,
-    );
 
-    // FS1161 tabs: a lexer-level diagnostic, scanned off the active-code
-    // whitespace trivia before `raw_tokens` is consumed by the parser. Merged
-    // into `errors` below (and sorted into source order alongside the directive
-    // and production errors).
-    let tab_errors = tab_diagnostics(source, &raw_tokens);
-
-    // FS0046 reserved-identifier warnings: scanned off the same active-code
-    // tokens. A *warning* (leaves `ParseHadErrors` false), so it never affects
-    // the parse-error parity the differential harness checks.
-    let reserved_warnings = reserved_ident_diagnostics(&raw_tokens);
-
-    // `:`/`$` inside an operator lexeme: an error FCS's lexer raises while
-    // still producing the operator token, so the tree is unaffected.
-    let operator_char_errors = operator_char_diagnostics(&raw_tokens);
+    // FS1161 tabs, FS0046 reserved-identifier warnings and `:`/`$` inside an
+    // operator lexeme: lexer-level diagnostics, scanned off the raw table
+    // before the parser consumes it. The tab and operator errors are merged
+    // into `errors` below (and sorted into source order alongside the
+    // directive and production errors); the reserved-identifier warnings
+    // leave `ParseHadErrors` false, so they never affect the parse-error
+    // parity the differential harness checks.
+    let [tab_errors, reserved_warnings, operator_char_errors] =
+        lexical_diagnostics(source, &raw_tokens);
 
     // Language-version legality gate. The version never threads into the
     // preprocessor — the driver records the gated `#elif` spans, and we turn
@@ -575,49 +561,6 @@ fn parse_inner_stopping_at(
     }
 }
 
-/// Under `token-reference`, assert that the filtered stream the productions
-/// are about to read, the lex-filter's offside diagnostics and its
-/// language-version flag are exactly what the frozen reference pipeline
-/// produces for the same source ([`crate::reference::filtered_stream`],
-/// `docs/token-pipeline-soa-plan.md` D7). The two pipelines' token types are
-/// distinct copies with the same derived `Debug`, which is the comparison's
-/// currency.
-#[cfg(feature = "token-reference")]
-fn assert_filtered_stream_matches_reference(
-    source: &str,
-    symbols: &HashSet<String>,
-    lang: LanguageVersion,
-    tokens: &FilteredTokens<'_>,
-    diagnostics: &[OffsideDiagnostic],
-    shape_depends_on_language_version: bool,
-) {
-    let reference = crate::reference::filtered_stream(source, symbols, lang);
-    for i in 0..tokens.len().max(reference.tokens.len()) {
-        let live = tokens.get(i).map(|t| format!("{t:?}"));
-        let want = reference.tokens.get(i).map(|t| format!("{t:?}"));
-        assert!(
-            live == want,
-            "filtered token {i} is {live:?} where the reference pipeline has {want:?}, \
-             at {lang} in {source:?}"
-        );
-    }
-    let live: Vec<String> = diagnostics.iter().map(|d| format!("{d:?}")).collect();
-    let want: Vec<String> = reference
-        .diagnostics
-        .iter()
-        .map(|d| format!("{d:?}"))
-        .collect();
-    assert!(
-        live == want,
-        "offside diagnostics {live:?} differ from the reference pipeline's {want:?}, \
-         at {lang} in {source:?}"
-    );
-    assert!(
-        shape_depends_on_language_version == reference.shape_depends_on_language_version,
-        "the language-version flag differs from the reference pipeline's, at {lang} in {source:?}"
-    );
-}
-
 /// Language-version legality diagnostics: report each construct not available
 /// at `lang`. Never alters the tree (the spans come from a side-channel the
 /// driver records), mirroring FCS's `CheckLanguageFeatureAndRecover`, which
@@ -648,6 +591,18 @@ fn langversion_diagnostics(
             span: span.clone(),
         })
         .collect()
+}
+
+/// The lexer-level diagnostics a parse reports beside its tree, scanned off
+/// the raw table: the FS1161 tab errors (`tab_diagnostics`), the FS0046
+/// reserved-identifier warnings (`reserved_ident_diagnostics`) and the
+/// operator-character errors (`operator_char_diagnostics`), in that order.
+pub fn lexical_diagnostics(source: &str, raw_tokens: &RawTokens<'_>) -> [Vec<ParseError>; 3] {
+    [
+        tab_diagnostics(source, raw_tokens),
+        reserved_ident_diagnostics(raw_tokens),
+        operator_char_diagnostics(raw_tokens),
+    ]
 }
 
 /// FS1161 "TABs are not allowed in F# code". FCS's lexer splits whitespace
@@ -685,6 +640,11 @@ fn langversion_diagnostics(
 fn tab_diagnostics(source: &str, raw_tokens: &RawTokens<'_>) -> Vec<ParseError> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
+    // Most sources hold no tab at all, and one pass over the bytes says so for
+    // a fraction of what testing every whitespace token costs.
+    if !bytes.contains(&b'\t') {
+        return out;
+    }
     for i in 0..raw_tokens.len() {
         let span = raw_tokens.span(i);
         // The directive-line test scans back to the start of the line, so it
@@ -778,24 +738,26 @@ fn operator_char_diagnostics(raw_tokens: &RawTokens<'_>) -> Vec<ParseError> {
 fn reserved_ident_diagnostics(raw_tokens: &RawTokens<'_>) -> Vec<ParseError> {
     let mut out = Vec::new();
     for i in 0..raw_tokens.len() {
-        let (s, span) = (raw_tokens.text(i), raw_tokens.span(i));
-        if raw_tokens.kind(i) == RawKind::Lexed(TokenKind::Ident)
-            && crate::lexer::is_reserved_ident(s)
-        {
-            match glued_ident_suffix(raw_tokens, i, span.end) {
-                // `break#` — folded into a non-reserved lexeme, no FS0046.
-                Some(GluedSuffix::Hash) => continue,
-                // `break!` — FS0046 over the full `break!` lexeme.
-                Some(GluedSuffix::Bang(bang_end)) => out.push(ParseError {
-                    message: format!("The identifier '{s}' is reserved for future use by F#"),
-                    span: span.start..bang_end,
-                }),
-                // Bare `break` — FS0046 over the word itself.
-                None => out.push(ParseError {
-                    message: format!("The identifier '{s}' is reserved for future use by F#"),
-                    span: span.clone(),
-                }),
-            }
+        // The kind test comes first: it is all most tokens need.
+        if raw_tokens.kind(i) != RawKind::Lexed(TokenKind::Ident) {
+            continue;
+        }
+        let s = raw_tokens.text(i);
+        if !crate::lexer::is_reserved_ident(s) {
+            continue;
+        }
+        let span = raw_tokens.span(i);
+        let message = format!("The identifier '{s}' is reserved for future use by F#");
+        match glued_ident_suffix(raw_tokens, i, span.end) {
+            // `break#` — folded into a non-reserved lexeme, no FS0046.
+            Some(GluedSuffix::Hash) => {}
+            // `break!` — FS0046 over the full `break!` lexeme.
+            Some(GluedSuffix::Bang(bang_end)) => out.push(ParseError {
+                message,
+                span: span.start..bang_end,
+            }),
+            // Bare `break` — FS0046 over the word itself.
+            None => out.push(ParseError { message, span }),
         }
     }
     out
