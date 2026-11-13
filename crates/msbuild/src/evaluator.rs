@@ -1709,7 +1709,12 @@ struct State<'r> {
 #[derive(Debug, Clone)]
 struct EvaluatedItem {
     identity: String,
+    /// NuGet's package metadata names only, each value trimmed as the
+    /// dependency capture reads it.
     metadata: HashMap<String, String>,
+    /// Every metadatum, exactly as MSBuild evaluates it (untrimmed), for a
+    /// reader of the item table itself ([`reads`]).
+    exact_metadata: HashMap<String, String>,
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
 }
 

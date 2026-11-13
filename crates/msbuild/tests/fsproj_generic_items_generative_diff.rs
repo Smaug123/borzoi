@@ -42,7 +42,8 @@ const INCLUDES: [&str; 8] = [
     "  b  ",
     "@(Helper->'%(Flavor)')",
 ];
-const VALUES: [&str; 8] = [
+/// Values for a metadata attribute.
+const VALUES: [&str; 11] = [
     "1.0",
     "$(Name)",
     "pre$(Name)post",
@@ -51,6 +52,18 @@ const VALUES: [&str; 8] = [
     "@(Helper)",
     "x%3By",
     "$(Gated)",
+    "  padded  ",
+    " $(Name) ",
+    "a&amp;b",
+];
+/// Bodies for a metadata child element: the attribute values, and what only
+/// element content can hold.
+const BODIES: [&str; 5] = [
+    "<nested>hello</nested>",
+    "<!-- c -->x",
+    "<![CDATA[ c ]]>",
+    "a<!-- c -->b",
+    "\n      spread\n    ",
 ];
 const CONDITIONS: [&str; 5] = [
     "'$(Name)' == 'n'",
@@ -60,13 +73,20 @@ const CONDITIONS: [&str; 5] = [
     "'$(Gated)' != ''",
 ];
 
-/// One generated project.
-fn project(rng: &mut SplitMix64) -> String {
+/// A condition MSBuild accepts and this evaluator cannot decide, so that
+/// `Gated` is untrusted.
+const UNDECIDABLE: &str = "$([System.String]::IsNullOrWhiteSpace(''))";
+
+/// One generated project, and whether it writes the untrusted `Gated`.
+fn project(rng: &mut SplitMix64) -> (String, bool) {
     let mut out = String::from("<Project>\n  <PropertyGroup>\n    <Name>n</Name>\n");
     // `Gated` is written under a condition outside the modelled grammar, so
     // its value is untrusted.
-    if rng.below(2) == 0 {
-        out.push_str("    <Gated Condition=\"'@(Nothing)' == ''\">g</Gated>\n");
+    let gated = rng.below(2) == 0;
+    if gated {
+        out.push_str(&format!(
+            "    <Gated Condition=\"{UNDECIDABLE}\">g</Gated>\n"
+        ));
     }
     out.push_str("  </PropertyGroup>\n");
     if rng.below(3) == 0 {
@@ -90,6 +110,9 @@ fn project(rng: &mut SplitMix64) -> String {
         }
         let include = rng.pick(&INCLUDES);
         let mut attributes = String::new();
+        if rng.below(8) == 0 {
+            attributes.push_str(" Label=\"group\"");
+        }
         let mut children = String::new();
         for name in METADATA {
             match rng.below(4) {
@@ -100,10 +123,12 @@ fn project(rng: &mut SplitMix64) -> String {
                     } else {
                         String::new()
                     };
-                    children.push_str(&format!(
-                        "      <{name}{condition}>{}</{name}>\n",
+                    let body = if rng.below(3) == 0 {
+                        rng.pick(&BODIES)
+                    } else {
                         rng.pick(&VALUES)
-                    ));
+                    };
+                    children.push_str(&format!("      <{name}{condition}>{body}</{name}>\n"));
                 }
                 _ => {}
             }
@@ -119,18 +144,24 @@ fn project(rng: &mut SplitMix64) -> String {
         }
     }
     out.push_str("  </ItemGroup>\n</Project>\n");
-    out
+    (out, gated)
 }
 
-/// How many lists made a claim, and how many were checked.
+/// What a sweep reached: how many projects MSBuild rejected (and so tested
+/// nothing), how many lists made a claim, how many were checked, and how many
+/// of those were in a project writing the untrusted `Gated`.
 #[derive(Default)]
 struct Tally {
+    cases: usize,
+    rejected: usize,
     lists: usize,
     clean: usize,
+    clean_with_gated: usize,
 }
 
 /// Evaluate `xml` both ways and hold every clean list to MSBuild's.
-fn check(oracle: &mut Oracle, xml: &str, tally: &mut Tally) {
+fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
+    tally.cases += 1;
     let dir = tempfile::tempdir().unwrap();
     let path = std::fs::canonicalize(dir.path()).unwrap().join("p.fsproj");
     std::fs::write(&path, xml).unwrap();
@@ -149,16 +180,29 @@ fn check(oracle: &mut Oracle, xml: &str, tally: &mut Tally) {
     )
     .unwrap();
     for item_type in ITEM_TYPES {
-        let Some(theirs) = oracle.items_meta(xml, &path, item_type, &METADATA) else {
+        // Every name the generator writes, the structural `Label` among them,
+        // and every name our table holds: a name we hold that MSBuild does not
+        // must read as "" there.
+        let read = &reads.items[item_type];
+        let mut names: Vec<String> = METADATA.iter().map(|n| (*n).to_owned()).collect();
+        names.push("Label".to_owned());
+        for row in read.items.iter().flatten() {
+            names.extend(row.metadata.keys().cloned());
+        }
+        names.sort();
+        names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let Some(theirs) = oracle.items_meta(xml, &path, item_type, &names) else {
             // MSBuild rejects the project: there is nothing to agree with.
+            tally.rejected += 1;
             return;
         };
         tally.lists += 1;
-        let read = &reads.items[item_type];
         if read.tainted || read.untracked {
             continue;
         }
         tally.clean += 1;
+        tally.clean_with_gated += usize::from(gated);
         let rows = read.items.as_deref().unwrap_or_default();
         let ours: Vec<&str> = rows.iter().map(|r| r.identity.as_str()).collect();
         let msbuild: Vec<&str> = theirs.iter().map(|(id, _)| id.as_str()).collect();
@@ -191,8 +235,8 @@ fn sweep(seed: u64, cases: usize) -> Tally {
     let mut oracle = Oracle::spawn();
     let mut tally = Tally::default();
     for _ in 0..cases {
-        let xml = project(&mut rng);
-        check(&mut oracle, &xml, &mut tally);
+        let (xml, gated) = project(&mut rng);
+        check(&mut oracle, &xml, gated, &mut tally);
     }
     tally
 }
@@ -202,10 +246,21 @@ fn clean_generic_lists_match_msbuild() {
     sweep(0x6e5e_71c5, 400);
 }
 
-/// A sweep in which every list declined would pass while testing nothing.
+/// A sweep in which every list declined, or MSBuild rejected every project,
+/// would pass while testing nothing.
 #[test]
 fn most_lists_are_clean() {
     let tally = sweep(0x0a11_c1ea, 200);
+    assert!(
+        tally.rejected * 10 < tally.cases,
+        "MSBuild rejected {} of {} generated projects",
+        tally.rejected,
+        tally.cases
+    );
+    assert!(
+        tally.clean_with_gated > 0,
+        "no clean list was checked in a project writing the untrusted property"
+    );
     assert!(
         tally.clean * 2 > tally.lists,
         "only {} of {} generated lists were clean",

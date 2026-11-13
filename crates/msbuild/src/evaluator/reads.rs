@@ -150,7 +150,7 @@ impl State<'_> {
                 .map(|item| ItemRow {
                     identity: item.identity.clone(),
                     metadata: item
-                        .metadata
+                        .exact_metadata
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),

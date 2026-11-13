@@ -1716,7 +1716,9 @@ and the gaps have known causes.
 ##### A₁.3b: every metadatum — landed
 
 The generic item tables keep every metadatum an item declaration gives,
-not just NuGet's five package metadata names. The package consumers still
+not just NuGet's five package metadata names. Each value is kept as MSBuild
+holds it, untrimmed, beside the trimmed value the dependency capture reads.
+A body holding elements, which MSBuild takes as inner XML, is uncertain. The package consumers still
 read only those five, and ignore an uncertainty on any other name. Nothing
 they commit to moves.
 
@@ -1733,10 +1735,11 @@ Two checks hold it:
   constructs the taint and uncertainty marks guard. These are literal,
   `$(…)` and escaped identities, `@(…)` copies and transforms, `Remove`,
   attribute and child metadata, conditions on either, `%(…)` and `@(…)` in
-  metadata, item definitions, and an untrusted property. It holds every
-  clean list to MSBuild's `itemsMeta`: identities in order, and every
-  metadatum not marked uncertain. It fails when the probe stops reporting
-  item-definition defaults.
+  metadata, padded values, bodies holding elements, comments or CDATA, the
+  structural `Label` attribute, item definitions, and an untrusted property.
+  It holds every clean list to MSBuild's `itemsMeta`: identities in order,
+  and every metadatum not marked uncertain, on every name either side holds.
+  Reverting any of the capture's guards fails it.
 - **The read census** compares metadata on real projects. On every corpus
   project and fixture, each `Known*` table and
   `ImplicitPackageReferenceVersion` now agrees with MSBuild on every name:

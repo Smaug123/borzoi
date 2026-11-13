@@ -1149,6 +1149,7 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
             Some(false) => captured.push(EvaluatedItem {
                 identity,
                 metadata: metadata.values.clone(),
+                exact_metadata: metadata.exact.clone(),
                 metadata_uncertainties: metadata.uncertainties.clone(),
             }),
             None => state.taint_item_list(item_type),
@@ -1429,6 +1430,7 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
                 // the package metadata a helper item records: a consumer
                 // reading one through the copy must treat it as unknown.
                 metadata: HashMap::new(),
+                exact_metadata: HashMap::new(),
                 metadata_uncertainties: PACKAGE_METADATA_NAMES
                     .iter()
                     .map(|name| HelperMetadataUncertainty::new(name, "@(ProjectReference)"))
@@ -2994,7 +2996,10 @@ fn helper_item_has_package_metadata_name(item: &EvaluatedItem, name: &str) -> bo
 
 #[derive(Debug, Clone, Default)]
 struct GenericItemMetadata {
+    /// Package metadata names, trimmed; see [`EvaluatedItem`]'s `metadata`.
     values: HashMap<String, String>,
+    /// Every name, exact; see [`EvaluatedItem`]'s `exact_metadata`.
+    exact: HashMap<String, String>,
     uncertainties: Vec<HelperMetadataUncertainty>,
 }
 
@@ -3004,7 +3009,7 @@ impl EvaluatedItem {
     /// or leaves uncertain replaces whatever the source carried for it.
     fn with_metadata_applied(mut self, metadata: &GenericItemMetadata) -> EvaluatedItem {
         let element_names: HashSet<String> = metadata
-            .values
+            .exact
             .keys()
             .cloned()
             .chain(metadata.uncertainties.iter().map(|u| item_key(&u.name)))
@@ -3016,8 +3021,12 @@ impl EvaluatedItem {
         for (name, value) in &metadata.values {
             self.metadata.insert(name.clone(), value.clone());
         }
+        for (name, value) in &metadata.exact {
+            self.exact_metadata.insert(name.clone(), value.clone());
+        }
         for uncertainty in &metadata.uncertainties {
             self.metadata.remove(&item_key(&uncertainty.name));
+            self.exact_metadata.remove(&item_key(&uncertainty.name));
         }
         self
     }
@@ -3026,6 +3035,7 @@ impl EvaluatedItem {
 #[derive(Default)]
 struct GenericItemMetadataBuilder {
     values: HashMap<String, String>,
+    exact: HashMap<String, String>,
     uncertainties: HashMap<String, HelperMetadataUncertainty>,
 }
 
@@ -3035,6 +3045,7 @@ impl GenericItemMetadataBuilder {
         uncertainties.sort_by(|left, right| left.name.cmp(&right.name));
         GenericItemMetadata {
             values: self.values,
+            exact: self.exact,
             uncertainties,
         }
     }
@@ -3081,7 +3092,11 @@ fn read_generic_metadata_child(
             // An unmodellable body (CDATA / entity-encoded whitespace —
             // see `collect_element_text`) drops the metadatum and marks it
             // uncertain, exactly like an expansion we couldn't evaluate.
-            match collect_element_text(child) {
+            // So does a body holding elements, whose value MSBuild takes as its
+            // inner XML.
+            let body =
+                collect_element_text(child).filter(|_| !child.children().any(|c| c.is_element()));
+            match body {
                 Some(raw) => {
                     set_generic_metadata_value(name, &raw, condition_tainted, state, metadata)
                 }
@@ -3109,37 +3124,33 @@ fn set_generic_metadata_value(
 ) {
     let key = item_key(name);
     let metadata_tainted = condition_tainted || state.raw_uses_sdk_package_taint(raw);
-    if raw.is_empty() {
-        metadata.values.insert(key.clone(), String::new());
-        if metadata_tainted {
-            mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
-        } else {
-            metadata.uncertainties.remove(&key);
-        }
-        return;
-    }
-    let expansion = expand_silent(raw, state);
-    if expansion.had_issue() {
+    let package = is_package_metadata_name(name);
+    let forget = |metadata: &mut GenericItemMetadataBuilder, value: &str| {
         metadata.values.remove(&key);
-        mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
-        return;
-    }
-    let (escaped, value) = scalar_use(&expansion.value);
-    if escaped.is_empty() {
-        metadata.values.insert(key.clone(), String::new());
-        if metadata_tainted {
-            mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
-        } else {
-            metadata.uncertainties.remove(&key);
+        metadata.exact.remove(&key);
+        mark_generic_metadata_uncertain(name, value, &mut metadata.uncertainties);
+    };
+    let (normalised, exact) = if raw.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let expansion = expand_silent(raw, state);
+        if expansion.had_issue() {
+            forget(metadata, raw);
+            return;
         }
-        return;
+        let full = expansion.value.as_escaped();
+        if contains_item_reference(full) || contains_metadata_reference(full) {
+            forget(metadata, scalar_use(&expansion.value).0);
+            return;
+        }
+        // The dependency capture reads the value trimmed in the escaped domain;
+        // MSBuild's item table holds it whole.
+        (scalar_use(&expansion.value).1, escaping::unescape(full))
+    };
+    if package {
+        metadata.values.insert(key.clone(), normalised);
     }
-    if contains_item_reference(escaped) || contains_metadata_reference(escaped) {
-        metadata.values.remove(&key);
-        mark_generic_metadata_uncertain(name, escaped, &mut metadata.uncertainties);
-        return;
-    }
-    metadata.values.insert(key.clone(), value);
+    metadata.exact.insert(key.clone(), exact);
     if metadata_tainted {
         mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
     } else {
@@ -3262,6 +3273,7 @@ fn is_item_metadata_attribute(name: &str) -> bool {
             | "include"
             | "keepduplicates"
             | "keepmetadata"
+            | "label"
             | "matchonmetadata"
             | "matchonmetadataoptions"
             | "remove"

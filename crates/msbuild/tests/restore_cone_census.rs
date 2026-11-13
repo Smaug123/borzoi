@@ -922,7 +922,9 @@ fn reads(
                         "identities differ"
                     };
                     verdict.push_str(&format!("; ours {}, {agreement}", rows.len()));
-                    if identities == msbuild_identities {
+                    // A tainted list makes no claim: two declarations may share an
+                    // identity and differ in metadata.
+                    if identities == msbuild_identities && !read.tainted && !read.untracked {
                         verdict.push_str(&metadata_verdict(&subject.key, item_type, rows, &theirs));
                     }
                 }
