@@ -15,6 +15,8 @@
 //! [`crate::ParsedProject`] beside it is the one the unprobed walk returns.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
+use std::path::PathBuf;
 
 use super::item_pass::{
     PackageItemKind, helper_item_definition_default_uncertainties, is_package_id_shape,
@@ -31,6 +33,8 @@ pub struct ReadProbe {
     pub properties: Vec<String>,
     /// Item types, in any case.
     pub item_types: Vec<String>,
+    /// Target names, in any case.
+    pub targets: Vec<String>,
 }
 
 /// What the walk's reads saw, keyed by the names as the probe spelt them.
@@ -38,6 +42,46 @@ pub struct ReadProbe {
 pub struct EvaluationReads {
     pub properties: BTreeMap<String, PropertyRead>,
     pub items: BTreeMap<String, ItemRead>,
+    pub targets: BTreeMap<String, TargetRead>,
+}
+
+/// The definition of one target a build would run: the last `<Target>` of
+/// that name, compared case-insensitively, in the order the walk reached the
+/// files of the import graph. MSBuild keeps that one and drops the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetRead {
+    /// The element, or `None` when the walk reached no target of that name.
+    pub definition: Option<TargetDefinition>,
+    /// Whether the walk saw every file MSBuild's evaluation imports, so that
+    /// no definition it did not reach can override `definition`. Only an
+    /// exact read makes a claim.
+    pub exact: bool,
+}
+
+/// Which `Directory.Build.*` files the walk spliced in itself
+/// ([`super::walk_directory_build_file`]), standing in for an import
+/// `Microsoft.Common.props` or `.targets` makes, and whether the props splice
+/// first ran at `Microsoft.Common.props`'s import point and was what that
+/// import takes.
+#[derive(Debug, Clone, Default)]
+pub(super) struct DirectoryBuildSplices {
+    pub(super) props_spliced: bool,
+    pub(super) targets_spliced: bool,
+    pub(super) props_point_reached: bool,
+    /// A props import point the walk suppressed although MSBuild's import
+    /// there may take a file the splice does not stand for: undecided, or a
+    /// file taken again or other than the splice's (a `Directory.Build.props`
+    /// can redirect the path, an SDK can import it with the splice off).
+    pub(super) props_point_unaccounted: bool,
+}
+
+/// Where a `<Target>` element is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetDefinition {
+    /// The file, spelt as the walk reached it.
+    pub file: PathBuf,
+    /// The element's byte range in that file's text.
+    pub range: Range<usize>,
 }
 
 /// A read of one property at the end of the walk.
@@ -122,7 +166,53 @@ impl State<'_> {
             .iter()
             .map(|item_type| (item_type.clone(), self.read_items(item_type)))
             .collect();
-        EvaluationReads { properties, items }
+        let targets = probe
+            .targets
+            .iter()
+            .map(|name| (name.clone(), self.read_target(name)))
+            .collect();
+        EvaluationReads {
+            properties,
+            items,
+            targets,
+        }
+    }
+
+    /// MSBuild keeps the last definition of a name, comparing names unescaped
+    /// and `OrdinalIgnoreCase`. Within [`plain_target_name`] that comparison
+    /// is ASCII case folding; a name outside it (a `%` escape, whitespace,
+    /// non-ASCII) is one this does not compare, so any such definition, or
+    /// such a query, declines.
+    ///
+    /// The target graph is the files the walk reached. It is MSBuild's when
+    /// the walk is not opaque and every `Directory.Build.*` file it spliced
+    /// in itself stands for an import an SDK chain really makes. The props
+    /// splice must have run at `Microsoft.Common.props`'s import point and
+    /// been what that import takes ([`DirectoryBuildSplices`]). The targets
+    /// splice is a fallback the walk makes only when no chain reached its
+    /// import point first, so MSBuild never makes it.
+    /// Otherwise whatever the file defines or steers is the walk's alone.
+    fn read_target(&self, name: &str) -> TargetRead {
+        let definition = self
+            .target_definitions
+            .iter()
+            .rev()
+            .find(|(defined, _)| defined.eq_ignore_ascii_case(name))
+            .map(|(_, definition)| definition.clone());
+        let comparable = plain_target_name(name)
+            && self
+                .target_definitions
+                .iter()
+                .all(|(defined, _)| plain_target_name(defined));
+        let splices = &self.directory_build_splices;
+        let graph_is_msbuilds = self.walk_opaque.is_none()
+            && !splices.props_point_unaccounted
+            && (!splices.props_spliced || splices.props_point_reached)
+            && !splices.targets_spliced;
+        TargetRead {
+            definition,
+            exact: comparable && graph_is_msbuilds,
+        }
     }
 
     fn read_property(&self, name: &str) -> PropertyRead {
@@ -333,6 +423,13 @@ impl State<'_> {
     }
 }
 
+/// A target name MSBuild's comparison (unescape, then `OrdinalIgnoreCase`)
+/// treats as ASCII case folding: non-empty, printable ASCII, and free of `%`
+/// and whitespace.
+fn plain_target_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_graphic() && b != b'%')
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -349,6 +446,7 @@ mod tests {
         let probe = ReadProbe {
             properties: properties.iter().map(|p| (*p).to_owned()).collect(),
             item_types: item_types.iter().map(|i| (*i).to_owned()).collect(),
+            targets: Vec::new(),
         };
         let walked = crate::parse_fsproj_probed(
             &source,
@@ -629,5 +727,257 @@ mod global_package_reference_tests {
             &["GlobalPackageReference"],
         );
         assert!(!reads.items["GlobalPackageReference"].exact);
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// Read `targets` at the end of a walk of `body`, which may import
+    /// `t.targets` holding `imported`.
+    fn read_targets(
+        body: &str,
+        imported: &str,
+        targets: &[&str],
+    ) -> (EvaluationReads, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.fsproj");
+        let source = format!("<Project>{body}</Project>");
+        std::fs::write(&path, &source).unwrap();
+        std::fs::write(
+            dir.path().join("t.targets"),
+            format!("<Project>{imported}</Project>"),
+        )
+        .unwrap();
+        let probe = ReadProbe {
+            targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+            ..ReadProbe::default()
+        };
+        let walked = crate::parse_fsproj_probed(
+            &source,
+            &path,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+            Some(&probe),
+        )
+        .unwrap();
+        (walked.reads.unwrap(), dir)
+    }
+
+    #[test]
+    fn the_last_definition_across_the_import_graph_wins() {
+        const IMPORTED: &str = "<Target Name=\"A\" /><Target Name=\"B\" />";
+        let (reads, dir) = read_targets(
+            "<Target Name=\"a\" /><Import Project=\"t.targets\" /><Target Name=\"B\" DependsOnTargets=\"A\" />",
+            IMPORTED,
+            &["A", "b", "Absent"],
+        );
+        let a = &reads.targets["A"];
+        assert!(a.exact);
+        let a = a.definition.as_ref().unwrap();
+        assert_eq!(a.file, dir.path().join("t.targets"));
+        let imported = format!("<Project>{IMPORTED}</Project>");
+        assert_eq!(&imported[a.range.clone()], "<Target Name=\"A\" />");
+        let b = reads.targets["b"].definition.as_ref().unwrap();
+        assert_eq!(b.file, dir.path().join("p.fsproj"));
+        assert!(reads.targets["Absent"].exact);
+        assert_eq!(reads.targets["Absent"].definition, None);
+    }
+
+    #[test]
+    fn an_opaque_walk_makes_no_claim() {
+        let (reads, _) = read_targets(
+            "<Import Project=\"t.targets\" Condition=\"$([System.String]::IsNullOrWhiteSpace(''))\" />",
+            "<Target Name=\"A\" />",
+            &["A"],
+        );
+        assert!(!reads.targets["A"].exact);
+    }
+}
+
+#[cfg(test)]
+mod spliced_target_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::{SdkPaths, SdkResolution};
+
+    /// Read target `Phantom` at the end of a walk of an SDK project whose
+    /// `Sdk.props` and `Sdk.targets` bodies are given, beside a
+    /// `Directory.Build.props` that defines it.
+    pub(super) fn read_phantom(sdk_props: &str, sdk_targets: &str) -> TargetRead {
+        read_phantom_beside(
+            sdk_props,
+            sdk_targets,
+            "<Project><Target Name=\"Phantom\" /></Project>",
+            None,
+        )
+    }
+
+    /// [`read_phantom`] beside a `Directory.Build.props` of `beside`, and an
+    /// `other.props` of `other` if given.
+    pub(super) fn read_phantom_beside(
+        sdk_props: &str,
+        sdk_targets: &str,
+        beside: &str,
+        other: Option<&str>,
+    ) -> TargetRead {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::observed::host_fs::canonicalize(dir.path()).unwrap();
+        let sdk = root.join("sdk");
+        std::fs::create_dir(&sdk).unwrap();
+        std::fs::write(sdk.join("Sdk.props"), sdk_props).unwrap();
+        std::fs::write(sdk.join("Sdk.targets"), sdk_targets).unwrap();
+        let project = root.join("p").join("p.fsproj");
+        std::fs::create_dir(project.parent().unwrap()).unwrap();
+        std::fs::write(root.join("p").join("Directory.Build.props"), beside).unwrap();
+        if let Some(other) = other {
+            std::fs::write(root.join("p").join("other.props"), other).unwrap();
+        }
+        let source = "<Project Sdk=\"S\"></Project>";
+        std::fs::write(&project, source).unwrap();
+        let resolver = |_: &str, _: &crate::observed::Observer| {
+            Ok(SdkResolution::from(SdkPaths {
+                root: sdk.clone(),
+                props: sdk.join("Sdk.props"),
+                targets: sdk.join("Sdk.targets"),
+            }))
+        };
+        let probe = ReadProbe {
+            targets: vec!["Phantom".to_owned()],
+            ..ReadProbe::default()
+        };
+        let walked = crate::parse_fsproj_probed(
+            source,
+            &project,
+            &HashMap::new(),
+            &HashMap::new(),
+            Some(&resolver),
+            None,
+            Some(&probe),
+        )
+        .unwrap();
+        walked.reads.unwrap().targets["Phantom"].clone()
+    }
+
+    /// An SDK whose `Sdk.targets` reaches the `Directory.Build.targets` import
+    /// point but whose `Sdk.props` never reaches the props one: MSBuild
+    /// imports no `Directory.Build.props`, so the walk's splice of it decides
+    /// nothing.
+    #[test]
+    fn a_props_splice_no_chain_asked_for_declines() {
+        let read = read_phantom(
+            "<Project />",
+            "<Project><Import Project=\"$(DirectoryBuildTargetsPath)\" \
+             Condition=\"Exists('$(DirectoryBuildTargetsPath)')\" /></Project>",
+        );
+        assert!(read.definition.is_some());
+        assert!(!read.exact, "{read:?}");
+    }
+
+    /// The same SDK with the props import point, as `Microsoft.Common.props`
+    /// writes it, path first: the splice stands for a real import.
+    #[test]
+    fn a_props_splice_at_a_reached_import_point_is_exact() {
+        let read = read_phantom(
+            "<Project><PropertyGroup><DirectoryBuildPropsPath>\
+             $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildProjectDirectory)'))\
+             </DirectoryBuildPropsPath></PropertyGroup>\
+             <Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
+            "<Project />",
+        );
+        assert!(read.definition.is_some());
+        assert!(read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod spliced_target_condition_tests {
+    use super::spliced_target_tests::read_phantom;
+
+    /// The props import point is reached, but its condition is false, so
+    /// MSBuild imports nothing there.
+    #[test]
+    fn a_props_import_point_whose_condition_is_false_declines() {
+        let read = read_phantom(
+            "<Project><Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"false And Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
+            "<Project />",
+        );
+        assert!(!read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod spliced_target_order_tests {
+    use super::spliced_target_tests::read_phantom_beside;
+
+    /// The import's condition is false until the spliced file runs: MSBuild
+    /// decides it first and imports nothing.
+    #[test]
+    fn a_props_import_decided_before_the_splice_runs_declines() {
+        let read = read_phantom_beside(
+            "<Project><PropertyGroup><Gate>false</Gate></PropertyGroup>\
+             <Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"'$(Gate)' == 'true' And Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
+            "<Project />",
+            "<Project><PropertyGroup><Gate>true</Gate></PropertyGroup>\
+             <Target Name=\"Phantom\" /></Project>",
+            None,
+        );
+        assert!(!read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod spliced_target_redirect_tests {
+    use super::spliced_target_tests::read_phantom_beside;
+
+    /// `Directory.Build.props` redirects the path and the SDK reaches a
+    /// second props import point: MSBuild takes it, and the walk suppresses
+    /// it.
+    #[test]
+    fn a_second_props_import_point_declines() {
+        const POINT: &str = "<Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"Exists('$(DirectoryBuildPropsPath)')\" />";
+        let read = read_phantom_beside(
+            &format!(
+                "<Project><PropertyGroup><DirectoryBuildPropsPath>\
+                 $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildProjectDirectory)'))\
+                 </DirectoryBuildPropsPath></PropertyGroup>{POINT}{POINT}</Project>"
+            ),
+            "<Project />",
+            "<Project><PropertyGroup><DirectoryBuildPropsPath>$(MSBuildThisFileDirectory)other.props\
+             </DirectoryBuildPropsPath></PropertyGroup><Target Name=\"Phantom\" /></Project>",
+            Some("<Project><Target Name=\"Phantom\" /></Project>"),
+        );
+        assert!(!read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod suppressed_props_import_tests {
+    use super::spliced_target_tests::read_phantom;
+
+    /// The splice is off (`ImportDirectoryBuildProps=false`), but the SDK
+    /// imports the file itself: MSBuild takes it, and the walk suppresses it.
+    #[test]
+    fn an_sdk_import_of_the_props_file_with_the_splice_off_declines() {
+        let read = read_phantom(
+            "<Project><PropertyGroup><ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>\
+             <DirectoryBuildPropsPath>\
+             $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildProjectDirectory)'))\
+             </DirectoryBuildPropsPath></PropertyGroup>\
+             <Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
+            "<Project />",
+        );
+        assert!(!read.exact, "{read:?}");
     }
 }

@@ -1751,6 +1751,19 @@ struct State<'r> {
     /// kept so the item pass can re-parse them. Indexed by
     /// [`CurrentFile::Imported::retained`].
     retained_imported_files: Vec<RetainedImportedFile>,
+    /// The entry project's path, as the caller spelt it: the file a
+    /// [`Self::target_definitions`] entry of the entry project names.
+    #[cfg(any(test, feature = "test-support"))]
+    entry_project_path: PathBuf,
+    /// Every `<Target>` element the walk reached, with its `Name` attribute,
+    /// in the order it reached them. Only the probe reads these
+    /// ([`reads`]); the walk itself runs no target.
+    #[cfg(any(test, feature = "test-support"))]
+    target_definitions: Vec<(String, reads::TargetDefinition)>,
+    /// Which `Directory.Build.*` files the walk spliced in itself, and
+    /// whether an SDK chain reached the import point each stands in for.
+    #[cfg(any(test, feature = "test-support"))]
+    directory_build_splices: reads::DirectoryBuildSplices,
     /// What the walk knows, or doesn't, about each property's stored value —
     /// keyed by lowercase property name. All three forward-uncertainty channels
     /// live in the one [`Trust`] value, so a name cannot be marked on one
@@ -2196,6 +2209,12 @@ impl<'r> State<'r> {
             current_file: CurrentFile::Entry,
             deferred_item_groups: Vec::new(),
             retained_imported_files: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            entry_project_path: project_path.to_path_buf(),
+            #[cfg(any(test, feature = "test-support"))]
+            target_definitions: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            directory_build_splices: reads::DirectoryBuildSplices::default(),
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: None,
@@ -2753,6 +2772,12 @@ impl<'r> State<'r> {
             current_file: _,
             deferred_item_groups: _,
             retained_imported_files: _,
+            #[cfg(any(test, feature = "test-support"))]
+                entry_project_path: _,
+            #[cfg(any(test, feature = "test-support"))]
+                target_definitions: _,
+            #[cfg(any(test, feature = "test-support"))]
+                directory_build_splices: _,
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
@@ -3624,6 +3649,24 @@ impl<'r> State<'r> {
     /// Every name is seeded by [`properties::well_known`], so the saved
     /// values are always present; the [`ThisFileFrame`] just records them
     /// verbatim for [`Self::exit_this_file`] to restore.
+    /// Record a `<Target>` element in the file being walked
+    /// ([`Self::target_definitions`]).
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_target_definition(&mut self, node: Node<'_, '_>) {
+        let file = match &self.current_file {
+            CurrentFile::Entry => self.entry_project_path.clone(),
+            CurrentFile::Imported { path, .. } => path.clone(),
+        };
+        let name = node.attribute("Name").unwrap_or_default().to_owned();
+        self.target_definitions.push((
+            name,
+            reads::TargetDefinition {
+                file,
+                range: node.range(),
+            },
+        ));
+    }
+
     fn enter_this_file(&mut self, file_path: &Path) -> ThisFileFrame {
         let seeds = properties::this_file_seeds(file_path);
         let saved = seeds
@@ -3938,6 +3981,10 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             // Neither contributes to the *static* Compile item set —
             // `<Target>` items are build-time, `<UsingTask>` declares a
             // task. They flip `is_partial` only.
+            #[cfg(any(test, feature = "test-support"))]
+            if node.tag_name().name() == "Target" {
+                state.record_target_definition(node);
+            }
             state.push(
                 DiagnosticKind::UnsupportedConstruct {
                     element: node.tag_name().name().to_string(),
@@ -5431,6 +5478,13 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             .and_then(simple_property_reference)
             .is_some_and(|name| name.eq_ignore_ascii_case("DirectoryBuildPropsPath"));
         if is_props_rediscovery {
+            // What the real import here takes, decided before the splice runs:
+            // the spliced file can rewrite what decides it.
+            #[cfg(any(test, feature = "test-support"))]
+            let (real_import, spliced_before) = (
+                props_import_point(node, current_file_dir, state),
+                state.directory_build_splices.props_spliced,
+            );
             if !state.in_entry_body && state.directory_build_props_splice_pending {
                 fire_entry_directory_build_props_splice(state);
             } else if state.in_entry_body && state.pending_directory_build_props.take().is_some() {
@@ -5441,6 +5495,23 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // `walk_external_file` (which `take()`s the stash) is a
                 // no-op afterwards.
                 fire_entry_directory_build_props_splice(state);
+            }
+            // The walk suppresses this import, so it is accounted for only when
+            // it takes nothing, or when the splice ran here, for the first
+            // time, on the file it takes.
+            #[cfg(any(test, feature = "test-support"))]
+            match real_import {
+                PropsImportPoint::TakesNothing => {}
+                PropsImportPoint::Takes(path)
+                    if !spliced_before
+                        && state.directory_build_splices.props_spliced
+                        && state.directory_build_props_splice_path.as_ref() == Some(&path) =>
+                {
+                    state.directory_build_splices.props_point_reached = true;
+                }
+                PropsImportPoint::Takes(_) | PropsImportPoint::Undecided => {
+                    state.directory_build_splices.props_point_unaccounted = true;
+                }
             }
         }
         return;
@@ -6552,12 +6623,93 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     state.exit_this_file(frame);
 }
 
+/// What the `Microsoft.Common.props` import of `$(DirectoryBuildPropsPath)` at
+/// a props import point takes, as far as the walk can decide it. Only the
+/// target probe asks ([`reads::DirectoryBuildSplices`]).
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, PartialEq, Eq)]
+enum PropsImportPoint {
+    /// Its condition decides true exactly and names this trusted file,
+    /// canonical as [`State::directory_build_props_splice_path`] holds it.
+    Takes(PathBuf),
+    /// Its condition decides false exactly: MSBuild imports nothing here.
+    TakesNothing,
+    /// Anything else.
+    Undecided,
+}
+
+/// Decide the props import at `node` before the walk does anything there.
+/// Read quietly ([`State::quiet_target_framework_reads`]): only the target
+/// probe asks.
+#[cfg(any(test, feature = "test-support"))]
+fn props_import_point(
+    node: Node<'_, '_>,
+    current_file_dir: &Path,
+    state: &State<'_>,
+) -> PropsImportPoint {
+    let previous = state.quiet_target_framework_reads.replace(true);
+    let outcome = match node.attribute("Condition") {
+        None => Some(true),
+        Some(condition) => {
+            let exists = |path: &str| condition_exists(state.observer, path, current_file_dir);
+            let eval = condition::evaluate_with_exists(
+                condition,
+                &state.lookup,
+                condition::Probes {
+                    exists: &exists,
+                    observer: state.observer,
+                },
+            );
+            let exact =
+                state.condition_is_decided_exactly(condition, Some(current_file_dir), &|name| {
+                    state.undefined_read_is_exact(name)
+                });
+            match eval.outcome {
+                condition::Outcome::True if exact => Some(true),
+                condition::Outcome::False if exact => Some(false),
+                _ => None,
+            }
+        }
+    };
+    state.quiet_target_framework_reads.set(previous);
+    match outcome {
+        Some(false) => PropsImportPoint::TakesNothing,
+        None => PropsImportPoint::Undecided,
+        Some(true) => {
+            if state
+                .trust_of("DirectoryBuildPropsPath")
+                .reference_is_untrusted()
+            {
+                return PropsImportPoint::Undecided;
+            }
+            let path = state
+                .lookup
+                .get_unescaped("DirectoryBuildPropsPath")
+                .unwrap_or_default();
+            let path = path.trim();
+            if path.is_empty() {
+                PropsImportPoint::Undecided
+            } else {
+                PropsImportPoint::Takes(canonicalise_or_normalise(
+                    state.observer,
+                    &current_file_dir.join(path),
+                ))
+            }
+        }
+    }
+}
+
 fn walk_directory_build_file(
     path: &Path,
     span: Range<usize>,
     kind: DirectoryBuildFile,
     state: &mut State<'_>,
 ) {
+    #[cfg(any(test, feature = "test-support"))]
+    match kind {
+        DirectoryBuildFile::Props => state.directory_build_splices.props_spliced = true,
+        DirectoryBuildFile::Targets => state.directory_build_splices.targets_spliced = true,
+    }
     match kind {
         DirectoryBuildFile::Props => {
             state.directory_build_props_splice_path =

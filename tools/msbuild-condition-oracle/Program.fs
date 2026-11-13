@@ -79,11 +79,16 @@
 ///
 ///   {"op":"evaluated","project":s,"globals":{..},"properties":[..],"items":[..]}
 ///     -> {"ok":true,"properties":{name:value|null, ..},
-///         "items":{type:[{"identity":s,"metadata":{..}}, ..], ..}}
+///         "items":{type:[{"identity":s,"metadata":{..}}, ..], ..},
+///         "targets":{name:{"file":s,"line":n,"column":n}|null, ..}}
 ///     Evaluates the project file at `project` under `globals` without building
 ///     it, and reads back each named property (null when unset) and each named
 ///     item type's items with their metadata: the evaluation the restore
 ///     targets run on. The restore-cone census reads it against ours.
+///     An optional `"targets":[..]` names targets to look up in the
+///     evaluation's target table, by MSBuild's own name rules: where the
+///     definition it keeps is, or null.
+///     `{"ok":false}` when MSBuild rejects the project.
 ///
 ///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"items":[fullPath, ..]}
@@ -765,11 +770,24 @@ let private evaluated
     (globals: Collections.Generic.IDictionary<string, string>)
     (properties: string list)
     (itemTypes: string list)
+    (targets: string list)
     =
     use collection = new ProjectCollection()
     let instance = ProjectInstance(project, globals, null, collection)
 
     {| ok = true
+       targets =
+        targets
+        |> List.map (fun name ->
+            match instance.Targets.TryGetValue name with
+            | true, target ->
+                (name,
+                 box
+                     {| file = target.FullPath
+                        line = target.Location.Line
+                        column = target.Location.Column |})
+            | _ -> (name, null))
+        |> dict
        properties =
         properties
         |> List.map (fun name ->
@@ -800,9 +818,19 @@ let private respondEvaluated (root: JsonElement) : string =
     let names (field: string) =
         root.GetProperty(field).EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
 
+    // `targets` is optional: the names to look up in MSBuild's own target table.
+    let targets =
+        match root.TryGetProperty "targets" with
+        | true, _ -> names "targets"
+        | _ -> []
+
     match readGlobals root with
     | null -> JsonSerializer.Serialize {| error = "evaluated needs a globals object" |}
-    | globals -> JsonSerializer.Serialize(evaluated project globals (names "properties") (names "items"))
+    | globals ->
+        try
+            JsonSerializer.Serialize(evaluated project globals (names "properties") (names "items") targets)
+        with :? InvalidProjectFileException ->
+            JsonSerializer.Serialize {| ok = false |}
 
 /// The `targetItems` op: evaluate the project file at `path` as it stands on
 /// disk, execute `target` on that evaluation in-process, and read back the

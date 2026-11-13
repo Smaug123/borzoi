@@ -75,7 +75,8 @@ pub fn property_references(raw: &str) -> Vec<&str> {
 }
 
 pub use crate::evaluator::reads::{
-    EvaluationReads, InexactUnset, ItemRead, ItemRow, PropertyRead, ReadProbe,
+    EvaluationReads, InexactUnset, ItemRead, ItemRow, PropertyRead, ReadProbe, TargetDefinition,
+    TargetRead,
 };
 
 /// [`crate::parse_fsproj_with_imports`], also reading `probe`'s properties and
