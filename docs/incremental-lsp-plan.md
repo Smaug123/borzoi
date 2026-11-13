@@ -1453,8 +1453,13 @@ dozen, and the counts report it.
   directory it is looked up in is witnessed (its search permission decides
   the lookup, and a `chmod` moves its stamp). An `lstat` of a path ending
   in a separator follows a final symlink, so such a spelling has no
-  `LinkKind` witness. A listing that failed at some entry has none
-  either: the failure can clear with no entry changing. Codex found two spellings a narrower witness missed
+  `LinkKind` witness. Only a *fact* (an answer, or an absence;
+  `read_checks::a_fact`) has a witness or is trusted inside an installed
+  version: a read that failed otherwise (a permission, an I/O error, a
+  listing that failed at an entry) can recover with nothing on disk
+  changing, and is asked in every generation. (Codex found it twice, for a
+  partial listing's witness and for a failure inside a version; the two
+  became one predicate.) Codex found two spellings a narrower witness missed
   (`Exists('link/')`, and a link whose target ends with a separator, to
   another link); the narrower witnesses went, and a property on the host's
   file system now generates trees with symlinks of every such spelling.
@@ -1582,6 +1587,7 @@ Planted, each caught, then removed:
 | a `.` dropped from the walk (Codex) | `a_directory_a_dot_is_looked_up_in_is_witnessed` |
 | a package version trusted without its commit marker (Codex) | `a_package_is_trusted_only_once_committed_before_the_evaluation` |
 | a listing that failed at an entry witnessed by its directory (Codex) | `a_listing_with_a_failed_entry_is_asked_every_time` |
+| a failed read inside an installed version trusted as immutable (Codex) | `a_failed_read_inside_a_version_is_confirmed` |
 
 Three plants first passed every test: the canonical-spelling witness (the
 model could not move a directory), the seeded pass's reads and the graph walk

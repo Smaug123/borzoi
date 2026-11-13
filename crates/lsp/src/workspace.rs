@@ -38,7 +38,7 @@
 //! body's own `<DefineConstants>` are still collected.
 
 use crate::observed::{EvaluationCounts, Unobserved};
-use crate::read_checks::{Check, ReadChecks};
+use crate::read_checks::{Check, ReadChecks, a_fact};
 use crate::vfs::Nanos;
 use borzoi_msbuild::observed::{self as msbuild_observed, Observation, Observer, Read, ReadSet};
 use std::cell::Cell;
@@ -270,10 +270,13 @@ impl Evaluation {
             .filter_map(|read| versions.containing(&read.path))
             .filter(|version| !is_package(version) || committed(version))
             .collect();
+        // What a version holds is immutable; an I/O error reading it is
+        // not, so only an answer or an absence is trusted.
         let trusted = |read: &&Read| {
-            versions
-                .containing(&read.path)
-                .is_some_and(|version| shown.contains(&version))
+            a_fact(&read.observation)
+                && versions
+                    .containing(&read.path)
+                    .is_some_and(|version| shown.contains(&version))
         };
         reads
             .iter()
@@ -6035,6 +6038,63 @@ mod tests {
                 inside(&evaluation.checks(|_| false))
             };
             assert_eq!(checks_at(Nanos(i128::MAX / 2)), expected);
+        }
+
+        /// Inside a version shown to exist, an answer or an absence is
+        /// trusted, but a read that failed otherwise is confirmed: the
+        /// failure can clear (Codex).
+        #[test]
+        fn a_failed_read_inside_a_version_is_confirmed() {
+            let failure = |kind: std::io::ErrorKind| {
+                msbuild_observed::Failure::of(&std::io::Error::from(kind))
+            };
+            let read = |path: &str, observation: Observation| Read {
+                path: PathBuf::from(path),
+                observation,
+            };
+            let reads = [
+                read(
+                    "/d/sdk/1.0.0/Sdk.props",
+                    Observation::Text(Err(failure(std::io::ErrorKind::PermissionDenied))),
+                ),
+                read(
+                    "/d/sdk/1.0.0/Sdk.targets",
+                    Observation::Text(Ok(msbuild_observed::TextDigest::of("<Project />"))),
+                ),
+                read(
+                    "/d/sdk/1.0.0/absent.props",
+                    Observation::Kind(Err(failure(std::io::ErrorKind::NotFound))),
+                ),
+                read(
+                    "/d/sdk/1.0.0/Sdks",
+                    Observation::Listing(Ok(vec![msbuild_observed::Listed::Unreadable(
+                        msbuild_observed::Failure::of(&std::io::Error::other("transient")),
+                    )])),
+                ),
+            ];
+            let evaluation = Evaluation {
+                evaluated: None,
+                reads: reads.iter().cloned().collect(),
+                immutable: ImmutableRoots {
+                    dotnet: vec![PathBuf::from("/d")],
+                    nuget: vec![],
+                },
+            };
+            let mut checked: Vec<PathBuf> = evaluation
+                .checks(|_| true)
+                .iter()
+                .map(|check| check.read().path.clone())
+                .collect();
+            checked.sort();
+            assert_eq!(
+                checked,
+                [
+                    "/d/sdk/1.0.0",
+                    "/d/sdk/1.0.0/Sdk.props",
+                    "/d/sdk/1.0.0/Sdks"
+                ]
+                .map(PathBuf::from)
+            );
         }
 
         /// The served pass of `evaluated`, or for a failed evaluation the

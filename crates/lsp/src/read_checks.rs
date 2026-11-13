@@ -35,6 +35,11 @@
 //! spelt as its components: a trailing separator makes it follow a final
 //! symlink.
 //!
+//! Only a fact has a witness ([`a_fact`]): an answer, or an absence. A
+//! read that failed otherwise (a permission, an I/O error, a listing that
+//! failed at an entry) can recover with nothing on disk changing, and is
+//! asked in every generation.
+//!
 //! Whole-file reads are confirmed by the file's own stamp
 //! ([`DiskCache::text_answer`]). A read that failed for any reason but
 //! absence is asked again in every generation, as is one whose resolution
@@ -64,6 +69,26 @@ use borzoi_msbuild::observed::{Failure, Listed, Observation, Read, ReadCounts};
 use crate::observed::HostDisk;
 use crate::paths::lexically_normalize;
 use crate::vfs::{Disk, DiskCache, Nanos, Stamp};
+
+/// Whether a query's answer is a fact about what the disk holds: an answer
+/// with nothing in it that failed, or the absence of the path. Any other
+/// failure (a permission, an I/O error, a listing that failed at an entry)
+/// can clear with nothing on disk changing, so neither a witness nor the
+/// immutability of an installed version may speak for it.
+pub fn a_fact(observation: &Observation) -> bool {
+    fn answered_or_absent<T>(answer: &Result<T, Failure>) -> bool {
+        answer.as_ref().err().is_none_or(Failure::is_absent)
+    }
+    match observation {
+        Observation::Text(answer) => answered_or_absent(answer),
+        Observation::Kind(answer) | Observation::LinkKind(answer) => answered_or_absent(answer),
+        Observation::Listing(Ok(entries)) => entries
+            .iter()
+            .all(|entry| matches!(entry, Listed::Entry { kind: Ok(_), .. })),
+        Observation::Listing(Err(failure)) => failure.is_absent(),
+        Observation::Canonical(answer) => answered_or_absent(answer),
+    }
+}
 
 /// How many symlinks a walk follows before it gives up, as `ELOOP` does.
 const MAX_LINKS: usize = 40;
@@ -250,10 +275,6 @@ impl<D: Probe> ReadChecks<D> {
     /// docs), for a read about to be asked; `None` when no directory does,
     /// and the read is asked in every generation.
     fn deciders(&self, read: &Read) -> Option<Vec<PathBuf>> {
-        let absent_or_answered = |answer: Result<(), &Failure>| match answer {
-            Ok(()) => true,
-            Err(failure) => failure.is_absent(),
-        };
         let path = &read.path;
         // A relative path is resolved from the working directory, and has
         // no witness. `lstat` follows a final symlink when the path ends
@@ -263,32 +284,17 @@ impl<D: Probe> ReadChecks<D> {
         let spelt_as_components = lexically_normalize(path).as_os_str() == path.as_os_str();
         if !path.is_absolute()
             || (matches!(read.observation, Observation::LinkKind(_)) && !spelt_as_components)
+            || !a_fact(&read.observation)
         {
             return None;
         }
         match &read.observation {
-            // A listing that failed at some entry can recover with no entry
-            // changing, so only a whole listing has a witness.
-            Observation::Listing(Ok(entries))
-                if entries
-                    .iter()
-                    .all(|entry| matches!(entry, Listed::Entry { kind: Ok(_), .. })) =>
-            {
-                Some(vec![path.clone()])
-            }
-            Observation::Listing(Err(failure)) if failure.is_absent() => {
+            Observation::Listing(Ok(_)) => Some(vec![path.clone()]),
+            Observation::Listing(Err(_)) | Observation::Kind(_) | Observation::Canonical(_) => {
                 self.resolution(path, true)
             }
-            Observation::LinkKind(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
-                self.resolution(path, false)
-            }
-            Observation::Kind(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
-                self.resolution(path, true)
-            }
-            Observation::Canonical(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
-                self.resolution(path, true)
-            }
-            _ => None,
+            Observation::LinkKind(_) => self.resolution(path, false),
+            Observation::Text(_) => None,
         }
     }
 
