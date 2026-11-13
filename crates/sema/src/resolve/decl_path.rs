@@ -1,10 +1,12 @@
 //! [`DeclPath`]: the path an export declaration names, as an interned
-//! [`PathId`] (`docs/sema-interning-plan.md`, Stage 6a).
+//! [`PathId`] (`docs/sema-interning-plan.md`, Stage 6a); and [`ExportName`],
+//! the name an export publishes, as an interned [`Name`] (Stage 6c).
 
 #[cfg(all(feature = "interning-reference", debug_assertions))]
 use std::sync::Arc;
 
-use crate::names::{NameTable, PathId};
+use super::container::ContainerPath;
+use crate::names::{Name, NameTable, PathId, PathKey};
 
 /// The qualified path an [`ExportDecl`](super::model::ExportDecl) names, held
 /// by its id in the env's [`NameTable`], so a declaration and every index
@@ -211,6 +213,94 @@ impl DeclPath {
         spelled
     }
 
+    /// Whether the path is exactly `path`.
+    pub(super) fn is(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        path.check(names);
+        let found = path.id == Some(self.id);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            found,
+            *self.text == *path.text,
+            "a declaration path compared with {:?} at {:?}",
+            path.text,
+            self.text
+        );
+        found
+    }
+
+    /// Whether the path is `parent` extended by one name.
+    pub(super) fn is_child_of(&self, names: &NameTable, parent: PathKey<'_>) -> bool {
+        parent.check(names);
+        let found = parent
+            .id
+            .is_some_and(|parent| names.split(self.id).is_some_and(|(up, _)| up == parent));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            found,
+            self.text.len() == parent.text.len() + 1 && self.text.starts_with(parent.text),
+            "a declaration path's parent {:?} at {:?}",
+            parent.text,
+            self.text
+        );
+        found
+    }
+
+    /// Whether `prefix` is a proper prefix of the path.
+    pub(super) fn is_strictly_under(&self, names: &NameTable, prefix: PathKey<'_>) -> bool {
+        prefix.check(names);
+        let found = prefix
+            .id
+            .is_some_and(|prefix| prefix != self.id && names.is_prefix(prefix, self.id));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            found,
+            self.text.len() > prefix.text.len() && self.text.starts_with(prefix.text),
+            "a declaration path's proper prefix {:?} at {:?}",
+            prefix.text,
+            self.text
+        );
+        found
+    }
+
+    /// Whether a use in `site` may see an export at this path whose access
+    /// root is the path's first `access_root_len` segments
+    /// ([`accessible_from`](super::model::accessible_from)): the root, when
+    /// there is one, must be a prefix of `site`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the root is longer than the path.
+    pub(super) fn accessible_from(
+        &self,
+        names: &NameTable,
+        access_root_len: Option<usize>,
+        site: &ContainerPath<'_>,
+    ) -> bool {
+        let found = access_root_len.is_none_or(|k| {
+            let depth = names.names_inward(self.id).count();
+            assert!(
+                k <= depth,
+                "an access root of {k} segments on a path of {depth}"
+            );
+            let root = (k..depth).fold(self.id, |at, _| {
+                names
+                    .split(at)
+                    .expect("a path has a parent above each of its segments")
+                    .0
+            });
+            site.prefix_ids().get(k) == Some(&root)
+        });
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            found,
+            super::model::accessible_from(access_root_len, &self.text, site),
+            "a declaration path's access root {access_root_len:?} at {:?}, seen from {:?}",
+            self.text,
+            &**site
+        );
+        found
+    }
+
     /// The path's segments for the reference of an index keyed by its id:
     /// the walk's own spelling where the reference is kept, so an index that
     /// files the id under another path disagrees with its reference at its
@@ -243,6 +333,81 @@ impl DeclPath {
     fn check(&self, _: &NameTable) {}
 }
 
+/// The name an [`ExportedItem`](super::model::ExportedItem) publishes, in the
+/// logical domain (`idText`: backticks stripped, a bare operator compiled),
+/// held by its id in the env's [`NameTable`].
+///
+/// Under `interning-reference` in a debug build it also carries the text the
+/// walk published it as, and reading it asserts that the id spells that
+/// text, so an export whose name was interned from another spelling, or
+/// carried across tables without re-keying, fails where it is read.
+#[derive(Clone, Debug)]
+pub(super) struct ExportName {
+    name: Name,
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    text: Arc<str>,
+}
+
+impl PartialEq for ExportName {
+    fn eq(&self, other: &Self) -> bool {
+        let same = self.name == other.name;
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(
+            same,
+            self.text == other.text,
+            "two export names' ids disagree with their texts, {:?} and {:?}",
+            self.text,
+            other.text
+        );
+        same
+    }
+}
+
+impl Eq for ExportName {}
+
+impl ExportName {
+    /// `name`, which the walk spelled `text`.
+    pub(super) fn new(names: &NameTable, name: Name, text: &str) -> Self {
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = text;
+        let export = ExportName {
+            name,
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: text.into(),
+        };
+        export.check(names);
+        export
+    }
+
+    /// The name's text.
+    pub(super) fn text<'n>(&self, names: &'n NameTable) -> &'n str {
+        let text = names.text(self.name);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        assert_eq!(text, &*self.text, "an export name's id spells another name");
+        text
+    }
+
+    /// The same name, as an id of `to`'s; `self` is `from`'s.
+    #[cfg(feature = "test-support")]
+    pub(super) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
+        let export = ExportName {
+            name: crate::names::rekey_name(from, to, self.name),
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            text: Arc::clone(&self.text),
+        };
+        export.check(to);
+        export
+    }
+
+    /// Assert that the id spells the walk's text.
+    fn check(&self, names: &NameTable) {
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        let _ = self.text(names);
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        let _ = names;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +432,7 @@ mod tests {
             tail in path(),
             probes in prop::collection::vec(path(), 0..6),
             segments in prop::collection::vec(segment(), 0..4),
+            sites in prop::collection::vec(path(), 0..4),
         ) {
             let names = NameTable::default();
             for path in &interned {
@@ -302,7 +468,57 @@ mod tests {
                         "{:?}", segment
                     );
                 }
+                // The questions a lookup asks of an export's value path,
+                // each against the expression it replaced.
+                for probe in probes.iter().chain(&interned).chain([&container, &text]) {
+                    let key = PathKey::of(&names, probe);
+                    prop_assert_eq!(decl.is(&names, key), *probe == text, "{:?}", probe);
+                    prop_assert_eq!(
+                        decl.is_child_of(&names, key),
+                        text.len() == probe.len() + 1 && text.starts_with(probe),
+                        "{:?}", probe
+                    );
+                    prop_assert_eq!(
+                        decl.is_strictly_under(&names, key),
+                        text.len() > probe.len() && text.starts_with(probe),
+                        "{:?}", probe
+                    );
+                }
+                for site_text in sites.iter().chain([&container, &text]) {
+                    let mut site = ContainerPath::new(&names);
+                    site.set(site_text.clone());
+                    for root in std::iter::once(None).chain((0..=text.len()).map(Some)) {
+                        prop_assert_eq!(
+                            decl.accessible_from(&names, root, &site),
+                            super::super::model::accessible_from(root, &text, site_text),
+                            "{:?} from {:?}", root, site_text
+                        );
+                    }
+                }
             }
+        }
+
+        /// An export's name reads back as the text it was published as,
+        /// and compares as that text does, whatever else the table holds.
+        #[test]
+        fn an_export_name_answers_as_its_text_does(
+            interned in prop::collection::vec(segment(), 0..6),
+            text in segment(),
+            other in segment(),
+        ) {
+            let names = NameTable::default();
+            for name in &interned {
+                names.logical(name);
+            }
+            let name = ExportName::new(&names, names.logical(&text), &text);
+            prop_assert_eq!(name.text(&names), text.as_str());
+            let other_name = ExportName::new(&names, names.logical(&other), &other);
+            prop_assert_eq!(name == other_name, text == other);
+            let fresh = NameTable::default();
+            for name in interned.iter().rev() {
+                fresh.logical(name);
+            }
+            prop_assert_eq!(name.rekey(&names, &fresh).text(&fresh), text.as_str());
         }
     }
 }

@@ -35,6 +35,7 @@ mod contributor_name_oracle;
 mod decline_cause;
 mod entity_placement;
 mod explicit_impl_unreachable;
+mod exported_names;
 mod extension_shadow_diff;
 mod extension_visibility_matrix;
 mod fcs_dump_refs_absolute;

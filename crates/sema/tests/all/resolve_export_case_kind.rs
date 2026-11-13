@@ -50,7 +50,7 @@ fn case_kind_of(rf: &ResolvedFile, name: &str) -> Option<CaseKind> {
     let item = rf
         .exports()
         .iter()
-        .find(|i| i.name() == name)
+        .find(|i| i.name(crate::common::fsharp_core_env()) == name)
         .unwrap_or_else(|| panic!("no exported item named {name:?}"));
     item.case_kind()
 }

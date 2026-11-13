@@ -8,6 +8,7 @@ use borzoi_cst::syntax::{
 use crate::def::{DefId, DefKind};
 
 use super::contributors::{Contribution, RequireQualifiedAccess};
+use super::decl_path::{DeclPath, ExportName};
 use super::model::{
     CaseKind, DeclaredType, ExportDeclKind, ExportedItem, ItemId, OpenTrace, Resolution, SlotClass,
     TypeSlot,
@@ -158,16 +159,14 @@ fn abbrev_names_itself(defn: &TypeDefn, abbrev: &TypeAbbrev) -> bool {
 }
 
 impl<'a> Resolver<'a> {
-    /// The qualified path a later file uses to reach this export
-    /// (`["Shared", "foo"]`), or `None` in an anonymous module — whose members
-    /// F# reaches only through the file's implicit (filename-derived) module,
-    /// which we do not model, so they are not cross-file referenceable here.
-    pub(super) fn qualified_export_path(&self, name: &str) -> Option<Vec<String>> {
-        self.module_path().map(|path| {
-            let mut full = path.to_vec();
-            full.push(name.to_string());
-            full
-        })
+    /// The qualified path a later file uses to reach a `let` value declared
+    /// here at `decl_path` (`["Shared", "foo"]`): the declaration's own path
+    /// in a module ([`Self::module_path`]), and `None` in a namespace or an
+    /// anonymous module — whose members F# reaches only through the file's
+    /// implicit (filename-derived) module, which we do not model, so they are
+    /// not cross-file referenceable here.
+    pub(super) fn value_export_path(&self, decl_path: &DeclPath) -> Option<DeclPath> {
+        self.module_path().map(|_| decl_path.clone())
     }
 
     /// Dotted path of the module currently being walked (`["Shared"]`), used to
@@ -222,6 +221,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The name an export of `def` publishes, which the walk spelled
+    /// `text`: the definition's own name.
+    pub(super) fn export_name(&self, def: DefId, text: &str) -> ExportName {
+        ExportName::new(self.assemblies.names(), self.defs[def.index()].name(), text)
+    }
+
     pub(super) fn export_case(
         &mut self,
         name: &str,
@@ -249,13 +254,11 @@ impl<'a> Resolver<'a> {
             );
             return None;
         }
-        let mut qualified = self.container_path.to_vec();
-        qualified.push(name.to_string());
         let item_idx = self.items.len();
         let item_id = ItemId::new(self.item_base as usize + item_idx);
         self.items.push(ExportedItem {
-            name: name.to_string(),
-            qualified: Some(qualified),
+            name: self.export_name(def, name),
+            qualified: Some(decl_path.clone()),
             id: item_id,
             def: super::model::ExportDef::Own(def),
             case: Some(kind),
@@ -346,7 +349,7 @@ impl<'a> Resolver<'a> {
         let item_idx = self.items.len();
         let item_id = ItemId::new(self.item_base as usize + item_idx);
         self.items.push(ExportedItem {
-            name: name.to_string(),
+            name: self.export_name(def, name),
             qualified: None,
             id: item_id,
             def: super::model::ExportDef::Own(def),

@@ -3884,8 +3884,8 @@ mod tests {
         );
         assert!(parses.files[1].file.as_impl().is_some());
 
-        let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &Vfs::new())
+        let (resolved, env) = sema
+            .resolved_project_and_env_for(&proj, &mut ws, &Vfs::new())
             .expect("a .fsi-bearing project resolves (Stage 1)");
         assert_eq!(resolved.len(), 3);
         // The signature slot owns no exports of its own; its surface rides
@@ -3898,7 +3898,7 @@ mod tests {
             .file(1)
             .exports()
             .iter()
-            .map(|e| e.name().to_string())
+            .map(|e| e.name(&env).to_string())
             .collect();
         assert_eq!(
             names,
@@ -4214,19 +4214,20 @@ mod tests {
         let parses = sema
             .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("project parses");
+        let env = AssemblyEnv::default();
         let resolved = resolve_file(
             parses.files[0]
                 .file
                 .as_impl()
                 .expect("an impl Compile item"),
             &ProjectItems::default(),
-            &AssemblyEnv::default(),
+            &env,
             &parses.files[0].recovery,
         );
         let names: Vec<_> = resolved
             .exports()
             .iter()
-            .map(|e| e.name().to_string())
+            .map(|e| e.name(&env).to_string())
             .collect();
         assert_eq!(names, vec!["on".to_string()]);
     }
@@ -6935,14 +6936,14 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &docs)
+        let (resolved, env) = sema
+            .resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("resolved project");
         let names: Vec<_> = resolved
             .file(0)
             .exports()
             .iter()
-            .map(|e| e.name().to_string())
+            .map(|e| e.name(&env).to_string())
             .collect();
         assert_eq!(names, vec!["buffer".to_string()]);
     }

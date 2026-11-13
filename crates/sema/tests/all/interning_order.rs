@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::test_support::names::{interned_paths, rekeyed, with_fresh_names};
-use borzoi_sema::{AssemblyEnv, ResolvedProject, resolve_project};
+use borzoi_sema::{AssemblyEnv, ResolvedProject, resolve_project, resolve_project_files};
 use proptest::prelude::*;
 
 use crate::common::scope_gen;
@@ -44,8 +44,18 @@ fn resolve(sources: &[String], env: &AssemblyEnv) -> ResolvedProject {
 /// filled first in an order `seed` picks, and compare. Returns how many paths
 /// the first run interned, so a caller can tell the comparison was not empty.
 fn assert_order_invariant(sources: &[String], base: &AssemblyEnv, seed: u64) -> usize {
+    assert_fold_order_invariant(|env| resolve(sources, env), base, seed)
+}
+
+/// [`assert_order_invariant`] for any fold of one input: `fold` resolves it
+/// against the env it is given.
+fn assert_fold_order_invariant(
+    fold: impl Fn(&AssemblyEnv) -> ResolvedProject,
+    base: &AssemblyEnv,
+    seed: u64,
+) -> usize {
     let first_env = with_fresh_names(base, &[]);
-    let first = resolve(sources, &first_env);
+    let first = fold(&first_env);
     let mut paths = interned_paths(&first_env);
     let walked = paths.len();
     // Decoys: each path reversed, which the walk never entered, so a map
@@ -58,7 +68,7 @@ fn assert_order_invariant(sources: &[String], base: &AssemblyEnv, seed: u64) -> 
     paths.extend(decoys);
     shuffle(&mut paths, seed);
     let second_env = with_fresh_names(base, &paths);
-    let second = resolve(sources, &second_env);
+    let second = fold(&second_env);
     // A result holds ids of the table it was computed against, so the first
     // is compared in the second's ids, translated by spelling.
     let first = rekeyed(&first, &first_env, &second_env);
@@ -129,6 +139,22 @@ fn corpus_sample_resolves_the_same_in_any_interning_order() {
     );
     for seed in [1, 0x9e37_79b9_7f4a_7c15] {
         let walked = assert_order_invariant(&sources, crate::common::full_bcl_env(), seed);
+        assert!(walked > 10, "the walk interned {walked} paths");
+    }
+}
+
+/// A project whose signature files materialise exports at their
+/// implementations' slots: what a signature stashes is re-keyed with the
+/// rest of the result.
+#[test]
+fn signature_exports_resolve_the_same_in_any_interning_order() {
+    let files = crate::resolve_signatures::project(crate::exported_names::FIXTURE);
+    for seed in [1, 7, 0x9e37_79b9_7f4a_7c15] {
+        let walked = assert_fold_order_invariant(
+            |env| resolve_project_files(&files, env),
+            &AssemblyEnv::default(),
+            seed,
+        );
         assert!(walked > 10, "the walk interned {walked} paths");
     }
 }

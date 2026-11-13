@@ -1998,14 +1998,15 @@ impl<'a> Resolver<'a> {
                 .or_insert_with(|| (id, self.preceding.file_of(id)));
         }
         let current = self.preceding.num_files();
+        let names = self.assemblies.names();
+        let parent = PathKey::of(names, path);
         for item in &self.items {
             if let Some(q) = &item.qualified
-                && q.len() == path.len() + 1
-                && q.starts_with(path)
-                && super::model::accessible_from(item.access_root_len, q, &site)
+                && q.is_child_of(names, parent)
+                && q.accessible_from(names, item.access_root_len, &self.container_path)
             {
                 out.insert(
-                    q.last().expect("non-empty qualified path").clone(),
+                    q.last(names).expect("non-empty qualified path").to_string(),
                     (item.id, current),
                 );
             }
@@ -2069,13 +2070,14 @@ impl<'a> Resolver<'a> {
             } else {
                 value_names = Vec::new();
                 case_names = Vec::new();
+                let names = self.assemblies.names();
+                let parent = PathKey::of(names, sub.as_slice());
                 for item in &self.items {
                     if let Some(q) = &item.qualified
-                        && q.len() == sub.len() + 1
-                        && q.starts_with(sub.as_slice())
-                        && super::model::accessible_from(item.access_root_len, q, &site)
+                        && q.is_child_of(names, parent)
+                        && q.accessible_from(names, item.access_root_len, &self.container_path)
                     {
-                        let name = q.last().expect("non-empty qualified path").clone();
+                        let name = q.last(names).expect("non-empty qualified path").to_string();
                         // A case — or a maybe-literal value, a constant-pattern
                         // contestant in the constructor namespace (see the
                         // cross-file branch above).
@@ -2253,12 +2255,14 @@ impl<'a> Resolver<'a> {
     /// [`ProjectItems::ordinary_value_at`](super::model::ProjectItems::ordinary_value_at), used to detect a value that shadows a
     /// type-qualified case for the qualifier.
     pub(super) fn ordinary_value_at(&self, path: &[String]) -> Option<ItemId> {
+        let names = self.assemblies.names();
+        let key = PathKey::of(names, path);
         self.items
             .iter()
             .rev()
             .find(|it| {
                 !it.is_case()
-                    && it.qualified.as_deref() == Some(path)
+                    && it.qualified.as_ref().is_some_and(|q| q.is(names, key))
                     // A non-`rec` binder being defined is not yet in scope in its own
                     // RHS, so it must not shadow its own qualified self-reference.
                     && !self.pending_items.contains(&it.id)
@@ -2531,16 +2535,17 @@ impl<'a> Resolver<'a> {
         // the case then stays committed. (For a single-fragment fold the
         // cross-file history spans every file, over-approximating the
         // fragment's own members — a wider defer, never a commit.)
+        let names = self.assemblies.names();
+        let module_key = PathKey::of(names, module_path);
         let mut constant_names: HashSet<String> = HashSet::default();
         for item in &self.items {
             if item.attributed
                 && let Some(q) = &item.qualified
-                && q.len() == module_path.len() + 1
-                && q.starts_with(module_path)
+                && q.is_child_of(names, module_key)
                 && same_file_folds
-                && super::model::accessible_from(item.access_root_len, q, &site)
+                && q.accessible_from(names, item.access_root_len, &self.container_path)
             {
-                constant_names.insert(q.last().expect("non-empty qualified path").clone());
+                constant_names.insert(q.last(names).expect("non-empty qualified path").to_string());
             }
         }
         // Same-file pass: push every same-file `[M, …]` child (value **or** case) as
@@ -2554,20 +2559,19 @@ impl<'a> Resolver<'a> {
         let mut same_file: Vec<((usize, u8), ScopeEntry)> = Vec::new();
         for item in &self.items {
             if let Some(q) = &item.qualified
-                && q.len() == module_path.len() + 1
-                && q.starts_with(module_path)
+                && q.is_child_of(names, module_key)
                 && same_file_folds
-                && super::model::accessible_from(item.access_root_len, q, &site)
+                && q.accessible_from(names, item.access_root_len, &self.container_path)
             {
-                let name = q.last().expect("non-empty qualified path").clone();
+                let name = q.last(names).expect("non-empty qualified path").to_string();
                 seen_values.insert(name.clone());
                 if item.is_case() {
                     seen_ctors.insert(name.clone());
                     if hidden
                         || constant_names.contains(&name)
                         || self.preceding.module_value_may_be_constant_pattern(
-                            self.assemblies.names(),
-                            q,
+                            names,
+                            &q.spell(names),
                             &site,
                         )
                     {
@@ -3248,20 +3252,20 @@ impl<'a> Resolver<'a> {
         // = Red`; `let Red = 0`). F# resolves the *latest* such binding in
         // expression position, and `self.items` is source-ordered, so take the last
         // match before falling back to an earlier file's export.
+        let names = self.assemblies.names();
+        let key = PathKey::of(names, &full);
         self.items
             .iter()
             .rfind(|i| {
-                i.qualified.as_deref() == Some(full.as_slice())
-                    // Accessibility-gate the same-file qualified value exactly as the
-                    // cross-file `lookup_qualified_path` does: a `let private` value
-                    // is invisible to a *sibling* module (FCS FS1094). `rfind` takes
-                    // the source-latest *accessible* match, so a public value shadowed
-                    // by a later inaccessible `private` one is still recovered.
-                    && super::model::accessible_from(
-                        i.access_root_len,
-                        &full,
-                        &self.container_path,
-                    )
+                // Accessibility-gate the same-file qualified value exactly as the
+                // cross-file `lookup_qualified_path` does: a `let private` value
+                // is invisible to a *sibling* module (FCS FS1094). `rfind` takes
+                // the source-latest *accessible* match, so a public value shadowed
+                // by a later inaccessible `private` one is still recovered.
+                i.qualified.as_ref().is_some_and(|q| {
+                    q.is(names, key)
+                        && q.accessible_from(names, i.access_root_len, &self.container_path)
+                })
             })
             .map(|i| i.id)
             .or_else(|| {
@@ -3345,11 +3349,15 @@ impl<'a> Resolver<'a> {
         }
         let site = &self.container_path;
         let accessible = |root: Option<usize>| super::model::accessible_from(root, full, site);
-        let own = self
-            .items
-            .iter()
-            .filter(|i| i.qualified.as_deref() == Some(full) && !i.is_case())
-            .map(|i| (i.id, accessible(i.access_root_len)));
+        let names = self.assemblies.names();
+        let key = PathKey::of(names, full);
+        let own = self.items.iter().filter_map(|i| {
+            let q = i
+                .qualified
+                .as_ref()
+                .filter(|q| q.is(names, key) && !i.is_case())?;
+            Some((i.id, q.accessible_from(names, i.access_root_len, site)))
+        });
         let earlier = self
             .preceding
             .ordinary_values_at(self.assemblies.names(), full)
@@ -3384,15 +3392,16 @@ impl<'a> Resolver<'a> {
     /// likewise binds a same-file value only through `qualified` and otherwise falls to
     /// the cross-file path.
     fn companion_value_provably_inaccessible(&self, full: &[String]) -> bool {
+        let names = self.assemblies.names();
+        let key = PathKey::of(names, full);
         let mut keyed = self
             .items
             .iter()
-            .filter(|i| i.qualified.as_deref() == Some(full))
+            .filter_map(|i| Some((i.qualified.as_ref().filter(|q| q.is(names, key))?, i)))
             .peekable();
         keyed.peek().is_some()
-            && keyed.all(|i| {
-                !super::model::accessible_from(i.access_root_len, full, &self.container_path)
-            })
+            && keyed
+                .all(|(q, i)| !q.accessible_from(names, i.access_root_len, &self.container_path))
     }
 
     /// If a *constructor case* named `name` is in scope — a union case, an
@@ -5244,10 +5253,12 @@ impl<'a> Resolver<'a> {
             ty_path.push(seg.to_string());
             // A value / constructor at the segment commits member access (the
             // same-file `is_dottable_value` rule; Gap C's value-wins probes).
+            let names = self.assemblies.names();
+            let ty_key = PathKey::of(names, &ty_path);
             if self
                 .items
                 .iter()
-                .any(|i| i.qualified.as_deref() == Some(ty_path.as_slice()))
+                .any(|i| i.qualified.as_ref().is_some_and(|q| q.is(names, ty_key)))
                 || self
                     .preceding
                     .lookup_qualified_path(self.assemblies.names(), &ty_path, &self.container_path)
@@ -7137,9 +7148,11 @@ impl<'a> Resolver<'a> {
             Some(local) => {
                 let item = self.items.get(local)?;
                 let pos = u32::from(self.defs[item.def()?.index()].range.start());
-                let path = item.qualified.as_deref()?;
-                let in_prefix = path.len() > prefix.len() && path.starts_with(prefix);
-                let directly = in_prefix && path.len() == prefix.len() + 1;
+                let path = item.qualified.as_ref()?;
+                let names = self.assemblies.names();
+                let prefix_key = PathKey::of(names, prefix);
+                let in_prefix = path.is_strictly_under(names, prefix_key);
+                let directly = in_prefix && path.is_child_of(names, prefix_key);
                 let tier = match item.case_kind() {
                     Some(CaseKind::Union { .. }) if directly => FoldTier::Types,
                     Some(CaseKind::Union { .. }) | None if in_prefix && entry.from_open => {

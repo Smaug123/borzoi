@@ -22,7 +22,7 @@ use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::contributors::{Contribution, FileContributions};
-use super::decl_path::DeclPath;
+use super::decl_path::{DeclPath, ExportName};
 use super::path_set::{Extended, PathPrefixes, PathSet};
 use super::state::ActivePatternShape;
 
@@ -241,13 +241,14 @@ pub(super) struct SigScreen {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SigExport {
     /// The exported name (`idText`).
-    pub(super) name: String,
-    /// The value-namespace qualified path, or `None` for a require-qualified
-    /// case (reachable only through the type-qualified index).
-    pub(super) qualified: Option<Vec<String>>,
+    pub(super) name: ExportName,
+    /// Whether [`Self::path`] is also the export's value-namespace path;
+    /// `false` for a require-qualified case (reachable only through the
+    /// type-qualified index) and a name the signature's container contests.
+    pub(super) qualified: bool,
     /// The decl path (container + name) — the materialised [`ExportDecl`]'s
     /// `path`.
-    pub(super) path: Vec<String>,
+    pub(super) path: DeclPath,
     /// The defining ident in the signature slot's arena.
     pub(super) def: DefId,
     /// The export's access root (see [`ExportedItem::access_root_len`]):
@@ -263,7 +264,7 @@ pub(super) struct SigExport {
     /// The constructor-case kind, `None` for a plain `val`.
     pub(super) case: Option<CaseKind>,
     /// The case's type-qualified export path, if any.
-    pub(super) type_qualified: Option<Vec<String>>,
+    pub(super) type_qualified: Option<DeclPath>,
     /// Whether the `val` carried any attribute list (a maybe-`[<Literal>]`,
     /// like [`ExportedItem::attributed`]).
     pub(super) attributed: bool,
@@ -2102,11 +2103,19 @@ impl FileExportIndices {
                     }
                     Some(item_idx) => {
                         let it = &file.exports.items[*item_idx];
-                        if let Some(path) = it.qualified_path() {
-                            // An item's qualified path is its declaration's.
+                        if let Some(path) = &it.qualified {
+                            // An item's qualified path is its declaration's,
+                            // and ends in the name it publishes.
                             debug_assert!(
-                                decl.path.spells(names, path),
-                                "an item's qualified path {path:?} is not its declaration's"
+                                *path == decl.path,
+                                "an item's qualified path {:?} is not its declaration's {:?}",
+                                path.spell(names),
+                                decl.path.spell(names)
+                            );
+                            debug_assert_eq!(
+                                path.last(names),
+                                Some(it.name.text(names)),
+                                "an item's qualified path does not end in its name"
                             );
                             fi.value_exports.push((
                                 decl.path.clone(),
@@ -3591,12 +3600,14 @@ pub enum ExportDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedItem {
     /// The exported name, with backticks stripped (`idText` semantics).
-    pub(super) name: String,
+    pub(super) name: ExportName,
     /// The module-qualified *path* (`["Shared", "foo"]`) a later file must use
     /// to reference this binding, or `None` when the binding sits in an
     /// anonymous (header-less) module and so has no qualified cross-file path we
     /// model. Only `Some` paths enter [`ProjectItems`]'s cross-file index.
-    pub(super) qualified: Option<Vec<String>>,
+    /// When `Some`, it is the export's declaration path, and its last name is
+    /// [`Self::name`].
+    pub(super) qualified: Option<DeclPath>,
     /// This binding's project-global handle.
     pub(super) id: ItemId,
     /// The defining binder — this file's arena, or the paired signature's
@@ -3661,14 +3672,15 @@ pub struct ExportedItem {
 
 impl ExportedItem {
     /// The exported name (`idText`-normalised: surrounding double-backticks
-    /// removed).
-    pub fn name(&self) -> &str {
-        &self.name
+    /// removed). `env` must be the env the export was resolved against.
+    pub fn name<'e>(&self, env: &'e AssemblyEnv) -> &'e str {
+        self.name.text(env.names())
     }
 
     /// The module-qualified cross-file path, if any (see the field docs).
-    pub fn qualified_path(&self) -> Option<&[String]> {
-        self.qualified.as_deref()
+    /// `env` must be the env the export was resolved against.
+    pub fn qualified_path(&self, env: &AssemblyEnv) -> Option<Vec<String>> {
+        self.qualified.as_ref().map(|path| path.spell(env.names()))
     }
 
     /// This binding's project-global [`ItemId`].
@@ -4196,7 +4208,7 @@ impl ResolvedFile {
             let item_id = ItemId::new(self.item_base as usize + item_idx);
             self.exports.items.push(ExportedItem {
                 name: ex.name.clone(),
-                qualified: ex.qualified.clone(),
+                qualified: ex.qualified.then(|| ex.path.clone()),
                 id: item_id,
                 def: ExportDef::Sig {
                     file: sig_idx,
@@ -4211,15 +4223,12 @@ impl ResolvedFile {
                 attributed: ex.attributed,
             });
             self.export_decls.push(ExportDecl {
-                path: DeclPath::new(names, &ex.path),
+                path: ex.path.clone(),
                 pos: ex.pos,
                 anonymous_root: false,
                 kind: ExportDeclKind::Item {
                     item: Some(item_idx),
-                    type_qualified: ex
-                        .type_qualified
-                        .as_ref()
-                        .map(|path| DeclPath::new(names, path)),
+                    type_qualified: ex.type_qualified.clone(),
                 },
             });
         }
@@ -4756,6 +4765,16 @@ impl ResolvedProject {
                     for decl in &mut file.export_decls {
                         decl.path = decl.path.rekey(from, to);
                         decl.kind = rekey_kind(&decl.kind);
+                    }
+                    for item in &mut file.exports.items {
+                        item.name = item.name.rekey(from, to);
+                        item.qualified = item.qualified.as_ref().map(|p| p.rekey(from, to));
+                    }
+                    for export in &mut file.sig_exports {
+                        export.name = export.name.rekey(from, to);
+                        export.path = export.path.rekey(from, to);
+                        export.type_qualified =
+                            export.type_qualified.as_ref().map(|p| p.rekey(from, to));
                     }
                     Arc::new(file)
                 })

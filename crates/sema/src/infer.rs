@@ -8787,7 +8787,7 @@ fn constructor_names(
 ) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::default();
     for e in resolved.exports().iter() {
-        *counts.entry(e.name().to_string()).or_default() += 1;
+        *counts.entry(e.name(env).to_string()).or_default() += 1;
     }
     if is_headerless(file) {
         for def in resolved.defs() {
