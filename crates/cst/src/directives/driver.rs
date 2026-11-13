@@ -251,7 +251,7 @@ struct Frame {
 /// over the private `DriverCore`; in swallow mode the core never yields a
 /// directive marker, so unwrapping [`TriviaToken::Lexed`] in `next` is
 /// total.
-pub struct Driver<'a, 'b>(DriverCore<'a, 'b>);
+pub struct Driver<'a, 'b>(Queued<'a, 'b>);
 
 impl<'a, 'b> Iterator for Driver<'a, 'b> {
     type Item = DriverItem<'a>;
@@ -272,15 +272,60 @@ impl<'a, 'b> Driver<'a, 'b> {
     /// The active-branch `#line` directives seen so far, in source order.
     /// Delegates to the inner core's `line_directives`.
     pub fn line_directives(&self) -> &LineDirectiveStore {
-        self.0.line_directives()
+        self.0.core.line_directives()
     }
 }
 
-/// Shared preprocessor state machine. See module docs. Produces a
-/// [`CoreItem`] stream whose success payload is a [`TriviaToken`]; the
-/// public [`Driver`] wraps it and unwraps [`TriviaToken::Lexed`]. Factored
-/// out so a later full-trivia mode can reuse the identical state machine
-/// while exposing the directive markers it currently swallows.
+/// Where [`DriverCore::step`] writes the items it produces, in stream order:
+/// a queue the iterators drain ([`Queued`]), or the token table
+/// ([`crate::tokens::lex_full_trivia`]), which writes each item as it comes
+/// rather than queueing it.
+pub(crate) trait Sink<'a> {
+    fn push(&mut self, item: CoreItem<'a>);
+}
+
+impl<'a> Sink<'a> for VecDeque<CoreItem<'a>> {
+    fn push(&mut self, item: CoreItem<'a>) {
+        self.push_back(item);
+    }
+}
+
+/// [`DriverCore`] as an iterator: each [`DriverCore::step`] writes into a
+/// queue, which `next` drains.
+struct Queued<'a, 'b> {
+    core: DriverCore<'a, 'b>,
+    pending: VecDeque<CoreItem<'a>>,
+}
+
+impl<'a, 'b> Queued<'a, 'b> {
+    fn new(core: DriverCore<'a, 'b>) -> Self {
+        Queued {
+            core,
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+impl<'a, 'b> Iterator for Queued<'a, 'b> {
+    type Item = CoreItem<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(item) = self.pending.pop_front() {
+                return Some(item);
+            }
+            if !self.core.step(&mut self.pending) {
+                return None;
+            }
+        }
+    }
+}
+
+/// Shared preprocessor state machine. See module docs. Each
+/// [`DriverCore::step`] writes [`CoreItem`]s, whose success payload is a
+/// [`TriviaToken`], into a [`Sink`]: the iterators' queue ([`Queued`]; the
+/// public [`Driver`] unwraps [`TriviaToken::Lexed`]), or the token table
+/// ([`lex_full_trivia_into`]).
 struct DriverCore<'a, 'b> {
     source: &'a str,
     symbols: &'b HashSet<String>,
@@ -288,10 +333,6 @@ struct DriverCore<'a, 'b> {
     /// recognise a directive) or mid-token (we drive Logos).
     pos: usize,
     stack: Vec<Frame>,
-    /// Items the driver has produced internally but not yet yielded —
-    /// chiefly errors that need to come out of a single `apply_directive`
-    /// call. Drained first on every `next`.
-    pending: VecDeque<CoreItem<'a>>,
     /// One-shot flag: have we emitted the EOF unclosed-if errors yet?
     eof_done: bool,
     /// Logos lexer over `source[lexer_state.base..]`, lazily (re)created.
@@ -342,10 +383,10 @@ struct DriverCore<'a, 'b> {
 
 type DriverItem<'a> = (Result<Token<'a>, PreprocError>, Range<usize>);
 /// Like [`DriverItem`], but the success payload is a [`TriviaToken`] so the
-/// shared [`DriverCore`] (and the future full-trivia mode) can carry
-/// directive markers the public [`Driver`] never surfaces. All error items
+/// shared [`DriverCore`] can carry the directive markers of full-trivia mode,
+/// which the public [`Driver`] never surfaces. All error items
 /// are payload-agnostic, so they flow through both aliases unchanged.
-type CoreItem<'a> = (Result<TriviaToken<'a>, PreprocError>, Range<usize>);
+pub(crate) type CoreItem<'a> = (Result<TriviaToken<'a>, PreprocError>, Range<usize>);
 
 struct LexerState<'a> {
     /// Absolute byte offset where the inner [`InterpDriver`] was constructed.
@@ -368,7 +409,7 @@ struct LexerState<'a> {
 /// symbol set (FCS `skip=true`). `#line` / `#nowarn` / `#warnon` directives
 /// are recognised and dropped without emitting a token.
 pub fn lex_with_symbols<'a, 'b>(source: &'a str, symbols: &'b HashSet<String>) -> Driver<'a, 'b> {
-    Driver(DriverCore::new(source, symbols, false))
+    Driver(Queued::new(DriverCore::new(source, symbols, false)))
 }
 
 /// Construct a *full-trivia* driver iterator over `source` (FCS
@@ -382,13 +423,27 @@ pub fn lex_with_symbols_full_trivia<'a, 'b>(
     source: &'a str,
     symbols: &'b HashSet<String>,
 ) -> FullTriviaDriver<'a, 'b> {
-    FullTriviaDriver(DriverCore::new(source, symbols, true))
+    FullTriviaDriver(Queued::new(DriverCore::new(source, symbols, true)))
+}
+
+/// Run the full-trivia state machine over `source` to the end, writing every
+/// item into `sink` as it is produced, and return the `#elif` spans
+/// ([`FullTriviaDriver::elif_directives`]). The items are exactly those
+/// [`lex_with_symbols_full_trivia`] yields, in the same order.
+pub(crate) fn lex_full_trivia_into<'a>(
+    source: &'a str,
+    symbols: &HashSet<String>,
+    sink: &mut impl Sink<'a>,
+) -> Vec<Range<usize>> {
+    let mut core = DriverCore::new(source, symbols, true);
+    while core.step(sink) {}
+    core.elif_directives
 }
 
 /// Full-trivia preprocessor iterator (FCS `skip=false`). Unlike [`Driver`],
 /// its item is a [`TriviaToken`], so active-branch directive trivia is
 /// preserved. Built by [`lex_with_symbols_full_trivia`].
-pub struct FullTriviaDriver<'a, 'b>(DriverCore<'a, 'b>);
+pub struct FullTriviaDriver<'a, 'b>(Queued<'a, 'b>);
 
 impl<'a, 'b> Iterator for FullTriviaDriver<'a, 'b> {
     type Item = (Result<TriviaToken<'a>, PreprocError>, Range<usize>);
@@ -402,7 +457,7 @@ impl<'a, 'b> FullTriviaDriver<'a, 'b> {
     /// The active-branch `#line` directives seen so far, in source order.
     /// Delegates to the inner core's `line_directives`.
     pub fn line_directives(&self) -> &LineDirectiveStore {
-        self.0.line_directives()
+        self.0.core.line_directives()
     }
 
     /// Spans of the `#elif` directives FCS feature-checks for
@@ -411,19 +466,16 @@ impl<'a, 'b> FullTriviaDriver<'a, 'b> {
     /// bare `#elif` excluded. The parser maps each to an FS3350 diagnostic under
     /// a pre-11.0 language version. Valid once the driver has been drained.
     pub fn elif_directives(&self) -> &[Range<usize>] {
-        &self.0.elif_directives
+        &self.0.core.elif_directives
     }
 }
 
-impl<'a, 'b> Iterator for DriverCore<'a, 'b> {
-    type Item = CoreItem<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(item) = self.pending.pop_front() {
-                return Some(item);
-            }
-
+impl<'a, 'b> DriverCore<'a, 'b> {
+    /// Advance the state machine by one step, writing what it produces (none,
+    /// one or several items) into `out`. Returns `false` once the source is
+    /// exhausted and nothing more will be written.
+    fn step(&mut self, out: &mut impl Sink<'a>) -> bool {
+        {
             // At a line start, see if a directive begins here. This check
             // runs in *both* modes: in active mode we intercept the line
             // so Logos doesn't tokenise `#if`/`#endif` as `Hash`+`Ident`;
@@ -432,8 +484,8 @@ impl<'a, 'b> Iterator for DriverCore<'a, 'b> {
                 && self.at_line_start()
                 && let Some(result) = recognise_directive(self.source, self.pos)
             {
-                self.handle_directive_result(result);
-                continue;
+                self.handle_directive_result(result, out);
+                return true;
             }
 
             if self.pos >= self.source.len() {
@@ -442,37 +494,38 @@ impl<'a, 'b> Iterator for DriverCore<'a, 'b> {
                     let eof = self.source.len();
                     // Full-trivia: cover a trailing dead region (a file ending
                     // mid-dead-branch) before the unclosed-`#if` errors.
-                    self.fill_inactive_gap(eof);
+                    self.fill_inactive_gap(eof, out);
                     for frame in self.stack.drain(..) {
                         let if_span = frame.if_span.clone();
-                        self.pending.push_back((
+                        out.push((
                             Err(PreprocError::UnclosedIfAtEof { if_span, eof }),
                             eof..eof,
                         ));
                     }
-                    continue;
+                    return true;
                 }
-                return None;
+                return false;
             }
 
             if self.currently_active() {
-                let (tok, span) = self.next_logos_token()?;
+                let Some((tok, span)) = self.next_logos_token() else {
+                    return false;
+                };
                 let (start, end) = (span.start, span.end);
                 self.pos = end;
                 let item = (tok.map(TriviaToken::Lexed).map_err(PreprocError::Lex), span);
                 if self.trivia_mode {
-                    // Close any preceding dead region, then queue the token so
-                    // it interleaves with the markers in source order.
-                    self.fill_inactive_gap(start);
+                    // Close any preceding dead region first, so the token
+                    // interleaves with the markers in source order.
+                    self.fill_inactive_gap(start, out);
                     self.covered_end = self.covered_end.max(end);
-                    self.pending.push_back(item);
-                    continue;
                 }
-                return Some(item);
+                out.push(item);
             } else {
                 self.advance_to_next_line_start();
                 self.invalidate_lexer();
             }
+            true
         }
     }
 }
@@ -484,7 +537,6 @@ impl<'a, 'b> DriverCore<'a, 'b> {
             symbols,
             pos: 0,
             stack: Vec::new(),
-            pending: VecDeque::new(),
             eof_done: false,
             lexer: None,
             pending_interp_frames: Vec::new(),
@@ -503,20 +555,24 @@ impl<'a, 'b> DriverCore<'a, 'b> {
     /// that a dead `#if`-eliminated region (including non-visible nested
     /// directives inside it) coalesces into one `INACTIVECODE` token and the
     /// emitted spans stay a gapless partition of the source.
-    fn fill_inactive_gap(&mut self, up_to: usize) {
+    fn fill_inactive_gap(&mut self, up_to: usize, out: &mut impl Sink<'a>) {
         if self.trivia_mode && up_to > self.covered_end {
-            self.pending
-                .push_back((Ok(TriviaToken::InactiveCode), self.covered_end..up_to));
+            out.push((Ok(TriviaToken::InactiveCode), self.covered_end..up_to));
             self.covered_end = up_to;
         }
     }
 
     /// Full-trivia mode: emit `marker` over `range`, first filling any dead
     /// gap before it (see [`Self::fill_inactive_gap`]).
-    fn emit_trivia_marker(&mut self, marker: TriviaToken<'a>, range: Range<usize>) {
-        self.fill_inactive_gap(range.start);
+    fn emit_trivia_marker(
+        &mut self,
+        marker: TriviaToken<'a>,
+        range: Range<usize>,
+        out: &mut impl Sink<'a>,
+    ) {
+        self.fill_inactive_gap(range.start, out);
         self.covered_end = self.covered_end.max(range.end);
-        self.pending.push_back((Ok(marker), range));
+        out.push((Ok(marker), range));
     }
 
     fn at_line_start(&self) -> bool {
@@ -556,7 +612,11 @@ impl<'a, 'b> DriverCore<'a, 'b> {
         self.line_scan_line
     }
 
-    fn handle_directive_result(&mut self, result: Result<Recognised, DirectiveError>) {
+    fn handle_directive_result(
+        &mut self,
+        result: Result<Recognised, DirectiveError>,
+        out: &mut impl Sink<'a>,
+    ) {
         // Trivia directives (`#nowarn` / `#warnon` / `#line`) never touch the
         // ifdef stack. In swallow mode (FCS `skip=true`) the driver advances
         // past the line without emitting a token; in full-trivia mode
@@ -583,11 +643,11 @@ impl<'a, 'b> DriverCore<'a, 'b> {
                 }
                 // Full-trivia mode: surface the directive as a single trivia
                 // token over its recognised range (gap-filling any dead
-                // region before it). Swallow mode leaves `pending` untouched.
+                // region before it). Swallow mode writes nothing.
                 if self.trivia_mode
                     && let Some(tt) = directive_trivia_token(&r.directive)
                 {
-                    self.emit_trivia_marker(tt, r.range.clone());
+                    self.emit_trivia_marker(tt, r.range.clone(), out);
                 }
             }
             self.pos = r.range.end;
@@ -662,25 +722,26 @@ impl<'a, 'b> DriverCore<'a, 'b> {
         // is absorbed into the surrounding INACTIVECODE instead, so it is not
         // emitted here — `fill_inactive_gap` covers its bytes.
         if self.trivia_mode && parent_active {
-            self.emit_trivia_marker(cc_directive_marker(kind), range.clone());
+            self.emit_trivia_marker(cc_directive_marker(kind), range.clone(), out);
         }
 
         if let Some(e) = body_err
             && parent_active
         {
             let r = e.range.clone();
-            self.pending.push_back((Err(PreprocError::Directive(e)), r));
+            out.push((Err(PreprocError::Directive(e)), r));
         }
 
-        if !suppress_state {
-            apply_directive(
+        if !suppress_state
+            && let Some((err, span)) = apply_directive(
                 &mut self.stack,
-                &mut self.pending,
                 range.clone(),
                 kind,
                 expr_value,
                 parent_active,
-            );
+            )
+        {
+            out.push((Err(err), span));
         }
         self.pos = range.end;
         self.invalidate_lexer();
@@ -764,22 +825,22 @@ fn parent_active_for(stack: &[Frame], kind: DirectiveKind) -> bool {
     }
 }
 
-/// Apply a recognised directive (well-formed or recovered) to the stack.
-/// Free function so the reference implementation can reuse it.
+/// Apply a recognised directive (well-formed or recovered) to the stack, and
+/// return the error it reports, if any. Free function so the reference
+/// implementation can reuse it.
 ///
 /// `parent_active` (computed by [`parent_active_for`] before invocation)
 /// controls whether chain diagnostics — `DoubleElse`, `ElifAfterElse` —
 /// fire. Inside an inactive parent these are depth-skipped, matching FCS.
 /// Orphan and unmatched-endif errors are emitted regardless: they signal
 /// structural problems independent of containment.
-fn apply_directive<T>(
+fn apply_directive(
     stack: &mut Vec<Frame>,
-    pending: &mut VecDeque<(Result<T, PreprocError>, Range<usize>)>,
     range: Range<usize>,
     kind: DirectiveKind,
     expr_value: Option<bool>,
     parent_active: bool,
-) {
+) -> Option<(PreprocError, Range<usize>)> {
     match kind {
         DirectiveKind::If => {
             let arm_lit = parent_active && expr_value.unwrap_or(false);
@@ -789,75 +850,67 @@ fn apply_directive<T>(
                 any_arm_lit: arm_lit,
                 else_span: None,
             });
+            None
         }
         DirectiveKind::Elif => {
-            if stack.is_empty() {
-                pending.push_back((
-                    Err(PreprocError::OrphanElif {
+            let Some(top) = stack.last_mut() else {
+                return Some((
+                    PreprocError::OrphanElif {
                         range: range.clone(),
-                    }),
+                    },
                     range,
                 ));
-                return;
-            }
-            let prev_else = stack.last().and_then(|f| f.else_span.clone());
-            if let Some(prev) = prev_else
-                && parent_active
-            {
-                pending.push_back((
-                    Err(PreprocError::ElifAfterElse {
+            };
+            let err = match &top.else_span {
+                Some(prev) if parent_active => Some((
+                    PreprocError::ElifAfterElse {
                         range: range.clone(),
-                        prev_else: prev,
-                    }),
-                    range.clone(),
-                ));
-            }
-            let len = stack.len();
-            let top = &mut stack[len - 1];
+                        prev_else: prev.clone(),
+                    },
+                    range,
+                )),
+                _ => None,
+            };
             let new_arm_lit = parent_active && !top.any_arm_lit && expr_value.unwrap_or(false);
             top.arm_lit = new_arm_lit;
             top.any_arm_lit |= new_arm_lit;
+            err
         }
         DirectiveKind::Else => {
-            if stack.is_empty() {
-                pending.push_back((
-                    Err(PreprocError::OrphanElse {
+            let Some(top) = stack.last_mut() else {
+                return Some((
+                    PreprocError::OrphanElse {
                         range: range.clone(),
-                    }),
+                    },
                     range,
                 ));
-                return;
-            }
-            let prev_else = stack.last().and_then(|f| f.else_span.clone());
-            if let Some(prev) = prev_else
-                && parent_active
-            {
-                pending.push_back((
-                    Err(PreprocError::DoubleElse {
+            };
+            let err = match &top.else_span {
+                Some(prev) if parent_active => Some((
+                    PreprocError::DoubleElse {
                         range: range.clone(),
-                        prev_else: prev,
-                    }),
+                        prev_else: prev.clone(),
+                    },
                     range.clone(),
-                ));
-            }
-            let len = stack.len();
-            let top = &mut stack[len - 1];
+                )),
+                _ => None,
+            };
             let new_arm_lit = parent_active && !top.any_arm_lit;
             top.arm_lit = new_arm_lit;
             top.any_arm_lit |= new_arm_lit;
             top.else_span = Some(range);
+            err
         }
         DirectiveKind::EndIf => {
-            if stack.is_empty() {
-                pending.push_back((
-                    Err(PreprocError::UnmatchedEndIf {
+            if stack.pop().is_none() {
+                return Some((
+                    PreprocError::UnmatchedEndIf {
                         range: range.clone(),
-                    }),
+                    },
                     range,
                 ));
-                return;
             }
-            stack.pop();
+            None
         }
     }
 }
@@ -878,7 +931,6 @@ mod reference {
         let bytes = source.as_bytes();
         let mut active = vec![false; bytes.len()];
         let mut stack: Vec<Frame> = Vec::new();
-        let mut sink: VecDeque<DriverItem> = VecDeque::new();
         let mut i = 0;
         while i < bytes.len() {
             let is_line_start = i == 0 || matches!(bytes[i - 1], b'\n' | b'\r');
@@ -921,7 +973,8 @@ mod reference {
                 }
                 if !suppress_state {
                     let pa = parent_active_for(&stack, kind);
-                    apply_directive(&mut stack, &mut sink, range.clone(), kind, expr_value, pa);
+                    // The walk models the stack, not the diagnostics.
+                    let _ = apply_directive(&mut stack, range.clone(), kind, expr_value, pa);
                 }
                 i = range.end;
                 continue;
@@ -958,7 +1011,6 @@ mod reference {
     ) -> LineDirectiveStore {
         let bytes = source.as_bytes();
         let mut stack: Vec<Frame> = Vec::new();
-        let mut sink: VecDeque<DriverItem> = VecDeque::new();
         let mut store = LineDirectiveStore::new();
         let mut i = 0;
         while i < bytes.len() {
@@ -1002,7 +1054,8 @@ mod reference {
                 };
                 if !suppress_state {
                     let pa = parent_active_for(&stack, kind);
-                    apply_directive(&mut stack, &mut sink, range.clone(), kind, expr_value, pa);
+                    // The walk models the stack, not the diagnostics.
+                    let _ = apply_directive(&mut stack, range.clone(), kind, expr_value, pa);
                 }
                 i = range.end;
                 continue;
@@ -1024,7 +1077,6 @@ mod reference {
     ) -> Vec<(SyntaxKind, Range<usize>)> {
         let bytes = source.as_bytes();
         let mut stack: Vec<Frame> = Vec::new();
-        let mut sink: VecDeque<DriverItem> = VecDeque::new();
         let mut out = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
@@ -1082,7 +1134,8 @@ mod reference {
                     out.push((cc_kind, range.clone()));
                 }
                 if !suppress_state {
-                    apply_directive(&mut stack, &mut sink, range.clone(), kind, expr_value, pa);
+                    // The walk models the stack, not the diagnostics.
+                    let _ = apply_directive(&mut stack, range.clone(), kind, expr_value, pa);
                 }
                 i = range.end;
                 continue;

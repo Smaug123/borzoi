@@ -3,13 +3,14 @@
 //! the same stream (`docs/token-pipeline-soa-plan.md`, D7).
 //!
 //! The table stores a kind and a start offset per token and rebuilds each item
-//! from them and the source text. It must rebuild exactly what the iterator
-//! yields, item for item, spans included, with the preprocessor errors the
-//! table keeps beside the stream and the `#elif` spans the same as the
-//! iterator's. Under the `token-reference` feature every parse also asserts
-//! this (`tokens::lex_full_trivia`), so the parser suites and the corpus sweeps
-//! hold the table to it too; this group covers the lexical shapes those
-//! suites need not reach.
+//! from them and the source text. The preprocessor's state machine writes it
+//! directly, without the iterator's queue. It must rebuild exactly what the
+//! iterator yields, item for item, spans included, with the preprocessor
+//! errors the table keeps beside the stream and the `#elif` spans the same as
+//! the iterator's. Under the `token-reference` feature every parse also
+//! asserts this (`tokens::lex_full_trivia`), so the parser suites and the
+//! corpus sweeps hold the table to it too; this group covers the lexical
+//! shapes those suites need not reach.
 
 use std::collections::{BTreeSet, HashSet};
 

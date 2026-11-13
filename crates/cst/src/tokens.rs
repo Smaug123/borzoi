@@ -11,15 +11,19 @@
 //! item is rebuilt on demand from its kind and its text ([`RawTokens::get`],
 //! [`RawTokens::items`]); see `docs/token-pipeline-soa-plan.md` (D1, D2).
 //!
-//! The table is built from the full-trivia driver iterator, which stays the
-//! reference implementation of the stream: under the `token-reference`
-//! feature, [`lex_full_trivia`] asserts on every call that the table rebuilds
-//! exactly the stream the iterator yielded.
+//! The preprocessor's state machine writes the table directly
+//! ([`lex_full_trivia`]). The full-trivia driver iterator, which runs the same
+//! state machine through a queue, stays the reference implementation of the
+//! stream: under the `token-reference` feature, [`lex_full_trivia`] asserts on
+//! every call that the table rebuilds exactly the stream the iterator yields.
 
 use std::collections::HashSet;
 use std::ops::{Bound, Range, RangeBounds};
 
-use crate::directives::{PreprocError, TriviaToken, lex_with_symbols_full_trivia};
+use crate::directives::driver::{CoreItem, Sink};
+#[cfg(feature = "token-reference")]
+use crate::directives::lex_with_symbols_full_trivia;
+use crate::directives::{PreprocError, TriviaToken};
 use crate::lexer::{LexError, Token, TokenKind};
 use crate::lexfilter::{FilteredItem, FilteredToken, Virtual};
 use crate::syntax::SyntaxKind;
@@ -346,7 +350,13 @@ pub struct LexedSource<'src> {
 }
 
 /// Lex `source` in full-trivia mode under the conditional-compilation
-/// `symbols`, in one pass over the full-trivia driver.
+/// `symbols`: the preprocessor's state machine writes each entry into the
+/// table as it produces it, without queueing it as an iterator item.
+///
+/// The full-trivia driver iterator is the reference implementation: under the
+/// `token-reference` feature, every call also runs the iterator and asserts
+/// that the table rebuilds exactly its stream, with the same preprocessor
+/// errors and `#elif` spans.
 ///
 /// # Panics
 ///
@@ -354,56 +364,92 @@ pub struct LexedSource<'src> {
 /// offsets), or if the driver's stream does not tile the source, which the
 /// lossless syntax tree depends on.
 pub fn lex_full_trivia<'src>(source: &'src str, symbols: &HashSet<String>) -> LexedSource<'src> {
-    let len = u32::try_from(source.len()).expect("a source is shorter than 4 GiB");
-    let mut driver = lex_with_symbols_full_trivia(source, symbols);
-    let mut kinds = Vec::new();
-    let mut starts = Vec::new();
-    let mut preproc_errors = Vec::new();
+    let mut writer = TableWriter::new(source);
+    let elif_directives =
+        crate::directives::driver::lex_full_trivia_into(source, symbols, &mut writer);
+    let lexed = writer.finish(elif_directives);
     #[cfg(feature = "token-reference")]
-    let mut reference: Vec<RawItem<'src>> = Vec::new();
-    let mut covered = 0usize;
-    for (res, span) in driver.by_ref() {
+    {
+        let mut driver = lex_with_symbols_full_trivia(source, symbols);
+        let mut stream: Vec<RawItem<'src>> = Vec::new();
+        let mut preproc_errors = Vec::new();
+        for (res, span) in driver.by_ref() {
+            match res {
+                Ok(_) | Err(PreprocError::Lex(_)) => stream.push((res, span)),
+                Err(err) => preproc_errors.push((err, span)),
+            }
+        }
+        let rebuilt: Vec<RawItem<'src>> = lexed.tokens.items(..).collect();
+        assert!(
+            rebuilt == stream
+                && lexed.preproc_errors == preproc_errors
+                && lexed.elif_directives == driver.elif_directives(),
+            "the token table does not rebuild the driver's stream for {source:?}"
+        );
+    }
+    lexed
+}
+
+/// The table [`lex_full_trivia`] writes, one driver item at a time.
+struct TableWriter<'src> {
+    source: &'src str,
+    len: u32,
+    kinds: Vec<RawKind>,
+    starts: Vec<u32>,
+    preproc_errors: Vec<(PreprocError, Range<usize>)>,
+    /// The end of the last entry: where the next must start.
+    covered: usize,
+}
+
+impl<'src> TableWriter<'src> {
+    fn new(source: &'src str) -> Self {
+        TableWriter {
+            source,
+            len: u32::try_from(source.len()).expect("a source is shorter than 4 GiB"),
+            kinds: Vec::new(),
+            starts: Vec::new(),
+            preproc_errors: Vec::new(),
+            covered: 0,
+        }
+    }
+
+    fn finish(mut self, elif_directives: Vec<Range<usize>>) -> LexedSource<'src> {
+        assert_eq!(
+            self.covered,
+            self.source.len(),
+            "the full-trivia stream tiles the source"
+        );
+        self.starts.push(self.len);
+        LexedSource {
+            tokens: RawTokens {
+                source: self.source,
+                kinds: self.kinds,
+                starts: self.starts,
+            },
+            preproc_errors: self.preproc_errors,
+            elif_directives,
+        }
+    }
+}
+
+impl<'src> Sink<'src> for TableWriter<'src> {
+    fn push(&mut self, (res, span): CoreItem<'src>) {
         let Some(kind) = RawKind::of(&res) else {
             let Err(err) = res else {
                 unreachable!("every token is an entry")
             };
-            preproc_errors.push((err, span));
-            continue;
+            self.preproc_errors.push((err, span));
+            return;
         };
         assert_eq!(
-            span.start, covered,
+            span.start, self.covered,
             "the full-trivia stream tiles the source: {kind:?} at {span:?}"
         );
-        kinds.push(kind);
-        // In range: `span.start` is at most the source length, checked above.
-        starts.push(span.start as u32);
-        covered = span.end;
-        #[cfg(feature = "token-reference")]
-        reference.push((res, span));
-    }
-    assert_eq!(
-        covered,
-        source.len(),
-        "the full-trivia stream tiles the source"
-    );
-    starts.push(len);
-    let tokens = RawTokens {
-        source,
-        kinds,
-        starts,
-    };
-    #[cfg(feature = "token-reference")]
-    {
-        let rebuilt: Vec<RawItem<'src>> = tokens.items(..).collect();
-        assert!(
-            rebuilt == reference,
-            "the token table does not rebuild the driver's stream for {source:?}"
-        );
-    }
-    LexedSource {
-        tokens,
-        preproc_errors,
-        elif_directives: driver.elif_directives().to_vec(),
+        self.kinds.push(kind);
+        // In range: `span.start` is at most the source length, checked when
+        // the previous entry ended there.
+        self.starts.push(span.start as u32);
+        self.covered = span.end;
     }
 }
 
