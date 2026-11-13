@@ -358,6 +358,19 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             recovery_sweep:: -- --ignored --nocapture
 
+      - name: Grade the lex filter over declaration sequences
+        if: steps.gate.outputs.run == 'true'
+        # The declaration-sequence grid grades parse verdicts in the ordinary
+        # suite, and a verdict can agree with FCS on a token stream that does
+        # not. This grades the same cells' lex-filter streams and FS0058s
+        # against FCS, pinned in
+        # `crates/cst/tests/manifests/decl_sequence_grid_streams.txt`.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            parser_diff_decl_sequence_grid::every_declaration_pair_streams -- --ignored --nocapture
+
       - name: Hold the syntax table to rowan over the corpus
         if: steps.gate.outputs.run == 'true'
         # `SyntaxNode` is a flat preorder table behind rowan's red-tree API

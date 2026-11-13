@@ -1903,31 +1903,89 @@ pub fn assert_filtered_streams_match_with_parser_fs0058(source: &str, parser: Pa
     filtered_streams_match(source, parser);
 }
 
+/// Offside diagnostics as `(start, end, severity, message)`, the shape both
+/// sides of the lex-filter differential compare in.
+type Offside = BTreeSet<(usize, usize, String, String)>;
+
+/// Our lex-filter's stream and FS0058s for `source` at `lang`, and FCS's at
+/// `lang_text`, normalised for comparison.
+fn filtered_streams_at(
+    path: &Path,
+    source: &str,
+    lang: LanguageVersion,
+    lang_text: &str,
+) -> (
+    (Vec<NormalisedToken>, Offside),
+    (Vec<NormalisedToken>, Offside),
+) {
+    let fcs_json = fcs_tokens_parser_stream_batch_at(path, lang_text);
+    let fcs_tokens = parse_fcs_parser_stream(&fcs_json, source);
+
+    // The filter consumes trivia internally (for offside line/column
+    // tracking) and never emits Raw whitespace/comments — so no trivia
+    // filter is needed on the output.
+    let run = filter_collect(&RawTokens::from_active(source, lex(source)), lang);
+    let rust_offside: Offside = run
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let sev = match d.severity {
+                OffsideSeverity::Error => "Error",
+                OffsideSeverity::Warning => "Warning",
+            };
+            (d.span.start, d.span.end, sev.to_string(), d.message.clone())
+        })
+        .collect();
+    let rust_tokens: Vec<NormalisedToken> = run
+        .tokens
+        .into_items()
+        .map(|(tok, span)| {
+            let tok = tok.unwrap_or_else(|e| panic!("rust lex error {e:?} in {source:?}"));
+            NormalisedToken {
+                kind: filtered_kind_name(&tok),
+                start: span.start,
+                end: span.end,
+            }
+        })
+        .collect();
+
+    let fcs_offside: Offside =
+        fcs_diagnostics_with_severity(&fcs_ast_batch_at(path, lang_text), source, 58)
+            .into_iter()
+            .map(|(s, msg, sev)| (s.start, s.end, sev, msg))
+            .collect();
+    ((rust_tokens, rust_offside), (fcs_tokens, fcs_offside))
+}
+
+/// How our lex-filter's output at [`LanguageVersion::DEFAULT`] first differs
+/// from FCS's for `source`: `stream@<i>` at the first differing token, else
+/// `fs0058` when the offside diagnostics differ, else `None`. For a sweep that
+/// pins each divergent cell rather than stopping at the first, as
+/// [`assert_filtered_streams_match`] does.
+pub fn filtered_stream_divergence(source: &str) -> Option<String> {
+    let mut tmp = NamedTempFile::with_suffix(".fs").expect("create temp .fs file");
+    tmp.write_all(source.as_bytes()).expect("write source");
+    let ((rust_tokens, rust_offside), (fcs_tokens, fcs_offside)) =
+        filtered_streams_at(tmp.path(), source, LanguageVersion::DEFAULT, "10.0");
+    if rust_tokens != fcs_tokens {
+        let at = rust_tokens
+            .iter()
+            .zip(&fcs_tokens)
+            .position(|(r, f)| r != f)
+            .unwrap_or(rust_tokens.len().min(fcs_tokens.len()));
+        return Some(format!("stream@{at}"));
+    }
+    (rust_offside != fcs_offside).then(|| "fs0058".to_string())
+}
+
 fn filtered_streams_match(source: &str, parser: ParserFs0058) {
     let mut parser_only_seen = false;
     let mut tmp = NamedTempFile::with_suffix(".fs").expect("create temp .fs file");
     tmp.write_all(source.as_bytes()).expect("write source");
 
     for &(lang, lang_text) in LEXFILTER_VERSION_BANDS {
-        let fcs_json = fcs_tokens_parser_stream_batch_at(tmp.path(), lang_text);
-        let fcs_tokens = parse_fcs_parser_stream(&fcs_json, source);
-
-        // The filter consumes trivia internally (for offside line/column
-        // tracking) and never emits Raw whitespace/comments — so no trivia
-        // filter is needed on the output.
-        let run = filter_collect(&RawTokens::from_active(source, lex(source)), lang);
-        let rust_tokens: Vec<NormalisedToken> = run
-            .tokens
-            .into_items()
-            .map(|(tok, span)| {
-                let tok = tok.unwrap_or_else(|e| panic!("rust lex error {e:?} in {source:?}"));
-                NormalisedToken {
-                    kind: filtered_kind_name(&tok),
-                    start: span.start,
-                    end: span.end,
-                }
-            })
-            .collect();
+        let ((rust_tokens, rust_offside), (fcs_tokens, fcs_offside)) =
+            filtered_streams_at(tmp.path(), source, lang, lang_text);
 
         if rust_tokens != fcs_tokens {
             report_divergence_at(
@@ -1938,22 +1996,6 @@ fn filtered_streams_match(source: &str, parser: ParserFs0058) {
             );
         }
 
-        let fcs_offside: BTreeSet<(usize, usize, String, String)> =
-            fcs_diagnostics_with_severity(&fcs_ast_batch_at(tmp.path(), lang_text), source, 58)
-                .into_iter()
-                .map(|(s, msg, sev)| (s.start, s.end, sev, msg))
-                .collect();
-        let rust_offside: BTreeSet<(usize, usize, String, String)> = run
-            .diagnostics
-            .iter()
-            .map(|d| {
-                let sev = match d.severity {
-                    OffsideSeverity::Error => "Error",
-                    OffsideSeverity::Warning => "Warning",
-                };
-                (d.span.start, d.span.end, sev.to_string(), d.message.clone())
-            })
-            .collect();
         if parser == ParserFs0058::None {
             assert_eq!(
                 rust_offside, fcs_offside,
