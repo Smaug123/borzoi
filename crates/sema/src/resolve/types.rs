@@ -836,8 +836,7 @@ impl<'a> Resolver<'a> {
                     });
                     Some((item_idx, item_id))
                 };
-                let mut path = self.container_path.to_vec();
-                path.push(case_name.clone());
+                let path = self.decl_path(std::slice::from_ref(&case_name));
                 self.push_export_decl(
                     path,
                     token_range.start(),
