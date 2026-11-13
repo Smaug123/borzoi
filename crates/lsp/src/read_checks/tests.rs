@@ -122,6 +122,37 @@ impl Model {
         self.touch(path.parent().expect("not the root"));
     }
 
+    /// Move `from` and everything below it to `to`, which must be absent
+    /// under a directory: the entries keep their inodes, and both parents
+    /// are stamped.
+    fn rename(&mut self, from: &Path, to: &Path) {
+        let Some(parent) = to.parent() else { return };
+        if from == Path::new("/")
+            || !self.entries.contains_key(from)
+            || self.entries.contains_key(to)
+            || to.starts_with(from)
+            || !matches!(
+                self.entries.get(parent),
+                Some(Entry {
+                    node: Node::Dir,
+                    ..
+                })
+            )
+        {
+            return;
+        }
+        let moved: Vec<(PathBuf, Entry)> = self
+            .entries
+            .iter()
+            .filter(|(p, _)| p.starts_with(from))
+            .map(|(p, e)| (to.join(p.strip_prefix(from).unwrap()), e.clone()))
+            .collect();
+        self.entries.retain(|p, _| !p.starts_with(from));
+        self.entries.extend(moved);
+        self.touch(from.parent().expect("not the root"));
+        self.touch(parent);
+    }
+
     /// Rewrite the file at `path` in place.
     fn write(&mut self, path: &Path, bytes: &[u8]) {
         let now = self.tick();
@@ -152,6 +183,7 @@ impl Model {
             }
             Op::Remove(p) => self.remove(&path(*p)),
             Op::Write(p) => self.write(&path(*p), b"yy"),
+            Op::Rename(from, to) => self.rename(&path(*from), &path(*to)),
             Op::Interleave(op) => self.interleaved = Some((**op).clone()),
             Op::Generation => {}
         }
@@ -289,8 +321,21 @@ impl Probe for Rc<RefCell<Model>> {
     }
 }
 
-const PATHS: [&str; 10] = [
-    "/w", "/w/a", "/w/a/b", "/w/c", "/w/x", "/w/a/x", "/w/a/b/x", "/w/c/x", "/w/a/y", "/w/c/a",
+const PATHS: [&str; 13] = [
+    "/w",
+    "/w/a",
+    "/w/a/b",
+    "/w/c",
+    "/w/x",
+    "/w/a/x",
+    "/w/a/b/x",
+    "/w/c/x",
+    "/w/a/y",
+    "/w/c/a",
+    // Through the symlink the setup makes at `/w/c/a`.
+    "/w/c/a/x",
+    "/w/c/a/b/x",
+    "/w/z",
 ];
 
 fn path(i: usize) -> PathBuf {
@@ -306,6 +351,8 @@ enum Op {
     Link(usize, usize),
     Remove(usize),
     Write(usize),
+    /// Move the first path to the second.
+    Rename(usize, usize),
     /// Make this change at the next query a check asks.
     Interleave(Box<Op>),
     /// Begin a generation at the clock's time and check every read.
@@ -319,7 +366,8 @@ fn change() -> impl Strategy<Value = Op> {
         2 => p.clone().prop_map(Op::Dir),
         1 => (p.clone(), p.clone()).prop_map(|(a, b)| Op::Link(a, b)),
         2 => p.clone().prop_map(Op::Remove),
-        1 => p.prop_map(Op::Write),
+        1 => p.clone().prop_map(Op::Write),
+        2 => (p.clone(), p).prop_map(|(a, b)| Op::Rename(a, b)),
     ]
 }
 

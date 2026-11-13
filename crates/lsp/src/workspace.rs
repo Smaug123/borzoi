@@ -5926,6 +5926,65 @@ mod tests {
             assert_ne!(ws.projects_generation(), generation);
         }
 
+        /// A file only the second, seeded pass reads (an import gated on the
+        /// target framework a multi-targeted project is re-evaluated under)
+        /// is one the cached evaluation depends on.
+        #[test]
+        fn a_file_only_the_seeded_pass_reads_is_confirmed() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let project = root.join("App/App.fsproj");
+            write_file(
+                &project,
+                r#"<Project>
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <Import Project="tfm.props" Condition="'$(TargetFramework)' == 'net8.0'" />
+  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
+</Project>"#,
+            );
+            let props = |define: &str| {
+                format!(
+                    "<Project><PropertyGroup><DefineConstants>$(DefineConstants);{define}</DefineConstants></PropertyGroup></Project>"
+                )
+            };
+            write_file(&root.join("App/tfm.props"), &props("ONE"));
+            write_file(&root.join("App/A.fs"), "module A\n");
+            let file = root.join("App/A.fs");
+            let mut ws = Workspace::default();
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert!(ws.symbols_for(&file).contains("ONE"));
+            ws.end_generation();
+            write_file(&root.join("App/tfm.props"), &props("TWO"));
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert!(ws.symbols_for(&file).contains("TWO"));
+            ws.end_generation();
+        }
+
+        /// The graph walk reads the entry's cached evaluation only when the
+        /// open generation has confirmed it: a walk that comes first in a
+        /// generation evaluates the entry as it is on disk.
+        #[test]
+        fn the_graph_walk_reads_only_a_confirmed_entry() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let a = root.join("A/A.fsproj");
+            let b = root.join("B/B.fsproj");
+            write_file(&a, "<Project />");
+            write_file(&b, "<Project />");
+            let mut ws = Workspace::default();
+            ws.begin_generation(Nanos(i128::MAX / 2));
+            assert!(ws.project(&a).is_some());
+            assert_eq!(ws.project_graph(&a).nodes.len(), 1);
+            ws.end_generation();
+            write_file(
+                &a,
+                r#"<Project><ItemGroup><ProjectReference Include="../B/B.fsproj" /></ItemGroup></Project>"#,
+            );
+            ws.begin_generation(Nanos(i128::MAX / 2 + 1));
+            assert_eq!(ws.project_graph(&a).nodes.len(), 2);
+            ws.end_generation();
+        }
+
         /// A rewrite of a file inside an SDK version is not looked for: the
         /// read is an immutable content. Installing a version beside it is.
         #[test]
