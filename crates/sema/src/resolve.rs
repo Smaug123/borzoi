@@ -73,11 +73,13 @@ mod container;
 mod contributors;
 mod custom_operations;
 use contributors::FileContributions;
+use open_scope::OpenScope;
 use path_set::PathSet;
 mod decls;
 mod exprs;
 mod lookup;
 mod model;
+mod open_scope;
 mod path_set;
 mod state;
 mod types;
@@ -89,8 +91,7 @@ pub use model::{
 };
 pub use state::ActivePatternShape;
 use state::{
-    DottedOpacity, Resolver, implicit_open_groups, implicit_open_namespaces,
-    implicit_shortening_prefixes,
+    Resolver, implicit_open_groups, implicit_open_namespaces, implicit_shortening_prefixes,
 };
 
 /// Resolve every name use in `file` to its defining binder — within this file,
@@ -372,37 +373,14 @@ pub fn resolve_file(
             .long_id()
             .map(|li| li.idents().map(|t| id_text(&t).to_string()).collect())
             .unwrap_or_default();
-        // Imports are scoped to a *single* top-level block: an `open` in one
-        // `namespace`/`module` block does not carry to the next (FCS-verified,
-        // even for two same-named `namespace N` blocks), so reset the open state
-        // to the implicit auto-opens at each block — mirroring the per-nested-
-        // module save/restore in [`Resolver::nested_module`].
-        r.imports = implicit_open_groups(r.assemblies);
-        // The implicit auto-opens are namespace readings, so they lend their
-        // `[<AutoOpen>]` modules as shortening prefixes too
-        // (`Resolver::auto_open_shortening_prefixes`).
-        r.open_shortening_prefixes = implicit_shortening_prefixes(r.assemblies);
-        // Block-scoped like every other open state: an incomplete module opened in one
-        // top-level block must not veto a sibling block's opens (review round 11).
-        r.incomplete_open_prefixes = Vec::new();
-        r.explicit_open_prefixes = Vec::new();
-        r.module_open_prefixes = Vec::new();
-        r.assembly_open_prefixes = Vec::new();
-        r.open_generation = 0;
-        r.latest_open_pos = 0;
         r.block_type_defs = HashSet::default();
-        r.pattern_suppressed_case_ids = HashSet::default();
-        r.unmodelled_open_active = false;
-        r.opaque_value_open = false;
-        r.dotted_opacity = DottedOpacity::default();
-        r.recursive_module_active = module.is_rec();
         // An `[<AutoOpen>]` module declared in one `namespace N` block is
         // opened again by every later block of `N`, and only of `N`.
         // They enter this block at its start, outranking every declaration
         // of an earlier block.
         let block_start = u32::from(module.syntax().text_range().start());
         r.block_starts.push(block_start);
-        r.auto_open_type_shadow_names = block_auto_open_type_shadows
+        let auto_open_type_shadow_names = block_auto_open_type_shadows
             .get(&block_key)
             .map(|shadows: &HashMap<String, state::AutoOpenTypeShadow>| {
                 shadows
@@ -415,16 +393,36 @@ pub fn resolve_file(
                     .collect()
             })
             .unwrap_or_default();
-        r.rec_module_names.clear();
+        let mut rec_module_names = HashSet::default();
         if module.is_rec() {
-            collect_nested_module_names(module.decls(), &mut r.rec_module_names);
+            collect_nested_module_names(module.decls(), &mut rec_module_names);
         }
+        let prefix = module_prefix(&module);
+        // The open state restarts at the implicit auto-opens, which are
+        // namespace readings and so lend their `[<AutoOpen>]` modules as
+        // shortening prefixes too (`Resolver::auto_open_shortening_prefixes`).
+        r.scope = OpenScope::block_start(
+            implicit_open_groups(r.assemblies),
+            implicit_shortening_prefixes(r.assemblies),
+            open_scope::BlockHeader {
+                auto_open_type_shadow_names,
+                rec_module_names,
+                // A `module private Foo` root scopes its contents to the
+                // module's parent (see [`OpenScope::access_floor`]); a
+                // namespace / anonymous root is always public. The parent is
+                // the header's path minus the module's own name.
+                access_floor: (matches!(module.kind(), ModuleOrNamespaceKind::NamedModule)
+                    && decls::header_is_private(module.syntax()))
+                .then(|| block_key.len().saturating_sub(1)),
+                in_exporting_module: prefix.is_some(),
+                recursive: module.is_rec(),
+            },
+        );
         // An anonymous top-level module roots its nested modules under the
         // implicit filename module (unmodeled), so they are not bare-cross-file
         // exportable; a `namespace`/`module` header (including `namespace
         // global`) is a real root. See [`Resolver::anonymous_root`].
         r.anonymous_root = matches!(module.kind(), ModuleOrNamespaceKind::Anon);
-        let prefix = module_prefix(&module);
         if let Some(path) = &prefix {
             // A declared module shadows a same-named assembly type even with no
             // exports, so record it here, not from the exported values.
@@ -450,7 +448,6 @@ pub fn resolve_file(
                 },
             );
         }
-        r.in_exporting_module = prefix.is_some();
         // The container prefix under which this header's nested modules are
         // qualified for *cross-file* reference — the header's `longId` for both
         // a `module` and a `namespace` (empty for an anonymous module /
@@ -494,12 +491,6 @@ pub fn resolve_file(
         // nested modules (a nested module appends to `container_path` but not to the
         // namespace), so set once here at the top-level header.
         r.namespace_depth = ns_upto;
-        // A `module private Foo` root scopes its contents to the module's parent
-        // (see [`Resolver::access_floor`]); a namespace / anonymous root is always
-        // public. The parent is `container_path` minus the module's own name.
-        r.access_floor = (matches!(module.kind(), ModuleOrNamespaceKind::NamedModule)
-            && decls::header_is_private(module.syntax()))
-        .then(|| r.container_path.len().saturating_sub(1));
         // Activate this container's value frame for the block — merging same-named
         // `namespace` blocks (re-take the accumulated frame) and isolating distinct
         // ones (a fresh frame) — then store it back after. The nested-module
@@ -560,7 +551,8 @@ pub fn resolve_file(
         for decl in module.decls() {
             r.module_decl(&decl);
         }
-        if matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace) && r.latest_open_pos != 0
+        if matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace)
+            && r.scope.latest_open_pos != 0
         {
             r.global_block_opened = true;
         }
@@ -592,7 +584,7 @@ pub fn resolve_file(
             .insert(r.container_path.to_vec(), augmentation_locals);
         block_auto_open_type_shadows.insert(
             block_key,
-            std::mem::take(&mut r.auto_open_type_shadow_names),
+            std::mem::take(&mut r.scope.auto_open_type_shadow_names),
         );
     }
     #[cfg(feature = "otel")]
@@ -1758,7 +1750,7 @@ fn thread_forward(
     paired_screen: Option<&model::SigScreen>,
     partner: Option<usize>,
 ) {
-    preceding.extend_with(rf, paired_screen, partner);
+    preceding.extend_with(rf, assemblies.names(), paired_screen, partner);
     ext.wholesale |= wholesale_extension_contribution(rf, assemblies);
     ext.instance_names
         .extend(rf.augmentation_instance_names.iter().cloned());
@@ -2263,7 +2255,7 @@ impl<'a> Resolver<'a> {
             typar_scopes: Vec::new(),
             type_defs: HashMap::default(),
             type_slot_classes: HashMap::default(),
-            type_slot_history: HashMap::default(),
+            type_slot_history: crate::names::ChildMap::default(),
             type_access_roots: HashMap::default(),
             case_repr_roots: HashMap::default(),
             container_decls: HashMap::default(),
@@ -2275,8 +2267,18 @@ impl<'a> Resolver<'a> {
             preceding,
             assemblies,
             item_base: preceding.next_base(),
-            in_exporting_module: false,
-            container_path: container::ContainerPath::default(),
+            scope: OpenScope::block_start(
+                implicit_open_groups(assemblies),
+                implicit_shortening_prefixes(assemblies),
+                open_scope::BlockHeader {
+                    auto_open_type_shadow_names: HashMap::default(),
+                    rec_module_names: HashSet::default(),
+                    access_floor: None,
+                    in_exporting_module: false,
+                    recursive: false,
+                },
+            ),
+            container_path: container::ContainerPath::new(assemblies.names()),
             namespace_depth: 0,
             module_paths: PathSet::default(),
             namespace_paths: Vec::new(),
@@ -2292,16 +2294,9 @@ impl<'a> Resolver<'a> {
             augmentation_head_exports: PathSet::default(),
             real_nested_module_exports: PathSet::default(),
             type_path_exports: Vec::new(),
-            imports: implicit_open_groups(assemblies),
+            type_path_export_ids: HashMap::default(),
             implicit_import_count: implicit_open_groups(assemblies).len(),
-            open_shortening_prefixes: implicit_shortening_prefixes(assemblies),
-            incomplete_open_prefixes: Vec::new(),
-            explicit_open_prefixes: Vec::new(),
-            module_open_prefixes: Vec::new(),
-            assembly_open_prefixes: Vec::new(),
-            open_generation: 0,
             own_namespace_fold: state::RecordedFold::default(),
-            pattern_suppressed_case_ids: HashSet::default(),
             modules_with_hidden_values: HashSet::default(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
@@ -2327,15 +2322,10 @@ impl<'a> Resolver<'a> {
             augmentation_instance_names: HashSet::default(),
             augmentation_static_names: HashSet::default(),
             augmentation_names_unknowable: false,
-            latest_open_pos: 0,
             block_type_defs: HashSet::default(),
             block_starts: Vec::new(),
             augmentable_types: HashSet::default(),
             module_aliases: HashMap::default(),
-            unmodelled_open_active: false,
-            opaque_value_open: false,
-            dotted_opacity: DottedOpacity::default(),
-            recursive_module_active: false,
             contributions: FileContributions::default(),
             own_extension_statics: std::collections::BTreeSet::new(),
             rec_contribution: None,
@@ -2344,10 +2334,7 @@ impl<'a> Resolver<'a> {
             in_file_constructions: HashMap::default(),
             module_frames: Vec::new(),
             auto_open_type_paths: HashSet::default(),
-            rec_module_names: HashSet::default(),
-            auto_open_type_shadow_names: HashMap::default(),
             anonymous_root: false,
-            access_floor: None,
             pending_items: HashSet::default(),
             ap_body_case_names: HashSet::default(),
             active_pattern_shape: HashMap::default(),
@@ -2903,7 +2890,7 @@ pub(crate) fn dropped_in_namespace(file: &ImplFile) -> HashSet<TextRange> {
 }
 
 /// Every nested-module name declared anywhere under `decls` (all depths),
-/// for the `rec`-block pre-scan ([`Resolver::rec_module_names`]): inside
+/// for the `rec`-block pre-scan ([`OpenScope::rec_module_names`](crate::resolve::open_scope::OpenScope::rec_module_names)): inside
 /// `module rec` / `namespace rec`, a later-declared module is already in
 /// scope, so its name must veto multi-segment type paths the source-ordered
 /// walk would otherwise resolve into a same-path assembly type. Every header
@@ -3353,7 +3340,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, None);
+        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
         assert!(
             pi.modules_with_hidden_values
                 .contains(&Vec::<String>::new()),
@@ -3386,7 +3373,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, None);
+        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
         assert!(
             pi.auto_open_module_paths.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
@@ -3409,7 +3396,7 @@ mod export_decl_tests {
             rf2.export_decls
         );
         let mut pi2 = ProjectItems::default();
-        pi2.extend_with(&rf2, None, None);
+        pi2.extend_with(&rf2, &crate::names::NameTable::default(), None, None);
         assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
     }
 
@@ -3430,7 +3417,7 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            pi.extend_with(&rf, None, None);
+            pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
             assert!(
                 !pi.nested_module_paths.contains(&segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
@@ -3451,7 +3438,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, None);
+        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(

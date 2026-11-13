@@ -313,6 +313,14 @@ impl Oracle {
         )
     }
 
+    /// An oracle whose default SDK resolver looks in `sdks_path` for a
+    /// `<Project Sdk="Name">` (`<sdks_path>/Name/Sdk`): the shape a
+    /// differential laying out a synthetic SDK needs, so MSBuild imports it
+    /// through the `Sdk` attribute just as our evaluator does.
+    pub fn spawn_with_sdks_path(sdks_path: &Path) -> Oracle {
+        Oracle::spawn_with(vec!["--sdks-path".into(), sdks_path.as_os_str().to_owned()])
+    }
+
     fn spawn_with(args: Vec<std::ffi::OsString>) -> Oracle {
         Oracle::spawn_in(args, None)
     }
@@ -479,6 +487,44 @@ impl Oracle {
         if resp["ok"].as_bool() != Some(true) {
             return None;
         }
+        Some(
+            resp["items"]
+                .as_array()
+                .expect("oracle ok response carries an items array")
+                .iter()
+                .map(|v| v.as_str().expect("each item is a string").to_string())
+                .collect(),
+        )
+    }
+
+    /// Evaluate the project file at `path` as it stands on disk, execute
+    /// `target` on it in the oracle's process, and read back the `FullPath` of
+    /// every `item_type` item the build leaves, in order (the `targetItems` op).
+    /// `None` when MSBuild rejects the project at evaluation. A build that runs
+    /// but fails panics with MSBuild's errors: a generated fixture is valid by
+    /// construction, so a failing build is a harness bug, not a verdict.
+    pub fn target_items(
+        &mut self,
+        path: &Path,
+        target: &str,
+        item_type: &str,
+    ) -> Option<Vec<String>> {
+        let resp = self.request(&serde_json::json!({
+            "op": "targetItems",
+            "path": path.to_string_lossy().into_owned(),
+            "target": target,
+            "itemType": item_type,
+        }));
+        if resp["ok"].as_bool() != Some(true) {
+            return None;
+        }
+        assert_eq!(
+            resp["succeeded"].as_bool(),
+            Some(true),
+            "target {target} failed on {}: {}",
+            path.display(),
+            resp["errors"]
+        );
         Some(
             resp["items"]
                 .as_array()
@@ -718,7 +764,7 @@ pub enum ExpandVerdict {
 /// plan's D1) nor `%XX` escapes in *plain text outside `$(…)`* (MSBuild
 /// unescapes those in the evaluated value while `substitute` passes them
 /// through without an issue — the known gap tracked in
-/// `docs/compile-item-fidelity-plan.md`); the generators and corner lists
+/// `docs/completed/compile-item-fidelity-plan.md`); the generators and corner lists
 /// honour this. `%XX` *inside* a `$(…)` expression is in scope: the
 /// expression evaluator declines it, landing the case in `Partial`.
 ///
@@ -888,7 +934,7 @@ fn gen_operand(rng: &mut SplitMix64) -> String {
         "x$(P1)y",
         "0x10",
         // Escape-bearing quoted operands (stage E2 of
-        // `docs/msbuild-escaped-value-plan.md`): MSBuild unescapes `%XX` at the
+        // `docs/completed/msbuild-escaped-value-plan.md`): MSBuild unescapes `%XX` at the
         // operand leaf, so `'%74rue'` compares as `true` and `'a%20b'` as `a b`.
         // These used to degrade the whole condition; they are modelled now, and
         // this dimension is what holds that line. A bare `%` stays literal, and
@@ -1104,7 +1150,7 @@ pub fn gen_expand_props(rng: &mut SplitMix64) -> Vec<(String, String)> {
         "o\u{17f}x",
         "\u{1d11e}x",
         // `%XX` escapes, and a bare `%`, in property values — now that the
-        // escaped-value domain models them (E1–E3, `docs/msbuild-escaped-value-plan.md`).
+        // escaped-value domain models them (E1–E3, `docs/completed/msbuild-escaped-value-plan.md`).
         // A bare `$(P)` splice unescapes at the leaf; a splice into a function
         // receiver/argument unescapes once at the call; a trailing bare `%`
         // composes with a hex-leading following segment (`$(P)abc` with `P=100%`
@@ -1120,7 +1166,7 @@ pub fn gen_expand_props(rng: &mut SplitMix64) -> Vec<(String, String)> {
         // comparison), NUL (`GetFullPath` throws). These must land the reducing
         // expressions in `Partial` (a decline), never a wrong commit; the sweep
         // is what proves that class stays closed, rather than a reviewer finding
-        // one consumer at a time. See `docs/msbuild-escaped-value-plan.md` (E3).
+        // one consumer at a time. See `docs/completed/msbuild-escaped-value-plan.md` (E3).
         "a%5cb",
         "%5cabc",
         "%01a",

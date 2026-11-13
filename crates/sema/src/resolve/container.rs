@@ -1,49 +1,35 @@
-//! The walk's current container path, with an interned id for each prefix.
+//! The walk's current container path, with the env-wide [`PathId`] of each
+//! prefix.
 
 use std::ops::Deref;
 
 use crate::hash::HashMap;
+use crate::names::{NameTable, PathId};
 
-/// A container path the walk has entered, interned by [`ContainerPath`]: a
-/// map keyed by it answers for an enclosing container without hashing that
-/// container's path, so a lookup across every enclosing container costs one
-/// probe per level rather than one path hash per level.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ContainerId(u32);
-
-impl ContainerId {
-    /// The empty path: an anonymous module or `namespace global`.
-    const ROOT: ContainerId = ContainerId(0);
-}
-
-/// Dotted path of the enclosing *container*, and the [`ContainerId`] of each
-/// of its prefixes. Read as a `[String]`; changed only through its methods,
-/// which keep the ids in step with the segments.
+/// Dotted path of the enclosing *container*, and the [`PathId`] of each of
+/// its prefixes, interned in the env's [`NameTable`]. Read as a `[String]`;
+/// changed only through its methods, which keep the ids in step with the
+/// segments.
+///
+/// A map keyed by a container's [`PathId`] answers for an enclosing container
+/// without hashing that container's path, so a lookup across every enclosing
+/// container costs one probe per level rather than one path hash per level.
+/// The walk's maps get their keys from [`Self::id`] and [`Self::prefix_id`],
+/// so a path the walk has not entered holds nothing in any of them, whether or
+/// not the table holds it for some other walk.
 #[derive(Debug)]
-pub(super) struct ContainerPath {
+pub(super) struct ContainerPath<'n> {
+    names: &'n NameTable,
     segments: Vec<String>,
     /// `prefix_ids[k]` is `segments[..k]`'s id: one more entry than
     /// `segments`.
-    prefix_ids: Vec<ContainerId>,
-    /// Every path entered so far, by its parent's id and then its last
-    /// segment.
-    children: HashMap<ContainerId, HashMap<String, ContainerId>>,
-    /// How many paths have been entered: the next path's id.
-    entered: u32,
+    prefix_ids: Vec<PathId>,
+    /// The per-walk interning this one replaced, held to it query by query.
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    reference: reference::Lockstep,
 }
 
-impl Default for ContainerPath {
-    fn default() -> Self {
-        ContainerPath {
-            segments: Vec::new(),
-            prefix_ids: vec![ContainerId::ROOT],
-            children: HashMap::default(),
-            entered: 1,
-        }
-    }
-}
-
-impl Deref for ContainerPath {
+impl Deref for ContainerPath<'_> {
     type Target = [String];
 
     fn deref(&self) -> &[String] {
@@ -51,9 +37,20 @@ impl Deref for ContainerPath {
     }
 }
 
-impl ContainerPath {
+impl<'n> ContainerPath<'n> {
+    /// The root container, interning into `names`.
+    pub(super) fn new(names: &'n NameTable) -> Self {
+        ContainerPath {
+            names,
+            segments: Vec::new(),
+            prefix_ids: vec![names.root()],
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
+            reference: reference::Lockstep::new(names.root()),
+        }
+    }
+
     /// The current container's id.
-    pub(super) fn id(&self) -> ContainerId {
+    pub(super) fn id(&self) -> PathId {
         *self
             .prefix_ids
             .last()
@@ -61,23 +58,25 @@ impl ContainerPath {
     }
 
     /// The id of the enclosing container `self[..k]`.
-    pub(super) fn prefix_id(&self, k: usize) -> ContainerId {
+    pub(super) fn prefix_id(&self, k: usize) -> PathId {
         self.prefix_ids[k]
     }
 
-    /// The id of `path`, if the walk has entered it; a container it has not
-    /// entered holds nothing in any map keyed by [`ContainerId`].
-    pub(super) fn id_of(&self, path: &[String]) -> Option<ContainerId> {
-        path.iter().try_fold(ContainerId::ROOT, |parent, segment| {
-            self.children.get(&parent)?.get(segment).copied()
-        })
+    /// The id of `path`, if the table holds it. `None` proves that no map
+    /// keyed by [`PathId`]s holds the path; `Some` does not prove the walk
+    /// entered it.
+    pub(super) fn id_of(&self, path: &[String]) -> Option<PathId> {
+        let id = self.names.lookup_path(path);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.reference.check_id_of(path, id);
+        id
     }
 
     /// What `map` holds for the container `path`: nothing when the walk has
     /// not entered it.
     pub(super) fn get_at<'m, V>(
         &self,
-        map: &'m HashMap<ContainerId, V>,
+        map: &'m HashMap<PathId, V>,
         path: &[String],
     ) -> Option<&'m V> {
         map.get(&self.id_of(path)?)
@@ -85,20 +84,11 @@ impl ContainerPath {
 
     /// Enter the container `segment` under the current one.
     pub(super) fn push(&mut self, segment: String) {
-        let parent = self.id();
-        let siblings = self.children.entry(parent).or_default();
-        let id = match siblings.get(&segment) {
-            Some(&id) => id,
-            None => {
-                let id = ContainerId(self.entered);
-                self.entered = self
-                    .entered
-                    .checked_add(1)
-                    .expect("fewer than 2^32 containers");
-                siblings.insert(segment.clone(), id);
-                id
-            }
-        };
+        let id = self
+            .names
+            .intern_child(self.id(), self.names.logical(&segment));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.reference.push(&segment, id);
         self.segments.push(segment);
         self.prefix_ids.push(id);
     }
@@ -136,6 +126,8 @@ impl ContainerPath {
         );
         self.segments.truncate(len);
         self.prefix_ids.truncate(len + 1);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.reference.truncate(len);
     }
 }
 
@@ -143,7 +135,91 @@ impl ContainerPath {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ContainerMark {
     len: usize,
-    id: ContainerId,
+    id: PathId,
+}
+
+/// The per-walk container interning that [`PathId`]s replaced, kept under
+/// `interning-reference` in a debug build to hold them to it (a release build,
+/// which is what `sema_counts` measures, leaves it out even when the feature
+/// is on, since the feature reaches every target that links this crate's
+/// dev-dependencies): each container the walk enters
+/// gets a walk-local id, the first time, from a trie of its own.
+///
+/// What the walk's maps can tell apart is exactly what the reference ids can,
+/// so the lockstep asserts that the table's ids biject with the reference's
+/// over the containers the walk entered, and that a path the reference never
+/// entered has no id or one the walk never entered either.
+#[cfg(all(feature = "interning-reference", debug_assertions))]
+mod reference {
+    use crate::hash::HashMap;
+    use crate::names::PathId;
+
+    #[derive(Debug)]
+    pub(super) struct Lockstep {
+        /// Each entered container's local id by its parent's and its last
+        /// segment; the root is 0.
+        children: HashMap<u32, HashMap<String, u32>>,
+        /// The local id of each prefix of the current path.
+        prefix_ids: Vec<u32>,
+        /// Each entered container's [`PathId`], by local id, and back.
+        to_table: Vec<PathId>,
+        from_table: HashMap<PathId, u32>,
+    }
+
+    impl Lockstep {
+        pub(super) fn new(root: PathId) -> Self {
+            Lockstep {
+                children: HashMap::default(),
+                prefix_ids: vec![0],
+                to_table: vec![root],
+                from_table: std::iter::once((root, 0)).collect(),
+            }
+        }
+
+        pub(super) fn push(&mut self, segment: &str, table_id: PathId) {
+            let parent = *self.prefix_ids.last().expect("the root is always present");
+            let next = u32::try_from(self.to_table.len()).expect("fewer than 2^32 containers");
+            let local = *self
+                .children
+                .entry(parent)
+                .or_default()
+                .entry(segment.to_string())
+                .or_insert(next);
+            if local == next {
+                self.to_table.push(table_id);
+                assert!(
+                    self.from_table.insert(table_id, local).is_none(),
+                    "one PathId for two containers"
+                );
+            }
+            assert_eq!(
+                self.to_table[local as usize], table_id,
+                "two PathIds for one container"
+            );
+            self.prefix_ids.push(local);
+        }
+
+        pub(super) fn truncate(&mut self, len: usize) {
+            self.prefix_ids.truncate(len + 1);
+        }
+
+        pub(super) fn check_id_of(&self, path: &[String], table_id: Option<PathId>) {
+            let local = path.iter().try_fold(0, |parent, segment| {
+                self.children.get(&parent)?.get(segment).copied()
+            });
+            match local {
+                Some(local) => assert_eq!(
+                    table_id,
+                    Some(self.to_table[local as usize]),
+                    "an entered container's PathId moved: {path:?}"
+                ),
+                None => assert!(
+                    table_id.is_none_or(|id| !self.from_table.contains_key(&id)),
+                    "a container the walk never entered has an entered one's PathId: {path:?}"
+                ),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -182,13 +258,14 @@ mod tests {
         prop::collection::vec(block, 0..4).prop_map(|blocks| blocks.concat())
     }
 
-    /// Every id names exactly one path, and every prefix's id is the one that
-    /// path's lookup finds.
-    fn check(path: &ContainerPath, seen: &mut HashMap<ContainerId, Vec<String>>) {
+    /// Every id names exactly one path, every prefix's id is the one that
+    /// path's lookup finds, and the table spells it.
+    fn check(path: &ContainerPath, names: &NameTable, seen: &mut HashMap<PathId, Vec<String>>) {
         for k in 0..=path.len() {
             let prefix = path[..k].to_vec();
             let id = path.prefix_id(k);
             assert_eq!(path.id_of(&prefix), Some(id), "{prefix:?}");
+            assert_eq!(names.segments(id), prefix, "{prefix:?}");
             let named = seen.entry(id).or_insert_with(|| prefix.clone());
             assert_eq!(*named, prefix, "one id for two paths");
         }
@@ -197,8 +274,9 @@ mod tests {
 
     fn walk(
         path: &mut ContainerPath,
+        names: &NameTable,
         moves: &[Move],
-        seen: &mut HashMap<ContainerId, Vec<String>>,
+        seen: &mut HashMap<PathId, Vec<String>>,
     ) {
         for m in moves {
             match m {
@@ -215,40 +293,65 @@ mod tests {
                     let mut entered = before.clone();
                     entered.extend(segments.iter().cloned());
                     assert_eq!(path.to_vec(), entered);
-                    check(path, seen);
-                    walk(path, body, seen);
+                    check(path, names, seen);
+                    walk(path, names, body, seen);
                     assert_eq!(path.to_vec(), entered, "a body leaves what it enters");
                     path.leave_to(mark);
                     assert_eq!(path.to_vec(), before);
                 }
             }
-            check(path, seen);
+            check(path, names, seen);
         }
     }
 
     proptest! {
+        /// Also run with paths another walk interned first, in the same
+        /// table: ids differ, and nothing the walk can observe does.
         #[test]
-        fn container_ids_name_paths_one_to_one(moves in moves()) {
-            let mut path = ContainerPath::default();
+        fn container_ids_name_paths_one_to_one(
+            moves in moves(),
+            earlier in prop::collection::vec(prop::collection::vec(segment(), 0..4), 0..6),
+        ) {
+            let names = NameTable::default();
+            for p in &earlier {
+                p.iter().fold(names.root(), |parent, s| names.intern_child(parent, names.logical(s)));
+            }
+            let mut path = ContainerPath::new(&names);
             let mut seen = HashMap::default();
-            check(&path, &mut seen);
-            walk(&mut path, &moves, &mut seen);
+            check(&path, &names, &mut seen);
+            walk(&mut path, &names, &moves, &mut seen);
         }
     }
 
     #[test]
-    fn an_unentered_path_has_no_id() {
-        let mut path = ContainerPath::default();
+    fn an_uninterned_path_has_no_id() {
+        let names = NameTable::default();
+        let mut path = ContainerPath::new(&names);
         path.set(vec!["A".to_string(), "B".to_string()]);
         assert_eq!(path.id_of(&["A".to_string(), "C".to_string()]), None);
         assert_eq!(path.id_of(&["B".to_string()]), None);
         assert!(path.id_of(&["A".to_string()]).is_some());
     }
 
+    /// The lockstep catches an id the walk's maps would confuse with an
+    /// entered container's.
+    #[test]
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
+    #[should_panic(expected = "never entered")]
+    fn the_lockstep_rejects_an_unentered_path_with_an_entered_id() {
+        let names = NameTable::default();
+        let mut path = ContainerPath::new(&names);
+        path.set(vec!["A".to_string()]);
+        let entered = path.id();
+        path.reference
+            .check_id_of(&["B".to_string()], Some(entered));
+    }
+
     #[test]
     #[should_panic(expected = "encloses")]
     fn leaving_to_a_container_that_does_not_enclose_panics() {
-        let mut path = ContainerPath::default();
+        let names = NameTable::default();
+        let mut path = ContainerPath::new(&names);
         path.set(vec!["A".to_string()]);
         let mark = path.mark();
         path.set(vec!["B".to_string(), "C".to_string()]);

@@ -8,8 +8,8 @@
 > B₁ runs in production in shadow: every on-demand restore hands it the spec
 > it read and logs whether B₁ agreed (see *B₁ in shadow*).
 > The resolver is NuGet's default dependency resolver reimplemented, and
-> declines on no corpus project; B₁ commits on five of the six, exactly as the
-> restore does, and the sixth waits on its nuspec vocabulary. Supersedes
+> declines on no corpus project, and B₁ commits on all six, exactly as the
+> restore does (`crates/lsp/tests/manifests/restore_graph_projects.txt`). Supersedes
 > slice 8 of
 > [`nuget-restore-plan.md`](nuget-restore-plan.md).
 >

@@ -226,6 +226,248 @@ fn compile_update_compile_order_metadata_moves_existing_item() {
     assert!(!p.items_uncertain);
 }
 
+/// A compile-order `Update` matches an item by full path, ignoring case, on
+/// every host (oracle-pinned on Linux; `docs/completed/compile-item-fidelity-plan.md`).
+/// Each spelling here names `B.fs`, and each moves it.
+#[test]
+fn compile_update_compile_order_matches_alias_and_case_spellings() {
+    for target in [
+        "./B.fs",
+        "sub/../B.fs",
+        ".\\B.fs",
+        "b.fs",
+        "/repo/proj/B.fs",
+        "/repo/x/../proj/./b.fs",
+        "../proj/B.fs",
+    ] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="./B.fs" />
+    <Compile Update="{target}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert_eq!(file_names(&p.items), ["B.fs", "A.fs"], "Update={target}");
+        assert!(
+            p.diagnostics.is_empty(),
+            "Update={target}: {:?}",
+            p.diagnostics
+        );
+        assert!(!p.items_uncertain, "Update={target}");
+    }
+}
+
+/// Case-insensitive matching moves every item the folded name covers: on a
+/// case-sensitive host `a.fs` and `A.fs` are two files, and one `Update`
+/// moves both.
+#[test]
+fn compile_update_compile_order_moves_every_case_variant() {
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Include="a.fs" />
+    <Compile Include="B.fs" />
+    <Compile Include="A.fs" />
+    <Compile Update="A.FS" CompileOrder="CompileLast" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(file_names(&p.items), ["B.fs", "a.fs", "A.fs"]);
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+}
+
+/// .NET's `OrdinalIgnoreCase` folds beyond ASCII, by tables the evaluator does
+/// not reproduce: `é.fs` matches `É.fs`, but the Angstrom sign does not match
+/// `å` (oracle, Linux). So a match that would rest on folding two non-ASCII
+/// characters declines rather than guessing either way. A non-ASCII character
+/// never matches an ASCII one (`ı`, `ſ`, `İ`, the Kelvin sign: oracle), and
+/// names that differ by an ASCII character still differ, so neither needs a
+/// decline.
+#[test]
+fn compile_update_compile_order_declines_non_ascii_case_folding() {
+    for (include, target) in [("é.fs", "É.fs"), ("å.fs", "\u{212b}.fs")] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="{include}" />
+    <Compile Update="{target}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert!(p.items_uncertain, "{include} vs Update={target}");
+    }
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Include="é.fs" />
+    <Compile Include="é1.fs" />
+    <Compile Update="É2.fs" CompileOrder="CompileFirst" />
+    <Compile Update="é.fs" CompileOrder="CompileLast" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert_eq!(file_names(&p.items), ["é1.fs", "é.fs"]);
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+    for (include, target) in [
+        ("I.fs", "ı.fs"),
+        ("i.fs", "İ.fs"),
+        ("S.fs", "ſ.fs"),
+        ("K.fs", "\u{212a}.fs"),
+    ] {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="{include}" />
+    <Compile Update="{target}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert_eq!(file_names(&p.items), ["A.fs", include], "Update={target}");
+        assert!(
+            !p.items_uncertain,
+            "{include} vs Update={target}: {:?}",
+            p.diagnostics
+        );
+    }
+}
+
+/// Matching an `Update` against the Compile list costs a lookup per item,
+/// not a comparison per item and target: thousands of each, under a
+/// non-ASCII project directory (where every key has a non-ASCII unit), finish
+/// at once. A quadratic matcher takes seconds here even optimised.
+#[test]
+fn compile_update_compile_order_scales_with_items_and_targets() {
+    const N: usize = 4000;
+    let mut src = String::from("<Project>\n  <ItemGroup>\n");
+    for i in 0..N {
+        src.push_str(&format!("    <Compile Include=\"F{i}.fs\" />\n"));
+    }
+    // Every even item, spelt in lower case: they move after every odd one.
+    let targets: Vec<String> = (0..N).step_by(2).map(|i| format!("f{i}.fs")).collect();
+    src.push_str(&format!(
+        "    <Compile Update=\"{}\" CompileOrder=\"CompileLast\" />\n  </ItemGroup>\n</Project>",
+        targets.join(";")
+    ));
+    let start = std::time::Instant::now();
+    let p = parse_fsproj(
+        &src,
+        Path::new("/repo/José/Demo.fsproj"),
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("well-formed XML parses");
+    let elapsed = start.elapsed();
+    let names = file_names(&p.items);
+    assert_eq!(names.len(), N);
+    assert_eq!(
+        (names[0], names[N / 2 - 1]),
+        ("F1.fs", &*format!("F{}.fs", N - 1))
+    );
+    assert_eq!(
+        (names[N / 2], names[N - 1]),
+        ("F0.fs", &*format!("F{}.fs", N - 2))
+    );
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "{N} items against {N} targets took {elapsed:?}"
+    );
+}
+
+/// MSBuild compares a spelling it cannot normalise (`a:b.fs` — `:` is invalid
+/// in a Windows filename) *as written*, so `a:b.fs` and its rooted spelling
+/// are different items to an `Update`, though they name one file. The
+/// captured item has lost its written spelling, so a match there declines.
+#[test]
+fn compile_update_compile_order_declines_an_unnormalised_spelling() {
+    let src = r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="a:b.fs" />
+    <Compile Update="$(MSBuildProjectDirectory)/a:b.fs" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#;
+    let p = parse(src);
+    assert!(p.items_uncertain, "{:?}", p.diagnostics);
+}
+
+/// Replaying MSBuild's batching over an `Update` spec costs a lookup per
+/// fragment, not a comparison with every earlier one: a spec of many distinct
+/// targets, against a single item, finishes at once.
+#[test]
+fn compile_update_compile_order_scales_with_a_long_update_spec() {
+    const N: usize = 20_000;
+    let targets: Vec<String> = (0..N).map(|i| format!("T{i}.fs")).collect();
+    let src = format!(
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="T7.fs" />
+    <Compile Update="{}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#,
+        targets.join(";")
+    );
+    let start = std::time::Instant::now();
+    let p = parse(&src);
+    let elapsed = start.elapsed();
+    assert_eq!(file_names(&p.items), ["T7.fs", "A.fs"]);
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "a {N}-target Update took {elapsed:?}"
+    );
+}
+
+/// MSBuild's lazy evaluator abandons batching an `Update` spec at a fragment
+/// that repeats an earlier one's path or holds an escape, and strands the
+/// fragments before it, which then reach later `Include`s (an upstream bug;
+/// `fsproj_compile_order_generative_diff` pins it). The evaluator declines
+/// exactly where something is stranded.
+#[test]
+fn compile_update_compile_order_declines_a_stranded_prefix() {
+    let stranded = |spec: &str| {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+    <Compile Update="{spec}" CompileOrder="CompileLast" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        let flagged = p.diagnostics.iter().any(|d| {
+            matches!(
+                &d.kind,
+                DiagnosticKind::StrandedUpdatePrefix { fragment, .. } if !fragment.is_empty()
+            )
+        });
+        assert_eq!(flagged, p.items_uncertain, "{spec}: {:?}", p.diagnostics);
+        flagged
+    };
+    // A repeat, under any spelling, after the first fragment.
+    assert!(stranded("A.fs;A.fs"));
+    assert!(stranded("A.fs;./a.fs"));
+    assert!(stranded("B.fs;A.fs;sub/../A.fs"));
+    // An escape after a literal fragment.
+    assert!(stranded("B.fs;%41.fs"));
+    // Nothing before the stopping fragment: nothing stranded.
+    assert!(!stranded("%41.fs;B.fs"));
+    assert!(!stranded("A.fs;B.fs"));
+    // A fragment written as its own full path is removed by that text.
+    assert!(!stranded("/repo/proj/A.fs;/repo/proj/A.fs"));
+    // Batching stops at the second fragment, stranding nothing, so the later
+    // repeat is never batched at all.
+    assert!(!stranded("/repo/proj/A.fs;/repo/proj/./A.fs;B.fs;B.fs"));
+    assert!(stranded("/repo/proj/./A.fs;/repo/proj/A.fs"));
+}
+
 #[test]
 fn compile_update_compile_order_keeps_original_order_within_bucket() {
     let src = r#"<Project>
@@ -7712,7 +7954,7 @@ fn framework_reference_captured() {
 fn package_reference_with_escaped_condition_is_gated_in() {
     // MSBuild unescapes `%XX` inside conditions, so `'%74rue' == 'true'` gates
     // the item IN (oracle-verified). We model that now (stage E2 of
-    // `docs/msbuild-escaped-value-plan.md`); it used to degrade to unsupported —
+    // `docs/completed/msbuild-escaped-value-plan.md`); it used to degrade to unsupported —
     // fail-safe, but it cost a package MSBuild really does resolve.
     let src = r#"<Project>
   <ItemGroup>

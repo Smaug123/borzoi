@@ -21,7 +21,9 @@
 //! version.
 //!
 //! `#[ignore]`d: it walks the pinned corpus (`BORZOI_CORPUS`, set under
-//! `nix develop`), about ten minutes in a debug build.
+//! `nix develop`). Run it with `--profile gate`, which keeps the debug
+//! assertions it exists to trip: about a minute and a half, against ten in the
+//! unoptimised dev profile.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -143,7 +145,7 @@ fn sweep_damaged(
 }
 
 #[test]
-#[ignore = "walks the pinned corpus; about ten minutes"]
+#[ignore = "walks the pinned corpus; run with `--profile gate`"]
 fn a_line_break_before_any_token_parses_without_panicking() {
     let root = corpus_root();
     let files = collect_fsharp_corpus_files(&root).expect("walk the corpus");
