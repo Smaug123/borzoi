@@ -3486,6 +3486,7 @@ mod tests {
         Access, AssemblyIdentity, AssemblyProjectionSkips, EntityKind, FSharpResource,
         FsharpOverlayKind, ImportError, SkippedFsharpOverlay, UnionCases, Version,
     };
+    use borzoi_sema::test_support::names::rekeyed;
     use lsp_types::Uri;
     use std::fs;
     use tempfile::TempDir;
@@ -6892,8 +6893,8 @@ mod tests {
             "module A\nlet w = 0\nlet x = 1\n".to_string(),
         );
         sema.invalidate_project(&proj);
-        let warm = sema
-            .resolved_project_for(&proj, &mut ws, &docs)
+        let (warm, warm_env) = sema
+            .resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("rebuild after export edit");
         assert_eq!(
             sema.incremental_fold_count(),
@@ -6909,8 +6910,8 @@ mod tests {
         // Cold: same final buffers, fresh caches.
         let mut cold_ws = Workspace::default();
         let mut cold_sema = SemanticState::new();
-        let cold = cold_sema
-            .resolved_project_for(&proj, &mut cold_ws, &docs)
+        let (cold, cold_env) = cold_sema
+            .resolved_project_and_env_for(&proj, &mut cold_ws, &docs)
             .expect("cold final");
         assert_eq!(
             cold_sema.incremental_fold_count(),
@@ -6918,8 +6919,11 @@ mod tests {
             "a first fold has no prev base and must be cold"
         );
 
+        // Each fold holds ids of its own env's name table, so the warm one is
+        // compared in the cold env's ids.
         assert_eq!(
-            *warm, *cold,
+            rekeyed(&warm, &warm_env, &cold_env),
+            *cold,
             "the incremental fold must equal a cold fold of the same buffer state"
         );
     }
@@ -7190,7 +7194,7 @@ mod tests {
         );
 
         // Request file 1 (B): extends the cached prefix to length 2.
-        let (p1, _) = sema
+        let (p1, warm_env) = sema
             .resolved_prefix_and_env_for(&proj, 1, &mut ws, &docs)
             .expect("prefix up to 1");
         assert_eq!(
@@ -7202,10 +7206,13 @@ mod tests {
         // The prefix's per-file results equal a full cold fold's.
         let mut cold_ws = Workspace::default();
         let mut cold_sema = SemanticState::new();
-        let full = cold_sema
-            .resolved_project_for(&proj, &mut cold_ws, &docs)
+        let (full, cold_env) = cold_sema
+            .resolved_project_and_env_for(&proj, &mut cold_ws, &docs)
             .expect("full fold");
         assert_eq!(full.len(), 3);
+        // Each fold holds ids of its own env's name table, so the prefix is
+        // compared in the cold env's ids.
+        let p1 = rekeyed(&p1, &warm_env, &cold_env);
         assert_eq!(
             p1.file(0),
             full.file(0),
@@ -7226,14 +7233,14 @@ mod tests {
             !p0b.is_empty(),
             "a shallow request is served by the deeper cached prefix"
         );
-        assert_eq!(p0b.file(0), full.file(0));
+        assert_eq!(rekeyed(&p0b, &warm_env, &cold_env).file(0), full.file(0));
 
         // The full method folds the whole project and still agrees.
         let (whole, _) = sema
             .resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("whole project");
         assert_eq!(whole.len(), 3);
-        assert_eq!(whole.file(2), full.file(2));
+        assert_eq!(rekeyed(&whole, &warm_env, &cold_env).file(2), full.file(2));
     }
 
     /// The slice composes with stage-2 incremental reuse: after a body-only edit
@@ -7330,7 +7337,7 @@ mod tests {
 
         // Now a full-project request: it must reuse B, C, D (unchanged across the
         // export-neutral edit) and re-resolve only A — not re-fold the suffix.
-        let (full2, _) = sema
+        let (full2, warm_env) = sema
             .resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("full after prefix");
         assert_eq!(full2.len(), 4);
@@ -7342,10 +7349,10 @@ mod tests {
         // And it still equals a cold fold of the same buffers.
         let mut cold_ws = Workspace::default();
         let mut cold_sema = SemanticState::new();
-        let cold = cold_sema
-            .resolved_project_for(&proj, &mut cold_ws, &docs)
+        let (cold, cold_env) = cold_sema
+            .resolved_project_and_env_for(&proj, &mut cold_ws, &docs)
             .expect("cold");
-        assert_eq!(*full2, *cold);
+        assert_eq!(rekeyed(&full2, &warm_env, &cold_env), *cold);
     }
 
     // ---- semantic-tokens refresh signal ----

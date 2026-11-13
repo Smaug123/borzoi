@@ -767,7 +767,7 @@ impl<'a> Resolver<'a> {
             &self.preceding.nested_module_paths,
             &self.preceding.real_nested_modules,
         ];
-        let declared_decls: Vec<&Vec<String>> = self
+        let declared_decls: Vec<&super::DeclPath> = self
             .export_decls
             .iter()
             .filter(|d| {
@@ -791,13 +791,13 @@ impl<'a> Resolver<'a> {
             .chain(
                 declared_decls
                     .iter()
-                    .filter(|p| p.last() == Some(head))
-                    .map(|p| p.to_vec()),
+                    .filter(|p| p.last(names) == Some(head))
+                    .map(|p| p.spell(names)),
             )
             .collect();
         let declared = |full: &[String]| {
             sets.iter().any(|set| set.contains_path(names, full))
-                || declared_decls.iter().any(|p| p.as_slice() == full)
+                || declared_decls.iter().any(|p| p.spells(names, full))
         };
         let opened = |full: &[String]| {
             interps
@@ -2699,16 +2699,19 @@ impl<'a> Resolver<'a> {
         // expression position unless a value of the name outranks it.
         // Whether a value supersedes a case is asked only of the cases this
         // open reaches: the answer scans the file's declarations.
-        let own_cases: Vec<(&Vec<String>, bool)> = self
+        let names = self.assemblies.names();
+        let own_cases: Vec<(Vec<String>, bool)> = self
             .export_decls
             .iter()
             .filter(|d| {
                 matches!(d.kind, super::model::ExportDeclKind::OpaqueCase)
-                    && d.path.split_last().is_some_and(|(_, c)| c == module_path)
+                    && d.path
+                        .parent(names)
+                        .is_some_and(|c| c.spells(names, module_path))
             })
             .map(|d| {
                 (
-                    &d.path,
+                    d.path.spell(names),
                     super::model::superseded_by_a_value(&self.export_decls, &self.items, d),
                 )
             })
@@ -2718,7 +2721,10 @@ impl<'a> Resolver<'a> {
             .opaque_cases
             .iter()
             .map(|(path, superseded)| (path, *superseded));
-        for (path, superseded) in own_cases.into_iter().chain(earlier_cases) {
+        let own_cases = own_cases
+            .iter()
+            .map(|(path, superseded)| (path, *superseded));
+        for (path, superseded) in own_cases.chain(earlier_cases) {
             if let Some((name, container)) = path.split_last()
                 && container == module_path
             {
@@ -3297,7 +3303,11 @@ impl<'a> Resolver<'a> {
             .member_decl_files
             .get(self.assemblies.names(), path)
             .map_or(&[][..], Vec::as_slice);
-        let own = self.member_decl_counts.get(path).copied().unwrap_or(0);
+        let own = self
+            .member_decl_counts
+            .get(self.assemblies.names(), path)
+            .copied()
+            .unwrap_or(0);
         let mut files = earlier
             .iter()
             .copied()
@@ -6054,7 +6064,10 @@ impl<'a> Resolver<'a> {
             || self
                 .preceding
                 .is_real_nested_module(self.assemblies.names(), self.path_key(module)))
-            && !self.export_decls.iter().any(|d| d.path.starts_with(module))
+            && !self
+                .export_decls
+                .iter()
+                .any(|d| d.path.starts_with(self.assemblies.names(), module))
             && !self
                 .modules_with_hidden_values
                 .iter()
@@ -6137,11 +6150,13 @@ impl<'a> Resolver<'a> {
     ///   any open, implicit opens included; and no explicitly opened namespace
     ///   could hide an abbreviation the metadata does not show.
     fn head_names_only_the_owner(&self, head: &str, owner: &[String]) -> bool {
-        let segment_is_head = |p: &Vec<String>| p.iter().any(|s| s == head);
         let this_file_names_it = self.own_type_simple_names.contains(head)
             || self.own_module_simple_names.contains(head)
             || self.container_path.iter().any(|s| s == head)
-            || self.export_decls.iter().any(|d| segment_is_head(&d.path));
+            || self
+                .export_decls
+                .iter()
+                .any(|d| d.path.has_segment(self.assemblies.names(), head));
         let earlier_files_name_it_otherwise = self
             .preceding
             .may_name_module_or_namespace(self.assemblies.names(), head)

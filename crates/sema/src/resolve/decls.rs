@@ -230,8 +230,7 @@ impl<'a> Resolver<'a> {
         repr_access_root: Option<Vec<String>>,
         kind: CaseKind,
     ) -> Option<ItemId> {
-        let mut qualified = self.container_path.to_vec();
-        qualified.push(name.to_string());
+        let decl_path = self.decl_path(&[name]);
         let pos = self.defs[def.index()].range.start();
         if self.anonymous_root {
             // No cross-file `ExportedItem`, but the case is still recorded (with
@@ -241,7 +240,7 @@ impl<'a> Resolver<'a> {
             // container hidden here; `export_require_qualified_case` (RQA / enum)
             // does not, so it records nothing under an anonymous root.
             self.push_export_decl(
-                qualified,
+                decl_path,
                 pos,
                 ExportDeclKind::Item {
                     item: None,
@@ -250,11 +249,13 @@ impl<'a> Resolver<'a> {
             );
             return None;
         }
+        let mut qualified = self.container_path.to_vec();
+        qualified.push(name.to_string());
         let item_idx = self.items.len();
         let item_id = ItemId::new(self.item_base as usize + item_idx);
         self.items.push(ExportedItem {
             name: name.to_string(),
-            qualified: Some(qualified.clone()),
+            qualified: Some(qualified),
             id: item_id,
             def: super::model::ExportDef::Own(def),
             case: Some(kind),
@@ -266,7 +267,7 @@ impl<'a> Resolver<'a> {
             attributed: false,
         });
         self.push_export_decl(
-            qualified,
+            decl_path,
             pos,
             ExportDeclKind::Item {
                 item: Some(item_idx),
@@ -290,9 +291,7 @@ impl<'a> Resolver<'a> {
         if self.anonymous_root {
             return;
         }
-        let mut path = self.container_path.to_vec();
-        path.push(type_name.to_string());
-        path.push(case_name.to_string());
+        let path = self.decl_path(&[type_name, case_name]);
         self.set_last_decl_type_qualified(path);
     }
 
@@ -364,11 +363,7 @@ impl<'a> Resolver<'a> {
         // which sets it on this just-pushed decl.
         let pos = self.defs[def.index()].range.start();
         self.push_export_decl(
-            {
-                let mut p = self.container_path.to_vec();
-                p.push(name.to_string());
-                p
-            },
+            self.decl_path(&[name]),
             pos,
             ExportDeclKind::Item {
                 item: Some(item_idx),
@@ -471,8 +466,7 @@ impl<'a> Resolver<'a> {
                     // `path` (container + `X`) is both its nested-module shadow and
                     // its hidden-value path (both derived only when non-anonymous).
                     if !segs.is_empty() {
-                        let mut path = self.container_path.to_vec();
-                        path.extend(segs.iter().cloned());
+                        let path = self.decl_path(&segs);
                         let pos = ident
                             .idents()
                             .next()
@@ -537,8 +531,7 @@ impl<'a> Resolver<'a> {
                         // `nested_module_paths` and spuriously defer later-file
                         // assembly references rooted there (codex fuzz find).
                         if !genuine && !segs.is_empty() {
-                            let mut path = self.container_path.to_vec();
-                            path.extend(segs);
+                            let path = self.decl_path(&segs);
                             let pos = li
                                 .idents()
                                 .next()
@@ -655,8 +648,7 @@ impl<'a> Resolver<'a> {
                         // shadow set, and — when `[<AutoOpen>]` — its container's
                         // hidden-value marker.
                         {
-                            let mut path = self.container_path.to_vec();
-                            path.push(id_text(&name).to_string());
+                            let path = self.decl_path(&[id_text(&name)]);
                             self.push_export_decl(
                                 path,
                                 name.text_range().start(),
@@ -816,8 +808,7 @@ impl<'a> Resolver<'a> {
                     // value-namespace ctor is a separate `Item` decl from
                     // `define_exception_case` → `export_case` below).
                     {
-                        let mut path = self.container_path.to_vec();
-                        path.push(id_text(&name).to_string());
+                        let path = self.decl_path(&[id_text(&name)]);
                         self.push_export_decl(
                             path,
                             name.text_range().start(),
@@ -904,14 +895,17 @@ impl<'a> Resolver<'a> {
                 // already marks its module hidden.
                 self.note_hidden_value_module(self.container_path.to_vec());
                 // The export-decl-list twin: `path` = the container (its
-                // hidden-value path, recorded unconditionally as above); `name`
-                // carries the function segments (empty for a nameless recovery
-                // node), and `path + name` is the nested-module shadow, derived
-                // only when `name` is non-empty.
+                // hidden-value path, recorded unconditionally as above); `shadow`
+                // is the container extended by the function segments, the
+                // nested-module shadow, which a nameless recovery node has none
+                // of.
+                let container = self.decl_path::<String>(&[]);
+                let shadow = (!ext_name.is_empty())
+                    .then(|| container.extended(self.assemblies.names(), &ext_name));
                 self.push_export_decl(
-                    self.container_path.to_vec(),
+                    container,
                     ext.syntax().text_range().start(),
-                    ExportDeclKind::Extern { name: ext_name },
+                    ExportDeclKind::Extern { shadow },
                 );
             }
             ModuleDecl::Open(open) => {
@@ -1741,31 +1735,35 @@ impl<'a> Resolver<'a> {
             decl.module_pos = Some(nm.syntax().text_range().start().into());
         }
         self.record_project_name_shadow(segs.clone());
-        let mut qualified = self.container_path.to_vec();
-        qualified.extend(segs.iter().cloned());
         let nm_auto_open = attrs_auto_open(nm.attributes());
         let nm_private = header_is_private(nm.syntax());
+        // The module's path, held by id. The body is walked inside this call,
+        // so a spelled path kept here would be live at every enclosing level
+        // at once: quadratic in the nesting.
+        let decl_path = self.decl_path(&segs);
+        if nm_auto_open {
+            let qualified = decl_path.spell(self.assemblies.names());
+            self.lexical_auto_open_paths.push(qualified.clone());
+            if !self.anonymous_root {
+                self.record_auto_open_module(qualified, nm_private);
+            }
+        }
         // The module-only cross-file index ([`ProjectItems::real_nested_modules`]):
         // unlike the name-shadow set just recorded (which types, exceptions,
         // abbreviations, and `extern`s share), this answers "is there a genuine
         // module at this path?" for a later file's open-target classification.
         // The same real-root guard as the shadow's cross-file half.
-        if nm_auto_open {
-            self.lexical_auto_open_paths.push(qualified.clone());
-        }
         if !self.anonymous_root {
-            if nm_auto_open {
-                self.record_auto_open_module(qualified.clone(), nm_private);
-            }
+            let names = self.assemblies.names();
             self.real_nested_module_exports
-                .insert(self.assemblies.names(), &qualified);
+                .insert_id(names, decl_path.id(), || decl_path.reference_text(names));
         }
         // The export-decl-list twin: one nested-module decl (`header: false`)
         // carrying its `[<AutoOpen>]`/`private` bits. Every derivation off it
         // filters `!anonymous_root`, so an anonymous-root nested module records an
         // inert decl (pitfall 1) rather than a spurious cross-file entry.
         self.push_export_decl(
-            qualified,
+            decl_path,
             nm.syntax().text_range().start(),
             ExportDeclKind::Module {
                 header: false,
@@ -2034,8 +2032,7 @@ impl Resolver<'_> {
         self.record_project_name_shadow(vec![name.clone()]);
         // An `open` of the container, here or in a later file, declines the
         // name ([`Self::open_module_values`]); nothing else it holds is hidden.
-        let mut path = self.container_path.to_vec();
-        path.push(name);
+        let path = self.decl_path(&[name]);
         self.push_export_decl(path, pos, ExportDeclKind::OpaqueCase);
     }
 }

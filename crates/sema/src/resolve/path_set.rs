@@ -222,14 +222,25 @@ impl PathSet {
 
     /// Add `path`, interning it.
     pub(super) fn insert(&mut self, names: &NameTable, path: &[String]) {
+        self.insert_id(names, names.intern_path(path), || path.to_vec());
+    }
+
+    /// Add the path whose id is `id`. `text` spells it, for the reference.
+    pub(super) fn insert_id(
+        &mut self,
+        names: &NameTable,
+        id: PathId,
+        text: impl FnOnce() -> Vec<String>,
+    ) {
         self.check_table(names);
         #[cfg(debug_assertions)]
         {
             self.table = Some(names.tag());
         }
         #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.reference.insert(path.to_vec());
-        let id = names.intern_path(path);
+        self.reference.insert(text());
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        drop(text);
         *self.members.entry(id).or_default() += 1;
         self.log.push(id);
     }

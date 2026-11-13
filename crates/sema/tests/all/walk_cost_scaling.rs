@@ -514,12 +514,7 @@ static NAMED_NESTED_MODULES: Shape = Shape {
 /// with why. Memory is deterministic, so an entry is held exactly: a shape
 /// listed here that comes back within [`MAX_MEMORY_RATIO`] fails until its
 /// entry is removed.
-const MEMORY_EXEMPT: &[(&str, &str)] = &[(
-    "named_nested_modules",
-    "each nested module's export is held by its full qualified path, in the \
-     walk's name-shadow, real-module and export-declaration sets alike: d \
-     paths of up to d segments",
-)];
+const MEMORY_EXEMPT: &[(&str, &str)] = &[];
 
 /// The shapes [`nested_modules_resolve_in_linear_memory_in_their_depth`]
 /// measures: every layout-nested shape, and [`NAMED_NESTED_MODULES`].
@@ -626,11 +621,13 @@ fn memory_probe_child() {
 /// so neither depth measures a recovered tail.
 ///
 /// What is held to the bound is the walk's working state, its peak beyond
-/// the result it returns. The result names each nested module's export by its
-/// full qualified path, so an implementation file's result is itself
-/// quadratic in the nesting, as `module_long_ident`'s is in a header's
-/// segments ([`EXEMPT`]); it is printed, not bounded. Under a named root the
-/// walk holds those paths too ([`MEMORY_EXEMPT`]).
+/// the result it returns. In a debug build the interning reference keeps each
+/// nested module's export declaration spelled out by its full qualified path,
+/// so an implementation file's result is quadratic in the nesting there, as
+/// `module_long_ident`'s is in a header's segments ([`EXEMPT`]); it is
+/// printed, not bounded. Under a named root ([`NAMED_NESTED_MODULES`]) the
+/// fold also derives the next file's indices from those declarations, which
+/// it holds by id, so that working state is bounded too.
 #[test]
 fn nested_modules_resolve_in_linear_memory_in_their_depth() {
     for (name, _) in MEMORY_EXEMPT {
