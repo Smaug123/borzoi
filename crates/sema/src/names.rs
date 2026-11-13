@@ -119,6 +119,14 @@ impl<T> AppendOnly<T> {
         self.chunks[chunk].get()?.get(offset)?.get()
     }
 
+    /// Slot `index`, written with `init()` if it is empty.
+    pub(crate) fn get_or_init(&self, index: u32, init: impl FnOnce() -> T) -> &T {
+        let (chunk, offset) = Self::locate(index);
+        let slots = self.chunks[chunk]
+            .get_or_init(|| (0..FIRST_CHUNK << chunk).map(|_| OnceLock::new()).collect());
+        slots[offset].get_or_init(init)
+    }
+
     /// Write slot `index`, which must be empty.
     pub(crate) fn set(&self, index: u32, value: T) {
         let (chunk, offset) = Self::locate(index);

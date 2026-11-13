@@ -85,6 +85,9 @@ pub(crate) struct TyTable {
     tag: u32,
     holds: Holds,
     nodes: AppendOnly<Node>,
+    /// Each inference variable's node, by the variable's index: the one
+    /// node a walk interns most often, read here without hashing.
+    vars: AppendOnly<Ty>,
     index: RwLock<Index>,
 }
 
@@ -113,6 +116,7 @@ impl TyTable {
             tag: NEXT_TAG.fetch_add(1, Ordering::Relaxed),
             holds,
             nodes: AppendOnly::default(),
+            vars: AppendOnly::default(),
             index: RwLock::new(Index::default()),
         }
     }
@@ -168,14 +172,20 @@ impl TyTable {
     /// Panics when `kind` is a [`TyKind::Var`] and this is an env's table,
     /// which holds ground types only.
     pub(crate) fn intern(&self, kind: TyKind) -> Ty {
-        let found = self.read().ids.get(&kind).copied();
-        if let Some(index) = found {
-            self.check_reference(&kind, Some(index));
-            return self.id(index);
+        // An env's table is shared, so it is probed under the read lock
+        // first; a session's has one writer, and a session interns mostly
+        // new nodes, so it is probed once, under the write lock, below.
+        if self.holds == Holds::Ground {
+            let found = self.read().ids.get(&kind).copied();
+            if let Some(index) = found {
+                self.check_reference(&kind, Some(index));
+                return self.id(index);
+            }
         }
         let node = self.node_of(kind);
         let mut index = self.write();
-        // Another thread may have interned it between the two locks.
+        // The only probe of a session's table, and for an env's, another
+        // thread may have interned the node between the two locks.
         if let Some(&existing) = index.ids.get(&node.kind) {
             drop(index);
             self.check_reference(&node.kind, Some(existing));
@@ -339,7 +349,12 @@ impl TyTable {
 
     /// The inference variable `v`. A session's table only.
     pub(crate) fn var(&self, v: TyVid) -> Ty {
-        self.intern(TyKind::Var(v))
+        let ty = *self
+            .vars
+            .get_or_init(v.index(), || self.intern(TyKind::Var(v)));
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        self.check_reference(&TyKind::Var(v), Some(ty.index));
+        ty
     }
 
     /// Whether `ty` is the nullary [`TyKind::Named`] at `path`.

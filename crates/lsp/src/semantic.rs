@@ -7227,6 +7227,57 @@ mod tests {
         assert_eq!(incremental, 1, "past the cap the next edit folds cold");
     }
 
+    /// Inference publishes into the env's type table, which the cap bounds
+    /// with the name table: an inference that takes the tables past the cap
+    /// drops the env, so the next request builds a fresh one, where under a
+    /// cap the tables stay within the env is kept.
+    #[test]
+    fn an_env_an_inference_takes_past_its_cap_is_rebuilt() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fs"]));
+        write(&tmp.path().join("A.fs"), "module A\nlet x = (1, \"s\")\n");
+
+        // Resolve, then infer, then resolve again: the entries after the
+        // resolution and after the inference, and whether the two
+        // resolutions shared an env.
+        let resolve_infer_resolve = |cap: usize| {
+            let mut ws = Workspace::default();
+            let mut sema = SemanticState::new();
+            sema.name_table_cap = NameTableCap(cap);
+            let docs = Vfs::new();
+            let (_, before) = sema
+                .resolved_project_and_env_for(&proj, &mut ws, &docs)
+                .expect("resolution");
+            let resolved_entries = before.interned_count();
+            let (_, inferred_env, _) = sema
+                .inferred_prefix_for(&proj, 0, &mut ws, &docs)
+                .expect("inference");
+            let inferred_entries = inferred_env.interned_count();
+            let (_, after) = sema
+                .resolved_project_and_env_for(&proj, &mut ws, &docs)
+                .expect("resolution again");
+            (
+                resolved_entries,
+                inferred_entries,
+                Arc::ptr_eq(&before, &after),
+            )
+        };
+
+        let (resolved, inferred, same_env) = resolve_infer_resolve(1 << 20);
+        assert!(
+            inferred > resolved,
+            "the inference's published types grow the tables: {resolved} -> {inferred}"
+        );
+        assert!(same_env, "within the cap the env is kept");
+
+        let (_, _, same_env) = resolve_infer_resolve(resolved);
+        assert!(
+            !same_env,
+            "past the cap after an inference the env is rebuilt"
+        );
+    }
+
     /// A referenced-assembly change ([`SemanticState::invalidate_assembly_state`])
     /// drops the incremental base, so the next fold is cold — the env it would
     /// reuse against is gone. Guards the `Arc::ptr_eq` env precondition at the
