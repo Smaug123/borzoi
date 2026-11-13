@@ -348,6 +348,19 @@ impl NameTable {
             .collect()
     }
 
+    /// `base` extended by the path whose names are `names`, `None` where the
+    /// table never interned it. Probes under one lock, building nothing.
+    pub(crate) fn extend_last(
+        &self,
+        base: Option<PathId>,
+        names: &[Option<Name>],
+    ) -> Option<PathId> {
+        let reader = self.reader();
+        names
+            .iter()
+            .try_fold(base?, |parent, &name| reader.child(parent, name?))
+    }
+
     /// The ids of `base` extended by each prefix of the path whose names are
     /// `names` (`base` itself first), each `None` where the table never
     /// interned it. Probes under one lock and interns nothing.
@@ -702,6 +715,9 @@ impl PathIdSet {
 #[derive(Clone, Debug)]
 pub(crate) struct PathMap<V> {
     by_id: HashMap<PathId, V>,
+    /// Each key's parent's id to the keys under it, in the order they were
+    /// added: what [`Self::children`] reads instead of scanning every key.
+    by_parent: HashMap<PathId, Vec<PathId>>,
     #[cfg(debug_assertions)]
     table: Option<TableTag>,
     #[cfg(all(feature = "interning-reference", debug_assertions))]
@@ -712,6 +728,7 @@ impl<V> Default for PathMap<V> {
     fn default() -> Self {
         PathMap {
             by_id: HashMap::default(),
+            by_parent: HashMap::default(),
             #[cfg(debug_assertions)]
             table: None,
             #[cfg(all(feature = "interning-reference", debug_assertions))]
@@ -744,7 +761,18 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
         }
         #[cfg(all(feature = "interning-reference", debug_assertions))]
         self.by_text.insert(path.to_vec(), value.clone());
-        self.by_id.insert(names.intern_path(path), value);
+        let id = names.intern_path(path);
+        self.note_key(names, id);
+        self.by_id.insert(id, value);
+    }
+
+    /// File a key under its parent the first time it is added.
+    fn note_key(&mut self, names: &NameTable, id: PathId) {
+        if !self.by_id.contains_key(&id)
+            && let Some((parent, _)) = names.split(id)
+        {
+            self.by_parent.entry(parent).or_default().push(id);
+        }
     }
 
     /// Apply `update` to the value at `path`, interning it, starting from the
@@ -760,7 +788,47 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
         }
         #[cfg(all(feature = "interning-reference", debug_assertions))]
         update(self.by_text.entry(path.to_vec()).or_default());
-        update(self.by_id.entry(names.intern_path(path)).or_default());
+        let id = names.intern_path(path);
+        self.note_key(names, id);
+        update(self.by_id.entry(id).or_default());
+    }
+
+    /// Every entry one segment under `parent`, as its last name and value,
+    /// in the order the keys were added: read from the parent index, not a
+    /// scan of every key. Held, as a set, to a scan of the reference.
+    pub(crate) fn children<'m>(
+        &'m self,
+        names: &'m NameTable,
+        parent: PathKey<'_>,
+    ) -> impl Iterator<Item = (Name, &'m V)> + 'm {
+        self.check_table(names);
+        parent.check(names);
+        let ids: &[PathId] = parent
+            .id
+            .and_then(|p| self.by_parent.get(&p))
+            .map_or(&[], Vec::as_slice);
+        #[cfg(all(feature = "interning-reference", debug_assertions))]
+        {
+            let mut found: Vec<&str> = ids
+                .iter()
+                .map(|&id| names.text(names.split(id).expect("a child has a parent").1))
+                .collect();
+            let mut expected: Vec<&str> = self
+                .by_text
+                .keys()
+                .filter(|q| q.len() == parent.text.len() + 1 && q.starts_with(parent.text))
+                .map(|q| q.last().expect("non-empty").as_str())
+                .collect();
+            found.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(found, expected, "a PathMap's children of {:?}", parent.text);
+        }
+        ids.iter().map(move |id| {
+            (
+                names.split(*id).expect("a child has a parent").1,
+                &self.by_id[id],
+            )
+        })
     }
 
     /// The value at `path`, looked up only when the map has an entry.
@@ -810,8 +878,16 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
         for (&id, v) in &self.by_id {
             by_id.insert(rekey_path(from, to, id), v.clone());
         }
+        let mut by_parent: HashMap<PathId, Vec<PathId>> = HashMap::default();
+        for (&parent, children) in &self.by_parent {
+            by_parent.insert(
+                rekey_path(from, to, parent),
+                children.iter().map(|&c| rekey_path(from, to, c)).collect(),
+            );
+        }
         PathMap {
             by_id,
+            by_parent,
             #[cfg(debug_assertions)]
             table: self.table.map(|_| to.tag()),
             #[cfg(all(feature = "interning-reference", debug_assertions))]
@@ -820,32 +896,9 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     }
 
     /// Every entry, as its path's id and value, in no particular order.
+    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (PathId, &V)> {
         self.by_id.iter().map(|(&id, v)| (id, v))
-    }
-
-    /// Every entry, as its path's id and value, held to the reference: each
-    /// is spelled as the reference spells one, and they are as many. Costs a
-    /// spelling per entry under the reference, so only a scan pays it.
-    pub(crate) fn iter_checked<'m>(
-        &'m self,
-        names: &'m NameTable,
-    ) -> impl Iterator<Item = (PathId, &'m V)> + 'm {
-        self.check_table(names);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            assert_eq!(
-                self.by_id.len(),
-                self.by_text.len(),
-                "a PathMap lost an entry"
-            );
-            for (&id, v) in &self.by_id {
-                let text: Vec<String> =
-                    names.segments(id).into_iter().map(str::to_string).collect();
-                assert_eq!(self.by_text.get(&text), Some(v), "{text:?}");
-            }
-        }
-        self.iter()
     }
 }
 
@@ -1069,6 +1122,42 @@ mod tests {
                 prop_assert_eq!(set.contains(&table, PathKey::of(&table, p)), expected);
                 prop_assert_eq!(set.contains_path(&table, p), expected);
                 prop_assert_eq!(rekeyed.contains_path(&other, p), expected);
+            }
+        }
+    }
+
+    proptest! {
+        /// A `PathMap`'s children of a path are exactly the keys one segment
+        /// under it, each once, whatever the order and repetition of inserts
+        /// and updates.
+        #[test]
+        fn path_map_children_are_the_keys_one_segment_under(
+            keys in prop::collection::vec(path(), 0..16),
+            parents in prop::collection::vec(path(), 0..8),
+        ) {
+            let table = NameTable::default();
+            let mut map: PathMap<usize> = PathMap::default();
+            for (i, k) in keys.iter().enumerate() {
+                if i % 2 == 0 {
+                    map.insert(&table, k, i);
+                } else {
+                    map.update(&table, k, |v| *v += i);
+                }
+            }
+            for parent in parents.iter().chain(&keys) {
+                let mut found: Vec<&str> = map
+                    .children(&table, PathKey::of(&table, parent))
+                    .map(|(name, _)| table.text(name))
+                    .collect();
+                found.sort_unstable();
+                let mut expected: Vec<&str> = keys
+                    .iter()
+                    .filter(|k| k.len() == parent.len() + 1 && k.starts_with(parent))
+                    .map(|k| k.last().expect("non-empty").as_str())
+                    .collect();
+                expected.sort_unstable();
+                expected.dedup();
+                prop_assert_eq!(found, expected, "{:?}", parent);
             }
         }
     }

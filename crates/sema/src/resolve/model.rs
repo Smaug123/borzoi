@@ -8,7 +8,7 @@
 //! [`resolve`](super) module.
 
 use crate::hash::{HashMap, HashSet};
-use crate::names::{NameTable, PathId, PathMap};
+use crate::names::{NameKey, NameTable, PathId, PathKey, PathMap};
 use crate::recovery::SyntaxRecovery;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::contributors::{Contribution, FileContributions};
-use super::path_set::PathSet;
+use super::path_set::{Extended, PathPrefixes, PathSet};
 use super::state::ActivePatternShape;
 
 /// One export recorded at a qualified path, in the Compile order
@@ -360,7 +360,7 @@ pub struct ProjectItems {
     /// selectable (the collapse the latest-wins maps could only defer), and the
     /// value/constructor namespaces read the same history through different
     /// predicates.
-    pub(super) value_exports: HashMap<Vec<String>, Vec<ExportRecord>>,
+    pub(super) value_exports: PathMap<Vec<ExportRecord>>,
     /// Member path (container + name) → the Compile-order file of **every**
     /// earlier-file declaration there ([`ExportDecl::member_path`]): values,
     /// union cases with or without `[<RequireQualifiedAccess>]`, exception
@@ -368,7 +368,7 @@ pub struct ProjectItems {
     /// accessible or not. Unlike [`Self::value_exports`] it is complete, so
     /// one entry proves the container declares the name once
     /// ([`Resolver::member_declarations`](super::state::Resolver::member_declarations)).
-    pub(super) member_decl_files: HashMap<Vec<String>, Vec<usize>>,
+    pub(super) member_decl_files: PathMap<Vec<usize>>,
     /// Declared project *module header* paths (`["Demo"]`, `["Demo", "Calc"]`).
     ///
     /// A project module header and a same-named referenced-assembly *namespace*
@@ -604,7 +604,7 @@ pub struct ProjectItems {
     /// for an ordinary union case. Lets [`Resolver::resolve_long_ident`](super::state::Resolver::resolve_long_ident) resolve a
     /// cross-file `Lib.Color.Red` / `open Lib; Color.Red` to the case. A latest-wins
     /// map: a later file shadows an earlier same path.
-    pub(super) type_qualified_cases: HashMap<Vec<String>, (ItemId, Option<usize>)>,
+    pub(super) type_qualified_cases: PathMap<(ItemId, Option<usize>)>,
     /// The keys of [`Self::type_qualified_cases`], as a trie, so a walk can ask
     /// about every way of completing a written path at once
     /// ([`Self::type_qualified_case_prefix_lens`]). Written only beside the
@@ -708,8 +708,13 @@ impl ProjectItems {
     /// outside — FS1094 only when *no* accessible binding remains). So this is
     /// [`Self::latest_accessible_value`] — the collapse model's recovery, which the
     /// complete per-path history makes possible.
-    pub(super) fn lookup_qualified_path(&self, path: &[String], site: &[String]) -> Option<ItemId> {
-        self.latest_accessible_value(path, site)
+    pub(super) fn lookup_qualified_path(
+        &self,
+        names: &NameTable,
+        path: &[String],
+        site: &[String],
+    ) -> Option<ItemId> {
+        self.latest_accessible_value(names, path, site)
     }
 
     /// The handle of the union/enum **case** at type-qualified `path` (`["Lib",
@@ -722,23 +727,41 @@ impl ProjectItems {
     /// public; `Some(k)` = the `private` container prefix length): an inaccessible
     /// `type private` case is not imported by an `open` (FCS FS0039), so it must not
     /// resolve cross-file — a wrong target the ungated index produced.
-    pub(super) fn type_qualified_case(&self, path: &[String], site: &[String]) -> Option<ItemId> {
+    pub(super) fn type_qualified_case(
+        &self,
+        names: &NameTable,
+        path: &[String],
+        site: &[String],
+    ) -> Option<ItemId> {
         self.type_qualified_cases
-            .get(path)
+            .get(names, path)
             .filter(|(_, access_root_len)| accessible_from(*access_root_len, path, site))
             .map(|(id, _)| *id)
+    }
+
+    /// Whether an earlier file exports a type-qualified case at the path
+    /// whose id is `id`, whatever the reference site: `false`, building
+    /// nothing, when the table never interned the path. `spell` spells the
+    /// path for the reference.
+    pub(super) fn holds_type_qualified_case(
+        &self,
+        names: &NameTable,
+        id: Option<PathId>,
+        spell: impl FnOnce() -> Vec<String>,
+    ) -> bool {
+        self.type_qualified_cases.get_id(names, id, spell).is_some()
     }
 
     /// The lengths `k`, ascending, for which `names[..k]` followed by `written`
     /// is a path [`Self::type_qualified_case`] holds a case at, whatever the
     /// reference site: one walk along `names`, building no path.
-    pub(super) fn type_qualified_case_prefix_lens<'a>(
-        &'a self,
-        names: &'a [String],
-        written: &'a [String],
-    ) -> impl Iterator<Item = usize> + 'a {
+    pub(super) fn type_qualified_case_prefix_lens(
+        &self,
+        names: &NameTable,
+        question: &Extended<'_, '_, String>,
+    ) -> Vec<usize> {
         self.type_qualified_case_paths
-            .suffix_member_prefix_lens(names, written)
+            .suffix_member_prefix_lens(names, question)
     }
 
     /// Whether an earlier file exports a **type** at exactly `path`, and if so
@@ -766,8 +789,17 @@ impl ProjectItems {
     /// adds it among the container's types. `None` when `id` is no such case:
     /// a value, an exception, an active-pattern case, a signature-derived
     /// identity, or an export at another path.
-    pub(super) fn union_case_order(&self, path: &[String], id: ItemId) -> Option<DeclOrder> {
-        let record = self.value_exports.get(path)?.iter().find(|r| r.id == id)?;
+    pub(super) fn union_case_order(
+        &self,
+        names: &NameTable,
+        path: &[String],
+        id: ItemId,
+    ) -> Option<DeclOrder> {
+        let record = self
+            .value_exports
+            .get(names, path)?
+            .iter()
+            .find(|r| r.id == id)?;
         Some((self.file_of(id), record.union_case_ordinal?))
     }
 
@@ -794,16 +826,10 @@ impl ProjectItems {
         container: &[String],
         site: &[String],
     ) -> Vec<(String, usize)> {
-        let Some(container_id) = names.lookup_path(container) else {
-            return Vec::new();
-        };
         self.type_paths
-            .iter_checked(names)
-            .filter_map(|(p, t)| {
-                let (parent, last) = names.split(p)?;
-                (parent == container_id && t.slot.class_in(container, site) != SlotClass::Keeps)
-                    .then(|| (names.text(last).to_string(), t.file))
-            })
+            .children(names, PathKey::of(names, container))
+            .filter(|(_, t)| t.slot.class_in(container, site) != SlotClass::Keeps)
+            .map(|(last, t)| (names.text(last).to_string(), t.file))
             .collect()
     }
 
@@ -825,14 +851,19 @@ impl ProjectItems {
     /// All prefixes are checked (`1..=names.len()`), though an *exact* value
     /// path is already caught by the cross-file `Item` branch before the
     /// assembly lookup runs — only proper-prefix value matches reach here.
-    pub(super) fn is_project_value_prefixed(&self, names: &[String], site: &[String]) -> bool {
+    pub(super) fn is_project_value_prefixed(
+        &self,
+        names: &NameTable,
+        path: &[String],
+        site: &[String],
+    ) -> bool {
         // A prefix is a project value only if it holds a *value* export — a
         // pattern-only active-pattern-case path (Stage 3a) is not a dottable value,
         // so it does not make `names` value-prefixed.
-        (1..=names.len()).any(|k| {
-            self.value_exports.get(&names[..k]).is_some_and(|h| {
+        (1..=path.len()).any(|k| {
+            self.value_exports.get(names, &path[..k]).is_some_and(|h| {
                 h.iter().any(|r| {
-                    !r.pattern_only && accessible_from(r.access_root_len, &names[..k], site)
+                    !r.pattern_only && accessible_from(r.access_root_len, &path[..k], site)
                 })
             })
         })
@@ -847,9 +878,9 @@ impl ProjectItems {
     /// [`ExportRecord`]) counts: a later `let` shadowing an earlier case makes the
     /// path an ordinary value (correct — the value wins), while a path whose latest
     /// export is itself a case is *not* an ordinary value (returns `None`).
-    pub(super) fn ordinary_value_at(&self, path: &[String]) -> Option<ItemId> {
+    pub(super) fn ordinary_value_at(&self, names: &NameTable, path: &[String]) -> Option<ItemId> {
         self.value_exports
-            .get(path)
+            .get(names, path)
             // A pattern-only active-pattern case (Stage 3a) is not a value-namespace
             // export, so it must be transparent here — skip it and read the latest
             // ACTUAL value-space export (else a trailing AP case masks an underlying
@@ -866,20 +897,24 @@ impl ProjectItems {
     /// namespace with `name` as any of its segments. Position-blind and
     /// over-approximate: FCS searches every module and namespace of a dotted
     /// expression head before any type of it, whichever tier brings it.
-    pub(super) fn may_name_module_or_namespace(&self, name: &str) -> bool {
+    pub(super) fn may_name_module_or_namespace(&self, names: &NameTable, name: &str) -> bool {
         self.project_module_simple_names.contains(name)
             || self
                 .module_headers
                 .iter()
-                .chain(&self.namespace_paths)
+                .any(|id| names.segments(id).contains(&name))
+            || self
+                .namespace_paths
+                .iter()
                 .any(|p| p.iter().any(|s| s == name))
     }
 
     /// Whether an earlier file declares a value- or constructor-space member
     /// at exactly `path` ([`ExportDecl::member_path`]), of any kind or
     /// accessibility.
-    pub(super) fn declares_member_at(&self, path: &[String]) -> bool {
-        self.member_decl_files.contains_key(path) || self.value_exports.contains_key(path)
+    pub(super) fn declares_member_at(&self, names: &NameTable, path: &[String]) -> bool {
+        self.member_decl_files.get(names, path).is_some()
+            || self.value_exports.get(names, path).is_some()
     }
 
     /// Every earlier-file **ordinary value** (not a case, not an
@@ -887,10 +922,11 @@ impl ProjectItems {
     /// its accessibility root (see [`ExportRecord::access_root_len`]).
     pub(super) fn ordinary_values_at(
         &self,
+        names: &NameTable,
         path: &[String],
     ) -> impl Iterator<Item = (ItemId, Option<usize>)> + '_ {
         self.value_exports
-            .get(path)
+            .get(names, path)
             .into_iter()
             .flatten()
             .filter(|r| !r.is_case && !r.pattern_only)
@@ -904,30 +940,58 @@ impl ProjectItems {
     /// the module and the assembly namespace merge, and F# falls through to the
     /// assembly when the module does not provide the tail (see
     /// [`Self::module_headers`]).
-    pub(super) fn is_exact_project_module(&self, names: &[String]) -> bool {
-        self.module_headers.contains(names)
+    pub(super) fn is_exact_project_module(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        self.module_headers.contains(names, path)
+    }
+
+    /// [`Self::is_exact_project_module`] of `parent` extended by `name`, by
+    /// id.
+    pub(super) fn is_exact_project_module_child(
+        &self,
+        names: &NameTable,
+        parent: PathKey<'_>,
+        name: NameKey<'_>,
+    ) -> bool {
+        self.module_headers.contains_child(names, parent, name)
     }
 
     /// Whether `names` is rooted at (equal to, or a path under) a declared
     /// *nested* project module from an earlier file. Such a reference defers
     /// rather than falling through to a colliding assembly member — see
     /// [`Self::nested_module_paths`].
-    pub(super) fn is_rooted_at_nested_module(&self, names: &[String]) -> bool {
-        self.nested_module_paths.has_prefix_of(names)
+    pub(super) fn is_rooted_at_nested_module(
+        &self,
+        names: &NameTable,
+        path: &PathPrefixes<'_>,
+    ) -> bool {
+        self.nested_module_paths.has_prefix_of(names, path)
+    }
+
+    /// [`Self::is_rooted_at_nested_module`] by the path's segments.
+    pub(super) fn is_rooted_at_nested_module_path(
+        &self,
+        names: &NameTable,
+        path: &[String],
+    ) -> bool {
+        self.nested_module_paths.has_prefix_of_path(names, path)
     }
 
     /// Whether `names` is rooted at (equal to, or a path under) a path an
     /// earlier file's augmentation head names — see
     /// [`Self::augmentation_head_paths`]. **Value namespace only.**
-    pub(super) fn is_rooted_at_augmentation_head(&self, names: &[String]) -> bool {
-        self.augmentation_head_paths.has_prefix_of(names)
+    pub(super) fn is_rooted_at_augmentation_head(
+        &self,
+        names: &NameTable,
+        path: &PathPrefixes<'_>,
+    ) -> bool {
+        self.augmentation_head_paths.has_prefix_of(names, path)
     }
 
     /// Whether `names` is *exactly* a declared *nested* project module from an
     /// earlier file (not merely a path under one). The cross-file half of the
     /// enumerable-module predicate ([`Resolver::is_project_module_path`](super::state::Resolver::is_project_module_path)).
-    pub(super) fn is_exact_nested_module(&self, names: &[String]) -> bool {
-        self.nested_module_paths.contains(names)
+    pub(super) fn is_exact_nested_module(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        self.nested_module_paths.contains(names, path)
     }
 
     /// Whether an earlier file binds **any resolvable entity along `path`** — a
@@ -954,18 +1018,22 @@ impl ProjectItems {
         };
         let value_at = |p: &[String]| {
             self.value_exports
-                .get(p)
+                .get_id(names, prefix_ids.get(p.len()).copied(), || p.to_vec())
                 .is_some_and(|h| h.iter().any(|r| !r.pattern_only))
         };
+        let whole = PathKey::new(prefix_ids.get(path.len()).copied(), path);
         let exact = value_at(path)
-            || self.module_headers.contains(path)
-            || self.nested_module_paths.contains(path)
+            || self.module_headers.contains(names, whole)
+            || self.nested_module_paths.contains(names, whole)
             // An augmentation head binds *members* along its path even though it
             // declares no type, and this predicate only ever withholds the
             // self-qualifier relaxation, so it counts here.
-            || self.augmentation_head_paths.contains(path)
+            || self.augmentation_head_paths.contains(names, whole)
             || type_at(path.len())
-            || self.type_qualified_cases.contains_key(path);
+            || self
+                .type_qualified_cases
+                .get_id(names, whole.id, || path.to_vec())
+                .is_some();
         exact || (1..path.len()).any(|k| value_at(&path[..k]) || type_at(k))
     }
 
@@ -973,24 +1041,35 @@ impl ProjectItems {
     /// `names` (see [`Self::real_nested_modules`] — unlike
     /// [`Self::is_exact_nested_module`]'s shadow set, a type/exception/alias/
     /// `extern` name does not answer).
-    pub(super) fn is_real_nested_module(&self, names: &[String]) -> bool {
-        self.real_nested_modules.contains(names)
+    pub(super) fn is_real_nested_module(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        self.real_nested_modules.contains(names, path)
+    }
+
+    /// [`Self::is_real_nested_module`] of `parent` extended by `name`, by id.
+    pub(super) fn is_real_nested_module_child(
+        &self,
+        names: &NameTable,
+        parent: PathKey<'_>,
+        name: NameKey<'_>,
+    ) -> bool {
+        self.real_nested_modules.contains_child(names, parent, name)
     }
 
     /// The lengths `k` for which `names[..k]` followed by `suffix` is
     /// [an earlier file's module header](Self::is_exact_project_module) or
     /// [nested module](Self::is_exact_nested_module), reading each
     /// segment of `names` once per set.
-    pub(super) fn module_suffix_prefix_lens<'a, S: AsRef<str>>(
-        &'a self,
-        names: &'a [String],
-        suffix: &'a [S],
-    ) -> impl Iterator<Item = usize> + 'a {
+    pub(super) fn module_suffix_prefix_lens<S: AsRef<str>>(
+        &self,
+        names: &NameTable,
+        question: &Extended<'_, '_, S>,
+    ) -> impl Iterator<Item = usize> {
         self.module_headers
-            .suffix_member_prefix_lens(names, suffix)
+            .suffix_member_prefix_lens(names, question)
+            .into_iter()
             .chain(
                 self.nested_module_paths
-                    .suffix_member_prefix_lens(names, suffix),
+                    .suffix_member_prefix_lens(names, question),
             )
     }
 
@@ -998,16 +1077,17 @@ impl ProjectItems {
     /// [an earlier file's module header](Self::is_exact_project_module) or
     /// [real nested module](Self::is_real_nested_module), reading each
     /// segment of `names` once per set.
-    pub(super) fn real_module_suffix_prefix_lens<'a, S: AsRef<str>>(
-        &'a self,
-        names: &'a [String],
-        suffix: &'a [S],
-    ) -> impl Iterator<Item = usize> + 'a {
+    pub(super) fn real_module_suffix_prefix_lens<S: AsRef<str>>(
+        &self,
+        names: &NameTable,
+        question: &Extended<'_, '_, S>,
+    ) -> impl Iterator<Item = usize> {
         self.module_headers
-            .suffix_member_prefix_lens(names, suffix)
+            .suffix_member_prefix_lens(names, question)
+            .into_iter()
             .chain(
                 self.real_nested_modules
-                    .suffix_member_prefix_lens(names, suffix),
+                    .suffix_member_prefix_lens(names, question),
             )
     }
 
@@ -1026,11 +1106,12 @@ impl ProjectItems {
     /// redeclaration is still found.
     fn latest_accessible(
         &self,
+        names: &NameTable,
         path: &[String],
         site: &[String],
         keep: impl Fn(&ExportRecord) -> bool,
     ) -> Option<ItemId> {
-        let history = self.value_exports.get(path)?;
+        let history = self.value_exports.get(names, path)?;
         history
             .iter()
             .rev()
@@ -1047,12 +1128,13 @@ impl ProjectItems {
     /// history's own order.
     fn opened_member(
         &self,
+        names: &NameTable,
         path: &[String],
         site: &[String],
         file: Option<usize>,
         keep: impl Fn(&ExportRecord) -> bool,
     ) -> Option<ItemId> {
-        let history = self.value_exports.get(path)?;
+        let history = self.value_exports.get(names, path)?;
         history
             .iter()
             .enumerate()
@@ -1074,10 +1156,15 @@ impl ProjectItems {
     /// earlier file into the value frame, and `decide_type_path` ignores values by
     /// design, so neither sees this. Deferral-only, so matching too eagerly is
     /// sound: the check is by simple name, ignoring accessibility and shadowing.
-    pub(super) fn namespace_exports_value_named(&self, namespace: &[String], name: &str) -> bool {
+    pub(super) fn namespace_exports_value_named(
+        &self,
+        names: &NameTable,
+        namespace: &[String],
+        name: &str,
+    ) -> bool {
         let mut container = namespace.to_vec();
         loop {
-            if self.container_value_surface_could_supply(&container, name) {
+            if self.container_value_surface_could_supply(names, &container, name) {
                 return true;
             }
             // An `[<AutoOpen>]` module *inside* this container puts its values in
@@ -1086,7 +1173,7 @@ impl ProjectItems {
             // Recurses, since an auto-open module may hold another.
             let mut frontier = self.auto_open_modules_directly_in(&container);
             while let Some(module) = frontier.pop() {
-                if self.container_value_surface_could_supply(&module, name) {
+                if self.container_value_surface_could_supply(names, &module, name) {
                     return true;
                 }
                 frontier.extend(self.auto_open_modules_directly_in(&module));
@@ -1107,14 +1194,19 @@ impl ProjectItems {
     /// has value-space names the export index cannot enumerate, so an absent
     /// `value_exports` row there is not evidence of absence. Consulting it is what
     /// keeps this from being a bespoke query that re-derives the fold badly.
-    fn container_value_surface_could_supply(&self, container: &[String], name: &str) -> bool {
+    fn container_value_surface_could_supply(
+        &self,
+        names: &NameTable,
+        container: &[String],
+        name: &str,
+    ) -> bool {
         if self.modules_with_hidden_values.contains(container) {
             return true;
         }
         let mut path = container.to_vec();
         path.push(name.to_string());
         self.value_exports
-            .get(&path[..])
+            .get(names, &path[..])
             .is_some_and(|history| !history.is_empty())
     }
 
@@ -1126,20 +1218,12 @@ impl ProjectItems {
     /// fragment's own.
     pub(super) fn fragment_value_children(
         &self,
+        names: &NameTable,
         module_path: &[String],
         file: usize,
         site: &[String],
     ) -> Vec<(String, ItemId)> {
-        self.value_exports
-            .keys()
-            .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
-            .filter_map(|q| {
-                // Value-namespace: exclude pattern-only active-pattern cases (Stage
-                // 3a) — a value-live union/exception case still counts.
-                self.opened_member(q, site, Some(file), |r| !r.pattern_only)
-                    .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
-            })
-            .collect()
+        self.opened_children(names, module_path, site, Some(file), |r| !r.pattern_only)
     }
 
     /// The `(name, id)` of every **constructor case** exported directly under
@@ -1147,18 +1231,12 @@ impl ProjectItems {
     /// constructor-namespace twin of [`Self::fragment_value_children`].
     pub(super) fn fragment_constructor_children(
         &self,
+        names: &NameTable,
         module_path: &[String],
         file: usize,
         site: &[String],
     ) -> Vec<(String, ItemId)> {
-        self.value_exports
-            .keys()
-            .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
-            .filter_map(|q| {
-                self.opened_member(q, site, Some(file), |r| r.is_case)
-                    .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
-            })
-            .collect()
+        self.opened_children(names, module_path, site, Some(file), |r| r.is_case)
     }
 
     /// The latest export at `path` accessible from `site`, counting **values and
@@ -1167,12 +1245,39 @@ impl ProjectItems {
     /// straddle's value slot.
     pub(super) fn latest_accessible_value(
         &self,
+        names: &NameTable,
         path: &[String],
         site: &[String],
     ) -> Option<ItemId> {
         // A value or a value-live union/exception case — never a pattern-only
         // active-pattern case (FS0039 in expression position; Stage 3a).
-        self.latest_accessible(path, site, |r| !r.pattern_only)
+        self.latest_accessible(names, path, site, |r| !r.pattern_only)
+    }
+
+    /// The `(name, id)` of every export directly under `module_path` that an
+    /// `open` of it binds ([`Self::opened_member`]) among those `keep`
+    /// accepts, accessible from `site` and, given `file`, declared in that
+    /// Compile-order file. Read from the export map's parent index, not a
+    /// scan of every export.
+    fn opened_children(
+        &self,
+        names: &NameTable,
+        module_path: &[String],
+        site: &[String],
+        file: Option<usize>,
+        keep: impl Fn(&ExportRecord) -> bool,
+    ) -> Vec<(String, ItemId)> {
+        let mut path = module_path.to_vec();
+        path.push(String::new());
+        self.value_exports
+            .children(names, PathKey::of(names, module_path))
+            .filter_map(|(name, _)| {
+                let name = names.text(name);
+                *path.last_mut().expect("the child's slot") = name.to_string();
+                self.opened_member(names, &path, site, file, &keep)
+                    .map(|id| (name.to_string(), id))
+            })
+            .collect()
     }
 
     /// The `(name, id)` of every earlier-file **value** exported *directly* under
@@ -1186,17 +1291,11 @@ impl ProjectItems {
     /// export shadowed by a later inaccessible `private` is recovered.
     pub(super) fn direct_value_children(
         &self,
+        names: &NameTable,
         module_path: &[String],
         site: &[String],
     ) -> Vec<(String, ItemId)> {
-        self.value_exports
-            .keys()
-            .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
-            .filter_map(|q| {
-                self.opened_member(q, site, None, |r| !r.pattern_only)
-                    .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
-            })
-            .collect()
+        self.opened_children(names, module_path, site, None, |r| !r.pattern_only)
     }
 
     /// Whether an assembly reading of the qualified path `names` is withheld
@@ -1225,8 +1324,8 @@ impl ProjectItems {
     /// Joins `nested_module_paths` (the qualified-path shadow) and its own
     /// set (the `open`-fold demotion — kept apart so real nested modules,
     /// whose members *are* modelled, keep their definite open entries).
-    pub(super) fn note_implicit_module_shadow(&mut self, path: Vec<String>) {
-        self.nested_module_paths.insert(path.clone());
+    pub(super) fn note_implicit_module_shadow(&mut self, names: &NameTable, path: Vec<String>) {
+        self.nested_module_paths.insert(names, &path);
         self.implicit_module_shadows.insert(path);
     }
 
@@ -1484,24 +1583,22 @@ impl ProjectItems {
             }
         };
         for module in idx.module_headers {
-            self.module_headers.insert(module);
+            self.module_headers.insert(names, &module);
         }
         for nested in idx.nested_module_paths {
-            self.nested_module_paths.insert(nested);
+            self.nested_module_paths.insert(names, &nested);
         }
         for head in idx.augmentation_head_paths {
-            self.augmentation_head_paths.insert(head);
+            self.augmentation_head_paths.insert(names, &head);
         }
         for nested in idx.real_nested_modules {
-            self.real_nested_modules.insert(nested);
+            self.real_nested_modules.insert(names, &nested);
         }
         for (path, entry) in idx.type_qualified_cases {
-            if self
-                .type_qualified_cases
-                .insert(path.clone(), entry)
-                .is_none()
-            {
-                self.type_qualified_case_paths.insert(path);
+            let is_new = self.type_qualified_cases.get(names, &path).is_none();
+            self.type_qualified_cases.insert(names, &path, entry);
+            if is_new {
+                self.type_qualified_case_paths.insert(names, &path);
             }
         }
         for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
@@ -1623,16 +1720,15 @@ impl ProjectItems {
         }
         for path in idx.member_decls {
             self.member_decl_files
-                .entry(path)
-                .or_default()
-                .push(file_idx);
+                .update(names, &path, |files| files.push(file_idx));
         }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
             // constructor namespaces read this same history through different
             // predicates; no export is lost to a shadow).
-            self.value_exports.entry(path).or_default().push(record);
+            self.value_exports
+                .update(names, &path, |history| history.push(record));
         }
         for id in idx.case_item_ids {
             self.case_item_ids.insert(id);
@@ -1681,10 +1777,11 @@ impl ProjectItems {
     /// opened environment, leaving the case committed.
     pub(super) fn module_value_may_be_constant_pattern(
         &self,
+        names: &NameTable,
         path: &[String],
         site: &[String],
     ) -> bool {
-        self.value_exports.get(path).is_some_and(|history| {
+        self.value_exports.get(names, path).is_some_and(|history| {
             history.iter().any(|rec| {
                 self.attributed_value_ids.contains(&rec.id)
                     && accessible_from(rec.access_root_len, path, site)
@@ -1701,17 +1798,11 @@ impl ProjectItems {
     /// namespace, live in pattern position).
     pub(super) fn direct_constructor_children(
         &self,
+        names: &NameTable,
         module_path: &[String],
         site: &[String],
     ) -> Vec<(String, ItemId)> {
-        self.value_exports
-            .keys()
-            .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
-            .filter_map(|q| {
-                self.opened_member(q, site, None, |r| r.is_case)
-                    .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
-            })
-            .collect()
+        self.opened_children(names, module_path, site, None, |r| r.is_case)
     }
 
     /// The recognizer [`ActivePatternShape`] of the earlier-file **active-pattern

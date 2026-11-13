@@ -42,9 +42,18 @@
 //! subscriber interested in nothing else), and fails on any project-deferral
 //! toast.
 //!
-//! Instruction counts need macOS; elsewhere that column reads `n/a`. Wall time is not reported: the machines these run on are
-//! loaded, and these counts barely move with load. Each keystroke row reports
-//! the minimum and the maximum over the keystrokes.
+//! Instruction counts need macOS; elsewhere that column reads `n/a`. Wall time
+//! is not reported: the machines these run on are loaded. The instruction
+//! counter includes kernel mode, so a row that reads files (`semanticTokens E`,
+//! the cold rows) carries a kernel component that depends on whether the
+//! kernel still caches those files' vnodes. It can add up to about half again,
+//! and it is bimodal under other processes' file churn. Rows without file I/O
+//! repeat to within 0.2%. Each keystroke row reports the minimum and the
+//! maximum over the keystrokes.
+//!
+//! Run it under `nix develop`: the env the server builds depends on the
+//! `dotnet` and packs it finds, and outside the devshell it builds a
+//! different one.
 //!
 //! ```sh
 //! nix develop -c cargo run --release -p borzoi --example edit_counts

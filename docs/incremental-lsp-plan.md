@@ -1,7 +1,8 @@
 # An incremental LSP: file state, derived values and the edit loop
 
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness)
-> and Stage 1 (the inference cutoff) implemented. Tracks [#544](https://github.com/WoofWare/borzoi/issues/544).
+> and Stage 1 (the inference cutoff) implemented. Tracks
+> [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
 > the committed harness no longer carries.
@@ -64,15 +65,40 @@ workers it starts to read DLLs in parallel when it builds an env.
   stages count file-system calls inside the modules that make them (D3),
   where a test can assert them on any platform.
 
-After merging d3a4a131 into the branch, the committed harness moves on two
-rows: `semanticTokens E` goes from 24.5 M to 36.1 M and the keystroke total
-from 164.0 M to 176.0 M. Every other keystroke row moves by under 4%. The
-movement comes from main's #596, #600 and #622, not from this plan, and Stage 1
-re-measures from the new base.
+**Kernel instructions.** `ri_instructions` counts kernel-mode instructions
+too. So a row that does file I/O carries a kernel component that depends on
+the machine's state, not on the server: `semanticTokens E` (80 reads per
+keystroke) and the cold rows. That component can add up to about 50%, and it
+is bimodal.
 
-Wall time is not reported, because the machine is heavily loaded. Across two
-runs, the keystroke rows' minima agree to within 0.2% and the cold rows to
-within 1%.
+On the measuring machine the vnode table is full (`kern.num_vnodes` =
+`kern.maxvnodes`), so whether the 80 files' vnodes are still cached depends
+on other processes' file activity. The same commit measures `semanticTokens E`
+at about 24.4 M with the vnodes cached and about 36.2 M once they have been
+recycled. Background file churn reproduces the high level at 369039e9 itself,
+with user time and the syscall count (420) identical in both levels. A bisect
+of every commit from 369039e9 to d3a4a131 measures about 24.5 M and a 164 M
+keystroke total throughout, so the baseline is 164 M. Rows that open no files
+do not move.
+
+So the run-to-run agreement holds only for rows without file I/O. Across
+runs, their minima agree to within 0.2%. A row with I/O should be compared at
+the same kernel level: the minimum of several runs, on an otherwise quiet
+machine.
+
+A standalone open/`fstat`/read/close microbenchmark over the project's files
+costs about 167 k kernel instructions per file with warm vnodes, and about
+150 k more when recycled. Extrapolated, and not measured inside the LSP,
+roughly 13 M of `semanticTokens E`'s 24.4 M fast level is the kernel's share
+of `build_parses` re-reading the 80 files. So Stage 2b, which stops those
+reads, likely saves more than its user-space accounting suggests.
+
+**Run it under `nix develop`.** The env the server builds depends on the
+environment it finds (the `dotnet` on the path, the SDK and packs it
+resolves). Outside the devshell, the same binary measured a 136 M keystroke
+total, because it built a different env.
+
+Wall time is not reported, because the machine is heavily loaded.
 
 The project is **WoofWare.Incremental** (pin `f6b8fdf7`, from the whole-project
 gate's corpus cache): 82 Compile items, 314 KB. `E` is `[10] Stack.fs` and `L`
@@ -655,8 +681,9 @@ any semantic request does not reach the measured project's fold, if an env is
 built from no DLLs, or on a deferral toast.
 
 **Oracle**: it runs to completion under `nix develop` and reproduces the
-instruction and allocation baseline, to within run-to-run noise (0.2% on
-instructions; allocations are exact).
+instruction and allocation baseline. Allocations are exact. Instructions agree
+to within 0.2% on rows without file I/O, and at the same kernel level on rows
+with it (see "Kernel instructions").
 
 ### Stage 1: an export-equality cutoff for inference
 
@@ -695,8 +722,8 @@ calling the new reuse.
 
 **Expected gain**: about 107 M of re-inference leaves `hover L`, taking it
 from 117 M toward the 9.7 M measured with `E` next to `L`. The keystroke total
-goes from 164 M to about 57 M at 369039e9 (176 M → about 69 M from
-d3a4a131), and allocations fall by about 130 k per keystroke.
+goes from 164 M to about 57 M, and allocations fall by about 130 k per
+keystroke.
 
 **Implemented** (`crates/sema/src/infer_project.rs`), as planned:
 
@@ -811,12 +838,24 @@ The `Vfs` replaces `State::docs` and the `observed` source reads. Its disk
 side reads stamp-then-read and applies the racy rule. `build_parses` asks the
 `Vfs` for each Compile item. An unchanged disk file then costs one `stat` per
 generation and returns the same `Arc<str>`, so the parse-cache comparison
-becomes a pointer test. `read_text`'s scan of every buffer goes away. Watched
-source events become re-`stat` hints.
+becomes a pointer test. `read_text`'s scan of every buffer goes away.
+
+**Cached folds are validated, not only rebuilt.** Once a project's fold is
+cached, `parses_for_project` and `resolved_prefix_and_env_for` answer from
+`project_parses` and `resolved_projects` without reaching `build_parses`, and
+so without reading the `Vfs`. Re-reading in `build_parses` alone would
+therefore leave a closed Compile item's disk edit unseen until something
+invalidated the project. So `ProjectParses` records the stamp (or buffer
+version) of each Compile item it was built from. Every generation that reads
+a cached fold validates those, and a mismatch drops the cached parses and the
+resolved project exactly as `invalidate_file` does today. Watched source
+events keep calling `invalidate_file` as well, and also become re-`stat`
+hints. The event path is removed only in Stage 7, once every cache it guards
+is validated.
 
 **Oracle**:
-- Stage 2a's count test flips: the comment keystroke performs **0 opens** and
-  at most `N` `stat`s.
+- Stage 2a's count test flips: the comment keystroke performs **0 opens**,
+  and each request that reads the fold performs at most `N` `stat`s.
 - `incremental_state_machine` gains `WITNESSED = [SourceContent]`. Scripts
   that `Write` a source and `Check` without `Flush` must agree with a fresh
   session. At least one pinned script does exactly that and fails on `main`
@@ -833,9 +872,13 @@ source events become re-`stat` hints.
   whose timestamps tick at a generated granularity up to `G`, so the property
   covers coarse-clock filesystems that the CI machine does not have.
 
-**Expected gain**: per keystroke, 80 opens and 80 `fstat`s become 0, and 0
-path `stat`s become at most 80. Instructions are not estimated: the stage
-measures them. The other expected effect is that `semanticTokens E` falls
+**Expected gain**: per keystroke, 80 opens and 80 `fstat`s become 0. Path
+`stat`s go from 0 to at most 80 per request that reads the fold, which is
+three requests (`semanticTokens E`, `semanticTokens L`, `hover L`), so about
+240 per keystroke. Instructions are not estimated in user space;
+the kernel's share of the 80 reads, extrapolated from a microbenchmark, is
+roughly 13 M of `semanticTokens E`'s 24.4 M with warm vnodes, and more when
+they are recycled (see "Kernel instructions"). The stage measures both levels. The other expected effect is that `semanticTokens E` falls
 toward the cost of parsing and resolving `E` alone.
 
 ### Stage 3a: the MSBuild evaluation records its read set
@@ -1024,14 +1067,14 @@ hints plus the refresh decisions it makes today.
 - #313's planted mutations M1–M10 are re-planted where their code still
   exists, and are still caught.
 
-**Expected cost**: this stage *raises* the file-system counts. A
-`project_parses` hit stops being free. Every generation that reads the fold
-validates it: about 80 Compile-item `stat`s, plus the evaluation's validated
-read set, plus the env's (DLL contents under immutable roots exempt, listings
-not). On WoofWare.Incremental that is roughly 130 `stat`s per fold-reading
-request, and a keystroke has three (`semanticTokens E`, `semanticTokens L`,
-`hover L`), so roughly **400 `stat`s per keystroke**, against 0 path `stat`s
-and 80 opens today. The `observed` counters measure it per message in
+**Expected cost**: this stage *raises* the file-system counts further. Stage
+2b already validates the 80 Compile items per fold-reading generation (about
+240 `stat`s per keystroke). Here, a cached fold also validates the
+evaluation's read set and the env's, with DLL contents under immutable roots
+exempt and listings not. On WoofWare.Incremental that is roughly 130 `stat`s
+per fold-reading request in total. A keystroke has three such requests, so
+the total is roughly **400 `stat`s per keystroke**, against 0 path `stat`s and
+80 opens today. The `observed` counters measure it per message in
 `edit_counts`, and the read-set sizes reported by Stages 3a and 6a predict it
 before the stage is written. If the measured instructions matter, the
 remedy to weigh is validating once per revision plus once per bounded time
@@ -1085,9 +1128,13 @@ an `edit_counts` mode, `EDIT_COUNTS_SCRIPT=blocked-edit`:
    what the edit waited for.
 
 **The budget**: the edit waits for at most **50 M** server instructions. That
-is less than one steady keystroke is expected to cost after Stages 1–5 (about
-60 M from d3a4a131), so an edit never waits longer than the work it causes. The gate is measured on macOS, where the instruction
-counter exists, on WoofWare.Incremental and on WoofWare.PawPrint.Domain.
+is about what one steady keystroke is expected to cost after Stages 1–5
+(about 50 M), so an edit never waits much longer than the work it causes. The
+gate is measured on macOS, where the instruction counter exists, under
+`nix develop`, on WoofWare.Incremental and on WoofWare.PawPrint.Domain. The
+re-fold in step 3 reads every file, so its count carries the kernel component
+described under "Kernel instructions". The wait is taken as the minimum over
+five runs, which compares the vnode-cached level.
 
 **The gate**: if either project's wait exceeds the budget after Stage 8, this
 stage is built. Otherwise it is not, and the measurement is recorded here.

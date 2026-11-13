@@ -619,8 +619,13 @@ impl Resolver<'_> {
         let entries = names
             .into_iter()
             .map(|name| {
-                let mut mark =
-                    ScopeEntry::contributor_mark(name, MarkReach::Expression, generation, pos);
+                let mut mark = ScopeEntry::contributor_mark(
+                    self.assemblies.names(),
+                    &name,
+                    MarkReach::Expression,
+                    generation,
+                    pos,
+                );
                 mark.decline = Some(cause);
                 mark
             })
