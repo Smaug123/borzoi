@@ -713,6 +713,9 @@ fn metadata_verdict(
                     );
                     agree.insert(name.clone());
                 }
+                None if !row.metadata_complete => {
+                    uncertain.insert(name.clone());
+                }
                 None if expected.is_empty() => {
                     agree.insert(name.clone());
                 }
@@ -922,9 +925,9 @@ fn reads(
                         "identities differ"
                     };
                     verdict.push_str(&format!("; ours {}, {agreement}", rows.len()));
-                    // A tainted list makes no claim: two declarations may share an
-                    // identity and differ in metadata.
-                    if identities == msbuild_identities && !read.tainted && !read.untracked {
+                    // A list that is not exact makes no claim: two declarations may
+                    // share an identity and differ in metadata.
+                    if identities == msbuild_identities && read.exact {
                         verdict.push_str(&metadata_verdict(&subject.key, item_type, rows, &theirs));
                     }
                 }
@@ -934,6 +937,9 @@ fn reads(
             }
             if read.untracked {
                 verdict.push_str(", untracked");
+            }
+            if !read.exact && !read.tainted && !read.untracked {
+                verdict.push_str(", not exact");
             }
         }
         if text.written_items.contains(&item_type.to_ascii_lowercase()) {

@@ -1718,6 +1718,11 @@ struct EvaluatedItem {
     /// MSBuild's Unix path fixup may rewrite, depending on its working
     /// directory. The dependency capture keeps its own reading of those.
     exact_metadata: HashMap<String, Option<String>>,
+    /// Whether `exact_metadata` names every metadatum the item carries. False
+    /// for an item copied from a type whose metadata this crate models
+    /// elsewhere (`@(ProjectReference)`), where a name it lacks is unknown
+    /// rather than absent.
+    metadata_complete: bool,
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
 }
 

@@ -1727,6 +1727,14 @@ The dependency capture keeps its own reading of both (#642). The package
 consumers still read only their five names, and ignore an uncertainty on any
 other name. Nothing they commit to moves.
 
+The probe makes a claim about a list only when the walk itself would take
+that list as exact: it reads the list through `item_list_view`, the
+predicate an `@(…)` reference in the walk uses. So an opaque walk, a tainted
+list and an untracked one all decline together. A row copied from
+`@(ProjectReference)`, whose metadata this crate keeps in its own model, says
+its metadata is incomplete, so a name it lacks is unknown rather than
+absent.
+
 One side effect needed care. Reading a metadatum can read an undefined
 `$(TargetFramework)`, and the walk records such a read: it is what decides
 whether the walk keeps its first pass. A metadatum only a target reads must
@@ -1740,9 +1748,11 @@ Two checks hold it:
   constructs the taint and uncertainty marks guard. These are literal,
   `$(…)` and escaped identities, `@(…)` copies and transforms, `Remove`,
   attribute and child metadata, conditions on either, `%(…)` and `@(…)` in
-  metadata, padded and backslash-bearing values, bodies holding elements,
-  processing instructions, comments or CDATA, the structural `Label`
-  attribute, item definitions, and an untrusted property.
+  metadata, padded, backslash-bearing and escaped path values, bodies
+  holding elements, processing instructions, comments or CDATA, the
+  structural `Label` attribute, item definitions, an untrusted property, an
+  imported item file (plain, or under a condition that turns the walk
+  opaque), and copies of `@(ProjectReference)`.
   It holds every clean list to MSBuild's `itemsMeta`: identities in order,
   and every metadatum not marked uncertain, on every name either side holds.
   Reverting any of the capture's guards fails it.

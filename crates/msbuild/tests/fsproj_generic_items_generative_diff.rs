@@ -32,7 +32,7 @@ use common::{Oracle, SplitMix64};
 
 const ITEM_TYPES: [&str; 2] = ["Helper", "Known"];
 const METADATA: [&str; 3] = ["Version", "Pack", "Flavor"];
-const INCLUDES: [&str; 8] = [
+const INCLUDES: [&str; 9] = [
     "a",
     "a;b",
     "$(Name)",
@@ -41,9 +41,10 @@ const INCLUDES: [&str; 8] = [
     "$(Undefined)c",
     "  b  ",
     "@(Helper->'%(Flavor)')",
+    "@(ProjectReference)",
 ];
 /// Values for a metadata attribute.
-const VALUES: [&str; 13] = [
+const VALUES: [&str; 14] = [
     "1.0",
     "$(Name)",
     "pre$(Name)post",
@@ -59,6 +60,8 @@ const VALUES: [&str; 13] = [
     // wherever the oracle runs.
     "\\tmp\\value",
     "x\\y",
+    // The fixup decides on the escaped value, where this is no `$(`.
+    "%24(foo)\\x",
 ];
 /// Bodies for a metadata child element: the attribute values, and what only
 /// element content can hold.
@@ -78,6 +81,9 @@ const CONDITIONS: [&str; 5] = [
     "'$(Gated)' != ''",
 ];
 
+/// The file a generated project may import.
+const IMPORTED: &str = "<Project>\n  <ItemGroup>\n    <Helper Include=\"imported\" Flavor=\"f\" />\n    <Known Remove=\"a\" />\n  </ItemGroup>\n</Project>\n";
+
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
 /// `Gated` is untrusted.
 const UNDECIDABLE: &str = "$([System.String]::IsNullOrWhiteSpace(''))";
@@ -94,6 +100,21 @@ fn project(rng: &mut SplitMix64) -> (String, bool) {
         ));
     }
     out.push_str("  </PropertyGroup>\n");
+    // A file of items, imported plainly or under a condition this evaluator
+    // cannot decide (so the walk turns opaque).
+    match rng.below(6) {
+        0 => out.push_str("  <Import Project=\"items.props\" />\n"),
+        1 => out.push_str(&format!(
+            "  <Import Project=\"items.props\" Condition=\"{UNDECIDABLE}\" />\n"
+        )),
+        _ => {}
+    }
+    // A source whose metadata this crate models in its own bucket.
+    if rng.below(4) == 0 {
+        out.push_str(
+            "  <ItemGroup>\n    <ProjectReference Include=\"q.fsproj\" Flavor=\"x\" />\n  </ItemGroup>\n",
+        );
+    }
     if rng.below(3) == 0 {
         let item_type = rng.pick(&ITEM_TYPES);
         let name = rng.pick(&METADATA);
@@ -170,6 +191,7 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
     let dir = tempfile::tempdir().unwrap();
     let path = std::fs::canonicalize(dir.path()).unwrap().join("p.fsproj");
     std::fs::write(&path, xml).unwrap();
+    std::fs::write(path.with_file_name("items.props"), IMPORTED).unwrap();
     let probe = ReadProbe {
         properties: Vec::new(),
         item_types: ITEM_TYPES.iter().map(|t| (*t).to_owned()).collect(),
@@ -203,7 +225,7 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
             return;
         };
         tally.lists += 1;
-        if read.tainted || read.untracked {
+        if !read.exact {
             continue;
         }
         tally.clean += 1;
@@ -224,7 +246,14 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
                 if row.uncertain_metadata.contains(&name) {
                     continue;
                 }
-                let read = row.metadata.get(&name).map_or("", String::as_str);
+                let Some(read) = row
+                    .metadata
+                    .get(&name)
+                    .map(String::as_str)
+                    .or(row.metadata_complete.then_some(""))
+                else {
+                    continue;
+                };
                 assert_eq!(
                     read, expected,
                     "{item_type} item {:?} reads %({name}) as {read:?}, MSBuild as {expected:?}, in\n{xml}",

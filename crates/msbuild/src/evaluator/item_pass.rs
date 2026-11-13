@@ -1151,6 +1151,7 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
                 identity,
                 metadata: metadata.values.clone(),
                 exact_metadata: metadata.exact.clone(),
+                metadata_complete: true,
                 metadata_uncertainties: metadata.uncertainties.clone(),
             }),
             None => state.taint_item_list(item_type),
@@ -1377,7 +1378,7 @@ fn evaluate_item_expression(
 /// it untracked, and `<ProjectReference>` is exact when its list is trusted, no
 /// `Include` went uncaptured, and every item carries an identity MSBuild spells
 /// the same way. The other modelled types are not offered.
-fn item_list_view(item_type: &str, state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
+pub(super) fn item_list_view(item_type: &str, state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
     if state.walk_opaque.is_some() {
         return None;
     }
@@ -1432,6 +1433,7 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
                 // reading one through the copy must treat it as unknown.
                 metadata: HashMap::new(),
                 exact_metadata: HashMap::new(),
+                metadata_complete: false,
                 metadata_uncertainties: PACKAGE_METADATA_NAMES
                     .iter()
                     .map(|name| HelperMetadataUncertainty::new(name, "@(ProjectReference)"))
@@ -3145,8 +3147,8 @@ fn set_generic_metadata_value(
         metadata.exact.remove(&key);
         mark_generic_metadata_uncertain(name, value, &mut metadata.uncertainties);
     };
-    let (normalised, exact) = if raw.is_empty() {
-        (String::new(), String::new())
+    let (normalised, exact, rewritable) = if raw.is_empty() {
+        (String::new(), String::new(), false)
     } else {
         let expansion = expand_silent(raw, state);
         if expansion.had_issue() {
@@ -3159,12 +3161,16 @@ fn set_generic_metadata_value(
             return;
         }
         // The dependency capture reads the value trimmed in the escaped domain;
-        // MSBuild's item table holds it whole.
-        (scalar_use(&expansion.value).1, escaping::unescape(full))
+        // MSBuild's item table holds it whole. MSBuild's Unix path fixup may
+        // rewrite a backslash-bearing value, or not, by a probe of its working
+        // directory; it decides on the escaped value, so `%24(` is no `$(`.
+        (
+            scalar_use(&expansion.value).1,
+            escaping::unescape(full),
+            path_fixup::worlds(full).is_some(),
+        )
     };
-    // MSBuild's Unix path fixup may rewrite a backslash-bearing value, or not,
-    // by a probe of its working directory.
-    let exact = (body_exact && path_fixup::worlds(&exact).is_none()).then_some(exact);
+    let exact = (body_exact && !rewritable).then_some(exact);
     if package {
         metadata.values.insert(key.clone(), normalised);
     }
