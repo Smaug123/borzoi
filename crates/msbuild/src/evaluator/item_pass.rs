@@ -1665,6 +1665,7 @@ fn resolve_compile_update_targets(
         return None;
     }
     let mut targets = Vec::new();
+    let mut batch = UpdateBatch::default();
     for entry in spec_fragments(&expansion.value) {
         if contains_glob(entry) {
             state.push(
@@ -1700,16 +1701,92 @@ fn resolve_compile_update_targets(
         let decoded = fragment_identity(entry);
         let unnormalised = crate::glob::compares_unnormalised(&decoded);
         let normalised = decoded.replace('\\', "/");
-        targets.push(UpdateTarget {
+        let target = UpdateTarget {
             path: if separator_only(&normalised) {
                 state.entry_project_dir.clone()
             } else {
                 state.entry_project_dir.join(normalised)
             },
             unnormalised,
-        });
+        };
+        if batch.strands_at(entry, &target) {
+            state.push(
+                DiagnosticKind::StrandedUpdatePrefix {
+                    update: raw.to_string(),
+                    fragment: entry.to_string(),
+                },
+                node.range(),
+            );
+            return None;
+        }
+        targets.push(target);
     }
     Some(targets)
+}
+
+/// MSBuild's lazy evaluator batching one `Update` spec's fragments, as far as
+/// it matters to which items the `Update` reaches
+/// (`LazyItemEvaluator.ComputeItems`).
+///
+/// It adds fragment after fragment to a dictionary keyed by full path
+/// (`NormalizePathForComparisonNoThrow`, compared `OrdinalIgnoreCase`), and
+/// abandons the spec at the first fragment that holds an expansion character
+/// (`*`, `?`, `$(`, `@(`, `%` — in the escaped text, so an escape counts) or
+/// whose key is already in the dictionary. Abandoning removes the fragments
+/// before it under their *written* text, not their key, so a fragment whose
+/// written text is not its own key stays behind — *stranded* — and applies
+/// again at the next flush, reaching items `Include`d after the `Update`. An
+/// abandoned spec with nothing stranded is applied unbatched, to the same
+/// items, so only stranding changes the answer.
+///
+/// Wildcards and item references never get here (they decline earlier), and
+/// a `$(` cannot survive expansion unescaped. Keys from *earlier* `Update`s
+/// in the batch are not tracked: a collision with one comes straight after
+/// that `Update` batched, and the flush that follows applies the stranded
+/// fragments at once, to the items this `Update` reaches anyway. For the same
+/// reason a strand within the spec is harmless when the Compile operation
+/// before it was a batched `Update`; it declines all the same, which is only
+/// conservative.
+#[derive(Default)]
+struct UpdateBatch {
+    /// The keys batched so far, by [`match_shape`]: a key can collide only
+    /// with keys of its own shape, so each fragment costs a lookup.
+    keys: HashMap<Vec<u16>, Vec<MatchKey>>,
+    /// Whether a batched fragment's written text differs from its key, so
+    /// that abandoning the spec would strand it.
+    any_strandable: bool,
+    abandoned: bool,
+}
+
+impl UpdateBatch {
+    /// Feed the next fragment (`entry`, escaped as written after expansion,
+    /// naming `target`). True when MSBuild abandons batching here with a
+    /// fragment stranded. A pair whose collision rests on folding the
+    /// evaluator does not model counts as a collision: it is only ever the
+    /// conservative reading.
+    fn strands_at(&mut self, entry: &str, target: &UpdateTarget) -> bool {
+        if self.abandoned {
+            return false;
+        }
+        let key = MatchKey::of_target(target);
+        let shape = match_shape(&key.key);
+        let collides = entry.contains('%')
+            || self
+                .keys
+                .get(&shape)
+                .into_iter()
+                .flatten()
+                .any(|earlier| earlier.matches(&key) != UpdateMatch::NoMatch);
+        if collides {
+            self.abandoned = true;
+            return self.any_strandable;
+        }
+        // A spelling MSBuild does not normalise is its own key, and is
+        // removed by it.
+        self.any_strandable |= !target.unnormalised && entry != key.key;
+        self.keys.entry(shape).or_default().push(key);
+        false
+    }
 }
 
 /// Whether an `Update` fragment names a Compile item, as MSBuild decides it.

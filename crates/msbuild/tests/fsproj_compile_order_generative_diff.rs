@@ -43,17 +43,17 @@
 //!   no bucket;
 //! - defined- and undefined-property conditions;
 //! - property and item groups interleaved across `Sdk.props`, the project and
-//!   `Sdk.targets`.
+//!   `Sdk.targets`;
+//! - `Update` specs that name one file twice, under any two spellings, or
+//!   carry an escaped fragment (`%41.fs`) after a literal one: stage F3. Those
+//!   are where MSBuild's lazy evaluator abandons batching part-way through a
+//!   spec and strands the fragments before (`LazyItemEvaluator.ComputeItems`
+//!   removes them under their written text, not their key), so they apply
+//!   again to items `Include`d after the `Update`. The evaluator declines
+//!   them, and the oracle sees the bug wherever it changes the order.
 //!
-//! It stays out of two things, each a known way for the evaluator to commit a
-//! wrong order today:
-//!
-//! - **escapes** in a spec (the escape generative differential covers those);
-//! - **an `Update` spec that names one file twice**, or names a file after a
-//!   fragment MSBuild cannot batch: the lazy evaluator's stranded-prefix bug
-//!   (`LazyItemEvaluator.ComputeItems` removes the batched prefix under the
-//!   wrong key), stage F3. A spec of distinct literals, or a single property
-//!   whose value lists distinct files, cannot reach it.
+//! Escapes beyond the one escaped spelling are the escape generative
+//! differential's.
 //!
 //! Inputs come from a proptest runner with its persisted-failure file, so a
 //! divergence shrinks to a small witness and reproduces.
@@ -186,6 +186,9 @@ enum Spelling {
     Lower,
     /// `A.fs/`: MSBuild trims a trailing separator before comparing.
     TrailingSlash,
+    /// `%41.fs`: the first character escaped. MSBuild stops batching an
+    /// `Update` spec at an escaped fragment.
+    Escaped,
 }
 
 impl Spelling {
@@ -199,6 +202,7 @@ impl Spelling {
             Spelling::Backslash => format!(".\\{name}"),
             Spelling::Lower => name.to_ascii_lowercase(),
             Spelling::TrailingSlash => format!("{name}/"),
+            Spelling::Escaped => format!("%{:02x}{}", name.as_bytes()[0], &name[1..]),
         }
     }
 }
@@ -222,9 +226,9 @@ impl IncludeSpec {
     }
 }
 
-/// An `Update` spec: distinct files, each in some [`Spelling`], or one
-/// property. Neither names a file twice, under any spelling, or follows a
-/// literal with a fragment MSBuild cannot batch (see the module doc).
+/// An `Update` spec: files, each in some [`Spelling`], or one property. A
+/// spec naming a file twice, or an escaped fragment after a literal one, is
+/// where MSBuild strands fragments (see the module doc).
 #[derive(Debug, Clone)]
 enum UpdateSpec {
     Files(Vec<(usize, Spelling)>),
@@ -524,6 +528,7 @@ fn spelling_strategy() -> impl Strategy<Value = Spelling> {
         1 => Just(Spelling::Backslash),
         1 => Just(Spelling::Lower),
         1 => Just(Spelling::TrailingSlash),
+        1 => Just(Spelling::Escaped),
     ]
 }
 
@@ -531,6 +536,9 @@ fn update_spec_strategy() -> impl Strategy<Value = UpdateSpec> {
     prop_oneof![
         5 => proptest::collection::btree_map(file(), spelling_strategy(), 1..3)
             .prop_map(|files| UpdateSpec::Files(files.into_iter().collect())),
+        // Possibly one file twice: where MSBuild strands a fragment (F3).
+        2 => proptest::collection::vec((file(), spelling_strategy()), 2..4)
+            .prop_map(UpdateSpec::Files),
         1 => (0..PROP_NAMES.len()).prop_map(UpdateSpec::Prop),
     ]
 }
@@ -1017,6 +1025,41 @@ const CORNERS: &[(&str, bool)] = &[
     <Compile Update="sub" CompileOrder="CompileFirst" />"#,
         true,
     ),
+    // Batching (F3). A repeated fragment strands the one before it, which
+    // then reaches the `A.fs` included after the `Update`: declined.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Update="A.fs;a.fs" CompileOrder="CompileLast" />
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />"#,
+        false,
+    ),
+    // An escape stops batching too: declined after a literal fragment...
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Update="B.fs;%41.fs" CompileOrder="CompileLast" />
+    <Compile Include="B.fs" />
+    <Compile Include="C.fs" />"#,
+        false,
+    ),
+    // ...but first in the spec it strands nothing, and the spec applies
+    // unbatched, in document order.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Update="%41.fs;B.fs" CompileOrder="CompileLast" />
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />"#,
+        true,
+    ),
+    // A fragment written as its own full path is removed by that text, so
+    // repeating it strands nothing.
+    (
+        r#"    <Compile Include="A.fs" />
+    <Compile Update="$(MSBuildProjectDirectory)/A.fs;$(MSBuildProjectDirectory)/A.fs" CompileOrder="CompileLast" />
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />"#,
+        true,
+    ),
     // `..` at the root stays at the root.
     (
         r#"    <Compile Include="A.fs" />
@@ -1078,4 +1121,58 @@ fn corners_decline_or_match_msbuild() {
             "corner {index} certain={reached}, recorded {certain}:\n{body}"
         );
     }
+}
+
+/// MSBuild's stranded-prefix bug, pinned so that an upstream fix is seen: an
+/// `Update` spec that names `A.fs` twice abandons batching at the second
+/// fragment, strands the first (removed under `A.fs`, stored under its full
+/// path), and the stranded fragment applies again at the end of the
+/// evaluation — to the `A.fs` `Include`d *after* the `Update` too. In document
+/// order only the first `A.fs` moves last (`A.fs B.fs A.fs`, the second `A.fs`
+/// first); MSBuild moves both (`B.fs A.fs A.fs`). The evaluator declines.
+///
+/// If this starts failing on the MSBuild side, upstream has fixed the bug and
+/// the decline (`DiagnosticKind::StrandedUpdatePrefix`) can be reconsidered.
+#[test]
+fn stranded_update_prefix_reaches_a_later_include() {
+    let body = r#"    <Compile Include="A.fs" />
+    <Compile Update="A.fs;./A.fs" CompileOrder="CompileLast" />
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />"#;
+    let fixture = Fixture {
+        sdk_props: Vec::new(),
+        project: vec![Group::Raw(body)],
+        sdk_targets: Vec::new(),
+    };
+    let (laid, parsed) = write_and_parse(&fixture);
+    let theirs = shared()
+        .oracle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .target_items(&laid.proj, "FSharpSourceCodeCompileOrder", "Compile")
+        .expect("MSBuild evaluates the canary");
+    let dir = laid
+        .proj
+        .parent()
+        .expect("project dir")
+        .to_string_lossy()
+        .into_owned();
+    let names: Vec<&str> = theirs
+        .iter()
+        .map(|p| p.strip_prefix(&dir).expect("inside the project"))
+        .collect();
+    assert_eq!(
+        names,
+        ["/B.fs", "/A.fs", "/A.fs"],
+        "MSBuild no longer strands the prefix: reconsider StrandedUpdatePrefix"
+    );
+    assert!(parsed.items_uncertain, "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            borzoi_msbuild::DiagnosticKind::StrandedUpdatePrefix { .. }
+        )),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
