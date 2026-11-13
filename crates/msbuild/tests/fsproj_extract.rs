@@ -5,7 +5,6 @@
 //! against vendored F# compiler fsproj live in `tests/fsproj_corpus.rs`.
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use borzoi_msbuild::{DiagnosticKind, ItemKind, parse_fsproj};
@@ -24,7 +23,8 @@ fn repo_root() -> PathBuf {
 #[test]
 fn fcs_dump_fsproj_extracts_single_program_fs() {
     let path = repo_root().join("tools/fcs-dump/fcs-dump.fsproj");
-    let source = fs::read_to_string(&path).expect("fcs-dump.fsproj exists");
+    let source =
+        borzoi_msbuild::observed::host_fs::read_to_string(&path).expect("fcs-dump.fsproj exists");
     let project =
         parse_fsproj(&source, &path, &HashMap::new(), &HashMap::new()).expect("well-formed XML");
 

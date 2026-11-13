@@ -72,7 +72,8 @@ impl Layout {
     /// The SDKs below `<root>/<parent>`.
     fn under(parent: &str) -> Layout {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let root = std::fs::canonicalize(dir.path()).expect("canonicalise tempdir");
+        let root = borzoi_msbuild::observed::host_fs::canonicalize(dir.path())
+            .expect("canonicalise tempdir");
         let sdks = root.join(parent).join("sdks");
         let layout = Layout {
             _dir: dir,
@@ -232,7 +233,9 @@ fn evaluate_both(
 
     let env = child_environment(layout);
     let sdk_root = layout.sdk_root();
-    let resolver = |name: &str| -> Result<SdkResolution, SdkResolveError> {
+    let resolver = |name: &str,
+                    _observer: &borzoi_msbuild::observed::Observer|
+     -> Result<SdkResolution, SdkResolveError> {
         if name == "MySdk" {
             Ok(SdkResolution::Single(SdkPaths {
                 root: sdk_root.clone(),
@@ -434,7 +437,8 @@ fn sdk_import_project_path_tails_soak() {
 #[test]
 fn web_sdk_before_common_targets_is_imported() {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalise tempdir");
+    let root =
+        borzoi_msbuild::observed::host_fs::canonicalize(dir.path()).expect("canonicalise tempdir");
     let proj = root.join("Web.fsproj");
     let xml = r#"<Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
@@ -453,8 +457,16 @@ fn web_sdk_before_common_targets_is_imported() {
         // The fixture tempdir has no global.json above it.
         global_json_pins_workload_set: false,
     };
-    let resolver = |name: &str| {
-        borzoi_msbuild::resolve_sdk(&dotnet_root, None, name, None, None, &workload_env)
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        borzoi_msbuild::resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workload_env,
+            observer,
+        )
     };
     let parsed = parse_fsproj_with_imports(
         xml,

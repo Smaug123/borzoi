@@ -102,7 +102,7 @@ fn a_pre_body_target_framework_read_is_trusted_exactly_when_the_project_builds_i
                 body.property_group
             );
             let project_path = write_at(tmp.path(), "Demo.fsproj", &source);
-            let resolver = |name: &str| {
+            let resolver = |name: &str, _observer: &crate::observed::Observer| {
                 if name == "MySdk" {
                     Ok(SdkResolution::from(SdkPaths {
                         root: root.clone(),

@@ -78,6 +78,7 @@
 
 mod common;
 
+use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -302,7 +303,7 @@ fn evaluate(
 ) -> (Option<String>, Option<String>, String) {
     // A fresh directory per case: a stale `Directory.Build.targets` from the
     // previous one would silently change the subject.
-    if dir.exists() {
+    if dir.host_exists() {
         std::fs::remove_dir_all(dir).expect("clear case directory");
     }
     std::fs::create_dir_all(dir).expect("create case directory");
@@ -315,7 +316,7 @@ fn evaluate(
 
     let dotnet_root = common::dotnet_root_from_env();
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
-    let resolver = |name: &str| {
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         resolve_sdk(
             &dotnet_root,
             None,
@@ -327,6 +328,7 @@ fn evaluate(
                 overrides_present,
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
     let parsed = parse_fsproj_with_imports(
@@ -365,7 +367,7 @@ const GATE_PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
 
 /// Evaluate the gate sweep's document under one global gate value.
 fn evaluate_gate(oracle: &mut Oracle, dir: &Path, value: &str) -> (Option<String>, Option<String>) {
-    if dir.exists() {
+    if dir.host_exists() {
         std::fs::remove_dir_all(dir).expect("clear case directory");
     }
     std::fs::create_dir_all(dir).expect("create case directory");
@@ -376,7 +378,7 @@ fn evaluate_gate(oracle: &mut Oracle, dir: &Path, value: &str) -> (Option<String
 
     let dotnet_root = common::dotnet_root_from_env();
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
-    let resolver = |name: &str| {
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         resolve_sdk(
             &dotnet_root,
             None,
@@ -388,6 +390,7 @@ fn evaluate_gate(oracle: &mut Oracle, dir: &Path, value: &str) -> (Option<String
                 overrides_present,
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
     let mut extras = HashMap::new();

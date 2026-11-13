@@ -442,7 +442,7 @@ fn layout(root: &Path) -> PathBuf {
 /// identity, which a `Remove` cannot match.
 fn check(oracle: &mut Oracle, blocks: &[Block], with_resolver: bool) -> Outcome {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let root = borzoi_msbuild::observed::host_fs::canonicalize(dir.path()).expect("canonicalize");
     let proj = layout(&root);
     let xml = project_xml(blocks);
     std::fs::write(&proj, &xml).unwrap();
@@ -743,7 +743,7 @@ fn a_metadata_matched_remove_is_not_a_path_match() {
 fn the_non_existent_idiom_commits_on_the_real_sdk() {
     let mut oracle = Oracle::spawn();
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let root = borzoi_msbuild::observed::host_fs::canonicalize(dir.path()).expect("canonicalize");
     let proj = layout(&root);
     let xml = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -762,7 +762,7 @@ fn the_non_existent_idiom_commits_on_the_real_sdk() {
     std::fs::write(&proj, xml).unwrap();
     let dotnet_root = common::dotnet_root_from_env();
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
-    let sdk = |name: &str| {
+    let sdk = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         resolve_sdk(
             &dotnet_root,
             None,
@@ -774,6 +774,7 @@ fn the_non_existent_idiom_commits_on_the_real_sdk() {
                 overrides_present,
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
     let resolver: &GlobResolver<'_> = &glob_resolver::resolve;

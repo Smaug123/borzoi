@@ -1361,7 +1361,7 @@ fn evaluate_item_expression(
     let mut kept = Vec::with_capacity(items.len());
     for item in items {
         let probe = item_spec::exists_probe(&item.identity, &state.entry_project_dir)?;
-        if item_spec::probe_exists(&probe)? {
+        if item_spec::probe_exists(state.observer, &probe)? {
             kept.push(item);
         }
     }
@@ -3221,8 +3221,15 @@ fn evaluate_item_condition_silent(node: Node<'_, '_>, state: &State<'_>) -> (Con
         return (CondGate::Run, false);
     };
     let eval = if state.follow_imports {
-        let exists = |path: &str| condition_exists(path, &state.entry_project_dir);
-        condition::evaluate_with_exists(cond, &state.lookup, &exists)
+        let exists = |path: &str| condition_exists(state.observer, path, &state.entry_project_dir);
+        condition::evaluate_with_exists(
+            cond,
+            &state.lookup,
+            condition::Probes {
+                exists: &exists,
+                observer: state.observer,
+            },
+        )
     } else {
         condition::evaluate(cond, &state.lookup)
     };
@@ -3254,7 +3261,7 @@ fn evaluate_item_condition_silent_with_sdk_taint(
 
 fn expand_silent(raw: &str, state: &State<'_>) -> Expansion {
     let (value, issues) = if state.follow_imports {
-        properties::substitute_with_fs(raw, &state.lookup)
+        properties::substitute_with_fs(raw, &state.lookup, state.observer)
     } else {
         properties::substitute(raw, &state.lookup)
     };
@@ -3461,6 +3468,7 @@ fn route_item_through_resolver(
             base_dir: &state.entry_project_dir,
             include: &include,
             excludes: &excludes,
+            observer: state.observer,
         };
         resolver(&request)
     };

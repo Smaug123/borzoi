@@ -347,7 +347,7 @@ fn evaluate_both(
 
     let dotnet_root = with_sdk.then(common::dotnet_root_from_env);
     let workload = with_sdk.then(common::workload_env_from_process);
-    let resolver = |name: &str| {
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         let (user_dotnet_root, overrides_present) =
             workload.as_ref().expect("only called when with_sdk");
         resolve_sdk(
@@ -362,6 +362,7 @@ fn evaluate_both(
                 // The fixture tempdir has no global.json above it.
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
 

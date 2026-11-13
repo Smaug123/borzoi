@@ -84,6 +84,8 @@
 
 mod common;
 
+use borzoi_msbuild::observed::host_fs;
+use host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
@@ -362,9 +364,9 @@ fn many_deferred_groups_across_alternating_imports_replay_in_order() {
     }
     // Canonicalised, so the macOS `/var` → `/private/var` symlink cannot make
     // the two sides' spellings of one file differ.
-    let canonical_root = std::fs::canonicalize(root).unwrap();
+    let canonical_root = host_fs::canonicalize(root).unwrap();
     let relative = |path: &Path| -> String {
-        std::fs::canonicalize(path)
+        host_fs::canonicalize(path)
             .unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
             .strip_prefix(&canonical_root)
             .unwrap_or_else(|_| panic!("{} escapes the fixture", path.display()))
@@ -479,17 +481,21 @@ fn multi_tfm_seeded_target_framework_matches_msbuild() {
 fn run_diff(rel_fsproj: &str, extras: &[(&str, &str)]) {
     let corpus = common::corpus_root();
     let joined = corpus.join(rel_fsproj);
-    assert!(joined.is_file(), "missing fixture {}", joined.display());
+    assert!(
+        joined.host_is_file(),
+        "missing fixture {}",
+        joined.display()
+    );
     // `parse_fsproj` rejects non-rooted paths (see
     // `ParseError::RelativeProjectPath`), and `BORZOI_CORPUS` is
     // documented to accept relative paths — so absolutise via the
     // filesystem before handing it over. `canonicalize` also resolves
     // symlinks, which is fine here: MSBuild's `FullPath` does the same,
     // so the two sides stay comparable.
-    let fsproj = std::fs::canonicalize(&joined)
+    let fsproj = host_fs::canonicalize(&joined)
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", joined.display()));
 
-    let source = std::fs::read_to_string(&fsproj)
+    let source = host_fs::read_to_string(&fsproj)
         .unwrap_or_else(|e| panic!("read {}: {e}", fsproj.display()));
     let mut props: HashMap<String, String> = HashMap::new();
     for (k, v) in extras {
@@ -742,8 +748,8 @@ fn compare_kind(
     for i in 0..limit {
         match (ours.get(i), theirs.get(i)) {
             (Some(o), Some(t)) => {
-                let our_canon = std::fs::canonicalize(&o.include);
-                let their_canon = std::fs::canonicalize(Path::new(&t.full_path));
+                let our_canon = host_fs::canonicalize(&o.include);
+                let their_canon = host_fs::canonicalize(Path::new(&t.full_path));
                 match (our_canon, their_canon) {
                     (Ok(oc), Ok(tc)) => {
                         if oc != tc {
@@ -913,7 +919,7 @@ fn path_derivable_reserved_properties_match_msbuild() {
         ("d%2541/x%3by.props", "d%41/x;y.props", "F"),
     ];
     let tmp = TempDir::new().unwrap();
-    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let root = host_fs::canonicalize(tmp.path()).unwrap();
     let dir = root.join("p r;oj");
     std::fs::create_dir_all(dir.join("sub dir")).unwrap();
     std::fs::create_dir_all(dir.join("other")).unwrap();

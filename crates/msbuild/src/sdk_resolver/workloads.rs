@@ -71,6 +71,7 @@ use std::path::{Path, PathBuf};
 
 use super::{SdkResolveError, SdkVersion};
 use crate::SdkResolution;
+use crate::observed::{self, EntryKind, Failure, Observer};
 
 pub const WORKLOAD_MANIFEST_TARGETS_LOCATOR: &str =
     "Microsoft.NET.SDK.WorkloadManifestTargetsLocator";
@@ -145,11 +146,14 @@ fn unsupported(reason: impl Into<String>) -> SdkResolveError {
 /// errors degrade for the same reason. The type probe follows symlinks
 /// (`metadata`, not `file_type`), matching `Directory.GetDirectories`,
 /// which includes a symlink to a directory and excludes one to a file.
-fn read_dir_or_degrade(dir: &Path) -> Result<Vec<std::fs::DirEntry>, SdkResolveError> {
+fn read_dir_or_degrade(
+    dir: &Path,
+    observer: &Observer,
+) -> Result<Vec<observed::DirEntry>, SdkResolveError> {
     use std::io::ErrorKind;
     let enumeration_failed =
-        |err: std::io::Error| unsupported(format!("cannot enumerate {}: {err}", dir.display()));
-    let entries = match std::fs::read_dir(dir) {
+        |err: Failure| unsupported(format!("cannot enumerate {}: {err}", dir.display()));
+    let entries = match observed::read_dir(observer, dir) {
         Ok(entries) => entries,
         Err(err) if matches!(err.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
             return Ok(Vec::new());
@@ -159,17 +163,14 @@ fn read_dir_or_degrade(dir: &Path) -> Result<Vec<std::fs::DirEntry>, SdkResolveE
     let mut dirs = Vec::new();
     for entry in entries {
         let entry = entry.map_err(enumeration_failed)?;
-        // `std::fs::metadata` (target-following), NOT `DirEntry::metadata`,
-        // which on Unix is `symlink_metadata` and would report a symlink to a
-        // directory as a non-directory. `Directory.GetDirectories` includes a
+        // A target-following `stat` (`observed::kind`), NOT the directory
+        // entry's own type, which does not follow a symlink and would report
+        // a symlink to a directory as a non-directory. `Directory.GetDirectories` includes a
         // symlinked directory (package-manager and user-local layouts create
         // them), so we must follow the link. A dangling symlink errors here and
         // degrades — conservative, and MSBuild's own later enumeration of it
         // would fail too.
-        if std::fs::metadata(entry.path())
-            .map_err(enumeration_failed)?
-            .is_dir()
-        {
+        if observed::kind(observer, &entry.path).map_err(enumeration_failed)? == EntryKind::Dir {
             dirs.push(entry);
         }
     }
@@ -185,6 +186,7 @@ pub fn resolve_workload_locator(
     dotnet_root: &Path,
     sdk_version_dir: &Path,
     env: &WorkloadEnvironment<'_>,
+    observer: &Observer,
 ) -> Result<SdkResolution, SdkResolveError> {
     debug_assert!(is_workload_locator(sdk_name));
     if env.overrides_present {
@@ -198,8 +200,8 @@ pub fn resolve_workload_locator(
         ));
     }
     let band = host_feature_band(sdk_version_dir)?;
-    let roots = workload_roots(dotnet_root, &band, env)?;
-    let manifest_roots = enumerate_manifest_roots(sdk_version_dir, &band, &roots)?;
+    let roots = workload_roots(dotnet_root, &band, env, observer)?;
+    let manifest_roots = enumerate_manifest_roots(sdk_version_dir, &band, &roots, observer)?;
 
     if sdk_name.eq_ignore_ascii_case(WORKLOAD_MANIFEST_TARGETS_LOCATOR) {
         // `CachingWorkloadResolver` keeps only the manifest directories
@@ -207,7 +209,7 @@ pub fn resolve_workload_locator(
         // skipped, not an error.
         let with_targets: Vec<PathBuf> = manifest_roots
             .into_iter()
-            .filter(|dir| dir.join("WorkloadManifest.targets").is_file())
+            .filter(|dir| observed::is_file(observer, &dir.join("WorkloadManifest.targets")))
             .collect();
         return Ok(SdkResolution::Roots(with_targets));
     }
@@ -221,7 +223,7 @@ pub fn resolve_workload_locator(
     // be installed, and we degrade rather than model the
     // manifest→pack→installation-record chain.
     for root in roots.pack_roots() {
-        if let Some(found) = find_any_auto_import_props(&root.join("packs"))? {
+        if let Some(found) = find_any_auto_import_props(&root.join("packs"), observer)? {
             return Err(unsupported(format!(
                 "a workload pack ships AutoImport.props (a workload may \
                  be installed): {}",
@@ -321,6 +323,7 @@ fn workload_roots(
     dotnet_root: &Path,
     band: &(String, SdkVersion),
     env: &WorkloadEnvironment<'_>,
+    observer: &Observer,
 ) -> Result<WorkloadRoots, SdkResolveError> {
     let marker = dotnet_root
         .join("metadata")
@@ -333,13 +336,16 @@ fn workload_roots(
     // `exists` — faithfully transcribes the marker check. A malformed
     // `userlocal` *directory* must read as "no marker" (global install),
     // not as a present marker that would consult/shadow the user root.
-    if marker.is_file() {
+    if observed::is_file(observer, &marker) {
         match env.user_dotnet_root {
             Some(user_root) => {
-                if user_root != dotnet_root && user_root.is_dir() {
+                if user_root != dotnet_root && observed::is_dir(observer, user_root) {
                     user = Some(UserRoot {
                         path: user_root.to_path_buf(),
-                        participates_in_manifests: user_root.join("sdk-manifests").is_dir(),
+                        participates_in_manifests: observed::is_dir(
+                            observer,
+                            &user_root.join("sdk-manifests"),
+                        ),
                     });
                 }
             }
@@ -367,7 +373,7 @@ fn workload_roots(
         // `GetWorkloadInstallType` tests this marker with CLR `File.Exists`
         // too, so `is_file` (not `exists`): a directory named `msi` is not
         // the marker.
-        if msi_marker.is_file() {
+        if observed::is_file(observer, &msi_marker) {
             return Err(unsupported(format!(
                 "MSI-based workload install: {}",
                 msi_marker.display()
@@ -386,17 +392,17 @@ fn workload_roots(
                 .join("InstallState")
                 .join("default.json"),
         ];
-        for entry in read_dir_or_degrade(&workloads_metadata)? {
+        for entry in read_dir_or_degrade(&workloads_metadata, observer)? {
             candidates.push(
                 entry
-                    .path()
+                    .path
                     .join(&band.0)
                     .join("InstallState")
                     .join("default.json"),
             );
         }
         for install_state in candidates {
-            if install_state.is_file() {
+            if observed::is_file(observer, &install_state) {
                 return Err(unsupported(format!(
                     "workload install-state pin present: {}",
                     install_state.display()
@@ -423,6 +429,7 @@ fn enumerate_manifest_roots(
     sdk_version_dir: &Path,
     band: &(String, SdkVersion),
     roots: &WorkloadRoots,
+    observer: &Observer,
 ) -> Result<Vec<PathBuf>, SdkResolveError> {
     // Known-id list: `KnownWorkloadManifests.txt`, falling back to the
     // older `IncludedWorkloadManifests.txt`; a missing file just means
@@ -436,7 +443,7 @@ fn enumerate_manifest_roots(
         "IncludedWorkloadManifests.txt",
     ] {
         let path = sdk_version_dir.join(name);
-        match std::fs::read_to_string(&path) {
+        match observed::read_to_string(observer, &path) {
             Ok(contents) => {
                 // Upstream reads this with `File.ReadAllLines`, whose
                 // BOM-detecting `StreamReader` consumes a leading UTF-8 BOM.
@@ -471,7 +478,7 @@ fn enumerate_manifest_roots(
         }
     }
 
-    check_workload_sets(band, roots)?;
+    check_workload_sets(band, roots, observer)?;
 
     // Primary pass: every id directory in `{root}/sdk-manifests/{band}`,
     // shadowed **by directory name** — the highest-precedence root wins by name,
@@ -487,8 +494,8 @@ fn enumerate_manifest_roots(
     let mut winners: HashMap<String, (String, PathBuf)> = HashMap::new();
     for root in roots.manifest_roots() {
         let band_dir = root.join("sdk-manifests").join(&band.0);
-        for entry in read_dir_or_degrade(&band_dir)? {
-            let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+        for entry in read_dir_or_degrade(&band_dir, observer)? {
+            let Some(id) = entry.name.to_str().map(str::to_owned) else {
                 continue;
             };
             // First insertion wins: `manifest_roots()` yields highest precedence
@@ -496,15 +503,20 @@ fn enumerate_manifest_roots(
             // higher root already claimed — resolvable or not.
             winners
                 .entry(id.to_ascii_lowercase())
-                .or_insert_with(|| (id, entry.path()));
+                .or_insert_with(|| (id, entry.path));
         }
     }
     let mut found: HashMap<String, ResolvedManifest> = HashMap::new();
+    // Probed in key order: a probe that degrades stops the loop, and what
+    // the probes before it observed lands in the evaluation's read set, which
+    // must not depend on a `HashMap`'s order.
+    let mut winners: Vec<_> = winners.into_iter().collect();
+    winners.sort_by(|a, b| a.0.cmp(&b.0));
     for (key, (id, dir)) in winners {
         if is_skipped_manifest_id(&id) {
             continue;
         }
-        if let Some(directory) = resolve_manifest_directory(&dir)? {
+        if let Some(directory) = resolve_manifest_directory(&dir, observer)? {
             found.insert(key, ResolvedManifest { id, directory });
         }
     }
@@ -528,8 +540,8 @@ fn enumerate_manifest_roots(
     {
         let manifests_dir = roots.dotnet_root.join("sdk-manifests");
         let mut fallback_bands: Vec<(SdkVersion, PathBuf)> = Vec::new();
-        for entry in read_dir_or_degrade(&manifests_dir)? {
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+        for entry in read_dir_or_degrade(&manifests_dir, observer)? {
+            let Some(name) = entry.name.to_str().map(str::to_owned) else {
                 continue;
             };
             let Some(version) = SdkVersion::parse(&name) else {
@@ -548,7 +560,7 @@ fn enumerate_manifest_roots(
                 )));
             };
             if version < band.1 {
-                fallback_bands.push((version, entry.path()));
+                fallback_bands.push((version, entry.path));
             }
         }
         fallback_bands.sort_by(|a, b| b.0.cmp(&a.0));
@@ -564,14 +576,14 @@ fn enumerate_manifest_roots(
             }
             for (_, band_dir) in &fallback_bands {
                 let id_dir = band_dir.join(id);
-                if !id_dir.is_dir() {
+                if !observed::is_dir(observer, &id_dir) {
                     continue;
                 }
                 // `FallbackForMissingManifest` filters unresolvable
                 // candidates *before* picking the highest band, so a
                 // band whose id directory holds no manifest is passed
                 // over in favour of an older band that resolves.
-                if let Some(directory) = resolve_manifest_directory(&id_dir)? {
+                if let Some(directory) = resolve_manifest_directory(&id_dir, observer)? {
                     found.insert(
                         key.clone(),
                         ResolvedManifest {
@@ -643,11 +655,12 @@ const BASELINE_WORKLOAD_SET_BAND: &str = "8.0.100";
 fn check_workload_sets(
     band: &(String, SdkVersion),
     roots: &WorkloadRoots,
+    observer: &Observer,
 ) -> Result<(), SdkResolveError> {
     for root in roots.all() {
         let manifests = root.join("sdk-manifests");
         let host_sets = manifests.join(&band.0).join("workloadsets");
-        if host_sets.is_dir() {
+        if observed::is_dir(observer, &host_sets) {
             return Err(unsupported(format!(
                 "workload set present for the host feature band: {}",
                 host_sets.display()
@@ -656,8 +669,8 @@ fn check_workload_sets(
         let baseline_sets = manifests
             .join(BASELINE_WORKLOAD_SET_BAND)
             .join("workloadsets");
-        if baseline_sets.is_dir() {
-            check_loadable_workload_sets(&baseline_sets)?;
+        if observed::is_dir(observer, &baseline_sets) {
+            check_loadable_workload_sets(&baseline_sets, observer)?;
         }
     }
     Ok(())
@@ -681,16 +694,19 @@ fn check_workload_sets(
 /// casing (`Directory.GetFiles` matches case-insensitively off Linux), so a
 /// file Linux would skip is still validated; and any such entry that is not
 /// a regular file degrades.
-fn check_loadable_workload_sets(workload_sets_root: &Path) -> Result<(), SdkResolveError> {
+fn check_loadable_workload_sets(
+    workload_sets_root: &Path,
+    observer: &Observer,
+) -> Result<(), SdkResolveError> {
     let malformed = |path: &Path, why: &str| {
         Err(unsupported(format!(
             "workload set may fail to load ({why}): {}",
             path.display()
         )))
     };
-    for set_dir in read_dir_or_degrade(workload_sets_root)? {
-        let set_path = set_dir.path();
-        let entries = std::fs::read_dir(&set_path).map_err(|err| {
+    for set_dir in read_dir_or_degrade(workload_sets_root, observer)? {
+        let set_path = set_dir.path.clone();
+        let entries = observed::read_dir(observer, &set_path).map_err(|err| {
             unsupported(format!("cannot enumerate {}: {err}", set_path.display()))
         })?;
         let mut ids: Vec<String> = Vec::new();
@@ -699,17 +715,17 @@ fn check_loadable_workload_sets(workload_sets_root: &Path) -> Result<(), SdkReso
             let entry = entry.map_err(|err| {
                 unsupported(format!("cannot enumerate {}: {err}", set_path.display()))
             })?;
-            let path = entry.path();
-            let Some(name) = entry.file_name().to_str().map(str::to_ascii_lowercase) else {
+            let path = entry.path;
+            let Some(name) = entry.name.to_str().map(str::to_ascii_lowercase) else {
                 return malformed(&path, "non-UTF-8 file name");
             };
             if !name.ends_with(".workloadset.json") {
                 continue;
             }
-            if !std::fs::metadata(&path).is_ok_and(|meta| meta.is_file()) {
+            if !observed::is_file(observer, &path) {
                 return malformed(&path, "not a regular file");
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = observed::read_to_string(observer, &path) else {
                 return malformed(&path, "unreadable or not UTF-8");
             };
             let Some(entries) = super::global_json::parse_json_string_map(&text) else {
@@ -741,7 +757,7 @@ fn check_loadable_workload_sets(workload_sets_root: &Path) -> Result<(), SdkReso
         // A directory without set files loads as no set, and its name is
         // never parsed.
         if any_set_file {
-            let name = set_dir.file_name();
+            let name = set_dir.name;
             if !name.to_str().is_some_and(is_plain_workload_set_version) {
                 return malformed(&set_path, "workload set version not certified to parse");
             }
@@ -803,14 +819,17 @@ fn is_plain_prerelease(s: &str) -> bool {
 /// directory is skipped (`Ok(None)`), not an error. A version directory
 /// name our `SdkVersion` cannot parse degrades — we cannot reproduce
 /// MSBuild's comparison for it.
-fn resolve_manifest_directory(id_dir: &Path) -> Result<Option<PathBuf>, SdkResolveError> {
+fn resolve_manifest_directory(
+    id_dir: &Path,
+    observer: &Observer,
+) -> Result<Option<PathBuf>, SdkResolveError> {
     let mut best: Option<(SdkVersion, PathBuf)> = None;
-    for entry in read_dir_or_degrade(id_dir)? {
-        let candidate = entry.path();
-        if !candidate.join("WorkloadManifest.json").is_file() {
+    for entry in read_dir_or_degrade(id_dir, observer)? {
+        let candidate = entry.path;
+        if !observed::is_file(observer, &candidate.join("WorkloadManifest.json")) {
             continue;
         }
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+        let Some(name) = entry.name.to_str().map(str::to_owned) else {
             continue;
         };
         let Some(version) = SdkVersion::parse(&name) else {
@@ -826,7 +845,7 @@ fn resolve_manifest_directory(id_dir: &Path) -> Result<Option<PathBuf>, SdkResol
     if let Some((_, directory)) = best {
         return Ok(Some(directory));
     }
-    if id_dir.join("WorkloadManifest.json").is_file() {
+    if observed::is_file(observer, &id_dir.join("WorkloadManifest.json")) {
         return Ok(Some(id_dir.to_path_buf()));
     }
     Ok(None)
@@ -856,14 +875,17 @@ fn is_safe_manifest_id(id: &str) -> bool {
 /// too — under `packs_dir`, if any. An unreadable directory degrades
 /// (`Err`): treating it as empty would certify the zero-import answer
 /// off evidence we could not actually collect.
-fn find_any_auto_import_props(packs_dir: &Path) -> Result<Option<PathBuf>, SdkResolveError> {
-    for pack in read_dir_or_degrade(packs_dir)? {
-        for version in read_dir_or_degrade(&pack.path())? {
+fn find_any_auto_import_props(
+    packs_dir: &Path,
+    observer: &Observer,
+) -> Result<Option<PathBuf>, SdkResolveError> {
+    for pack in read_dir_or_degrade(packs_dir, observer)? {
+        for version in read_dir_or_degrade(&pack.path, observer)? {
             for candidate in [
-                version.path().join("Sdk").join("AutoImport.props"),
-                version.path().join("AutoImport.props"),
+                version.path.join("Sdk").join("AutoImport.props"),
+                version.path.join("AutoImport.props"),
             ] {
-                if candidate.is_file() {
+                if observed::is_file(observer, &candidate) {
                     return Ok(Some(candidate));
                 }
             }

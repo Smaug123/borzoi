@@ -27,6 +27,7 @@ mod common;
 
 use std::collections::{BTreeMap, HashMap};
 
+use borzoi_msbuild::observed::host_fs;
 use borzoi_msbuild::test_support::{ReadProbe, parse_fsproj_reads};
 use common::{Oracle, SplitMix64};
 
@@ -195,7 +196,7 @@ struct Tally {
 fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
     tally.cases += 1;
     let dir = tempfile::tempdir().unwrap();
-    let path = std::fs::canonicalize(dir.path()).unwrap().join("p.fsproj");
+    let path = host_fs::canonicalize(dir.path()).unwrap().join("p.fsproj");
     std::fs::write(&path, xml).unwrap();
     std::fs::write(path.with_file_name("items.props"), IMPORTED).unwrap();
     let probe = ReadProbe {

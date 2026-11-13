@@ -19,6 +19,7 @@
 //! Each fixture spawns `dotnet msbuild`, so these run under `nix develop`
 //! (offline SDK) like the sibling `fsproj_msbuild_diff` tests.
 
+use borzoi_msbuild::observed::host_fs;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -309,7 +310,17 @@ fn assert_sdk_captures_match(xml: &str, extras: &[(&str, &str)]) {
         // The fixture tempdir has no global.json above it.
         global_json_pins_workload_set: false,
     };
-    let resolver = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workload_env,
+            observer,
+        )
+    };
     let parsed = parse_fsproj_with_imports(
         xml,
         &proj,
@@ -406,7 +417,17 @@ fn sdk_style_netcoreapp_fsharp_property_functions_leave_no_cause() {
         // The fixture tempdir has no global.json above it.
         global_json_pins_workload_set: false,
     };
-    let resolver = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workload_env,
+            observer,
+        )
+    };
     let parsed = parse_fsproj_with_imports(
         xml,
         &proj,
@@ -479,7 +500,17 @@ fn sdk_style_netcoreapp_workflow_gate_no_longer_cascades() {
         overrides_present,
         global_json_pins_workload_set: false,
     };
-    let resolver = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workload_env,
+            observer,
+        )
+    };
     let parsed = parse_fsproj_with_imports(
         xml,
         &proj,
@@ -539,7 +570,17 @@ fn sdk_style_netcoreapp_fsharp_path_property_default_is_inert() {
         overrides_present,
         global_json_pins_workload_set: false,
     };
-    let resolver = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workload_env,
+            observer,
+        )
+    };
     let parsed = parse_fsproj_with_imports(
         xml,
         &proj,
@@ -1110,7 +1151,7 @@ fn eval_cpm_fixture_both_ways(
     tempfile::TempDir,
 ) {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize tempdir");
+    let root = host_fs::canonicalize(dir.path()).expect("canonicalize tempdir");
     std::fs::write(root.join("Directory.Packages.props"), packages_props_xml)
         .expect("write packages props");
     std::fs::create_dir_all(root.join("src")).expect("mkdir src");
@@ -1125,7 +1166,17 @@ fn eval_cpm_fixture_both_ways(
         // The fixture tempdir has no global.json above it.
         global_json_pins_workload_set: false,
     };
-    let resolver = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
+        resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workload_env,
+            observer,
+        )
+    };
     let parsed = parse_fsproj_with_imports(
         project_xml,
         &proj,
@@ -1292,9 +1343,9 @@ fn sdk_style_cpm_probe_properties_match_msbuild() {
     // property values while this walker stores values verbatim and
     // normalises at use sites — so compare file identity, not string form.
     let name = "ProbeNuGetPropsFile";
-    let a = std::fs::canonicalize(ours(name).replace('\\', "/"))
+    let a = host_fs::canonicalize(ours(name).replace('\\', "/"))
         .unwrap_or_else(|e| panic!("canonicalize ours {name}={}: {e}", ours(name)));
-    let b = std::fs::canonicalize(theirs(name))
+    let b = host_fs::canonicalize(theirs(name))
         .unwrap_or_else(|e| panic!("canonicalize theirs {name}={}: {e}", theirs(name)));
     assert_eq!(a, b, "probe {name} names different files");
     // MSBuildExtensionsPath is a directory and carries a trailing
@@ -1309,8 +1360,8 @@ fn sdk_style_cpm_probe_properties_match_msbuild() {
         "theirs: {}",
         theirs("ProbeExtensionsPath")
     );
-    let a = std::fs::canonicalize(ours("ProbeExtensionsPath")).expect("ours extensions path");
-    let b = std::fs::canonicalize(theirs("ProbeExtensionsPath")).expect("theirs extensions path");
+    let a = host_fs::canonicalize(ours("ProbeExtensionsPath")).expect("ours extensions path");
+    let b = host_fs::canonicalize(theirs("ProbeExtensionsPath")).expect("theirs extensions path");
     assert_eq!(a, b, "ProbeExtensionsPath names different directories");
 }
 

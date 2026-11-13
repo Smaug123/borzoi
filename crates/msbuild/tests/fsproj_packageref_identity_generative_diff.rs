@@ -241,7 +241,7 @@ fn theirs_rows(items: &[(String, HashMap<String, String>)]) -> Vec<Row> {
 /// that the flag was set.
 fn check(oracle: &mut Oracle, refs: &[Ref]) -> bool {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let root = borzoi_msbuild::observed::host_fs::canonicalize(dir.path()).expect("canonicalize");
     let proj = root.join("Demo.fsproj");
     let xml = project_xml(refs);
     std::fs::write(&proj, &xml).expect("write project");
