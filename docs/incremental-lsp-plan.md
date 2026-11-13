@@ -1210,11 +1210,17 @@ corpus project is reported, so Stage 3b's validation cost is known in advance.
 The oracle (`crates/msbuild/src/observed/soundness.rs`):
 
 - `soundness::sweep(root, evaluate, extra)` perturbs the tree under `root`
-  one change at a time, restoring each, and holds the read set to two
-  properties. **Sound**: if no answer in the read set moved, evaluating
-  again gives an equal `ParsedProject` (read set and counts included).
-  **Precise**: a change that touches no path the read set names, and adds
-  no entry to a directory it listed, leaves every answer standing. The
+  one change at a time, restoring each, and asserts that the read set is
+  **sound**: if no answer in it moved, evaluating again gives an equal
+  `ParsedProject` (read set and counts included). It counts failures of
+  **precision**: a change that touches no path the read set names (nor an
+  ancestor of one), and adds no entry to a directory it listed, should
+  leave every answer standing. Deciding what a change touches means knowing
+  every spelling the file system accepts for a file (through a symlink, a
+  `..` after one, a case-insensitive volume); after three Codex rounds
+  found one more such spelling each, the check compares lexically and only
+  the generated worlds, which spell each file one way, assert it. An
+  imprecise read set costs a needless re-evaluation, never a wrong one. The
   changes: every file rewritten (an MSBuild file with a property more),
   rewritten at the same size, and deleted; a file created in every
   directory under every name of a vocabulary (the implicit-import names,
@@ -1244,9 +1250,12 @@ The oracle (`crates/msbuild/src/observed/soundness.rs`):
   a query of each kind, an absence among them.
 - The sweep changes only paths that lie under its root lexically and
   physically (a read of `../outside/x` is recorded but not perturbed), and
-  counts any change as touching a read whose path passes through a symlink
-  under the root (Codex found both; `the_sweep_writes_only_under_its_root`,
-  `a_symlink_whose_target_moves_is_swept`, `a_dangling_symlink_is_swept`).
+  does not mistake a dangling symlink for an absent path (Codex found both;
+  `the_sweep_writes_only_under_its_root`, `a_dangling_symlink_is_swept`).
+- Workload manifest resolution probes its manifests in key order: a probe
+  that degrades stops the loop, so `HashMap` order decided what the probes
+  before it recorded (Codex;
+  `what_resolution_observes_does_not_depend_on_hash_order`).
 - `fsproj_corpus::fixture_read_sets_are_sound_through_the_real_sdk_chain`
   copies three of the crate's project fixtures into temporary directories
   and sweeps them through the real SDK chain and the glob resolver.

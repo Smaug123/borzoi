@@ -247,9 +247,11 @@ proptest! {
         .. ProptestConfig::default()
     })]
 
+    /// Sound, and (the world spelling each file one way) precise.
     #[test]
     fn an_evaluation_whose_read_set_stands_is_unchanged(world in world()) {
-        sweep_world(&world);
+        let tally = sweep_world(&world);
+        prop_assert_eq!(tally.imprecise, 0, "{:#?}", tally);
     }
 }
 
@@ -281,6 +283,10 @@ fn every_perturbation_rule_moves_some_evaluation() {
     assert!(
         total.untouched > 0,
         "no perturbation left the read set untouched, so precision was never checked: {total:#?}"
+    );
+    assert_eq!(
+        total.imprecise, 0,
+        "a change the read set does not name moved one of its answers: {total:#?}"
     );
 }
 

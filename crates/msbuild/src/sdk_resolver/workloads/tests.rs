@@ -1144,3 +1144,30 @@ fn unreadable_known_manifests_file_degrades() {
         ));
     }
 }
+
+/// Two manifests in the host band, one of which degrades: what the
+/// resolution observes before it degrades must not depend on the order a
+/// `HashMap` yields them in, or two equal evaluations would record different
+/// read sets.
+#[test]
+fn what_resolution_observes_does_not_depend_on_hash_order() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let version_dir = host_sdk(root, "10.0.300", &["a.workload", "b.workload"]);
+    manifest(root, "10.0.300", "a.workload", "1.0.0");
+    manifest(root, "10.0.300", "b.workload", "not a version!");
+    let observe = || {
+        let observer = Observer::new();
+        let result =
+            resolve_workload_locator(TARGETS, root, &version_dir, &no_user_env(), &observer);
+        assert!(matches!(
+            result,
+            Err(SdkResolveError::UnsupportedLayout { .. })
+        ));
+        observer.finish()
+    };
+    let first = observe();
+    for _ in 0..64 {
+        assert_eq!(observe(), first);
+    }
+}

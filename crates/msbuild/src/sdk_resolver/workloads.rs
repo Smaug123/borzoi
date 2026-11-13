@@ -507,6 +507,11 @@ fn enumerate_manifest_roots(
         }
     }
     let mut found: HashMap<String, ResolvedManifest> = HashMap::new();
+    // Probed in key order: a probe that degrades stops the loop, and what
+    // the probes before it observed lands in the evaluation's read set, which
+    // must not depend on a `HashMap`'s order.
+    let mut winners: Vec<_> = winners.into_iter().collect();
+    winners.sort_by(|a, b| a.0.cmp(&b.0));
     for (key, (id, dir)) in winners {
         if is_skipped_manifest_id(&id) {
             continue;
