@@ -536,6 +536,8 @@ mod tests {
             let root = parsed.root.clone();
             let file = ImplFile::cast(parsed.root).expect("an impl file");
             let env = AssemblyEnv::default();
+            #[cfg(feature = "test-support")]
+            let other = AssemblyEnv::default();
             let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
             prop_assert!(resolved.defs().next().is_some());
             for def in resolved.defs() {
@@ -575,6 +577,13 @@ mod tests {
                     src,
                     def
                 );
+                // Re-keyed onto another table, it answers as it did.
+                #[cfg(feature = "test-support")]
+                {
+                    let rekeyed = def.rekey(env.names(), other.names());
+                    prop_assert_eq!(&spelling(&rekeyed, &other), &shown, "{:?}", src);
+                    prop_assert_eq!(logical(&rekeyed, &other), logical(def, &env), "{:?}", src);
+                }
             }
         }
     }
