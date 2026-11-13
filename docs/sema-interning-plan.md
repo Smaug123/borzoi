@@ -632,6 +632,55 @@ The whole-corpus dump of Stage 4 (resolutions, decline sites, definitions,
 diagnostics, inferred types; each file alone and each directory as a
 project) is byte-identical before and after.
 
+**5b, implemented** (`resolve/path_set.rs`, `resolve/state.rs`):
+
+- **`PathSet` on ids.** The shadow sets (`module_paths`,
+  `nested_module_locals`/`_exports`, `augmentation_head_locals`/`_exports`,
+  `real_nested_module_exports`, and `ProjectItems`' `module_headers`,
+  `nested_module_paths`, `augmentation_head_paths`, `real_nested_modules`,
+  `type_qualified_case_paths`) are a log of `PathId`s and a member count per
+  id: the env's trie of names stands in for the trie each set kept of its
+  own. A question arrives as the ids of its prefixes (`PathPrefixes`): from
+  a lookup, from an interned reading extended by looked-up segments
+  (`PathPrefixes::under`, which `assembly_path_records` and
+  `assembly_type_path_core` share between the project shadow and their env
+  probes), or from `ContainerPath`'s ids. Suffix questions over the
+  container path (`Extended`) are extended once and asked of every set.
+  `head_contested_by_project_module`'s open loop asks each set for the
+  open's child of the head by id (`contains_child`), building no path.
+- **The scope frames on `Name`s.** `ScopeEntry::name` is a `Name`, interned
+  when the entry is made, so an entry clones without allocating, and
+  `Frame`'s index is keyed by it: a frame rebuilt for a member body
+  (`push_field_scope`) re-indexes without cloning a string, and a lookup
+  through every frame (`latest_entry_noting_withdrawals`,
+  `case_reference_scan`) looks the name up once and probes each frame by id.
+- **`PathSet` is shared.** It backs `ProjectItems`' sets as well as the
+  resolver's, so converting it converts both; 5a takes the rest of
+  `ProjectItems`.
+- **Lockstep.** `PathSet` keeps the string trie it replaced
+  (`path_set/text.rs`, whose log now holds nodes rather than paths, so the
+  reference is linear in the segments inserted too) and asserts every query
+  against it; `PathPrefixes::under` asserts each prefix id spells its
+  prefix; `Frame` keeps a string-keyed index and `named_rev` asserts the two
+  agree.
+- **Not converted**: the resolver's other string-keyed maps (`type_members`,
+  `top_level_nested_locals`, the per-block local sets' container keys, the
+  declared-name views) sit off the hot path: none of their queries is among
+  the functions the profile after this part attributes resolve's time to.
+- **`walk_cost_scaling`'s `MEMORY_EXEMPT` entry stays.** Its reason names
+  three holders of each nested module's full path; this part makes the
+  name-shadow and real-module sets linear (their `PathSet` reference too),
+  but the export declarations still carry full paths, and the test still
+  measures the shape growing. Those paths are Stage 6's (published paths).
+  The allocation test caught one quadratic this part introduced on the way:
+  a scan that spelled every member of a set per `open`
+  (`may_name_unlent_module`); it now spells only members whose last name
+  is the open's head.
+
+**Measured** (5b, on 5c): resolve 1134.2 → 999.8 instructions per byte
+(−11.9%), allocations 1.186 → 0.947 per byte (−20%); infer 175.4 → 173.7.
+The whole-corpus dump is byte-identical to Stage 4's.
+
 ### Stage 6 (optional): published names
 
 **Dependencies**: Stage 5. **Implements**: D3 at the public API.
