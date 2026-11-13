@@ -554,7 +554,12 @@ type ConeLogger() =
                     let key = struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)
 
                     match taskNames.TryGetValue key with
-                    | true, "WriteRestoreGraphTask" ->
+                    // By name, bare or qualified with its namespace, as a hook may
+                    // spell it.
+                    | true, name when
+                        name = "WriteRestoreGraphTask"
+                        || name.EndsWith(".WriteRestoreGraphTask", StringComparison.Ordinal)
+                        ->
                         if not (writers.ContainsKey key) then
                             writers[key] <- Collections.Generic.Dictionary<string, obj list>()
                             writerOrder.Add key
@@ -677,6 +682,8 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
         let scalar (inputs: Collections.Generic.Dictionary<string, obj list>) name =
             match inputs.TryGetValue name with
             | true, [ :? string as value ] -> Some value
+            // A bool parameter is logged as the boxed value it was converted to.
+            | true, [ :? bool as value ] -> Some(if value then "true" else "false")
             | true, [ :? Microsoft.Build.Framework.ITaskItem as item ] -> Some item.ItemSpec
             | _ -> None
 

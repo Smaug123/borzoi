@@ -1508,8 +1508,10 @@ second writer that a hook runs for another file, and a hook that changes
 `RestoreRecursive` after the writer. The fixtures now reproduce all of these:
 - the `hooked` fixture edits the entries before the writer, runs a side
   writer first, and carries an escaped `;` in its metadata;
-- the central-package-management fixture flips the `RestoreRecursive` global
-  after the writer, through `TreatAsLocalProperty`.
+- the central-package-management fixture sets the `RestoreRecursive` global
+  (false) to true for the writer and back to false after it, through
+  `TreatAsLocalProperty`;
+- the side writer names the task qualified with its namespace, as a hook may.
 
 `restore_cone_census.rs` puts every cone's entries through
 `write_restore_graph` with two further inputs:

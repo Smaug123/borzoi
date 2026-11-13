@@ -831,12 +831,18 @@ const CPM_APP: &str = r#"<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="
     <PackageReference Include="System.Text.Json" />
     <ProjectReference Include="../lib/Lib.fsproj" />
   </ItemGroup>
-  <!-- Changes the writer's RestoreRecursive (a restore global, false) after the
-       writer ran: the item seam must take the flag the writer was handed, which
-       decides whether the referenced project is restored too. -->
-  <Target Name="UserHookAfterRestoreGraphFile" AfterTargets="GenerateRestoreGraphFile">
+  <!-- Sets RestoreRecursive (a restore global, false) to true for the writer,
+       and back to false after it: the item seam must take the flag the writer
+       was handed, which decides whether the referenced project is restored too,
+       not the property's final value. -->
+  <Target Name="UserHookBeforeRestoreGraphFile" BeforeTargets="GenerateRestoreGraphFile">
     <PropertyGroup>
       <RestoreRecursive>true</RestoreRecursive>
+    </PropertyGroup>
+  </Target>
+  <Target Name="UserHookAfterRestoreGraphFile" AfterTargets="GenerateRestoreGraphFile">
+    <PropertyGroup>
+      <RestoreRecursive>false</RestoreRecursive>
     </PropertyGroup>
   </Target>
 </Project>
@@ -879,7 +885,7 @@ const HOOKED: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
     <!-- A second writer, for another file, handed the entries before the edit
          below: the item seam must take the inputs of the writer that wrote the
          spec. -->
-    <WriteRestoreGraphTask RestoreGraphItems="@(_RestoreGraphEntry)"
+    <NuGet.Build.Tasks.WriteRestoreGraphTask RestoreGraphItems="@(_RestoreGraphEntry)"
                            RestoreGraphOutputPath="$(MSBuildProjectDirectory)/side.dg.json" />
     <ItemGroup>
       <_RestoreGraphEntry Condition="'%(_RestoreGraphEntry.Type)' == 'ProjectSpec'">
