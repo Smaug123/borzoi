@@ -60,9 +60,9 @@ pub struct TargetRead {
 
 /// Which `Directory.Build.*` files the walk spliced in itself
 /// ([`super::walk_directory_build_file`]), standing in for an import
-/// `Microsoft.Common.props` or `.targets` makes, and whether an SDK chain
-/// reached the props import point. The targets point is
-/// [`State::sdk_reached_directory_build_targets_import`].
+/// `Microsoft.Common.props` or `.targets` makes, and whether the props splice
+/// first ran at `Microsoft.Common.props`'s import point and was what that
+/// import takes.
 #[derive(Debug, Clone, Default)]
 pub(super) struct DirectoryBuildSplices {
     pub(super) props_spliced: bool,
@@ -181,10 +181,12 @@ impl State<'_> {
     ///
     /// The target graph is the files the walk reached. It is MSBuild's when
     /// the walk is not opaque and every `Directory.Build.*` file it spliced
-    /// in itself stands for an import some SDK chain really makes: one whose
-    /// import point in `Microsoft.Common.*` the walk reached. Without that
-    /// point MSBuild imports no such file, and whatever it defines or steers
-    /// is the walk's alone.
+    /// in itself stands for an import an SDK chain really makes. The props
+    /// splice must have run at `Microsoft.Common.props`'s import point and
+    /// been what that import takes ([`DirectoryBuildSplices`]). The targets
+    /// splice is a fallback the walk makes only when no chain reached its
+    /// import point first, so MSBuild never makes it.
+    /// Otherwise whatever the file defines or steers is the walk's alone.
     fn read_target(&self, name: &str) -> TargetRead {
         let definition = self
             .target_definitions
@@ -200,7 +202,7 @@ impl State<'_> {
         let splices = &self.directory_build_splices;
         let graph_is_msbuilds = self.walk_opaque.is_none()
             && (!splices.props_spliced || splices.props_point_reached)
-            && (!splices.targets_spliced || self.sdk_reached_directory_build_targets_import);
+            && !splices.targets_spliced;
         TargetRead {
             definition,
             exact: comparable && graph_is_msbuilds,

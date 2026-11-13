@@ -1914,11 +1914,11 @@ target's XML from that file and range. The answer is exact only when:
 - the walk is not opaque, so no file it did not reach can define the name
   later;
 - every `Directory.Build.*` file the walk spliced in itself stands for an
-  import an SDK chain really makes: the walk reached that file's import
-  point in `Microsoft.Common.props` or `.targets`, and, for the props file,
-  the splice first ran there, and that import's condition, decided before
-  the splice ran, is exactly true and names the file spliced. Otherwise MSBuild imports no such file there, and whatever it
-  defines or steers is the walk's alone;
+  import an SDK chain really makes. The props splice must have first run at
+  `Microsoft.Common.props`'s import point, whose condition, decided before
+  the splice ran, is exactly true and names the file spliced. The targets
+  splice is a fallback the walk makes only when no chain reached its import
+  point first, which MSBuild never makes, so it always declines;
 - the name, and every name defined, is plain: printable ASCII, no `%`, no
   whitespace. MSBuild compares names unescaped, untrimmed and
   `OrdinalIgnoreCase`, which on plain names is ASCII case folding.
