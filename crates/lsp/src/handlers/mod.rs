@@ -13,9 +13,9 @@ use borzoi_sema::{
 };
 use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Uri};
 
-use crate::observed::Sources;
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
+use crate::vfs::Vfs;
 
 pub mod completion;
 pub mod definition;
@@ -301,7 +301,7 @@ pub fn smallest_member_resolution_with_range(
 /// buffer matches. Returns `None` only when the path can't be turned into
 /// any URI at all (a non-absolute path on platforms `Uri::from_file_path`
 /// rejects, or a path with no representation).
-pub fn preferred_uri(target_path: &Path, docs: &Sources) -> Option<Uri> {
+pub fn preferred_uri(target_path: &Path, docs: &Vfs) -> Option<Uri> {
     let target = lexically_normalize(target_path);
     for url in docs.keys() {
         if let Ok(doc_path) = url.to_file_path()

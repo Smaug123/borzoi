@@ -1,14 +1,20 @@
-//! The server's source reads, counted per generation by `borzoi::observed`
-//! (`docs/incremental-lsp-plan.md`, Stage 2a).
+//! The server's source reads, counted per generation by `borzoi::vfs`
+//! (`docs/incremental-lsp-plan.md`, Stages 2a and 2b).
 //!
 //! A real dispatch loop runs on its own thread over an in-memory connection,
 //! with a `tracing` subscriber on that thread recording every
 //! [`GENERATION_EVENT`]. The client opens two Compile items of a generated
 //! `N`-item project, warms the fold, then types into a trailing comment of
-//! one of them and asks for its semantic tokens. The fold re-reads every
-//! Compile item, and the two that are open come from their buffers, so the
-//! keystroke and the request open exactly `N − 2` files between them. This
-//! pins today's behaviour: Stage 2b's `Vfs` takes the count to 0.
+//! one of them and asks for its semantic tokens. The cold fold opens each of
+//! the `N − 2` items that are not open in a buffer; after that, every request
+//! that reads the fold confirms each of them with one `stat` and opens none,
+//! because nothing on disk moved.
+//!
+//! The project is written just before the server starts, so every stamp would
+//! be racy ([`borzoi::vfs::RACY_WINDOW`]) and re-read in every generation; the
+//! server's clock is set ahead ([`Clock::HostAhead`]) so the files read as
+//! old, which is what a real workspace's are. The same run on the host clock
+//! is the control: every request then re-reads them.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -19,6 +25,7 @@ use borzoi::observed::GENERATION_EVENT;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::server::{SERVER_STACK_BYTES, State, run_with_fetcher};
 use borzoi::uri::UriExt as _;
+use borzoi::vfs::{Clock, RACY_WINDOW};
 use borzoi::workspace::Workspace;
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::{ClientCapabilities, Uri};
@@ -26,11 +33,12 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-/// One [`GENERATION_EVENT`]: the generation's number and its opens.
+/// One [`GENERATION_EVENT`]: the generation's number and its counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Generation {
     number: u64,
     opens: u64,
+    stats: u64,
 }
 
 /// A `tracing` subscriber that records [`GENERATION_EVENT`]s and nothing else.
@@ -41,6 +49,7 @@ struct Recorder(Arc<Mutex<Vec<Generation>>>);
 struct Fields {
     generation: Option<u64>,
     opens: Option<u64>,
+    stats: Option<u64>,
 }
 
 impl tracing::field::Visit for Fields {
@@ -48,6 +57,7 @@ impl tracing::field::Visit for Fields {
         match field.name() {
             "generation" => self.generation = Some(value),
             "opens" => self.opens = Some(value),
+            "stats" => self.stats = Some(value),
             _ => {}
         }
     }
@@ -79,6 +89,7 @@ impl tracing::Subscriber for Recorder {
         self.0.lock().unwrap().push(Generation {
             number: fields.generation.expect("a generation number"),
             opens: fields.opens.expect("an opens count"),
+            stats: fields.stats.expect("a stats count"),
         });
     }
     fn enter(&self, _: &tracing::span::Id) {}
@@ -96,7 +107,7 @@ struct Client {
 }
 
 impl Client {
-    fn start(root: &Path, pull: bool) -> Client {
+    fn start(root: &Path, pull: bool, clock: Clock) -> Client {
         let (server_side, conn) = Connection::memory();
         let generations = Arc::new(Mutex::new(Vec::new()));
         let recorder = Recorder(Arc::clone(&generations));
@@ -106,6 +117,7 @@ impl Client {
             .spawn(move || {
                 let _subscriber = tracing::subscriber::set_default(recorder);
                 let mut state = State::new();
+                state.clock = clock;
                 // Hermetic: no `dotnet` is found, so no env is built from the
                 // host's packs. The project is SDK-less, so it evaluates and
                 // folds all the same.
@@ -227,21 +239,28 @@ fn project(dir: &Path, n: usize) -> (Vec<PathBuf>, Vec<String>) {
     (items, texts)
 }
 
-/// What a keystroke and the requests after it opened.
+/// What one stretch of messages opened and `stat`ed.
+#[derive(Debug, PartialEq, Eq)]
+struct Reads {
+    opens: u64,
+    stats: u64,
+}
+
+/// What a keystroke and the requests after it read.
 #[derive(Debug, PartialEq, Eq)]
 struct Counted {
     /// The cold `semanticTokens` request on the edited document.
-    cold_tokens: u64,
+    cold_tokens: Reads,
     /// The comment keystroke, then `semanticTokens` on the edited document.
-    keystroke_and_tokens: u64,
+    keystroke_and_tokens: Reads,
     /// `semanticTokens` on the other open document, after that.
-    other_tokens: u64,
+    other_tokens: Reads,
 }
 
-/// Opens summed over the generations recorded since `from`, checking that
+/// Counts summed over the generations recorded since `from`, checking that
 /// they are numbered consecutively and that there are at least `messages` of
 /// them (one per message sent, before any the server's own requests cost).
-fn opens_since(client: &Client, from: usize, messages: usize) -> (u64, usize) {
+fn reads_since(client: &Client, from: usize, messages: usize) -> (Reads, usize) {
     let generations = client.generations();
     let new = &generations[from..];
     assert!(
@@ -256,13 +275,17 @@ fn opens_since(client: &Client, from: usize, messages: usize) -> (u64, usize) {
             "generations are consecutive"
         );
     }
-    (new.iter().map(|g| g.opens).sum(), generations.len())
+    let reads = Reads {
+        opens: new.iter().map(|g| g.opens).sum(),
+        stats: new.iter().map(|g| g.stats).sum(),
+    };
+    (reads, generations.len())
 }
 
-fn run(n: usize, edited: usize, other: usize, pull: bool) -> Counted {
+fn run(n: usize, edited: usize, other: usize, pull: bool, clock: Clock) -> Counted {
     let tmp = TempDir::new().unwrap();
     let (items, mut texts) = project(tmp.path(), n);
-    let mut client = Client::start(tmp.path(), pull);
+    let mut client = Client::start(tmp.path(), pull, clock);
     let uri = |i: usize| Uri::from_file_path(&items[i]).unwrap();
     for i in [edited, other] {
         client.notify(
@@ -287,7 +310,7 @@ fn run(n: usize, edited: usize, other: usize, pull: bool) -> Counted {
 
     let mark = client.generations().len();
     tokens(&mut client, edited);
-    let (cold_tokens, mark) = opens_since(&client, mark, 1);
+    let (cold_tokens, mark) = reads_since(&client, mark, 1);
 
     texts[edited].push_str("// typed");
     client.notify(
@@ -298,10 +321,10 @@ fn run(n: usize, edited: usize, other: usize, pull: bool) -> Counted {
         }),
     );
     tokens(&mut client, edited);
-    let (keystroke_and_tokens, mark) = opens_since(&client, mark, 2);
+    let (keystroke_and_tokens, mark) = reads_since(&client, mark, 2);
 
     tokens(&mut client, other);
-    let (other_tokens, _) = opens_since(&client, mark, 1);
+    let (other_tokens, _) = reads_since(&client, mark, 1);
 
     client.shut_down();
     Counted {
@@ -311,29 +334,61 @@ fn run(n: usize, edited: usize, other: usize, pull: bool) -> Counted {
     }
 }
 
+/// Ahead of the host's clock by more than the racy window, so the files the
+/// test wrote read as old.
+fn settled() -> Clock {
+    Clock::HostAhead(RACY_WINDOW * 30)
+}
+
+/// Behind the host's clock, so every stamp of a file the test wrote is racy.
+fn racy() -> Clock {
+    Clock::HostBehind(RACY_WINDOW * 30)
+}
+
+fn cases() -> impl Strategy<Value = (usize, usize, usize, bool)> {
+    (3usize..10)
+        .prop_flat_map(|n| (Just(n), 0..n, 0..n - 1))
+        .prop_map(|(n, edited, other)| (n, edited, if other >= edited { other + 1 } else { other }))
+        .prop_flat_map(|(n, edited, other)| (Just(n), Just(edited), Just(other), any::<bool>()))
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
 
-    /// A comment keystroke followed by a semantic-tokens request opens every
-    /// Compile item that is not open in a buffer, exactly once; so does the
-    /// cold request; and a second document's request, answered from the
-    /// cached fold, opens nothing.
+    /// The cold semantic-tokens request opens every Compile item that is not
+    /// open in a buffer, exactly once. After that, nothing on disk moves: a
+    /// comment keystroke and the request after it open nothing and `stat`
+    /// each unbuffered item once, and so does a second document's request,
+    /// which validates the cached fold.
     #[test]
-    fn a_keystroke_and_a_tokens_request_open_every_unbuffered_item(
-        (n, edited, other) in (3usize..10).prop_flat_map(|n| {
-            (Just(n), 0..n, 0..n - 1)
-        }).prop_map(|(n, edited, other)| {
-            (n, edited, if other >= edited { other + 1 } else { other })
-        }),
-        pull in any::<bool>(),
+    fn after_the_cold_fold_a_keystroke_stats_and_opens_nothing(
+        (n, edited, other, pull) in cases(),
     ) {
         let n_minus_2 = (n - 2) as u64;
         prop_assert_eq!(
-            run(n, edited, other, pull),
+            run(n, edited, other, pull, settled()),
             Counted {
-                cold_tokens: n_minus_2,
-                keystroke_and_tokens: n_minus_2,
-                other_tokens: 0,
+                cold_tokens: Reads { opens: n_minus_2, stats: 0 },
+                keystroke_and_tokens: Reads { opens: 0, stats: n_minus_2 },
+                other_tokens: Reads { opens: 0, stats: n_minus_2 },
+            }
+        );
+    }
+
+    /// The control: with every stamp racy, every request that reads the fold
+    /// re-reads each unbuffered item, so the count above is the racy rule's
+    /// to make and not an artefact of a server that never looks.
+    #[test]
+    fn with_racy_stamps_every_fold_reading_request_re_reads(
+        (n, edited, other, pull) in cases(),
+    ) {
+        let n_minus_2 = (n - 2) as u64;
+        prop_assert_eq!(
+            run(n, edited, other, pull, racy()),
+            Counted {
+                cold_tokens: Reads { opens: n_minus_2, stats: 0 },
+                keystroke_and_tokens: Reads { opens: n_minus_2, stats: 0 },
+                other_tokens: Reads { opens: n_minus_2, stats: 0 },
             }
         );
     }

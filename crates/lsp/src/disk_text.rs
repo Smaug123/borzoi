@@ -3,7 +3,7 @@
 //! Editors decode a leading UTF-8 byte-order mark away: the document VS Code
 //! or Neovim sends in `didOpen` has no U+FEFF, and FCS strips it too, so
 //! neither counts it as a column. A file the client has not opened is read
-//! from disk instead ([`crate::observed::Sources::read_disk`]), and must have
+//! from disk instead ([`crate::vfs::Vfs::disk_text`]), and must have
 //! the same positions as when it is open, so the mark is dropped. Text from
 //! `didOpen`/`didChange` is the client's own and is never touched: whatever it
 //! holds is what its positions count.

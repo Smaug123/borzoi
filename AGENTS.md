@@ -257,10 +257,15 @@ This is a Cargo workspace with nine members:
   `borzoi-assembly` is runtime-live too: referenced assemblies are
   read into each project's `AssemblyEnv` (`crates/lsp/src/semantic.rs`).
   The crate observes the file system only through `crates/lsp/src/observed.rs`
-  (`docs/incremental-lsp-plan.md`, D3): source reads go through `Sources`,
-  which counts them per generation of the dispatch loop, and every other read
-  is a method of `Unobserved`, whose variant names the reader and the plan
-  stage that will route it. `crates/lsp/clippy.toml` bans the `std` calls
+  (`docs/incremental-lsp-plan.md`, D3): source text is owned by the `Vfs`
+  (`crates/lsp/src/vfs.rs`), whose disk is `observed::HostDisk` and which
+  counts its opens and `stat`s per generation of the dispatch loop, and every
+  other read is a method of `Unobserved`, whose variant names the reader and
+  the plan stage that will route it. The `Vfs` re-reads a disk file only when
+  its stamp moves or is racy (git's rule, a 2 s window), and every cached fold
+  is validated against it in each generation that reads it, so a closed
+  source rewritten with no watch event is still seen
+  (`incremental_state_machine`'s `WITNESSED`). `crates/lsp/clippy.toml` bans the `std` calls
   everywhere else; test code reaches them through `host_fs` (the lib's
   `observed::host_fs`, `tests/all/common/host_fs.rs`), never through a
   wholesale allow, which would also lift the spawn ban.
