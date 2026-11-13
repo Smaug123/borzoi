@@ -144,8 +144,12 @@ impl<'a> PathPrefixes<'a> {
             })
             .collect();
         Extended {
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
             base: self.text,
+            #[cfg(all(feature = "interning-reference", debug_assertions))]
             suffix: suffix_text,
+            #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+            borrows: std::marker::PhantomData,
             ids,
         }
     }
@@ -172,10 +176,19 @@ impl<'a> PathPrefixes<'a> {
 
 /// [`PathPrefixes::extended`]: `base[..k]` followed by `suffix`, for every
 /// `k`, by id (`None` where the table never interned it).
+///
+/// Only the ids answer the question; the spellings are kept for the
+/// reference check under `interning-reference` in a debug build. Without it
+/// the question still borrows them, so it borrow-checks the same in every
+/// build.
 #[derive(Debug)]
 pub(super) struct Extended<'a, 's, S> {
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
     base: &'a [String],
+    #[cfg(all(feature = "interning-reference", debug_assertions))]
     suffix: &'s [S],
+    #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+    borrows: std::marker::PhantomData<(&'a [String], &'s [S])>,
     ids: Vec<Option<PathId>>,
 }
 
