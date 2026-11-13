@@ -1707,7 +1707,8 @@ The item side is the gap the census was built to size:
 So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
    discipline (landed; see *A₁.3b: every metadatum* below);
-2. expose the dedicated buckets as item lists the executor can read;
+2. expose the dedicated buckets as item lists the executor can read
+   (`PackageReference` landed; see *A₁.3b: `PackageReference` rows* below);
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
@@ -1765,6 +1766,41 @@ Two checks hold it:
   `ImplicitPackageReferenceVersion` now agrees with MSBuild on every name:
   12 for `KnownFrameworkReference`, 6 for `KnownRuntimePack`, and so on. No
   name is uncertain or missing.
+
+##### A₁.3b: `PackageReference` rows — landed
+
+`PackageReference` lives in the dependency capture, not the generic tables.
+Its five metadata names are typed and trimmed there for NuGet's resolver. The
+capture now also carries each reference's row as an item table would read it:
+- every metadatum, read by the generic reader quietly, so it reads nothing
+  the capture has not already read;
+- copied whole from a helper item for `Include="@(Helper)"`;
+- collapsed through `Update` onto prior `Include`s as MSBuild collapses it
+  (`EvaluatedItem::updated_by`).
+
+A generic list likewise counts as exact only when no identity keeps a
+backslash, the evaluator's mark of a spelling that turns on MSBuild's working
+directory.
+
+An `Update` that writes no package metadatum is inert for the dependency
+set and skipped there. But it may write other metadata on whichever
+references it matches. So every name it may write is marked unknown on every
+row, without resolving the match. Item-definition defaults for dependency
+item types are recorded too, and mark their names uncertain.
+
+The probe calls the list exact when the dependency set is certain and the
+walk is not opaque, and every identity has NuGet's package-id shape (which
+no path normalisation or Unix path fixup respells), which is the certainty `fsproj_packageref_generative_diff`
+already grades for identities. `fsproj_generic_items_generative_diff` now
+generates `PackageReference` items and `Update`s for every type, including a
+versioned `Include` followed by an `Update`. It fails if the collapse or the
+inert-`Update` marking is reverted.
+
+On the fixtures, both single-target projects' references agree with MSBuild
+on every name but one. `GeneratePathProperty` is uncertain: its value is the
+F# SDK's item-definition default, which the walk records but does not
+apply. Applying item-definition defaults, rather than declining them, is
+what would make it exact.
 
 #### A₁.4: the task leaves
 
