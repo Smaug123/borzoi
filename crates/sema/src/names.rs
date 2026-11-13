@@ -558,10 +558,9 @@ impl NameReader<'_> {
 /// never interned it, beside its segments.
 ///
 /// The id answers the query. The segments are what the query's caller holds
-/// independently of the table, and under `interning-reference` a debug build
-/// asserts on every query that the two spell the same path and that the
-/// string-keyed reference answers alike, so a key built against the wrong
-/// parent or from the wrong text fails where it is used.
+/// independently of the table; a query that walks the table from the root
+/// reads them where the id is `None`, since a prefix of the path may still
+/// be interned.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PathKey<'a> {
     pub(crate) id: Option<PathId>,
@@ -581,28 +580,10 @@ impl<'a> PathKey<'a> {
     pub(crate) fn new(id: Option<PathId>, text: &'a [String]) -> Self {
         PathKey { id, text }
     }
-
-    /// Assert, under `interning-reference` in a debug build, that the id
-    /// spells the segments. A `None` may since have been interned by another
-    /// walk sharing the table, which changes no index this key is asked of:
-    /// an index is filled before it is queried.
-    pub(crate) fn check(&self, names: &NameTable) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        if let Some(id) = self.id {
-            assert_eq!(
-                Some(id),
-                names.lookup_path(self.text),
-                "a PathKey's id does not spell {:?}",
-                self.text
-            );
-        }
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = names;
-    }
 }
 
 /// A name as a query spells it: its id in the table, `None` when the table
-/// never interned it, beside its text. Checked like a [`PathKey`].
+/// never interned it, beside its text.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NameKey<'a> {
     pub(crate) id: Option<Name>,
@@ -622,23 +603,6 @@ impl<'a> NameKey<'a> {
     pub(crate) fn new(id: Option<Name>, text: &'a str) -> Self {
         NameKey { id, text }
     }
-
-    /// Assert, under `interning-reference` in a debug build, that the id
-    /// spells the text. A `None` may since have been interned, as for a
-    /// [`PathKey`].
-    pub(crate) fn check(&self, names: &NameTable) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        if let Some(id) = self.id {
-            assert_eq!(
-                Some(id),
-                names.lookup(self.text),
-                "a NameKey's id does not spell {:?}",
-                self.text
-            );
-        }
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = names;
-    }
 }
 
 /// `path`'s id in `to`, given its id in `from`: the same segments, interned
@@ -654,17 +618,13 @@ pub(crate) fn rekey_name(from: &NameTable, to: &NameTable, name: Name) -> Name {
     to.logical(from.text(name))
 }
 
-/// A set of interned paths. Under `interning-reference` in a debug build it
-/// keeps the string-keyed set it replaced beside it and asserts on every
-/// query that the two agree; in every debug build it asserts that it is only
-/// ever used with one table's ids.
+/// A set of interned paths. In a debug build it asserts that it is only ever
+/// used with one table's ids.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PathIdSet {
     ids: crate::hash::HashSet<PathId>,
     #[cfg(debug_assertions)]
     table: Option<TableTag>,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    by_text: crate::hash::HashSet<Vec<String>>,
 }
 
 impl PathIdSet {
@@ -689,24 +649,13 @@ impl PathIdSet {
         {
             self.table = Some(names.tag());
         }
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.by_text.insert(path.to_vec());
         self.ids.insert(names.intern_path(path));
     }
 
     /// Whether `path` is a member.
     pub(crate) fn contains(&self, names: &NameTable, path: PathKey<'_>) -> bool {
         self.check_table(names);
-        path.check(names);
-        let found = path.id.is_some_and(|id| self.ids.contains(&id));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.by_text.contains(path.text),
-            "an interned path set disagrees with its reference at {:?}",
-            path.text
-        );
-        found
+        path.id.is_some_and(|id| self.ids.contains(&id))
     }
 
     /// Whether `path` is a member, looked up only when the set has one.
@@ -715,8 +664,7 @@ impl PathIdSet {
     }
 
     /// Whether the path whose id is `id` is a member, `false` when the table
-    /// never interned it. Unlike [`Self::contains`], the caller holds no
-    /// spelling to check against, so the reference is the caller's to assert.
+    /// never interned it.
     pub(crate) fn contains_id(&self, names: &NameTable, id: Option<PathId>) -> bool {
         self.check_table(names);
         id.is_some_and(|id| self.ids.contains(&id))
@@ -724,8 +672,6 @@ impl PathIdSet {
 
     /// Whether the set has no member.
     pub(crate) fn is_empty(&self) -> bool {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(self.ids.is_empty(), self.by_text.is_empty());
         self.ids.is_empty()
     }
 
@@ -740,16 +686,12 @@ impl PathIdSet {
             ids,
             #[cfg(debug_assertions)]
             table: self.table.map(|_| to.tag()),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            by_text: self.by_text.clone(),
         }
     }
 }
 
 /// A map keyed by interned paths, which a lookup by a path's segments or by
-/// its id reaches. Under `interning-reference` in a debug build it keeps the
-/// string-keyed map it replaced beside it and asserts on every query that the
-/// two agree; in every debug build it asserts that it is only ever used with
+/// its id reaches. In a debug build it asserts that it is only ever used with
 /// one table's ids.
 #[derive(Clone, Debug)]
 pub(crate) struct PathMap<V> {
@@ -759,8 +701,6 @@ pub(crate) struct PathMap<V> {
     by_parent: HashMap<PathId, Vec<PathId>>,
     #[cfg(debug_assertions)]
     table: Option<TableTag>,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    by_text: HashMap<Vec<String>, V>,
 }
 
 impl<V> Default for PathMap<V> {
@@ -770,13 +710,11 @@ impl<V> Default for PathMap<V> {
             by_parent: HashMap::default(),
             #[cfg(debug_assertions)]
             table: None,
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            by_text: HashMap::default(),
         }
     }
 }
 
-impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
+impl<V> PathMap<V> {
     #[cfg(debug_assertions)]
     fn check_table(&self, names: &NameTable) {
         if let Some(table) = self.table {
@@ -794,27 +732,16 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     /// Map `path`, interning it, to `value`; the previous value goes.
     #[cfg(test)]
     pub(crate) fn insert(&mut self, names: &NameTable, path: &[String], value: V) {
-        self.insert_id(names, names.intern_path(path), || path.to_vec(), value);
+        self.insert_id(names, names.intern_path(path), value);
     }
 
     /// Map the path whose id is `id` to `value`; the previous value goes.
-    /// `text` spells the path, for the reference.
-    pub(crate) fn insert_id(
-        &mut self,
-        names: &NameTable,
-        id: PathId,
-        text: impl FnOnce() -> Vec<String>,
-        value: V,
-    ) {
+    pub(crate) fn insert_id(&mut self, names: &NameTable, id: PathId, value: V) {
         self.check_table(names);
         #[cfg(debug_assertions)]
         {
             self.table = Some(names.tag());
         }
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.by_text.insert(text(), value.clone());
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        drop(text);
         self.note_key(names, id);
         self.by_id.insert(id, value);
     }
@@ -834,18 +761,13 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     where
         V: Default,
     {
-        self.update_id(names, names.intern_path(path), || path.to_vec(), update);
+        self.update_id(names, names.intern_path(path), update);
     }
 
     /// Apply `update` to the value at the path whose id is `id`, starting
-    /// from the default. `text` spells the path, for the reference.
-    pub(crate) fn update_id(
-        &mut self,
-        names: &NameTable,
-        id: PathId,
-        text: impl FnOnce() -> Vec<String>,
-        update: impl Fn(&mut V),
-    ) where
+    /// from the default.
+    pub(crate) fn update_id(&mut self, names: &NameTable, id: PathId, update: impl Fn(&mut V))
+    where
         V: Default,
     {
         self.check_table(names);
@@ -853,44 +775,23 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
         {
             self.table = Some(names.tag());
         }
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        update(self.by_text.entry(text()).or_default());
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        drop(text);
         self.note_key(names, id);
         update(self.by_id.entry(id).or_default());
     }
 
     /// Every entry one segment under `parent`, as its last name and value,
     /// in the order the keys were added: read from the parent index, not a
-    /// scan of every key. Held, as a set, to a scan of the reference.
+    /// scan of every key.
     pub(crate) fn children<'m>(
         &'m self,
         names: &'m NameTable,
         parent: PathKey<'_>,
     ) -> impl Iterator<Item = (Name, &'m V)> + 'm {
         self.check_table(names);
-        parent.check(names);
         let ids: &[PathId] = parent
             .id
             .and_then(|p| self.by_parent.get(&p))
             .map_or(&[], Vec::as_slice);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let mut found: Vec<&str> = ids
-                .iter()
-                .map(|&id| names.text(names.split(id).expect("a child has a parent").1))
-                .collect();
-            let mut expected: Vec<&str> = self
-                .by_text
-                .keys()
-                .filter(|q| q.len() == parent.text.len() + 1 && q.starts_with(parent.text))
-                .map(|q| q.last().expect("non-empty").as_str())
-                .collect();
-            found.sort_unstable();
-            expected.sort_unstable();
-            assert_eq!(found, expected, "a PathMap's children of {:?}", parent.text);
-        }
         ids.iter().map(move |id| {
             (
                 names.split(*id).expect("a child has a parent").1,
@@ -902,46 +803,29 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     /// The value at `path`, looked up only when the map has an entry.
     pub(crate) fn get(&self, names: &NameTable, path: &[String]) -> Option<&V> {
         if self.by_id.is_empty() {
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            assert!(self.by_text.is_empty(), "a PathMap lost an entry");
             return None;
         }
-        self.get_id(names, names.lookup_path(path), || path.to_vec())
+        self.get_id(names, names.lookup_path(path))
     }
 
     /// The value at `path`, by a key the caller already holds.
     pub(crate) fn get_key(&self, names: &NameTable, path: PathKey<'_>) -> Option<&V> {
-        path.check(names);
-        self.get_id(names, path.id, || path.text.to_vec())
+        self.get_id(names, path.id)
     }
 
     /// The value at the path whose id is `id`, `None` when the table never
-    /// interned it; `text` spells the path, for the reference.
-    pub(crate) fn get_id(
-        &self,
-        names: &NameTable,
-        id: Option<PathId>,
-        text: impl FnOnce() -> Vec<String>,
-    ) -> Option<&V> {
+    /// interned it.
+    pub(crate) fn get_id(&self, names: &NameTable, id: Option<PathId>) -> Option<&V> {
         self.check_table(names);
-        let found = id.and_then(|id| self.by_id.get(&id));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let text = text();
-            assert_eq!(
-                found,
-                self.by_text.get(&text),
-                "an interned path map disagrees with its reference at {text:?}"
-            );
-        }
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        drop(text);
-        found
+        id.and_then(|id| self.by_id.get(&id))
     }
 
     /// The same map, keyed by `to`'s ids.
     #[cfg(feature = "test-support")]
-    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self {
+    pub(crate) fn rekey(&self, from: &NameTable, to: &NameTable) -> Self
+    where
+        V: Clone,
+    {
         let mut by_id = HashMap::default();
         for (&id, v) in &self.by_id {
             by_id.insert(rekey_path(from, to, id), v.clone());
@@ -958,8 +842,6 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
             by_parent,
             #[cfg(debug_assertions)]
             table: self.table.map(|_| to.tag()),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            by_text: self.by_text.clone(),
         }
     }
 
@@ -970,28 +852,21 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     }
 }
 
-/// A map keyed by a container's interned path and a name in it. Under
-/// `interning-reference` in a debug build it keeps the map it replaced,
-/// keyed by the container's path and the name's text, beside it and asserts
-/// on every query that the two agree.
+/// A map keyed by a container's interned path and a name in it.
 #[derive(Clone, Debug)]
 pub(crate) struct ChildMap<V> {
     by_id: HashMap<(PathId, Name), V>,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    by_text: HashMap<PathId, HashMap<String, V>>,
 }
 
 impl<V> Default for ChildMap<V> {
     fn default() -> Self {
         ChildMap {
             by_id: HashMap::default(),
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            by_text: HashMap::default(),
         }
     }
 }
 
-impl<V: Default + PartialEq + std::fmt::Debug> ChildMap<V> {
+impl<V> ChildMap<V> {
     /// Apply `update` to the value at `name` in `container`, starting from
     /// the default.
     pub(crate) fn update(
@@ -1000,15 +875,9 @@ impl<V: Default + PartialEq + std::fmt::Debug> ChildMap<V> {
         container: PathId,
         name: &str,
         update: impl Fn(&mut V),
-    ) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        update(
-            self.by_text
-                .entry(container)
-                .or_default()
-                .entry(name.to_string())
-                .or_default(),
-        );
+    ) where
+        V: Default,
+    {
         update(
             self.by_id
                 .entry((container, names.logical(name)))
@@ -1017,20 +886,9 @@ impl<V: Default + PartialEq + std::fmt::Debug> ChildMap<V> {
     }
 
     /// The value at `name` in `container`. `name` is `None` when the table
-    /// never interned it, and its text is `name_text`.
-    pub(crate) fn get(&self, container: PathId, name: Option<Name>, name_text: &str) -> Option<&V> {
-        let found = name.and_then(|name| self.by_id.get(&(container, name)));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.by_text
-                .get(&container)
-                .and_then(|by_name| by_name.get(name_text)),
-            "an interned child map disagrees with its reference at {name_text:?}"
-        );
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = name_text;
-        found
+    /// never interned it.
+    pub(crate) fn get(&self, container: PathId, name: Option<Name>) -> Option<&V> {
+        name.and_then(|name| self.by_id.get(&(container, name)))
     }
 }
 
@@ -1189,6 +1047,7 @@ mod tests {
                 let expected = members.contains(p);
                 prop_assert_eq!(set.contains(&table, PathKey::of(&table, p)), expected);
                 prop_assert_eq!(set.contains_path(&table, p), expected);
+                prop_assert_eq!(set.contains_id(&table, table.lookup_path(p)), expected);
                 prop_assert_eq!(rekeyed.contains_path(&other, p), expected);
             }
         }
@@ -1230,21 +1089,100 @@ mod tests {
         }
     }
 
-    /// A key looked up before another walk sharing the table interned its
-    /// path still checks: the interleaving of a query on one env racing a
-    /// mark on its clone, which shares the table.
-    #[test]
-    fn a_key_looked_up_before_its_path_was_interned_still_checks() {
-        let table = NameTable::default();
-        let set = PathIdSet::default();
-        let path = vec!["A".to_string(), "B".to_string()];
-        let key = PathKey::of(&table, &path);
-        let name = NameKey::of(&table, "A");
-        assert_eq!((key.id, name.id), (None, None));
-        table.intern_path(&path);
-        key.check(&table);
-        name.check(&table);
-        assert!(!set.contains(&table, key));
+    proptest! {
+        /// A `PathMap` answers as the string-keyed map built from the same
+        /// writes: by path, by key and by id, its children in the order
+        /// their keys were first written, and after re-keying onto another
+        /// table. The table also holds decoy paths no write names.
+        #[test]
+        fn path_maps_agree_with_string_maps(
+            decoys in prop::collection::vec(path(), 0..4),
+            writes in prop::collection::vec((path(), any::<bool>()), 0..16),
+            probes in prop::collection::vec(path(), 0..8),
+        ) {
+            let table = NameTable::default();
+            for decoy in &decoys {
+                table.intern_path(decoy);
+            }
+            let mut map: PathMap<usize> = PathMap::default();
+            let mut model: HashMap<Vec<String>, usize> = HashMap::default();
+            let mut first_written: Vec<Vec<String>> = Vec::new();
+            for (i, (key, by_id)) in writes.iter().enumerate() {
+                if !model.contains_key(key) {
+                    first_written.push(key.clone());
+                }
+                if i % 2 == 0 {
+                    if *by_id {
+                        map.insert_id(&table, table.intern_path(key), i);
+                    } else {
+                        map.insert(&table, key, i);
+                    }
+                    model.insert(key.clone(), i);
+                } else {
+                    if *by_id {
+                        map.update_id(&table, table.intern_path(key), |v| *v += i);
+                    } else {
+                        map.update(&table, key, |v| *v += i);
+                    }
+                    *model.entry(key.clone()).or_default() += i;
+                }
+            }
+            let other = NameTable::default();
+            for decoy in decoys.iter().rev() {
+                other.intern_path(decoy);
+            }
+            let rekeyed = map.rekey(&table, &other);
+            for (t, m) in [(&table, &map), (&other, &rekeyed)] {
+                for p in probes.iter().chain(&decoys).chain(writes.iter().map(|(k, _)| k)) {
+                    let expected = model.get(p);
+                    prop_assert_eq!(m.get(t, p), expected, "{:?}", p);
+                    prop_assert_eq!(m.get_key(t, PathKey::of(t, p)), expected, "{:?}", p);
+                    prop_assert_eq!(m.get_id(t, t.lookup_path(p)), expected, "{:?}", p);
+                    let children: Vec<(&str, usize)> = m
+                        .children(t, PathKey::of(t, p))
+                        .map(|(name, &v)| (t.text(name), v))
+                        .collect();
+                    let expected_children: Vec<(&str, usize)> = first_written
+                        .iter()
+                        .filter(|k| k.len() == p.len() + 1 && k.starts_with(p))
+                        .map(|k| (k.last().expect("non-empty").as_str(), model[k]))
+                        .collect();
+                    prop_assert_eq!(children, expected_children, "{:?}", p);
+                }
+            }
+        }
+
+        /// A `ChildMap` answers as the map keyed by the container's segments
+        /// and the name's text, built from the same writes, whatever else
+        /// the table holds.
+        #[test]
+        fn child_maps_agree_with_string_maps(
+            decoys in prop::collection::vec(path(), 0..4),
+            writes in prop::collection::vec((path(), text()), 0..16),
+            probes in prop::collection::vec((path(), text()), 0..8),
+        ) {
+            let table = NameTable::default();
+            for decoy in &decoys {
+                table.intern_path(decoy);
+            }
+            let mut map: ChildMap<usize> = ChildMap::default();
+            let mut model: HashMap<(Vec<String>, String), usize> = HashMap::default();
+            for (i, (container, name)) in writes.iter().enumerate() {
+                map.update(&table, table.intern_path(container), name, |v| *v += i + 1);
+                *model.entry((container.clone(), name.clone())).or_default() += i + 1;
+            }
+            for (container, name) in probes.iter().chain(&writes) {
+                let Some(container_id) = table.lookup_path(container) else {
+                    prop_assert!(!model.keys().any(|(c, _)| c == container), "{:?}", container);
+                    continue;
+                };
+                prop_assert_eq!(
+                    map.get(container_id, table.lookup(name)),
+                    model.get(&(container.clone(), name.clone())),
+                    "{:?}.{:?}", container, name
+                );
+            }
+        }
     }
 
     /// The entry count grows with paths that reuse names the table holds.

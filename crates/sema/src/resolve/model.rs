@@ -744,15 +744,9 @@ impl ProjectItems {
 
     /// Whether an earlier file exports a type-qualified case at the path
     /// whose id is `id`, whatever the reference site: `false`, building
-    /// nothing, when the table never interned the path. `spell` spells the
-    /// path for the reference.
-    pub(super) fn holds_type_qualified_case(
-        &self,
-        names: &NameTable,
-        id: Option<PathId>,
-        spell: impl FnOnce() -> Vec<String>,
-    ) -> bool {
-        self.type_qualified_cases.get_id(names, id, spell).is_some()
+    /// nothing, when the table never interned the path.
+    pub(super) fn holds_type_qualified_case(&self, names: &NameTable, id: Option<PathId>) -> bool {
+        self.type_qualified_cases.get_id(names, id).is_some()
     }
 
     /// The lengths `k`, ascending, for which `names[..k]` followed by `written`
@@ -761,7 +755,7 @@ impl ProjectItems {
     pub(super) fn type_qualified_case_prefix_lens(
         &self,
         names: &NameTable,
-        question: &Extended<'_, '_, String>,
+        question: &Extended,
     ) -> Vec<usize> {
         self.type_qualified_case_paths
             .suffix_member_prefix_lens(names, question)
@@ -774,17 +768,15 @@ impl ProjectItems {
     }
 
     /// The earlier-file type exported at the path whose id is `id` (`None`
-    /// when the env's table never interned it), spelled `text` for the
-    /// interning reference: its [`TypeSlot`] — whether its name enters FCS's
-    /// unqualified slot when an `open` brings it into scope (probes
-    /// M20h–M20o) — and its [`ExportedTypePath::order`].
+    /// when the env's table never interned it): its [`TypeSlot`] — whether
+    /// its name enters FCS's unqualified slot when an `open` brings it into
+    /// scope (probes M20h–M20o) — and its [`ExportedTypePath::order`].
     pub(super) fn exported_type_by_id(
         &self,
         names: &NameTable,
         id: Option<PathId>,
-        text: impl FnOnce() -> Vec<String>,
     ) -> Option<ExportedTypePath> {
-        self.type_paths.get_id(names, id, text).copied()
+        self.type_paths.get_id(names, id).copied()
     }
 
     /// [`ExportedTypePath::order`]'s counterpart for the earlier-file union
@@ -1016,16 +1008,16 @@ impl ProjectItems {
         let prefix_ids = names.lookup_path_prefixes(path);
         let type_at = |k: usize| {
             self.type_paths
-                .get_id(names, prefix_ids.get(k).copied(), || path[..k].to_vec())
+                .get_id(names, prefix_ids.get(k).copied())
                 .is_some()
         };
-        let value_at = |p: &[String]| {
+        let value_at = |k: usize| {
             self.value_exports
-                .get_id(names, prefix_ids.get(p.len()).copied(), || p.to_vec())
+                .get_id(names, prefix_ids.get(k).copied())
                 .is_some_and(|h| h.iter().any(|r| !r.pattern_only))
         };
         let whole = PathKey::new(prefix_ids.get(path.len()).copied(), path);
-        let exact = value_at(path)
+        let exact = value_at(path.len())
             || self.module_headers.contains(names, whole)
             || self.nested_module_paths.contains(names, whole)
             // An augmentation head binds *members* along its path even though it
@@ -1033,11 +1025,8 @@ impl ProjectItems {
             // self-qualifier relaxation, so it counts here.
             || self.augmentation_head_paths.contains(names, whole)
             || type_at(path.len())
-            || self
-                .type_qualified_cases
-                .get_id(names, whole.id, || path.to_vec())
-                .is_some();
-        exact || (1..path.len()).any(|k| value_at(&path[..k]) || type_at(k))
+            || self.type_qualified_cases.get_id(names, whole.id).is_some();
+        exact || (1..path.len()).any(|k| value_at(k) || type_at(k))
     }
 
     /// Whether an earlier file defines a **real** nested `module X = …` at exactly
@@ -1062,10 +1051,10 @@ impl ProjectItems {
     /// [an earlier file's module header](Self::is_exact_project_module) or
     /// [nested module](Self::is_exact_nested_module), reading each
     /// segment of `names` once per set.
-    pub(super) fn module_suffix_prefix_lens<S: AsRef<str>>(
+    pub(super) fn module_suffix_prefix_lens(
         &self,
         names: &NameTable,
-        question: &Extended<'_, '_, S>,
+        question: &Extended,
     ) -> impl Iterator<Item = usize> {
         self.module_headers
             .suffix_member_prefix_lens(names, question)
@@ -1080,10 +1069,10 @@ impl ProjectItems {
     /// [an earlier file's module header](Self::is_exact_project_module) or
     /// [real nested module](Self::is_real_nested_module), reading each
     /// segment of `names` once per set.
-    pub(super) fn real_module_suffix_prefix_lens<S: AsRef<str>>(
+    pub(super) fn real_module_suffix_prefix_lens(
         &self,
         names: &NameTable,
-        question: &Extended<'_, '_, S>,
+        question: &Extended,
     ) -> impl Iterator<Item = usize> {
         self.module_headers
             .suffix_member_prefix_lens(names, question)
@@ -1598,27 +1587,23 @@ impl ProjectItems {
             (&mut self.real_nested_modules, &idx.real_nested_modules),
         ] {
             for path in paths {
-                set.insert_id(names, path.id(), || path.reference_text(names));
+                set.insert_id(names, path.id());
             }
         }
         for (path, entry) in idx.type_qualified_cases {
-            let text = || path.reference_text(names);
             let is_new = self
                 .type_qualified_cases
-                .get_id(names, Some(path.id()), text)
+                .get_id(names, Some(path.id()))
                 .is_none();
-            self.type_qualified_cases
-                .insert_id(names, path.id(), text, entry);
+            self.type_qualified_cases.insert_id(names, path.id(), entry);
             if is_new {
-                self.type_qualified_case_paths
-                    .insert_id(names, path.id(), text);
+                self.type_qualified_case_paths.insert_id(names, path.id());
             }
         }
         for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
             self.type_paths.insert_id(
                 names,
                 path.id(),
-                || path.reference_text(names),
                 ExportedTypePath {
                     cases_enumerable,
                     slot,
@@ -1734,24 +1719,16 @@ impl ProjectItems {
                 .push((auto_open.spell(names), file_idx));
         }
         for path in idx.member_decls {
-            self.member_decl_files.update_id(
-                names,
-                path.id(),
-                || path.reference_text(names),
-                |files| files.push(file_idx),
-            );
+            self.member_decl_files
+                .update_id(names, path.id(), |files| files.push(file_idx));
         }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
             // constructor namespaces read this same history through different
             // predicates; no export is lost to a shadow).
-            self.value_exports.update_id(
-                names,
-                path.id(),
-                || path.reference_text(names),
-                |history| history.push(record),
-            );
+            self.value_exports
+                .update_id(names, path.id(), |history| history.push(record));
         }
         for id in idx.case_item_ids {
             self.case_item_ids.insert(id);

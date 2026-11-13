@@ -33,24 +33,16 @@ otel = ["dep:tracing"]
 # other, so it lives below both. Off by default: nothing at runtime compares
 # against an oracle.
 test-support = []
-# Holds each interned index to the string-keyed representation it replaced,
-# query by query (`docs/sema-interning-plan.md`, D7): the replaced structure is
-# kept beside the interned one and every query asserts that the two agree. Off
-# by default; this crate's own tests turn it on, so every test and corpus sweep
-# that runs sema checks the interning. It takes effect only in a debug build:
-# the examples link the dev-dependencies too, and `sema_counts` measures a
-# release build without the reference.
-interning-reference = []
 
 [dev-dependencies]
 borzoi-oracle-harness.workspace = true
 # The metric-path walk the stats dashboard plots by, so a generator's
 # pinned metric namespace is read exactly as it is published.
 borzoi-stats.workspace = true
-# Self-reference activates `test-support` and `interning-reference` when
-# building this crate for its own tests, so they exercise the shared comparator
-# and the interning lockstep without a `--features` flag on the test command.
-borzoi-sema = { path = ".", features = ["test-support", "interning-reference"] }
+# Self-reference activates `test-support` when building this crate for its own
+# integration tests, so they exercise the shared comparator without a
+# `--features` flag on the test command.
+borzoi-sema = { path = ".", features = ["test-support"] }
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

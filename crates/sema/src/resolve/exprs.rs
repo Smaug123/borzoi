@@ -642,7 +642,6 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     entries.push(ScopeEntry::binding_named(
-                        self.assemblies.names(),
                         name,
                         res,
                         self.scope.open_generation,
@@ -815,7 +814,6 @@ impl<'a> Resolver<'a> {
                         .is_some_and(|r| !matches!(r, Resolution::Deferred(_)));
                     if !a_case {
                         entries.push(ScopeEntry::binding_named(
-                            self.assemblies.names(),
                             name,
                             Resolution::Deferred(DeferredReason::UnboundName),
                             self.scope.open_generation,
@@ -828,7 +826,6 @@ impl<'a> Resolver<'a> {
                 let res = Resolution::Local(self.intern(def));
                 self.record(range, res);
                 entries.push(ScopeEntry::binding_named(
-                    self.assemblies.names(),
                     name,
                     res,
                     self.scope.open_generation,
@@ -971,7 +968,6 @@ impl<'a> Resolver<'a> {
                 self.record(range, res);
                 aliases.interned(range, res);
                 entries.push(ScopeEntry::binding_named(
-                    self.assemblies.names(),
                     name,
                     res,
                     self.scope.open_generation,
