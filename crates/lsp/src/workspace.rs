@@ -16,10 +16,14 @@
 //!   that contains at least one `.fsproj`. Multiple `.fsproj`s in the
 //!   same directory are tie-broken alphabetically for determinism.
 //!
-//! No file-system watching: edits to a `.fsproj` while the server is
-//! running do *not* invalidate the cache (the next LSP restart picks
-//! them up). Smarter invalidation is deferred until we wire the LSP to
-//! `workspace/didChangeWatchedFiles`.
+//! The cache needs no file watching: each evaluation keeps every file-system
+//! query it and the reads preparing it made, with the answers, and within a
+//! dispatch-loop generation the first lookup of a cached evaluation confirms
+//! them ([`Workspace::validate`], through [`crate::read_checks`]). One whose
+//! answers moved is evaluated afresh. Reads strictly inside an installed SDK,
+//! pack, workload manifest or package version are not confirmed: an installer
+//! never changes a version in place. A structural watch event still drops
+//! every evaluation ([`Workspace::invalidate_projects`]).
 //!
 //! SDK resolution is wired through [`SdkDiscovery`]: each project gets
 //! its own discovery context (built from a [`SdkDiscoveryEnv`] held on
@@ -1138,9 +1142,11 @@ impl Workspace {
     /// (recurse only through `.fsproj`; `.csproj` is a terminal boundary owned
     /// by the C# sidecar).
     ///
-    /// **Evaluates every node fresh and leaves the project cache untouched.**
-    /// Unlike [`Workspace::project`], this does not read or populate
-    /// `Workspace.projects`; each node is parsed from disk via
+    /// **Evaluates every node fresh and leaves the project cache untouched**,
+    /// except that the entry reads its cached evaluation when this
+    /// generation has confirmed it (the same evaluation, already shown
+    /// current). Unlike [`Workspace::project`], this does not populate
+    /// `Workspace.projects`; every other node is parsed from disk via
     /// `evaluate_project`. That is load-bearing for its consumer, the `.fsproj`
     /// reference-cycle diagnostics:
     /// - **No pinning.** A `.fsproj` diagnostic must not pin the project cache —
