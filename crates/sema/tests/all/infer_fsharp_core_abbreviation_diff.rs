@@ -114,7 +114,7 @@ fn fsharp_core_abbreviations_bridge_as_fcs_names_them() {
                 u32::from(range.start()) as usize,
                 u32::from(range.end()) as usize,
             );
-            let ours = ty.render();
+            let ours = ty.render(env());
             if dump.types.get(&key) != Some(&ours) {
                 wrong.push(format!(
                     "{label}: `{}`: ours `{ours}`, FCS {:?}\n{src}",
@@ -126,7 +126,7 @@ fn fsharp_core_abbreviations_bridge_as_fcs_names_them() {
         for (def, ty) in inferred.def_types() {
             let r = resolved.def(*def).range;
             let key = (u32::from(r.start()) as usize, u32::from(r.end()) as usize);
-            let ours = ty.render();
+            let ours = ty.render(env());
             match dump.binders.get(&key) {
                 Some(theirs) if *theirs == ours && !dump.hides_constraint(key, &ours) => {
                     if &src[key.0..key.1] == "x" {
@@ -185,7 +185,7 @@ fn a_parameter_permuting_abbreviation_from_another_assembly_declines() {
         let key = (u32::from(r.start()) as usize, u32::from(r.end()) as usize);
         assert_eq!(
             dump.binders.get(&key),
-            Some(&ty.render()),
+            Some(&ty.render(env())),
             "binder `{}`",
             &src[key.0..key.1]
         );

@@ -130,7 +130,7 @@ pub fn check_with(
             if dumps.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render();
+            let ours = ty.render(full_bcl_env());
             match dumps.types.get(&key) {
                 Some(theirs) if *theirs == ours => tally.exprs += 1,
                 theirs => tally.wrong.push(format!(
@@ -145,7 +145,7 @@ pub fn check_with(
         for (def, ty) in inferred.def_types() {
             let d = rf.def(*def);
             let key = (usize::from(d.range.start()), usize::from(d.range.end()));
-            let ours = ty.render();
+            let ours = ty.render(full_bcl_env());
             // A commit counts toward its cell even where FCS's dumps grade
             // nothing (an error-recovered declaration), so the erroring
             // count sees it.

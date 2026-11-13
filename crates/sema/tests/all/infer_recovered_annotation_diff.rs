@@ -124,7 +124,7 @@ fn ours(source: &str) -> Option<String> {
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(env) == "v")
-        .map(|(_, ty)| ty.render())
+        .map(|(_, ty)| ty.render(env))
 }
 
 /// FCS's verdict for the binder on line 2: `Err(diagnostic)` if it reported an

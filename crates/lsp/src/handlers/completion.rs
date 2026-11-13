@@ -287,6 +287,7 @@ fn members_of<'e>(env: &'e AssemblyEnv, ty: &Ty) -> Option<Vec<&'e str>> {
     if !args.is_empty() {
         return None;
     }
+    let path: Vec<String> = path.segments(env).into_iter().map(str::to_owned).collect();
     let (type_name, namespace) = path.split_last()?;
     let handle = env.lookup_type(namespace, type_name, 0)?;
     Some(env.public_instance_member_names(handle))

@@ -91,7 +91,7 @@ pub use resolve::{
 };
 // `TyVid` is re-exported because it appears in the public `Ty::Var` variant; it
 // is an inference-internal handle that never surfaces in `infer_file` output.
-pub use ty::{MAX_TYPE_DEPTH, MAX_TYPE_NODES, Ty, TySize, TyVid, TypeBudgetExceeded};
+pub use ty::{MAX_TYPE_DEPTH, MAX_TYPE_NODES, Ty, TyPath, TySize, TyVid, TypeBudgetExceeded};
 pub use unify::TypeWalks;
 
 /// The stack a thread needs to resolve and infer any tree `borzoi_cst`'s
