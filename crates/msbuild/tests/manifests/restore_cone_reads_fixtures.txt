@@ -1,0 +1,682 @@
+# Generated; do not edit by hand. One line per graded item, sorted.
+# Regenerate with:
+#   BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-msbuild --test restore_cone_census fixtures
+10.0.401 resolved cpm/app/App.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item DeduplicatedPackageVersions	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item DeduplicatedPrunePackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item DotnetCliToolReference	MSBuild 0; ours none
+10.0.401 resolved cpm/app/App.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item FrameworkReference	MSBuild 0; ours a dedicated bucket of 0; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata kept for 0 of 3 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownAppHostPack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 5 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownAspNetCorePack	MSBuild 1; ours 1, identities agree, metadata kept for 0 of 2 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownCrossgen2Pack	MSBuild 6; ours 6, identities agree, metadata kept for 0 of 5 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownFrameworkReference	MSBuild 41; ours 41, identities agree, metadata kept for 0 of 12 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownILCompilerPack	MSBuild 4; ours 4, identities agree, metadata kept for 0 of 6 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownILLinkPack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 2 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownRuntimePack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 6 names
+10.0.401 resolved cpm/app/App.fsproj reads item KnownWebAssemblySdkPack	MSBuild 5; ours 5, identities agree, metadata kept for 0 of 2 names
+10.0.401 resolved cpm/app/App.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item PackageDownload	MSBuild 0; ours none, tainted; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item PackageReference	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item PackageVersion	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item ProjectReference	MSBuild 1; ours a dedicated bucket of 1
+10.0.401 resolved cpm/app/App.fsproj reads item PrunePackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item RestoreGraphProjectInputItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item TargetingPack	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _AllRuntimeIdentifiers	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _CurrentRestoreProjectPathItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _DecomposedTargetFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _FilteredRestoreGraphProjectInputItemsTmp	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _FrameworkReferenceForRestore	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _FrameworkReferenceToAdd	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _FrameworkReferenceToRemove	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _GenerateRestoreGraphProjectEntryInput	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _GenerateRestoreProjectPathWalkOutputs	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _GetAllRuntimeIdentifiersTargetFrameworks	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _ImplicitPackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _PackAsToolShimRuntimeIdentifiers	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _PackageReferenceToAdd	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _PackageReferenceToRemove	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _PackageToDownload	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _ReferenceToObsoleteDotNetCliTool	MSBuild 0; ours none
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreGraphEntry	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreGraphEntryFiltered	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreProjectPathItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreProjectPathItemsOutputs	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreProjectPathItemsWithoutDupes	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreSettingsPerFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreTargetFrameworkItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _RestoreTargetFrameworksOutputFiltered	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _TargetFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _TargetFrameworkToSilenceEnableSingleFileAnalyzerUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _TargetFrameworkToSilenceIsAotCompatibleUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _TargetFrameworkToSilenceIsTrimmableUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads item _ValidProjectsForRestore	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property AllowMissingPrunePackageData	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property AppHostRuntimeIdentifier	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property AssemblyName	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property AssetTargetFallback	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property CLRSupport	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property CentralPackageFloatingVersionsEnabled	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property CentralPackageTransitivePinningEnabled	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property CentralPackageVersionOverrideEnabled	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property CollectCentralPackageVersionsContinueOnError	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property CollectNuGetAuditSuppressionsContinueOnError	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property CollectPackageDownloadsContinueOnError	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property CollectPackageReferencesContinueOnError	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property CollectPrunePackageReferencesContinueOnError	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property ContinueOnError	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property DefaultAppHostRuntimeIdentifier	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property DisableCheckingDuplicateNuGetItems	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property DisableTransitiveFrameworkReferenceDownloads	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property DisableWarnForInvalidRestoreProjects	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property DotnetCliToolTargetFramework	value agrees; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property EnableAotAnalyzer	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property EnableAppHostPackDownload	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property EnableComHosting	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property EnableRuntimePackDownload	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property EnableSingleFileAnalyzer	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property EnableTargetingPackDownload	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property EnableTrimAnalyzer	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property EnableWindowsTargeting	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property HideWarningsAndErrors	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property ImplicitPackageReferenceInformationLink	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property IsAotCompatible	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property IsTrimmable	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property Language	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildAssemblyVersion	unset, inexact (the toolset); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildProjectDirectory	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildProjectExtensionsPath	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildProjectFile	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildProjectFullPath	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildProjectName	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildRuntimeType	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildStartupDirectory	unset, inexact (the toolset); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property MSBuildThisFileFullPath	per file
+10.0.401 resolved cpm/app/App.fsproj reads property NETCoreAppMaximumVersion	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NETCoreSdkPortableRuntimeIdentifier	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NETCoreSdkRuntimeIdentifier	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NETCoreSdkVersion	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NETStandardMaximumVersion	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property NetCoreRoot	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NetCoreTargetingPackRoot	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NoWarn	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property NuGetAudit	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NuGetAuditLevel	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property NuGetAuditMode	untrusted (read $(NuGetExeSkipSdkAnalysisLevelCheck) undefined, hidden by read $(TargetFramework) undefined); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property NuGetLockFilePath	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property OutputType	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property PackAsToolShimRuntimeIdentifiers	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PackageDownloadSupported	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property PackageId	unset, inexact (opacity: read $(TargetFramework) undefined); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PackageReferenceCompatibleProjectStyle	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property PackageTargetFallback	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PackageVersion	unset, inexact (opacity: read $(TargetFramework) undefined); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PrunePackageDataRoot	value agrees; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property PrunePackageTargetingPackRoots	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property PublishAot	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PublishAotUsingRuntimePack	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PublishReadyToRun	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PublishReadyToRunUseCrossgen2	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property PublishTrimmed	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RequiresAspNetWebAssets	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreAdditionalProjectFallbackFolders	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreAdditionalProjectFallbackFoldersExcludes	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreAdditionalProjectSources	unset agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreBuildInParallel	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreConfigFile	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreContinueOnError	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreDoNotWriteDependencyGraphSpec	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreDotnetCliToolReferences	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreEnablePackagePruning	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreFallbackFolders	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreGraphOutputPath	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreGraphProjectInput	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreLegacyPackagesDirectory	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreLockedMode	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreOutputAbsolutePath	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreOutputPath	value agrees; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property RestorePackagePruningDefault	untrusted (read $(NuGetExeSkipSdkAnalysisLevelCheck) undefined, hidden by read $(TargetFramework) undefined); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestorePackagesPath	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestorePackagesWithLockFile	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreProjectFilterMode	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreProjectStyle	value agrees; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreProjects	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreRecursive	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreRepositoryPath	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreRepositoryPathOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreRootConfigDirectory	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreSolutionDirectory	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreSources	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreUseLegacyDependencyResolver	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RestoreUseSkipNonexistentTargets	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property RuntimeFrameworkVersion	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RuntimeIdentifier	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RuntimeIdentifierGraphPath	untrusted (an SDK package input); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property RuntimeIdentifiers	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property RuntimeSupports	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property SdkAnalysisLevel	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property SelfContained	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property SolutionDir	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property SuppressObsoleteDotNetCliToolWarning	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetFramework	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetFrameworkIdentifier	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetFrameworkMoniker	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetFrameworkProfile	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetFrameworkVersion	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetFrameworks	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property TargetLatestRuntimePatch	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetPlatformIdentifier	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetPlatformMinVersion	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetPlatformMoniker	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TargetPlatformVersion	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property TreatWarningsAsErrors	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property UseAppHost	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property UseIJWHost	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property UsePackageDownload	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property UsingMicrosoftNETSdk	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property UsingMicrosoftNETSdkWebAssembly	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property ValidateRuntimeIdentifierCompatibility	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property Version	untrusted (read $(VersionSuffix) undefined, hidden by read $(TargetFramework) undefined); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property WarningsAsErrors	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property WarningsNotAsErrors	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property WindowsTargetPlatformMinVersion	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _CentralPackageVersionsEnabled	value agrees
+10.0.401 resolved cpm/app/App.fsproj reads property _DisableNuGetRestoreTargetFrameworksOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _DotNetAppHostExecutableNameWithoutExtension	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _DotNetComHostLibraryNameWithoutExtension	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _DotNetIjwHostLibraryNameWithoutExtension	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _DotNetSingleFileHostExecutableNameWithoutExtension	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _EnablePackageReferencesInVCProjects	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _FirstTargetFrameworkToSupportAot	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _FirstTargetFrameworkToSupportSingleFile	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _FirstTargetFrameworkToSupportTrimming	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _FirstTargetFrameworkVersionToSupportAotAnalyzer	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _FirstTargetFrameworkVersionToSupportSingleFileAnalyzer	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _FirstTargetFrameworkVersionToSupportTrimAnalyzer	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _GenerateRestoreGraphProjectEntryInputProperties	untrusted (read $(SolutionDir) undefined, hidden by read $(TargetFramework) undefined); set in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _HasPackageReferenceItems	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _MinNonEolTargetFrameworkForAot	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _MinNonEolTargetFrameworkForSingleFile	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _MinNonEolTargetFrameworkForTrimming	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _MinimumNonEolSupportedNetCoreTargetFramework	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _NuGetRestoreSupported	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _OutputConfigFilePaths	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _OutputFallbackFolders	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _OutputPackagesPath	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _OutputRepositoryPath	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _OutputSources	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RequiresILLinkPack	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreCrossTargeting	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreFallbackFoldersOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreGraphAbsoluteProjectPaths	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestorePackagesPathOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreProjectFramework	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreProjectName	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreProjectVersion	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreRepositoryPathOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreSkipContentFileWrite	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _RestoreSourcesOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _ShouldAddAspNetCoreAppFrameworkReference	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _ShouldRemoveAspNetCoreAll	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _ShouldRemoveAspNetCoreApp	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _SilenceEnableSingleFileAnalyzerUnsupportedWarning	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _SilenceIsAotCompatibleUnsupportedWarning	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _SilenceIsTrimmableUnsupportedWarning	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _TargetFrameworkOverride	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _TargetFrameworkToBeUsed	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild; the cone writes it
+10.0.401 resolved cpm/app/App.fsproj reads property _TargetFrameworkVersionWithoutV	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved cpm/app/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	unset, inexact (opacity: read $(TargetFramework) undefined); unset in MSBuild
+10.0.401 resolved hooked/App.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPackageVersions	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item DeduplicatedPrunePackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item DotnetCliToolReference	MSBuild 0; ours none
+10.0.401 resolved hooked/App.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item FrameworkReference	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata kept for 0 of 3 names
+10.0.401 resolved hooked/App.fsproj reads item KnownAppHostPack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 5 names
+10.0.401 resolved hooked/App.fsproj reads item KnownAspNetCorePack	MSBuild 1; ours 1, identities agree, metadata kept for 0 of 2 names
+10.0.401 resolved hooked/App.fsproj reads item KnownCrossgen2Pack	MSBuild 6; ours 6, identities agree, metadata kept for 0 of 5 names
+10.0.401 resolved hooked/App.fsproj reads item KnownFrameworkReference	MSBuild 41; ours 41, identities agree, metadata kept for 0 of 12 names
+10.0.401 resolved hooked/App.fsproj reads item KnownILCompilerPack	MSBuild 4; ours 4, identities agree, metadata kept for 0 of 6 names
+10.0.401 resolved hooked/App.fsproj reads item KnownILLinkPack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 2 names
+10.0.401 resolved hooked/App.fsproj reads item KnownRuntimePack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 6 names
+10.0.401 resolved hooked/App.fsproj reads item KnownWebAssemblySdkPack	MSBuild 5; ours none, tainted
+10.0.401 resolved hooked/App.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item PackageDownload	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item PackageReference	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item PackageVersion	MSBuild 0; ours a dedicated bucket of 0; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item ProjectReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved hooked/App.fsproj reads item PrunePackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item RestoreGraphProjectInputItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _CurrentRestoreProjectPathItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _DecomposedTargetFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _FilteredRestoreGraphProjectInputItemsTmp	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _FrameworkReferenceForRestore	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _FrameworkReferenceToAdd	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _FrameworkReferenceToRemove	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _GenerateRestoreGraphProjectEntryInput	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _GenerateRestoreProjectPathWalkOutputs	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _ImplicitPackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _PackAsToolShimRuntimeIdentifiers	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _PackageReferenceToAdd	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _PackageReferenceToRemove	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _PackageToDownload	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _ReferenceToObsoleteDotNetCliTool	MSBuild 0; ours 0, identities agree, metadata kept for 0 of 0 names
+10.0.401 resolved hooked/App.fsproj reads item _RestoreGraphEntry	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _RestoreGraphEntryFiltered	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _RestoreProjectPathItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _RestoreProjectPathItemsOutputs	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _RestoreProjectPathItemsWithoutDupes	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _RestoreSettingsPerFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _RestoreTargetFrameworksOutputFiltered	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _TargetFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _TargetFrameworkToSilenceEnableSingleFileAnalyzerUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _TargetFrameworkToSilenceIsAotCompatibleUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _TargetFrameworkToSilenceIsTrimmableUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads item _ValidProjectsForRestore	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property AppHostRuntimeIdentifier	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property AssemblyName	value agrees
+10.0.401 resolved hooked/App.fsproj reads property AssetTargetFallback	value agrees
+10.0.401 resolved hooked/App.fsproj reads property CLRSupport	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property CentralPackageFloatingVersionsEnabled	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property CentralPackageTransitivePinningEnabled	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property CentralPackageVersionOverrideEnabled	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property CollectCentralPackageVersionsContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property CollectNuGetAuditSuppressionsContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property CollectPackageDownloadsContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property CollectPackageReferencesContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property CollectPrunePackageReferencesContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property ContinueOnError	value agrees
+10.0.401 resolved hooked/App.fsproj reads property DefaultAppHostRuntimeIdentifier	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property DisableCheckingDuplicateNuGetItems	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property DisableTransitiveFrameworkReferenceDownloads	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property DisableWarnForInvalidRestoreProjects	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property DotnetCliToolTargetFramework	value agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property EnableAotAnalyzer	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property EnableAppHostPackDownload	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property EnableComHosting	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property EnableRuntimePackDownload	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property EnableSingleFileAnalyzer	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property EnableTargetingPackDownload	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property EnableTrimAnalyzer	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property EnableWindowsTargeting	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property HideWarningsAndErrors	value agrees
+10.0.401 resolved hooked/App.fsproj reads property ImplicitPackageReferenceInformationLink	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property IsAotCompatible	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property IsTrimmable	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property Language	value agrees
+10.0.401 resolved hooked/App.fsproj reads property MSBuildAssemblyVersion	unset, inexact (the toolset); set in MSBuild
+10.0.401 resolved hooked/App.fsproj reads property MSBuildProjectDirectory	value agrees
+10.0.401 resolved hooked/App.fsproj reads property MSBuildProjectExtensionsPath	value agrees
+10.0.401 resolved hooked/App.fsproj reads property MSBuildProjectFullPath	value agrees
+10.0.401 resolved hooked/App.fsproj reads property MSBuildProjectName	value agrees
+10.0.401 resolved hooked/App.fsproj reads property MSBuildRuntimeType	value agrees
+10.0.401 resolved hooked/App.fsproj reads property MSBuildStartupDirectory	unset, inexact (the toolset); set in MSBuild
+10.0.401 resolved hooked/App.fsproj reads property MSBuildThisFileFullPath	per file
+10.0.401 resolved hooked/App.fsproj reads property NETCoreAppMaximumVersion	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NETCoreSdkPortableRuntimeIdentifier	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NETCoreSdkRuntimeIdentifier	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NETCoreSdkVersion	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NetCoreRoot	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NetCoreTargetingPackRoot	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NoWarn	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property NuGetAudit	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NuGetAuditLevel	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NuGetAuditMode	value agrees
+10.0.401 resolved hooked/App.fsproj reads property NuGetLockFilePath	value agrees
+10.0.401 resolved hooked/App.fsproj reads property OutputType	value agrees
+10.0.401 resolved hooked/App.fsproj reads property PackAsToolShimRuntimeIdentifiers	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property PackageDownloadSupported	value agrees
+10.0.401 resolved hooked/App.fsproj reads property PackageId	value agrees
+10.0.401 resolved hooked/App.fsproj reads property PackageReferenceCompatibleProjectStyle	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property PackageTargetFallback	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property PackageVersion	value agrees
+10.0.401 resolved hooked/App.fsproj reads property PublishAot	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property PublishAotUsingRuntimePack	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property PublishReadyToRun	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property PublishReadyToRunUseCrossgen2	value agrees
+10.0.401 resolved hooked/App.fsproj reads property PublishTrimmed	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RequiresAspNetWebAssets	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property RestoreAdditionalProjectFallbackFolders	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreAdditionalProjectFallbackFoldersExcludes	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreAdditionalProjectSources	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreBuildInParallel	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreConfigFile	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreContinueOnError	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreDoNotWriteDependencyGraphSpec	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreDotnetCliToolReferences	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreEnablePackagePruning	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreFallbackFolders	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreGraphOutputPath	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreGraphProjectInput	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreLegacyPackagesDirectory	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreLockedMode	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreOutputAbsolutePath	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property RestoreOutputPath	value agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property RestorePackagePruningDefault	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestorePackagesPath	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestorePackagesWithLockFile	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreProjectFilterMode	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property RestoreProjectStyle	value agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property RestoreProjects	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreRecursive	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreRepositoryPath	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreRepositoryPathOverride	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreRootConfigDirectory	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreSolutionDirectory	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property RestoreSources	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreUseLegacyDependencyResolver	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RestoreUseSkipNonexistentTargets	value agrees
+10.0.401 resolved hooked/App.fsproj reads property RuntimeFrameworkVersion	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RuntimeIdentifier	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RuntimeIdentifierGraphPath	untrusted (an SDK package input); set in MSBuild
+10.0.401 resolved hooked/App.fsproj reads property RuntimeIdentifiers	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property RuntimeSupports	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property SdkAnalysisLevel	value agrees
+10.0.401 resolved hooked/App.fsproj reads property SelfContained	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property SolutionDir	value agrees
+10.0.401 resolved hooked/App.fsproj reads property SuppressObsoleteDotNetCliToolWarning	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetFramework	value agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetFrameworkIdentifier	value agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetFrameworkMoniker	untrusted (unmodelled text); set in MSBuild
+10.0.401 resolved hooked/App.fsproj reads property TargetFrameworkProfile	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetFrameworkVersion	value agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetFrameworks	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetLatestRuntimePatch	value agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetPlatformIdentifier	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetPlatformMinVersion	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetPlatformMoniker	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property TargetPlatformVersion	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property TreatWarningsAsErrors	value agrees
+10.0.401 resolved hooked/App.fsproj reads property UseAppHost	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property UseIJWHost	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property UsePackageDownload	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property UsingMicrosoftNETSdk	value agrees
+10.0.401 resolved hooked/App.fsproj reads property UsingMicrosoftNETSdkWebAssembly	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property ValidateRuntimeIdentifierCompatibility	value agrees
+10.0.401 resolved hooked/App.fsproj reads property Version	value agrees
+10.0.401 resolved hooked/App.fsproj reads property WarningsAsErrors	value agrees
+10.0.401 resolved hooked/App.fsproj reads property WarningsNotAsErrors	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property WindowsTargetPlatformMinVersion	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property _CentralPackageVersionsEnabled	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property _DisableNuGetRestoreTargetFrameworksOverride	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property _DotNetAppHostExecutableNameWithoutExtension	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _DotNetComHostLibraryNameWithoutExtension	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _DotNetIjwHostLibraryNameWithoutExtension	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _DotNetSingleFileHostExecutableNameWithoutExtension	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _EnablePackageReferencesInVCProjects	unset agrees
+10.0.401 resolved hooked/App.fsproj reads property _FirstTargetFrameworkToSupportAot	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _FirstTargetFrameworkToSupportSingleFile	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _FirstTargetFrameworkToSupportTrimming	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _FirstTargetFrameworkVersionToSupportAotAnalyzer	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _FirstTargetFrameworkVersionToSupportSingleFileAnalyzer	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _FirstTargetFrameworkVersionToSupportTrimAnalyzer	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _GenerateRestoreGraphProjectEntryInputProperties	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _HasPackageReferenceItems	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _MinNonEolTargetFrameworkForAot	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _MinNonEolTargetFrameworkForSingleFile	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _MinNonEolTargetFrameworkForTrimming	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _MinimumNonEolSupportedNetCoreTargetFramework	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _NuGetRestoreSupported	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _OutputConfigFilePaths	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _OutputFallbackFolders	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _OutputPackagesPath	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _OutputRepositoryPath	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _OutputSources	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RequiresILLinkPack	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreCrossTargeting	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreFallbackFoldersOverride	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreGraphAbsoluteProjectPaths	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestorePackagesPathOverride	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreProjectFramework	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreProjectName	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreProjectVersion	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreRepositoryPathOverride	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreSkipContentFileWrite	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _RestoreSourcesOverride	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _ShouldAddAspNetCoreAppFrameworkReference	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _ShouldRemoveAspNetCoreAll	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _ShouldRemoveAspNetCoreApp	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _SilenceEnableSingleFileAnalyzerUnsupportedWarning	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _SilenceIsAotCompatibleUnsupportedWarning	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _SilenceIsTrimmableUnsupportedWarning	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _TargetFrameworkOverride	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _TargetFrameworkToBeUsed	unset agrees; the cone writes it
+10.0.401 resolved hooked/App.fsproj reads property _TargetFrameworkVersionWithoutV	value agrees
+10.0.401 resolved hooked/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	value agrees
+10.0.401 resolved net10/App.fsproj reads item DeduplicatedNuGetAuditSuppressions	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item DeduplicatedPackageDownloads	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item DeduplicatedPackageReferences	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item DeduplicatedPackageVersions	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item DeduplicatedPrunePackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item DotnetCliToolReference	MSBuild 0; ours none
+10.0.401 resolved net10/App.fsproj reads item FilteredRestoreGraphProjectInputItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item FilteredRestoreGraphProjectInputItemsWithoutDuplicates	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item FrameworkReference	MSBuild 1; ours a dedicated bucket of 1; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item ImplicitPackageReferenceVersion	MSBuild 9; ours 9, identities agree, metadata kept for 0 of 3 names
+10.0.401 resolved net10/App.fsproj reads item KnownAppHostPack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 5 names
+10.0.401 resolved net10/App.fsproj reads item KnownAspNetCorePack	MSBuild 1; ours 1, identities agree, metadata kept for 0 of 2 names
+10.0.401 resolved net10/App.fsproj reads item KnownCrossgen2Pack	MSBuild 6; ours 6, identities agree, metadata kept for 0 of 5 names
+10.0.401 resolved net10/App.fsproj reads item KnownFrameworkReference	MSBuild 41; ours 41, identities agree, metadata kept for 0 of 12 names
+10.0.401 resolved net10/App.fsproj reads item KnownILCompilerPack	MSBuild 4; ours 4, identities agree, metadata kept for 0 of 6 names
+10.0.401 resolved net10/App.fsproj reads item KnownILLinkPack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 2 names
+10.0.401 resolved net10/App.fsproj reads item KnownRuntimePack	MSBuild 8; ours 8, identities agree, metadata kept for 0 of 6 names
+10.0.401 resolved net10/App.fsproj reads item KnownWebAssemblySdkPack	MSBuild 5; ours none, tainted
+10.0.401 resolved net10/App.fsproj reads item NuGetAuditSuppress	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item PackageDownload	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item PackageReference	MSBuild 2; ours a dedicated bucket of 2; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item PackageReferenceToUpdate	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item PackageVersion	MSBuild 0; ours a dedicated bucket of 0; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item ProjectReference	MSBuild 0; ours a dedicated bucket of 0
+10.0.401 resolved net10/App.fsproj reads item PrunePackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item RestoreGraphProjectInputItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item TargetingPack	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _CurrentRestoreProjectPathItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _DecomposedTargetFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _FilteredRestoreGraphProjectInputItemsTmp	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _FrameworkReferenceForRestore	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _FrameworkReferenceToAdd	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _FrameworkReferenceToRemove	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _GenerateRestoreGraphProjectEntryInput	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _GenerateRestoreProjectPathWalkOutputs	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _ImplicitPackageReference	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _PackAsToolShimRuntimeIdentifiers	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _PackageReferenceToAdd	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _PackageReferenceToRemove	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _PackageToDownload	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _ReferenceToObsoleteDotNetCliTool	MSBuild 0; ours 0, identities agree, metadata kept for 0 of 0 names
+10.0.401 resolved net10/App.fsproj reads item _RestoreGraphEntry	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _RestoreGraphEntryFiltered	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _RestoreProjectPathItems	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _RestoreProjectPathItemsOutputs	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _RestoreProjectPathItemsWithoutDupes	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _RestoreSettingsPerFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _RestoreTargetFrameworksOutputFiltered	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _TargetFramework	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _TargetFrameworkToSilenceEnableSingleFileAnalyzerUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _TargetFrameworkToSilenceIsAotCompatibleUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _TargetFrameworkToSilenceIsTrimmableUnsupportedWarning	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads item _ValidProjectsForRestore	MSBuild 0; ours none; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property AllowMissingPrunePackageData	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property AppHostRuntimeIdentifier	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property AssemblyName	value agrees
+10.0.401 resolved net10/App.fsproj reads property AssetTargetFallback	value agrees
+10.0.401 resolved net10/App.fsproj reads property CLRSupport	unset agrees
+10.0.401 resolved net10/App.fsproj reads property CentralPackageFloatingVersionsEnabled	unset agrees
+10.0.401 resolved net10/App.fsproj reads property CentralPackageTransitivePinningEnabled	unset agrees
+10.0.401 resolved net10/App.fsproj reads property CentralPackageVersionOverrideEnabled	unset agrees
+10.0.401 resolved net10/App.fsproj reads property CollectCentralPackageVersionsContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property CollectNuGetAuditSuppressionsContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property CollectPackageDownloadsContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property CollectPackageReferencesContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property CollectPrunePackageReferencesContinueOnError	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property ContinueOnError	value agrees
+10.0.401 resolved net10/App.fsproj reads property DefaultAppHostRuntimeIdentifier	unset agrees
+10.0.401 resolved net10/App.fsproj reads property DisableCheckingDuplicateNuGetItems	unset agrees
+10.0.401 resolved net10/App.fsproj reads property DisableTransitiveFrameworkReferenceDownloads	unset agrees
+10.0.401 resolved net10/App.fsproj reads property DisableWarnForInvalidRestoreProjects	unset agrees
+10.0.401 resolved net10/App.fsproj reads property DotnetCliToolTargetFramework	value agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property EnableAotAnalyzer	unset agrees
+10.0.401 resolved net10/App.fsproj reads property EnableAppHostPackDownload	unset agrees
+10.0.401 resolved net10/App.fsproj reads property EnableComHosting	unset agrees
+10.0.401 resolved net10/App.fsproj reads property EnableRuntimePackDownload	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property EnableSingleFileAnalyzer	unset agrees
+10.0.401 resolved net10/App.fsproj reads property EnableTargetingPackDownload	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property EnableTrimAnalyzer	unset agrees
+10.0.401 resolved net10/App.fsproj reads property EnableWindowsTargeting	unset agrees
+10.0.401 resolved net10/App.fsproj reads property HideWarningsAndErrors	value agrees
+10.0.401 resolved net10/App.fsproj reads property ImplicitPackageReferenceInformationLink	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property IsAotCompatible	unset agrees
+10.0.401 resolved net10/App.fsproj reads property IsTrimmable	unset agrees
+10.0.401 resolved net10/App.fsproj reads property Language	value agrees
+10.0.401 resolved net10/App.fsproj reads property MSBuildAssemblyVersion	unset, inexact (the toolset); set in MSBuild
+10.0.401 resolved net10/App.fsproj reads property MSBuildProjectDirectory	value agrees
+10.0.401 resolved net10/App.fsproj reads property MSBuildProjectExtensionsPath	value agrees
+10.0.401 resolved net10/App.fsproj reads property MSBuildProjectFullPath	value agrees
+10.0.401 resolved net10/App.fsproj reads property MSBuildProjectName	value agrees
+10.0.401 resolved net10/App.fsproj reads property MSBuildRuntimeType	value agrees
+10.0.401 resolved net10/App.fsproj reads property MSBuildStartupDirectory	unset, inexact (the toolset); set in MSBuild
+10.0.401 resolved net10/App.fsproj reads property MSBuildThisFileFullPath	per file
+10.0.401 resolved net10/App.fsproj reads property NETCoreAppMaximumVersion	value agrees
+10.0.401 resolved net10/App.fsproj reads property NETCoreSdkPortableRuntimeIdentifier	value agrees
+10.0.401 resolved net10/App.fsproj reads property NETCoreSdkRuntimeIdentifier	value agrees
+10.0.401 resolved net10/App.fsproj reads property NETCoreSdkVersion	value agrees
+10.0.401 resolved net10/App.fsproj reads property NetCoreRoot	value agrees
+10.0.401 resolved net10/App.fsproj reads property NetCoreTargetingPackRoot	value agrees
+10.0.401 resolved net10/App.fsproj reads property NoWarn	unset agrees
+10.0.401 resolved net10/App.fsproj reads property NuGetAudit	value agrees
+10.0.401 resolved net10/App.fsproj reads property NuGetAuditLevel	value agrees
+10.0.401 resolved net10/App.fsproj reads property NuGetAuditMode	value agrees
+10.0.401 resolved net10/App.fsproj reads property NuGetLockFilePath	value agrees
+10.0.401 resolved net10/App.fsproj reads property OutputType	value agrees
+10.0.401 resolved net10/App.fsproj reads property PackAsToolShimRuntimeIdentifiers	unset agrees
+10.0.401 resolved net10/App.fsproj reads property PackageDownloadSupported	value agrees
+10.0.401 resolved net10/App.fsproj reads property PackageId	value agrees
+10.0.401 resolved net10/App.fsproj reads property PackageReferenceCompatibleProjectStyle	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property PackageTargetFallback	unset agrees
+10.0.401 resolved net10/App.fsproj reads property PackageVersion	value agrees
+10.0.401 resolved net10/App.fsproj reads property PrunePackageDataRoot	value agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property PrunePackageTargetingPackRoots	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property PublishAot	unset agrees
+10.0.401 resolved net10/App.fsproj reads property PublishAotUsingRuntimePack	unset agrees
+10.0.401 resolved net10/App.fsproj reads property PublishReadyToRun	unset agrees
+10.0.401 resolved net10/App.fsproj reads property PublishReadyToRunUseCrossgen2	value agrees
+10.0.401 resolved net10/App.fsproj reads property PublishTrimmed	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RequiresAspNetWebAssets	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property RestoreAdditionalProjectFallbackFolders	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreAdditionalProjectFallbackFoldersExcludes	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreAdditionalProjectSources	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreBuildInParallel	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreConfigFile	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreContinueOnError	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreDoNotWriteDependencyGraphSpec	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreDotnetCliToolReferences	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreEnablePackagePruning	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreFallbackFolders	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreGraphOutputPath	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreGraphProjectInput	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreLegacyPackagesDirectory	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreLockedMode	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreOutputAbsolutePath	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property RestoreOutputPath	value agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property RestorePackagePruningDefault	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestorePackagesPath	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestorePackagesWithLockFile	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreProjectFilterMode	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property RestoreProjectStyle	value agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property RestoreProjects	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreRecursive	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreRepositoryPath	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreRepositoryPathOverride	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreRootConfigDirectory	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreSolutionDirectory	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property RestoreSources	value agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreUseLegacyDependencyResolver	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RestoreUseSkipNonexistentTargets	value agrees
+10.0.401 resolved net10/App.fsproj reads property RuntimeFrameworkVersion	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RuntimeIdentifier	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RuntimeIdentifierGraphPath	untrusted (an SDK package input); set in MSBuild
+10.0.401 resolved net10/App.fsproj reads property RuntimeIdentifiers	unset agrees
+10.0.401 resolved net10/App.fsproj reads property RuntimeSupports	unset agrees
+10.0.401 resolved net10/App.fsproj reads property SdkAnalysisLevel	value agrees
+10.0.401 resolved net10/App.fsproj reads property SelfContained	unset agrees
+10.0.401 resolved net10/App.fsproj reads property SolutionDir	value agrees
+10.0.401 resolved net10/App.fsproj reads property SuppressObsoleteDotNetCliToolWarning	unset agrees
+10.0.401 resolved net10/App.fsproj reads property TargetFramework	value agrees
+10.0.401 resolved net10/App.fsproj reads property TargetFrameworkIdentifier	value agrees
+10.0.401 resolved net10/App.fsproj reads property TargetFrameworkMoniker	untrusted (unmodelled text); set in MSBuild
+10.0.401 resolved net10/App.fsproj reads property TargetFrameworkProfile	unset agrees
+10.0.401 resolved net10/App.fsproj reads property TargetFrameworkVersion	value agrees
+10.0.401 resolved net10/App.fsproj reads property TargetFrameworks	unset agrees
+10.0.401 resolved net10/App.fsproj reads property TargetLatestRuntimePatch	value agrees
+10.0.401 resolved net10/App.fsproj reads property TargetPlatformIdentifier	unset agrees
+10.0.401 resolved net10/App.fsproj reads property TargetPlatformMinVersion	unset agrees
+10.0.401 resolved net10/App.fsproj reads property TargetPlatformMoniker	unset agrees
+10.0.401 resolved net10/App.fsproj reads property TargetPlatformVersion	unset agrees
+10.0.401 resolved net10/App.fsproj reads property TreatWarningsAsErrors	value agrees
+10.0.401 resolved net10/App.fsproj reads property UseAppHost	unset agrees
+10.0.401 resolved net10/App.fsproj reads property UseIJWHost	unset agrees
+10.0.401 resolved net10/App.fsproj reads property UsePackageDownload	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property UsingMicrosoftNETSdk	value agrees
+10.0.401 resolved net10/App.fsproj reads property UsingMicrosoftNETSdkWebAssembly	unset agrees
+10.0.401 resolved net10/App.fsproj reads property ValidateRuntimeIdentifierCompatibility	value agrees
+10.0.401 resolved net10/App.fsproj reads property Version	value agrees
+10.0.401 resolved net10/App.fsproj reads property WarningsAsErrors	value agrees
+10.0.401 resolved net10/App.fsproj reads property WarningsNotAsErrors	unset agrees
+10.0.401 resolved net10/App.fsproj reads property WindowsTargetPlatformMinVersion	unset agrees
+10.0.401 resolved net10/App.fsproj reads property _CentralPackageVersionsEnabled	unset agrees
+10.0.401 resolved net10/App.fsproj reads property _DisableNuGetRestoreTargetFrameworksOverride	unset agrees
+10.0.401 resolved net10/App.fsproj reads property _DotNetAppHostExecutableNameWithoutExtension	value agrees
+10.0.401 resolved net10/App.fsproj reads property _DotNetComHostLibraryNameWithoutExtension	value agrees
+10.0.401 resolved net10/App.fsproj reads property _DotNetIjwHostLibraryNameWithoutExtension	value agrees
+10.0.401 resolved net10/App.fsproj reads property _DotNetSingleFileHostExecutableNameWithoutExtension	value agrees
+10.0.401 resolved net10/App.fsproj reads property _EnablePackageReferencesInVCProjects	unset agrees
+10.0.401 resolved net10/App.fsproj reads property _FirstTargetFrameworkToSupportAot	value agrees
+10.0.401 resolved net10/App.fsproj reads property _FirstTargetFrameworkToSupportSingleFile	value agrees
+10.0.401 resolved net10/App.fsproj reads property _FirstTargetFrameworkToSupportTrimming	value agrees
+10.0.401 resolved net10/App.fsproj reads property _FirstTargetFrameworkVersionToSupportAotAnalyzer	value agrees
+10.0.401 resolved net10/App.fsproj reads property _FirstTargetFrameworkVersionToSupportSingleFileAnalyzer	value agrees
+10.0.401 resolved net10/App.fsproj reads property _FirstTargetFrameworkVersionToSupportTrimAnalyzer	value agrees
+10.0.401 resolved net10/App.fsproj reads property _GenerateRestoreGraphProjectEntryInputProperties	value agrees
+10.0.401 resolved net10/App.fsproj reads property _HasPackageReferenceItems	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _MinNonEolTargetFrameworkForAot	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _MinNonEolTargetFrameworkForSingleFile	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _MinNonEolTargetFrameworkForTrimming	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _MinimumNonEolSupportedNetCoreTargetFramework	value agrees
+10.0.401 resolved net10/App.fsproj reads property _NuGetRestoreSupported	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _OutputConfigFilePaths	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _OutputFallbackFolders	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _OutputPackagesPath	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _OutputRepositoryPath	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _OutputSources	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RequiresILLinkPack	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreCrossTargeting	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreFallbackFoldersOverride	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreGraphAbsoluteProjectPaths	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestorePackagesPathOverride	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreProjectFramework	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreProjectName	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreProjectVersion	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreRepositoryPathOverride	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreSkipContentFileWrite	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _RestoreSourcesOverride	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _ShouldAddAspNetCoreAppFrameworkReference	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _ShouldRemoveAspNetCoreAll	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _ShouldRemoveAspNetCoreApp	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _SilenceEnableSingleFileAnalyzerUnsupportedWarning	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _SilenceIsAotCompatibleUnsupportedWarning	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _SilenceIsTrimmableUnsupportedWarning	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _TargetFrameworkOverride	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _TargetFrameworkToBeUsed	unset agrees; the cone writes it
+10.0.401 resolved net10/App.fsproj reads property _TargetFrameworkVersionWithoutV	value agrees
+10.0.401 resolved net10/App.fsproj reads property _TargetLatestRuntimePatchIsDefault	value agrees

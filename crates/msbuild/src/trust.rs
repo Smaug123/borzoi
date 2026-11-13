@@ -159,7 +159,7 @@ impl UntrustedCause {
         }
     }
 
-    fn of_opacity(cause: &OpacityCause) -> Self {
+    pub(crate) fn of_opacity(cause: &OpacityCause) -> Self {
         match cause {
             OpacityCause::Gate(root) => Self::of_root(root),
             OpacityCause::Unentered(what) => UntrustedCause::Unentered(what.clone()),

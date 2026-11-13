@@ -73,3 +73,32 @@ pub const TOOLSET_PREDEFINED_NAMES: &[&str] = crate::evaluator::TOOLSET_PREDEFIN
 pub fn property_references(raw: &str) -> Vec<&str> {
     crate::properties::property_references(raw).collect()
 }
+
+pub use crate::evaluator::reads::{
+    EvaluationReads, InexactUnset, ItemRead, ItemRow, PropertyRead, ReadProbe,
+};
+
+/// [`crate::parse_fsproj_with_imports`], also reading `probe`'s properties and
+/// item types at the end of the walk, as a target that runs on the evaluation
+/// would read them. The restore-cone census reports these reads against
+/// MSBuild's (stage A₁.3a of `docs/nuget-dgspec-boundary-plan.md`).
+pub fn parse_fsproj_reads(
+    source: &str,
+    project_path: &std::path::Path,
+    extra_properties: &std::collections::HashMap<String, String>,
+    environment: &std::collections::HashMap<String, String>,
+    sdk_resolver: Option<&crate::SdkResolver<'_>>,
+    glob_resolver: Option<&crate::GlobResolver<'_>>,
+    probe: &ReadProbe,
+) -> Result<(crate::ParsedProject, EvaluationReads), crate::ParseError> {
+    let (parsed, reads) = crate::parse_fsproj_probed(
+        source,
+        project_path,
+        extra_properties,
+        environment,
+        sdk_resolver,
+        glob_resolver,
+        Some(probe),
+    )?;
+    Ok((parsed, reads.expect("a probed walk answers its probe")))
+}

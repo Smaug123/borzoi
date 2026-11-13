@@ -84,10 +84,12 @@ use super::{
 
 mod item_pass;
 mod item_spec;
+pub(crate) mod reads;
 use item_pass::{
     CapturedPackageReference, CurrentFile, DeferredGroupKind, DeferredItemGroup,
     RetainedImportedFile, item_key, replay_deferred_item_groups,
 };
+use reads::{EvaluationReads, ReadProbe};
 
 /// Maximum recursion depth for `<Import>` following. MSBuild itself
 /// caps at ~100; we pick a number well above any sane real-world
@@ -223,7 +225,8 @@ pub fn walk_with_imports<'r>(
     detected_packages_props: Option<&Path>,
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
-) -> ParsedProject {
+    probe: Option<&ReadProbe>,
+) -> (ParsedProject, Option<EvaluationReads>) {
     let walk = |target_framework_reads| {
         walk_in_msbuild_order(
             doc,
@@ -236,14 +239,16 @@ pub fn walk_with_imports<'r>(
             sdk_resolver,
             glob_resolver,
             target_framework_reads,
+            probe,
         )
     };
     let (exact, observations) = walk(TargetFrameworkReads::Exact);
     if !observations.target_framework_read_exempted || observations.builds_its_own_target_framework
     {
-        return exact;
+        return (exact, observations.reads);
     }
-    walk(TargetFrameworkReads::CarvedOut).0
+    let (carved_out, observations) = walk(TargetFrameworkReads::CarvedOut);
+    (carved_out, observations.reads)
 }
 
 /// How [`State::undefined_read_is_exact`] treats an undefined
@@ -271,6 +276,7 @@ fn walk_in_msbuild_order<'r>(
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
     target_framework_reads: TargetFrameworkReads,
+    probe: Option<&ReadProbe>,
 ) -> (ParsedProject, WalkObservations) {
     // Pass 1: the eager before-body `Directory.Build.props` splice
     // (historical behaviour). This is *only* a fallback result for the
@@ -294,6 +300,7 @@ fn walk_in_msbuild_order<'r>(
         glob_resolver,
         false,
         target_framework_reads,
+        probe,
     );
     // Skip the deferred second pass whenever it could not possibly change
     // the result — when the entry already has its own SDK (pass 1 is
@@ -322,6 +329,7 @@ fn walk_in_msbuild_order<'r>(
         glob_resolver,
         true,
         target_framework_reads,
+        probe,
     );
     // Pass 2 is the faithful single-pass model: it fires
     // `Directory.Build.props` at exactly the first body-reached nested
@@ -368,6 +376,8 @@ struct WalkObservations {
     /// tainted input, and never followed by content the walk could not see.
     /// MSBuild's `IsCrossTargetingBuild` is false for it.
     builds_its_own_target_framework: bool,
+    /// The walk's answer to the caller's [`ReadProbe`], when it passed one.
+    reads: Option<EvaluationReads>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,6 +414,7 @@ fn walk_once<'r>(
     glob_resolver: Option<&'r GlobResolver<'r>>,
     defer_directory_build_props: bool,
     target_framework_reads: TargetFrameworkReads,
+    probe: Option<&ReadProbe>,
 ) -> (ParsedProject, WalkObservations) {
     let root = doc.root_element();
     let local_overrides = collect_local_overrides(root);
@@ -734,6 +745,7 @@ fn walk_once<'r>(
         directory_build_props_pending_unconsumed: state.pending_directory_build_props.is_some(),
         target_framework_read_exempted: state.target_framework_read_exempted.get(),
         builds_its_own_target_framework,
+        reads: probe.map(|probe| state.read_probe(probe)),
     };
     (state.into_project(), observations)
 }
