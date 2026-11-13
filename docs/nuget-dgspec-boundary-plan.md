@@ -6,7 +6,8 @@
 > B₁'s reading of the environment restore runs under.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions);
 > *A₁: the restore cone, staged* splits it into five stages, of which A₁.1
-> (the item seam) and A₁.2 (the seam on real projects) have landed.
+> (the item seam) and A₁.2 (the seam on real projects) have landed, and of
+> A₁.3 its read census (A₁.3a).
 > B₁ runs in production in shadow: every on-demand restore hands it the spec
 > it read and logs whether B₁ agreed (see *B₁ in shadow*).
 > The resolver is NuGet's default dependency resolver reimplemented, and
@@ -1607,13 +1608,8 @@ which `write_restore_graph` never reads.
 
 The stages are:
 
-1. **A₁.3a, the read census.** An ignored test evaluates the corpus projects
-   and the census fixtures under `restore_globals`. For each of the cone's
-   properties and item types it reports whether the value is committed,
-   untrusted (with its cause) or absent, and whether an item list sits
-   untainted in the evaluated tables. A manifest pins the result, and the
-   census is regenerated from the cone itself rather than from a list
-   written once. It is A₁.3's worklist, and its go/no-go.
+1. **A₁.3a, the read census — landed.** See *A₁.3a: what the cone reads*
+   below.
 2. **A₁.3b, the evaluation's second output.** Behind the opt-in mode, the
    evaluation retains `<Target>` elements (name, attributes, file, order) and
    exports the item tables instead of dropping them. Two checks:
@@ -1640,6 +1636,82 @@ The stages are:
      corpus project before any A₁.4 leaf exists. It later grades each leaf
      against its recorded inputs and outputs, so A₁.3 and A₁.4 do not wait on
      each other.
+
+##### A₁.3a: what the cone reads — landed
+
+The restore-cone census reads, for each cone under the SDK its project
+resolves, every property and item type its executed targets reference. It
+takes those names from the targets' own XML (each target's last definition
+in the file MSBuild ran it from). It then reads them in two places, both
+under the census globals:
+- at the end of our evaluation, through a probe on the walk
+  (`test_support::parse_fsproj_reads`);
+- at the end of MSBuild's, through the oracle's `evaluated` op.
+
+The probe classifies each property read as one of:
+- a trusted value;
+- unset, exactly;
+- unset but possibly set in the real build (a refused write, the
+  environment, the toolset, or opacity);
+- untrusted, with its cause.
+
+For an item type it reports the evaluated table with its taint. The probe
+changes nothing about the walk: the census asserts that the probed
+`ParsedProject` equals the unprobed one. A trusted value MSBuild disagrees
+with panics. Every other verdict is pinned, in
+`restore_cone_reads_projects.txt` and `restore_cone_reads_fixtures.txt`.
+A verdict says whether the cone itself writes the name, which separates the
+targets' own locals from what they read off the evaluation.
+
+On SDK 10.0.401 (six corpus projects, three fixtures):
+
+| property reads | corpus | fixtures |
+|---|---|---|
+| value agrees with MSBuild | 319 | 169 |
+| unset, and unset in MSBuild | 440 | 205 |
+| unset, inexact (opacity), unset in MSBuild | 96 | 124 |
+| unset, inexact (opacity), set in MSBuild | 1 | 2 |
+| unset, inexact (the toolset), set in MSBuild | 12 | 6 |
+| untrusted | 12 | 9 |
+| `MSBuildThisFile*`, per file | 6 | 3 |
+| **committed and wrong** | **0** | **0** |
+
+The single-target projects read four properties off:
+- `MSBuildAssemblyVersion` and `MSBuildStartupDirectory`, which the walk does
+  not seed;
+- `TargetFrameworkMoniker`, which rests on unmodelled text;
+- `RuntimeIdentifierGraphPath`, an SDK package input.
+
+The remaining inexact and untrusted reads belong to the outer builds of the
+multi-targeting projects (`TypeEquality`, the `cpm` fixture). An undefined
+`TargetFramework` is kept inexact there, by design, so everything past it is
+opaque. Those reads matter only to the outer build's dispatch. The inner
+builds run under a `TargetFramework` global, which A₁.5 evaluates.
+
+The item side is the gap the census was built to size:
+- **The SDK's `Known*` tables** (`KnownFrameworkReference`,
+  `KnownRuntimePack`, `KnownAppHostPack`, `KnownILCompilerPack`, and others)
+  and `ImplicitPackageReferenceVersion` sit untainted in our tables, and their
+  identities equal MSBuild's, in order. But the generic capture keeps only
+  NuGet's package metadata names, so **none of their metadata** survives
+  (0 of 2 to 12 names per type). `ProcessFrameworkReferences` reads exactly
+  that metadata.
+- **`KnownWebAssemblySdkPack`** is tainted on four of the five cones that
+  read it.
+- **`PackageDownload`** is tainted on the two multi-targeting outer builds,
+  where MSBuild's list is empty.
+- **`PackageReference`, `ProjectReference`, `FrameworkReference` and
+  `PackageVersion`** live in this crate's dedicated buckets, not the generic
+  tables. Their counts agree with MSBuild's.
+
+So A₁.3b's work, in order, is:
+1. keep every metadatum on the generic tables, under the same taint
+   discipline;
+2. expose the dedicated buckets as item lists the executor can read;
+3. seed the two toolset names.
+
+Nothing in the census argues against going on. No trusted read is wrong,
+and the gaps have known causes.
 
 #### A₁.4: the task leaves
 

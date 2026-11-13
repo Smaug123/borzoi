@@ -123,7 +123,9 @@ run_step() { # name
       # 8) over the same projects: every target and task
       # `GenerateRestoreGraphFile` executes under restore's globals, under
       # every SDK the devshell installs, pinned in `restore_cone_projects.txt`
-      # with each target file's hash and each task assembly's identity.
+      # with each target file's hash and each task assembly's identity. What the
+      # cone reads off the evaluation, ours and MSBuild's, is pinned in
+      # `restore_cone_reads_projects.txt`.
       nix develop --command env \
         BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
         cargo test -p borzoi-msbuild --test restore_cone_census pinned_projects \
