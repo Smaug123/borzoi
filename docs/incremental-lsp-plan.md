@@ -1665,6 +1665,67 @@ unchanged.
 
 **Expected gain**: none (the stage is infrastructure).
 
+**Implemented** (`crates/lsp/src/workspace.rs`, `crates/lsp/src/observed.rs`,
+`crates/lsp/src/vfs.rs`):
+
+- `Workspace::owning_project` walks with a `borzoi_msbuild::observed::Observer`
+  of its own, and `all_fsproj_in` and `find_owning_project` list each
+  directory through it (`observed::read_dir`). That is the module the
+  evaluations already observe through, so the walk's reads are the same
+  `Read`s, with `Listing` observations, that `read_checks` confirms: Stage
+  4b's memo needs nothing new to validate them. The walk's counts go into a
+  per-generation `Cell` on the `Workspace`, beside its count of evaluations.
+  `Unobserved::Ownership` is gone.
+- `Generation` gains `ownership` (a `borzoi_msbuild::observed::ReadCounts`),
+  `Workspace::end_generation` returns both the evaluation and the ownership
+  counts (`WorkspaceCounts`), and the `observed.generation` event carries
+  them as `o_listings` and `o_stats`. `edit_counts` prints them as `o.list`
+  and `o.stat`. Nothing `stat`s yet, so `o.stat` is 0 until Stage 4b.
+- `find_owning_project` takes the observer to list through. It was public
+  for the tests alone, which now hand it one.
+
+The oracle:
+
+- Every ownership test's assertions are unchanged; the calls of
+  `find_owning_project` pass an observer.
+- `observed_counts` pins today's walks for a pull client. A pull of a file
+  one directory below its project that its text answers `unchanged` lists
+  **four** times: it walks twice, for the file's symbols and its language
+  version (which the result id hashes), and each walk lists the file's
+  directory and its project's, where the project lists the file and the
+  walk stops. After a keystroke, the `full` report walks twice more to
+  compute the diagnostics: **eight**. In general a file `d` directories
+  below lists `2(d + 1)` and `4(d + 1)` times. Written first against a walk
+  that counted nothing, it failed (`0 ≠ 4`).
+- `workspace::tests`: the walk lists the directories from the file's up to
+  the listing project's, each once, as `Listing` reads in its observer; a
+  file no project lists climbs to the file system's root and then lists
+  the directories up to the nearest project again, every listing observed;
+  and the counts are per generation.
+- `edit_counts` prints **13** listings per keystroke on
+  WoofWare.Incremental, reproducing the one-off count. `E` (`Stack.fs`) lies
+  in the project's directory and `L` (`Skeleton/Skeleton.fs`) one below it:
+  `diagnostic E` is a `full` report (four walks of one directory),
+  `diagnostic L` an `unchanged` one (two walks of two), and
+  `semanticTokens E`, `semanticTokens L` and `hover L` walk once each (one,
+  two and two listings).
+
+**Departure.** The plan's count test said an *unchanged* pull one directory
+down performs "four listings of two directories (eight)". Eight is the
+`full` pull's count; an unchanged pull walks twice and lists four times.
+Both are pinned.
+
+Planted, each caught, then removed:
+
+| plant | caught by |
+|---|---|
+| the walk's counts dropped | both `observed_counts` ownership tests |
+| the counts not reset when a generation begins | `the_ownership_walks_are_counted_per_generation`, both `observed_counts` ownership tests |
+| a direct `std::fs::read_dir` in `all_fsproj_in` | `cargo clippy` (`disallowed_methods`) |
+| the fallback walk listing through an observer of its own | `the_ownership_walks_fallback_lists_through_the_observer_too` |
+
+MEASURED_4A
+
 ### Stage 4b: ownership is memoised
 
 **Dependencies**: Stages 3b and 4a. **Implements**: D4 (item 4).

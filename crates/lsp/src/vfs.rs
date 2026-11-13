@@ -562,20 +562,27 @@ impl<D: Disk> Vfs<D> {
         self.log = Some(log);
     }
 
-    /// End the current generation, in which no project evaluation was read.
+    /// End the current generation, in which no project evaluation was read
+    /// and no file's owner was looked for.
     pub fn end_generation(&mut self) -> Generation {
-        self.end_generation_with(EvaluationCounts::default())
+        self.end_generation_with(EvaluationCounts::default(), borzoi_msbuild::observed::ReadCounts::default())
     }
 
     /// End the current generation, in which reading project evaluations
-    /// cost `evaluations`: send it to the log, if one is attached, emit its
-    /// counts as [`GENERATION_EVENT`], and return it.
-    pub fn end_generation_with(&mut self, evaluations: EvaluationCounts) -> Generation {
+    /// cost `evaluations` and finding the projects that own files cost
+    /// `ownership`: send it to the log, if one is attached, emit its counts
+    /// as [`GENERATION_EVENT`], and return it.
+    pub fn end_generation_with(
+        &mut self,
+        evaluations: EvaluationCounts,
+        ownership: borzoi_msbuild::observed::ReadCounts,
+    ) -> Generation {
         let (number, counts) = self.disk.end_generation();
         let generation = Generation {
             number,
             counts,
             evaluations,
+            ownership,
         };
         if let Some(log) = &self.log
             && log.send(generation).is_err()
@@ -594,6 +601,8 @@ impl<D: Disk> Vfs<D> {
             v_stats = checks.stats,
             v_listings = checks.listings,
             v_canonicalizations = checks.canonicalizations,
+            o_listings = ownership.listings,
+            o_stats = ownership.stats,
         );
         generation
     }

@@ -260,11 +260,12 @@ impl State {
         self.workspace.begin_generation(now);
     }
 
-    /// End the generation, logging what both its source reads and its
-    /// project evaluations cost.
+    /// End the generation, logging what its source reads, its project
+    /// evaluations and its ownership walks cost.
     pub fn end_generation(&mut self) -> crate::observed::Generation {
-        let evaluations = self.workspace.end_generation();
-        self.docs.end_generation_with(evaluations)
+        let counts = self.workspace.end_generation();
+        self.docs
+            .end_generation_with(counts.evaluations, counts.ownership)
     }
 
     /// Record the capabilities the client advertised at `initialize`. Called

@@ -10,6 +10,11 @@
 //! that reads the fold confirms each of them with one `stat` and opens none,
 //! because nothing on disk moved.
 //!
+//! Finding the project that owns a file lists the directories from the file's
+//! up to its project's (`Workspace::owning_project`), and those listings are
+//! counted too: a pull of a file `d` directories below its project pins how
+//! many walks the server makes, and how far each climbs.
+//!
 //! The project is written just before the server starts, so every stamp would
 //! be racy ([`borzoi::vfs::RACY_WINDOW`]) and re-read in every generation; the
 //! server's clock is set ahead ([`Clock::HostAhead`]) so the files read as
@@ -381,5 +386,91 @@ proptest! {
             "a racy project file was confirmed without reading it: {:?}",
             counted
         );
+    }
+}
+
+/// What a pull client's second diagnostic request for one file `depth`
+/// directories below its project lists, after a first that warmed
+/// everything: an `unchanged` report, or, after a keystroke in the file, a
+/// `full` one.
+fn second_pull_listings(depth: usize, keystroke: bool) -> u64 {
+    let tmp = TempDir::new().unwrap();
+    let dir = (0..depth).fold(tmp.path().to_path_buf(), |dir, i| dir.join(format!("d{i}")));
+    std::fs::create_dir_all(&dir).unwrap();
+    let relative: String = (0..depth).map(|i| format!("d{i}/")).collect();
+    std::fs::write(
+        tmp.path().join("P.fsproj"),
+        format!("<Project>\n  <ItemGroup>\n    <Compile Include=\"{relative}A.fs\" />\n  </ItemGroup>\n</Project>\n"),
+    )
+    .unwrap();
+    let file = dir.join("A.fs");
+    let text = "module A\n\nlet a = 1\n";
+    std::fs::write(&file, text).unwrap();
+    let mut client = Client::start(tmp.path(), true, settled());
+    let uri = Uri::from_file_path(&file).unwrap();
+    client.notify(
+        "textDocument/didOpen",
+        json!({ "textDocument": {
+            "uri": uri.as_str(), "languageId": "fsharp", "version": 0, "text": text,
+        }}),
+    );
+    client.settle();
+    let (first, _) = client.request(
+        "textDocument/diagnostic",
+        json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    client.settle();
+    let result_id = first["resultId"].as_str().expect("a result id").to_string();
+    if keystroke {
+        client.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": uri.as_str(), "version": 1 },
+                "contentChanges": [{ "text": format!("{text}// typed") }],
+            }),
+        );
+        client.settle();
+    }
+    let mark = client.generations().len();
+    let (second, _) = client.request(
+        "textDocument/diagnostic",
+        json!({ "textDocument": { "uri": uri.as_str() }, "previousResultId": result_id }),
+    );
+    let kind = if keystroke { "full" } else { "unchanged" };
+    assert_eq!(second["kind"], kind, "{second}");
+    let listings = client.generations()[mark..]
+        .iter()
+        .map(|g| g.ownership.listings)
+        .sum();
+    client.shut_down();
+    listings
+}
+
+/// A pull of a file one directory below its project that the file's text
+/// answers `unchanged` walks for the file's owner twice (for its symbols and
+/// for its language version, which its result id hashes), and each walk
+/// lists the file's directory and its project's
+/// (`docs/incremental-lsp-plan.md`, Stage 4a): four listings. After a
+/// keystroke, the `full` report walks twice more to compute the diagnostics:
+/// eight.
+#[test]
+fn a_pull_one_directory_below_its_project_lists_four_or_eight_times() {
+    assert_eq!(second_pull_listings(1, false), 4);
+    assert_eq!(second_pull_listings(1, true), 8);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 8, ..ProptestConfig::default() })]
+
+    /// The same at any depth: each walk lists every directory from the
+    /// file's up to its project's, and stops there because the project
+    /// lists the file.
+    #[test]
+    fn a_pull_lists_every_directory_up_to_the_project(
+        depth in 0usize..4,
+        keystroke in any::<bool>(),
+    ) {
+        let walks = if keystroke { 4 } else { 2 };
+        prop_assert_eq!(second_pull_listings(depth, keystroke), walks * (depth as u64 + 1));
     }
 }
