@@ -1068,6 +1068,29 @@ pub fn parse_fsproj_with_imports(
     sdk_resolver: Option<&SdkResolver<'_>>,
     glob_resolver: Option<&GlobResolver<'_>>,
 ) -> Result<ParsedProject, ParseError> {
+    parse_fsproj_probed(
+        source,
+        project_path,
+        extra_properties,
+        environment,
+        sdk_resolver,
+        glob_resolver,
+        None,
+    )
+    .map(|(parsed, _)| parsed)
+}
+
+/// [`parse_fsproj_with_imports`], also answering `probe` from the end of the
+/// walk when one is given (see [`evaluator::reads`]).
+pub(crate) fn parse_fsproj_probed(
+    source: &str,
+    project_path: &Path,
+    extra_properties: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    sdk_resolver: Option<&SdkResolver<'_>>,
+    glob_resolver: Option<&GlobResolver<'_>>,
+    probe: Option<&evaluator::reads::ReadProbe>,
+) -> Result<(ParsedProject, Option<evaluator::reads::EvaluationReads>), ParseError> {
     validate_inputs(project_path, extra_properties)?;
     // Detection only — we follow the props/targets ourselves and
     // suppress the per-kind `ImplicitImportPresent` diagnostic that
@@ -1103,6 +1126,7 @@ pub fn parse_fsproj_with_imports(
         cpm_props_path.as_deref(),
         sdk_resolver,
         glob_resolver,
+        probe,
     ))
 }
 

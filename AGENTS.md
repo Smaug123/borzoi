@@ -87,6 +87,14 @@ This is a Cargo workspace with nine members:
   puts each cone's entries through `borzoi_nuget`'s `write_restore_graph`
   and pins the item seam's verdict on each cone of SDK targets alone: the
   cone's own spec, byte for byte, or a decline.
+  It also reads every property and item type the cone's targets reference,
+  in two places. One is the end of our evaluation, through a probe on the walk
+  (`test_support::parse_fsproj_reads`), which must leave the `ParsedProject`
+  unchanged. The other is the end of MSBuild's, through the `evaluated` op,
+  which evaluates without building. A trusted value MSBuild disagrees with
+  panics. Every other verdict (unset, inexact, untrusted, an item table's
+  identities and taint) is pinned in `restore_cone_reads_*.txt`. That is the
+  worklist for A₁.3's executor.
 - `crates/assembly/` — `borzoi-assembly`. F#-flavoured reader for
   ECMA-335 assemblies: owned `Entity`/`Member`/`TypeRef` model, the
   `EcmaView` trait, and a projector over an *in-crate* ECMA-335 reader

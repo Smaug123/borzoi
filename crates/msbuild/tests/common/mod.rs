@@ -391,6 +391,41 @@ impl Oracle {
         }))
     }
 
+    /// The `evaluated` op: MSBuild's evaluation of `project` under `globals`,
+    /// unbuilt, read at `properties` (`null` when unset) and `items` (each
+    /// type's items with their metadata).
+    pub fn evaluated(
+        &mut self,
+        project: &Path,
+        globals: &[(&str, std::ffi::OsString)],
+        properties: &[&str],
+        items: &[&str],
+    ) -> serde_json::Value {
+        let globals: serde_json::Map<String, serde_json::Value> = globals
+            .iter()
+            .map(|(name, value)| {
+                let value = value.to_str().expect("UTF-8 global property value");
+                (
+                    (*name).to_owned(),
+                    serde_json::Value::String(value.to_owned()),
+                )
+            })
+            .collect();
+        let answer = self.request(&serde_json::json!({
+            "op": "evaluated",
+            "project": project.to_str().expect("UTF-8 project path"),
+            "globals": globals,
+            "properties": properties,
+            "items": items,
+        }));
+        assert_eq!(
+            answer["ok"],
+            serde_json::Value::Bool(true),
+            "evaluated: {answer}"
+        );
+        answer
+    }
+
     /// Ask the real MSBuild evaluator for the condition's truth against
     /// `props`. `Some(bool)` is the value MSBuild computed; `None` means
     /// MSBuild rejects the condition as illegal (`InvalidProjectFileException`).

@@ -77,6 +77,14 @@
 ///     seam of A₁. Unlike the evaluation ops this one *executes*
 ///     targets, so it reaches the SDK's task code.
 ///
+///   {"op":"evaluated","project":s,"globals":{..},"properties":[..],"items":[..]}
+///     -> {"ok":true,"properties":{name:value|null, ..},
+///         "items":{type:[{"identity":s,"metadata":{..}}, ..], ..}}
+///     Evaluates the project file at `project` under `globals` without building
+///     it, and reads back each named property (null when unset) and each named
+///     item type's items with their metadata: the evaluation the restore
+///     targets run on. The restore-cone census reads it against ours.
+///
 ///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"items":[fullPath, ..]}
 ///      | {"ok":false}                           // MSBuild rejects the project
@@ -747,6 +755,55 @@ let private respondRestoreCone (root: JsonElement) : string =
     | null -> JsonSerializer.Serialize {| error = "restoreCone needs a globals object" |}
     | globals -> JsonSerializer.Serialize(restoreCone project globals)
 
+/// The `evaluated` op: evaluate the project file at `project` under `globals`,
+/// without building it, and read back each named property (`null` when unset)
+/// and each named item type's items, with their custom and item-definition
+/// metadata, in order. This is the evaluation the restore targets run on, which
+/// the restore-cone census reads against ours (stage A₁.3a).
+let private evaluated
+    (project: string)
+    (globals: Collections.Generic.IDictionary<string, string>)
+    (properties: string list)
+    (itemTypes: string list)
+    =
+    use collection = new ProjectCollection()
+    let instance = ProjectInstance(project, globals, null, collection)
+
+    {| ok = true
+       properties =
+        properties
+        |> List.map (fun name ->
+            match instance.GetProperty name with
+            | null -> (name, null)
+            | p -> (name, p.EvaluatedValue))
+        |> dict
+       items =
+        itemTypes
+        |> List.map (fun itemType ->
+            let items =
+                instance.GetItems itemType
+                |> Seq.map (fun item ->
+                    {| identity = item.EvaluatedInclude
+                       metadata =
+                        item.Metadata
+                        |> Seq.sortBy (fun m -> m.Name)
+                        |> Seq.map (fun m -> (m.Name, m.EvaluatedValue))
+                        |> dict |})
+                |> List.ofSeq
+
+            (itemType, items))
+        |> dict |}
+
+let private respondEvaluated (root: JsonElement) : string =
+    let project = root.GetProperty("project").GetString()
+
+    let names (field: string) =
+        root.GetProperty(field).EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
+
+    match readGlobals root with
+    | null -> JsonSerializer.Serialize {| error = "evaluated needs a globals object" |}
+    | globals -> JsonSerializer.Serialize(evaluated project globals (names "properties") (names "items"))
+
 /// The `targetItems` op: evaluate the project file at `path` as it stands on
 /// disk, execute `target` on that evaluation in-process, and read back the
 /// `FullPath` of every `itemType` item the build leaves, in order. `None` when
@@ -870,6 +927,7 @@ let main argv =
                     | "items" -> respondItems root
                     | "itemsMeta" -> respondItemsMeta root
                     | "restoreCone" -> respondRestoreCone root
+                    | "evaluated" -> respondEvaluated root
                     | "targetItems" -> respondTargetItems root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
