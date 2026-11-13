@@ -222,7 +222,7 @@ struct CachedEvaluation {
     evaluated: Option<EvaluatedProject>,
     /// The reads to confirm before serving `evaluated` again: everything the
     /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
-    /// less the immutable contents ([`Evaluation::checks`]).
+    /// less the immutable contents (`Evaluation::checks`).
     checks: Vec<Check>,
     /// The generation that last confirmed `checks` (or that evaluated it);
     /// `None` when it was evaluated outside a generation.
@@ -587,7 +587,7 @@ impl Workspace {
 
     /// Confirm the cached evaluation of `project` for the open generation:
     /// every read it depends on (bar the immutable contents it was told it
-    /// may skip, see [`Evaluation::checks`]) is asked again, once per
+    /// may skip, see `Evaluation::checks`) is asked again, once per
     /// generation, and an entry any of whose answers moved is dropped, so the
     /// lookup that follows evaluates afresh. Dropping it ends the
     /// [`Self::projects_generation`]. Nothing happens outside a generation, or
@@ -1258,16 +1258,28 @@ impl Workspace {
             let is_entry = lexically_normalize(path) == entry_key;
             resolve_node_uncached(
                 path,
-                &self.env,
-                &self.extra_build_properties,
+                NodeContext {
+                    env: &self.env,
+                    extra_build_properties: &self.extra_build_properties,
+                    evaluated: &self.evaluated,
+                },
                 seed_tfm,
                 purpose,
                 is_entry,
                 confirmed_entry.filter(|_| is_entry && path == entry),
-                &self.evaluated,
             )
         })
     }
+}
+
+/// What every node of a graph walk is evaluated with: the workspace's SDK
+/// discovery environment and build properties, and its count of evaluations
+/// run.
+#[derive(Clone, Copy)]
+struct NodeContext<'a> {
+    env: &'a SdkDiscoveryEnv,
+    extra_build_properties: &'a HashMap<String, String>,
+    evaluated: &'a Cell<u64>,
 }
 
 /// What a graph walk is *for* — the two consumers need different edge
@@ -1393,14 +1405,17 @@ fn evaluated_output_name(path: &Path, evaluated: &EvaluatedProject) -> Option<St
 /// outcome as a [`NodeTfm`] for the env fold's output-DLL location.
 fn resolve_node_uncached(
     path: &Path,
-    env: &SdkDiscoveryEnv,
-    extra_build_properties: &HashMap<String, String>,
+    context: NodeContext<'_>,
     seed_tfm: Option<&str>,
     purpose: GraphWalkPurpose,
     is_entry: bool,
     cached: Option<Option<&EvaluatedProject>>,
-    evaluated: &Cell<u64>,
 ) -> NodeResult {
+    let NodeContext {
+        env,
+        extra_build_properties,
+        evaluated,
+    } = context;
     if !Unobserved::EnvResolution.exists(path) {
         return NodeResult::NotFound;
     }
@@ -1422,8 +1437,8 @@ fn resolve_node_uncached(
     let Some(outer) = outer else {
         return NodeResult::resolved(Vec::new());
     };
-    let outer_edges = edges_of(&outer, purpose, is_entry);
-    let outer_suppressed = references_suppressed(&outer, purpose);
+    let outer_edges = edges_of(outer, purpose, is_entry);
+    let outer_suppressed = references_suppressed(outer, purpose);
     if outer.not_an_inner_build {
         // Ahead of the caller-owned fast path below, for the reason
         // `Workspace::served_tfm_for_project` states: caller ownership excuses
@@ -1449,7 +1464,7 @@ fn resolve_node_uncached(
                 Some(tfm) => NodeTfm::Known(tfm.clone()),
                 None => NodeTfm::NoneDeclared,
             },
-            output_name: evaluated_output_name(path, &outer),
+            output_name: evaluated_output_name(path, outer),
             references_uncertain: outer_suppressed,
         };
     }
@@ -1478,7 +1493,7 @@ fn resolve_node_uncached(
         return NodeResult::Resolved {
             edges: outer_edges,
             tfm: NodeTfm::Known(body.clone()),
-            output_name: evaluated_output_name(path, &outer),
+            output_name: evaluated_output_name(path, outer),
             references_uncertain: outer_suppressed,
         };
     }
@@ -1506,7 +1521,7 @@ fn resolve_node_uncached(
         return NodeResult::Resolved {
             edges: outer_edges,
             output_name: names_the_build
-                .then(|| evaluated_output_name(path, &outer))
+                .then(|| evaluated_output_name(path, outer))
                 .flatten(),
             tfm,
             references_uncertain: outer_suppressed,
@@ -1524,7 +1539,7 @@ fn resolve_node_uncached(
                 return NodeResult::Resolved {
                     edges: outer_edges,
                     tfm: NodeTfm::Known(current.clone()),
-                    output_name: evaluated_output_name(path, &outer),
+                    output_name: evaluated_output_name(path, outer),
                     references_uncertain: outer_suppressed,
                 };
             }

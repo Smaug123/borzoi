@@ -1388,8 +1388,9 @@ dozen, and the counts report it.
   its `Evaluation::reads`: the `.fsproj` read and SDK discovery's reads, which
   now record into an observer of their own (`SdkDiscovery::for_project` takes
   one, and so does `resolve_dotnet_root`), unioned (`ReadSet::union`) with the
-  read set of every pass it ran: pass 1 and, when it served one, the seeded
-  pass 2. A failed pass fails on the source text and the caller's arguments
+  read set of every pass it ran: pass 1 and the seeded pass 2, whether or
+  not pass 2 is served (a pass discarded for a `TreatAsLocalProperty`
+  opt-out decided that it was; found by Codex). A failed pass fails on the source text and the caller's arguments
   alone (`ParseError`), so its reads are not needed. `Unobserved::Evaluation`
   is gone: the `.fsproj` buffer diagnostics' probes, which nothing caches,
   became `Unobserved::FsprojDiagnostics`, and the env's fallback probe for a
@@ -1421,7 +1422,11 @@ dozen, and the counts report it.
   resolved from, and the folder discovery names. A version directory reached
   through a symlink (Nix's combined installs are symlink farms) is matched in
   its canonical spelling too, taken from a canonicalisation in the read set,
-  which is itself confirmed.
+  which is itself confirmed. Only a version some read showed to exist (a
+  read inside it got an answer) is trusted, and the entry then confirms that
+  it still does; a read inside a version no read showed to exist (an
+  `Exists` probe of one not installed) is confirmed like any other
+  (`Evaluation::checks`, found by Codex).
 - **Confirming a read costs a `stat`** (`read_checks`). A whole-file read is
   confirmed through a `vfs::DiskCache` (factored out of the `Vfs`, which keeps
   one for sources), by the file's stamp. Any other read, the first time it is
@@ -1500,10 +1505,15 @@ The oracle:
   `Directory.Build.props`, a conditional import and a glob, whose read set is
   the workspace's (preparation reads and every pass); a newer SDK installed
   and a `global.json` pin each move the evaluation, as the non-vacuity
-  check. Beside it: the immutable-content table, a moved project file noticed
+  check. A second sweep holds what a cached evaluation *confirms*, its checks
+  after the immutable-content exemption, to the same property, over a
+  project tree outside the installs (where the axiom holds): the SDK
+  project, and a multi-targeted one whose seeded pass is discarded and which
+  probes an absent import (`the_workspace_checks_are_sound_outside_the_installs`). Beside it: the immutable-content table, a moved project file noticed
   in the next generation and trusted outside one, an SDK version trusted
-  while its listing is confirmed, a file only the seeded pass reads, and the
-  graph walk reading only a confirmed entry.
+  while its listing is confirmed, a version installed after the evaluation,
+  a file only the seeded pass reads, a discarded pass's reads, and the graph
+  walk reading only a confirmed entry.
 - `read_checks::tests`: a model file system (files, directories, absolute
   symlinks, renames, a directory moved and linked from where it was) whose
   timestamps tick at 1 ns, 1 ms, 1 s or 2 s, and a generated clock. For all
@@ -1532,6 +1542,8 @@ Planted, each caught, then removed:
 | a `Kind` witness that does not follow a symlink chain | the model property and its non-vacuity check |
 | a canonical spelling witnessed by its link chain only | the model property, once the model could move a directory and link it back |
 | the version directory itself immutable, not only its contents | the immutable-content table only: the holder's listing still sees an install |
+| a discarded seeded pass's reads dropped (Codex) | `a_discarded_pass_reads_are_confirmed`, the checks sweep |
+| reads inside a version trusted before any showed it exists (Codex) | `a_version_installed_after_the_evaluation_is_seen` |
 
 Three plants first passed every test: the canonical-spelling witness (the
 model could not move a directory), the seeded pass's reads and the graph walk

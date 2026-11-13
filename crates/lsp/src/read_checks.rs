@@ -28,7 +28,7 @@
 //! - **the canonical spelling** of a path is a function of the names on the
 //!   way, not only of where it leads, so it holds while the stamp of every
 //!   directory the path's resolution looks an entry up in holds
-//!   ([`ReadChecks::resolution`] walks it as the kernel does: following
+//!   (`ReadChecks::resolution` walks it as the kernel does: following
 //!   symlinks, and taking each `..` from the directory reached).
 //!
 //! Whole-file reads are confirmed by the file's own stamp
