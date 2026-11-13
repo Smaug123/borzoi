@@ -165,6 +165,10 @@ impl PropertyMap {
 /// `MSBuildThisFile*` family starts out naming the project and is rebound for
 /// each imported file ([`this_file_seeds`]).
 pub fn well_known(project_path: &Path) -> PropertyMap {
+    // MSBuild derives these from the project's full path, `.` and `..`
+    // resolved, lexically.
+    let normalised = lexically_normalised(project_path);
+    let project_path = normalised.as_path();
     let mut map = PropertyMap::new();
     let full_path = project_path.to_string_lossy().into_owned();
     let dir = project_path
@@ -228,7 +232,7 @@ pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, String); 6] {
         ),
         (
             "MSBuildThisFileDirectoryNoRoot",
-            with_trailing_separator(parent.map(no_root).unwrap_or_default()),
+            with_trailing_separator_always(parent.map(no_root).unwrap_or_default()),
         ),
         (
             "MSBuildThisFileFullPath",
@@ -278,9 +282,21 @@ fn split_file_name(path: &Path) -> (String, String) {
     }
 }
 
-/// `dir` with the platform's separator after it, unless it is empty.
+/// MSBuild's `FileUtilities.EnsureTrailingSlash`: the platform's separator
+/// after a non-empty `dir` that does not already end in one (`/` stays `/`).
 fn with_trailing_separator(dir: String) -> String {
-    if dir.is_empty() {
+    if dir.is_empty() || dir.ends_with(['/', '\\']) {
+        dir
+    } else {
+        format!("{dir}{}", std::path::MAIN_SEPARATOR)
+    }
+}
+
+/// MSBuild's `FileUtilities.EnsureTrailingNoLeadingSlash` on a root-less
+/// directory: a separator after it unless it already ends in one, *even when
+/// it is empty*, so a file at the root has `/` (`MSBuildThisFileDirectoryNoRoot`).
+fn with_trailing_separator_always(dir: String) -> String {
+    if dir.ends_with(['/', '\\']) {
         dir
     } else {
         format!("{dir}{}", std::path::MAIN_SEPARATOR)
@@ -1736,6 +1752,19 @@ mod tests {
         assert_eq!(split("/d/Makefile"), ("Makefile".into(), "".into()));
         assert_eq!(no_root(std::path::Path::new("/repo/app")), "repo/app");
         assert_eq!(no_root(std::path::Path::new("/")), "");
+        // `EnsureTrailingSlash` leaves `/` alone; `EnsureTrailingNoLeadingSlash`
+        // gives a root-less empty directory its separator.
+        assert_eq!(with_trailing_separator("/".into()), "/");
+        assert_eq!(with_trailing_separator("/a".into()), "/a/");
+        assert_eq!(with_trailing_separator_always("".into()), "/");
+        let seeds = this_file_seeds(std::path::Path::new("/Imp.props"));
+        let get = |k| seeds.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("MSBuildThisFileDirectory"), Some("/"));
+        assert_eq!(get("MSBuildThisFileDirectoryNoRoot"), Some("/"));
+        assert_eq!(
+            lexically_normalised(std::path::Path::new("/r/a/../b/./D.fsproj")),
+            std::path::Path::new("/r/b/D.fsproj")
+        );
     }
 
     #[test]

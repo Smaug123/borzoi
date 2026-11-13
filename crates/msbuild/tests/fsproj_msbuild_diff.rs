@@ -939,8 +939,11 @@ fn path_derivable_reserved_properties_match_msbuild() {
         reads("B"),
         reads("A"),
     );
-    let fsproj = dir.join("Demo.fsproj");
-    std::fs::write(&fsproj, &source).unwrap();
+    std::fs::write(dir.join("Demo.fsproj"), &source).unwrap();
+    // Both sides are handed the project through `..`, which MSBuild resolves
+    // before deriving the project's names from it.
+    std::fs::create_dir_all(root.join("x")).unwrap();
+    let fsproj = root.join("x/../p r;oj/Demo.fsproj");
 
     let props: Vec<String> = ["B", "A"]
         .into_iter()
