@@ -19,17 +19,15 @@
 //! path leads to now: a symlink re-pointed anywhere above it changes the
 //! inode the stamp names. So, while the stamp of `d` holds,
 //!
-//! - **a listing** of `d` holds (its entries and their types), and a
-//!   listing that found `d` absent holds while `d` is, as below;
-//! - **what `d/n` is**, not following it, holds, and so does whether it is
-//!   there; following it holds too while, if `d/n` is a symlink, the stamp
-//!   of the directory its target is looked up in holds, and so on along the
-//!   chain;
-//! - **the canonical spelling** of a path is a function of the names on the
-//!   way, not only of where it leads, so it holds while the stamp of every
-//!   directory the path's resolution looks an entry up in holds
-//!   (`ReadChecks::resolution` walks it as the kernel does: following
-//!   symlinks, and taking each `..` from the directory reached).
+//! - **a listing** of `d` holds (its entries and their types);
+//! - **what a path names**, following symlinks or not, whether it is there,
+//!   and **its canonical spelling** hold while the stamp of every directory
+//!   its resolution looks an entry up in holds: each step of the resolution
+//!   is an entry of the directory it is looked up in, and none can change
+//!   without moving that directory's stamp. `ReadChecks::resolution` walks
+//!   it as the kernel does (following symlinks, a link's target component by
+//!   component, and taking each `..` from the directory reached), and a
+//!   listing that found its directory absent is witnessed the same way.
 //!
 //! A read whose path is not spelt as its components (a trailing separator,
 //! a `.` or `..`, a doubled separator, a relative path) is resolved by the
@@ -231,55 +229,32 @@ impl<D: Probe> ReadChecks<D> {
         if !path.is_absolute() || lexically_normalize(path).as_os_str() != path.as_os_str() {
             return None;
         }
-        let parent = || path.parent().map(|dir| vec![dir.to_path_buf()]);
         match &read.observation {
             Observation::Listing(Ok(_)) => Some(vec![path.clone()]),
-            // An absent directory is an entry absent from the one it would
-            // be looked up in.
-            Observation::Listing(Err(failure)) if failure.is_absent() => self.link_chain(path),
+            Observation::Listing(Err(failure)) if failure.is_absent() => {
+                self.resolution(path, true)
+            }
             Observation::LinkKind(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
-                parent()
+                self.resolution(path, false)
             }
             Observation::Kind(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
-                self.link_chain(path)
+                self.resolution(path, true)
             }
             Observation::Canonical(answer) if absent_or_answered(answer.as_ref().map(drop)) => {
-                self.resolution(path)
+                self.resolution(path, true)
             }
             _ => None,
         }
     }
 
-    /// The directories `path`'s final entry is looked up in, following it
-    /// while it is a symlink: its parent, then each link target's parent.
-    /// `None` if the chain is longer than the kernel follows, or meets an
-    /// entry it cannot read.
-    fn link_chain(&self, path: &Path) -> Option<Vec<PathBuf>> {
-        let mut dirs = Vec::new();
-        let mut at = path.to_path_buf();
-        for _ in 0..=MAX_LINKS {
-            let dir = at.parent()?.to_path_buf();
-            let mut counts = self.counts.get();
-            counts.stats += 1;
-            self.counts.set(counts);
-            let entry = self.files.disk().entry(&at);
-            dirs.push(dir.clone());
-            match entry {
-                Ok(EntryAt::Link(target)) => at = dir.join(target),
-                Ok(_) => return Some(dirs),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => return Some(dirs),
-                Err(_) => return None,
-            }
-        }
-        None
-    }
-
     /// The directories resolving `path` looks an entry up in, following
-    /// every symlink, as the kernel resolves it; `None` if `path` is
-    /// relative, or the walk follows more symlinks than the kernel does or
-    /// meets anything but a directory, a symlink, or the absence or final
-    /// entry it stops at.
-    fn resolution(&self, path: &Path) -> Option<Vec<PathBuf>> {
+    /// every symlink (the final component's too, if `follow_last`) as the
+    /// kernel resolves it: a link's target is taken component by component,
+    /// so a separator it ends with is no different from none, and each `..`
+    /// from the directory reached. `None` if `path` is relative, or the walk
+    /// follows more symlinks than the kernel does or meets anything but a
+    /// directory, a symlink, or the absence or final entry it stops at.
+    fn resolution(&self, path: &Path, follow_last: bool) -> Option<Vec<PathBuf>> {
         use std::path::Component;
         if !path.is_absolute() {
             return None;
@@ -314,7 +289,7 @@ impl<D: Probe> ReadChecks<D> {
             self.counts.set(counts);
             match self.files.disk().entry(&child) {
                 Ok(EntryAt::Dir) => current = child,
-                Ok(EntryAt::Link(target)) => {
+                Ok(EntryAt::Link(target)) if !last || follow_last => {
                     links += 1;
                     if links > MAX_LINKS {
                         return None;
@@ -378,6 +353,125 @@ mod tests;
 mod host_tests {
     use super::*;
     use crate::observed::host_fs;
+    use proptest::prelude::*;
+
+    /// Names in the generated trees.
+    const NAMES: [&str; 4] = ["a", "b", "l", "m"];
+
+    /// Symlink targets, relative to the tree's root or to the link: the
+    /// spellings the kernel resolves in ways a component walk must follow.
+    const TARGETS: [&str; 8] = [
+        "a", "a/", "b/a", "../a", "./b", "a/../b", "ROOT/b/", "ROOT/a",
+    ];
+
+    #[derive(Clone, Debug)]
+    enum Change {
+        File(Vec<usize>),
+        Dir(Vec<usize>),
+        Link(Vec<usize>, usize),
+        Remove(Vec<usize>),
+        Rename(Vec<usize>, Vec<usize>),
+    }
+
+    fn rel(names: &[usize]) -> PathBuf {
+        names.iter().map(|&i| NAMES[i]).collect()
+    }
+
+    fn apply(root: &Path, change: &Change) {
+        let at = |names: &[usize]| root.join(rel(names));
+        // Failures (a missing parent, an existing entry) leave the tree as
+        // it was, which is a change like any other for the property.
+        let _ = match change {
+            Change::File(p) => std::fs::write(at(p), b"x"),
+            Change::Dir(p) => std::fs::create_dir(at(p)),
+            Change::Link(p, t) => {
+                let target = TARGETS[*t].replace("ROOT", &root.display().to_string());
+                std::os::unix::fs::symlink(target, at(p))
+            }
+            Change::Remove(p) => {
+                let path = at(p);
+                std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir_all(&path))
+            }
+            Change::Rename(from, to) => std::fs::rename(at(from), at(to)),
+        };
+    }
+
+    fn names() -> impl Strategy<Value = Vec<usize>> {
+        prop::collection::vec(0..NAMES.len(), 1..3)
+    }
+
+    fn change() -> impl Strategy<Value = Change> {
+        prop_oneof![
+            names().prop_map(Change::File),
+            names().prop_map(Change::Dir),
+            (names(), 0..TARGETS.len()).prop_map(|(p, t)| Change::Link(p, t)),
+            names().prop_map(Change::Remove),
+            (names(), names()).prop_map(|(a, b)| Change::Rename(a, b)),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+
+        /// On the host's file system, with symlinks of every spelling: a
+        /// check that holds in a generation after a change gets the answer
+        /// recorded. Each change is followed by a pause longer than a coarse
+        /// filesystem tick, since the generations run on a clock ahead of the
+        /// files (so that witnesses are used), which the racy rule would
+        /// otherwise answer for.
+        #[test]
+        fn a_check_that_holds_is_right_on_the_host(
+            setup in prop::collection::vec(change(), 0..12),
+            rounds in prop::collection::vec(prop::collection::vec(change(), 0..3), 1..6),
+        ) {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = host_fs::canonicalize(tmp.path()).unwrap();
+            for change in &setup {
+                apply(&root, change);
+            }
+            let mut paths = vec![root.clone()];
+            for a in 0..NAMES.len() {
+                paths.push(root.join(NAMES[a]));
+                for b in 0..NAMES.len() {
+                    paths.push(root.join(NAMES[a]).join(NAMES[b]));
+                }
+            }
+            let queries = [
+                Observation::Kind(Ok(EntryKind::File)),
+                Observation::LinkKind(Ok(EntryKind::File)),
+                Observation::Listing(Ok(Vec::new())),
+                Observation::Canonical(Ok(PathBuf::new())),
+            ];
+            let checks: Vec<Check> = paths
+                .iter()
+                .flat_map(|path| {
+                    queries.iter().map(move |query| {
+                        Check::new(Read {
+                            path: path.clone(),
+                            observation: HostDisk.answer(path, query),
+                        })
+                    })
+                })
+                .collect();
+            let mut checker = ReadChecks::<HostDisk>::default();
+            let mut at = Nanos(i128::MAX / 2);
+            for round in rounds.iter().chain([&Vec::new()]) {
+                for change in round {
+                    apply(&root, change);
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+                checker.begin_generation(at);
+                for check in &checks {
+                    if checker.holds(check) {
+                        let truth = HostDisk.answer(&check.read().path, &check.read().observation);
+                        prop_assert_eq!(&truth, &check.read().observation, "{:?}", check.read().path);
+                    }
+                }
+                checker.end_generation();
+                at = Nanos(at.0 + 1);
+            }
+        }
+    }
 
     /// A path the kernel resolves differently from its components (a
     /// trailing separator follows a final symlink, `..` is taken from the
@@ -391,9 +485,13 @@ mod host_tests {
         std::fs::create_dir_all(root.join("elsewhere/target")).unwrap();
         std::fs::create_dir(root.join("here")).unwrap();
         std::os::unix::fs::symlink(root.join("elsewhere/target"), root.join("here/link")).unwrap();
+        // A link whose target ends with a separator, to a link (Codex).
+        std::os::unix::fs::symlink(format!("{}/here/link/", root.display()), root.join("chain"))
+            .unwrap();
         let spellings = [
             PathBuf::from(format!("{}/here/link/", root.display())),
             root.join("here/link/../target"),
+            root.join("chain"),
         ];
         let checks: Vec<Check> = spellings
             .iter()
