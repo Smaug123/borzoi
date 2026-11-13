@@ -94,7 +94,7 @@ impl PropertyMap {
 
     /// Insert text the evaluator **computed from the world**: a filesystem
     /// path, a toolset/SDK seed. (Not the `MSBuildThisFile*` family, which
-    /// MSBuild splices raw: see [`this_file_seeds`].) Escaped on the
+    /// MSBuild splices raw: see `this_file_seeds`.) Escaped on the
     /// way in, exactly as MSBuild escapes such values when it seeds them
     /// (`Evaluator.cs:1186–1189`, `Toolset.cs:802`) — which is what makes a
     /// `%`, `;` or `(` in a project's own path inert rather than an escape, a

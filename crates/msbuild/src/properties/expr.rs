@@ -1128,11 +1128,15 @@ fn eval_msbuild_static(
                 // implicit default rather than a name the source mentions, so
                 // its absence is a decline. The empty substitution an undefined
                 // `$(…)` would get is exactly the empty starting directory
-                // MSBuild errors on.
+                // MSBuild errors on. Its stored text is the directory's path as
+                // written (the `MSBuildThisFile*` values are spliced raw), so it
+                // is taken as it is: a directory named `a%20b` is searched,
+                // not `a b`.
                 let this_dir = props
                     .get("MSBuildThisFileDirectory")
                     .ok_or(Unsupported)?
-                    .unescape();
+                    .as_escaped()
+                    .to_string();
                 if !path_args_are_bare(&[file]) {
                     return Err(Unsupported);
                 }
