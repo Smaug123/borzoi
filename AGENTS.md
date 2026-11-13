@@ -113,6 +113,8 @@ This is a Cargo workspace with nine members:
   panics. Every other verdict (unset, inexact, untrusted, an item table's
   identities and taint, and their metadata) is pinned in
   `restore_cone_reads_*.txt`. That is the worklist for A₁.3's executor.
+  The probe also answers where each target the cone ran is defined, and an
+  exact answer that is not the definition MSBuild ran panics.
   `fsproj_generic_items_generative_diff` holds the generic item tables the
   probe reads, metadata included, to the `itemsMeta` op on generated
   projects.

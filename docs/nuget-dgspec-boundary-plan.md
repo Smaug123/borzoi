@@ -1612,7 +1612,8 @@ The stages are:
    below.
 2. **A₁.3b, the evaluation's second output.** Behind the opt-in mode, the
    evaluation retains `<Target>` elements (name, attributes, file, order) and
-   exports the item tables instead of dropping them. Two checks:
+   exports the item tables instead of dropping them (landed; see the *A₁.3b*
+   sections below). Two checks:
    - an invariant test: `ParsedProject` is identical with the mode on and
      off over the corpus, which is what protects the LSP;
    - an oracle: the `itemsMeta` op, widened to any item type on SDK
@@ -1902,6 +1903,22 @@ walk is not opaque, and every identity has the package-id shape. The
 generator writes it as well. Ignoring its `Update` or `Remove`, or a cause
 attributed to it that is not its marker, fails the soak. No cone the census
 runs reads it.
+
+##### A₁.3b: target definitions — landed
+
+The walk records every `<Target>` element it reaches: its `Name`, the file,
+and the element's byte range there (`State::target_definitions`, test builds
+only). The probe answers a target name with the last definition of it, as
+MSBuild keeps the last and drops the rest, and calls the answer exact when
+the walk is not opaque, so that no file it did not reach can define the name
+later. The executor (A₁.3c) reads a target's XML from that file and range.
+
+The census probes every target MSBuild ran in the subject project and
+panics if an exact answer is not the last definition of that name in the
+file MSBuild ran it from. On SDK 10.0.401 every single-target corpus project
+and fixture retains every target of its cone that way (39 to 42 each). The
+two multi-targeting outer builds are opaque. No target in these cones is
+defined twice, so the override rule is held by a unit test, not the census.
 
 #### A₁.4: the task leaves
 

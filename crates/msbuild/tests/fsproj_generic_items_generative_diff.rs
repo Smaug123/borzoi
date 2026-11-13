@@ -299,6 +299,7 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
     let probe = ReadProbe {
         properties: Vec::new(),
         item_types: ITEM_TYPES.iter().map(|t| (*t).to_owned()).collect(),
+        targets: Vec::new(),
     };
     let (_, reads) = parse_fsproj_reads(
         xml,

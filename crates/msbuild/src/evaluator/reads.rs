@@ -15,6 +15,8 @@
 //! [`crate::ParsedProject`] beside it is the one the unprobed walk returns.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
+use std::path::PathBuf;
 
 use super::item_pass::{
     PackageItemKind, helper_item_definition_default_uncertainties, is_package_id_shape,
@@ -31,6 +33,8 @@ pub struct ReadProbe {
     pub properties: Vec<String>,
     /// Item types, in any case.
     pub item_types: Vec<String>,
+    /// Target names, in any case.
+    pub targets: Vec<String>,
 }
 
 /// What the walk's reads saw, keyed by the names as the probe spelt them.
@@ -38,6 +42,29 @@ pub struct ReadProbe {
 pub struct EvaluationReads {
     pub properties: BTreeMap<String, PropertyRead>,
     pub items: BTreeMap<String, ItemRead>,
+    pub targets: BTreeMap<String, TargetRead>,
+}
+
+/// The definition of one target a build would run: the last `<Target>` of
+/// that name, compared case-insensitively, in the order the walk reached the
+/// files of the import graph. MSBuild keeps that one and drops the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetRead {
+    /// The element, or `None` when the walk reached no target of that name.
+    pub definition: Option<TargetDefinition>,
+    /// Whether the walk saw every file MSBuild's evaluation imports, so that
+    /// no definition it did not reach can override `definition`. Only an
+    /// exact read makes a claim.
+    pub exact: bool,
+}
+
+/// Where a `<Target>` element is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetDefinition {
+    /// The file, spelt as the walk reached it.
+    pub file: PathBuf,
+    /// The element's byte range in that file's text.
+    pub range: Range<usize>,
 }
 
 /// A read of one property at the end of the walk.
@@ -122,7 +149,29 @@ impl State<'_> {
             .iter()
             .map(|item_type| (item_type.clone(), self.read_items(item_type)))
             .collect();
-        EvaluationReads { properties, items }
+        let targets = probe
+            .targets
+            .iter()
+            .map(|name| (name.clone(), self.read_target(name)))
+            .collect();
+        EvaluationReads {
+            properties,
+            items,
+            targets,
+        }
+    }
+
+    fn read_target(&self, name: &str) -> TargetRead {
+        let definition = self
+            .target_definitions
+            .iter()
+            .rev()
+            .find(|(defined, _)| defined.trim().eq_ignore_ascii_case(name.trim()))
+            .map(|(_, definition)| definition.clone());
+        TargetRead {
+            definition,
+            exact: self.walk_opaque.is_none(),
+        }
     }
 
     fn read_property(&self, name: &str) -> PropertyRead {
@@ -349,6 +398,7 @@ mod tests {
         let probe = ReadProbe {
             properties: properties.iter().map(|p| (*p).to_owned()).collect(),
             item_types: item_types.iter().map(|i| (*i).to_owned()).collect(),
+            targets: Vec::new(),
         };
         let walked = crate::parse_fsproj_probed(
             &source,
@@ -629,5 +679,75 @@ mod global_package_reference_tests {
             &["GlobalPackageReference"],
         );
         assert!(!reads.items["GlobalPackageReference"].exact);
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// Read `targets` at the end of a walk of `body`, which may import
+    /// `t.targets` holding `imported`.
+    fn read_targets(
+        body: &str,
+        imported: &str,
+        targets: &[&str],
+    ) -> (EvaluationReads, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.fsproj");
+        let source = format!("<Project>{body}</Project>");
+        std::fs::write(&path, &source).unwrap();
+        std::fs::write(
+            dir.path().join("t.targets"),
+            format!("<Project>{imported}</Project>"),
+        )
+        .unwrap();
+        let probe = ReadProbe {
+            targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+            ..ReadProbe::default()
+        };
+        let walked = crate::parse_fsproj_probed(
+            &source,
+            &path,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+            Some(&probe),
+        )
+        .unwrap();
+        (walked.reads.unwrap(), dir)
+    }
+
+    #[test]
+    fn the_last_definition_across_the_import_graph_wins() {
+        const IMPORTED: &str = "<Target Name=\"A\" /><Target Name=\"B\" />";
+        let (reads, dir) = read_targets(
+            "<Target Name=\"a\" /><Import Project=\"t.targets\" /><Target Name=\"B\" DependsOnTargets=\"A\" />",
+            IMPORTED,
+            &["A", "b", "Absent"],
+        );
+        let a = &reads.targets["A"];
+        assert!(a.exact);
+        let a = a.definition.as_ref().unwrap();
+        assert_eq!(a.file, dir.path().join("t.targets"));
+        let imported = format!("<Project>{IMPORTED}</Project>");
+        assert_eq!(&imported[a.range.clone()], "<Target Name=\"A\" />");
+        let b = reads.targets["b"].definition.as_ref().unwrap();
+        assert_eq!(b.file, dir.path().join("p.fsproj"));
+        assert!(reads.targets["Absent"].exact);
+        assert_eq!(reads.targets["Absent"].definition, None);
+    }
+
+    #[test]
+    fn an_opaque_walk_makes_no_claim() {
+        let (reads, _) = read_targets(
+            "<Import Project=\"t.targets\" Condition=\"$([System.String]::IsNullOrWhiteSpace(''))\" />",
+            "<Target Name=\"A\" />",
+            &["A"],
+        );
+        assert!(!reads.targets["A"].exact);
     }
 }

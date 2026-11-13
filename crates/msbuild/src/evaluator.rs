@@ -1751,6 +1751,15 @@ struct State<'r> {
     /// kept so the item pass can re-parse them. Indexed by
     /// [`CurrentFile::Imported::retained`].
     retained_imported_files: Vec<RetainedImportedFile>,
+    /// The entry project's path, as the caller spelt it: the file a
+    /// [`Self::target_definitions`] entry of the entry project names.
+    #[cfg(any(test, feature = "test-support"))]
+    entry_project_path: PathBuf,
+    /// Every `<Target>` element the walk reached, with its `Name` attribute,
+    /// in the order it reached them. Only the probe reads these
+    /// ([`reads`]); the walk itself runs no target.
+    #[cfg(any(test, feature = "test-support"))]
+    target_definitions: Vec<(String, reads::TargetDefinition)>,
     /// What the walk knows, or doesn't, about each property's stored value —
     /// keyed by lowercase property name. All three forward-uncertainty channels
     /// live in the one [`Trust`] value, so a name cannot be marked on one
@@ -2196,6 +2205,10 @@ impl<'r> State<'r> {
             current_file: CurrentFile::Entry,
             deferred_item_groups: Vec::new(),
             retained_imported_files: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            entry_project_path: project_path.to_path_buf(),
+            #[cfg(any(test, feature = "test-support"))]
+            target_definitions: Vec::new(),
             property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: None,
@@ -2753,6 +2766,10 @@ impl<'r> State<'r> {
             current_file: _,
             deferred_item_groups: _,
             retained_imported_files: _,
+            #[cfg(any(test, feature = "test-support"))]
+                entry_project_path: _,
+            #[cfg(any(test, feature = "test-support"))]
+                target_definitions: _,
             property_trust: _,
             env_property_names: _,
             walk_opaque: _,
@@ -3624,6 +3641,24 @@ impl<'r> State<'r> {
     /// Every name is seeded by [`properties::well_known`], so the saved
     /// values are always present; the [`ThisFileFrame`] just records them
     /// verbatim for [`Self::exit_this_file`] to restore.
+    /// Record a `<Target>` element in the file being walked
+    /// ([`Self::target_definitions`]).
+    #[cfg(any(test, feature = "test-support"))]
+    fn record_target_definition(&mut self, node: Node<'_, '_>) {
+        let file = match &self.current_file {
+            CurrentFile::Entry => self.entry_project_path.clone(),
+            CurrentFile::Imported { path, .. } => path.clone(),
+        };
+        let name = node.attribute("Name").unwrap_or_default().to_owned();
+        self.target_definitions.push((
+            name,
+            reads::TargetDefinition {
+                file,
+                range: node.range(),
+            },
+        ));
+    }
+
     fn enter_this_file(&mut self, file_path: &Path) -> ThisFileFrame {
         let seeds = properties::this_file_seeds(file_path);
         let saved = seeds
@@ -3938,6 +3973,10 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             // Neither contributes to the *static* Compile item set —
             // `<Target>` items are build-time, `<UsingTask>` declares a
             // task. They flip `is_partial` only.
+            #[cfg(any(test, feature = "test-support"))]
+            if node.tag_name().name() == "Target" {
+                state.record_target_definition(node);
+            }
             state.push(
                 DiagnosticKind::UnsupportedConstruct {
                     element: node.tag_name().name().to_string(),
