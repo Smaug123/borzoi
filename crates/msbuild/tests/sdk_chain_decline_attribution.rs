@@ -216,7 +216,7 @@ fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions(
     let mut expressions: BTreeSet<String> = BTreeSet::new();
     let mut conditions: BTreeSet<String> = BTreeSet::new();
     for file in &files {
-        if let Ok(text) = std::fs::read_to_string(file) {
+        if let Ok(text) = borzoi_msbuild::observed::host_fs::read_to_string(file) {
             extract_call_expressions(&text, &mut expressions);
             extract_conditions(&text, &mut conditions);
         }

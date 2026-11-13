@@ -410,7 +410,7 @@ fn the_fixup_collapse_rule_is_pinned() {
     let cwds: [&[&str]; 3] = [&["obj", "x", "nope", "c", "a"], &[], &["b", "xobj", "q"]];
     for (column, dirs) in cwds.iter().enumerate() {
         let cwd = tempfile::TempDir::new().unwrap();
-        let cwd = std::fs::canonicalize(cwd.path()).unwrap();
+        let cwd = borzoi_msbuild::observed::host_fs::canonicalize(cwd.path()).unwrap();
         let got = eval_properties_in(&cwd, dirs, &props);
         for (row, value) in table.iter().zip(&got) {
             let want = [row.2, row.3, row.4][column];

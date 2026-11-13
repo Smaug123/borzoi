@@ -655,7 +655,8 @@ fn shared() -> &'static Shared {
         let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("compile-order-generative-{}", std::process::id()));
         std::fs::create_dir_all(root.join("Sdks")).expect("mkdir Sdks");
-        let root = std::fs::canonicalize(root).expect("canonicalize root");
+        let root =
+            borzoi_msbuild::observed::host_fs::canonicalize(root).expect("canonicalize root");
         let mut oracle = Oracle::spawn_with_sdks_path(&root.join("Sdks"));
         let order_target = lift_order_target(&mut oracle);
         Shared {
@@ -676,8 +677,8 @@ fn lift_order_target(oracle: &mut Oracle) -> String {
         .remove("MSBuildBinPath")
         .expect("MSBuildBinPath is reported");
     let path = Path::new(&bin).join("FSharp/Microsoft.FSharp.Targets");
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = borzoi_msbuild::observed::host_fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let doc = roxmltree::Document::parse(&text)
         .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     let target = doc
@@ -728,7 +729,7 @@ fn write_and_parse(fixture: &Fixture) -> (Laid, ParsedProject) {
     let resolver = {
         let sdk = sdk.clone();
         let sdk_dir = sdk_dir.clone();
-        move |name: &str| {
+        move |name: &str, _: &borzoi_msbuild::observed::Observer| {
             if name == sdk {
                 Ok(SdkResolution::Single(SdkPaths {
                     root: sdk_dir.clone(),

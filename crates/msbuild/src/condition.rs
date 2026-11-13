@@ -54,8 +54,20 @@
 //! pattern. Unsupported expressions (unknown property functions, item
 //! references inside the substitution) still poison the whole condition.
 
+use super::observed::Observer;
 use super::properties::escaping::Escaped;
 use super::properties::{Issue, PropertyMap, substitute, substitute_with_fs};
+
+/// The file-system queries a condition may make: `exists` answers
+/// `Exists('…')` for a decoded, trimmed path, and the property functions
+/// that probe the file system (`GetDirectoryNameOfFileAbove`) query through
+/// `observer`. A condition evaluated without them treats both as
+/// unsupported.
+#[derive(Clone, Copy)]
+pub(crate) struct Probes<'a> {
+    pub exists: &'a dyn Fn(&str) -> bool,
+    pub observer: &'a Observer,
+}
 
 /// Result of evaluating a condition string. The `Unsupported` variant
 /// carries the original condition text so callers can fold it into a
@@ -116,20 +128,13 @@ pub fn evaluate(source: &str, props: &PropertyMap) -> Eval {
 }
 
 /// Evaluate a condition with support for MSBuild's filesystem-backed
-/// `Exists('...')` predicate.
-pub fn evaluate_with_exists(
-    source: &str,
-    props: &PropertyMap,
-    exists: &dyn Fn(&str) -> bool,
-) -> Eval {
-    evaluate_inner(source, props, Some(exists))
+/// `Exists('...')` predicate and the property functions that probe the file
+/// system (see [`Probes`]).
+pub fn evaluate_with_exists(source: &str, props: &PropertyMap, probes: Probes<'_>) -> Eval {
+    evaluate_inner(source, props, Some(probes))
 }
 
-fn evaluate_inner(
-    source: &str,
-    props: &PropertyMap,
-    exists: Option<&dyn Fn(&str) -> bool>,
-) -> Eval {
+fn evaluate_inner(source: &str, props: &PropertyMap, fs: Option<Probes<'_>>) -> Eval {
     let expr = match parse_condition(source) {
         Ok(Some(expr)) => expr,
         Ok(None) => {
@@ -142,7 +147,7 @@ fn evaluate_inner(
         Err(()) => return unsupported(),
     };
     let mut undefined = Vec::new();
-    let outcome = match eval_bool(&expr, props, exists, &mut undefined) {
+    let outcome = match eval_bool(&expr, props, fs, &mut undefined) {
         Ok(true) => Outcome::True,
         Ok(false) => Outcome::False,
         Err(()) => {
@@ -260,7 +265,7 @@ pub enum Decision {
 pub fn decide_without(
     source: &str,
     props: &PropertyMap,
-    exists: Option<&dyn Fn(&str) -> bool>,
+    fs: Option<Probes<'_>>,
     untrusted: &dyn Fn(&str) -> bool,
 ) -> Decision {
     let expr = match parse_condition(source) {
@@ -268,7 +273,7 @@ pub fn decide_without(
         Ok(None) => return Decision::Decided(true),
         Err(()) => return Decision::Unsupported,
     };
-    match eval_kleene(&expr, props, exists, untrusted) {
+    match eval_kleene(&expr, props, fs, untrusted) {
         Ok(Some(value)) => Decision::Decided(value),
         Ok(None) => Decision::Depends,
         Err(()) => Decision::Unsupported,
@@ -279,13 +284,13 @@ pub fn decide_without(
 fn eval_kleene(
     expr: &BoolExpr,
     props: &PropertyMap,
-    exists: Option<&dyn Fn(&str) -> bool>,
+    fs: Option<Probes<'_>>,
     untrusted: &dyn Fn(&str) -> bool,
 ) -> Result<Option<bool>, ()> {
     match expr {
-        BoolExpr::Not(inner) => Ok(eval_kleene(inner, props, exists, untrusted)?.map(|v| !v)),
-        BoolExpr::And(operands) => kleene_chain(operands, false, props, exists, untrusted),
-        BoolExpr::Or(operands) => kleene_chain(operands, true, props, exists, untrusted),
+        BoolExpr::Not(inner) => Ok(eval_kleene(inner, props, fs, untrusted)?.map(|v| !v)),
+        BoolExpr::And(operands) => kleene_chain(operands, false, props, fs, untrusted),
+        BoolExpr::Or(operands) => kleene_chain(operands, true, props, fs, untrusted),
         BoolExpr::True
         | BoolExpr::False
         | BoolExpr::Exists(_)
@@ -301,7 +306,7 @@ fn eval_kleene(
             // The undefined names are the caller's to report from its own
             // `evaluate`; this evaluation only decides.
             let mut undefined = Vec::new();
-            eval_bool(expr, props, exists, &mut undefined).map(Some)
+            eval_bool(expr, props, fs, &mut undefined).map(Some)
         }
     }
 }
@@ -314,12 +319,12 @@ fn kleene_chain(
     operands: &[BoolExpr],
     absorbing: bool,
     props: &PropertyMap,
-    exists: Option<&dyn Fn(&str) -> bool>,
+    fs: Option<Probes<'_>>,
     untrusted: &dyn Fn(&str) -> bool,
 ) -> Result<Option<bool>, ()> {
     let mut unknown = false;
     for operand in operands {
-        match eval_kleene(operand, props, exists, untrusted)? {
+        match eval_kleene(operand, props, fs, untrusted)? {
             Some(value) if value == absorbing => return Ok(Some(absorbing)),
             Some(_) => {}
             None => unknown = true,
@@ -1062,13 +1067,13 @@ impl Token {
 fn eval_bool(
     expr: &BoolExpr,
     props: &PropertyMap,
-    exists: Option<&dyn Fn(&str) -> bool>,
+    fs: Option<Probes<'_>>,
     undefined: &mut Vec<String>,
 ) -> Result<bool, ()> {
     match expr {
         BoolExpr::True => Ok(true),
         BoolExpr::False => Ok(false),
-        BoolExpr::Not(expr) => Ok(!eval_bool(expr, props, exists, undefined)?),
+        BoolExpr::Not(expr) => Ok(!eval_bool(expr, props, fs, undefined)?),
         // Short-circuit on the resolved truth value, matching MSBuild's
         // left-to-right evaluation order. This is only observable when
         // the right-hand side encounters an Unsupported expression
@@ -1086,7 +1091,7 @@ fn eval_bool(
         // them as "we couldn't resolve" would be over-eager.
         BoolExpr::And(operands) => {
             for operand in operands {
-                if !eval_bool(operand, props, exists, undefined)? {
+                if !eval_bool(operand, props, fs, undefined)? {
                     return Ok(false);
                 }
             }
@@ -1094,24 +1099,24 @@ fn eval_bool(
         }
         BoolExpr::Or(operands) => {
             for operand in operands {
-                if eval_bool(operand, props, exists, undefined)? {
+                if eval_bool(operand, props, fs, undefined)? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
         BoolExpr::Exists(raw) => {
-            let Some(exists) = exists else {
+            let Some(fs) = fs else {
                 return Err(());
             };
-            let path = expand_for_condition(raw, props, true, undefined)?;
+            let path = expand_for_condition(raw, props, Some(fs.observer), undefined)?;
             // Trim the *padding*, then decode: an escaped `%20` is part of the
             // filename, not padding around it. `Exists('path%20')` probes the
             // file literally named `path ` and finds it (oracle-pinned).
-            Ok(exists(&path.trimmed_unescaped()))
+            Ok((fs.exists)(&path.trimmed_unescaped()))
         }
         BoolExpr::HasTrailingSlash(raw) => {
-            let value = expand_for_condition(raw, props, exists.is_some(), undefined)?;
+            let value = expand_for_condition(raw, props, fs.map(|fs| fs.observer), undefined)?;
             // MSBuild expands the argument into an item list: each entry is
             // whitespace-trimmed and empty entries are dropped
             // (`'a/;'` and `';/'` are the single item `a/` / `/`). A single
@@ -1135,18 +1140,19 @@ fn eval_bool(
             Ok(item.is_some_and(|s: String| s.ends_with('/') || s.ends_with('\\')))
         }
         BoolExpr::MsbuildVersionFunction(inner) => {
-            eval_msbuild_version_function(inner, props, exists.is_some(), undefined)
+            eval_msbuild_version_function(inner, props, fs.map(|fs| fs.observer), undefined)
         }
         BoolExpr::CoerceBool(scalar) => {
-            let value = expand_scalar_for_condition(scalar, props, exists.is_some(), undefined)?;
+            let value =
+                expand_scalar_for_condition(scalar, props, fs.map(|fs| fs.observer), undefined)?;
             // A standalone scalar is coerced through MSBuild's boolean
             // vocabulary; a value outside it (`1`, `foo`, an unset
             // property's "") is a project error → Unsupported.
             parse_msbuild_bool(&value).ok_or(())
         }
         BoolExpr::Compare { op, lhs, rhs } => {
-            let lhs = expand_scalar_for_condition(lhs, props, exists.is_some(), undefined)?;
-            let rhs = expand_scalar_for_condition(rhs, props, exists.is_some(), undefined)?;
+            let lhs = expand_scalar_for_condition(lhs, props, fs.map(|fs| fs.observer), undefined)?;
+            let rhs = expand_scalar_for_condition(rhs, props, fs.map(|fs| fs.observer), undefined)?;
             if !matches!(op, CompareOp::Eq | CompareOp::Neq) {
                 let ordering = compare_relational_values(&lhs, &rhs)?;
                 return Ok(match op {
@@ -1170,16 +1176,15 @@ fn eval_bool(
 fn expand_scalar_for_condition(
     scalar: &ScalarExpr,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
     undefined: &mut Vec<String>,
 ) -> Result<String, ()> {
     match scalar {
-        ScalarExpr::String(raw) => expand_operand(raw, props, fs_probes_allowed, undefined),
+        ScalarExpr::String(raw) => expand_operand(raw, props, fs_observer, undefined),
         ScalarExpr::Bare(raw) => Ok(raw.clone()),
-        ScalarExpr::Property(raw) => expand_operand(raw, props, fs_probes_allowed, undefined),
+        ScalarExpr::Property(raw) => expand_operand(raw, props, fs_observer, undefined),
         ScalarExpr::SystemVersionPart { arg, part } => {
-            let version =
-                expand_system_version_parse_arg(arg, props, fs_probes_allowed, undefined)?;
+            let version = expand_system_version_parse_arg(arg, props, fs_observer, undefined)?;
             let version = parse_system_version(&version)?;
             let idx = match part {
                 VersionPart::Build => 2,
@@ -1209,7 +1214,7 @@ fn split_dash_zero_property(raw: &str) -> Option<&str> {
 fn expand_system_version_parse_arg(
     raw: &str,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
     undefined: &mut Vec<String>,
 ) -> Result<String, ()> {
     if let Some(property) = split_dash_zero_property(raw) {
@@ -1227,13 +1232,13 @@ fn expand_system_version_parse_arg(
         .strip_prefix('\'')
         .and_then(|s| s.strip_suffix('\''))
         .unwrap_or(raw);
-    expand_operand(raw, props, fs_probes_allowed, undefined)
+    expand_operand(raw, props, fs_observer, undefined)
 }
 
 fn eval_msbuild_version_function(
     inner: &str,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
     undefined: &mut Vec<String>,
 ) -> Result<bool, ()> {
     let (function, raw_args) = parse_msbuild_version_function_call(inner).ok_or(())?;
@@ -1241,8 +1246,8 @@ fn eval_msbuild_version_function(
     if args.len() != 2 {
         return Err(());
     }
-    let lhs = expand_function_arg_for_condition(args[0], props, fs_probes_allowed, undefined)?;
-    let rhs = expand_function_arg_for_condition(args[1], props, fs_probes_allowed, undefined)?;
+    let lhs = expand_function_arg_for_condition(args[0], props, fs_observer, undefined)?;
+    let rhs = expand_function_arg_for_condition(args[1], props, fs_observer, undefined)?;
     let ordering = crate::properties::compare_msbuild_versions(&lhs, &rhs)?;
     Ok(match function {
         CompareOp::Gt => ordering.is_gt(),
@@ -1287,12 +1292,12 @@ fn split_function_args(raw: &str) -> Result<Vec<&str>, ()> {
 fn expand_function_arg_for_condition(
     raw: &str,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
     undefined: &mut Vec<String>,
 ) -> Result<String, ()> {
     let raw = raw.trim();
     let unquoted = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\''));
-    expand_operand(unquoted.unwrap_or(raw), props, fs_probes_allowed, undefined)
+    expand_operand(unquoted.unwrap_or(raw), props, fs_observer, undefined)
 }
 
 /// Relational comparison, mirroring MSBuild's
@@ -1466,13 +1471,13 @@ fn parse_system_version(value: &str) -> Result<[i64; 4], ()> {
 fn expand_for_condition(
     raw: &str,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
     undefined: &mut Vec<String>,
 ) -> Result<Escaped, ()> {
     // FS-probing property functions follow the same split as `Exists()`:
     // available exactly when the caller supplied a filesystem oracle.
-    let (value, issues) = if fs_probes_allowed {
-        substitute_with_fs(raw, props)
+    let (value, issues) = if let Some(observer) = fs_observer {
+        substitute_with_fs(raw, props, observer)
     } else {
         substitute(raw, props)
     };
@@ -1502,15 +1507,24 @@ fn expand_for_condition(
 fn expand_operand(
     raw: &str,
     props: &PropertyMap,
-    fs_probes_allowed: bool,
+    fs_observer: Option<&Observer>,
     undefined: &mut Vec<String>,
 ) -> Result<String, ()> {
-    Ok(expand_for_condition(raw, props, fs_probes_allowed, undefined)?.unescape())
+    Ok(expand_for_condition(raw, props, fs_observer, undefined)?.unescape())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`Probes`] answering `Exists` with `exists`, over an observer the test
+    /// never reads.
+    fn probes<'a>(exists: &'a dyn Fn(&str) -> bool) -> Probes<'a> {
+        Probes {
+            exists,
+            observer: Box::leak(Box::new(Observer::new())),
+        }
+    }
 
     fn props(pairs: &[(&str, &str)]) -> PropertyMap {
         let mut m = PropertyMap::new();
@@ -1591,7 +1605,7 @@ mod tests {
                     (!$([System.String]::IsNullOrEmpty('$(TargetFrameworkVersion)')) and \
                     !$(TargetFrameworkVersion.StartsWith('v4.0')))) and \
                     Exists('$(MSBuildToolsPath)\\Microsoft.WorkflowBuildExtensions.targets')";
-        let eval = super::evaluate_with_exists(cond, &p, &|_| false);
+        let eval = super::evaluate_with_exists(cond, &p, probes(&|_| false));
         assert_eq!(eval.outcome, Outcome::False, "{cond}");
     }
 
@@ -1821,11 +1835,13 @@ mod tests {
     fn exists_uses_filesystem_callback() {
         let exists = |path: &str| path == "a.fs";
         assert_eq!(
-            super::evaluate_with_exists("Exists('a.fs')", &PropertyMap::new(), &exists).outcome,
+            super::evaluate_with_exists("Exists('a.fs')", &PropertyMap::new(), probes(&exists))
+                .outcome,
             Outcome::True
         );
         assert_eq!(
-            super::evaluate_with_exists("Exists('b.fs')", &PropertyMap::new(), &exists).outcome,
+            super::evaluate_with_exists("Exists('b.fs')", &PropertyMap::new(), probes(&exists))
+                .outcome,
             Outcome::False
         );
     }
@@ -1835,7 +1851,7 @@ mod tests {
         let p = props(&[("File", " marker.txt ")]);
         let exists = |path: &str| path == "marker.txt";
         assert_eq!(
-            super::evaluate_with_exists("Exists(' $(File) ')", &p, &exists).outcome,
+            super::evaluate_with_exists("Exists(' $(File) ')", &p, probes(&exists)).outcome,
             Outcome::True
         );
     }
@@ -1845,10 +1861,10 @@ mod tests {
         let p = props(&[("File", "a.fs")]);
         let exists = |path: &str| path == "a.fs";
         assert_eq!(
-            super::evaluate_with_exists("!Exists('b.fs')", &p, &exists).outcome,
+            super::evaluate_with_exists("!Exists('b.fs')", &p, probes(&exists)).outcome,
             Outcome::True
         );
-        let eval = super::evaluate_with_exists("Exists('$(File)')", &p, &exists);
+        let eval = super::evaluate_with_exists("Exists('$(File)')", &p, probes(&exists));
         assert_eq!(eval.outcome, Outcome::True);
         assert!(eval.undefined_properties.is_empty());
     }
@@ -1856,8 +1872,11 @@ mod tests {
     #[test]
     fn exists_reports_undefined_properties() {
         let exists = |_path: &str| false;
-        let eval =
-            super::evaluate_with_exists("Exists('$(Missing)')", &PropertyMap::new(), &exists);
+        let eval = super::evaluate_with_exists(
+            "Exists('$(Missing)')",
+            &PropertyMap::new(),
+            probes(&exists),
+        );
         assert_eq!(eval.outcome, Outcome::False);
         assert_eq!(eval.undefined_properties, vec!["Missing".to_string()]);
     }

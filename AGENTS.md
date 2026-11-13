@@ -24,7 +24,16 @@ This is a Cargo workspace with nine members:
   real `Microsoft.Common.props` → `NuGet.props` chain, including the
   `Directory.Packages.props` central-package import.
   Self-contained: depends only on `roxmltree`. Intended to be reusable outside
-  this repo. The evaluator is differentially tested against the
+  this repo. Every file-system query an evaluation makes goes through
+  `observed`, which records it in the result's `read_set` (absences
+  included); the crate's own `clippy.toml` bans the `std` calls elsewhere, and
+  test code reaches them through `observed::host_fs`. A resolver the caller
+  passes must query through the `Observer` it is handed. The read set is held
+  to `observed::soundness::sweep` (perturb each file; a read set that still
+  validates must mean an unchanged evaluation), which every
+  `with_imports_tests` helper runs over its test's tree, so a new reader that
+  skips the observer fails there or in clippy. The evaluator is
+  differentially tested against the
   real MSBuild evaluator via `tools/msbuild-condition-oracle` — a test-only
   JSONL batch oracle (in the `tools/fcs-dump` / `tools/nuget-oracle` mould)
   that evaluates in-process through the MSBuild API; it is never a

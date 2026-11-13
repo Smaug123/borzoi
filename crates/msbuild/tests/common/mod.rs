@@ -25,6 +25,7 @@
 pub mod case_axis;
 pub mod sdk_chain;
 
+use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,7 +64,7 @@ pub fn corpus_root() -> PathBuf {
         ),
     };
     assert!(
-        root.is_dir(),
+        root.host_is_dir(),
         "F# corpus root {root:?} (from BORZOI_CORPUS) is not a directory."
     );
     root
@@ -114,8 +115,8 @@ fn ensure_oracle_built() -> &'static Path {
             let marker = bin.join(".msbuild-condition-oracle-built");
             let want = format!("{:016x}", oracle_source_fingerprint(&project));
 
-            let fresh = apphost.exists()
-                && std::fs::read_to_string(&marker)
+            let fresh = apphost.host_exists()
+                && borzoi_msbuild::observed::host_fs::read_to_string(&marker)
                     .map(|recorded| recorded.trim() == want)
                     .unwrap_or(false);
             if !fresh {
@@ -126,7 +127,7 @@ fn ensure_oracle_built() -> &'static Path {
                     .timeout(BUILD_TIMEOUT)
                     .run_ok("dotnet build msbuild-condition-oracle");
                 assert!(
-                    apphost.exists(),
+                    apphost.host_exists(),
                     "dotnet build msbuild-condition-oracle produced no apphost at {apphost:?}"
                 );
                 write_marker_atomically(&marker, &want);
@@ -149,7 +150,7 @@ fn oracle_source_fingerprint(project: &Path) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut sources: Vec<PathBuf> = std::fs::read_dir(project)
+    let mut sources: Vec<PathBuf> = borzoi_msbuild::observed::host_fs::read_dir(project)
         .into_iter()
         .flatten()
         .flatten()
@@ -171,7 +172,9 @@ fn oracle_source_fingerprint(project: &Path) -> u64 {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .hash(&mut h);
-        std::fs::read(p).unwrap_or_default().hash(&mut h);
+        borzoi_msbuild::observed::host_fs::read(p)
+            .unwrap_or_default()
+            .hash(&mut h);
     }
     h.finish()
 }

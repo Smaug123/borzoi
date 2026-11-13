@@ -10,10 +10,12 @@
 //! walked-file identity) returns `/private/var/folders/...` —
 //! comparing the two directly would spuriously fail.
 
+use crate::observed::host_fs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::observed::Observer;
 
 mod cycles_and_failures;
 mod directory_build;
@@ -29,6 +31,7 @@ mod nuget_props_chain;
 mod package_uncertain;
 mod pass_ordering;
 mod project_reference_remove;
+mod read_set;
 mod resolved_sdk_root;
 mod sdk_custom_entry;
 mod sdk_resolution;
@@ -42,7 +45,7 @@ mod treat_as_local;
 /// canonicalised; tests should canonicalise the expected paths too so
 /// the macOS `/var` ↔ `/private/var` symlink doesn't desync them.
 fn canon(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
+    host_fs::canonicalize(path).unwrap_or_else(|e| panic!("canonicalize {}: {e}", path.display()))
 }
 
 /// Write `contents` at `dir/name`, creating intermediate directories.
@@ -63,25 +66,43 @@ fn write_at(dir: &Path, name: &str, contents: &str) -> PathBuf {
 /// need a canonical project path to match.)
 fn parse(project_path: &Path, source: &str) -> ParsedProject {
     let canon_project = canon(project_path);
-    parse_fsproj_with_imports(
-        source,
-        &canon_project,
-        &HashMap::new(),
-        &HashMap::new(),
-        None,
-        None,
-    )
-    .expect("well-formed XML parses")
+    sound(&canon_project, || {
+        parse_fsproj_with_imports(
+            source,
+            &canon_project,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+        )
+        .expect("well-formed XML parses")
+    })
+}
+
+/// `evaluate()`, after holding its read set to the soundness oracle
+/// ([`crate::observed::soundness`]) over the test's own temporary tree: the
+/// directory directly below the system's temporary directory that holds the
+/// project. A project outside it is evaluated without the sweep.
+fn sound(canon_project: &Path, evaluate: impl Fn() -> ParsedProject) -> ParsedProject {
+    let temp = canon(&std::env::temp_dir());
+    if let Some(first) = canon_project
+        .strip_prefix(&temp)
+        .ok()
+        .and_then(|rest| rest.components().next())
+    {
+        crate::observed::soundness::sweep(&temp.join(first), &evaluate, &[]);
+    }
+    evaluate()
 }
 
 /// [`parse`], reading the body back from `project_path` on disk. Most
 /// tests write the project with [`write_at`] (which returns the path)
 /// and immediately walk it; this bundles the re-read so call sites
-/// don't repeat `&std::fs::read_to_string(&project_path).unwrap()`.
+/// don't repeat `&host_fs::read_to_string(&project_path).unwrap()`.
 fn parse_file(project_path: &Path) -> ParsedProject {
     parse(
         project_path,
-        &std::fs::read_to_string(project_path).unwrap(),
+        &host_fs::read_to_string(project_path).unwrap(),
     )
 }
 
@@ -98,8 +119,10 @@ fn parse_with_extras(
     extras: HashMap<String, String>,
 ) -> ParsedProject {
     let canon_project = canon(project_path);
-    parse_fsproj_with_imports(source, &canon_project, &extras, &HashMap::new(), None, None)
-        .expect("well-formed XML parses")
+    sound(&canon_project, || {
+        parse_fsproj_with_imports(source, &canon_project, &extras, &HashMap::new(), None, None)
+            .expect("well-formed XML parses")
+    })
 }
 
 /// [`parse_with_extras`], reading the body back from `project_path` on
@@ -107,7 +130,7 @@ fn parse_with_extras(
 fn parse_file_with_extras(project_path: &Path, extras: HashMap<String, String>) -> ParsedProject {
     parse_with_extras(
         project_path,
-        &std::fs::read_to_string(project_path).unwrap(),
+        &host_fs::read_to_string(project_path).unwrap(),
         extras,
     )
 }
@@ -147,15 +170,18 @@ where
     F: Fn(&str) -> Result<SdkResolution, SdkResolveError>,
 {
     let canon_project = canon(project_path);
-    parse_fsproj_with_imports(
-        source,
-        &canon_project,
-        &HashMap::new(),
-        &HashMap::new(),
-        Some(&resolver),
-        None,
-    )
-    .expect("well-formed XML parses")
+    let resolver = |name: &str, _: &Observer| resolver(name);
+    sound(&canon_project, || {
+        parse_fsproj_with_imports(
+            source,
+            &canon_project,
+            &HashMap::new(),
+            &HashMap::new(),
+            Some(&resolver),
+            None,
+        )
+        .expect("well-formed XML parses")
+    })
 }
 
 /// [`parse_with_sdk`], reading the body back from `project_path` on disk
@@ -166,7 +192,7 @@ where
 {
     parse_with_sdk(
         project_path,
-        &std::fs::read_to_string(project_path).unwrap(),
+        &host_fs::read_to_string(project_path).unwrap(),
         resolver,
     )
 }
@@ -179,7 +205,7 @@ where
 {
     parse_with_sdk_resolution(
         project_path,
-        &std::fs::read_to_string(project_path).unwrap(),
+        &host_fs::read_to_string(project_path).unwrap(),
         resolver,
     )
 }
@@ -198,17 +224,19 @@ where
     F: Fn(&str) -> Result<SdkResolution, SdkResolveError>,
 {
     let canon_project = canon(project_path);
-    let source = std::fs::read_to_string(project_path).unwrap();
-    let resolver = |name: &str| resolver(name);
-    parse_fsproj_with_imports(
-        &source,
-        &canon_project,
-        &extras,
-        &environment,
-        Some(&resolver),
-        None,
-    )
-    .expect("well-formed XML parses")
+    let source = host_fs::read_to_string(project_path).unwrap();
+    let resolver = |name: &str, _observer: &crate::observed::Observer| resolver(name);
+    sound(&canon_project, || {
+        parse_fsproj_with_imports(
+            &source,
+            &canon_project,
+            &extras,
+            &environment,
+            Some(&resolver),
+            None,
+        )
+        .expect("well-formed XML parses")
+    })
 }
 
 /// Materialise a synthetic SDK with the standard `Sdk.{props,targets}`

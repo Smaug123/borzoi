@@ -29,7 +29,7 @@ use tempfile::TempDir;
 fn self_default_names() -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for file in common::sdk_chain::msbuild_files(&common::sdk_chain::sdk_dir()) {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        let Ok(text) = borzoi_msbuild::observed::host_fs::read_to_string(&file) else {
             continue;
         };
         let Ok(doc) = roxmltree::Document::parse(&text) else {
@@ -122,7 +122,7 @@ fn visual_studio_version_on_a_real_sdk_project_is_exact_or_declined() {
 
     let dotnet_root = common::dotnet_root_from_env();
     let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
-    let resolver = |name: &str| {
+    let resolver = |name: &str, observer: &borzoi_msbuild::observed::Observer| {
         resolve_sdk(
             &dotnet_root,
             None,
@@ -134,6 +134,7 @@ fn visual_studio_version_on_a_real_sdk_project_is_exact_or_declined() {
                 overrides_present,
                 global_json_pins_workload_set: false,
             },
+            observer,
         )
     };
     let ours = parse_fsproj_with_imports(

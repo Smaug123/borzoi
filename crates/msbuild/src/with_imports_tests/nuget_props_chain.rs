@@ -665,10 +665,11 @@ fn global_toolset_property_is_not_clobbered_by_seeding() {
 </Project>"#,
     );
     let canon_project = canon(&project_path);
-    let source = std::fs::read_to_string(&project_path).unwrap();
+    let source = crate::observed::host_fs::read_to_string(&project_path).unwrap();
     let mut extras = HashMap::new();
     extras.insert("MSBuildSDKsPath".to_string(), "/global/sdks".to_string());
     let resolver = canonical_sdk_resolver(sdk);
+    let resolver = |name: &str, _: &crate::observed::Observer| resolver(name);
     let result = parse_fsproj_with_imports(
         &source,
         &canon_project,

@@ -13,6 +13,7 @@
 //! A failure aborts this test binary; the last `pump:` line on stderr names the
 //! path that overflowed.
 
+use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -83,15 +84,22 @@ const BYTE_BUDGET: usize = 512 << 10;
 fn corpus_projects() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fsproj-corpus");
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&root).expect("the fsproj fixture corpus") {
+    for entry in
+        borzoi_msbuild::observed::host_fs::read_dir(&root).expect("the fsproj fixture corpus")
+    {
         let dir = entry.expect("a corpus entry").path();
-        if !dir.is_dir() {
+        if !dir.host_is_dir() {
             continue;
         }
-        for file in std::fs::read_dir(&dir).expect("a corpus project directory") {
+        for file in
+            borzoi_msbuild::observed::host_fs::read_dir(&dir).expect("a corpus project directory")
+        {
             let file = file.expect("a corpus file").path();
             if file.extension().is_some_and(|e| e == "fsproj") {
-                out.push(std::fs::read_to_string(&file).expect("a corpus project"));
+                out.push(
+                    borzoi_msbuild::observed::host_fs::read_to_string(&file)
+                        .expect("a corpus project"),
+                );
             }
         }
     }
@@ -138,7 +146,7 @@ fn the_deepest_choose_msbuild_loads_evaluates_on_the_pump_stack() {
         "</When></Choose>".repeat(depth),
     );
     let tmp = tempfile::tempdir().expect("a temp dir");
-    let dir = tmp.path().canonicalize().expect("canonical temp dir");
+    let dir = tmp.path().host_canonicalize().expect("canonical temp dir");
     let as_project = on_pump_stack("deepest Choose as the project", {
         let text = text.clone();
         move || evaluate_as_project(text)
@@ -153,7 +161,7 @@ fn the_deepest_choose_msbuild_loads_evaluates_on_the_pump_stack() {
 #[test]
 fn no_pumped_path_overflows_the_evaluator() {
     let tmp = tempfile::tempdir().expect("a temp dir");
-    let dir = tmp.path().canonicalize().expect("canonical temp dir");
+    let dir = tmp.path().host_canonicalize().expect("canonical temp dir");
     let mut inputs = vec![EVERY_CONSTRUCT.to_owned()];
     inputs.extend(corpus_projects());
     let mut paths = Vec::new();

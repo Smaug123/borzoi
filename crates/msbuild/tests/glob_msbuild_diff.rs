@@ -29,6 +29,7 @@
 
 mod common;
 
+use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -139,7 +140,7 @@ fn assert_matches_msbuild(
 
 fn canonical_tempdir() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let root = borzoi_msbuild::observed::host_fs::canonicalize(tmp.path()).unwrap();
     (tmp, root)
 }
 
@@ -303,7 +304,7 @@ fn generated_order_matches_msbuild() {
                 lay_down(&ext, &["e1.fs", "E2.fs", "deep/e3.fsi"]);
                 std::os::unix::fs::symlink(&ext, root.join("lnk")).unwrap();
             }
-            if case % 5 == 0 && root.join("sub").is_dir() {
+            if case % 5 == 0 && root.join("sub").host_is_dir() {
                 std::fs::create_dir_all(root.join("_d")).unwrap();
                 std::os::unix::fs::symlink(root.join("sub"), root.join("_d/to_sub")).unwrap();
             }

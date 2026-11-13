@@ -148,7 +148,7 @@ fn glob_include_expands_property_defined_later_in_document() {
         Ok(resolved.clone())
     };
     let result = parse_fsproj_with_imports(
-        &std::fs::read_to_string(&project_path).unwrap(),
+        &crate::observed::host_fs::read_to_string(&project_path).unwrap(),
         &canon_project,
         &HashMap::new(),
         &HashMap::new(),

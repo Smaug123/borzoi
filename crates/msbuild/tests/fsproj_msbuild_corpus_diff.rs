@@ -59,6 +59,8 @@
 //! `TRACE`, and TFM/platform symbols) after every parser-reported symbol has
 //! been accounted for.
 
+use borzoi_msbuild::observed::host_fs;
+use host_fs::HostPath;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
@@ -121,7 +123,7 @@ impl Config {
         let pinned_corpus = std::env::var_os("BORZOI_CORPUS")
             .map(PathBuf::from)
             .map(|p| {
-                fs::canonicalize(&p).map_err(|e| format!("BORZOI_CORPUS {}: {e}", p.display()))
+                host_fs::canonicalize(&p).map_err(|e| format!("BORZOI_CORPUS {}: {e}", p.display()))
             })
             .transpose()?;
         let project_source = project_source_from_env(
@@ -132,7 +134,7 @@ impl Config {
         )?;
         let whole_pinned_corpus = match (&project_source, &pinned_corpus) {
             (ProjectSource::CorpusRoot(root), Some(pinned)) => {
-                fs::canonicalize(root).ok().as_ref() == Some(pinned)
+                host_fs::canonicalize(root).ok().as_ref() == Some(pinned)
             }
             _ => false,
         };
@@ -177,7 +179,7 @@ fn projects_from_source(
             })
             .collect::<Result<Vec<_>, _>>()?,
         ProjectSource::CorpusRoot(root) => {
-            if !root.is_dir() {
+            if !root.host_is_dir() {
                 return Err(format!("corpus root {} is not a directory", root.display()));
             }
             collect_fsprojs(&root)
@@ -230,7 +232,7 @@ fn project_source_from_env(
     }
     if let Some(file) = project_list_file {
         let file = PathBuf::from(file);
-        let text = fs::read_to_string(&file)
+        let text = host_fs::read_to_string(&file)
             .map_err(|e| format!("read project list {}: {e}", file.display()))?;
         return Ok(ProjectSource::ProjectList(parse_project_list_file(&text)));
     }
@@ -292,7 +294,7 @@ impl Run {
     /// the pinned corpus. `None` for a project outside it.
     fn manifest_key(&self, project: &str) -> Option<String> {
         let root = self.config.pinned_corpus.as_ref()?;
-        let path = fs::canonicalize(project).unwrap_or_else(|_| PathBuf::from(project));
+        let path = host_fs::canonicalize(project).unwrap_or_else(|_| PathBuf::from(project));
         path.starts_with(root).then(|| corpus_relative(root, &path))
     }
 
@@ -364,7 +366,7 @@ impl Run {
             manifest::check(&manifest_path(), &actual, REGENERATE);
         } else if !actual.entries().is_empty() {
             let path = manifest_path();
-            let text = fs::read_to_string(&path)
+            let text = host_fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
             let expected = Manifest::parse(&text).unwrap_or_else(|(line, e)| {
                 panic!(
@@ -410,13 +412,13 @@ fn visited_movement(expected: &Manifest, actual: &Manifest) -> ManifestDiff {
 
 fn compare_project(project: &Path) -> ProjectReport {
     let display = project.display().to_string();
-    let fsproj = match fs::canonicalize(project) {
+    let fsproj = match host_fs::canonicalize(project) {
         Ok(p) => p,
         Err(e) => {
             return ProjectReport::error(display, Stage::Setup, format!("canonicalize: {e}"));
         }
     };
-    let source = match fs::read_to_string(&fsproj) {
+    let source = match host_fs::read_to_string(&fsproj) {
         Ok(s) => s,
         Err(e) => return ProjectReport::error(display, Stage::Setup, format!("read: {e}")),
     };
@@ -425,7 +427,8 @@ fn compare_project(project: &Path) -> ProjectReport {
         Ok(sdk) => sdk,
         Err(e) => return ProjectReport::error(display, Stage::Setup, e),
     };
-    let resolver = |name: &str| sdk.resolve(name);
+    let resolver =
+        |name: &str, observer: &borzoi_msbuild::observed::Observer| sdk.resolve(name, observer);
     let mut extra_properties = HashMap::new();
     extra_properties.insert("DISABLE_ARCADE".to_string(), "true".to_string());
     let parsed = match parse_fsproj_with_imports(
@@ -441,6 +444,17 @@ fn compare_project(project: &Path) -> ProjectReport {
         Ok(parsed) => parsed,
         Err(e) => return ProjectReport::error(display, Stage::Parse, e.to_string()),
     };
+    // What an evaluation's read set costs to validate (Stage 3b of
+    // `docs/incremental-lsp-plan.md`), per project.
+    let counts = parsed.read_counts;
+    eprintln!(
+        "{display}: read set {} reads ({} opens, {} stats, {} listings, {} canonicalisations)",
+        parsed.read_set.len(),
+        counts.opens,
+        counts.stats,
+        counts.listings,
+        counts.canonicalizations,
+    );
 
     let msbuild = match run_msbuild(&fsproj) {
         Ok(msbuild) => msbuild,
@@ -786,7 +800,9 @@ impl SdkContext {
         let dotnet_root = std::env::var_os("DOTNET_ROOT").map(PathBuf::from);
         let nuget_packages_dir = resolve_nuget_packages_dir(project_dir);
 
-        let Some(global_json_path) = find_global_json(project_dir) else {
+        let Some(global_json_path) =
+            find_global_json(project_dir, &borzoi_msbuild::observed::Observer::new())
+        else {
             let dotnet_root = dotnet_root
                 .ok_or_else(|| "DOTNET_ROOT is not set; run under nix develop".to_string())?;
             return Ok(Self {
@@ -798,7 +814,7 @@ impl SdkContext {
             });
         };
 
-        let text = fs::read_to_string(&global_json_path)
+        let text = host_fs::read_to_string(&global_json_path)
             .map_err(|e| format!("read {}: {e}", global_json_path.display()))?;
         let parsed = parse_global_json(&text)
             .map_err(|e| format!("parse {}: {e}", global_json_path.display()))?;
@@ -825,7 +841,11 @@ impl SdkContext {
         })
     }
 
-    fn resolve(&self, sdk_name: &str) -> Result<SdkResolution, SdkResolveError> {
+    fn resolve(
+        &self,
+        sdk_name: &str,
+        observer: &borzoi_msbuild::observed::Observer,
+    ) -> Result<SdkResolution, SdkResolveError> {
         // Same workload context the corpus's real `dotnet msbuild`
         // comparisons run under (the test process environment).
         // Empty home-ish values count as unset (`string.IsNullOrEmpty`
@@ -865,6 +885,7 @@ impl SdkContext {
                 Some(&self.spec),
                 Some(&self.msbuild_sdks),
                 &workload_env,
+                observer,
             ) {
                 Ok(resolution) => return Ok(resolution),
                 Err(e @ SdkResolveError::VersionNotSatisfied { .. }) => {
@@ -928,14 +949,14 @@ fn collect_fsprojs(root: &Path) -> Vec<PathBuf> {
 }
 
 fn collect_fsprojs_into(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
+    let Ok(entries) = host_fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if path.is_dir() {
+        if path.host_is_dir() {
             if should_skip_dir(&name) {
                 continue;
             }
@@ -1063,7 +1084,7 @@ fn item_kind_name(kind: ItemKind) -> &'static str {
 }
 
 fn path_key(path: &Path) -> String {
-    let path = fs::canonicalize(path).unwrap_or_else(|_| normalize_lexical(path));
+    let path = host_fs::canonicalize(path).unwrap_or_else(|_| normalize_lexical(path));
     to_forward_slashes(&path)
 }
 

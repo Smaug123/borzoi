@@ -147,7 +147,7 @@ struct Case {
 /// mistaken for the override decline.
 fn declined_by_override(disc: &SdkDiscovery, sdk_ref: &str) -> bool {
     matches!(
-        disc.resolve(sdk_ref),
+        disc.resolve(sdk_ref, &borzoi_msbuild::observed::Observer::new()),
         Err(SdkResolveError::UnsupportedLayout { reason }) if reason.contains("MSBuildSDKsPath")
     )
 }

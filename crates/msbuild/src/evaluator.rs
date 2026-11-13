@@ -70,6 +70,7 @@ use super::diagnostic::{
     StructuralPackageReferenceUncertainty,
 };
 use super::imports::normalise;
+use super::observed::{self, EntryKind, Observer, ReadCounts, ReadSet};
 use super::properties::escaping::Escaped;
 use super::properties::{self, Issue, PropertyMap};
 use super::trust::{
@@ -107,6 +108,9 @@ pub fn walk(
 ) -> ParsedProject {
     let root = doc.root_element();
     let local_overrides = collect_local_overrides(root);
+    // The pure walker follows no import and resolves no SDK, so nothing
+    // reaches the observer; `parse_fsproj` promises that.
+    let observer = Observer::new();
     let mut state = State::new(
         project_path,
         extra_properties,
@@ -115,6 +119,7 @@ pub fn walk(
         false,
         None,
         None,
+        &observer,
     );
     let project_dir = project_path.parent().unwrap_or_else(|| Path::new(""));
     // SDK resolution requires IO, which the pure walker doesn't do.
@@ -139,7 +144,12 @@ pub fn walk(
     }
     walk_doc_body(root, project_dir, &mut state);
     replay_deferred_item_groups(doc, &mut state);
-    state.into_project()
+    let project = state.into_project();
+    assert!(
+        observer.finish().0.is_empty(),
+        "the pure walker observed the file system"
+    );
+    project
 }
 
 /// Whether the deferred second pass in [`walk_with_imports`] could change
@@ -223,6 +233,7 @@ pub fn walk_with_imports<'r>(
     detected_packages_props: Option<&Path>,
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
+    observer: &'r Observer,
 ) -> ParsedProject {
     let walk = |target_framework_reads| {
         walk_in_msbuild_order(
@@ -235,6 +246,7 @@ pub fn walk_with_imports<'r>(
             detected_packages_props,
             sdk_resolver,
             glob_resolver,
+            observer,
             target_framework_reads,
         )
     };
@@ -270,6 +282,7 @@ fn walk_in_msbuild_order<'r>(
     detected_packages_props: Option<&Path>,
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
+    observer: &'r Observer,
     target_framework_reads: TargetFrameworkReads,
 ) -> (ParsedProject, WalkObservations) {
     // Pass 1: the eager before-body `Directory.Build.props` splice
@@ -292,6 +305,7 @@ fn walk_in_msbuild_order<'r>(
         detected_packages_props,
         sdk_resolver,
         glob_resolver,
+        observer,
         false,
         target_framework_reads,
     );
@@ -320,6 +334,7 @@ fn walk_in_msbuild_order<'r>(
         detected_packages_props,
         sdk_resolver,
         glob_resolver,
+        observer,
         true,
         target_framework_reads,
     );
@@ -402,6 +417,7 @@ fn walk_once<'r>(
     detected_packages_props: Option<&Path>,
     sdk_resolver: Option<&'r SdkResolver<'r>>,
     glob_resolver: Option<&'r GlobResolver<'r>>,
+    observer: &'r Observer,
     defer_directory_build_props: bool,
     target_framework_reads: TargetFrameworkReads,
 ) -> (ParsedProject, WalkObservations) {
@@ -415,6 +431,7 @@ fn walk_once<'r>(
         true,
         sdk_resolver,
         glob_resolver,
+        observer,
     );
     state.target_framework_reads = target_framework_reads;
     // Seed `imports_seen` with the entry project so an import that names
@@ -427,7 +444,7 @@ fn walk_once<'r>(
         .insert(import_dedup_fuzzy_key(project_path));
     state
         .walked_files
-        .insert(canonicalise_or_normalise(project_path));
+        .insert(canonicalise_or_normalise(observer, project_path));
     state.implicit_directory_build_props_fallback = implicit_props.map(Path::to_path_buf);
     let project_dir = project_path.parent().unwrap_or_else(|| Path::new(""));
     state.directory_build_props_splice_pending = true;
@@ -448,7 +465,7 @@ fn walk_once<'r>(
         // the import point we currently own so that standard rediscovery is
         // still suppressed, while later SDK retargets to a different path keep
         // flowing through normal import evaluation.
-        state.directory_build_props_splice_path = Some(canonicalise_or_normalise(&path));
+        state.directory_build_props_splice_path = Some(canonicalise_or_normalise(observer, &path));
     }
 
     // Resolve the project root's SDK shorthand (if any). The returned
@@ -655,7 +672,7 @@ fn walk_once<'r>(
         && !state.sdk_reached_directory_build_targets_import
         && !state
             .walked_files
-            .contains(&canonicalise_or_normalise(path))
+            .contains(&canonicalise_or_normalise(observer, path))
     {
         if matches!(source, ResolutionSource::Fallback) {
             seed_directory_build_path(&mut state, "DirectoryBuildTargetsPath", path);
@@ -700,13 +717,15 @@ fn walk_once<'r>(
                 .get_unescaped("DirectoryPackagesPropsPath")
                 .map(|raw| raw.trim().replace('\\', "/"))
                 .filter(|path| !path.is_empty())
-                .is_some_and(|path| canonicalise_or_normalise(Path::new(&path)) == *walked)
+                .is_some_and(|path| {
+                    canonicalise_or_normalise(observer, Path::new(&path)) == *walked
+                })
         });
     if let Some(path) = detected_packages_props
         && !redirected_central_file_walked
         && !state
             .walked_files
-            .contains(&canonicalise_or_normalise(path))
+            .contains(&canonicalise_or_normalise(observer, path))
     {
         state.package_references_uncertain = true;
         state
@@ -778,7 +797,7 @@ fn resolve_project_sdk(root: Node<'_, '_>, state: &mut State<'_>) -> Option<SdkP
         );
         return None;
     };
-    match resolver(sdk) {
+    match resolver(sdk, state.observer) {
         // SDK-root *recording* (for `ParsedProject::resolved_sdk_root`) is the
         // entry caller's responsibility; but the *tolerance* set must include
         // every resolved SDK — entry, nested, and via `<Import Sdk=…>` — so its
@@ -879,7 +898,7 @@ fn find_explicit_sdk_promotion(
     // Promotion needs the canonical entry points; a locator-style
     // resolution has none, so it is not a promotion candidate (the body
     // walk handles the import naturally).
-    let sdk_paths = match resolver(sdk_name).ok()? {
+    let sdk_paths = match resolver(sdk_name, state.observer).ok()? {
         SdkResolution::Single(paths) => paths,
         SdkResolution::Roots(_) => return None,
     };
@@ -1054,7 +1073,7 @@ fn resolve_directory_build_path(
             } else {
                 project_dir.join(candidate)
             };
-            return resolved.exists().then_some(Resolution {
+            return observed::exists(state.observer, &resolved).then_some(Resolution {
                 path: resolved,
                 source: ResolutionSource::Override,
             });
@@ -1186,12 +1205,12 @@ fn walk_doc_body(root: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
     }
 }
 
-/// Try [`std::fs::canonicalize`]; on failure (file doesn't exist yet,
+/// Try to canonicalise `path` (through `observer`); on failure (file doesn't exist yet,
 /// permission error, etc.) fall back to lexical `.`/`..` collapse.
 /// We never compare these paths to anything other than other
 /// canonicalised paths.
-fn canonicalise_or_normalise(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| normalise(path))
+fn canonicalise_or_normalise(observer: &Observer, path: &Path) -> PathBuf {
+    observed::canonicalize(observer, path).unwrap_or_else(|_| normalise(path))
 }
 
 /// First tier of the import-dedup identity, modelling MSBuild's
@@ -1444,6 +1463,9 @@ struct State<'r> {
     /// [`DiagnosticKind::UnsupportedItemOperation`]. See
     /// [`crate::GlobResolver`].
     glob_resolver: Option<&'r GlobResolver<'r>>,
+    /// Where every file-system query of the walk is made and recorded
+    /// ([`crate::observed`]), the resolvers' included.
+    observer: &'r Observer,
     /// Byte ranges of *entry-project* body `<Import Sdk="X"
     /// Project="Sdk.{props,targets}"/>` nodes that the pre-scan in
     /// [`find_explicit_sdk_promotion`] has hoisted to the root SDK
@@ -1761,6 +1783,7 @@ impl Expansion {
 }
 
 impl<'r> State<'r> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         project_path: &Path,
         extra_properties: &HashMap<String, String>,
@@ -1769,6 +1792,7 @@ impl<'r> State<'r> {
         follow_imports: bool,
         sdk_resolver: Option<&'r SdkResolver<'r>>,
         glob_resolver: Option<&'r GlobResolver<'r>>,
+        observer: &'r Observer,
     ) -> Self {
         let mut lookup = properties::well_known(project_path);
         // Reserved well-known names are unconditionally protected;
@@ -2003,6 +2027,7 @@ impl<'r> State<'r> {
             import_site_span: None,
             sdk_resolver,
             glob_resolver,
+            observer,
             hoisted_sdk_imports: HashSet::new(),
             directory_build_props_splice_path: None,
             directory_build_targets_splice_path: None,
@@ -2293,7 +2318,8 @@ impl<'r> State<'r> {
             vec![root]
         };
         for boundary in boundaries {
-            let canon = std::fs::canonicalize(boundary).unwrap_or_else(|_| boundary.to_path_buf());
+            let canon = observed::canonicalize(self.observer, boundary)
+                .unwrap_or_else(|_| boundary.to_path_buf());
             if !self.sdk_tolerance_roots.contains(&canon) {
                 self.sdk_tolerance_roots.push(canon);
             }
@@ -2334,8 +2360,8 @@ impl<'r> State<'r> {
         // Real `dotnet msbuild` reports its own fully-resolved location
         // (the process resolves symlinks to find itself), so canonicalise
         // for the same shape; the tolerance roots are canonical too.
-        let version_dir =
-            std::fs::canonicalize(version_dir).unwrap_or_else(|_| version_dir.to_path_buf());
+        let version_dir = observed::canonicalize(self.observer, version_dir)
+            .unwrap_or_else(|_| version_dir.to_path_buf());
         let dir = version_dir.to_string_lossy().replace('\\', "/");
         let reserved = [
             ("MSBuildToolsPath", dir.clone()),
@@ -2535,6 +2561,7 @@ impl<'r> State<'r> {
             import_site_span: _,
             sdk_resolver: _,
             glob_resolver: _,
+            observer: _,
             hoisted_sdk_imports: _,
             directory_build_props_splice_path: _,
             directory_build_targets_splice_path: _,
@@ -2708,6 +2735,10 @@ impl<'r> State<'r> {
             package_references_uncertain,
             package_reference_uncertainties,
             locally_overridable_properties: locally_overridable.into_iter().collect(),
+            // The read set is the whole evaluation's, every pass included, so
+            // `parse_fsproj_with_imports` fills it in once the walk is done.
+            read_set: ReadSet::default(),
+            read_counts: ReadCounts::default(),
             resolved_sdk_root,
         }
     }
@@ -3219,13 +3250,14 @@ impl<'r> State<'r> {
         if self.walk_opaque.is_some() {
             return false;
         }
-        let exists = exists_dir.map(|dir| move |path: &str| condition_exists(path, dir));
-        let exists: Option<&dyn Fn(&str) -> bool> = match (&exists, self.follow_imports) {
-            (Some(exists), true) => Some(exists),
+        let observer = self.observer;
+        let exists = exists_dir.map(|dir| move |path: &str| condition_exists(observer, path, dir));
+        let probes = match (&exists, self.follow_imports) {
+            (Some(exists), true) => Some(condition::Probes { exists, observer }),
             _ => None,
         };
         matches!(
-            condition::decide_without(cond, &self.lookup, exists, &unknown),
+            condition::decide_without(cond, &self.lookup, probes, &unknown),
             condition::Decision::Decided(_)
         )
     }
@@ -3337,7 +3369,7 @@ impl<'r> State<'r> {
         // FS-probing property functions are with-imports-only; the pure
         // surface documents "no filesystem access".
         let (value, issues) = if self.follow_imports {
-            properties::substitute_with_fs(raw, &self.lookup)
+            properties::substitute_with_fs(raw, &self.lookup, self.observer)
         } else {
             properties::substitute(raw, &self.lookup)
         };
@@ -4472,8 +4504,15 @@ fn evaluate_condition_with_exemptions(
         return CondGate::Run;
     };
     let mut eval = if state.follow_imports {
-        let exists = |path: &str| condition_exists(path, current_file_dir);
-        condition::evaluate_with_exists(cond, &state.lookup, &exists)
+        let exists = |path: &str| condition_exists(state.observer, path, current_file_dir);
+        condition::evaluate_with_exists(
+            cond,
+            &state.lookup,
+            condition::Probes {
+                exists: &exists,
+                observer: state.observer,
+            },
+        )
     } else {
         condition::evaluate(cond, &state.lookup)
     };
@@ -4625,7 +4664,7 @@ fn evaluate_property_condition(node: Node<'_, '_>, state: &mut State<'_>) -> Con
     evaluate_condition_with_exemptions(node, &base_dir, state, &self_name)
 }
 
-fn condition_exists(path: &str, current_file_dir: &Path) -> bool {
+fn condition_exists(observer: &Observer, path: &str, current_file_dir: &Path) -> bool {
     if path.is_empty() {
         return false;
     }
@@ -4636,7 +4675,7 @@ fn condition_exists(path: &str, current_file_dir: &Path) -> bool {
     } else {
         current_file_dir.join(path)
     };
-    resolved.exists()
+    observed::exists(observer, &resolved)
 }
 
 fn emit_unsupported_condition(node: Node<'_, '_>, state: &mut State<'_>) {
@@ -5054,8 +5093,15 @@ fn property_child_could_write(child: Node<'_, '_>, state: &State<'_>) -> bool {
         return true;
     };
     let mut eval = if state.follow_imports {
-        let exists = |path: &str| condition_exists(path, &state.entry_project_dir);
-        condition::evaluate_with_exists(cond, &state.lookup, &exists)
+        let exists = |path: &str| condition_exists(state.observer, path, &state.entry_project_dir);
+        condition::evaluate_with_exists(
+            cond,
+            &state.lookup,
+            condition::Probes {
+                exists: &exists,
+                observer: state.observer,
+            },
+        )
     } else {
         condition::evaluate(cond, &state.lookup)
     };
@@ -5318,7 +5364,7 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             );
             return;
         };
-        let resolution = match resolver(sdk_name) {
+        let resolution = match resolver(sdk_name, state.observer) {
             Ok(resolution) => resolution,
             Err(err) => {
                 state.push(sdk_error_to_diagnostic(sdk_name, err), node.range());
@@ -5623,7 +5669,7 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             .and_then(simple_property_reference)
             .is_some_and(|name| name.eq_ignore_ascii_case("DirectoryPackagesPropsPath"))
         {
-            let canon = canonicalise_or_normalise(&path);
+            let canon = canonicalise_or_normalise(state.observer, &path);
             if state.walked_files.contains(&canon) {
                 state.walked_directory_packages_props_import = Some(canon);
             }
@@ -5673,7 +5719,7 @@ fn follow_wildcard_import(
         );
         return;
     }
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match observed::read_dir(state.observer, dir) {
         Ok(entries) => entries,
         Err(e)
             if matches!(
@@ -5709,10 +5755,11 @@ fn follow_wildcard_import(
         }
     };
     let mut matches: Vec<PathBuf> = entries
+        .into_iter()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|t| !t.is_dir()))
-        .filter(|entry| wildcard_matches(&file_pattern, &entry.file_name().to_string_lossy()))
-        .map(|entry| entry.path())
+        .filter(|entry| entry.kind.as_ref().is_ok_and(|&k| k != EntryKind::Dir))
+        .filter(|entry| wildcard_matches(&file_pattern, &entry.name.to_string_lossy()))
+        .map(|entry| entry.path)
         .collect();
     // MSBuild consumes wildcard matches in ordinal-ignore-case order
     // (verified against `dotnet msbuild`: `a.props` imports before
@@ -5897,7 +5944,7 @@ fn is_sdk_directory_build_rediscovery_import(
     if written_by_splice {
         return true;
     }
-    let resolved = canonicalise_or_normalise(&resolved);
+    let resolved = canonicalise_or_normalise(state.observer, &resolved);
     if splice_path.is_some_and(|path| resolved == *path) {
         return true;
     }
@@ -5925,7 +5972,7 @@ fn pending_directory_build_props_splice_matches(resolved_import: &Path, state: &
     ) else {
         return false;
     };
-    canonicalise_or_normalise(&path) == resolved_import
+    canonicalise_or_normalise(state.observer, &path) == resolved_import
 }
 
 fn simple_property_reference(raw: &str) -> Option<&str> {
@@ -6082,7 +6129,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // never resolves symlinks when deduping, so an alias of an imported
     // file must still walk (its dedup key differs), while `walked_files`
     // wants the file's real identity.
-    let canon = match std::fs::canonicalize(path) {
+    let canon = match observed::canonicalize(state.observer, path) {
         Ok(c) => c,
         Err(e) => {
             let reason = if e.kind() == std::io::ErrorKind::NotFound {
@@ -6102,7 +6149,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
             return;
         }
     };
-    let source = match std::fs::read_to_string(&canon) {
+    let source = match observed::read_to_string(state.observer, &canon) {
         Ok(s) => s,
         Err(e) => {
             let reason = if e.kind() == std::io::ErrorKind::NotFound {
@@ -6191,9 +6238,9 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // root) or a directory symlink inside the SDK tree pointing out (parent
     // canonicalises to the escape target) are both correctly *not* tolerated —
     // only a genuine leaf-file symlink out of a real in-tree directory is.
-    let reach_parent_canon = path
-        .parent()
-        .map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
+    let reach_parent_canon = path.parent().map(|dir| {
+        observed::canonicalize(state.observer, dir).unwrap_or_else(|_| dir.to_path_buf())
+    });
     let saved_in_sdk_subtree = state.in_sdk_subtree;
     state.in_sdk_subtree = state.sdk_tolerance_roots.iter().any(|root| {
         canon.starts_with(root)
@@ -6345,11 +6392,13 @@ fn walk_directory_build_file(
 ) {
     match kind {
         DirectoryBuildFile::Props => {
-            state.directory_build_props_splice_path = Some(canonicalise_or_normalise(path));
+            state.directory_build_props_splice_path =
+                Some(canonicalise_or_normalise(state.observer, path));
             state.directory_build_props_splice_pending = false;
         }
         DirectoryBuildFile::Targets => {
-            state.directory_build_targets_splice_path = Some(canonicalise_or_normalise(path));
+            state.directory_build_targets_splice_path =
+                Some(canonicalise_or_normalise(state.observer, path));
         }
     }
     let saved = state.active_directory_build_splice;

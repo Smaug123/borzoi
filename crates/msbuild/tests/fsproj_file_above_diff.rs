@@ -57,6 +57,7 @@
 
 mod common;
 
+use borzoi_msbuild::observed::host_fs::HostPath;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -144,7 +145,7 @@ fn project_xml(expression: &str) -> String {
 /// [`LEVELS`]; bit *i* set means the marker exists at that level. Returns the
 /// path of the project file, which always lives in the innermost level.
 fn build_tree(root: &Path, placement: usize) -> std::path::PathBuf {
-    if root.exists() {
+    if root.host_exists() {
         std::fs::remove_dir_all(root).expect("clear case directory");
     }
     for (index, level) in LEVELS.iter().enumerate() {
