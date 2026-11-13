@@ -31,6 +31,10 @@
 //!   (`ReadChecks::resolution` walks it as the kernel does: following
 //!   symlinks, and taking each `..` from the directory reached).
 //!
+//! A read whose path is not spelt as its components (a trailing separator,
+//! a `.` or `..`, a doubled separator, a relative path) is resolved by the
+//! kernel in ways these rules do not follow, and has no witness.
+//!
 //! Whole-file reads are confirmed by the file's own stamp
 //! ([`DiskCache::text_answer`]). A read that failed for any reason but
 //! absence is asked again in every generation, as is one whose resolution
@@ -53,9 +57,12 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use borzoi_msbuild::observed::EntryKind;
 use borzoi_msbuild::observed::{Failure, Observation, Read, ReadCounts};
 
 use crate::observed::HostDisk;
+use crate::paths::lexically_normalize;
 use crate::vfs::{Disk, DiskCache, Nanos, Stamp};
 
 /// How many symlinks a walk follows before it gives up, as `ELOOP` does.
@@ -217,6 +224,13 @@ impl<D: Probe> ReadChecks<D> {
             Err(failure) => failure.is_absent(),
         };
         let path = &read.path;
+        // A spelling the kernel resolves otherwise than component by
+        // component (a trailing separator follows a final symlink, `..` is
+        // taken from the directory reached, a relative path from the working
+        // directory) has no witness.
+        if !path.is_absolute() || lexically_normalize(path).as_os_str() != path.as_os_str() {
+            return None;
+        }
         let parent = || path.parent().map(|dir| vec![dir.to_path_buf()]);
         match &read.observation {
             Observation::Listing(Ok(_)) => Some(vec![path.clone()]),
@@ -359,3 +373,52 @@ impl<D: Probe> ReadChecks<D> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod host_tests {
+    use super::*;
+    use crate::observed::host_fs;
+
+    /// A path the kernel resolves differently from its components (a
+    /// trailing separator follows a final symlink, `..` is taken from the
+    /// directory reached) has no witness: it is asked in every generation.
+    /// Here `link/` names the target directory through a symlink, and the
+    /// target's deletion is noticed though the link's directory is unchanged.
+    #[test]
+    fn a_spelling_the_stamps_cannot_follow_is_asked_every_time() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = host_fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere/target")).unwrap();
+        std::fs::create_dir(root.join("here")).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere/target"), root.join("here/link")).unwrap();
+        let spellings = [
+            PathBuf::from(format!("{}/here/link/", root.display())),
+            root.join("here/link/../target"),
+        ];
+        let checks: Vec<Check> = spellings
+            .iter()
+            .map(|path| {
+                let observation = HostDisk.answer(path, &Observation::Kind(Ok(EntryKind::Dir)));
+                Check::new(Read {
+                    path: path.clone(),
+                    observation,
+                })
+            })
+            .collect();
+        let mut checker = ReadChecks::<HostDisk>::default();
+        // Far enough ahead that no stamp is racy, so a witness would be used.
+        let mut at = Nanos(i128::MAX / 2);
+        for _ in 0..2 {
+            checker.begin_generation(at);
+            assert!(checks.iter().all(|check| checker.holds(check)));
+            checker.end_generation();
+            at = Nanos(at.0 + 1);
+        }
+        std::fs::remove_dir(root.join("elsewhere/target")).unwrap();
+        checker.begin_generation(at);
+        for check in &checks {
+            assert!(!checker.holds(check), "{:?} held", check.read().path);
+        }
+        checker.end_generation();
+    }
+}

@@ -1421,8 +1421,10 @@ dozen, and the counts report it.
   NuGet folder, for every dotnet root SDK discovery consulted or the SDK
   resolved from, and the folder discovery names. A version directory reached
   through a symlink (Nix's combined installs are symlink farms) is matched in
-  its canonical spelling too, taken from a canonicalisation in the read set,
-  which is itself confirmed. Only a version some read showed to exist (a
+  its canonical spelling too, taken from a canonicalisation of the version
+  directory itself in the read set, which is confirmed. (A canonicalisation
+  of a path below a version says nothing about the version: a symlink there
+  can lead into the user's tree. Found by Codex.) Only a version some read showed to exist (a
   read inside it got an answer) is trusted, and the entry then confirms that
   it still does; a read inside a version no read showed to exist (an
   `Exists` probe of one not installed) is confirmed like any other
@@ -1436,7 +1438,11 @@ dozen, and the counts report it.
   per generation however many reads share it. A listing's witness is the
   directory; what a path names, its parent (and each link target's parent
   along a symlink chain); a canonical spelling, every directory its
-  resolution looks an entry up in, walked as the kernel walks it.
+  resolution looks an entry up in, walked as the kernel walks it. A path not
+  spelt as its components (a trailing separator, which follows a final
+  symlink; a `.` or `..`; a doubled separator) has no witness and is asked
+  in every generation (found by Codex: `Exists('link/')` was witnessed by
+  the link's directory alone).
 - **The graph walk reads the confirmed entry.** The env's project-graph walk
   evaluated the entry project afresh, a second evaluation on every cold env
   build. It now reads the cached evaluation when this generation has
@@ -1544,6 +1550,8 @@ Planted, each caught, then removed:
 | the version directory itself immutable, not only its contents | the immutable-content table only: the holder's listing still sees an install |
 | a discarded seeded pass's reads dropped (Codex) | `a_discarded_pass_reads_are_confirmed`, the checks sweep |
 | reads inside a version trusted before any showed it exists (Codex) | `a_version_installed_after_the_evaluation_is_seen` |
+| a version's alias inferred from a canonicalisation below it (Codex) | `only_a_version_directory_canonicalised_gives_an_alias` |
+| a witness for a trailing-separator spelling (Codex) | `a_spelling_the_stamps_cannot_follow_is_asked_every_time` |
 
 Three plants first passed every test: the canonical-spelling witness (the
 model could not move a directory), the seeded pass's reads and the graph walk

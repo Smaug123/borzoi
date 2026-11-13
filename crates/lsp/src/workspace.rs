@@ -345,34 +345,23 @@ impl ImmutableRoots {
     }
 
     /// Every version directory `reads` reach: those under the roots, and
-    /// the spelling a canonicalisation of one in `reads` resolved it to (an
-    /// install whose version directories are symlinks into another tree,
-    /// as Nix's combined installs are, is read through both spellings).
+    /// the spelling a canonicalisation in `reads` of a version directory
+    /// itself resolved it to (an install whose version directories are
+    /// symlinks into another tree, as Nix's combined installs are, is read
+    /// through both spellings). Only the version directory's own
+    /// canonicalisation names its other spelling: a symlink below a version
+    /// can lead anywhere.
     fn versions<'r>(&self, reads: impl IntoIterator<Item = &'r Read>) -> VersionDirs<'_> {
-        let mut aliases = Vec::new();
-        for read in reads {
-            let Observation::Canonical(Ok(canonical)) = &read.observation else {
-                continue;
-            };
-            let path = lexically_normalize(&read.path);
-            let Some((dir, below)) = self.version_of(&path) else {
-                continue;
-            };
-            // The canonical spelling of the version directory: the answer
-            // less the components below it, when they are the same names.
-            let tail: Vec<_> = path.components().rev().take(below).collect();
-            let canonical_tail: Vec<_> = canonical.components().rev().take(below).collect();
-            if tail != canonical_tail {
-                continue;
-            }
-            let mut alias = canonical.clone();
-            for _ in 0..below {
-                alias.pop();
-            }
-            if alias != dir {
-                aliases.push(alias);
-            }
-        }
+        let aliases = reads
+            .into_iter()
+            .filter_map(|read| {
+                let Observation::Canonical(Ok(canonical)) = &read.observation else {
+                    return None;
+                };
+                let (dir, below) = self.version_of(&lexically_normalize(&read.path))?;
+                (below == 0 && *canonical != dir).then(|| canonical.clone())
+            })
+            .collect();
         VersionDirs {
             roots: self,
             aliases,
@@ -5930,6 +5919,30 @@ mod tests {
             }
         }
 
+        /// A version's canonical spelling is an alias for it only when the
+        /// version directory itself was canonicalised: a symlink below a
+        /// version leads somewhere that is not that version.
+        #[test]
+        fn only_a_version_directory_canonicalised_gives_an_alias() {
+            let roots = ImmutableRoots {
+                dotnet: vec![PathBuf::from("/d")],
+                nuget: vec![],
+            };
+            let canonical = |path: &str, to: &str| Read {
+                path: PathBuf::from(path),
+                observation: Observation::Canonical(Ok(PathBuf::from(to))),
+            };
+            let below = [canonical("/d/sdk/1.0.0/Sdks/X/Sdk", "/repo/Sdks/X/Sdk")];
+            let versions = roots.versions(below.iter());
+            assert_eq!(versions.containing(Path::new("/repo/App.fsproj")), None);
+            let itself = [canonical("/d/sdk/1.0.0", "/real/sdk/1.0.0")];
+            let versions = roots.versions(itself.iter());
+            assert_eq!(
+                versions.containing(Path::new("/real/sdk/1.0.0/x.props")),
+                Some(PathBuf::from("/real/sdk/1.0.0"))
+            );
+        }
+
         /// The served pass of `evaluated`, or for a failed evaluation the
         /// evaluation of an empty `<Project />`.
         fn evaluation_of(project: &Path, evaluated: Option<EvaluatedProject>) -> ParsedProject {
@@ -5996,8 +6009,8 @@ mod tests {
             ];
             // A canonicalisation that resolved a version to another tree.
             let read = Read {
-                path: PathBuf::from("/d/sdk/10.0.100/Sdks/X"),
-                observation: Observation::Canonical(Ok(PathBuf::from("/real/sdk/10.0.100/Sdks/X"))),
+                path: PathBuf::from("/d/sdk/10.0.100"),
+                observation: Observation::Canonical(Ok(PathBuf::from("/real/sdk/10.0.100"))),
             };
             let versions = roots.versions(std::slice::from_ref(&read));
             for (path, expected) in cases {
