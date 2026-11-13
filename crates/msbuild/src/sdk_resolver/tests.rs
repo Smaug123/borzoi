@@ -1,3 +1,4 @@
+use crate::observed::Observer;
 use crate::observed::host_fs;
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -421,29 +422,9 @@ fn rejects_traversal_in_versioned_sdk_reference() {
     let tmp = TempDir::new().unwrap();
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
     // Empty name half rejected.
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "/Version",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
+    assert!(locate_dotnet_sdk(tmp.path(), None, "/Version", None, None, &Observer::new()).is_err());
     // `..` as the name half rejected.
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "../1.0.0",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
+    assert!(locate_dotnet_sdk(tmp.path(), None, "../1.0.0", None, None, &Observer::new()).is_err());
     // Backslash inside the name half rejected.
     assert!(
         locate_dotnet_sdk(
@@ -603,38 +584,10 @@ fn rejects_path_escape_via_absolute_sdk_name() {
 fn rejects_parent_dir_traversal() {
     let tmp = TempDir::new().unwrap();
     install_sdk(tmp.path(), "8.0.401", "Microsoft.NET.Sdk");
+    assert!(locate_dotnet_sdk(tmp.path(), None, "..", None, None, &Observer::new()).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "../etc", None, None, &Observer::new()).is_err());
     assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "..",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "../etc",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "foo/../bar",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
+        locate_dotnet_sdk(tmp.path(), None, "foo/../bar", None, None, &Observer::new()).is_err()
     );
 }
 
@@ -645,52 +598,12 @@ fn rejects_separators_inside_name() {
     // Backslash on macOS/Linux is just a regular byte to the
     // filesystem, but it would matter on Windows. Reject in
     // either case to keep behaviour portable.
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "foo/bar",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "foo\\bar",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
+    assert!(locate_dotnet_sdk(tmp.path(), None, "foo/bar", None, None, &Observer::new()).is_err());
+    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\\bar", None, None, &Observer::new()).is_err());
     // Empty rejected.
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
+    assert!(locate_dotnet_sdk(tmp.path(), None, "", None, None, &Observer::new()).is_err());
     // NUL rejected.
-    assert!(
-        locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            "foo\0bar",
-            None,
-            None,
-            &Observer::new()
-        )
-        .is_err()
-    );
+    assert!(locate_dotnet_sdk(tmp.path(), None, "foo\0bar", None, None, &Observer::new()).is_err());
 }
 
 #[test]
@@ -710,15 +623,7 @@ fn accepts_real_dotnet_sdk_names() {
         let tmp = TempDir::new().unwrap();
         install_sdk(tmp.path(), "8.0.401", name);
         assert!(
-            locate_dotnet_sdk(
-                tmp.path(),
-                None,
-                name,
-                None,
-                None,
-                &Observer::new()
-            )
-            .is_ok(),
+            locate_dotnet_sdk(tmp.path(), None, name, None, None, &Observer::new()).is_ok(),
             "validator wrongly rejected {name:?}"
         );
     }
@@ -748,15 +653,8 @@ fn variant_sdks_resolve_to_their_own_directories() {
         install_sdk(tmp.path(), "8.0.401", name);
     }
     for name in names {
-        let paths = locate_dotnet_sdk(
-            tmp.path(),
-            None,
-            name,
-            None,
-            None,
-            &Observer::new(),
-        )
-        .unwrap();
+        let paths =
+            locate_dotnet_sdk(tmp.path(), None, name, None, None, &Observer::new()).unwrap();
         // `…/sdk/<version>/Sdks/<sdk_name>/Sdk/Sdk.props` — two parents
         // past `Sdk.props` lands on `<sdk_name>`.
         let sdk_segment = paths

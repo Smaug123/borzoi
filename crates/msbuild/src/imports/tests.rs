@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+
+use crate::observed::Observer;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -27,10 +29,7 @@ fn empty_tree_yields_no_diagnostics() {
     let tmp = TempDir::new().unwrap();
     let proj = tmp.path().join("Demo.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &proj,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&proj, &Observer::new())),
         tmp.path(),
     );
     assert!(got.is_empty(), "got: {got:?}");
@@ -48,10 +47,7 @@ fn nearest_directory_build_props_wins() {
 
     let proj = inner.join("Demo.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &proj,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&proj, &Observer::new())),
         tmp.path(),
     );
     assert_eq!(got, [(ImplicitImportKind::DirectoryBuildProps, nearest)]);
@@ -71,10 +67,7 @@ fn all_three_kinds_at_same_depth() {
 
     let proj = dir.join("Demo.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &proj,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&proj, &Observer::new())),
         tmp.path(),
     );
     // Order within a single ancestor must be (Props, Targets, Packages).
@@ -101,10 +94,7 @@ fn distinct_kinds_can_resolve_to_different_depths() {
 
     let proj = inner.join("Demo.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &proj,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&proj, &Observer::new())),
         tmp.path(),
     );
     assert_eq!(
@@ -143,10 +133,7 @@ fn directory_named_like_well_known_file_is_ignored() {
     fs::create_dir(dir.join("Directory.Build.props")).unwrap();
     let proj = dir.join("Demo.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &proj,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&proj, &Observer::new())),
         tmp.path(),
     );
     assert!(got.is_empty(), "directory should be ignored, got: {got:?}");
@@ -188,14 +175,9 @@ fn relative_project_path_does_not_probe_cwd() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     let got = detect_implicit_imports(Path::new("Demo.fsproj"), &Observer::new());
-    let got_relative = detect_implicit_imports(
-        Path::new("./Demo.fsproj"),
-        &Observer::new(),
-    );
-    let got_nested_relative = detect_implicit_imports(
-        Path::new("sub/Demo.fsproj"),
-        &Observer::new(),
-    );
+    let got_relative = detect_implicit_imports(Path::new("./Demo.fsproj"), &Observer::new());
+    let got_nested_relative =
+        detect_implicit_imports(Path::new("sub/Demo.fsproj"), &Observer::new());
 
     // Always restore cwd before any assertion so a panic in this
     // test doesn't poison the binary's subsequent tests.
@@ -224,10 +206,7 @@ fn project_path_need_not_exist() {
     fs::write(dir.join("Directory.Build.props"), "<Project/>").unwrap();
     let proj = dir.join("does-not-exist.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &proj,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&proj, &Observer::new())),
         tmp.path(),
     );
     assert_eq!(
@@ -259,10 +238,7 @@ fn parent_dir_components_in_project_path_do_not_probe_phantom_ancestors() {
 
     let project_path = a.join("..").join("b").join("Demo.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &project_path,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&project_path, &Observer::new())),
         tmp.path(),
     );
     assert_eq!(
@@ -285,10 +261,7 @@ fn cur_dir_components_in_project_path_are_skipped() {
 
     let project_path = proj_dir.join(".").join("Demo.fsproj");
     let got = under(
-        &pairs(&detect_implicit_imports(
-            &project_path,
-            &Observer::new(),
-        )),
+        &pairs(&detect_implicit_imports(&project_path, &Observer::new())),
         tmp.path(),
     );
     assert_eq!(got, [(ImplicitImportKind::DirectoryBuildProps, expected)]);
@@ -443,10 +416,7 @@ fn property_nearest_of_each_kind_is_reported() {
 
         let expected = expected_for(&placements, &chain, levels);
         let got = under(
-            &pairs(&detect_implicit_imports(
-                &project_path,
-                &Observer::new(),
-            )),
+            &pairs(&detect_implicit_imports(&project_path, &Observer::new())),
             tmp.path(),
         );
 

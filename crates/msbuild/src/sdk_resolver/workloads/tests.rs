@@ -4,6 +4,7 @@
 //! descending band fallback, silent skipping of absent ids, and a
 //! degrade for every layout shape outside the envelope.
 
+use crate::observed::Observer;
 use crate::observed::host_fs;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,13 +54,7 @@ fn resolve_targets(
     version_dir: &Path,
     env: &WorkloadEnvironment<'_>,
 ) -> Result<SdkResolution, SdkResolveError> {
-    resolve_workload_locator(
-        TARGETS,
-        root,
-        version_dir,
-        env,
-        &Observer::new(),
-    )
+    resolve_workload_locator(TARGETS, root, version_dir, env, &Observer::new())
 }
 
 #[test]
@@ -285,14 +280,8 @@ fn baseline_workload_set_does_not_change_the_answer() {
         with_set_target
     );
     assert_eq!(
-        resolve_workload_locator(
-            AUTO,
-            root,
-            &version_dir,
-            &no_user_env(),
-            &Observer::new()
-        )
-        .unwrap(),
+        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+            .unwrap(),
         SdkResolution::Roots(Vec::new())
     );
 }
@@ -802,14 +791,9 @@ fn auto_import_returns_empty_when_no_pack_ships_auto_import_props() {
         "",
     );
 
-    let result = resolve_workload_locator(
-        AUTO,
-        root,
-        &version_dir,
-        &no_user_env(),
-        &Observer::new(),
-    )
-    .unwrap();
+    let result =
+        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+            .unwrap();
     assert_eq!(result, SdkResolution::Roots(Vec::new()));
 }
 
@@ -824,14 +808,8 @@ fn auto_import_degrades_when_any_auto_import_props_exists() {
         "<Project/>",
     );
 
-    let err = resolve_workload_locator(
-        AUTO,
-        root,
-        &version_dir,
-        &no_user_env(),
-        &Observer::new(),
-    )
-    .unwrap_err();
+    let err = resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+        .unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
 
@@ -890,14 +868,8 @@ fn auto_import_degrades_on_the_sdk_subfolder_layout() {
         "<Project/>",
     );
 
-    let err = resolve_workload_locator(
-        AUTO,
-        root,
-        &version_dir,
-        &no_user_env(),
-        &Observer::new(),
-    )
-    .unwrap_err();
+    let err = resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
+        .unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
 
@@ -924,14 +896,8 @@ fn auto_import_scans_user_packs_even_without_user_manifests() {
         overrides_present: false,
         global_json_pins_workload_set: false,
     };
-    let err = resolve_workload_locator(
-        AUTO,
-        &root,
-        &version_dir,
-        &env,
-        &Observer::new(),
-    )
-    .unwrap_err();
+    let err =
+        resolve_workload_locator(AUTO, &root, &version_dir, &env, &Observer::new()).unwrap_err();
     assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
 }
 
@@ -976,14 +942,8 @@ fn auto_import_empty_when_manifestless_user_root_ships_no_props() {
         overrides_present: false,
         global_json_pins_workload_set: false,
     };
-    let result = resolve_workload_locator(
-        AUTO,
-        &root,
-        &version_dir,
-        &env,
-        &Observer::new(),
-    )
-    .unwrap();
+    let result =
+        resolve_workload_locator(AUTO, &root, &version_dir, &env, &Observer::new()).unwrap();
     assert_eq!(result, SdkResolution::Roots(Vec::new()));
 }
 
@@ -1025,14 +985,8 @@ fn global_json_workload_set_pin_degrades_both_locators() {
         global_json_pins_workload_set: true,
     };
     for locator in [TARGETS, AUTO] {
-        let err = resolve_workload_locator(
-            locator,
-            root,
-            &version_dir,
-            &env,
-            &Observer::new(),
-        )
-        .unwrap_err();
+        let err = resolve_workload_locator(locator, root, &version_dir, &env, &Observer::new())
+            .unwrap_err();
         assert!(matches!(err, SdkResolveError::UnsupportedLayout { .. }));
     }
 }
@@ -1156,13 +1110,7 @@ fn unreadable_packs_directory_degrades_auto_import() {
     fs::create_dir_all(&packs).unwrap();
 
     let result = with_dir_mode(&packs, 0o000, || {
-        resolve_workload_locator(
-            AUTO,
-            root,
-            &version_dir,
-            &no_user_env(),
-            &Observer::new(),
-        )
+        resolve_workload_locator(AUTO, root, &version_dir, &no_user_env(), &Observer::new())
     });
     if host_fs::read_dir(&packs).is_err() {
         assert!(matches!(
