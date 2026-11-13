@@ -33,11 +33,6 @@
 //! Ids are handed out in interning order, so like the name table's they never
 //! order anything: [`Ty`] has no `Ord`.
 //!
-//! Under `interning-reference` in a debug build the table keeps, beside its
-//! index, a reference index keyed by each node's spelling — its paths' carried
-//! segments and its children's ids — and asserts on every intern that the two
-//! agree, so a node is interned once exactly when its spelling is.
-//!
 //! [`AssemblyEnv::types`]: crate::AssemblyEnv::types
 //! [`AssemblyEnv::interned_count`]: crate::AssemblyEnv::interned_count
 
@@ -73,9 +68,6 @@ struct Index {
     ids: HashMap<TyKind, u32>,
     /// How many nodes have been interned: the next node's id.
     count: u32,
-    /// Each node's spelling → its id: the reference [`Self::ids`] is held to.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    reference: HashMap<String, u32>,
 }
 
 /// A table of interned types. See the module docs.
@@ -178,7 +170,6 @@ impl TyTable {
         if self.holds == Holds::Ground {
             let found = self.read().ids.get(&kind).copied();
             if let Some(index) = found {
-                self.check_reference(&kind, Some(index));
                 return self.id(index);
             }
         }
@@ -187,22 +178,10 @@ impl TyTable {
         // The only probe of a session's table, and for an env's, another
         // thread may have interned the node between the two locks.
         if let Some(&existing) = index.ids.get(&node.kind) {
-            drop(index);
-            self.check_reference(&node.kind, Some(existing));
             return self.id(existing);
         }
         let new = index.count;
         index.count = new.checked_add(1).expect("fewer than 2^32 types");
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let spelled = spelling(&node.kind);
-            assert_eq!(
-                index.reference.get(&spelled),
-                None,
-                "a type the table holds was interned again: {spelled}"
-            );
-            index.reference.insert(spelled, new);
-        }
         index.ids.insert(node.kind.clone(), new);
         self.nodes.set(new, node);
         self.id(new)
@@ -242,30 +221,6 @@ impl TyTable {
             size,
             has_var,
         }
-    }
-
-    /// Assert, under `interning-reference` in a debug build, that the
-    /// reference index holds `kind`'s spelling at `found`, and that the node
-    /// at `found` spells it.
-    fn check_reference(&self, kind: &TyKind, found: Option<u32>) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let spelled = spelling(kind);
-            assert_eq!(
-                self.read().reference.get(&spelled).copied(),
-                found,
-                "the type table and its reference disagree on {spelled}"
-            );
-            if let Some(found) = found {
-                assert_eq!(
-                    spelling(&self.node(self.id(found)).kind),
-                    spelled,
-                    "a type's id holds another node"
-                );
-            }
-        }
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = (kind, found);
     }
 
     /// `ty`'s node.
@@ -349,12 +304,9 @@ impl TyTable {
 
     /// The inference variable `v`. A session's table only.
     pub(crate) fn var(&self, v: TyVid) -> Ty {
-        let ty = *self
+        *self
             .vars
-            .get_or_init(v.index(), || self.intern(TyKind::Var(v)));
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.check_reference(&TyKind::Var(v), Some(ty.index));
-        ty
+            .get_or_init(v.index(), || self.intern(TyKind::Var(v)))
     }
 
     /// Whether `ty` is the nullary [`TyKind::Named`] at `path`.
@@ -441,26 +393,5 @@ impl TyTable {
             TyKind::Var(v) => TyKind::Var(*v),
         };
         self.intern(kind)
-    }
-}
-
-/// A node's spelling, for the reference index: its paths' carried segments
-/// and its children's ids, built apart from [`TyKind`]'s own `Hash` and `Eq`.
-#[cfg(all(feature = "interning-reference", debug_assertions))]
-fn spelling(kind: &TyKind) -> String {
-    let ids = |args: &[Ty]| {
-        args.iter()
-            .map(|a| a.index.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    match kind {
-        TyKind::Named { path, args } => format!("named {:?} [{}]", path.text(), ids(args)),
-        TyKind::Project { path, args } => format!("project {:?} [{}]", path.text(), ids(args)),
-        TyKind::Array { elem, rank } => format!("array {} {rank}", elem.index),
-        TyKind::Tuple(elems) => format!("tuple [{}]", ids(elems)),
-        TyKind::Fun { arg, ret } => format!("fun {} {}", arg.index, ret.index),
-        TyKind::Param(i) => format!("param {i}"),
-        TyKind::Var(v) => format!("var {}", v.index()),
     }
 }

@@ -3,16 +3,13 @@
 //! (`docs/sema-interning-plan.md`, Stages 7 and 8).
 //!
 //! It is the representation [`Ty`] had before its paths were ids and its
-//! nodes were interned, kept as the reference the interned form is held to:
-//! `SpelledTy::of` and `SpelledTy::to_ty` convert between the two through the
-//! tables, and [`render`] and [`render_fsharp`] are the renderers as they read
-//! the tree, so a test can ask that rendering a [`Ty`] through its tables
-//! gives the same text.
+//! nodes were interned, kept for the tests as the reference the interned form
+//! is held to (`ty::spelled_form`): `SpelledTy::of` and `SpelledTy::to_ty`
+//! convert between the two through the tables, and [`render`] and
+//! [`render_fsharp`] are the renderers as they read the tree, so a test can
+//! ask that rendering a [`Ty`] through its tables gives the same text.
 
-#[cfg(test)]
-use super::TySize;
-use super::{FSHARP_CORE_RENAMED, Ty, TyKind, TyPath, TyTable, TyVid, typar_name};
-#[cfg(test)]
+use super::{FSHARP_CORE_RENAMED, Ty, TyKind, TyPath, TySize, TyTable, TyVid, typar_name};
 use crate::names::NameTable;
 
 /// A [`Ty`] as an owned tree whose named types carry their paths as segments.
@@ -41,42 +38,25 @@ pub(crate) enum SpelledTy {
 
 impl SpelledTy {
     /// `ty`, a type of `tys`, with each path spelled by `names`.
-    #[cfg(test)]
     pub(crate) fn of(names: &NameTable, tys: &TyTable, ty: Ty) -> SpelledTy {
-        SpelledTy::spelling(tys, ty, &|path| path.spelled(names))
-    }
-
-    /// `ty`, a type of `tys`, with each path spelled by the segments it
-    /// carries, the name table unread: what [`TyTable::render`] is held to on
-    /// every call.
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    pub(crate) fn carried(tys: &TyTable, ty: Ty) -> SpelledTy {
-        SpelledTy::spelling(tys, ty, &|path| path.text().to_vec())
-    }
-
-    fn spelling(tys: &TyTable, ty: Ty, spell: &dyn Fn(&TyPath) -> Vec<String>) -> SpelledTy {
-        let all = |args: &[Ty]| {
-            args.iter()
-                .map(|&a| SpelledTy::spelling(tys, a, spell))
-                .collect()
-        };
+        let all = |args: &[Ty]| args.iter().map(|&a| SpelledTy::of(names, tys, a)).collect();
         match tys.kind(ty) {
             TyKind::Named { path, args } => SpelledTy::Named {
-                path: spell(path),
+                path: path.spelled(names),
                 args: all(args),
             },
             TyKind::Project { path, args } => SpelledTy::Project {
-                path: spell(path),
+                path: path.spelled(names),
                 args: all(args),
             },
             TyKind::Array { elem, rank } => SpelledTy::Array {
-                elem: Box::new(SpelledTy::spelling(tys, *elem, spell)),
+                elem: Box::new(SpelledTy::of(names, tys, *elem)),
                 rank: *rank,
             },
             TyKind::Tuple(elems) => SpelledTy::Tuple(all(elems)),
             TyKind::Fun { arg, ret } => SpelledTy::Fun {
-                arg: Box::new(SpelledTy::spelling(tys, *arg, spell)),
-                ret: Box::new(SpelledTy::spelling(tys, *ret, spell)),
+                arg: Box::new(SpelledTy::of(names, tys, *arg)),
+                ret: Box::new(SpelledTy::of(names, tys, *ret)),
             },
             TyKind::Param(i) => SpelledTy::Param(*i),
             TyKind::Var(v) => SpelledTy::Var(*v),
@@ -84,7 +64,6 @@ impl SpelledTy {
     }
 
     /// This type interned in `tys`, each path in `names`.
-    #[cfg(test)]
     pub(crate) fn to_ty(&self, names: &NameTable, tys: &TyTable) -> Ty {
         let all =
             |args: &[SpelledTy]| -> Vec<Ty> { args.iter().map(|a| a.to_ty(names, tys)).collect() };
@@ -100,7 +79,6 @@ impl SpelledTy {
     }
 
     /// The tree's node count and depth, by a walk of it.
-    #[cfg(test)]
     pub(crate) fn size(&self) -> TySize {
         let below = |children: &[&SpelledTy]| {
             children.iter().fold(TySize::default(), |acc, c| {
@@ -127,7 +105,6 @@ impl SpelledTy {
     }
 
     /// Whether no inference variable occurs in the tree, by a walk of it.
-    #[cfg(test)]
     pub(crate) fn is_ground(&self) -> bool {
         match self {
             SpelledTy::Named { args, .. }

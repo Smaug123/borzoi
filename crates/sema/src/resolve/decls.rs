@@ -222,14 +222,9 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// The name an export of `def` publishes, which the walk spelled
-    /// `text`: the definition's own name.
-    pub(super) fn export_name(&self, def: DefId, text: &str) -> ExportName {
-        ExportName::new(
-            self.assemblies.names(),
-            self.out.defs[def.index()].name(),
-            text,
-        )
+    /// The name an export of `def` publishes: the definition's own name.
+    pub(super) fn export_name(&self, def: DefId) -> ExportName {
+        ExportName::new(self.out.defs[def.index()].name())
     }
 
     pub(super) fn export_case(
@@ -262,7 +257,7 @@ impl<'a> Resolver<'a> {
         let item_idx = self.out.items.len();
         let item_id = ItemId::new(self.item_base as usize + item_idx);
         self.out.items.push(ExportedItem {
-            name: self.export_name(def, name),
+            name: self.export_name(def),
             qualified: Some(decl_path.clone()),
             id: item_id,
             def: super::model::ExportDef::Own(def),
@@ -357,7 +352,7 @@ impl<'a> Resolver<'a> {
         let item_idx = self.out.items.len();
         let item_id = ItemId::new(self.item_base as usize + item_idx);
         self.out.items.push(ExportedItem {
-            name: self.export_name(def, name),
+            name: self.export_name(def),
             qualified: None,
             id: item_id,
             def: super::model::ExportDef::Own(def),
@@ -1778,7 +1773,7 @@ impl<'a> Resolver<'a> {
             let names = self.assemblies.names();
             self.index
                 .real_nested_module_exports
-                .insert_id(names, decl_path.id(), || decl_path.reference_text(names));
+                .insert_id(names, decl_path.id());
         }
         // The export-decl-list twin: one nested-module decl (`header: false`)
         // carrying its `[<AutoOpen>]`/`private` bits. Every derivation off it

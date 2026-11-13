@@ -10,13 +10,9 @@
 //! `type_long_ident`). The question arrives as the ids of its prefixes
 //! ([`PathPrefixes`]), and each is one integer probe.
 //!
-//! The ids come from the env's name table, whose trie of names stands in for
-//! the trie this set kept of its own: a member is interned when it is
-//! inserted, so a prefix the table never interned is no member, and a
-//! question about a path under it stops there.
-
-#[cfg(any(test, all(feature = "interning-reference", debug_assertions)))]
-mod text;
+//! The ids come from the env's name table, a trie of names: a member is
+//! interned when it is inserted, so a prefix the table never interned is no
+//! member, and a question about a path under it stops there.
 
 use crate::hash::HashMap;
 use crate::names::{Name, NameKey, NameTable, PathId, PathKey};
@@ -25,10 +21,8 @@ use crate::names::{Name, NameKey, NameTable, PathId, PathKey};
 /// queries by id and a cheap [`Self::mark`] / [`Self::rollback`] pair for a
 /// scope that only adds to the set.
 ///
-/// Under `interning-reference` in a debug build it keeps the string-keyed
-/// trie it replaced ([`text::TextPathSet`]) beside it and asserts on every
-/// query that the two agree; in every debug build it asserts that it is
-/// only ever used with one table's ids.
+/// In a debug build it asserts that it is only ever used with one table's
+/// ids.
 #[derive(Clone, Debug, Default)]
 pub(super) struct PathSet {
     /// Every insertion, in order: what [`Self::rollback`] undoes, and what
@@ -39,8 +33,6 @@ pub(super) struct PathSet {
     members: HashMap<PathId, usize>,
     #[cfg(debug_assertions)]
     table: Option<crate::names::TableTag>,
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    reference: text::TextPathSet,
 }
 
 /// The state of a [`PathSet`] that a later [`PathSet::rollback`] returns it
@@ -103,9 +95,7 @@ impl<'a> PathPrefixes<'a> {
             ids.push(at);
         }
         drop(reader);
-        let prefixes = PathPrefixes { text, ids };
-        prefixes.check(names);
-        prefixes
+        PathPrefixes { text, ids }
     }
 
     /// The prefixes of the container path whose prefix ids are `ids`
@@ -124,15 +114,9 @@ impl<'a> PathPrefixes<'a> {
     }
 
     /// Every prefix of this path extended by the segments whose names are
-    /// `suffix` (spelled `suffix_text`), each by id, under one lock: the
-    /// question a [`PathSet::suffix_member_prefix_lens`] asks of each set.
-    pub(super) fn extended<'s, S: AsRef<str>>(
-        &self,
-        names: &NameTable,
-        suffix: &[Option<Name>],
-        suffix_text: &'s [S],
-    ) -> Extended<'a, 's, S> {
-        debug_assert_eq!(suffix.len(), suffix_text.len());
+    /// `suffix`, each by id, under one lock: the question a
+    /// [`PathSet::suffix_member_prefix_lens`] asks of each set.
+    pub(super) fn extended(&self, names: &NameTable, suffix: &[Option<Name>]) -> Extended {
         let reader = names.reader();
         let ids = self
             .ids
@@ -143,15 +127,7 @@ impl<'a> PathPrefixes<'a> {
                     .try_fold(base?, |parent, &name| reader.child(parent, name?))
             })
             .collect();
-        Extended {
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            base: self.text,
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            suffix: suffix_text,
-            #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-            borrows: std::marker::PhantomData,
-            ids,
-        }
+        Extended { ids }
     }
 
     /// The whole path's key.
@@ -161,34 +137,12 @@ impl<'a> PathPrefixes<'a> {
             self.text,
         )
     }
-
-    /// Assert, under `interning-reference` in a debug build, that every id
-    /// spells its prefix.
-    fn check(&self, names: &NameTable) {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        for (k, &id) in self.ids.iter().enumerate() {
-            PathKey::new(id, &self.text[..k]).check(names);
-        }
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        let _ = names;
-    }
 }
 
 /// [`PathPrefixes::extended`]: `base[..k]` followed by `suffix`, for every
 /// `k`, by id (`None` where the table never interned it).
-///
-/// Only the ids answer the question; the spellings are kept for the
-/// reference check under `interning-reference` in a debug build. Without it
-/// the question still borrows them, so it borrow-checks the same in every
-/// build.
 #[derive(Debug)]
-pub(super) struct Extended<'a, 's, S> {
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    base: &'a [String],
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    suffix: &'s [S],
-    #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-    borrows: std::marker::PhantomData<(&'a [String], &'s [S])>,
+pub(super) struct Extended {
     ids: Vec<Option<PathId>>,
 }
 
@@ -215,32 +169,21 @@ impl PathSet {
     /// Whether nothing was inserted since the set was made (or every
     /// insertion was rolled back).
     pub(super) fn is_empty(&self) -> bool {
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(self.log.is_empty(), self.reference.iter().next().is_none());
         self.log.is_empty()
     }
 
     /// Add `path`, interning it.
     pub(super) fn insert(&mut self, names: &NameTable, path: &[String]) {
-        self.insert_id(names, names.intern_path(path), || path.to_vec());
+        self.insert_id(names, names.intern_path(path));
     }
 
-    /// Add the path whose id is `id`. `text` spells it, for the reference.
-    pub(super) fn insert_id(
-        &mut self,
-        names: &NameTable,
-        id: PathId,
-        text: impl FnOnce() -> Vec<String>,
-    ) {
+    /// Add the path whose id is `id`.
+    pub(super) fn insert_id(&mut self, names: &NameTable, id: PathId) {
         self.check_table(names);
         #[cfg(debug_assertions)]
         {
             self.table = Some(names.tag());
         }
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.reference.insert(text());
-        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
-        drop(text);
         *self.members.entry(id).or_default() += 1;
         self.log.push(id);
     }
@@ -248,20 +191,10 @@ impl PathSet {
     /// Whether `path` itself is a member.
     pub(super) fn contains(&self, names: &NameTable, path: PathKey<'_>) -> bool {
         self.check_table(names);
-        path.check(names);
-        let found = self.member(path.id);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.reference.contains(path.text),
-            "an interned path set disagrees with its reference at {:?}",
-            path.text
-        );
-        found
+        self.member(path.id)
     }
 
-    /// Whether `parent` extended by `name` is a member, by id: the path is
-    /// spelled only for the reference.
+    /// Whether `parent` extended by `name` is a member, by id.
     pub(super) fn contains_child(
         &self,
         names: &NameTable,
@@ -269,31 +202,17 @@ impl PathSet {
         name: NameKey<'_>,
     ) -> bool {
         self.check_table(names);
-        parent.check(names);
-        name.check(names);
-        let found = !self.log.is_empty()
+        !self.log.is_empty()
             && self.member(
                 parent
                     .id
                     .zip(name.id)
                     .and_then(|(parent, name)| names.child(parent, name)),
-            );
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        {
-            let mut path = parent.text.to_vec();
-            path.push(name.text.to_string());
-            assert_eq!(
-                found,
-                self.reference.contains(&path),
-                "an interned path set disagrees with its reference at {path:?}"
-            );
-        }
-        found
+            )
     }
 
     /// Whether the path whose id is `id` is a member, `false` when the table
-    /// never interned it. The caller holds no spelling to check against, so
-    /// the reference is the caller's to assert.
+    /// never interned it.
     pub(super) fn contains_id(&self, names: &NameTable, id: Option<PathId>) -> bool {
         self.check_table(names);
         self.member(id)
@@ -303,8 +222,6 @@ impl PathSet {
     /// set has a member.
     pub(super) fn contains_path(&self, names: &NameTable, path: &[String]) -> bool {
         if self.log.is_empty() {
-            #[cfg(all(feature = "interning-reference", debug_assertions))]
-            assert!(!self.reference.contains(path));
             return false;
         }
         self.contains(names, PathKey::of(names, path))
@@ -345,23 +262,13 @@ impl PathSet {
 
     /// [`Self::has_prefix_of`] by the path's segments, building nothing.
     pub(super) fn has_prefix_of_path(&self, names: &NameTable, path: &[String]) -> bool {
-        let found = self.any_member_prefix(names, path, |_| true);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(found, self.reference.has_prefix_of(path), "{path:?}");
-        found
+        self.any_member_prefix(names, path, |_| true)
     }
 
     /// Whether some non-empty member is a prefix of `path` (`path` itself
     /// included).
     pub(super) fn has_nonempty_prefix_of_path(&self, names: &NameTable, path: &[String]) -> bool {
-        let found = self.any_member_prefix(names, path, |k| k > 0);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.reference.has_nonempty_prefix_of(path),
-            "{path:?}"
-        );
-        found
+        self.any_member_prefix(names, path, |k| k > 0)
     }
 
     /// Whether some non-empty member is a *proper* prefix of `path`: `path`
@@ -372,14 +279,7 @@ impl PathSet {
         path: &[String],
     ) -> bool {
         let len = path.len();
-        let found = self.any_member_prefix(names, path, |k| k > 0 && k < len);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.reference.has_strict_nonempty_prefix_of(path),
-            "{path:?}"
-        );
-        found
+        self.any_member_prefix(names, path, |k| k > 0 && k < len)
     }
 
     /// The lengths `k`, ascending, at which `path[..k]` is a member.
@@ -399,26 +299,18 @@ impl PathSet {
     /// Whether some member is a prefix of `path` (`path` itself and the empty
     /// path included).
     pub(super) fn has_prefix_of(&self, names: &NameTable, path: &PathPrefixes<'_>) -> bool {
-        let found = self.member_prefix_lens(names, path).next().is_some();
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.reference.has_prefix_of(path.text),
-            "{:?}",
-            path.text
-        );
-        found
+        self.member_prefix_lens(names, path).next().is_some()
     }
 
     /// The lengths `k`, ascending, for which `base[..k]` followed by the
     /// suffix is a member, of an [`Extended`] question. Nothing is built.
-    pub(super) fn suffix_member_prefix_lens<S: AsRef<str>>(
+    pub(super) fn suffix_member_prefix_lens(
         &self,
         names: &NameTable,
-        question: &Extended<'_, '_, S>,
+        question: &Extended,
     ) -> Vec<usize> {
         self.check_table(names);
-        let found: Vec<usize> = if self.log.is_empty() {
+        if self.log.is_empty() {
             Vec::new()
         } else {
             question
@@ -428,22 +320,7 @@ impl PathSet {
                 .filter(|&(_, &id)| self.member(id))
                 .map(|(k, _)| k)
                 .collect()
-        };
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            found,
-            self.reference
-                .suffix_member_prefix_lens(question.base, question.suffix)
-                .collect::<Vec<_>>(),
-            "{:?} + {:?}",
-            question.base,
-            question
-                .suffix
-                .iter()
-                .map(AsRef::as_ref)
-                .collect::<Vec<_>>()
-        );
-        found
+        }
     }
 
     /// Every insertion in order, a path inserted twice appearing twice.
@@ -451,29 +328,14 @@ impl PathSet {
         self.log.iter().copied()
     }
 
-    /// Every insertion in order, as segments, held to the reference. Costs a
-    /// spelling per member, so only a scan pays it.
+    /// Every insertion in order, as segments. Costs a spelling per member,
+    /// so only a test pays it.
     #[cfg(test)]
     pub(super) fn iter_text<'s>(
         &'s self,
         names: &'s NameTable,
     ) -> impl Iterator<Item = Vec<String>> + 's {
         self.check_table(names);
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        assert_eq!(
-            self.log
-                .iter()
-                .map(|&id| {
-                    names
-                        .segments(id)
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>(),
-            self.reference.iter().collect::<Vec<_>>(),
-            "a PathSet's insertions disagree with its reference"
-        );
         self.log
             .iter()
             .map(move |&id| names.segments(id).into_iter().map(str::to_string).collect())
@@ -491,8 +353,6 @@ impl PathSet {
             mark.0 <= self.log.len(),
             "a PathSet rolled back to a mark taken from a larger set"
         );
-        #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.reference.rollback(self.reference_mark(mark));
         for id in self.log.split_off(mark.0) {
             let count = self
                 .members
@@ -500,11 +360,6 @@ impl PathSet {
                 .expect("every logged path is counted");
             *count = count.checked_sub(1).expect("every logged path is counted");
         }
-    }
-
-    #[cfg(all(feature = "interning-reference", debug_assertions))]
-    fn reference_mark(&self, mark: PathSetMark) -> text::TextPathSetMark {
-        text::TextPathSetMark::at(mark.0)
     }
 }
 
@@ -593,7 +448,7 @@ mod tests {
                             prop_assert_eq!(
                                 set.suffix_member_prefix_lens(
                                     &names,
-                                    &prefixes.extended(&names, &suffix_names, suffix),
+                                    &prefixes.extended(&names, &suffix_names),
                                 ),
                                 (0..=q.len())
                                     .filter(|&k| model.iter().any(|p| {
@@ -606,6 +461,20 @@ mod tests {
                         }
                     }
                     prop_assert_eq!(set.contains_path(&names, q), model.iter().any(|p| p == q));
+                    prop_assert_eq!(
+                        set.contains_id(&names, names.lookup_path(q)),
+                        model.iter().any(|p| p == q)
+                    );
+                    if let Some((last, parent)) = q.split_last() {
+                        prop_assert_eq!(
+                            set.contains_child(
+                                &names,
+                                PathKey::of(&names, parent),
+                                NameKey::of(&names, last),
+                            ),
+                            model.iter().any(|p| p == q)
+                        );
+                    }
                     prop_assert_eq!(set.has_prefix_of_path(&names, q), model.iter().any(|p| under(&p)));
                 }
             }

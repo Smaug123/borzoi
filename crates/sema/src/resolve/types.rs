@@ -503,7 +503,7 @@ impl<'a> Resolver<'a> {
                 let generation = self.scope.open_generation;
                 self.lexical
                     .module_frame()
-                    .push(ScopeEntry::binding_named(names, name_id, res, generation));
+                    .push(ScopeEntry::binding_named(name_id, res, generation));
             }
         }
     }
@@ -672,7 +672,7 @@ impl<'a> Resolver<'a> {
         let generation = self.scope.open_generation;
         self.lexical
             .module_frame()
-            .push(ScopeEntry::binding_named(names, entry_id, res, generation));
+            .push(ScopeEntry::binding_named(entry_id, res, generation));
     }
 
     /// Intern an active-pattern definition's recognizer and cases
@@ -828,7 +828,7 @@ impl<'a> Resolver<'a> {
                     let item_idx = self.out.items.len();
                     let item_id = ItemId::new(self.item_base as usize + item_idx);
                     self.out.items.push(ExportedItem {
-                        name: self.export_name(use_id, case_name),
+                        name: self.export_name(use_id),
                         qualified: None,
                         id: item_id,
                         def: super::model::ExportDef::Own(use_id),
@@ -863,7 +863,7 @@ impl<'a> Resolver<'a> {
             // finds it. Without this an `Item`-backed case would leak into
             // expression lookup and shadow a same-named ordinary value.
             let mut entry =
-                ScopeEntry::binding_named(names, case_id, case_res, self.scope.open_generation);
+                ScopeEntry::binding_named(case_id, case_res, self.scope.open_generation);
             entry.pattern_only = true;
             entries.push(entry);
         }
@@ -1075,7 +1075,7 @@ impl<'a> Resolver<'a> {
         (0..=self.lexical.container_path.len()).any(|k| {
             self.index
                 .type_slot_history
-                .get(self.lexical.container_path.prefix_id(k), interned, name)
+                .get(self.lexical.container_path.prefix_id(k), interned)
                 .is_some_and(|entries| entries.iter().any(|(_, class)| *class != SlotClass::Keeps))
         })
     }
@@ -1679,7 +1679,6 @@ impl<'a> Resolver<'a> {
         let res = Resolution::Local(id);
         self.record(range, res);
         Some(ScopeEntry::binding_named(
-            names,
             name,
             res,
             self.scope.open_generation,

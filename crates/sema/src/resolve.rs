@@ -257,11 +257,7 @@ pub fn resolve_file(
             let ns = r.lexical.container_path[..k].to_vec();
             // The export-decl-list twin: one `Namespace` decl per ancestor prefix,
             // reproducing the `ns_upto` bound verbatim (plan pitfall 4).
-            let decl_path = DeclPath::interned(
-                assemblies.names(),
-                r.lexical.container_path.prefix_id(k),
-                &ns,
-            );
+            let decl_path = DeclPath::interned(r.lexical.container_path.prefix_id(k));
             r.out.namespace_paths.push(ns);
             r.push_export_decl(
                 decl_path,
@@ -933,9 +929,9 @@ fn collect_sig_container_exports(
         defs.push(def);
         let qualified = qualified && !contested.contains(text);
         exports.push(model::SigExport {
-            name: ExportName::new(names, name, text),
+            name: ExportName::new(name),
             qualified,
-            path: DeclPath::under(names, container_id, container, &[text]),
+            path: DeclPath::under(names, container_id, &[text]),
             def: def_id,
             access_root_len,
             case,
@@ -988,9 +984,8 @@ fn collect_sig_container_exports(
                     let rqa = !sig_cases_certainly_bare(&defn);
                     let type_contested = contested_types.contains(&type_name);
                     let tq_path = |case: &str| {
-                        (!type_contested).then(|| {
-                            DeclPath::under(names, container_id, container, &[&*type_name, case])
-                        })
+                        (!type_contested)
+                            .then(|| DeclPath::under(names, container_id, &[&*type_name, case]))
                     };
                     match defn.repr() {
                         Some(TypeDefnRepr::Union(u)) => {
@@ -2099,12 +2094,9 @@ impl<'a> Resolver<'a> {
         // identities only when the fold publishes them.
         if let Some(member) = decl.member_path(&self.out.items, false) {
             let names = self.assemblies.names();
-            self.index.member_decl_counts.update_id(
-                names,
-                member.id(),
-                || member.reference_text(names),
-                |count| *count += 1,
-            );
+            self.index
+                .member_decl_counts
+                .update_id(names, member.id(), |count| *count += 1);
         }
         self.out.export_decls.push(decl);
     }
@@ -2115,7 +2107,6 @@ impl<'a> Resolver<'a> {
         DeclPath::under(
             self.assemblies.names(),
             self.lexical.container_path.id(),
-            &self.lexical.container_path,
             segments,
         )
     }

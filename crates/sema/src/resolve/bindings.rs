@@ -220,7 +220,7 @@ impl<'a> Resolver<'a> {
                     let decl_path = self.decl_path(&[name]);
                     let qualified = self.value_export_path(&decl_path);
                     self.out.items.push(ExportedItem {
-                        name: self.export_name(id, name),
+                        name: self.export_name(id),
                         qualified,
                         id: item_id,
                         def: super::model::ExportDef::Own(id),
@@ -251,7 +251,7 @@ impl<'a> Resolver<'a> {
                     self.record(range, res);
                     aliases.interned(range, res);
                     let mut entry =
-                        ScopeEntry::binding_named(table, name_id, res, self.scope.open_generation);
+                        ScopeEntry::binding_named(name_id, res, self.scope.open_generation);
                     // A maybe-literal module-level value contests the pattern
                     // namespace as a constant pattern (see
                     // [`ScopeEntry::maybe_constant_pattern`]).
@@ -263,7 +263,6 @@ impl<'a> Resolver<'a> {
                     self.record(range, res);
                     aliases.interned(range, res);
                     param_entries.push(ScopeEntry::binding_named(
-                        table,
                         name_id,
                         res,
                         self.scope.open_generation,
@@ -447,12 +446,7 @@ impl<'a> Resolver<'a> {
                     let res = Resolution::Local(id);
                     self.record(range, res);
                     aliases.interned(range, res);
-                    let entry = ScopeEntry::binding_named(
-                        self.assemblies.names(),
-                        name,
-                        res,
-                        self.scope.open_generation,
-                    );
+                    let entry = ScopeEntry::binding_named(name, res, self.scope.open_generation);
                     if is_value {
                         value_entries.push(entry);
                     } else {
