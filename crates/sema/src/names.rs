@@ -385,8 +385,38 @@ impl NameTable {
 
     /// The path whose segments are `segments`, interned if it is new.
     pub(crate) fn intern_path<S: AsRef<str>>(&self, segments: &[S]) -> PathId {
-        segments.iter().fold(self.root(), |parent, segment| {
+        self.intern_extension(self.root(), segments)
+    }
+
+    /// `base` extended by `segments`, interned where it is new.
+    pub(crate) fn intern_extension<S: AsRef<str>>(&self, base: PathId, segments: &[S]) -> PathId {
+        segments.iter().fold(base, |parent, segment| {
             self.intern_child(parent, self.logical(segment.as_ref()))
+        })
+    }
+
+    /// Whether `prefix` is a prefix of `path`, `path` itself and the root
+    /// included: a walk up `path`'s parents, building nothing.
+    pub(crate) fn is_prefix(&self, prefix: PathId, path: PathId) -> bool {
+        let mut at = path;
+        loop {
+            if at == prefix {
+                return true;
+            }
+            match self.split(at) {
+                Some((parent, _)) => at = parent,
+                None => return false,
+            }
+        }
+    }
+
+    /// `path`'s names, innermost first: one per segment.
+    pub(crate) fn names_inward(&self, path: PathId) -> impl Iterator<Item = Name> + '_ {
+        let mut at = path;
+        std::iter::from_fn(move || {
+            let (parent, last) = self.split(at)?;
+            at = parent;
+            Some(last)
         })
     }
 
@@ -753,15 +783,29 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     fn check_table(&self, _: &NameTable) {}
 
     /// Map `path`, interning it, to `value`; the previous value goes.
+    #[cfg(test)]
     pub(crate) fn insert(&mut self, names: &NameTable, path: &[String], value: V) {
+        self.insert_id(names, names.intern_path(path), || path.to_vec(), value);
+    }
+
+    /// Map the path whose id is `id` to `value`; the previous value goes.
+    /// `text` spells the path, for the reference.
+    pub(crate) fn insert_id(
+        &mut self,
+        names: &NameTable,
+        id: PathId,
+        text: impl FnOnce() -> Vec<String>,
+        value: V,
+    ) {
         self.check_table(names);
         #[cfg(debug_assertions)]
         {
             self.table = Some(names.tag());
         }
         #[cfg(all(feature = "interning-reference", debug_assertions))]
-        self.by_text.insert(path.to_vec(), value.clone());
-        let id = names.intern_path(path);
+        self.by_text.insert(text(), value.clone());
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        drop(text);
         self.note_key(names, id);
         self.by_id.insert(id, value);
     }
@@ -781,14 +825,29 @@ impl<V: Clone + PartialEq + std::fmt::Debug> PathMap<V> {
     where
         V: Default,
     {
+        self.update_id(names, names.intern_path(path), || path.to_vec(), update);
+    }
+
+    /// Apply `update` to the value at the path whose id is `id`, starting
+    /// from the default. `text` spells the path, for the reference.
+    pub(crate) fn update_id(
+        &mut self,
+        names: &NameTable,
+        id: PathId,
+        text: impl FnOnce() -> Vec<String>,
+        update: impl Fn(&mut V),
+    ) where
+        V: Default,
+    {
         self.check_table(names);
         #[cfg(debug_assertions)]
         {
             self.table = Some(names.tag());
         }
         #[cfg(all(feature = "interning-reference", debug_assertions))]
-        update(self.by_text.entry(path.to_vec()).or_default());
-        let id = names.intern_path(path);
+        update(self.by_text.entry(text()).or_default());
+        #[cfg(not(all(feature = "interning-reference", debug_assertions)))]
+        drop(text);
         self.note_key(names, id);
         update(self.by_id.entry(id).or_default());
     }
