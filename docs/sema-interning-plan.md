@@ -7,8 +7,9 @@
 > (export-declaration paths on ids), 6b (definitions' names on ids), 6c
 > (exports' published names on ids), 7 (`Ty` paths on ids), 8
 > (hash-consed `Ty`, built at the user's direction past its unmet gate), 9
-> (`OpenScope`), 10 (file-wide unknowables and windows) and 11 (the
-> resolver split) implemented.
+> (`OpenScope`), 10 (file-wide unknowables and windows), 11 (the
+> resolver split) and 12 (the string reference retired) implemented. Every
+> stage is implemented, so the plan is complete.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -1476,6 +1477,124 @@ D7's lockstep.
 The `interning-reference` feature and the string-keyed maps behind it go.
 
 **Oracle**: `cargo tree` shows no feature user, and the full gate is green.
+
+**Implemented**: the feature is gone from `borzoi-sema`'s `Cargo.toml` and
+its dev-dependency self-reference; no other crate, CI job or tool named it.
+`cargo tree -e features --workspace --all-features` lists no
+`interning-reference`. Every `cfg` site goes with it: the type index's
+string-keyed index, the path sets' and maps' string twins, the frame's string
+index, the container trie, the path-set text trie (`path_set/text.rs`), the
+spellings a `DeclPath`, `ExportName`, `Def` and `TyPath` carried, the type
+table's reference index, and the render lockstep. `ty/reference.rs`
+(`SpelledTy` and its renderers) is now test-only: `ty::spelled_form` is
+held to it.
+
+**Dead code the feature kept alive**, deleted with it: the spelling closures
+of `PathSet::insert_id` and `PathMap::{insert_id, update_id, get_id}` and
+their callers' `reference_text`, `ChildMap::get`'s name text, `Extended`'s
+borrowed spellings (and its lifetime and type parameters),
+`DeclPath::under`'s and `DeclPath::interned`'s spellings, `ExportName::new`'s
+text, the name table the `TypeIndex` queries, `DeclPath::is` and
+`ScopeEntry::binding_named` took only to check, `PathKey::check`,
+`NameKey::check`, the text parameters of `is_project_module_id`,
+`latest_type_path_export`, `holds_type_qualified_case` and
+`exported_type_by_id`, and `child_text`. `PathKey::text` and `NameKey::text`
+stay: a walk from the root reads them where the id is `None`, since a
+prefix of the path may still be interned.
+
+**What each lockstep held, and what holds it now.** Each property that only a
+lockstep checked became a test that builds its own string-keyed reference.
+
+| lockstep (stage) | property | held now by |
+|---|---|---|
+| container trie (3) | the table's ids biject with the walk's containers | `container_ids_name_paths_one_to_one` (existing property) |
+| `TypeIndex`'s string index (5c) | every query answers as the string-keyed index | **new** `the_type_index_answers_as_its_text_does`, which builds that index from the same inserts and asks it by keys from a table with decoys, and after re-keying |
+| `PathIdSet`'s twin (5c) | membership | `path_id_sets_agree_with_string_sets`, which now asks `contains_id` too |
+| `PathMap`'s twin and `children`'s scan (4, 5a, 6a) | values by path, key and id; children in first-write order | **new** `path_maps_agree_with_string_maps`, and `path_map_children_are_the_keys_one_segment_under` |
+| `ChildMap`'s twin (4) | values by container and name | **new** `child_maps_agree_with_string_maps` |
+| the dropped-type walk against the spelled original (5c) | the splits by id are the spelled path's | **new** `the_splits_by_id_are_the_splits_of_the_spelled_path` |
+| `PathSet`'s text trie (5b) | every query | `queries_agree_with_a_scan`, which now asks `contains_child` and `contains_id` too |
+| `PathPrefixes::under`'s prefix check (5b) | each prefix id spells its prefix | the same property, which builds `under` from a held and a looked-up base |
+| the frame's string index (5b) | `named_rev` | `named_rev_is_the_latest_first_scan` (existing) |
+| `DeclPath`'s spelling (6a, 6c) | each operation answers as its segments do | `a_declaration_path_answers_as_its_segments_do` |
+| `ExportName`'s text (6c) | the name reads back as published | `an_export_name_answers_as_its_text_does`, `exported_names` |
+| `Def`'s spelling (6b) | the name is `id_text` of the spelling, which renders back | `a_definition_publishes_its_spelling_and_keys_its_logical_name` |
+| `TyPath`'s segments and the render lockstep (7) | construction, `is`, both renderers | `ty::spelled_form` |
+| the type table's reference index (8) | a node is interned once exactly when its tree is | `ty::spelled_form` (`types_are_equal_exactly_when_their_spellings_are`, size, import) |
+| `PathKey`/`NameKey` id checks at call sites (5c), the tier-1 probes (4, 5a), `DeclPath`'s construction in the walk (6a) | a call site's id spells the path it means | the end-to-end suite: no property can see a walk's call site without a reference beside it, and each planted call-site bug below fails between 1 and 231 cases of it |
+
+**Planted bugs.** Twenty-seven, each run against the tests named for it (the
+unit plants) or the whole sema suite (the walk's call sites; two unit plants
+were run against it too), and each caught:
+
+| planted bug | caught by |
+|---|---|
+| a container interned under its grandparent | `container_ids_name_paths_one_to_one`, `an_uninterned_path_has_no_id` |
+| a type's name bucket keyed by its IL name | `the_type_index_answers_as_its_text_does` |
+| the dropped-type walk skipping the prefix itself | `the_splits_by_id_are_the_splits_of_the_spelled_path` |
+| a strict-prefix query that accepts the path itself | `queries_agree_with_a_scan` |
+| `PathPrefixes::under` extending the base's parent | `queries_agree_with_a_scan` |
+| a `PathIdSet` filing a path's parent | `path_id_sets_agree_with_string_sets` |
+| a `PathMap` filing a key under its grandparent | both `PathMap` properties |
+| a `PathMap` insert that keeps the first value | `path_maps_agree_with_string_maps` |
+| a `ChildMap` that ignores the container | `child_maps_agree_with_string_maps` |
+| a frame rotated without reindexing | `named_rev_is_the_latest_first_scan` |
+| `is_child_of` accepting any ancestor | `a_declaration_path_answers_as_its_segments_do` |
+| an access root read one segment up | the same |
+| `NameTable::is_prefix` looking one level up only | the same |
+| a definition's name interned from its spelling | `a_definition_publishes_its_spelling_and_keys_its_logical_name`; in the whole suite, 21 cases (`exported_names`, `binders`, the operator differentials) |
+| a quoted name spelled as its name | `a_definition_publishes_its_spelling_and_keys_its_logical_name` |
+| a type path interned under its parent | 17 library cases, `ty::spelled_form` among them; 345 in the whole suite |
+| a project type rendered without its first segment | `a_type_renders_as_its_spelling_does` |
+| `TyPath::is` answering for a prefix | `a_path_is_exactly_the_segments_it_spells` |
+| a type table that never finds a node it holds | `types_are_equal_exactly_when_their_spellings_are`, the thread test, 4 `member_ty` cases |
+| `value_slot`'s child probe under the open's parent | 14 cases (`resolve_project_diff`, `resolve_type_members`, three FCS grids) |
+| the type-export index keeping the first export | `a_redefined_open_supplied_type_uses_the_latest_slot_class` |
+| tier 1 of `resolved_project_module` extending the prefix's parent | 12 cases, the nesting reference among them |
+| a rooting key one prefix short | 111 cases |
+| a declaration's path built under the container's parent | 231 cases |
+| `extend_with` filing each module's parent | 138 cases |
+| an export's name interned from the definition's spelling | 10 cases (`exported_names`, the cross-file inference differentials, `interning_order`) |
+| a nested module holding its spelled path across its body | `nested_modules_resolve_in_linear_memory_in_their_depth` |
+
+**Departure: `walk_cost_scaling`'s memory bound holds the peak.** It held the
+walk's working state, its peak beyond the result, because the reference made
+a debug build's result quadratic in the nesting. Without the reference,
+`sig_nested_modules` read 12.3x over the bound of 12x (9.4x before), while
+holding less at both depths: from 8,850 B at 63 modules and 83,547 B at 504
+to 4,681 B and 57,649 B. Probed at 32, 63, 126, 189, 252, 378 and 504 modules,
+it grows about 110 B a module, minus a constant: the peak can come before the
+whole result is built, so subtracting the result undercounts by up to its
+size, which a shallow signature's few bytes feel most. Each doubling's ratio
+falls toward 2 (2.51, 2.30, 2.13), where a quadratic's would rise toward 4.
+The result is linear now that no reference spells it, so the test bounds the
+peak, the result included, and prints the working state beside it: 6.5x,
+7.3x and 7.3x for the three shapes. The quadratic plant above (a nested
+module holding its spelled path across its body) fails it.
+
+**Not converted, and not twins**: `ProjectItems::case_repr_roots` (keyed by
+item, holding an access root's segments), `exported_value_paths` and
+`exported_case_paths` (the signature screen's exemption sets) are
+string-keyed indexes the walk answers from, not references held beside an
+interned index; no `cfg` guarded them. They stay on 5a's not-converted list.
+
+**Measured**, locally (the build box was down), each phase the median of
+three processes, before at `41380f45` and after at `769fead6`:
+
+| | before | after |
+|---|---|---|
+| `resolve_file` instr/B | 863.9 | 864.4 |
+| `resolve_file` allocs/B | 0.683 | 0.683 |
+| `resolve_project` instr/B | 865.8 | 865.2 |
+| `resolve_project` allocs/B | 0.606 | 0.606 |
+| `infer_file` instr/B | 160.7 | 160.7 |
+| `infer_file` allocs/B | 0.062 | 0.062 |
+| parse instr/B | 509.8 | 510.0 |
+| parse allocs/B | 0.0099 | 0.0099 |
+
+The default build does not move: the feature was off there. The whole-corpus
+dump of Stage 7 is byte-identical before and after (sha256 `505abf56…`,
+247 MB).
 
 ## Non-goals
 
