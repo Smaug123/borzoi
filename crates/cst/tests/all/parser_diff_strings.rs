@@ -293,6 +293,18 @@ fn diff_ast_interp_string_fill_qualifier_middle_only() {
     assert_asts_match("let a = 1\nlet b = 2\nlet c = 3\n$\"{a} {b:N2} {c}\"\n");
 }
 
+/// `$"{x:``ab``}"` — a backtick-quoted qualifier. FCS's lexer yields a quoted
+/// identifier as an ordinary `IDENT` with its backticks stripped, so the
+/// `ident` of the fill rule takes it and the qualifier's `idText` is `ab`.
+/// The space and keyword forms quote the same way.
+#[test]
+fn diff_ast_interp_string_fill_quoted_qualifier() {
+    assert_asts_match("let s x = $\"{x:``ab``}\"\n");
+    assert_asts_match("let s x = $\"{x:``a b``} {x:``type``}\"\n");
+    assert_asts_match("let s x = $\"\"\"{x:``N2``}\"\"\"\n");
+    assert_asts_match("let s x = $@\"{x:``N2``}\"\n");
+}
+
 /// `$"{\n  1\n}"` — single fill whose body spans newlines. FCS's
 /// `lex.fsl` transitions the inner lexer to the normal token rule on
 /// `{`, and `LexFilter.fs:2281-2288` pushes a `CtxtParen(INTERP_…_PART)`
