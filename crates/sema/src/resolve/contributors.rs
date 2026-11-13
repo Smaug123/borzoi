@@ -34,10 +34,7 @@ use borzoi_cst::syntax::{
 use super::model::SlotClass;
 use super::model::{ProjectItems, ResolvedFile};
 use super::state::{MarkReach, ScopeEntry};
-use super::{
-    Resolver, abbrev_target_single_ident, attrs_auto_open, exception_named_like_core_attribute,
-    is_type_augmentation, type_defn_renames_core_attribute,
-};
+use super::{Resolver, abbrev_target_single_ident, attrs_auto_open, is_type_augmentation};
 use crate::assembly_env::{AssemblyEnv, CoreAttributeAliases, CustomOperationNames};
 use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefKind, id_text};
@@ -76,9 +73,9 @@ impl Contribution {
     }
 }
 
-/// The active `rec` block's contributions ([`Resolver::rec_contribution`]):
+/// The active `rec` block's contributions ([`OpenScope::rec_block`](super::open_scope::OpenScope::rec_block)):
 /// everything it declares, and the part its nested modules declare.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct RecBlock {
     pub(super) all: Contribution,
     pub(super) modules: Contribution,
@@ -305,7 +302,8 @@ impl Resolver<'_> {
         spellings: impl Iterator<Item = &'s str>,
     ) -> bool {
         core_attribute_spellings_trusted(
-            self.declares_core_attribute_alias || self.preceding.core_attribute_alias_declared,
+            self.prescan.declares_core_attribute_alias
+                || self.preceding.core_attribute_alias_declared,
             self.assemblies.core_attribute_aliases(),
             spellings,
         )
@@ -754,7 +752,7 @@ impl Resolver<'_> {
         if !attrs_auto_open(nm.attributes())
             || !self.attribute_spellings_trusted(spellings.iter().map(String::as_str))
             || self.anonymous_root
-            || self.rec_contribution.is_some()
+            || self.scope.rec_block.is_some()
         {
             return None;
         }
@@ -876,16 +874,16 @@ impl Resolver<'_> {
                 .filter(|d| matches!(d, ModuleDecl::NestedModule(_))),
         );
         self.push_contribution(&all, pos);
-        let mut active = self.rec_contribution.take().unwrap_or_default();
+        let mut active = self.scope.rec_block.take().unwrap_or_default();
         active.all.merge(&all);
         active.modules.merge(&modules);
-        self.rec_contribution = Some(active);
+        self.scope.rec_block = Some(active);
     }
 
     /// After an `open` in a `rec` block: FCS adds the block's opens first and
     /// every binder after them, so the block's binders outrank it.
     pub(super) fn reassert_rec_block(&mut self, pos: u32) {
-        if let Some(block) = &self.rec_contribution {
+        if let Some(block) = &self.scope.rec_block {
             // The names, not the unlisted part: entering the block already
             // staled everything the open could have hidden behind it.
             let named = Contribution {
@@ -900,7 +898,7 @@ impl Resolver<'_> {
     /// block's modules — their `[<AutoOpen>]` contents with them — after its
     /// types and exceptions, so those contents outrank the cases just pushed.
     pub(super) fn reassert_rec_modules(&mut self, pos: u32) {
-        if let Some(block) = &self.rec_contribution {
+        if let Some(block) = &self.scope.rec_block {
             let named = Contribution {
                 unlisted: false,
                 ..block.modules.clone()
@@ -994,7 +992,9 @@ impl Resolver<'_> {
             }
             _ => {}
         }
-        self.rec_contribution = None;
+        // The block's scope starts with no `rec` block open
+        // ([`OpenScope::block_start`](super::open_scope::OpenScope::block_start)).
+        debug_assert!(self.scope.rec_block.is_none());
         if module.is_rec() {
             let pos = u32::from(module.syntax().text_range().start());
             self.enter_rec_block(module.decls(), pos);
@@ -1016,14 +1016,7 @@ pub(super) fn signature_contributions(
     assemblies: &AssemblyEnv,
     rf: &mut ResolvedFile,
 ) {
-    let renames = sig
-        .syntax()
-        .descendants_of::<TypeDefn>()
-        .any(|defn| type_defn_renames_core_attribute(&defn))
-        || sig
-            .syntax()
-            .descendants_of::<ExceptionDefnDecl>()
-            .any(|exn| exception_named_like_core_attribute(&exn));
+    let renames = super::prescan::declares_core_attribute_alias(sig.syntax());
     rf.declares_core_attribute_alias = renames;
     let aliases = assemblies.core_attribute_aliases();
     let may_auto_open = |attrs: &mut dyn Iterator<Item = AttributeList>| {

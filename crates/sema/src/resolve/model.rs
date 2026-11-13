@@ -25,6 +25,7 @@ use super::contributors::{Contribution, FileContributions};
 use super::decl_path::{DeclPath, ExportName};
 use super::path_set::{Extended, PathPrefixes, PathSet};
 use super::state::ActivePatternShape;
+use super::unknowables::{Unknowable, Unknowables};
 
 /// One export recorded at a qualified path, in the Compile order
 /// [`ProjectItems::extend_with`] appends them (file order, then source order
@@ -3842,17 +3843,17 @@ pub struct ResolvedFile {
     /// See [`Resolver::declares_core_attribute_alias`](super::state::Resolver),
     /// carried into [`ProjectItems::core_attribute_alias_declared`].
     pub(super) declares_core_attribute_alias: bool,
-    /// `true` when some attribute has no resolvable name shape (nameless
-    /// `[<>]`, an ident-less path) — unkeyable, so the gate keeps the
-    /// presence defer.
-    pub(super) attribute_shape_unknowable: bool,
+    /// The file-wide unknowables the walk raised ([`Unknowables`]), read
+    /// through [`Self::attributes_may_declare_extension`],
+    /// [`Self::augmentation_names_unknowable`] and
+    /// [`Self::open_extension_unknowable`].
+    pub(super) unknowables: Unknowables,
     /// The instance / static member names this file's `type … with`
-    /// augmentations declare, and whether any member's name was not walkable
-    /// (EX-3 §2(a); see
+    /// augmentations declare (EX-3 §2(a); whether any member's name was not
+    /// walkable is [`Unknowable::AugmentationNames`]; see
     /// [`Resolver::collect_augmentation_extension_names`](super::state::Resolver)).
     pub(super) augmentation_instance_names: HashSet<String>,
     pub(super) augmentation_static_names: HashSet<String>,
-    pub(super) augmentation_names_unknowable: bool,
     /// The augmentation member names **preceding Compile-order files**
     /// declare, accumulated by the fold (EX-3 §2(b)) — empty for a
     /// single-file caller. The cross-file sibling of the own-file sets above;
@@ -3895,12 +3896,6 @@ pub struct ResolvedFile {
     /// exactly as one in an enclosing namespace is. See
     /// [`Resolver::open_extension_namespaces`](super::state::Resolver).
     pub(super) open_extension_namespaces: Vec<Vec<String>>,
-    /// EX-2: some `open` in this file brings an extension surface whose names the
-    /// resolver cannot enumerate (a project open — EX-3 — an assembly module /
-    /// `open type`, or an opaque / vetoed / dropped-path open). The gate defers
-    /// every method-call commit in the file when set. See
-    /// [`Resolver::open_extension_unknowable`](super::state::Resolver).
-    pub(super) open_extension_unknowable: bool,
     /// The [`ActivePatternShape`] of each same-file active-pattern recognizer,
     /// keyed by each of its per-case *use def ids* (the `Resolution::Local`
     /// identity a case use resolves to). Read through
@@ -4125,10 +4120,9 @@ impl ResolvedFile {
             own_abbrev_type_simple_names: HashSet::default(),
             contributions: FileContributions::default(),
             declares_core_attribute_alias: false,
-            attribute_shape_unknowable: false,
+            unknowables: Unknowables::default(),
             augmentation_instance_names: HashSet::default(),
             augmentation_static_names: HashSet::default(),
-            augmentation_names_unknowable: false,
             preceding_augmentation_instance_names: HashSet::default(),
             preceding_augmentation_static_names: HashSet::default(),
             exports: ExportedItems::default(),
@@ -4136,7 +4130,6 @@ impl ResolvedFile {
             namespace_paths: Vec::new(),
             preceding_declares_extension_source: false,
             open_extension_namespaces: Vec::new(),
-            open_extension_unknowable: false,
             active_pattern_shape: HashMap::default(),
             diagnostics: Vec::new(),
             resolution_trace: ResolutionTrace::default(),
@@ -4356,7 +4349,7 @@ impl ResolvedFile {
     /// Whether some augmentation member's name was not walkable — the gate
     /// keeps the wholesale defer (EX-3 §2(a)).
     pub fn augmentation_names_unknowable(&self) -> bool {
-        self.augmentation_names_unknowable
+        self.unknowables.contains(Unknowable::AugmentationNames)
     }
 
     /// The instance-member names preceding Compile-order files' augmentations
@@ -4378,7 +4371,7 @@ impl ResolvedFile {
     /// not walkable (the unknowable bit — wholesale, like every other
     /// unknowable surface).
     pub fn augmentation_declares_extension_named(&self, name: &str, is_static: bool) -> bool {
-        self.augmentation_names_unknowable
+        self.augmentation_names_unknowable()
             || if is_static {
                 self.augmentation_static_names.contains(name)
             } else {
@@ -4407,7 +4400,7 @@ impl ResolvedFile {
     ///   with no shadow possible (the differential's decline-by-absence
     ///   agreement: FCS errors and binds nothing) — contributes nothing.
     pub fn attributes_may_declare_extension(&self, env: &AssemblyEnv) -> bool {
-        self.attribute_shape_unknowable
+        self.unknowables.contains(Unknowable::AttributeShape)
             || self
                 .attribute_resolutions
                 .keys()
@@ -4537,10 +4530,10 @@ impl ResolvedFile {
     }
 
     /// Whether some `open` in this file brings an extension surface whose names the
-    /// resolver cannot enumerate (EX-2 — see the field
-    /// [`Self::open_extension_unknowable`]). The gate defers wholesale when true.
+    /// resolver cannot enumerate (EX-2, [`Unknowable::OpenExtensionSurface`]).
+    /// The gate defers wholesale when true.
     pub fn open_extension_unknowable(&self) -> bool {
-        self.open_extension_unknowable
+        self.unknowables.contains(Unknowable::OpenExtensionSurface)
     }
 
     /// The file's declared project **namespace** paths, each with its ancestor

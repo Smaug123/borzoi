@@ -15,13 +15,16 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
-use super::contributors::{FileContributions, RecBlock};
+use super::contributors::FileContributions;
 use super::model::{
     DeclaredType, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDecl, ExportedItem,
     ItemId, OpenTrace, ProjectItems, Resolution, SlotClass, TypeSlot,
 };
 use super::open_scope::{InternedPrefix, OpenScope};
 use super::path_set::PathSet;
+use super::prescan::Prescan;
+use super::unknowables::Unknowables;
+use super::windows::Windows;
 use crate::names::{ChildMap, Name, NameKey, NameTable, PathId, PathMap};
 
 /// The opens in scope that could supply a **dotted-path head** the walk does
@@ -1280,9 +1283,18 @@ pub(super) struct Resolver<'a> {
     pub(super) assemblies: &'a AssemblyEnv,
     /// Project-global id of this file's first item (the `preceding` count).
     pub(super) item_base: u32,
+    /// What a pass over the whole file decided before the walk started
+    /// ([`Prescan`]), borrowed so the walk cannot write it.
+    pub(super) prescan: &'a Prescan,
     /// Everything the opens and module headers in scope decide, which lives
     /// as long as the module that wrote it ([`OpenScope`]).
     pub(super) scope: OpenScope,
+    /// The reasons raised so far that a file-wide question has no enumerable
+    /// answer ([`Unknowables`]): raised, never lowered.
+    pub(super) unknowables: Unknowables,
+    /// State that holds a value only for one call's dynamic extent
+    /// ([`Windows`]), written only by the scoped calls that open it.
+    pub(super) windows: Windows,
     /// Dotted path of the enclosing *container* — the `module`/`namespace`
     /// header's `longId` (`["Demo"]` for `namespace Demo` as well as for
     /// `module Demo`; empty for an anonymous module or `namespace global`).
@@ -1318,12 +1330,6 @@ pub(super) struct Resolver<'a> {
     /// global`): the prefix of [`Self::container_path`] under which this
     /// block's own declarations land in [`Self::container_decls`].
     pub(super) block_container_len: usize,
-    /// An earlier `namespace global` block of this file held an `open`. FCS
-    /// carries what such an open brings into the blocks after it (probed: a
-    /// later block's `Alpha.Color.Red` binds the opened module's `Alpha`
-    /// over a same-file `namespace Alpha`), which the per-block open state
-    /// does not model.
-    pub(super) global_block_opened: bool,
     /// Every nested `[<AutoOpen>]` module this file has declared so far, by
     /// its path under the container chain — the anonymous root's included,
     /// which [`Self::auto_open_module_paths`] leaves out because nothing
@@ -1471,8 +1477,9 @@ pub(super) struct Resolver<'a> {
     /// file's declared namespace chain is, so the gate asks the *same*
     /// [`AssemblyEnv::extension_named_in_scope`](crate::AssemblyEnv) query about
     /// them. Only `open`s that resolve *entirely* to assembly-namespace readings
-    /// with no residual uncertainty land here; anything else sets
-    /// [`Self::open_extension_unknowable`] instead.
+    /// with no residual uncertainty land here; anything else raises
+    /// [`Unknowable::OpenExtensionSurface`](super::unknowables::Unknowable::OpenExtensionSurface)
+    /// instead.
     ///
     /// **File-global, never block-scoped.** The gate is file-global (a single
     /// `ExtensionScope` per file), so an `open` in any nested module is folded in
@@ -1481,14 +1488,6 @@ pub(super) struct Resolver<'a> {
     /// namespace it need not), never a wrong commit. Deliberately absent from the
     /// nested-module save/restore in `decls.rs` for that reason.
     pub(super) open_extension_namespaces: Vec<Vec<String>>,
-    /// EX-2: some explicit `open` in the file brings an extension surface whose
-    /// names cannot be enumerated here — a project module/namespace (EX-3), an
-    /// assembly module or `open type`, or an opaque / vetoed / dropped-path open.
-    /// The gate defers *every* method-call commit in the file when set, exactly as
-    /// the pre-EX-2 presence gate did for *any* `open`. File-global like
-    /// [`Self::open_extension_namespaces`], and monotone (set, never cleared), so
-    /// the nested-module save/restore leaves it alone.
-    pub(super) open_extension_unknowable: bool,
     /// The *type* each written attribute resolved to, keyed by the written
     /// name's range — built by `Resolver::resolve_attribute_lists` and carried
     /// into [`ResolvedFile::attribute_resolutions`](super::model::ResolvedFile).
@@ -1606,10 +1605,6 @@ pub(super) struct Resolver<'a> {
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
-    /// `true` when some attribute in the file has no resolvable *name shape*
-    /// — a nameless `[<>]` or an ident-less path — so the gate cannot key it
-    /// and must keep the presence defer (EX-3 §2(d) stage 5).
-    pub(super) attribute_shape_unknowable: bool,
     /// The **instance** member names this file's `type … with` augmentations
     /// declare (EX-3 §2(a)): an augmentation member joins its own name's
     /// call group, so the gate defers exactly those names instead of every
@@ -1619,9 +1614,6 @@ pub(super) struct Resolver<'a> {
     /// The **static** sibling of [`Self::augmentation_instance_names`]. A
     /// member whose staticness is not walkable lands in both sets.
     pub(super) augmentation_static_names: HashSet<String>,
-    /// `true` when some augmentation member's *name* is not walkable (an
-    /// operator head, an `inherit`) — the gate keeps the wholesale defer.
-    pub(super) augmentation_names_unknowable: bool,
     /// The in-file types the current top-level block declares. Reset per
     /// block: a namespace reopened in a later block, `namespace global`
     /// included, makes an augmentation there an extension to FCS.
@@ -1644,11 +1636,6 @@ pub(super) struct Resolver<'a> {
     /// ([`FileContributions::extension_statics`] is the same, for later
     /// files).
     pub(super) own_extension_statics: BTreeSet<String>,
-    /// Whether this file declares a type spelled like `[<AutoOpen>]` or
-    /// `[<RequireQualifiedAccess>]`, or an abbreviation of one — which makes
-    /// every written attribute name untrustworthy for those two
-    /// ([`Resolver::attribute_spellings_trusted`]).
-    pub(super) declares_core_attribute_alias: bool,
     /// The same-file `[<AutoOpen>]` types, by container path and name, whose
     /// intrinsic augmentations extend what they fold
     /// ([`Resolver::type_group_contributions`]).
@@ -1665,11 +1652,6 @@ pub(super) struct Resolver<'a> {
     /// keyed by the name's range ([`Resolver::note_in_file_construction`]):
     /// what a builder bound as `let b = T()` is.
     pub(super) in_file_constructions: HashMap<TextRange, DefId>,
-    /// The active `rec` blocks' contributions, re-pushed where FCS's
-    /// `TcMutRecDefns_Phase1` order puts them above what the walk just pushed:
-    /// every binder after each `open`, and the nested modules' `[<AutoOpen>]`
-    /// contents after each type or exception definition.
-    pub(super) rec_contribution: Option<RecBlock>,
     /// In-project **module abbreviations**: the alias's absolute path
     /// (`[scope…, Alias]`) → the *canonical* fully-qualified path of the module it
     /// abbreviates. The RHS is resolved with the same precedence as an `open` path
@@ -1696,36 +1678,6 @@ pub(super) struct Resolver<'a> {
     /// bare-cross-file referenceable (`Calc.x`) and must be exported. Set per
     /// top-level module in [`resolve_file`](super::resolve_file).
     pub(super) anonymous_root: bool,
-    /// Project-global [`ItemId`]s of the value binders of the **current non-`rec`
-    /// `let … and …` group**, while that group's RHSs are being resolved — i.e.
-    /// items that are interned (eagerly pushed to [`Self::items`] by
-    /// [`prepare_binding`](Self::prepare_binding)) but **not yet in scope**, because
-    /// a non-`rec` binding is not visible in its own (or its group's) RHS. Empty
-    /// outside such a window and for `rec` groups (whose binders *are* in scope).
-    ///
-    /// [`ordinary_value_at`](Self::ordinary_value_at) skips these so the
-    /// value-vs-type-qualifier shadow check
-    /// ([`value_shadows_case`](Self::value_shadows_case)) does not let a binding
-    /// being defined shadow its own qualified self-reference: `let Color =
-    /// Lib.Container.Color.Red` resolves to the earlier file's case, not member
-    /// access on the not-yet-in-scope `Color` (FCS-verified). Set/restored around
-    /// [`resolve_rhss`](Self::resolve_rhss) in [`module_let`](Self::module_let).
-    pub(super) pending_items: HashSet<ItemId>,
-    /// The case names (`idText`-normalised) of every active-pattern recognizer
-    /// whose own RHS is *currently being resolved* — accumulated by
-    /// [`resolve_rhss`](Self::resolve_rhss) / [`resolve_local_let_rhss`](Self::resolve_local_let_rhss)
-    /// around each binding's body and restored after. A **bare** expression use of
-    /// one of these names in the recognizer's own body ([`resolve_name_use`](Self::resolve_name_use))
-    /// is ambiguous between constructing the result case (FCS `ActivePatternCase`)
-    /// and a fresh uppercase *pattern* rebinding (`match n with A -> A`, where FCS
-    /// binds `A` as a fresh local) — a distinction a resolution-only pass cannot
-    /// draw, since it drops uppercase provisional binders — so the use *declines*
-    /// rather than commit an outer same-named value (the original AP-body-shadow
-    /// bug) or the case. Only **bare** single-ident expression uses are declined:
-    /// a *qualified* head (`A.X`, where `A` names a type sharing the case name) is
-    /// resolved by [`resolve_long_ident`](Self::resolve_long_ident), which never
-    /// consults this set, so it resolves normally. Empty outside a recognizer body.
-    pub(super) ap_body_case_names: HashSet<String>,
     /// The [`ActivePatternShape`] of each same-file active-pattern recognizer,
     /// keyed by each of its per-case *use def ids* (the `Resolution::Local`
     /// identity a case use resolves to). Written once per recognizer by
@@ -1757,23 +1709,6 @@ pub(super) struct Resolver<'a> {
     /// per-file, byte ranges are unique within a file, and a range excluded as a
     /// parameter is never a legitimate binder elsewhere.
     pub(super) excluded_param_ranges: HashSet<TextRange>,
-    /// `true` while resolving a **binding-head** pattern — a `let` head or a
-    /// lambda's curried parameters — where a shape-keyed active-pattern split may
-    /// run ([`resolve_pattern_arg_as_expr`](Resolver::resolve_pattern_arg_as_expr)).
-    /// In such a position an earlier curried parameter is **not yet in scope** when
-    /// a later parameter pattern's active-pattern argument is resolved (FCS scopes
-    /// curried parameters left to right — `let f d (DivBy d)` scopes the first `d`
-    /// into the second parameter's `DivBy d`), so resolving the argument against the
-    /// enclosing scope could commit to the *wrong* target (a same-named module value
-    /// the earlier parameter should shadow). We therefore **decline** the argument's
-    /// expression resolution here (its fabricated binder is still excluded — a sound
-    /// coverage gap, never a wrong commit); a *match*-clause / general pattern
-    /// position (the flag is `false`) resolves it normally against the enclosing
-    /// scope, which is exactly FCS's rule there. Set/restored around the let-head
-    /// ([`resolve_let_head_pat_types`](Resolver::resolve_let_head_pat_types)) and the
-    /// lambda-parameter walk ([`pattern_locals`](Resolver::pattern_locals) with
-    /// [`BinderRole::Param`](crate::BinderRole)).
-    pub(super) decline_binding_head_param_exprs: bool,
     /// Always-sound semantic diagnostics accumulated during the walk (today
     /// only `use rec`; see [`SemaDiagnostic`]). Source-ordered because the
     /// walk is.

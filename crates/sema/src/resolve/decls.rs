@@ -15,6 +15,7 @@ use super::model::{
 };
 use super::open_scope::{AutoOpenExit, InternedPrefix, ModuleExit, OpenedPrefix};
 use super::state::{Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix};
+use super::unknowables::Unknowable;
 use super::{attrs_auto_open, id_text, is_type_augmentation, single_ident, type_long_ident_path};
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
@@ -1040,7 +1041,7 @@ impl<'a> Resolver<'a> {
                     // — but a name-keyed claim about that surface would have to
                     // enumerate the opened type's members, which we do not do here.
                     // Defer wholesale; the coverage cost is a rare `open type`.
-                    self.open_extension_unknowable = true;
+                    self.unknowables.raise(Unknowable::OpenExtensionSurface);
                 } else if let Some(li) = open.long_ident() {
                     let idents: Vec<SyntaxToken> = li.idents().collect();
                     let mut path: Vec<String> =
@@ -1316,7 +1317,7 @@ impl<'a> Resolver<'a> {
                             }
                         }
                     } else if !path.is_empty() {
-                        self.open_extension_unknowable = true;
+                        self.unknowables.raise(Unknowable::OpenExtensionSurface);
                     }
 
                     // Apply the interpretations **lowest priority first** (the list
@@ -1837,7 +1838,6 @@ impl<'a> Resolver<'a> {
         self.scopes.push(Frame::default());
         // Inside a `rec` block every binder the module declares is in scope
         // from its start, ahead of the walk reaching it.
-        let saved_rec_contribution = self.rec_contribution.clone();
         if self.scope.recursive_module_active {
             self.enter_rec_block(nm.decls(), u32::from(nm.syntax().text_range().start()));
         }
@@ -1846,7 +1846,6 @@ impl<'a> Resolver<'a> {
         }
         self.scopes.pop();
         self.module_frames.pop();
-        self.rec_contribution = saved_rec_contribution;
 
         self.container_path.leave_to(saved_container);
         // An `[<AutoOpen>]` nested module opens into the remainder of its

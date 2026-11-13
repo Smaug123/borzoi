@@ -23,6 +23,7 @@ use super::state::{
     RecordedFold, Resolver, SameFileQualified, ScopeEntry, ShadowVeto, ShorteningPrefix,
     TieredResolution,
 };
+use super::unknowables::Unknowable;
 
 #[cfg(test)]
 mod nesting_reference;
@@ -2265,7 +2266,7 @@ impl<'a> Resolver<'a> {
                     && it.qualified.as_ref().is_some_and(|q| q.is(names, key))
                     // A non-`rec` binder being defined is not yet in scope in its own
                     // RHS, so it must not shadow its own qualified self-reference.
-                    && !self.pending_items.contains(&it.id)
+                    && !self.windows.is_pending(it.id)
             })
             .map(|it| it.id)
             .or_else(|| {
@@ -2302,7 +2303,7 @@ impl<'a> Resolver<'a> {
     /// A non-`rec` binding's *own* qualified self-reference (`let Color =
     /// Lib.Container.Color.Red`) does **not** count its own binder: that binder is
     /// not in scope in its own RHS, and [`ordinary_value_at`](Self::ordinary_value_at)
-    /// skips the [`pending_items`](Self::pending_items) the eager
+    /// skips the pending binders ([`Windows::is_pending`](super::windows::Windows::is_pending)) the eager
     /// [`prepare_binding`](Self::prepare_binding) push would otherwise expose, so the
     /// self-reference reaches the earlier case (Gap B of
     /// `docs/type-qualified-case-prefix-plan.md`).
@@ -4954,7 +4955,7 @@ impl<'a> Resolver<'a> {
             // or the opened module wins over a later root module, which the
             // positional contest does not model.
             if k == 0
-                && (self.global_block_opened
+                && (self.unknowables.contains(Unknowable::GlobalBlockOpen)
                     || self
                         .namespace_paths
                         .iter()
@@ -5547,8 +5548,10 @@ impl<'a> Resolver<'a> {
                 || self
                     .assemblies
                     .any_split_of_a_module_path_has_a_dropped_type(enclosing));
-        (same_file_auto_open || other_contributor || self.global_block_opened)
-            .then_some(SameFileQualified::DeferStop)
+        (same_file_auto_open
+            || other_contributor
+            || self.unknowables.contains(Unknowable::GlobalBlockOpen))
+        .then_some(SameFileQualified::DeferStop)
     }
 
     /// Whether `container` declares a type named `ty` more than once at one
@@ -7496,7 +7499,7 @@ impl<'a> Resolver<'a> {
     /// genuine value constructors: `let c = Red` resolves.) The recognizer-body
     /// decline for a *bare* case-name expression is handled separately, in
     /// [`resolve_name_use`](Self::resolve_name_use) via
-    /// [`ap_body_case_names`](Self::ap_body_case_names), so it never touches this
+    /// [`Windows::is_ap_body_case`](super::windows::Windows::is_ap_body_case), so it never touches this
     /// shared lookup (and hence never a qualified head).
     ///
     /// **Opened** entries ([`ScopeEntry::from_open`]) are skipped while an
