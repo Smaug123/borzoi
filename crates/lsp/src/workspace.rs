@@ -3456,7 +3456,10 @@ mod tests {
         write_file(&inner_proj, &fsproj_with_defines(""));
         write_file(&file, "");
 
-        assert_eq!(find_owning_project(&file, &Observer::new()), Some(inner_proj));
+        assert_eq!(
+            find_owning_project(&file, &Observer::new()),
+            Some(inner_proj)
+        );
     }
 
     #[test]
@@ -3530,7 +3533,10 @@ mod tests {
 
         let mut ws = Workspace::default();
         assert_eq!(ws.owning_project(&file), Some(alpha));
-        assert_eq!(ws.owning_project(&file), find_owning_project(&file, &Observer::new()));
+        assert_eq!(
+            ws.owning_project(&file),
+            find_owning_project(&file, &Observer::new())
+        );
     }
 
     // ----- `symbols_for_linked` / `lang_version_for_linked` -----
@@ -3852,7 +3858,10 @@ mod tests {
 
         let mut ws = Workspace::default();
         assert_ne!(ws.owning_project(&file), Some(root));
-        assert_eq!(ws.owning_project(&file), find_owning_project(&file, &Observer::new()));
+        assert_eq!(
+            ws.owning_project(&file),
+            find_owning_project(&file, &Observer::new())
+        );
     }
 
     // ----- Stage 3.1: `Workspace::project_graph` over real fsproj trees -----

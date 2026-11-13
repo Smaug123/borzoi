@@ -565,7 +565,10 @@ impl<D: Disk> Vfs<D> {
     /// End the current generation, in which no project evaluation was read
     /// and no file's owner was looked for.
     pub fn end_generation(&mut self) -> Generation {
-        self.end_generation_with(EvaluationCounts::default(), borzoi_msbuild::observed::ReadCounts::default())
+        self.end_generation_with(
+            EvaluationCounts::default(),
+            borzoi_msbuild::observed::ReadCounts::default(),
+        )
     }
 
     /// End the current generation, in which reading project evaluations
