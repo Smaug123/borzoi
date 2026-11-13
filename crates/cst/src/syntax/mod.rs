@@ -85,9 +85,8 @@ pub use flat::{
 /// (`ImplFile`, `ModuleOrNamespace`, …). Mirrors rust-analyzer's `AstNode`.
 ///
 /// `cast` succeeds exactly when `can_cast` accepts the node's kind (astgen
-/// emits both from one kind list, and `ast_node!` defines `cast` by
-/// `can_cast`). [`SyntaxNode::descendants_of`] relies on it, testing only the
-/// kind before it builds a handle.
+/// emits both from one kind list). [`SyntaxNode::descendants_of`] relies on
+/// it, testing only the kind before it builds a handle.
 pub trait AstNode: Sized {
     fn can_cast(kind: SyntaxKind) -> bool;
     fn cast(node: SyntaxNode) -> Option<Self>;

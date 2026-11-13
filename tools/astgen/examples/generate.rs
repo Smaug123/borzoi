@@ -1,5 +1,6 @@
 //! `cargo run -p borzoi-astgen --example generate` — regenerate the checked-in typed-AST
-//! facade modules under `crates/cst/src/syntax/generated/`. See the crate docs in
+//! facade modules under `crates/cst/src/syntax/generated/` and the union's lock,
+//! `crates/cst/facades/union.lock`. See the crate docs in
 //! `lib.rs`.
 //!
 //! This is an *example*, not a `[[bin]]`, deliberately: a second workspace binary
