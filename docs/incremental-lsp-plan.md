@@ -1939,6 +1939,183 @@ together) instead of parsing again.
 **Expected gain**: `diagnostic E` from 4.85 M to near the floor. One parse of
 `E` (under 5 M) leaves the keystroke.
 
+**Implemented** (`crates/lsp/src/parses.rs`, `crates/lsp/src/diagnostics.rs`,
+`crates/lsp/src/semantic.rs`, `crates/cst/src/tokens.rs`):
+
+- **The memo.** `parses::ParseMemo`, on `SemanticState`, holds each file's
+  latest parse under each set of inputs: the text, the grammar
+  (implementation or signature), the `#if` symbols and the language
+  version. `ParseMemo::parse` hands back the parse whose inputs all match,
+  the text compared by pointer and then by bytes, and otherwise parses
+  (`SourceParse::new`, panic-safe) and replaces the parse under the same
+  inputs. Files are keyed as the `Vfs` keys its buffers (`path_dedup_key`
+  of the lexically normalised path), so a buffer and the Compile item that
+  names it share their parses. A buffer that names no file (`untitled:`) is
+  parsed and not remembered.
+- **Every reader parses through it.** The syntactic diagnostics
+  (`server::grouped_for_uri`, for a push and a pull client alike), the
+  fold (`build_parses`, on a miss in its per-file cache), and every
+  single-file handler (hover, definition, references, document and
+  workspace symbols, semantic tokens) ask the memo, the handlers through
+  `State::parse_buffer`. So in the keystroke script the pull of `E`'s
+  diagnostics parses `E` and the fold the next request builds reads that
+  parse.
+- **The fold's own cache** (`SemanticState::file_parses`) keeps what the
+  fold derives from a parse: the cast tree, the `SyntaxRecovery`, and the
+  verdict of the version-boundary gate. Its entries hold the memo's
+  `SourceParse` and are keyed by its inputs plus the project's
+  `LangVersion` provenance trust, as before, since a hit skips the gate.
+- **One lex.** A parse records what the preprocessor reported during the
+  lex it made (`Parse::preprocessor`, a `directives::Preprocessed`): every
+  error in stream order, lexer errors in active code included, and the
+  active-branch `#line` directives. The token table's writer collects them
+  as the driver writes its items, and `lex_full_trivia_into` hands back the
+  driver's `LineDirectiveStore`. `diagnostics::syntactic_diagnostics` reads
+  the preprocessor's diagnostics, the overlap spans the parser's are
+  deduplicated against, and the line directives from it, and builds one
+  `LineIndex` where it built two. The diagnostics lex nothing of their own.
+  If the parser panics (not expected: `parser_panic_sweep`), the report
+  comes from a swallow-mode lex made then (`directives::preprocess`), as the
+  lexer diagnostics did before.
+- **Counted.** `Generation` gains `parses` (`ParseCounts`: sources parsed
+  and parses handed back again), the `observed.generation` event carries
+  them as `parsed` and `parses_reused`, and `edit_counts` prints them as
+  `p.new` and `p.reuse`.
+
+**Departures.**
+
+- **Not every parse goes through the memo.** The verification parses at a
+  version other than the file's own are not memoised: the shape gate's
+  parses under untrusted `LangVersion` provenance, and
+  `SyntaxRecovery::of_guessed_version`'s two endpoint parses inside
+  `borzoi-cst`. They run only for an untrusted project's flagged files and
+  the single-file hover, their verdict is cached with the fold's entry, and
+  no other reader asks for a parse at those versions.
+- **D2's parse key named provenance trust.** Trust is not an input of the
+  parse; it decides only what the fold derives from it. So the memo keys on
+  the parse's inputs, and the fold's cache adds the trust.
+- **The syntactic diagnostics are not memoised themselves.** They are
+  computed from the memoised parse each time they are asked for. In the
+  keystroke script no text is diagnosed twice (an unchanged pull is
+  answered from its result id), so a table for them would hold nothing a
+  later request reads.
+- **The single lex needed a `borzoi-cst` change.** The token-pipeline plan
+  called reading the lexer errors from the table "an LSP change". The
+  parse's lex is the only one left, and its table is gone once the parse
+  returns, so `Parse` carries the report. That costs a parse nothing on
+  clean source (the writer records an error only when the driver reports
+  one) and moves the line-directive store it already built.
+- **The expected gain was a parse of `E` "under 5 M".** `E` (`Stack.fs`)
+  costs 0.62 M to parse and 0.24 M to lex three times. In the script the
+  diagnostic pull of `E` comes first, so it keeps the parse and loses the
+  lexes, and `semanticTokens E` loses the parse.
+
+The oracle:
+
+- **The diagnostics are unchanged.** Every existing diagnostics test keeps
+  its assertions, as do both diagnostic models in `incremental_state_machine`.
+  `tests/all/common/diagnostics_reference.rs` keeps the producer as it was,
+  three lexes beside a parse, and two tests hold the new one to it:
+  `syntactic_diagnostics_diff` over every one- and two-piece source and
+  random walks over pieces that reach every producer and rule (lexer and
+  directive errors, the overlap rule dropping a parser error, the FS3350
+  exemption, warnings, cross-file `#line` groups, under two symbols, five
+  versions and both grammars; a fixed-seed census asserts each is reached),
+  and `parser_corpus_sweep`, which now compares every corpus file's groups
+  (5,213 files, all equal).
+- **The report is the swallow-mode driver's.** Under `token-reference`,
+  every lex asserts that the table's report equals `directives::preprocess`,
+  so the parser suites and the cst corpus sweeps hold it on every file.
+  `token_table_reference` asserts it explicitly over its pairs, wide pairs
+  and random walks, and `a_parse_reports_what_the_preprocessor_does` holds a
+  parse to passing it on at both ends of the version ladder and in both
+  grammars, reaching every preprocessor error variant and a `#line`.
+  `parser_depth_limit::a_breaching_parse_keeps_the_preprocessor_report`
+  covers the parse that gives up on depth.
+- **Memo ≡ recompute.** `parses::tests` generates sequences of lookups over
+  five spellings of three files (one by case, one through `.` and `..`)
+  and none, seven texts whose parses differ by symbols, version, grammar and
+  preprocessor report, fresh and shared allocations, two symbol sets and
+  three versions. Every parse handed back equals a fresh one (tree by
+  structure, errors, warnings, report, flags and diagnostics), and the memo
+  parses exactly when a model that remembers each file's last text under
+  each set of inputs says it holds none. Its non-vacuity check counts hits on
+  the held allocation and on a byte-equal copy, replacements, ABA lookups
+  (a text again after its parse was replaced), lookups naming no file, and
+  second input sets.
+- **Counts.** `observed_counts::a_keystroke_parses_the_edited_text_once`:
+  after a comment keystroke, a pull client's diagnostic request parses once
+  and the edited document's semantic tokens reuse that parse (a push client:
+  `didChange` parses, the tokens reuse), and the other document's request
+  parses nothing. `single_file_requests_reuse_the_diagnostics_parse`: on a
+  buffer no project owns, after the pull parses it, hover, definition,
+  references, document symbols, semantic tokens and workspace symbols each
+  read the memo's parse and parse nothing.
+
+Planted, each caught, then removed:
+
+| plant | caught by |
+|---|---|
+| the diagnostics parse outside the memo (the behaviour before this stage) | `a_keystroke_parses_the_edited_text_once` |
+| the fold parses outside the memo | `a_keystroke_parses_the_edited_text_once` |
+| a single-file handler (document symbols) parses outside the memo | `single_file_requests_reuse_the_diagnostics_parse` |
+| the memo ignores the language version | both `parses` properties |
+| the memo ignores the symbols | both `parses` properties, six `incremental_state_machine` tests |
+| the memo ignores the grammar | both `parses` properties |
+| the memo compares texts by pointer only | both `parses` properties |
+| the memo never replaces a parse under the same inputs | both `parses` properties |
+| the memo keys a file by its spelling, not normalised | both `parses` properties (once the paths included one file spelt plainly and through `.` and `..`) |
+| the counts not reset when a generation begins | `the_counts_are_per_generation` (once it looked up between generations) |
+| the overlap spans taken from lexer errors alone | all three `syntactic_diagnostics_diff` tests |
+| the table's report skipping lexer errors | four `token_table_reference` tests, three `syntactic_diagnostics_diff` tests, seven `diagnostics` unit tests |
+| the table's report dropping the `#line` directives | three `token_table_reference` tests, four `parser_ifdef` tests (through the lockstep assertion), three `syntactic_diagnostics_diff` tests, two `diagnostics` unit tests |
+| a parse that gives up on depth dropping the report | `a_breaching_parse_keeps_the_preprocessor_report` (added for it: the plant first passed every test) |
+
+Three plants first passed every test: the spelling-keyed memo (the
+generated paths spelt the one file through `.` and `..` only), the counts
+not reset (a lookup between generations was never made), and the dropped
+report on a depth breach (no test parsed a deep file with a preprocessor
+error). The tests named against them were extended or added, and each then
+failed.
+
+**Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
+minimum over three runs of each binary: Stage 4b (0f573532, re-measured
+here at 35.55 M per keystroke against its own report's 35.81 M) and this
+stage (52ee07d0). Every source-read, validation and ownership column is
+unchanged (80 `stat`s on each fold-reading row, 137 validation `stat`s on
+each row that reads the evaluation, 8 ownership `stat`s per keystroke).
+
+| message, per keystroke | instructions before | after | allocs before | after | p.new | p.reuse |
+|---|---:|---:|---:|---:|---:|---:|
+| `didChange E` | 0.16 M | 0.17 M | 99 | 99 | 0 | 0 |
+| `diagnostic E` | 3.63 M | 3.39 M | 238 | 245 | 1 | 0 |
+| `diagnostic L` (`unchanged`) | 2.68 M | 2.68 M | 84 | 84 | 0 | 0 |
+| `semanticTokens E` | 9.00 M | 8.38 M | 5,018 | 4,928 | 0 | 1 |
+| `semanticTokens L` | 12.36 M | 12.38 M | 11,443 | 11,443 | 0 | 0 |
+| `hover L` | 7.65 M | 7.67 M | 3,878 | 3,878 | 0 | 0 |
+| `keystroke total` | 35.55 M | 34.72 M | 20,760 | 20,677 | 1 | 1 |
+
+| cold message | instructions before | after | allocs before | after | p.new | p.reuse |
+|---|---:|---:|---:|---:|---:|---:|
+| `didOpen E` | 339.9 M | 339.8 M | 122,459 | 122,425 | 0 | 0 |
+| `didOpen L` | 63.0 M | 62.8 M | 13,366 | 13,366 | 0 | 0 |
+| `diagnostic E (cold)` | 6.3 M | 5.9 M | 239 | 248 | 1 | 0 |
+| `diagnostic L (cold)` | 10.5 M | 8.1 M | 319 | 322 | 1 | 0 |
+| `semanticTokens E (cold)` | 2622.9 M | 2620.2 M | 3,413,069 | 3,413,488 | 80 | 2 |
+| `semanticTokens L (cold)` | 568.6 M | 567.2 M | 357,816 | 357,816 | 0 | 0 |
+| `hover L (cold)` | 91.4 M | 91.4 M | 58,098 | 58,098 | 0 | 0 |
+
+The keystroke falls by 0.83 M instructions (2.3%) and 83 allocations. The
+three lexes of `E` the diagnostics made cost 0.24 M, and `diagnostic E`
+falls by that; it keeps `E`'s one parse, as the first to ask. The parse
+leaves `semanticTokens E` (0.62 M and 90 allocations), whose fold reads
+it (`p.reuse` 1). `diagnostic E` gains 7 allocations: the memo's key and
+entry. The cold rows: the cold pulls lose their lexes (`diagnostic L` 2.4
+M, a larger file), and the cold `semanticTokens E` parses 80 items and
+reuses the 2 the cold pulls parsed. It moves within its runs' spread
+(2,620–2,656 M); its 419 extra allocations are the memo's entries for the
+80 items.
+
 ### Stage 6a: env reference resolution records its read set
 
 **Dependencies**: Stage 2a. **Implements**: D3 for the assembly env's
