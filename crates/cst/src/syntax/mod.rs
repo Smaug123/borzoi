@@ -2898,7 +2898,8 @@ pub enum InterpStringPart {
     /// A `{ expr }` fill. `expr` is the spliced expression; `qualifier` is the
     /// trailing `: ident` format specifier (`{x:N2}` → `Some("N2")` token),
     /// or `None` for a bare `{x}`. Mirrors `FillExpr of fillExpr * qualifiers:
-    /// Ident option`.
+    /// Ident option`. The token is lossless, so a backtick-quoted qualifier
+    /// keeps the backticks that FCS's `idText` drops.
     Fill {
         expr: Expr,
         qualifier: Option<SyntaxToken>,

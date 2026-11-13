@@ -59,7 +59,12 @@ impl<'src> Parser<'src> {
         }
         if matches!(self.next_non_trivia_raw_at_pos(), Some(Token::Colon)) {
             self.bump_into(SyntaxKind::COLON_TOK);
-            if matches!(self.next_non_trivia_raw_at_pos(), Some(Token::Ident(_))) {
+            // FCS's `ident` is its `IDENT` token, which its lexer also yields
+            // for a backtick-quoted identifier (`{x:``ab``}`), unquoted.
+            if matches!(
+                self.next_non_trivia_raw_at_pos(),
+                Some(Token::Ident(_) | Token::QuotedIdent(_))
+            ) {
                 self.bump_into(SyntaxKind::IDENT_TOK);
             } else if let Some((_, span)) = self.peek().cloned() {
                 self.errors.push(ParseError {
