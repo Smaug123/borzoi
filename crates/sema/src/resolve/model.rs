@@ -4530,7 +4530,7 @@ impl ResolvedFile {
     }
 
     /// Whether some `open` in this file brings an extension surface whose names the
-    /// resolver cannot enumerate (EX-2, [`Unknowable::OpenExtensionSurface`]).
+    /// resolver cannot enumerate (EX-2).
     /// The gate defers wholesale when true.
     pub fn open_extension_unknowable(&self) -> bool {
         self.unknowables.contains(Unknowable::OpenExtensionSurface)
