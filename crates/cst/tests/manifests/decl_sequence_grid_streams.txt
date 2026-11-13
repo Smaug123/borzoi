@@ -547,69 +547,9 @@
 "module M =\n    module N = let y = 2 type T = int\n"	stream@11
 "module M =\n    open System #nowarn \"44\"\n"	stream@5
 "module M =\n    open System ) #nowarn \"44\"\n"	stream@5
-"module M =\n    open System )\n         [<Literal>]\n        let L = 1\n"	stream@8
-"module M =\n    open System )\n        [<Literal>]\n        let L = 1\n"	stream@8
-"module M =\n    open System )\n        let f () =\n            1\n"	stream@5
-"module M =\n    open System )\n        let x = 1 in ()\n"	stream@5
-"module M =\n    open System )\n        let x = 1 in\n"	stream@5
-"module M =\n    open System )\n        let x = 1\n"	stream@5
-"module M =\n    open System )\n      [<Literal>]\n     let L = 1\n"	stream@8
-"module M =\n    open System )\n     [<Literal>]\n     let L = 1\n"	stream@8
-"module M =\n    open System )\n     let f () =\n         1\n"	stream@5
-"module M =\n    open System )\n     let x = 1 in ()\n"	stream@5
-"module M =\n    open System )\n     let x = 1 in\n"	stream@5
-"module M =\n    open System )\n     let x = 1\n"	stream@5
 "module M =\n    open System and #nowarn \"44\"\n"	stream@6
-"module M =\n    open System and\n         [<Literal>]\n        let L = 1\n"	stream@9
-"module M =\n    open System and\n        [<Literal>]\n        let L = 1\n"	stream@9
-"module M =\n    open System and\n        let f () =\n            1\n"	stream@6
-"module M =\n    open System and\n        let x = 1 in ()\n"	stream@6
-"module M =\n    open System and\n        let x = 1 in\n"	stream@6
-"module M =\n    open System and\n        let x = 1\n"	stream@6
-"module M =\n    open System and\n      [<Literal>]\n     let L = 1\n"	stream@9
-"module M =\n    open System and\n     [<Literal>]\n     let L = 1\n"	stream@9
-"module M =\n    open System and\n     let f () =\n         1\n"	stream@6
-"module M =\n    open System and\n     let x = 1 in ()\n"	stream@6
-"module M =\n    open System and\n     let x = 1 in\n"	stream@6
-"module M =\n    open System and\n     let x = 1\n"	stream@6
 "module M =\n    open System x #nowarn \"44\"\n"	stream@6
-"module M =\n    open System x\n         [<Literal>]\n        let L = 1\n"	stream@9
-"module M =\n    open System x\n        [<Literal>]\n        let L = 1\n"	stream@9
-"module M =\n    open System x\n        let f () =\n            1\n"	stream@6
-"module M =\n    open System x\n        let x = 1 in ()\n"	stream@6
-"module M =\n    open System x\n        let x = 1 in\n"	stream@6
-"module M =\n    open System x\n        let x = 1\n"	stream@6
-"module M =\n    open System x\n      [<Literal>]\n     let L = 1\n"	stream@9
-"module M =\n    open System x\n     [<Literal>]\n     let L = 1\n"	stream@9
-"module M =\n    open System x\n     let f () =\n         1\n"	stream@6
-"module M =\n    open System x\n     let x = 1 in ()\n"	stream@6
-"module M =\n    open System x\n     let x = 1 in\n"	stream@6
-"module M =\n    open System x\n     let x = 1\n"	stream@6
-"module M =\n    open System\n         [<Literal>]\n        let L = 1\n"	stream@8
-"module M =\n    open System\n        [<Literal>]\n        let L = 1\n"	stream@8
-"module M =\n    open System\n        let f () =\n            1\n"	stream@5
-"module M =\n    open System\n        let x = 1 in ()\n"	stream@5
-"module M =\n    open System\n        let x = 1 in\n"	stream@5
-"module M =\n    open System\n        let x = 1\n"	stream@5
-"module M =\n    open System\n      [<Literal>]\n     let L = 1\n"	stream@8
-"module M =\n    open System\n     [<Literal>]\n     let L = 1\n"	stream@8
-"module M =\n    open System\n     let f () =\n         1\n"	stream@5
-"module M =\n    open System\n     let x = 1 in ()\n"	stream@5
-"module M =\n    open System\n     let x = 1 in\n"	stream@5
-"module M =\n    open System\n     let x = 1\n"	stream@5
 "module M =\n    open type System.String #nowarn \"44\"\n"	stream@7
-"module M =\n    open type System.String\n         [<Literal>]\n        let L = 1\n"	stream@10
-"module M =\n    open type System.String\n        [<Literal>]\n        let L = 1\n"	stream@10
-"module M =\n    open type System.String\n        let f () =\n            1\n"	stream@7
-"module M =\n    open type System.String\n        let x = 1 in ()\n"	stream@7
-"module M =\n    open type System.String\n        let x = 1 in\n"	stream@7
-"module M =\n    open type System.String\n        let x = 1\n"	stream@7
-"module M =\n    open type System.String\n      [<Literal>]\n     let L = 1\n"	stream@10
-"module M =\n    open type System.String\n     [<Literal>]\n     let L = 1\n"	stream@10
-"module M =\n    open type System.String\n     let f () =\n         1\n"	stream@7
-"module M =\n    open type System.String\n     let x = 1 in ()\n"	stream@7
-"module M =\n    open type System.String\n     let x = 1 in\n"	stream@7
-"module M =\n    open type System.String\n     let x = 1\n"	stream@7
 "module M =\n    printfn \"x\" #nowarn \"44\"\n"	stream@5
 "module M =\n    type T = class end #nowarn \"44\"\n"	stream@10
 "module M =\n    type T = class end module N = begin let y = 1 end\n"	stream@10
@@ -617,72 +557,34 @@
 "module M =\n    type T = class end open type System.String\n"	stream@11
 "module M =\n    type T = class end type T = class end\n"	stream@10
 "module M =\n    type T = class end type T = int\n"	stream@10
-"module M =\n    type T = class end\n        open System )\n"	fs0058
-"module M =\n    type T = class end\n        open System and\n"	fs0058
-"module M =\n    type T = class end\n        open System x\n"	fs0058
-"module M =\n    type T = class end\n        open System\n"	fs0058
-"module M =\n    type T = class end\n        open type System.String\n"	fs0058
-"module M =\n    type T = class end\n     open System )\n"	fs0058
-"module M =\n    type T = class end\n     open System and\n"	fs0058
-"module M =\n    type T = class end\n     open System x\n"	fs0058
-"module M =\n    type T = class end\n     open System\n"	fs0058
-"module M =\n    type T = class end\n     open type System.String\n"	fs0058
 "module M =\n    type T = int #nowarn \"44\"\n"	stream@7
 "module M =\n    type T = int module N = begin let y = 1 end\n"	stream@7
 "module M =\n    type T = int module N = let y = 2\n"	stream@7
 "module M =\n    type T = int open type System.String\n"	stream@8
 "module M =\n    type T = int type T = class end\n"	stream@7
 "module M =\n    type T = int type T = int\n"	stream@7
-"module M =\n    type T = int\n        open System )\n"	fs0058
-"module M =\n    type T = int\n        open System and\n"	fs0058
-"module M =\n    type T = int\n        open System x\n"	fs0058
-"module M =\n    type T = int\n        open System\n"	fs0058
-"module M =\n    type T = int\n        open type System.String\n"	fs0058
-"module M =\n    type T = int\n     open System )\n"	fs0058
-"module M =\n    type T = int\n     open System and\n"	fs0058
-"module M =\n    type T = int\n     open System x\n"	fs0058
-"module M =\n    type T = int\n     open System\n"	fs0058
-"module M =\n    type T = int\n     open type System.String\n"	fs0058
 "module M =\n    type T with\n        member x.M = 1\n         [<AutoOpen>]\n        module N = let y = 2\n"	stream@19
 "module M =\n    type T with\n        member x.M = 1\n        [<AutoOpen>]\n         module N = let y = 2\n"	stream@19
 "module M =\n    type T with\n        member x.M = 1\n        [<AutoOpen>]\n        module N = let y = 2\n"	stream@20
 "module M =\n    type T with\n        member x.M = 1\n        module N = begin let y = 1 end\n"	stream@16
 "module M =\n    type T with\n        member x.M = 1\n        module N = let y = 2\n"	stream@16
 "module M =\n    type T with\n        member x.M = 1\n        module N =\n            let y = 2\n"	stream@16
-"module M =\n    type T with\n        member x.M = 1\n        open System )\n"	fs0058
-"module M =\n    type T with\n        member x.M = 1\n        open System and\n"	fs0058
-"module M =\n    type T with\n        member x.M = 1\n        open System x\n"	fs0058
-"module M =\n    type T with\n        member x.M = 1\n        open System\n"	fs0058
 "module M =\n    type T with\n        member x.M = 1\n        open type System.String\n"	stream@17
 "module M =\n    type T with\n        member x.M = 1\n        type T = class end\n"	stream@16
 "module M =\n    type T with\n        member x.M = 1\n        type T = int\n"	stream@16
 "module M =\n    type T with\n        member x.M = 1\n        type T with\n            member x.M = 1\n"	stream@16
 "module M =\n    type T with\n        member x.M = 1\n        type U =\n            | A\n            | B\n"	stream@16
-"module M =\n    type T with\n        member x.M = 1\n     open System )\n"	fs0058
-"module M =\n    type T with\n        member x.M = 1\n     open System and\n"	fs0058
-"module M =\n    type T with\n        member x.M = 1\n     open System x\n"	fs0058
-"module M =\n    type T with\n        member x.M = 1\n     open System\n"	fs0058
-"module M =\n    type T with\n        member x.M = 1\n     open type System.String\n"	fs0058
 "module M =\n    type U =\n        | A\n        | B\n         [<AutoOpen>]\n        module N = let y = 2\n"	stream@14
 "module M =\n    type U =\n        | A\n        | B\n        [<AutoOpen>]\n         module N = let y = 2\n"	stream@14
 "module M =\n    type U =\n        | A\n        | B\n        [<AutoOpen>]\n        module N = let y = 2\n"	stream@15
 "module M =\n    type U =\n        | A\n        | B\n        module N = begin let y = 1 end\n"	stream@11
 "module M =\n    type U =\n        | A\n        | B\n        module N = let y = 2\n"	stream@11
 "module M =\n    type U =\n        | A\n        | B\n        module N =\n            let y = 2\n"	stream@11
-"module M =\n    type U =\n        | A\n        | B\n        open System )\n"	fs0058
-"module M =\n    type U =\n        | A\n        | B\n        open System and\n"	fs0058
-"module M =\n    type U =\n        | A\n        | B\n        open System x\n"	fs0058
-"module M =\n    type U =\n        | A\n        | B\n        open System\n"	fs0058
 "module M =\n    type U =\n        | A\n        | B\n        open type System.String\n"	stream@12
 "module M =\n    type U =\n        | A\n        | B\n        type T = class end\n"	stream@11
 "module M =\n    type U =\n        | A\n        | B\n        type T = int\n"	stream@11
 "module M =\n    type U =\n        | A\n        | B\n        type T with\n            member x.M = 1\n"	stream@11
 "module M =\n    type U =\n        | A\n        | B\n        type U =\n            | A\n            | B\n"	stream@11
-"module M =\n    type U =\n        | A\n        | B\n     open System )\n"	fs0058
-"module M =\n    type U =\n        | A\n        | B\n     open System and\n"	fs0058
-"module M =\n    type U =\n        | A\n        | B\n     open System x\n"	fs0058
-"module M =\n    type U =\n        | A\n        | B\n     open System\n"	fs0058
-"module M =\n    type U =\n        | A\n        | B\n     open type System.String\n"	fs0058
 "module M\n[<AutoOpen>]\n module N = let y = 2\n  [<Literal>]\n let L = 1\n"	stream@19
 "module M\n[<AutoOpen>]\n module N = let y = 2\n [<Literal>]\n let L = 1\n"	stream@19
 "module M\n[<AutoOpen>]\n module N = let y = 2\n let f () =\n     1\n"	stream@16
@@ -831,69 +733,9 @@
 "module M\nmodule N = let y = 2 type T = int\n"	stream@10
 "module M\nopen System #nowarn \"44\"\n"	stream@4
 "module M\nopen System ) #nowarn \"44\"\n"	stream@4
-"module M\nopen System )\n     [<Literal>]\n    let L = 1\n"	stream@7
-"module M\nopen System )\n    [<Literal>]\n    let L = 1\n"	stream@7
-"module M\nopen System )\n    let f () =\n        1\n"	stream@4
-"module M\nopen System )\n    let x = 1 in ()\n"	stream@4
-"module M\nopen System )\n    let x = 1 in\n"	stream@4
-"module M\nopen System )\n    let x = 1\n"	stream@4
-"module M\nopen System )\n  [<Literal>]\n let L = 1\n"	stream@7
-"module M\nopen System )\n [<Literal>]\n let L = 1\n"	stream@7
-"module M\nopen System )\n let f () =\n     1\n"	stream@4
-"module M\nopen System )\n let x = 1 in ()\n"	stream@4
-"module M\nopen System )\n let x = 1 in\n"	stream@4
-"module M\nopen System )\n let x = 1\n"	stream@4
 "module M\nopen System and #nowarn \"44\"\n"	stream@5
-"module M\nopen System and\n     [<Literal>]\n    let L = 1\n"	stream@8
-"module M\nopen System and\n    [<Literal>]\n    let L = 1\n"	stream@8
-"module M\nopen System and\n    let f () =\n        1\n"	stream@5
-"module M\nopen System and\n    let x = 1 in ()\n"	stream@5
-"module M\nopen System and\n    let x = 1 in\n"	stream@5
-"module M\nopen System and\n    let x = 1\n"	stream@5
-"module M\nopen System and\n  [<Literal>]\n let L = 1\n"	stream@8
-"module M\nopen System and\n [<Literal>]\n let L = 1\n"	stream@8
-"module M\nopen System and\n let f () =\n     1\n"	stream@5
-"module M\nopen System and\n let x = 1 in ()\n"	stream@5
-"module M\nopen System and\n let x = 1 in\n"	stream@5
-"module M\nopen System and\n let x = 1\n"	stream@5
 "module M\nopen System x #nowarn \"44\"\n"	stream@5
-"module M\nopen System x\n     [<Literal>]\n    let L = 1\n"	stream@8
-"module M\nopen System x\n    [<Literal>]\n    let L = 1\n"	stream@8
-"module M\nopen System x\n    let f () =\n        1\n"	stream@5
-"module M\nopen System x\n    let x = 1 in ()\n"	stream@5
-"module M\nopen System x\n    let x = 1 in\n"	stream@5
-"module M\nopen System x\n    let x = 1\n"	stream@5
-"module M\nopen System x\n  [<Literal>]\n let L = 1\n"	stream@8
-"module M\nopen System x\n [<Literal>]\n let L = 1\n"	stream@8
-"module M\nopen System x\n let f () =\n     1\n"	stream@5
-"module M\nopen System x\n let x = 1 in ()\n"	stream@5
-"module M\nopen System x\n let x = 1 in\n"	stream@5
-"module M\nopen System x\n let x = 1\n"	stream@5
-"module M\nopen System\n     [<Literal>]\n    let L = 1\n"	stream@7
-"module M\nopen System\n    [<Literal>]\n    let L = 1\n"	stream@7
-"module M\nopen System\n    let f () =\n        1\n"	stream@4
-"module M\nopen System\n    let x = 1 in ()\n"	stream@4
-"module M\nopen System\n    let x = 1 in\n"	stream@4
-"module M\nopen System\n    let x = 1\n"	stream@4
-"module M\nopen System\n  [<Literal>]\n let L = 1\n"	stream@7
-"module M\nopen System\n [<Literal>]\n let L = 1\n"	stream@7
-"module M\nopen System\n let f () =\n     1\n"	stream@4
-"module M\nopen System\n let x = 1 in ()\n"	stream@4
-"module M\nopen System\n let x = 1 in\n"	stream@4
-"module M\nopen System\n let x = 1\n"	stream@4
 "module M\nopen type System.String #nowarn \"44\"\n"	stream@6
-"module M\nopen type System.String\n     [<Literal>]\n    let L = 1\n"	stream@9
-"module M\nopen type System.String\n    [<Literal>]\n    let L = 1\n"	stream@9
-"module M\nopen type System.String\n    let f () =\n        1\n"	stream@6
-"module M\nopen type System.String\n    let x = 1 in ()\n"	stream@6
-"module M\nopen type System.String\n    let x = 1 in\n"	stream@6
-"module M\nopen type System.String\n    let x = 1\n"	stream@6
-"module M\nopen type System.String\n  [<Literal>]\n let L = 1\n"	stream@9
-"module M\nopen type System.String\n [<Literal>]\n let L = 1\n"	stream@9
-"module M\nopen type System.String\n let f () =\n     1\n"	stream@6
-"module M\nopen type System.String\n let x = 1 in ()\n"	stream@6
-"module M\nopen type System.String\n let x = 1 in\n"	stream@6
-"module M\nopen type System.String\n let x = 1\n"	stream@6
 "module M\nprintfn \"x\" #nowarn \"44\"\n"	stream@4
 "module M\ntype T = class end #nowarn \"44\"\n"	stream@9
 "module M\ntype T = class end module N = begin let y = 1 end\n"	stream@9
@@ -901,72 +743,34 @@
 "module M\ntype T = class end open type System.String\n"	stream@10
 "module M\ntype T = class end type T = class end\n"	stream@9
 "module M\ntype T = class end type T = int\n"	stream@9
-"module M\ntype T = class end\n    open System )\n"	fs0058
-"module M\ntype T = class end\n    open System and\n"	fs0058
-"module M\ntype T = class end\n    open System x\n"	fs0058
-"module M\ntype T = class end\n    open System\n"	fs0058
-"module M\ntype T = class end\n    open type System.String\n"	fs0058
-"module M\ntype T = class end\n open System )\n"	fs0058
-"module M\ntype T = class end\n open System and\n"	fs0058
-"module M\ntype T = class end\n open System x\n"	fs0058
-"module M\ntype T = class end\n open System\n"	fs0058
-"module M\ntype T = class end\n open type System.String\n"	fs0058
 "module M\ntype T = int #nowarn \"44\"\n"	stream@6
 "module M\ntype T = int module N = begin let y = 1 end\n"	stream@6
 "module M\ntype T = int module N = let y = 2\n"	stream@6
 "module M\ntype T = int open type System.String\n"	stream@7
 "module M\ntype T = int type T = class end\n"	stream@6
 "module M\ntype T = int type T = int\n"	stream@6
-"module M\ntype T = int\n    open System )\n"	fs0058
-"module M\ntype T = int\n    open System and\n"	fs0058
-"module M\ntype T = int\n    open System x\n"	fs0058
-"module M\ntype T = int\n    open System\n"	fs0058
-"module M\ntype T = int\n    open type System.String\n"	fs0058
-"module M\ntype T = int\n open System )\n"	fs0058
-"module M\ntype T = int\n open System and\n"	fs0058
-"module M\ntype T = int\n open System x\n"	fs0058
-"module M\ntype T = int\n open System\n"	fs0058
-"module M\ntype T = int\n open type System.String\n"	fs0058
 "module M\ntype T with\n    member x.M = 1\n     [<AutoOpen>]\n    module N = let y = 2\n"	stream@18
 "module M\ntype T with\n    member x.M = 1\n    [<AutoOpen>]\n     module N = let y = 2\n"	stream@18
 "module M\ntype T with\n    member x.M = 1\n    [<AutoOpen>]\n    module N = let y = 2\n"	stream@19
 "module M\ntype T with\n    member x.M = 1\n    module N = begin let y = 1 end\n"	stream@15
 "module M\ntype T with\n    member x.M = 1\n    module N = let y = 2\n"	stream@15
 "module M\ntype T with\n    member x.M = 1\n    module N =\n        let y = 2\n"	stream@15
-"module M\ntype T with\n    member x.M = 1\n    open System )\n"	fs0058
-"module M\ntype T with\n    member x.M = 1\n    open System and\n"	fs0058
-"module M\ntype T with\n    member x.M = 1\n    open System x\n"	fs0058
-"module M\ntype T with\n    member x.M = 1\n    open System\n"	fs0058
 "module M\ntype T with\n    member x.M = 1\n    open type System.String\n"	stream@16
 "module M\ntype T with\n    member x.M = 1\n    type T = class end\n"	stream@15
 "module M\ntype T with\n    member x.M = 1\n    type T = int\n"	stream@15
 "module M\ntype T with\n    member x.M = 1\n    type T with\n        member x.M = 1\n"	stream@15
 "module M\ntype T with\n    member x.M = 1\n    type U =\n        | A\n        | B\n"	stream@15
-"module M\ntype T with\n    member x.M = 1\n open System )\n"	fs0058
-"module M\ntype T with\n    member x.M = 1\n open System and\n"	fs0058
-"module M\ntype T with\n    member x.M = 1\n open System x\n"	fs0058
-"module M\ntype T with\n    member x.M = 1\n open System\n"	fs0058
-"module M\ntype T with\n    member x.M = 1\n open type System.String\n"	fs0058
 "module M\ntype U =\n    | A\n    | B\n     [<AutoOpen>]\n    module N = let y = 2\n"	stream@13
 "module M\ntype U =\n    | A\n    | B\n    [<AutoOpen>]\n     module N = let y = 2\n"	stream@13
 "module M\ntype U =\n    | A\n    | B\n    [<AutoOpen>]\n    module N = let y = 2\n"	stream@14
 "module M\ntype U =\n    | A\n    | B\n    module N = begin let y = 1 end\n"	stream@10
 "module M\ntype U =\n    | A\n    | B\n    module N = let y = 2\n"	stream@10
 "module M\ntype U =\n    | A\n    | B\n    module N =\n        let y = 2\n"	stream@10
-"module M\ntype U =\n    | A\n    | B\n    open System )\n"	fs0058
-"module M\ntype U =\n    | A\n    | B\n    open System and\n"	fs0058
-"module M\ntype U =\n    | A\n    | B\n    open System x\n"	fs0058
-"module M\ntype U =\n    | A\n    | B\n    open System\n"	fs0058
 "module M\ntype U =\n    | A\n    | B\n    open type System.String\n"	stream@11
 "module M\ntype U =\n    | A\n    | B\n    type T = class end\n"	stream@10
 "module M\ntype U =\n    | A\n    | B\n    type T = int\n"	stream@10
 "module M\ntype U =\n    | A\n    | B\n    type T with\n        member x.M = 1\n"	stream@10
 "module M\ntype U =\n    | A\n    | B\n    type U =\n        | A\n        | B\n"	stream@10
-"module M\ntype U =\n    | A\n    | B\n open System )\n"	fs0058
-"module M\ntype U =\n    | A\n    | B\n open System and\n"	fs0058
-"module M\ntype U =\n    | A\n    | B\n open System x\n"	fs0058
-"module M\ntype U =\n    | A\n    | B\n open System\n"	fs0058
-"module M\ntype U =\n    | A\n    | B\n open type System.String\n"	fs0058
 "module N = begin let y = 1 end #nowarn \"44\"\n"	stream@12
 "module N = let y = 2 #nowarn \"44\"\n"	stream@8
 "module N = let y = 2 module N = begin let y = 1 end\n"	stream@8
@@ -1057,154 +861,46 @@
 "namespace N\nmodule N = let y = 2 type T = int\n"	stream@11
 "namespace N\nopen System #nowarn \"44\"\n"	stream@5
 "namespace N\nopen System ) #nowarn \"44\"\n"	stream@5
-"namespace N\nopen System )\n    let f () =\n        1\n"	stream@5
-"namespace N\nopen System )\n let f () =\n     1\n"	stream@5
 "namespace N\nopen System and #nowarn \"44\"\n"	stream@6
-"namespace N\nopen System and\n    let f () =\n        1\n"	stream@6
-"namespace N\nopen System and\n let f () =\n     1\n"	stream@6
 "namespace N\nopen System x #nowarn \"44\"\n"	stream@6
-"namespace N\nopen System x\n    let f () =\n        1\n"	stream@6
-"namespace N\nopen System x\n let f () =\n     1\n"	stream@6
-"namespace N\nopen System\n    let f () =\n        1\n"	stream@5
-"namespace N\nopen System\n let f () =\n     1\n"	stream@5
 "namespace N\nopen type System.String #nowarn \"44\"\n"	stream@7
-"namespace N\nopen type System.String\n    let f () =\n        1\n"	stream@7
-"namespace N\nopen type System.String\n let f () =\n     1\n"	stream@7
 "namespace N\ntype T = class end #nowarn \"44\"\n"	stream@10
 "namespace N\ntype T = class end module N = begin let y = 1 end\n"	stream@10
 "namespace N\ntype T = class end module N = let y = 2\n"	stream@10
 "namespace N\ntype T = class end open type System.String\n"	stream@11
 "namespace N\ntype T = class end type T = class end\n"	stream@10
 "namespace N\ntype T = class end type T = int\n"	stream@10
-"namespace N\ntype T = class end\n    open System )\n"	fs0058
-"namespace N\ntype T = class end\n    open System and\n"	fs0058
-"namespace N\ntype T = class end\n    open System x\n"	fs0058
-"namespace N\ntype T = class end\n    open System\n"	fs0058
-"namespace N\ntype T = class end\n    open type System.String\n"	fs0058
-"namespace N\ntype T = class end\n open System )\n"	fs0058
-"namespace N\ntype T = class end\n open System and\n"	fs0058
-"namespace N\ntype T = class end\n open System x\n"	fs0058
-"namespace N\ntype T = class end\n open System\n"	fs0058
-"namespace N\ntype T = class end\n open type System.String\n"	fs0058
 "namespace N\ntype T = int #nowarn \"44\"\n"	stream@7
 "namespace N\ntype T = int module N = begin let y = 1 end\n"	stream@7
 "namespace N\ntype T = int module N = let y = 2\n"	stream@7
 "namespace N\ntype T = int open type System.String\n"	stream@8
 "namespace N\ntype T = int type T = class end\n"	stream@7
 "namespace N\ntype T = int type T = int\n"	stream@7
-"namespace N\ntype T = int\n    open System )\n"	fs0058
-"namespace N\ntype T = int\n    open System and\n"	fs0058
-"namespace N\ntype T = int\n    open System x\n"	fs0058
-"namespace N\ntype T = int\n    open System\n"	fs0058
-"namespace N\ntype T = int\n    open type System.String\n"	fs0058
-"namespace N\ntype T = int\n open System )\n"	fs0058
-"namespace N\ntype T = int\n open System and\n"	fs0058
-"namespace N\ntype T = int\n open System x\n"	fs0058
-"namespace N\ntype T = int\n open System\n"	fs0058
-"namespace N\ntype T = int\n open type System.String\n"	fs0058
 "namespace N\ntype T with\n    member x.M = 1\n     [<AutoOpen>]\n    module N = let y = 2\n"	stream@19
 "namespace N\ntype T with\n    member x.M = 1\n    [<AutoOpen>]\n     module N = let y = 2\n"	stream@19
 "namespace N\ntype T with\n    member x.M = 1\n    [<AutoOpen>]\n    module N = let y = 2\n"	stream@20
 "namespace N\ntype T with\n    member x.M = 1\n    module N = begin let y = 1 end\n"	stream@16
 "namespace N\ntype T with\n    member x.M = 1\n    module N = let y = 2\n"	stream@16
-"namespace N\ntype T with\n    member x.M = 1\n    open System )\n"	fs0058
-"namespace N\ntype T with\n    member x.M = 1\n    open System and\n"	fs0058
-"namespace N\ntype T with\n    member x.M = 1\n    open System x\n"	fs0058
-"namespace N\ntype T with\n    member x.M = 1\n    open System\n"	fs0058
 "namespace N\ntype T with\n    member x.M = 1\n    open type System.String\n"	stream@17
 "namespace N\ntype T with\n    member x.M = 1\n    type T = class end\n"	stream@16
 "namespace N\ntype T with\n    member x.M = 1\n    type T = int\n"	stream@16
 "namespace N\ntype T with\n    member x.M = 1\n    type T with\n        member x.M = 1\n"	stream@16
 "namespace N\ntype T with\n    member x.M = 1\n    type U =\n        | A\n        | B\n"	stream@16
-"namespace N\ntype T with\n    member x.M = 1\n open System )\n"	fs0058
-"namespace N\ntype T with\n    member x.M = 1\n open System and\n"	fs0058
-"namespace N\ntype T with\n    member x.M = 1\n open System x\n"	fs0058
-"namespace N\ntype T with\n    member x.M = 1\n open System\n"	fs0058
-"namespace N\ntype T with\n    member x.M = 1\n open type System.String\n"	fs0058
 "namespace N\ntype U =\n    | A\n    | B\n     [<AutoOpen>]\n    module N = let y = 2\n"	stream@14
 "namespace N\ntype U =\n    | A\n    | B\n    [<AutoOpen>]\n     module N = let y = 2\n"	stream@14
 "namespace N\ntype U =\n    | A\n    | B\n    [<AutoOpen>]\n    module N = let y = 2\n"	stream@15
 "namespace N\ntype U =\n    | A\n    | B\n    module N = begin let y = 1 end\n"	stream@11
 "namespace N\ntype U =\n    | A\n    | B\n    module N = let y = 2\n"	stream@11
-"namespace N\ntype U =\n    | A\n    | B\n    open System )\n"	fs0058
-"namespace N\ntype U =\n    | A\n    | B\n    open System and\n"	fs0058
-"namespace N\ntype U =\n    | A\n    | B\n    open System x\n"	fs0058
-"namespace N\ntype U =\n    | A\n    | B\n    open System\n"	fs0058
 "namespace N\ntype U =\n    | A\n    | B\n    open type System.String\n"	stream@12
 "namespace N\ntype U =\n    | A\n    | B\n    type T = class end\n"	stream@11
 "namespace N\ntype U =\n    | A\n    | B\n    type T = int\n"	stream@11
 "namespace N\ntype U =\n    | A\n    | B\n    type T with\n        member x.M = 1\n"	stream@11
 "namespace N\ntype U =\n    | A\n    | B\n    type U =\n        | A\n        | B\n"	stream@11
-"namespace N\ntype U =\n    | A\n    | B\n open System )\n"	fs0058
-"namespace N\ntype U =\n    | A\n    | B\n open System and\n"	fs0058
-"namespace N\ntype U =\n    | A\n    | B\n open System x\n"	fs0058
-"namespace N\ntype U =\n    | A\n    | B\n open System\n"	fs0058
-"namespace N\ntype U =\n    | A\n    | B\n open type System.String\n"	fs0058
 "open System #nowarn \"44\"\n"	stream@2
 "open System ) #nowarn \"44\"\n"	stream@2
-"open System )\n     [<Literal>]\n    let L = 1\n"	stream@5
-"open System )\n    [<Literal>]\n    let L = 1\n"	stream@5
-"open System )\n    let f () =\n        1\n"	stream@2
-"open System )\n    let x = 1 in ()\n"	stream@2
-"open System )\n    let x = 1 in\n"	stream@2
-"open System )\n    let x = 1\n"	stream@2
-"open System )\n  [<Literal>]\n let L = 1\n"	stream@5
-"open System )\n [<Literal>]\n let L = 1\n"	stream@5
-"open System )\n let f () =\n     1\n"	stream@2
-"open System )\n let x = 1 in ()\n"	stream@2
-"open System )\n let x = 1 in\n"	stream@2
-"open System )\n let x = 1\n"	stream@2
 "open System and #nowarn \"44\"\n"	stream@3
-"open System and\n     [<Literal>]\n    let L = 1\n"	stream@6
-"open System and\n    [<Literal>]\n    let L = 1\n"	stream@6
-"open System and\n    let f () =\n        1\n"	stream@3
-"open System and\n    let x = 1 in ()\n"	stream@3
-"open System and\n    let x = 1 in\n"	stream@3
-"open System and\n    let x = 1\n"	stream@3
-"open System and\n  [<Literal>]\n let L = 1\n"	stream@6
-"open System and\n [<Literal>]\n let L = 1\n"	stream@6
-"open System and\n let f () =\n     1\n"	stream@3
-"open System and\n let x = 1 in ()\n"	stream@3
-"open System and\n let x = 1 in\n"	stream@3
-"open System and\n let x = 1\n"	stream@3
 "open System x #nowarn \"44\"\n"	stream@3
-"open System x\n     [<Literal>]\n    let L = 1\n"	stream@6
-"open System x\n    [<Literal>]\n    let L = 1\n"	stream@6
-"open System x\n    let f () =\n        1\n"	stream@3
-"open System x\n    let x = 1 in ()\n"	stream@3
-"open System x\n    let x = 1 in\n"	stream@3
-"open System x\n    let x = 1\n"	stream@3
-"open System x\n  [<Literal>]\n let L = 1\n"	stream@6
-"open System x\n [<Literal>]\n let L = 1\n"	stream@6
-"open System x\n let f () =\n     1\n"	stream@3
-"open System x\n let x = 1 in ()\n"	stream@3
-"open System x\n let x = 1 in\n"	stream@3
-"open System x\n let x = 1\n"	stream@3
-"open System\n     [<Literal>]\n    let L = 1\n"	stream@5
-"open System\n    [<Literal>]\n    let L = 1\n"	stream@5
-"open System\n    let f () =\n        1\n"	stream@2
-"open System\n    let x = 1 in ()\n"	stream@2
-"open System\n    let x = 1 in\n"	stream@2
-"open System\n    let x = 1\n"	stream@2
-"open System\n  [<Literal>]\n let L = 1\n"	stream@5
-"open System\n [<Literal>]\n let L = 1\n"	stream@5
-"open System\n let f () =\n     1\n"	stream@2
-"open System\n let x = 1 in ()\n"	stream@2
-"open System\n let x = 1 in\n"	stream@2
-"open System\n let x = 1\n"	stream@2
 "open type System.String #nowarn \"44\"\n"	stream@4
-"open type System.String\n     [<Literal>]\n    let L = 1\n"	stream@7
-"open type System.String\n    [<Literal>]\n    let L = 1\n"	stream@7
-"open type System.String\n    let f () =\n        1\n"	stream@4
-"open type System.String\n    let x = 1 in ()\n"	stream@4
-"open type System.String\n    let x = 1 in\n"	stream@4
-"open type System.String\n    let x = 1\n"	stream@4
-"open type System.String\n  [<Literal>]\n let L = 1\n"	stream@7
-"open type System.String\n [<Literal>]\n let L = 1\n"	stream@7
-"open type System.String\n let f () =\n     1\n"	stream@4
-"open type System.String\n let x = 1 in ()\n"	stream@4
-"open type System.String\n let x = 1 in\n"	stream@4
-"open type System.String\n let x = 1\n"	stream@4
 "printfn \"x\" #nowarn \"44\"\n"	stream@2
 "type T = class end #nowarn \"44\"\n"	stream@7
 "type T = class end module N = begin let y = 1 end\n"	stream@7
@@ -1212,69 +908,31 @@
 "type T = class end open type System.String\n"	stream@8
 "type T = class end type T = class end\n"	stream@7
 "type T = class end type T = int\n"	stream@7
-"type T = class end\n    open System )\n"	fs0058
-"type T = class end\n    open System and\n"	fs0058
-"type T = class end\n    open System x\n"	fs0058
-"type T = class end\n    open System\n"	fs0058
-"type T = class end\n    open type System.String\n"	fs0058
-"type T = class end\n open System )\n"	fs0058
-"type T = class end\n open System and\n"	fs0058
-"type T = class end\n open System x\n"	fs0058
-"type T = class end\n open System\n"	fs0058
-"type T = class end\n open type System.String\n"	fs0058
 "type T = int #nowarn \"44\"\n"	stream@4
 "type T = int module N = begin let y = 1 end\n"	stream@4
 "type T = int module N = let y = 2\n"	stream@4
 "type T = int open type System.String\n"	stream@5
 "type T = int type T = class end\n"	stream@4
 "type T = int type T = int\n"	stream@4
-"type T = int\n    open System )\n"	fs0058
-"type T = int\n    open System and\n"	fs0058
-"type T = int\n    open System x\n"	fs0058
-"type T = int\n    open System\n"	fs0058
-"type T = int\n    open type System.String\n"	fs0058
-"type T = int\n open System )\n"	fs0058
-"type T = int\n open System and\n"	fs0058
-"type T = int\n open System x\n"	fs0058
-"type T = int\n open System\n"	fs0058
-"type T = int\n open type System.String\n"	fs0058
 "type T with\n    member x.M = 1\n     [<AutoOpen>]\n    module N = let y = 2\n"	stream@16
 "type T with\n    member x.M = 1\n    [<AutoOpen>]\n     module N = let y = 2\n"	stream@16
 "type T with\n    member x.M = 1\n    [<AutoOpen>]\n    module N = let y = 2\n"	stream@17
 "type T with\n    member x.M = 1\n    module N = begin let y = 1 end\n"	stream@13
 "type T with\n    member x.M = 1\n    module N = let y = 2\n"	stream@13
 "type T with\n    member x.M = 1\n    module N =\n        let y = 2\n"	stream@13
-"type T with\n    member x.M = 1\n    open System )\n"	fs0058
-"type T with\n    member x.M = 1\n    open System and\n"	fs0058
-"type T with\n    member x.M = 1\n    open System x\n"	fs0058
-"type T with\n    member x.M = 1\n    open System\n"	fs0058
 "type T with\n    member x.M = 1\n    open type System.String\n"	stream@14
 "type T with\n    member x.M = 1\n    type T = class end\n"	stream@13
 "type T with\n    member x.M = 1\n    type T = int\n"	stream@13
 "type T with\n    member x.M = 1\n    type T with\n        member x.M = 1\n"	stream@13
 "type T with\n    member x.M = 1\n    type U =\n        | A\n        | B\n"	stream@13
-"type T with\n    member x.M = 1\n open System )\n"	fs0058
-"type T with\n    member x.M = 1\n open System and\n"	fs0058
-"type T with\n    member x.M = 1\n open System x\n"	fs0058
-"type T with\n    member x.M = 1\n open System\n"	fs0058
-"type T with\n    member x.M = 1\n open type System.String\n"	fs0058
 "type U =\n    | A\n    | B\n     [<AutoOpen>]\n    module N = let y = 2\n"	stream@11
 "type U =\n    | A\n    | B\n    [<AutoOpen>]\n     module N = let y = 2\n"	stream@11
 "type U =\n    | A\n    | B\n    [<AutoOpen>]\n    module N = let y = 2\n"	stream@12
 "type U =\n    | A\n    | B\n    module N = begin let y = 1 end\n"	stream@8
 "type U =\n    | A\n    | B\n    module N = let y = 2\n"	stream@8
 "type U =\n    | A\n    | B\n    module N =\n        let y = 2\n"	stream@8
-"type U =\n    | A\n    | B\n    open System )\n"	fs0058
-"type U =\n    | A\n    | B\n    open System and\n"	fs0058
-"type U =\n    | A\n    | B\n    open System x\n"	fs0058
-"type U =\n    | A\n    | B\n    open System\n"	fs0058
 "type U =\n    | A\n    | B\n    open type System.String\n"	stream@9
 "type U =\n    | A\n    | B\n    type T = class end\n"	stream@8
 "type U =\n    | A\n    | B\n    type T = int\n"	stream@8
 "type U =\n    | A\n    | B\n    type T with\n        member x.M = 1\n"	stream@8
 "type U =\n    | A\n    | B\n    type U =\n        | A\n        | B\n"	stream@8
-"type U =\n    | A\n    | B\n open System )\n"	fs0058
-"type U =\n    | A\n    | B\n open System and\n"	fs0058
-"type U =\n    | A\n    | B\n open System x\n"	fs0058
-"type U =\n    | A\n    | B\n open System\n"	fs0058
-"type U =\n    | A\n    | B\n open type System.String\n"	fs0058
