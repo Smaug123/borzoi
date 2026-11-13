@@ -213,4 +213,4 @@ harness's hand-picked corners, and its generated sweep reaches every row.
   `docs/msbuild-unix-path-fixup-plan.md`. E0 pinned only what the escaped stack
   needs from it: an escaped backslash is invisible to the fixup, so the escaped
   domain is the outermost layer.
-- `docs/compile-item-fidelity-plan.md` stage F1 is superseded in part by E4.
+- `docs/completed/compile-item-fidelity-plan.md` stage F1 is superseded in part by E4.

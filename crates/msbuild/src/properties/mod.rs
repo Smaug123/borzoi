@@ -93,7 +93,8 @@ impl PropertyMap {
     }
 
     /// Insert text the evaluator **computed from the world**: a filesystem
-    /// path, a toolset/SDK seed, the `MSBuildThisFile*` pair. Escaped on the
+    /// path, a toolset/SDK seed. (Not the `MSBuildThisFile*` family, which
+    /// MSBuild splices raw: see `this_file_seeds`.) Escaped on the
     /// way in, exactly as MSBuild escapes such values when it seeds them
     /// (`Evaluator.cs:1186–1189`, `Toolset.cs:802`) — which is what makes a
     /// `%`, `;` or `(` in a project's own path inert rather than an escape, a
@@ -159,11 +160,16 @@ impl PropertyMap {
 /// of the box without the caller having to supply them.
 ///
 /// MSBuild's authoritative list is larger (`MSBuildBinPath`,
-/// `MSBuildExtensionsPath`, the `MSBuildThisFile*` family for the
-/// currently-importing file, etc.). We only seed the path-derivable
-/// subset; SDK-dependent paths are left out because we don't model
-/// SDKs in phase 2.
+/// `MSBuildExtensionsPath`, …); toolset-derived names are left to the walker
+/// and the toolset seeding, and `MSBuildStartupDirectory` (the working
+/// directory of a build process that does not exist) is never seeded. The
+/// `MSBuildThisFile*` family starts out naming the project and is rebound for
+/// each imported file ([`this_file_seeds`]).
 pub fn well_known(project_path: &Path) -> PropertyMap {
+    // MSBuild derives these from the project's full path, `.` and `..`
+    // resolved, lexically.
+    let normalised = lexically_normalised(project_path);
+    let project_path = normalised.as_path();
     let mut map = PropertyMap::new();
     let full_path = project_path.to_string_lossy().into_owned();
     let dir = project_path
@@ -174,35 +180,154 @@ pub fn well_known(project_path: &Path) -> PropertyMap {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stem = project_path
-        .file_stem()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let extension = project_path
-        .extension()
-        .map(|n| format!(".{}", n.to_string_lossy()))
-        .unwrap_or_default();
-    // MSBuild docs: `MSBuildProjectDirectory` has no trailing separator;
-    // `MSBuildThisFileDirectory` does. Replicate that distinction.
-    let dir_with_sep = if dir.is_empty() {
-        String::new()
-    } else {
-        format!("{dir}/")
-    };
+    let (stem, extension) = split_file_name(project_path);
+    // `MSBuildProjectDirectoryNoRoot` has no trailing separator, like
+    // `MSBuildProjectDirectory` (probed against `dotnet msbuild`).
+    let dir_no_root = project_path.parent().map(no_root).unwrap_or_default();
     map.insert_computed("MSBuildProjectFullPath", full_path);
     map.insert_computed("MSBuildProjectDirectory", dir);
-    map.insert_computed("MSBuildThisFileDirectory", dir_with_sep);
+    map.insert_computed("MSBuildProjectDirectoryNoRoot", dir_no_root);
     map.insert_computed("MSBuildProjectName", stem);
-    // MSBuild seeds both names with the project's filename:
-    // `MSBuildThisFile` (relative to whichever file is currently
-    // importing — for us, always the project) and `MSBuildProjectFile`
-    // (the project-scoped alias). Real projects reach for either, and
-    // omitting the alias makes `$(MSBuildProjectFile)` resolve to empty,
-    // which truncates Include paths without a useful diagnostic.
-    map.insert_computed("MSBuildProjectFile", file.clone());
-    map.insert_computed("MSBuildThisFile", file);
+    // MSBuild seeds `MSBuildProjectFile` with the project's filename, and
+    // `MSBuildThisFile` too while the project's own body is walked. Real
+    // projects reach for either, and omitting the alias makes
+    // `$(MSBuildProjectFile)` resolve to empty, which truncates Include paths
+    // without a useful diagnostic.
+    map.insert_computed("MSBuildProjectFile", file);
     map.insert_computed("MSBuildProjectExtension", extension);
+    for (name, value) in this_file_seeds(project_path) {
+        map.insert_escaped(name, value);
+    }
     map
+}
+
+/// The `MSBuildThisFile*` reserved properties for the file at `path`, which
+/// MSBuild binds to whichever file is being walked: the project's own body,
+/// then each imported file for the duration of its import. Probed against
+/// `dotnet msbuild` from a project body and from imports in a subdirectory:
+/// the directory names carry a trailing separator, the `NoRoot` one drops the
+/// filesystem root, and the name and extension split as .NET splits them
+/// ([`split_file_name`]).
+///
+/// The values are **raw** text spliced into the escaped domain, not escaped
+/// seeds: MSBuild computes them in the expander from the file's path
+/// (`ExpandMSBuildThisFileProperty`), unlike the `MSBuildProject*` names it
+/// escapes when it seeds them. So a file named `a%20b.props` is `a b` to
+/// `100 1 57 100MSBuildThisFileName)`, and one named `x;y.props` splits an
+/// `Include="100 1 57 100MSBuildThisFile)"` in two (probed against `dotnet msbuild`).
+pub(crate) fn this_file_seeds(path: &Path) -> [(&'static str, Escaped); 6] {
+    // MSBuild names an imported file by its full path, `.` and `..` resolved
+    // (`Import Project="sub/../x/Imp.props"` is `…/x/Imp.props`), lexically:
+    // a symlinked directory is not resolved.
+    let normalised = lexically_normalised(path);
+    let path = normalised.as_path();
+    let parent = path.parent();
+    let (name, extension) = split_file_name(path);
+    [
+        (
+            "MSBuildThisFile",
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ),
+        (
+            "MSBuildThisFileDirectory",
+            with_trailing_separator(
+                parent
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+        ),
+        (
+            "MSBuildThisFileDirectoryNoRoot",
+            with_trailing_separator_always(parent.map(no_root).unwrap_or_default()),
+        ),
+        (
+            "MSBuildThisFileFullPath",
+            path.to_string_lossy().into_owned(),
+        ),
+        ("MSBuildThisFileName", name),
+        ("MSBuildThisFileExtension", extension),
+    ]
+    .map(|(key, value)| (key, Escaped::from_xml(value)))
+}
+
+/// `path` with `.` segments dropped and `..` segments resolved against what
+/// precedes them (at the root a `..` stays at the root), without touching the
+/// filesystem, as `Path.GetFullPath` resolves them.
+fn lexically_normalised(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A file's name and extension as .NET's `Path.GetFileNameWithoutExtension`
+/// and `Path.GetExtension` split them, which MSBuild's reserved properties
+/// use: at the last `.`, which the extension keeps, except that a final `.`
+/// gives no extension (`Imp.` is `Imp` and ``). Unlike Rust's `file_stem`, a
+/// leading `.` is not special: `.props` is `` and `.props`.
+fn split_file_name(path: &Path) -> (String, String) {
+    let file = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match file.rfind('.') {
+        None => (file, String::new()),
+        Some(dot) if dot + 1 == file.len() => (file[..dot].to_string(), String::new()),
+        Some(dot) => (file[..dot].to_string(), file[dot..].to_string()),
+    }
+}
+
+/// MSBuild's `FileUtilities.EnsureTrailingSlash`: the platform's separator
+/// after a non-empty `dir` that does not already end in one (`/` stays `/`).
+fn with_trailing_separator(dir: String) -> String {
+    if dir.is_empty() || dir.ends_with(['/', '\\']) {
+        dir
+    } else {
+        format!("{dir}{}", std::path::MAIN_SEPARATOR)
+    }
+}
+
+/// MSBuild's `FileUtilities.EnsureTrailingNoLeadingSlash` on a root-less
+/// directory: a separator after it unless it already ends in one, *even when
+/// it is empty*, so a file at the root has `/` (`MSBuildThisFileDirectoryNoRoot`).
+fn with_trailing_separator_always(dir: String) -> String {
+    if dir.ends_with(['/', '\\']) {
+        dir
+    } else {
+        format!("{dir}{}", std::path::MAIN_SEPARATOR)
+    }
+}
+
+/// `dir` without its filesystem root (`/a/b` → `a/b`, `C:\a\b` → `a\b`), its
+/// separators as written, as MSBuild's `NoRoot` reserved properties spell it.
+fn no_root(dir: &Path) -> String {
+    let root: std::path::PathBuf = dir
+        .components()
+        .take_while(|c| {
+            matches!(
+                c,
+                std::path::Component::RootDir | std::path::Component::Prefix(_)
+            )
+        })
+        .collect();
+    let text = dir.to_string_lossy();
+    text.strip_prefix(root.to_string_lossy().as_ref())
+        .unwrap_or(&text)
+        .to_string()
 }
 
 /// Expand `$(Name)` occurrences in `input` — **project XML text**, hence
@@ -1625,6 +1750,37 @@ mod tests {
         );
     }
 
+    /// .NET's split, not Rust's: a leading `.` starts the extension, and a
+    /// final `.` leaves none (probed against `dotnet msbuild`).
+    #[test]
+    fn file_names_split_as_dotnet_splits_them() {
+        let split = |p: &str| split_file_name(std::path::Path::new(p));
+        assert_eq!(split("/d/Imp.x.props"), ("Imp.x".into(), ".props".into()));
+        assert_eq!(split("/d/.props"), ("".into(), ".props".into()));
+        assert_eq!(split("/d/Imp."), ("Imp".into(), "".into()));
+        assert_eq!(split("/d/Makefile"), ("Makefile".into(), "".into()));
+        assert_eq!(no_root(std::path::Path::new("/repo/app")), "repo/app");
+        assert_eq!(no_root(std::path::Path::new("/")), "");
+        // `EnsureTrailingSlash` leaves `/` alone; `EnsureTrailingNoLeadingSlash`
+        // gives a root-less empty directory its separator.
+        assert_eq!(with_trailing_separator("/".into()), "/");
+        assert_eq!(with_trailing_separator("/a".into()), "/a/");
+        assert_eq!(with_trailing_separator_always("".into()), "/");
+        let seeds = this_file_seeds(std::path::Path::new("/Imp.props"));
+        let get = |k| {
+            seeds
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.as_escaped())
+        };
+        assert_eq!(get("MSBuildThisFileDirectory"), Some("/"));
+        assert_eq!(get("MSBuildThisFileDirectoryNoRoot"), Some("/"));
+        assert_eq!(
+            lexically_normalised(std::path::Path::new("/r/a/../b/./D.fsproj")),
+            std::path::Path::new("/r/b/D.fsproj")
+        );
+    }
+
     #[test]
     fn well_known_includes_path_derivatives() {
         let m = well_known(std::path::Path::new("/repo/proj/Demo.fsproj"));
@@ -1646,6 +1802,20 @@ mod tests {
             Some("/repo/proj/")
         );
         assert_eq!(get("MSBuildThisFile").as_deref(), Some("Demo.fsproj"));
+        assert_eq!(
+            get("MSBuildThisFileFullPath").as_deref(),
+            Some("/repo/proj/Demo.fsproj")
+        );
+        assert_eq!(get("MSBuildThisFileName").as_deref(), Some("Demo"));
+        assert_eq!(get("MSBuildThisFileExtension").as_deref(), Some(".fsproj"));
+        assert_eq!(
+            get("MSBuildThisFileDirectoryNoRoot").as_deref(),
+            Some("repo/proj/")
+        );
+        assert_eq!(
+            get("MSBuildProjectDirectoryNoRoot").as_deref(),
+            Some("repo/proj")
+        );
         // MSBuildProjectFile is the project-scoped alias for the same
         // value — both names must resolve to the project filename.
         assert_eq!(get("MSBuildProjectFile").as_deref(), Some("Demo.fsproj"));
