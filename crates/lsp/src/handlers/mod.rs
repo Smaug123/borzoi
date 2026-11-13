@@ -13,9 +13,8 @@ use borzoi_sema::{
 };
 use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Uri};
 
-use crate::observed::Sources;
-use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
+use crate::vfs::Vfs;
 
 pub mod completion;
 pub mod definition;
@@ -297,18 +296,18 @@ pub fn smallest_member_resolution_with_range(
 /// that surfaces a `Location` pointing at a project file the editor may
 /// already have open under a different spelling.
 ///
+/// When the file is open under several spellings, it is the one whose text
+/// [`Vfs::text_of`] reads ([`Vfs::buffer_uri`]).
+///
 /// Falls back to building a `file://` URI from `target_path` when no open
 /// buffer matches. Returns `None` only when the path can't be turned into
 /// any URI at all (a non-absolute path on platforms `Uri::from_file_path`
 /// rejects, or a path with no representation).
-pub fn preferred_uri(target_path: &Path, docs: &Sources) -> Option<Uri> {
-    let target = lexically_normalize(target_path);
-    for url in docs.keys() {
-        if let Ok(doc_path) = url.to_file_path()
-            && paths_equal(&lexically_normalize(&doc_path), &target)
-        {
-            return Some(url.clone());
-        }
+pub fn preferred_uri(target_path: &Path, docs: &Vfs) -> Option<Uri> {
+    // The buffer `Vfs::text_of` reads for this path: a location's ranges were
+    // computed from that buffer's text, so they must carry its URI.
+    if let Some(uri) = docs.buffer_uri(target_path) {
+        return Some(uri.clone());
     }
     Uri::from_file_path(target_path).ok()
 }

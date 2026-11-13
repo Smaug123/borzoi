@@ -57,7 +57,7 @@ struct Loaded {
 }
 
 fn load(project: &Path, workspace: &mut Workspace, sema: &mut SemanticState) -> Loaded {
-    let docs = borzoi::observed::Sources::new();
+    let docs = borzoi::vfs::Vfs::new();
     let parses = sema
         .parses_for_project(project, workspace, &docs)
         .unwrap_or_else(|| panic!("the LSP declined to load {project:?}"))

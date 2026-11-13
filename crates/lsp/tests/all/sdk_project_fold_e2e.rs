@@ -57,7 +57,7 @@ fn scratch_dir(tag: &str) -> std::path::PathBuf {
 fn folds(fsproj: &std::path::Path) -> bool {
     let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
     let mut sema = SemanticState::new();
-    let docs = borzoi::observed::Sources::new();
+    let docs = borzoi::vfs::Vfs::new();
     sema.parses_for_project(fsproj, &mut workspace, &docs)
         .is_some()
 }
@@ -330,7 +330,7 @@ fn a_language_version_refusal_names_the_condition_it_rests_on() {
 
     let mut workspace = Workspace::with_env(SdkDiscoveryEnv::from_process_env());
     let mut sema = SemanticState::new();
-    let docs = borzoi::observed::Sources::new();
+    let docs = borzoi::vfs::Vfs::new();
     assert!(
         sema.parses_for_project(&fsproj, &mut workspace, &docs)
             .is_none(),

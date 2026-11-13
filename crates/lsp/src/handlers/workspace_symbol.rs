@@ -67,7 +67,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         .map(|(uri, text)| OpenSource {
             uri: uri.clone(),
             path: uri.to_file_path().ok(),
-            text: text.clone(),
+            text: text.to_string(),
         })
         .collect();
     open_sources.sort_by(|a, b| a.uri.as_str().cmp(b.uri.as_str()));

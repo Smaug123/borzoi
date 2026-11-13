@@ -35,12 +35,12 @@ use lsp_types::{Location, ReferenceParams, Uri};
 
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::handlers::{indexed_range_to_lsp, preferred_uri, smallest_resolution_with_range};
-use crate::observed::Sources;
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::LineIndex;
 use crate::position::position_to_offset;
 use crate::semantic::ProjectParses;
 use crate::server::State;
+use crate::vfs::Vfs;
 
 /// Run the find-references handler. Always returns `Some` when the cursor
 /// has a buffer; an empty vec means "no references found", which clears the
@@ -226,7 +226,7 @@ fn collect_locations(
     target_res: Resolution,
     decl_anchor: Option<(usize, TextRange)>,
     include_declaration: bool,
-    docs: &Sources,
+    docs: &Vfs,
 ) -> ReferenceScan {
     let target_key = decl_anchor.map_or(target_res, |(file, _)| {
         occurrence_key(resolved.file(file), file, target_res)
