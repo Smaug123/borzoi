@@ -17,7 +17,8 @@
 use std::collections::BTreeMap;
 
 use super::item_pass::{
-    helper_item_definition_default_uncertainties, is_package_id_shape, item_list_view,
+    PackageItemKind, helper_item_definition_default_uncertainties, is_package_id_shape,
+    item_list_view,
 };
 use super::{EvaluatedItem, HelperMetadataUncertainty, HelperMetadataUncertaintyKind};
 use super::{State, is_toolset_initial_property_name, item_key};
@@ -153,22 +154,28 @@ impl State<'_> {
         PropertyRead::UnsetInexact(why)
     }
 
-    /// Whether the `PackageVersion` list holds what MSBuild's does: no
-    /// `Update` or `Remove` of one ran, and every cause that marks the package
-    /// set uncertain is either a `PackageVersion`'s existence or one recorded
-    /// about another dependency list ([`State::package_causes_elsewhere`]).
-    /// A cause raised anywhere else (on a `PackageVersion`, an item group, an
-    /// import, an item definition) declines.
-    fn package_versions_certain(&self) -> bool {
-        !self.package_versions_untracked
-            && self
-                .package_reference_uncertainties
-                .iter()
-                .enumerate()
-                .all(|(index, cause)| {
-                    self.package_causes_elsewhere.contains(&index)
-                        || cause.kind == PackageReferenceUncertaintyCauseKind::PackageVersion
-                })
+    /// Whether the package set's causes leave the central-package list of
+    /// `kind` (`PackageVersion` or `GlobalPackageReference`) as MSBuild holds
+    /// it: every cause is about another dependency list
+    /// ([`State::package_cause_owners`]), or is `marker`, which an item of
+    /// `kind` records merely by existing. A cause with no owner (an item group,
+    /// an import, an item definition), or any other cause about this list,
+    /// declines. The caller checks for an `Update` or `Remove` of the type.
+    fn central_list_certain(
+        &self,
+        kind: PackageItemKind,
+        marker: &PackageReferenceUncertaintyCauseKind,
+    ) -> bool {
+        self.package_reference_uncertainties
+            .iter()
+            .enumerate()
+            .all(
+                |(index, cause)| match self.package_cause_owners.get(&index) {
+                    Some(owner) if *owner != kind => true,
+                    Some(_) => cause.kind == *marker,
+                    None => false,
+                },
+            )
     }
 
     fn read_items(&self, item_type: &str) -> ItemRead {
@@ -200,11 +207,11 @@ impl State<'_> {
                 .collect(),
             metadata_complete: item.metadata_complete,
         };
-        // `PackageReference`, `FrameworkReference` and `PackageVersion` live in
-        // the dependency capture, whose certainty covers their identities:
-        // exact when that set is certain and nothing was hidden from the walk.
-        // `PackageVersion` marks the set uncertain merely by existing, so its
-        // list asks the set's causes instead ([`Self::package_versions_certain`]).
+        // The dependency types live in the dependency capture, whose certainty
+        // covers their identities: exact when that set is certain and nothing
+        // was hidden from the walk. A central-package item marks the set
+        // uncertain merely by existing, so its list asks the set's causes
+        // instead ([`Self::central_list_certain`]).
         let dependency = if key == item_key("PackageReference") {
             Some((
                 &self.package_reference_rows,
@@ -221,7 +228,21 @@ impl State<'_> {
             Some((
                 &self.package_version_rows,
                 None,
-                self.package_versions_certain(),
+                !self.package_versions_untracked
+                    && self.central_list_certain(
+                        PackageItemKind::PackageVersion,
+                        &PackageReferenceUncertaintyCauseKind::PackageVersion,
+                    ),
+            ))
+        } else if key == item_key("GlobalPackageReference") {
+            Some((
+                &self.global_package_reference_rows,
+                None,
+                !self.global_package_references_mutated
+                    && self.central_list_certain(
+                        PackageItemKind::GlobalPackageReference,
+                        &PackageReferenceUncertaintyCauseKind::GlobalPackageReference,
+                    ),
             ))
         } else {
             None
@@ -575,5 +596,38 @@ mod dependency_list_tests {
             &["PackageVersion"],
         );
         assert!(!reads.items["PackageVersion"].exact);
+    }
+}
+
+#[cfg(test)]
+mod global_package_reference_tests {
+    use super::tests::read;
+
+    #[test]
+    fn global_references_are_exact_beside_uncertain_central_versions() {
+        // A `PackageVersion` under an undecidable condition says nothing about
+        // the global references, nor they about it.
+        let reads = read(
+            "<ItemGroup><GlobalPackageReference Include=\"g\" Version=\"1\" Extra=\"e\" />\
+             <PackageVersion Include=\"a\" Version=\"1\" \
+             Condition=\"$([System.String]::IsNullOrWhiteSpace(''))\" /></ItemGroup>",
+            &[],
+            &["GlobalPackageReference", "PackageVersion"],
+        );
+        let globals = &reads.items["GlobalPackageReference"];
+        assert!(globals.exact, "{globals:?}");
+        assert_eq!(globals.items.as_ref().unwrap()[0].metadata["extra"], "e");
+        assert!(!reads.items["PackageVersion"].exact);
+    }
+
+    #[test]
+    fn an_updated_global_reference_is_not_exact() {
+        let reads = read(
+            "<ItemGroup><GlobalPackageReference Include=\"g\" Version=\"1\" />\
+             <GlobalPackageReference Remove=\"g\" /></ItemGroup>",
+            &[],
+            &["GlobalPackageReference"],
+        );
+        assert!(!reads.items["GlobalPackageReference"].exact);
     }
 }

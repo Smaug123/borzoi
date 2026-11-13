@@ -1708,9 +1708,8 @@ So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
    discipline (landed; see *A₁.3b: every metadatum* below);
 2. expose the dedicated buckets as item lists the executor can read
-   (`PackageReference`, `FrameworkReference`, `ProjectReference` and
-   `PackageVersion` landed; see the *A₁.3b* sections below;
-   `GlobalPackageReference` remains);
+   (every dependency type and `ProjectReference` landed; see the *A₁.3b*
+   sections below);
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
@@ -1868,11 +1867,11 @@ multi-targeting outer build, whose walk is opaque.
 but not its certainty. Every `PackageVersion` marks the package set uncertain
 until central versions are applied, so that flag cannot vouch for the list.
 The list asks the set's recorded causes instead. Each cause raised while
-walking a `PackageReference`, `FrameworkReference` or
-`GlobalPackageReference` element, or while collapsing `PackageReference`s,
-is attributed to that list (`State::package_causes_elsewhere`). The
-`PackageVersion` list is exact when every other cause is a
-`PackageVersion`'s own existence, no `Update` or `Remove` of one ran, the
+walking a dependency element is attributed to that element's type, and each
+raised while collapsing `PackageReference`s to `PackageReference`
+(`State::package_cause_owners`). The `PackageVersion` list is exact when
+every cause is attributed to another type or is a `PackageVersion`'s own
+existence, no `Update` or `Remove` of one ran, the
 walk is not opaque, and every identity has the package-id shape. A cause
 raised anywhere else declines: on a `PackageVersion`, an item group, an
 import, an item definition.
@@ -1895,6 +1894,14 @@ unit test. On every single-target corpus project and fixture the list is
 exact (and empty), beside a `PackageReference` set that stays uncertain.
 `cpm` and `TypeEquality` are multi-targeting outer builds, whose walks are
 opaque.
+
+`GlobalPackageReference` is the same with its own marker: its list is exact
+when every cause is attributed to another type or is a
+`GlobalPackageReference`'s existence, no `Update` or `Remove` of one ran, the
+walk is not opaque, and every identity has the package-id shape. The
+generator writes it as well. Ignoring its `Update` or `Remove`, or a cause
+attributed to it that is not its marker, fails the soak. No cone the census
+runs reads it.
 
 #### A₁.4: the task leaves
 

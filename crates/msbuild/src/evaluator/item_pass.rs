@@ -243,7 +243,7 @@ pub(super) fn replay_deferred_item_groups(entry_doc: &Document<'_>, state: &mut 
     finalize_package_references(state);
     // Every cause the collapse records is about a `PackageReference`.
     #[cfg(any(test, feature = "test-support"))]
-    state.attribute_package_causes_elsewhere(causes_before);
+    state.attribute_package_causes(causes_before, PackageItemKind::PackageReference);
 }
 
 /// Resolve a deferred group's node in a (re-)parsed document, verifying it
@@ -773,7 +773,7 @@ enum ItemPlacement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageItemKind {
+pub(super) enum PackageItemKind {
     PackageReference,
     FrameworkReference,
     PackageVersion,
@@ -787,15 +787,8 @@ fn walk_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
     // What the package set's causes say about another dependency list is the
     // probe's business only.
     #[cfg(any(test, feature = "test-support"))]
-    if matches!(
-        package_item_kind_for_element(node),
-        Some(
-            PackageItemKind::PackageReference
-                | PackageItemKind::FrameworkReference
-                | PackageItemKind::GlobalPackageReference
-        )
-    ) {
-        state.attribute_package_causes_elsewhere(causes_before);
+    if let Some(kind) = package_item_kind_for_element(node) {
+        state.attribute_package_causes(causes_before, kind);
     }
 }
 
@@ -2721,12 +2714,18 @@ fn walk_global_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     );
     let Some(include) = node.attribute("Include") else {
         if node.attribute("Remove").is_some() || node.attribute("Update").is_some() {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                state.global_package_references_mutated = true;
+            }
             state.mark_untracked_item_list("GlobalPackageReference");
         }
         return;
     };
     state.note_package_uncertain_from_sdk_property_taint(include);
     let local_metadata = read_package_metadata(node, state);
+    #[cfg(any(test, feature = "test-support"))]
+    let exact = read_exact_metadata_quietly(node, state);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let global_count_before = state.global_package_references.len();
@@ -2734,6 +2733,11 @@ fn walk_global_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
     for source in resolve_dependency_identity_sources(include, node, state) {
         if dependency_excluded(&excluded, &source.identity, node, state) {
             continue;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let row = included_row(state, "GlobalPackageReference", &source, &exact);
+            state.global_package_reference_rows.push(row);
         }
         note_inherited_helper_metadata_uncertainties(
             &source.metadata_uncertainties,

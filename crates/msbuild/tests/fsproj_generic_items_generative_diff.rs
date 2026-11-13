@@ -33,14 +33,16 @@ use common::{Oracle, SplitMix64};
 
 /// `PackageReference` and `FrameworkReference` are captured by the dependency
 /// capture, not the generic tables; `PackageReference` collapses `Update` onto
-/// prior `Include`s. `PackageVersion` is captured there too, with its own
-/// certainty. `ProjectReference` is captured by the reference capture.
-const ITEM_TYPES: [&str; 6] = [
+/// prior `Include`s. `PackageVersion` and `GlobalPackageReference` are captured
+/// there too, each with its own certainty. `ProjectReference` is captured by
+/// the reference capture.
+const ITEM_TYPES: [&str; 7] = [
     "Helper",
     "Known",
     "PackageReference",
     "FrameworkReference",
     "PackageVersion",
+    "GlobalPackageReference",
     "ProjectReference",
 ];
 /// What an `Update` names.
@@ -284,7 +286,6 @@ struct Tally {
     lists: usize,
     clean: usize,
     clean_with_gated: usize,
-    clean_package_references: usize,
     clean_by_type: BTreeMap<&'static str, usize>,
 }
 
@@ -333,7 +334,6 @@ fn check(oracle: &mut Oracle, xml: &str, gated: bool, tally: &mut Tally) {
         }
         tally.clean += 1;
         tally.clean_with_gated += usize::from(gated);
-        tally.clean_package_references += usize::from(item_type == "PackageReference");
         *tally.clean_by_type.entry(item_type).or_default() += 1;
         let rows = read.items.as_deref().unwrap_or_default();
         let ours: Vec<&str> = rows.iter().map(|r| r.identity.as_str()).collect();
@@ -386,7 +386,9 @@ fn clean_generic_lists_match_msbuild() {
 }
 
 /// A sweep in which every list declined, or MSBuild rejected every project,
-/// would pass while testing nothing.
+/// would pass while testing nothing. The floor is per type: the dependency
+/// types share one certainty, which any central-package item in a project
+/// clears, so how clean a sweep is overall turns on its mix of types.
 #[test]
 fn most_lists_are_clean() {
     let tally = sweep(0x0a11_c1ea, 200);
@@ -397,26 +399,20 @@ fn most_lists_are_clean() {
         tally.cases
     );
     for item_type in ITEM_TYPES {
+        let clean = tally
+            .clean_by_type
+            .get(item_type)
+            .copied()
+            .unwrap_or_default();
         assert!(
-            tally.clean_by_type.get(item_type).is_some_and(|n| *n > 0),
-            "no exact {item_type} list reached the comparison"
+            clean * 10 > tally.cases,
+            "only {clean} of {} cases had an exact {item_type} list",
+            tally.cases
         );
     }
     assert!(
-        tally.clean_package_references * 10 > tally.cases,
-        "only {} of {} cases had an exact PackageReference list",
-        tally.clean_package_references,
-        tally.cases
-    );
-    assert!(
         tally.clean_with_gated > 0,
         "no clean list was checked in a project writing the untrusted property"
-    );
-    assert!(
-        tally.clean * 2 > tally.lists,
-        "only {} of {} generated lists were clean",
-        tally.clean,
-        tally.lists
     );
 }
 
