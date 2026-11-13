@@ -1416,6 +1416,13 @@ struct State<'r> {
     /// supply metadata to helper items that a later `<PackageReference
     /// Include="@(Helper)">` inherits.
     helper_item_definition_defaults: HashMap<String, HashMap<String, HelperMetadataUncertainty>>,
+    /// Each item type's item-definition defaults, by metadata name, as
+    /// MSBuild's pass 2 leaves them: the value, or `None` where a definition
+    /// that may apply has a condition or value the walk cannot decide. Applied
+    /// to the exact rows of items declared directly ([`EvaluatedItem`]'s
+    /// `definitions_applied`).
+    #[cfg(any(test, feature = "test-support"))]
+    item_definition_values: HashMap<String, HashMap<String, Option<String>>>,
     diagnostics: Vec<Diagnostic>,
     /// Whether `<Import>` elements should be followed by reading the
     /// referenced file (`true`, set by [`walk_with_imports`]) or just
@@ -1788,6 +1795,11 @@ struct EvaluatedItem {
     /// rather than absent.
     #[cfg(any(test, feature = "test-support"))]
     metadata_complete: bool,
+    /// Whether `exact_metadata` already holds the item type's definition
+    /// defaults: true for an item declared directly, false for a copy
+    /// (`@(Other)`), whose definitions stay uncertain.
+    #[cfg(any(test, feature = "test-support"))]
+    definitions_applied: bool,
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
 }
 
@@ -2094,6 +2106,8 @@ impl<'r> State<'r> {
             tainted_item_lists: HashSet::new(),
             untracked_item_lists: HashSet::new(),
             helper_item_definition_defaults: HashMap::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            item_definition_values: HashMap::new(),
             diagnostics: Vec::new(),
             follow_imports,
             imports_seen: HashSet::new(),
@@ -2636,6 +2650,8 @@ impl<'r> State<'r> {
             tainted_item_lists: _,
             untracked_item_lists: _,
             helper_item_definition_defaults: _,
+            #[cfg(any(test, feature = "test-support"))]
+                item_definition_values: _,
             diagnostics,
             follow_imports: _,
             imports_seen: _,
