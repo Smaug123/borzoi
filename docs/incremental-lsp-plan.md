@@ -64,15 +64,40 @@ workers it starts to read DLLs in parallel when it builds an env.
   stages count file-system calls inside the modules that make them (D3),
   where a test can assert them on any platform.
 
-After merging d3a4a131 into the branch, the committed harness moves on two
-rows: `semanticTokens E` goes from 24.5 M to 36.1 M and the keystroke total
-from 164.0 M to 176.0 M. Every other keystroke row moves by under 4%. The
-movement comes from main's #596, #600 and #622, not from this plan, and Stage 1
-re-measures from the new base.
+**Kernel instructions.** `ri_instructions` counts kernel-mode instructions
+too. So a row that does file I/O carries a kernel component that depends on
+the machine's state, not on the server: `semanticTokens E` (80 reads per
+keystroke) and the cold rows. That component can add up to about 50%, and it
+is bimodal.
 
-Wall time is not reported, because the machine is heavily loaded. Across two
-runs, the keystroke rows' minima agree to within 0.2% and the cold rows to
-within 1%.
+On the measuring machine the vnode table is full (`kern.num_vnodes` =
+`kern.maxvnodes`), so whether the 80 files' vnodes are still cached depends
+on other processes' file activity. The same commit measures `semanticTokens E`
+at about 24.4 M with the vnodes cached and about 36.2 M once they have been
+recycled. Background file churn reproduces the high level at 369039e9 itself,
+with user time and the syscall count (420) identical in both levels. A bisect
+of every commit from 369039e9 to d3a4a131 measures about 24.5 M and a 164 M
+keystroke total throughout, so the baseline is 164 M. Rows that open no files
+do not move.
+
+So the run-to-run agreement holds only for rows without file I/O. Across
+runs, their minima agree to within 0.2%. A row with I/O should be compared at
+the same kernel level: the minimum of several runs, on an otherwise quiet
+machine.
+
+A standalone open/`fstat`/read/close microbenchmark over the project's files
+costs about 167 k kernel instructions per file with warm vnodes, and about
+150 k more when recycled. Extrapolated, and not measured inside the LSP,
+roughly 13 M of `semanticTokens E`'s 24.4 M fast level is the kernel's share
+of `build_parses` re-reading the 80 files. So Stage 2b, which stops those
+reads, likely saves more than its user-space accounting suggests.
+
+**Run it under `nix develop`.** The env the server builds depends on the
+environment it finds (the `dotnet` on the path, the SDK and packs it
+resolves). Outside the devshell, the same binary measured a 136 M keystroke
+total, because it built a different env.
+
+Wall time is not reported, because the machine is heavily loaded.
 
 The project is **WoofWare.Incremental** (pin `f6b8fdf7`, from the whole-project
 gate's corpus cache): 82 Compile items, 314 KB. `E` is `[10] Stack.fs` and `L`
@@ -655,8 +680,9 @@ any semantic request does not reach the measured project's fold, if an env is
 built from no DLLs, or on a deferral toast.
 
 **Oracle**: it runs to completion under `nix develop` and reproduces the
-instruction and allocation baseline, to within run-to-run noise (0.2% on
-instructions; allocations are exact).
+instruction and allocation baseline. Allocations are exact. Instructions agree
+to within 0.2% on rows without file I/O, and at the same kernel level on rows
+with it (see "Kernel instructions").
 
 ### Stage 1: an export-equality cutoff for inference
 
@@ -695,8 +721,8 @@ calling the new reuse.
 
 **Expected gain**: about 107 M of re-inference leaves `hover L`, taking it
 from 117 M toward the 9.7 M measured with `E` next to `L`. The keystroke total
-goes from 164 M to about 57 M at 369039e9 (176 M → about 69 M from
-d3a4a131), and allocations fall by about 130 k per keystroke.
+goes from 164 M to about 57 M, and allocations fall by about 130 k per
+keystroke.
 
 ### Stage 2a: source reads are observed and counted
 
@@ -751,8 +777,10 @@ source events become re-`stat` hints.
   covers coarse-clock filesystems that the CI machine does not have.
 
 **Expected gain**: per keystroke, 80 opens and 80 `fstat`s become 0, and 0
-path `stat`s become at most 80. Instructions are not estimated: the stage
-measures them. The other expected effect is that `semanticTokens E` falls
+path `stat`s become at most 80. Instructions are not estimated in user space;
+the kernel's share of the 80 reads, extrapolated from a microbenchmark, is
+roughly 13 M of `semanticTokens E`'s 24.4 M with warm vnodes, and more when
+they are recycled (see "Kernel instructions"). The stage measures both levels. The other expected effect is that `semanticTokens E` falls
 toward the cost of parsing and resolving `E` alone.
 
 ### Stage 3a: the MSBuild evaluation records its read set
@@ -1002,9 +1030,13 @@ an `edit_counts` mode, `EDIT_COUNTS_SCRIPT=blocked-edit`:
    what the edit waited for.
 
 **The budget**: the edit waits for at most **50 M** server instructions. That
-is less than one steady keystroke is expected to cost after Stages 1–5 (about
-60 M from d3a4a131), so an edit never waits longer than the work it causes. The gate is measured on macOS, where the instruction
-counter exists, on WoofWare.Incremental and on WoofWare.PawPrint.Domain.
+is about what one steady keystroke is expected to cost after Stages 1–5
+(about 50 M), so an edit never waits much longer than the work it causes. The
+gate is measured on macOS, where the instruction counter exists, under
+`nix develop`, on WoofWare.Incremental and on WoofWare.PawPrint.Domain. The
+re-fold in step 3 reads every file, so its count carries the kernel component
+described under "Kernel instructions". The wait is taken as the minimum over
+five runs, which compares the vnode-cached level.
 
 **The gate**: if either project's wait exceeds the budget after Stage 8, this
 stage is built. Otherwise it is not, and the measurement is recorded here.
