@@ -1,9 +1,10 @@
 # Interned names, paths and types in sema
 
-> **Status (2026-11-12).** Plan written; Stages 0 (count harness), 1 (the
+> **Status (2026-11-13).** Plan written; Stages 0 (count harness), 1 (the
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
-> product on ids) and 9 (`OpenScope`) implemented.
+> product on ids), 5 (the remaining path and name keys, in three parts) and
+> 9 (`OpenScope`) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -680,6 +681,50 @@ project) is byte-identical before and after.
 **Measured** (5b, on 5c): resolve 1134.2 → 999.8 instructions per byte
 (−11.9%), allocations 1.186 → 0.947 per byte (−20%); infer 175.4 → 173.7.
 The whole-corpus dump is byte-identical to Stage 4's.
+
+**5a, implemented** (`resolve/model.rs`, `names.rs`):
+
+- **Shortening prefixes on ids.** Every `ShorteningPrefix` is interned when
+  it is pushed. The tier-1 walks of `resolved_project_module` and the
+  cross-file type-qualified case extend each prefix by the written names by
+  id (`NameTable::extend_last`), and spell a candidate path only where a
+  module set (`is_project_module_id`) or the case index
+  (`holds_type_qualified_case`) holds it: with no project module or case of
+  the path, an `open`'s prefix costs a few integer probes rather than a
+  path built and hashed.
+- **`ProjectItems`' export maps.** `type_qualified_cases`, `value_exports`
+  and `member_decl_files` are `PathMap`s. A `PathMap` now indexes its keys
+  by their parent (`PathMap::children`), so the questions an `open` of a
+  module asks of the earlier files' exports
+  (`direct_value_children`, `direct_constructor_children`, the
+  `fragment_*` twins, `direct_type_contestants`) read the module's
+  children rather than scanning every export, which cost each such `open`
+  time linear in the whole project's exports.
+- **Lockstep.** Each map keeps its string-keyed twin; `children` is held, as
+  a set, to a scan of the twin; the tier-1 probes assert their id against
+  the spelled path and their answer against the string-keyed check.
+- **Not converted**: the rest of `ProjectItems`' string-keyed maps and sets
+  (`namespace_paths`, `modules_with_hidden_values`, the signature screens,
+  the opaque-case and contribution maps, `implicit_module_shadows`, the
+  simple-name indexes). Several are asked by prefix scan
+  (`starts_with`) rather than by key, and none of them appears in a
+  profile of resolve, per file or as one project.
+
+**Measured** (5a, on 5b): resolve 999.8 → 882.2 instructions per byte
+(−11.8%), allocations 0.947 → 0.758 per byte (−20%); infer 173.7 → 173.5.
+Each file resolves against an empty `ProjectItems` there, so this is the
+tier-1 walks alone. A throwaway variant that resolves the same files as one
+project (`resolve_project`, every map populated) measures the whole stage:
+
+| | Stage 4 | 5c | 5b | 5a |
+|---|---|---|---|---|
+| `resolve_file`, instr/B | 1245.1 | 1134.2 | 999.8 | 882.2 |
+| `resolve_project`, instr/B | 1304.4 | 1262.2 | 1225.1 | 910.7 |
+
+The plan estimated −10 to −15% across the three parts; per file the stage
+measures −29%, and as one project −30%. Allocations per byte, per file, fall
+from 1.267 to 0.758: below one per source byte. The whole-corpus dump is
+byte-identical to Stage 4's after each part.
 
 ### Stage 6 (optional): published names
 
