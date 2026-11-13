@@ -203,3 +203,17 @@ fn diff_filtered_empty_stack_returns_keywords_raw() {
         assert_filtered_streams_match(src);
     }
 }
+
+/// A warn directive after other tokens on its line: FCS's lexer rule takes
+/// the rest of the line wherever a token starts (and reports FS3874), so the
+/// parser stream holds none of it.
+#[test]
+fn diff_filtered_mid_line_warn_directive_is_skipped() {
+    for src in [
+        "let x = 1 #nowarn \"44\"\nlet y = 2\n",
+        "module M =\n    let x = 1 #warnon \"44\" let\n    let y = 2\n",
+        "type T = int #nowarn \"44\"\n",
+    ] {
+        assert_filtered_streams_match(src);
+    }
+}

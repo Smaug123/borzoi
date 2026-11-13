@@ -46,6 +46,7 @@ use std::ops::Range;
 use crate::directives::expr::Expr;
 use crate::directives::line::{
     Directive, DirectiveError, DirectiveErrorKind, DirectiveKind, Recognised, recognise_directive,
+    recognise_warn_directive_mid_line,
 };
 use crate::directives::line_store::{LineDirective, LineDirectiveStore, line_index};
 use crate::lexer::interp::{Frame as InterpFrame, InterpDriver};
@@ -80,6 +81,9 @@ pub enum PreprocError {
     },
     /// EOF reached with at least one `#if` frame unclosed.
     UnclosedIfAtEof { if_span: Range<usize>, eof: usize },
+    /// A `#nowarn` / `#warnon` after other tokens on its line (FS3874). The
+    /// directive still takes the rest of the line, as in FCS.
+    WarnDirectiveNotFirst { range: Range<usize> },
 }
 
 impl PreprocError {
@@ -118,6 +122,10 @@ impl PreprocError {
                 "`#elif` after `#else` in the same `#if` chain".to_string()
             }
             PreprocError::UnclosedIfAtEof { .. } => "`#if` without matching `#endif`".to_string(),
+            PreprocError::WarnDirectiveNotFirst { .. } => {
+                "#nowarn/#warnon directives must appear as the first non-whitespace characters on a line"
+                    .to_string()
+            }
         }
     }
 }
@@ -335,6 +343,10 @@ struct DriverCore<'a, 'b> {
     stack: Vec<Frame>,
     /// One-shot flag: have we emitted the EOF unclosed-if errors yet?
     eof_done: bool,
+    /// Where the last active token ended, when its text is an FCS `ident`
+    /// (keywords included). FCS lexes `ident '#'` as one token, so a `#`
+    /// starting here is that token's, and never begins a warn directive.
+    ident_end: Option<usize>,
     /// Logos lexer over `source[lexer_state.base..]`, lazily (re)created.
     /// We invalidate it whenever `pos` jumps non-contiguously (e.g. after
     /// processing a directive).
@@ -512,6 +524,25 @@ impl<'a, 'b> DriverCore<'a, 'b> {
                     return false;
                 };
                 let (start, end) = (span.start, span.end);
+                // A `#nowarn` / `#warnon` after other tokens on its line:
+                // FCS's warn-directive rule is a token rule, so it takes the
+                // rest of the line here too, and reports FS3874.
+                if matches!(tok, Ok(Token::Hash))
+                    && self.ident_end != Some(start)
+                    && let Some(r) = recognise_warn_directive_mid_line(self.source, start)
+                {
+                    let range = r.range.clone();
+                    self.ident_end = None;
+                    self.handle_directive_result(Ok(r), out);
+                    out.push((
+                        Err(PreprocError::WarnDirectiveNotFirst {
+                            range: range.clone(),
+                        }),
+                        range,
+                    ));
+                    return true;
+                }
+                self.ident_end = is_fcs_ident(&self.source[start..end]).then_some(end);
                 self.pos = end;
                 let item = (tok.map(TriviaToken::Lexed).map_err(PreprocError::Lex), span);
                 if self.trivia_mode {
@@ -538,6 +569,7 @@ impl<'a, 'b> DriverCore<'a, 'b> {
             pos: 0,
             stack: Vec::new(),
             eof_done: false,
+            ident_end: None,
             lexer: None,
             pending_interp_frames: Vec::new(),
             line_directives: LineDirectiveStore::new(),
@@ -808,6 +840,17 @@ impl<'a, 'b> DriverCore<'a, 'b> {
     }
 }
 
+/// Whether a lexed token's text is an FCS `ident` lexeme (lex.fsl:323-334),
+/// keywords and `_` included. The token's bounds are Logos's, so only its
+/// shape is checked: an identifier start, then identifier characters. A
+/// non-ASCII character inside a token that starts so is one of the
+/// lexer's `\p{…}` identifier classes.
+fn is_fcs_ident(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '\'' || !c.is_ascii())
+}
+
 /// Is the *enclosing* context (ignoring the frame this directive will
 /// modify) active? `#if` opens a new frame, so its parent is the full
 /// stack; `#elif`/`#else`/`#endif` act on the top frame, so the parent
@@ -979,7 +1022,15 @@ mod reference {
                 i = range.end;
                 continue;
             }
-            active[i] = stack.iter().all(|f| f.arm_lit);
+            let lit = stack.iter().all(|f| f.arm_lit);
+            // A mid-line warn directive takes the rest of its line. Every
+            // `#` in active code starts a token under the generators'
+            // alphabet (no strings, comments or operators hold one).
+            if lit && let Some(r) = recognise_warn_directive_mid_line(source, i) {
+                i = r.range.end;
+                continue;
+            }
+            active[i] = lit;
             i += 1;
         }
         active
@@ -1138,6 +1189,14 @@ mod reference {
                     let _ = apply_directive(&mut stack, range.clone(), kind, expr_value, pa);
                 }
                 i = range.end;
+                continue;
+            }
+            // A mid-line warn directive, as in `active_mask`.
+            if stack.iter().all(|f| f.arm_lit)
+                && let Some(r) = recognise_warn_directive_mid_line(source, i)
+            {
+                out.push((SyntaxKind::WARN_DIRECTIVE, r.range.clone()));
+                i = r.range.end;
                 continue;
             }
             i += 1;
@@ -1497,6 +1556,58 @@ mod tests {
         let s = sym(&[]);
         let got = full_trivia_directives("#warnon \"3218\"\nlet x = 1\n", &s);
         assert_eq!(got, vec![(SyntaxKind::WARN_DIRECTIVE, 0..14)]);
+    }
+
+    /// A warn directive after other tokens on its line still takes the rest
+    /// of the line (FCS's rule is a token rule), and reports FS3874.
+    #[test]
+    fn mid_line_warn_directive_takes_the_line_and_errs() {
+        let s = sym(&[]);
+        let src = "let x = 1 #nowarn \"40\" let\nlet y = 2\n";
+        let got = full_trivia_directives(src, &s);
+        assert_eq!(got, vec![(SyntaxKind::WARN_DIRECTIVE, 10..26)]);
+        let items: Vec<_> = lex_with_symbols(src, &s).collect();
+        let errs: Vec<_> = items
+            .iter()
+            .filter_map(|(t, sp)| t.as_ref().err().map(|e| (e.clone(), sp.clone())))
+            .collect();
+        assert_eq!(
+            errs,
+            vec![(
+                PreprocError::WarnDirectiveNotFirst { range: 10..26 },
+                10..26
+            )]
+        );
+        let lets = items
+            .iter()
+            .filter(|(t, _)| matches!(t, Ok(Token::Let)))
+            .count();
+        assert_eq!(lets, 2, "the `let` after the directive is swallowed");
+        // FCS lexes `ident '#'` as one token, so a `#` right after an
+        // identifier or keyword starts no directive; after a number, a
+        // bang keyword or a backticked name it does.
+        for (src, directive) in [
+            ("let x = (y#nowarn \"40\")\nlet after = 1\n", false),
+            ("let x = (let#nowarn \"40\")\n", false),
+            ("let x = (_#nowarn \"40\")\n", false),
+            ("let x = (y'#nowarn \"40\")\n", false),
+            ("let x = (1#nowarn \"40\")\n", true),
+            ("let x = (``y``#nowarn \"40\")\n", true),
+            ("let!#nowarn \"40\"\n", true),
+        ] {
+            let found = full_trivia_directives(src, &s)
+                .iter()
+                .any(|(k, _)| *k == SyntaxKind::WARN_DIRECTIVE);
+            assert_eq!(found, directive, "{src:?}");
+        }
+        // Not in an interpolated string's text, nor a dead branch.
+        let quiet = "let s = $\"a #nowarn {1}\"\n#if FOO\nlet z = 1 #nowarn \"1\"\n#endif\n";
+        assert!(
+            full_trivia_directives(quiet, &s)
+                .iter()
+                .all(|(k, _)| *k != SyntaxKind::WARN_DIRECTIVE)
+        );
+        assert!(lex_with_symbols(quiet, &s).all(|(t, _)| t.is_ok()));
     }
 
     #[test]
@@ -2288,9 +2399,12 @@ mod tests {
             file: Option<String>,
             bare: bool,
         },
-        /// A `#nowarn` / `#warnon` directive line (`on` selects `#warnon`).
+        /// A `#nowarn` / `#warnon` directive (`on` selects `#warnon`), at
+        /// the start of its line, or after `lead` and a space: content
+        /// that, unless blank, puts the directive mid-line (FS3874).
         Warn {
             on: bool,
+            lead: Option<String>,
         },
         If {
             ident: String,
@@ -2345,7 +2459,8 @@ mod tests {
     }
 
     fn arb_warn_block() -> impl Strategy<Value = Block> {
-        any::<bool>().prop_map(|on| Block::Warn { on })
+        (any::<bool>(), prop::option::of(arb_content()))
+            .prop_map(|(on, lead)| Block::Warn { on, lead })
     }
 
     fn arb_block() -> impl Strategy<Value = Block> {
@@ -2386,7 +2501,11 @@ mod tests {
                     }
                     out.push('\n');
                 }
-                Block::Warn { on } => {
+                Block::Warn { on, lead } => {
+                    if let Some(lead) = lead {
+                        out.push_str(lead);
+                        out.push(' ');
+                    }
                     out.push_str(if *on { "#warnon " } else { "#nowarn " });
                     out.push_str("\"40\"");
                     out.push('\n');
@@ -2533,16 +2652,30 @@ mod tests {
             prop_assert_eq!(fast, reference);
         }
 
-        /// No errors should be produced on balanced sources.
+        /// The only errors on balanced sources are FS3874s, one over each
+        /// visible warn directive with other text before it on its line.
         #[test]
         fn no_errors_on_balanced_sources(
             s in arb_program(),
             symbols in arb_symbols(),
         ) {
             let errs: Vec<_> = lex_with_symbols(&s, &symbols)
-                .filter_map(|(t, _)| t.err())
+                .filter_map(|(t, span)| t.err().map(|e| (e, span)))
                 .collect();
-            prop_assert!(errs.is_empty(), "errors on balanced source {:?}: {:?}", s, errs);
+            let expected: Vec<_> = reference::collect_trivia_directives_reference(&s, &symbols)
+                .into_iter()
+                .filter(|(kind, range)| {
+                    *kind == SyntaxKind::WARN_DIRECTIVE
+                        && s[..range.start]
+                            .rsplit(['\n', '\r'])
+                            .next()
+                            .is_some_and(|line| !line.trim().is_empty())
+                })
+                .map(|(_, range)| {
+                    (PreprocError::WarnDirectiveNotFirst { range: range.clone() }, range)
+                })
+                .collect();
+            prop_assert_eq!(errs, expected, "errors on balanced source {:?}", s);
         }
 
         /// The driver's captured `#line` store matches the independent
