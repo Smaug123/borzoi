@@ -152,7 +152,7 @@ impl State<'_> {
                     metadata: item
                         .exact_metadata
                         .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
                         .collect(),
                     uncertain_metadata: item
                         .metadata_uncertainties
@@ -161,6 +161,12 @@ impl State<'_> {
                             &key, item, self,
                         ))
                         .map(|u| u.name.to_ascii_lowercase())
+                        .chain(
+                            item.exact_metadata
+                                .iter()
+                                .filter(|(_, v)| v.is_none())
+                                .map(|(k, _)| k.clone()),
+                        )
                         .collect(),
                 })
                 .collect()

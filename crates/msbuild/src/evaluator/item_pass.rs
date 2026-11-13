@@ -11,6 +11,7 @@
 use super::*;
 use crate::glob::SpecFragment;
 use crate::properties::escaping;
+use crate::properties::path_fixup;
 
 /// The fragments of an expanded item spec.
 ///
@@ -2999,7 +3000,7 @@ struct GenericItemMetadata {
     /// Package metadata names, trimmed; see [`EvaluatedItem`]'s `metadata`.
     values: HashMap<String, String>,
     /// Every name, exact; see [`EvaluatedItem`]'s `exact_metadata`.
-    exact: HashMap<String, String>,
+    exact: HashMap<String, Option<String>>,
     uncertainties: Vec<HelperMetadataUncertainty>,
 }
 
@@ -3035,7 +3036,7 @@ impl EvaluatedItem {
 #[derive(Default)]
 struct GenericItemMetadataBuilder {
     values: HashMap<String, String>,
-    exact: HashMap<String, String>,
+    exact: HashMap<String, Option<String>>,
     uncertainties: HashMap<String, HelperMetadataUncertainty>,
 }
 
@@ -3060,7 +3061,14 @@ fn read_generic_item_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> Gene
     for attr in node.attributes() {
         if is_item_metadata_attribute(attr.name()) {
             let previous = quieten(attr.name(), state);
-            set_generic_metadata_value(attr.name(), attr.value(), false, state, &mut metadata);
+            set_generic_metadata_value(
+                attr.name(),
+                attr.value(),
+                false,
+                true,
+                state,
+                &mut metadata,
+            );
             state.quiet_target_framework_reads.set(previous);
         }
     }
@@ -3092,14 +3100,20 @@ fn read_generic_metadata_child(
             // An unmodellable body (CDATA / entity-encoded whitespace —
             // see `collect_element_text`) drops the metadatum and marks it
             // uncertain, exactly like an expansion we couldn't evaluate.
-            // So does a body holding elements, whose value MSBuild takes as its
-            // inner XML.
-            let body =
-                collect_element_text(child).filter(|_| !child.children().any(|c| c.is_element()));
-            match body {
-                Some(raw) => {
-                    set_generic_metadata_value(name, &raw, condition_tainted, state, metadata)
-                }
+            // A body holding more than text and comments (an element, a
+            // processing instruction) is one MSBuild takes as its inner XML: the
+            // dependency capture reads its text as it always has, and the exact
+            // table holds no value for it.
+            let body_exact = child.children().all(|c| c.is_text() || c.is_comment());
+            match collect_element_text(child) {
+                Some(raw) => set_generic_metadata_value(
+                    name,
+                    &raw,
+                    condition_tainted,
+                    body_exact,
+                    state,
+                    metadata,
+                ),
                 None => {
                     metadata.values.remove(&item_key(name));
                     mark_generic_metadata_uncertain(name, "", &mut metadata.uncertainties);
@@ -3119,6 +3133,7 @@ fn set_generic_metadata_value(
     name: &str,
     raw: &str,
     condition_tainted: bool,
+    body_exact: bool,
     state: &mut State<'_>,
     metadata: &mut GenericItemMetadataBuilder,
 ) {
@@ -3147,6 +3162,9 @@ fn set_generic_metadata_value(
         // MSBuild's item table holds it whole.
         (scalar_use(&expansion.value).1, escaping::unescape(full))
     };
+    // MSBuild's Unix path fixup may rewrite a backslash-bearing value, or not,
+    // by a probe of its working directory.
+    let exact = (body_exact && path_fixup::worlds(&exact).is_none()).then_some(exact);
     if package {
         metadata.values.insert(key.clone(), normalised);
     }

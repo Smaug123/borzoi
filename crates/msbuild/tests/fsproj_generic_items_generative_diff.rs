@@ -43,7 +43,7 @@ const INCLUDES: [&str; 8] = [
     "@(Helper->'%(Flavor)')",
 ];
 /// Values for a metadata attribute.
-const VALUES: [&str; 11] = [
+const VALUES: [&str; 13] = [
     "1.0",
     "$(Name)",
     "pre$(Name)post",
@@ -55,15 +55,20 @@ const VALUES: [&str; 11] = [
     "  padded  ",
     " $(Name) ",
     "a&amp;b",
+    // Path-shaped, so MSBuild's Unix path fixup may rewrite it: `/tmp` exists
+    // wherever the oracle runs.
+    "\\tmp\\value",
+    "x\\y",
 ];
 /// Bodies for a metadata child element: the attribute values, and what only
 /// element content can hold.
-const BODIES: [&str; 5] = [
+const BODIES: [&str; 6] = [
     "<nested>hello</nested>",
     "<!-- c -->x",
     "<![CDATA[ c ]]>",
     "a<!-- c -->b",
     "\n      spread\n    ",
+    "a<?thing b?>c",
 ];
 const CONDITIONS: [&str; 5] = [
     "'$(Name)' == 'n'",

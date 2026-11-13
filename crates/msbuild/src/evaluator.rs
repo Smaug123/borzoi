@@ -1713,8 +1713,11 @@ struct EvaluatedItem {
     /// dependency capture reads it.
     metadata: HashMap<String, String>,
     /// Every metadatum, exactly as MSBuild evaluates it (untrimmed), for a
-    /// reader of the item table itself ([`reads`]).
-    exact_metadata: HashMap<String, String>,
+    /// reader of the item table itself ([`reads`]). `None` where that value
+    /// cannot be known: a body holding more than text and comments, or a value
+    /// MSBuild's Unix path fixup may rewrite, depending on its working
+    /// directory. The dependency capture keeps its own reading of those.
+    exact_metadata: HashMap<String, Option<String>>,
     metadata_uncertainties: Vec<HelperMetadataUncertainty>,
 }
 
