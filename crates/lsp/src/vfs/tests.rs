@@ -535,3 +535,28 @@ fn a_hint_forgets_what_was_read() {
     vfs.hint([Path::new("/w/./A.fs")]);
     assert_eq!(vfs.text_of(&a).as_deref(), Some("let b = 1\n"));
 }
+
+/// A file open under two spellings reads the first-opened buffer, and
+/// `buffer_uri` names that same buffer, so a location computed from the text
+/// carries the URI of the text it was computed from.
+#[test]
+fn text_and_uri_agree_on_which_spelling_is_read() {
+    let model = Rc::new(RefCell::new(Model::new(1)));
+    let mut vfs = Vfs::with_disk(Rc::clone(&model));
+    let first = uri(0);
+    let second = Uri::from_file_path("/w/sub/../A.fs").unwrap();
+    assert_ne!(first, second);
+    vfs.insert(first.clone(), "let first = 1\n".to_string());
+    vfs.insert(second.clone(), "let second = 2\n".to_string());
+    for _ in 0..2 {
+        assert_eq!(vfs.buffer_uri(&path(0)), Some(&first));
+        assert_eq!(vfs.text_of(&path(0)).as_deref(), Some("let first = 1\n"));
+        // Editing the first keeps it first.
+        vfs.insert(first.clone(), "let first = 1\n".to_string());
+    }
+    vfs.remove(&first);
+    assert_eq!(vfs.buffer_uri(&path(0)), Some(&second));
+    assert_eq!(vfs.text_of(&path(0)).as_deref(), Some("let second = 2\n"));
+    vfs.remove(&second);
+    assert_eq!(vfs.buffer_uri(&path(0)), None);
+}

@@ -285,16 +285,18 @@ impl<D: Disk> Vfs<D> {
     /// [`crate::workspace::Workspace::owning_project`] uses, so an open buffer
     /// that decides project ownership also supplies the text that is folded.
     pub fn text_of(&self, path: &Path) -> Option<Arc<str>> {
-        let key = path_dedup_key(&lexically_normalize(path));
-        if let Some(text) = self
-            .buffer_paths
-            .get(&key)
-            .and_then(|uris| uris.first())
-            .and_then(|uri| self.buffers.get(uri))
-        {
+        if let Some(text) = self.buffer_uri(path).and_then(|uri| self.buffers.get(uri)) {
             return Some(Arc::clone(text));
         }
         self.disk_text(path)
+    }
+
+    /// The open document whose buffer [`Self::text_of`] reads for `path`: of
+    /// those whose path is path-equal to it, the first opened. A location
+    /// computed from that text must carry this URI.
+    pub fn buffer_uri(&self, path: &Path) -> Option<&Uri> {
+        let key = path_dedup_key(&lexically_normalize(path));
+        self.buffer_paths.get(&key).and_then(|uris| uris.first())
     }
 
     /// A document's current text: the buffer the client has open under

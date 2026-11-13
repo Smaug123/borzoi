@@ -240,7 +240,7 @@ fn project(dir: &Path, n: usize) -> (Vec<PathBuf>, Vec<String>) {
 }
 
 /// What one stretch of messages opened and `stat`ed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Reads {
     opens: u64,
     stats: u64,
@@ -365,12 +365,19 @@ proptest! {
         (n, edited, other, pull) in cases(),
     ) {
         let n_minus_2 = (n - 2) as u64;
+        // A non-unix host's stamps have no change time, so they are always
+        // racy (`borzoi::vfs::Stamp::ctime`) and every request re-reads.
+        let warm = if cfg!(unix) {
+            Reads { opens: 0, stats: n_minus_2 }
+        } else {
+            Reads { opens: n_minus_2, stats: 0 }
+        };
         prop_assert_eq!(
             run(n, edited, other, pull, settled()),
             Counted {
                 cold_tokens: Reads { opens: n_minus_2, stats: 0 },
-                keystroke_and_tokens: Reads { opens: 0, stats: n_minus_2 },
-                other_tokens: Reads { opens: 0, stats: n_minus_2 },
+                keystroke_and_tokens: warm,
+                other_tokens: warm,
             }
         );
     }
