@@ -70,7 +70,7 @@ This is a Cargo workspace with nine members:
   (`OutDir`/`OutputPath`/`DefineConstants` are untrusted under every global set
   on a real SDK project), which makes such a dimension a coverage investment,
   not a soundness fix.
-  Two ops execute rather than evaluate. `targetItems` runs one target on an
+  Three ops execute rather than evaluate. `targetItems` runs one target on an
   evaluation and reads back an item list: `fsproj_compile_order_generative_diff.rs`
   runs F#'s `FSharpSourceCodeCompileOrder` (its text lifted from the installed
   SDK into a synthetic SDK) and holds the compile order we commit to
@@ -82,6 +82,11 @@ This is a Cargo workspace with nine members:
   (stage 8 of `docs/nuget-dgspec-boundary-plan.md`), under the global
   properties `borzoi_oracle_harness::restore_globals` holds to `restore.rs`'s
   command line.
+  `restoreGraphEntries` builds `_GenerateRestoreGraph` and returns the
+  `_RestoreGraphEntry` items `WriteRestoreGraphTask` is handed. The census
+  puts each cone's entries through `borzoi_nuget`'s `write_restore_graph`
+  and pins the item seam's verdict, which must be the cone's own spec, byte
+  for byte, or a decline.
 - `crates/assembly/` — `borzoi-assembly`. F#-flavoured reader for
   ECMA-335 assemblies: owned `Entity`/`Member`/`TypeRef` model, the
   `EcmaView` trait, and a projector over an *in-crate* ECMA-335 reader

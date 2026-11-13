@@ -41,6 +41,12 @@
 //! a user target hooked into the restore targets), pinned in
 //! `tests/manifests/restore_cone_fixtures.txt`.
 //!
+//! Each cone also grades the item seam (stage A₁.2, [`seam`]): the
+//! `_RestoreGraphEntry` items the build hands `WriteRestoreGraphTask`, put
+//! through `borzoi_nuget`'s `write_restore_graph`, must give the cone's own
+//! spec byte for byte, or decline. The verdict is pinned as the cone's `seam`
+//! line.
+//!
 //! File spellings are host-independent: `sdk:` relative to the SDK directory,
 //! `dotnet:` relative to the dotnet root, and `project:`/`fixture:` relative to
 //! the tree the project lives in. A file anywhere else fails the census, which
@@ -320,6 +326,8 @@ struct Cone {
     spec: Value,
     /// The executed targets and tasks, for comparison with the CLI's.
     executed: Executed,
+    /// The item seam's verdict on this cone ([`seam`]).
+    seam: String,
 }
 
 fn string(value: &Value, field: &str) -> String {
@@ -412,6 +420,7 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         .collect();
     let spec = scratch.normalised(&string(&answer, "dgspec"));
     let executed = executed(&answer);
+    let seam = seam(oracle, project, &scratch, &answer, &loaded);
     Cone {
         sdk_dir: sdk_dir.to_path_buf(),
         targets,
@@ -421,6 +430,91 @@ fn cone(oracle: &mut Oracle, project: &Path, sdk: &str, sdk_dir: &Path) -> Cone 
         loaded,
         spec,
         executed,
+        seam,
+    }
+}
+
+/// The item seam on this cone (stage A₁.2 of the plan): the
+/// `_RestoreGraphEntry` items the build hands `WriteRestoreGraphTask`, put
+/// through `borzoi_nuget`'s `write_restore_graph`, must give exactly the spec
+/// the cone wrote, or decline. A commit with any other text panics, since
+/// under certain-implies-exact it is a bug. The verdict is `agree`, or the
+/// decline's shape (without the item index or value, which are not
+/// host-independent).
+///
+/// The entries come from a second build after the census's (the
+/// `restoreGraphEntries` op), with `GenerateRestoreGraphFile`'s
+/// `RemoveDuplicates` applied here: the first item of each spec, compared
+/// ignoring case. The NuGet identity is that of the `NuGet.Commands` the
+/// census build loaded, and the environment is the oracle's scrubbed one.
+fn seam(
+    oracle: &mut Oracle,
+    project: &Path,
+    scratch: &Scratch,
+    answer: &Value,
+    loaded: &BTreeMap<PathBuf, String>,
+) -> String {
+    use borzoi_nuget::dgspec::{
+        NuGetIdentity, RestoreGraphItem, RestoreItemsDecline, write_restore_graph,
+    };
+
+    let entries = oracle.restore_graph_entries(project, &scratch.globals());
+    assert_eq!(
+        entries["succeeded"],
+        Value::Bool(true),
+        "{}: _GenerateRestoreGraph failed: {}",
+        project.display(),
+        entries["errors"]
+    );
+    let mut seen: Vec<String> = Vec::new();
+    let mut items = Vec::new();
+    for item in entries["items"].as_array().expect("items") {
+        let identity = string(item, "identity");
+        if seen.iter().any(|s| s.eq_ignore_ascii_case(&identity)) {
+            continue;
+        }
+        seen.push(identity.clone());
+        let metadata = item["metadata"]
+            .as_object()
+            .expect("metadata")
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().expect("string metadata").to_owned()))
+            .collect();
+        items.push(RestoreGraphItem { identity, metadata });
+    }
+    // The task's bool parameter, as MSBuild converts the property.
+    let recursive = match entries["restoreRecursive"].as_str().unwrap_or_default() {
+        v if v.eq_ignore_ascii_case("true") => true,
+        v if v.is_empty() || v.eq_ignore_ascii_case("false") => false,
+        other => panic!("RestoreRecursive is {other:?}, which the census does not convert"),
+    };
+    let nuget = loaded
+        .values()
+        .find_map(|rendered| rendered.strip_prefix("NuGet.Commands "))
+        .unwrap_or_else(|| panic!("{}: the build loaded no NuGet.Commands", project.display()));
+    let environment = common::oracle_environment()
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+    match write_restore_graph(&items, recursive, &NuGetIdentity::new(nuget), &environment) {
+        Ok(file) => {
+            let theirs = string(answer, "dgspec");
+            assert!(
+                file.text == theirs,
+                "{}: the item seam wrote another spec than the build did\n--- ours\n{}\n--- the build's\n{theirs}",
+                project.display(),
+                file.text
+            );
+            "agree".to_owned()
+        }
+        Err(RestoreItemsDecline::Value { name, detail, .. }) => {
+            format!("decline {name}: {detail}")
+        }
+        Err(RestoreItemsDecline::Vocabulary { detail, .. }) => format!("decline {detail}"),
+        Err(RestoreItemsDecline::UnverifiedNuGet { identity }) => {
+            format!("decline unverified NuGet {identity}")
+        }
+        Err(other) => format!("decline {other}"),
     }
 }
 
@@ -620,6 +714,7 @@ fn census(subjects: &[Subject]) -> (Manifest, String) {
                 subject.key
             );
             let prefix = format!("{sdk} {how} {}", subject.key);
+            items.push((format!("{prefix} seam"), cone.seam.clone()));
             for target in &cone.targets {
                 let file = subject.spell(&cone, &target.file);
                 per_sdk

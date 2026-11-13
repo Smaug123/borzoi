@@ -70,6 +70,15 @@
 ///     `restoreCone` below. Unlike the evaluation ops this one *executes*
 ///     targets, so it reaches the SDK's task code.
 ///
+///   {"op":"restoreGraphEntries","project":s,"globals":{name:value, ..}}
+///     -> {"ok":true,"succeeded":b,"errors":[..],"restoreRecursive":s,
+///         "items":[{"identity":s,"metadata":{name:value}}, ..]}
+///     The `_RestoreGraphEntry` items `_GenerateRestoreGraph` returns, before
+///     `RemoveDuplicates`, with their custom metadata as
+///     `WriteRestoreGraphTask` reads it (unescaped), and the build's
+///     `RestoreRecursive`: the item seam of A₁ (docs/nuget-dgspec-boundary-
+///     plan.md). Run it after `restoreCone` on the same project.
+///
 ///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"items":[fullPath, ..]}
 ///      | {"ok":false}                           // MSBuild rejects the project
@@ -649,6 +658,66 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
         |> List.ofSeq
        dgspec = dgspec |}
 
+/// The `_RestoreGraphEntry` items `_GenerateRestoreGraph` returns for
+/// `project` under `globals`, in order, before `GenerateRestoreGraphFile`'s
+/// `RemoveDuplicates`: each item's spec and custom metadata, read as
+/// `WriteRestoreGraphTask` reads them (`GetMetadata`, so unescaped), plus the
+/// `RestoreRecursive` the task is handed.
+///
+/// A separate build from `restoreCone`'s, in a fresh collection. Run it after
+/// that census in the same process, so that what the census records as loaded
+/// during its build is not loaded here first.
+let private restoreGraphEntries (project: string) (globals: Collections.Generic.IDictionary<string, string>) =
+    use collection = new ProjectCollection()
+    let logger = ConeLogger()
+
+    let parameters =
+        BuildParameters(
+            collection,
+            Loggers = [ logger :> Microsoft.Build.Framework.ILogger ],
+            MaxNodeCount = 1,
+            EnableNodeReuse = false
+        )
+
+    let target = "_GenerateRestoreGraph"
+
+    let request =
+        BuildRequestData(project, globals, null, [| target |], null, BuildRequestDataFlags.ProvideProjectStateAfterBuild)
+
+    let result = BuildManager.DefaultBuildManager.Build(parameters, request)
+    let succeeded = result.OverallResult = BuildResultCode.Success
+
+    let items =
+        match result.ResultsByTarget.TryGetValue target with
+        | true, outputs ->
+            outputs.Items
+            |> Seq.map (fun item ->
+                let names =
+                    item.CloneCustomMetadata().Keys
+                    |> Seq.cast<string>
+                    |> Seq.sort
+                    |> List.ofSeq
+
+                {| identity = item.ItemSpec
+                   metadata = names |> List.map (fun name -> (name, item.GetMetadata name)) |> dict |})
+            |> List.ofSeq
+        | _ -> []
+
+    let state = result.ProjectStateAfterBuild
+
+    {| ok = true
+       succeeded = succeeded
+       errors = logger.Errors
+       restoreRecursive = (if isNull state then null else state.GetPropertyValue "RestoreRecursive")
+       items = items |}
+
+let private respondRestoreGraphEntries (root: JsonElement) : string =
+    let project = root.GetProperty("project").GetString()
+
+    match readGlobals root with
+    | null -> JsonSerializer.Serialize {| error = "restoreGraphEntries needs a globals object" |}
+    | globals -> JsonSerializer.Serialize(restoreGraphEntries project globals)
+
 let private respondRestoreCone (root: JsonElement) : string =
     let project = root.GetProperty("project").GetString()
 
@@ -779,6 +848,7 @@ let main argv =
                     | "items" -> respondItems root
                     | "itemsMeta" -> respondItemsMeta root
                     | "restoreCone" -> respondRestoreCone root
+                    | "restoreGraphEntries" -> respondRestoreGraphEntries root
                     | "targetItems" -> respondTargetItems root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->

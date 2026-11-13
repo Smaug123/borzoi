@@ -16,6 +16,7 @@
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets	sha256:ffd9fabffb90c1a1
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.targets	sha256:7958c0c5010ec8d9
 10.0.112 file sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.TargetFrameworkInference.targets	sha256:6c0f262cf3a0d3ba
+10.0.112 forced cpm/app/App.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced cpm/app/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets x4
 10.0.112 forced cpm/app/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x3
 10.0.112 forced cpm/app/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x4
@@ -90,6 +91,7 @@
 10.0.112 forced cpm/app/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
 10.0.112 forced cpm/app/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.112 forced cpm/app/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced hooked/App.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced hooked/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced hooked/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced hooked/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -158,6 +160,7 @@
 10.0.112 forced hooked/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
 10.0.112 forced hooked/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.112 forced hooked/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.112 forced net10/App.fsproj seam	decline unverified NuGet 7.0.3-rc.42308+95017c711e6afc1085133d440e42b4bd78155701
 10.0.112 forced net10/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
 10.0.112 forced net10/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.112 forced net10/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
@@ -280,6 +283,7 @@
 10.0.401 loaded sdk:NuGet.Versioning.dll	NuGet.Versioning 7.9.0-rc.42413+e34a38d2ae1fc26406a317517196e55c68ff83ab
 10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.Deployment.DotNet.Releases.dll	Microsoft.Deployment.DotNet.Releases 2.0.0-rtm.1.26422.108+95017c711e6afc1085133d440e42b4bd78155701
 10.0.401 loaded sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll	Microsoft.NET.Build.Tasks 10.0.401-servicing.26423.113+e34a38d2ae1fc26406a317517196e55c68ff83ab
+10.0.401 resolved cpm/app/App.fsproj seam	agree
 10.0.401 resolved cpm/app/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets x4
 10.0.401 resolved cpm/app/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x3
 10.0.401 resolved cpm/app/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets x4
@@ -354,6 +358,7 @@
 10.0.401 resolved cpm/app/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences x3
 10.0.401 resolved cpm/app/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.401 resolved cpm/app/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved hooked/App.fsproj seam	agree
 10.0.401 resolved hooked/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved hooked/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved hooked/App.fsproj target CollectCentralPackageVersions	sdk:NuGet.targets
@@ -422,6 +427,7 @@
 10.0.401 resolved hooked/App.fsproj task ResolveAppHosts	sdk:Sdks/Microsoft.NET.Sdk/tools/net10.0/Microsoft.NET.Build.Tasks.dll in ProcessFrameworkReferences
 10.0.401 resolved hooked/App.fsproj task WarnForInvalidProjectsTask	sdk:NuGet.Build.Tasks.dll in _FilterRestoreGraphProjectInputItems
 10.0.401 resolved hooked/App.fsproj task WriteRestoreGraphTask	sdk:NuGet.Build.Tasks.dll in GenerateRestoreGraphFile
+10.0.401 resolved net10/App.fsproj seam	agree
 10.0.401 resolved net10/App.fsproj target AddPrunePackageReferences	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.FrameworkReferenceResolution.targets
 10.0.401 resolved net10/App.fsproj target ApplyImplicitVersions	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets
 10.0.401 resolved net10/App.fsproj target CheckForImplicitPackageReferenceOverrides	sdk:Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets

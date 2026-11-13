@@ -6,7 +6,7 @@
 > B₁'s reading of the environment restore runs under.
 > Stage 8 chose **A₁** (see its section for the numbers and the conditions);
 > *A₁: the restore cone, staged* splits it into five stages, of which A₁.1
-> (the item seam) has landed.
+> (the item seam) and A₁.2 (the seam on real projects) have landed.
 > B₁ runs in production in shadow: every on-demand restore hands it the spec
 > it read and logs whether B₁ agreed (see *B₁ in shadow*).
 > The resolver is NuGet's default dependency resolver reimplemented, and
@@ -1489,17 +1489,36 @@ What it does not cover:
 - **Synthetic entries.** Everything graded here was generated. Real entry
   lists arrive at A₁.2.
 
-#### A₁.2: the seam on real projects
+#### A₁.2: the seam on real projects — landed
 
-`tools/msbuild-condition-oracle` gains an op that runs `_GenerateRestoreGraph`
-in-process under `restore_globals` and returns its target outputs with every
-custom metadata value, after `RemoveDuplicates`. Two things are checked on
-every corpus project and fixture:
-- feeding those entries to A₁.1 reproduces A₀'s spec exactly;
-- A₁.1 commits on each of them.
+`tools/msbuild-condition-oracle`'s `restoreGraphEntries` op builds
+`_GenerateRestoreGraph` in-process under `restore_globals`. It returns the
+target's outputs: each item's spec and its custom metadata, read as the task
+reads them, plus the `RestoreRecursive` the task is handed.
+
+`restore_cone_census.rs` runs the op on every cone, after the census build in
+the same process, so that the census's record of what its build loaded is
+unchanged. It then applies `GenerateRestoreGraphFile`'s `RemoveDuplicates`
+(the first item of each spec, compared ignoring case) and puts the entries
+through `write_restore_graph` with two further inputs:
+- the identity of the `NuGet.Commands` the census build loaded;
+- the oracle's scrubbed environment.
+
+A commit must equal the spec the cone wrote, byte for byte, or the census
+panics. Each cone's verdict is pinned as a `seam` line in the census
+manifests:
+
+| | SDK 10.0.401 (resolved) | SDK 10.0.112 (forced) |
+|---|---|---|
+| the six corpus projects | all six agree | all six decline: its NuGet is not verified |
+| the three fixtures | all three agree | all three decline: its NuGet is not verified |
+
+The fixtures cover central package management with a project reference,
+`net10.0` with pruning, and a user target hooked into the cone. So the seam
+commits on every real entry list the census sees under a verified NuGet.
 
 From here on, the entries are what the stages before the seam are graded
-against.
+against: a stage that produces entries can be held to this op's output.
 
 #### A₁.3: target execution
 
