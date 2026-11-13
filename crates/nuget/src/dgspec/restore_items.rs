@@ -1467,12 +1467,23 @@ where
     Ok(())
 }
 
+/// `VersionComparer.Default.Equals` on optional bounds: NuGet.s identity,
+/// which is finer than `NuGetVersion`.s ordering equality (`1.0--0` and
+/// `1.0-0` compare equal but are distinct versions).
+fn same_version(a: Option<&NuGetVersion>, b: Option<&NuGetVersion>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.eq_strict(b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// `VersionRange`'s equality (`VersionRangeComparer.Default`).
 fn range_eq(a: &VersionRange, b: &VersionRange) -> bool {
     a.is_min_inclusive() == b.is_min_inclusive()
         && a.is_max_inclusive() == b.is_max_inclusive()
-        && a.min_version() == b.min_version()
-        && a.max_version() == b.max_version()
+        && same_version(a.min_version(), b.min_version())
+        && same_version(a.max_version(), b.max_version())
         && a.float_behavior() == b.float_behavior()
 }
 
@@ -1496,7 +1507,7 @@ where
         };
         for version in text.split(';').filter(|v| !v.is_empty()) {
             let range = parse_range(item, "VersionRange", version)?;
-            let exact = matches!((range.min_version(), range.max_version()), (Some(min), Some(max)) if min == max);
+            let exact = matches!((range.min_version(), range.max_version()), (Some(min), Some(max)) if min.eq_strict(max));
             if !exact {
                 return Err(
                     item.decline("VersionRange", "not an exact version, which NuGet rejects")

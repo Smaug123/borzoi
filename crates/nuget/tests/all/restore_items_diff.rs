@@ -801,6 +801,8 @@ fn pool_for(rng: &mut SplitMix64, name: &str) -> Vec<String> {
                 "[1.0.0,2.0.0)",
                 "( , 2.0.0]",
                 "1.0.0 - beta",
+                "[8.0.31-0];[8.0.31--0]",
+                "[8.0.31--0, 8.0.31-0]",
             ]);
             values.extend((0..4).map(|_| gen_range_string(rng)));
             values
