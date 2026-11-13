@@ -11,20 +11,27 @@
 //! holding every path the first run interned, plus decoys, interned first in a
 //! shuffled order. The results must be equal.
 //!
-//! Inference's types hold paths by id too, so the inference cases infer each
-//! input against both tables and compare every type it publishes, rendered
-//! through the table it was inferred against.
+//! Inference's types hold paths by id too, and are themselves ids into a type
+//! table: the env's for what a file publishes, and one per inference session
+//! for the terms it builds. So the inference cases infer each input against
+//! both envs and compare every type it publishes, rendered through the env it
+//! was inferred against, and the whole fold. The second env's type table is
+//! filled first with every type the first run published, plus decoys, in a
+//! shuffled order, and each of its inference sessions interns them too, in
+//! another order, and its first inference variables, shuffled, before it
+//! starts.
 
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::test_support::names::{
-    interned_paths, rekeyed, rekeyed_inference, with_fresh_names,
+    interned_paths, interned_types, rekeyed, rekeyed_inference, with_fresh_names,
+    with_fresh_names_and_types,
 };
 use borzoi_sema::{
-    AssemblyEnv, InferredProject, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery,
-    infer_project, qualified_names, resolve_project, resolve_project_files,
+    AssemblyEnv, InferredProject, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery, Ty,
+    TyKind, infer_project, qualified_names, resolve_project, resolve_project_files,
 };
 use proptest::prelude::*;
 
@@ -220,7 +227,7 @@ fn inferred_types(files: &[ProjectFile], env: &AssemblyEnv) -> (InferredProject,
     (inferred, out)
 }
 
-/// Infer `sources` against an empty table and against one filled first in an
+/// Infer `sources` against empty tables and against ones filled first in an
 /// order `seed` picks, as [`assert_fold_order_invariant`] resolves, and
 /// compare the types, rendered and as the whole fold (the first in the
 /// second's ids). Returns how many types the first run published.
@@ -235,7 +242,40 @@ fn assert_inference_order_invariant(sources: &[String], base: &AssemblyEnv, seed
         .collect();
     paths.extend(decoys);
     shuffle(&mut paths, seed);
-    let second_env = with_fresh_names(base, &paths);
+    let mut types = interned_types(&first_env);
+    assert!(
+        types
+            .iter()
+            .all(|&t| !matches!(t.kind(&first_env), TyKind::Var(_))),
+        "the env's type table holds an inference variable"
+    );
+    // Decoys: each type as the element of an array of a rank no source
+    // writes, and in a pair with itself, which the walk may also build.
+    let decoys: Vec<Ty> = types
+        .iter()
+        .flat_map(|&t| {
+            [
+                Ty::array(&first_env, t, 7),
+                Ty::tuple(&first_env, vec![t, t]),
+            ]
+        })
+        .collect();
+    types.extend(decoys);
+    shuffle(&mut types, seed ^ 0x5eed);
+    let mut session_seed = types.clone();
+    shuffle(&mut session_seed, seed.rotate_left(17));
+    // The variables too, in a shuffled order, so that two variables' ids
+    // order apart from their indices.
+    let mut session_vars: Vec<u32> = (0..512).collect();
+    shuffle(&mut session_vars, seed.rotate_left(29));
+    let second_env = with_fresh_names_and_types(
+        base,
+        &paths,
+        &first_env,
+        &types,
+        &session_seed,
+        &session_vars,
+    );
     let (second_fold, second) = inferred_types(&files, &second_env);
     assert!(
         first == second,
@@ -274,7 +314,7 @@ proptest! {
 
     /// A two-file project whose values have assembly types, FSharp.Core's
     /// generic applications and the first file's own record and union, read
-    /// across the files.
+    /// across the files, and generic functions.
     #[test]
     fn generated_programs_infer_the_same_in_any_interning_order(
         choices in prop::collection::vec(any::<u8>(), 1..8),
@@ -291,6 +331,10 @@ proptest! {
             b.push_str(&format!("let w{i} = v{i}\n"));
         }
         b.push_str("let r = { F = 2; G = \"t\" }\nlet u = D\n");
+        // Generic functions, whose schemes number their parameters by where
+        // each first appears: in neither the order their variables were made
+        // in nor any order of their ids.
+        b.push_str("let swap x y = (y, x)\nlet pick a b c = (c, (a, b))\n");
         let published = assert_inference_order_invariant(
             &[a, b],
             crate::common::full_bcl_env(),

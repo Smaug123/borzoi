@@ -57,7 +57,7 @@ use borzoi_assembly::{
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::infer::{constrained_parameter, rejected_by_attributes};
 use crate::member_ty::primitive_to_ty;
-use crate::ty::{FSHARP_CORE_RENAMED, Ty, TyPath};
+use crate::ty::{FSHARP_CORE_RENAMED, Ty, TyKind, TyPath, TyTable};
 
 /// FSharp.Core's public-key token.
 const FSHARP_CORE_PUBLIC_KEY_TOKEN: [u8; 8] = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a];
@@ -100,12 +100,12 @@ pub enum FunctionTyGap {
 }
 
 /// The F# type of a module function or value as [`module_function_scheme`]
-/// reads it: the type over [`Ty::Param`]s, and what each parameter must
+/// reads it: the type over [`TyKind::Param`]s, and what each parameter must
 /// satisfy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleFunctionScheme {
     /// Curried over the argument groups, each type parameter the
-    /// [`Ty::Param`] of its index.
+    /// [`TyKind::Param`] of its index.
     pub(crate) ty: Ty,
     /// Per type parameter, by index: the `equality`/`comparison` constraint
     /// it carries, if any. No other constraint is read.
@@ -132,7 +132,7 @@ fn checkable_requirement(p: &TypeParameter) -> Result<Option<EqualityComparison>
 
 /// The F# type of `method`, a function or value of the F# module `handle` in
 /// `env` — as a scheme: curried over its argument groups, with each of its
-/// type parameters as the [`Ty::Param`] of its index, ready for instantiation.
+/// type parameters as the [`TyKind::Param`] of its index, ready for instantiation.
 ///
 /// A type parameter constrained only by `equality` or `comparison` is read,
 /// with the constraint ([`ModuleFunctionScheme::requirements`]): those two
@@ -189,7 +189,8 @@ pub(crate) enum Builtin {
     /// A conversion function (`int`, `float`, `char`, …) to `target`, a
     /// numeric type or `char`.
     Convert {
-        /// The type the function's signature returns.
+        /// The type the function's signature returns: a type of the env's
+        /// table ([`AssemblyEnv::types`]), as every scheme is.
         target: Ty,
     },
 }
@@ -254,11 +255,9 @@ pub(crate) fn builtin_operator(
         return None;
     }
     let ty = signature_ty(env, handle, method).ok()?;
-    let p = Ty::Param;
-    let fun = |arg: Ty, ret: Ty| Ty::Fun {
-        arg: Box::new(arg),
-        ret: Box::new(ret),
-    };
+    let tys = env.types();
+    let p = |i| tys.param(i);
+    let fun = |arg: Ty, ret: Ty| tys.fun(arg, ret);
     let (builtin, expected) = match shape {
         Shape::Arith(op) => (Builtin::Arith(op), fun(p(0), fun(p(1), p(2)))),
         Shape::Bitwise => (Builtin::Bitwise, fun(p(0), fun(p(0), p(0)))),
@@ -268,23 +267,17 @@ pub(crate) fn builtin_operator(
         ),
         Shape::Negate => (Builtin::Negate, fun(p(0), p(0))),
         Shape::Convert => {
-            let Ty::Fun { ret, .. } = &ty else {
+            let TyKind::Fun { ret: target, .. } = *tys.kind(ty) else {
                 return None;
             };
-            let target = (**ret).clone();
-            if !crate::infer::is_conversion_target(env.names(), &target) {
+            if !crate::infer::is_conversion_target(env.names(), tys, target) {
                 return None;
             }
-            (
-                Builtin::Convert {
-                    target: target.clone(),
-                },
-                fun(p(0), target),
-            )
+            (Builtin::Convert { target }, fun(p(0), target))
         }
     };
     let mut mentioned = Vec::new();
-    collect_params(&expected, &mut mentioned);
+    collect_params(tys, expected, &mut mentioned);
     (ty == expected && mentioned.len() == method.generic_parameters.len()).then_some(builtin)
 }
 
@@ -299,23 +292,22 @@ enum Shape {
     Convert,
 }
 
-/// The distinct [`Ty::Param`] indices `ty` mentions.
-fn collect_params(ty: &Ty, out: &mut Vec<u32>) {
-    match ty {
-        Ty::Param(i) => {
+/// The distinct [`TyKind::Param`] indices `ty`, a type of `tys`, mentions.
+fn collect_params(tys: &TyTable, ty: Ty, out: &mut Vec<u32>) {
+    match tys.kind(ty) {
+        TyKind::Param(i) => {
             if !out.contains(i) {
                 out.push(*i);
             }
         }
-        Ty::Var(_) => {}
-        Ty::Named { args, .. } | Ty::Project { args, .. } => {
-            args.iter().for_each(|a| collect_params(a, out))
+        TyKind::Var(_) => {}
+        TyKind::Named { args, .. } | TyKind::Project { args, .. } | TyKind::Tuple(args) => {
+            args.iter().for_each(|&a| collect_params(tys, a, out))
         }
-        Ty::Array { elem, .. } => collect_params(elem, out),
-        Ty::Tuple(elems) => elems.iter().for_each(|e| collect_params(e, out)),
-        Ty::Fun { arg, ret } => {
-            collect_params(arg, out);
-            collect_params(ret, out);
+        TyKind::Array { elem, .. } => collect_params(tys, *elem, out),
+        TyKind::Fun { arg, ret } => {
+            collect_params(tys, *arg, out);
+            collect_params(tys, *ret, out);
         }
     }
 }
@@ -382,7 +374,7 @@ fn use_checks(
 
 /// The F# type of `method`, a function or value of the F# module `handle`,
 /// read off its IL signature and pickled argument groups, with each of its
-/// type parameters the [`Ty::Param`] of its index. What its type parameters
+/// type parameters the [`TyKind::Param`] of its index. What its type parameters
 /// must satisfy is the caller's to read.
 fn signature_ty(
     env: &AssemblyEnv,
@@ -420,16 +412,18 @@ fn signature_ty(
         .map(|p| bridge.ty(&p.ty))
         .collect::<Result<Vec<_>, _>>()?;
     let domains = curried_domains(env, method, &params)?;
-    Ok(domains.into_iter().rev().fold(ret, |ret, arg| Ty::Fun {
-        arg: Box::new(arg),
-        ret: Box::new(ret),
-    }))
+    let tys = env.types();
+    Ok(domains
+        .into_iter()
+        .rev()
+        .fold(ret, |ret, arg| tys.fun(arg, ret)))
 }
 
 /// The F# type of a referenced union's case, read off its maker
 /// ([`UnionCaseMaker`](borzoi_assembly::UnionCaseMaker)): its fields, in
 /// order, and the union type they build, each of the union's type parameters
-/// the [`Ty::Param`] of its index. A use instantiates both together.
+/// the [`TyKind::Param`] of its index. A use instantiates both together.
+/// Its types are the env's ([`AssemblyEnv::types`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnionCaseScheme {
     pub(crate) fields: Vec<Ty>,
@@ -439,17 +433,15 @@ pub(crate) struct UnionCaseScheme {
 impl UnionCaseScheme {
     /// The type of the case used as a value: the union itself for a nullary
     /// case, else a function from its fields — one, or the tuple of several,
-    /// as F# writes `Case (a, b)` — to the union.
-    pub(crate) fn value_ty(&self) -> Ty {
+    /// as F# writes `Case (a, b)` — to the union. `tys` is the table the
+    /// scheme's types are of, the env's.
+    pub(crate) fn value_ty(&self, tys: &TyTable) -> Ty {
         let arg = match self.fields.as_slice() {
-            [] => return self.union.clone(),
-            [one] => one.clone(),
-            many => Ty::Tuple(many.to_vec()),
+            [] => return self.union,
+            [one] => *one,
+            many => tys.tuple(many),
         };
-        Ty::Fun {
-            arg: Box::new(arg),
-            ret: Box::new(self.union.clone()),
-        }
+        tys.fun(arg, self.union)
     }
 }
 
@@ -550,11 +542,12 @@ pub(crate) fn union_case_scheme(
         type_typars: entity.generic_parameters.len(),
     };
     let union_ty = bridge.ty(&method.signature.return_type)?;
-    let applied_to_own_parameters = match &union_ty {
-        Ty::Named { args, .. } => {
+    let tys = env.types();
+    let applied_to_own_parameters = match tys.kind(union_ty) {
+        TyKind::Named { args, .. } => {
             args.iter()
                 .enumerate()
-                .all(|(i, a)| *a == Ty::Param(u32::try_from(i).expect("few type parameters")))
+                .all(|(i, &a)| a == tys.param(u32::try_from(i).expect("few type parameters")))
                 && args.len() == entity.generic_parameters.len()
         }
         _ => false,
@@ -572,7 +565,7 @@ pub(crate) fn union_case_scheme(
     })
 }
 
-/// The path [`Ty::Named`] carries for the generic type `handle` applied in
+/// The path [`TyKind::Named`] carries for the generic type `handle` applied in
 /// an annotation, under the signature bridge's rules ([`Bridge::generic_path`]):
 /// its compiled path when F# names it so, or for one of FSharp.Core's own
 /// renamed generics (`Result` is `FSharpResult`) the compiled path that
@@ -622,8 +615,8 @@ fn curried_domains(
         .map(|group| match group {
             [] if sole => Ok(Ty::named(env, UNIT)),
             [] => Err(FunctionTyGap::Groups),
-            [one] => Ok(one.clone()),
-            many => Ok(Ty::Tuple(many.to_vec())),
+            [one] => Ok(*one),
+            many => Ok(env.types().tuple(many.to_vec())),
         })
         .collect()
 }
@@ -648,13 +641,15 @@ fn is_fsharp_core_namespace(namespace: &[String]) -> bool {
 
 /// The per-signature context of the `TypeRef → Ty` conversion: whose
 /// assembly a same-assembly reference names, and how many method type
-/// parameters a [`TypeRef::Var`] may index.
+/// parameters a [`TypeRef::Var`] may index. It builds in the env's table
+/// ([`AssemblyEnv::types`]): what it reads is a scheme, ground over
+/// [`TyKind::Param`]s.
 struct Bridge<'a> {
     env: &'a AssemblyEnv,
     declaring: &'a AssemblyIdentity,
     typars: usize,
     /// How many of the declaring **type's** parameters a type-level
-    /// [`TypeRef::Var`] may index, each read as the [`Ty::Param`] of its
+    /// [`TypeRef::Var`] may index, each read as the [`TyKind::Param`] of its
     /// index: a union's, for its case makers ([`union_case_scheme`]). Zero
     /// for a module function, whose module has none; a signature may then
     /// index the method's parameters or the type's, never both.
@@ -665,16 +660,16 @@ impl Bridge<'_> {
     fn ty(&self, ty: &TypeRef) -> Result<Ty, FunctionTyGap> {
         match ty {
             TypeRef::Primitive(Primitive::Void) => Err(FunctionTyGap::Type),
-            TypeRef::Primitive(p) => Ok(primitive_to_ty(self.env.names(), *p)),
+            TypeRef::Primitive(p) => Ok(primitive_to_ty(self.env.names(), self.env.types(), *p)),
             TypeRef::Var {
                 index,
                 is_method: true,
-            } if usize::from(*index) < self.typars => Ok(Ty::Param(u32::from(*index))),
+            } if usize::from(*index) < self.typars => Ok(self.env.types().param(u32::from(*index))),
             TypeRef::Var {
                 index,
                 is_method: false,
             } if self.typars == 0 && usize::from(*index) < self.type_typars => {
-                Ok(Ty::Param(u32::from(*index)))
+                Ok(self.env.types().param(u32::from(*index)))
             }
             // FSharp.Core's own `FSharpFunc<_, _>` and `Unit`, by their
             // resolution scope: a same-assembly reference from FSharp.Core, or
@@ -700,10 +695,10 @@ impl Bridge<'_> {
                     segment_arities.as_slice(),
                     type_args.as_slice(),
                 ) {
-                    ("FSharpFunc", [2], [arg, ret]) => Ok(Ty::Fun {
-                        arg: Box::new(self.ty(&arg.ty)?),
-                        ret: Box::new(self.ty(&ret.ty)?),
-                    }),
+                    ("FSharpFunc", [2], [arg, ret]) => {
+                        let (arg, ret) = (self.ty(&arg.ty)?, self.ty(&ret.ty)?);
+                        Ok(self.env.types().fun(arg, ret))
+                    }
                     ("Unit", [0], []) => Ok(Ty::named(self.env, UNIT)),
                     _ => Err(FunctionTyGap::Type),
                 }
@@ -729,12 +724,11 @@ impl Bridge<'_> {
                 {
                     return Err(FunctionTyGap::Type);
                 }
-                Ok(Ty::Tuple(
-                    type_args
-                        .iter()
-                        .map(|a| self.ty(&a.ty))
-                        .collect::<Result<_, _>>()?,
-                ))
+                let elems = type_args
+                    .iter()
+                    .map(|a| self.ty(&a.ty))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.env.types().tuple(elems))
             }
             // A generic, top-level named type applied to its arguments, by its
             // compiled path, which is how FCS renders it: see
@@ -764,8 +758,8 @@ impl Bridge<'_> {
                 let args = type_args
                     .iter()
                     .map(|a| self.ty(&a.ty))
-                    .collect::<Result<_, _>>()?;
-                Ok(Ty::Named { path, args })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.env.types().app(path, args))
             }
             // A non-generic, top-level named type, by the path FCS renders
             // it under — which is the IL's only when the type the reference's
@@ -813,7 +807,7 @@ impl Bridge<'_> {
                 {
                     return Err(FunctionTyGap::Type);
                 }
-                Ok(Ty::named_path(self.env.names(), &path))
+                Ok(self.env.types().named_path(self.env.names(), &path))
             }
             // A vector `T[]`. A multidimensional or bounded array declines.
             TypeRef::Array {
@@ -825,10 +819,8 @@ impl Bridge<'_> {
                 if element.nullability == Nullability::Annotated {
                     return Err(FunctionTyGap::Type);
                 }
-                Ok(Ty::Array {
-                    elem: Box::new(self.ty(&element.ty)?),
-                    rank: 1,
-                })
+                let elem = self.ty(&element.ty)?;
+                Ok(self.env.types().array(elem, 1))
             }
             TypeRef::Named { .. }
             | TypeRef::Var { .. }
@@ -839,7 +831,7 @@ impl Bridge<'_> {
     }
 
     /// The compiled path of the generic type `handle` a signature applies,
-    /// which is FCS's canonical rendering of it and so what [`Ty::Named`]
+    /// which is FCS's canonical rendering of it and so what [`TyKind::Named`]
     /// carries, when an instantiation of it may be read as written:
     ///
     /// - it is a type F# applies as written: not a module, an abbreviation, a
@@ -919,9 +911,11 @@ impl Bridge<'_> {
 /// the abbreviation's own parameters in order, whose path the signature
 /// bridge's rules accept ([`Bridge::generic_path`]): not renamed unless it is
 /// one of FSharp.Core's renamed generics, and unconstrained. A constrained
-/// abbreviation parameter declines too.
+/// abbreviation parameter declines too. `args` are types of `tys`, which the
+/// result is built in.
 pub(crate) fn fsharp_core_abbreviation_ty(
     env: &AssemblyEnv,
+    tys: &TyTable,
     marker: EntityHandle,
     args: Vec<Ty>,
 ) -> Option<Ty> {
@@ -951,10 +945,7 @@ pub(crate) fn fsharp_core_abbreviation_ty(
         let shape = path.last()?.split('`').next()?;
         let rank = u32::try_from(shape.len() - 1).ok()?;
         let [elem] = <[Ty; 1]>::try_from(args).ok()?;
-        return Some(Ty::Array {
-            elem: Box::new(elem),
-            rank,
-        });
+        return Some(tys.array(elem, rank));
     }
     let target = env.abbreviation_direct_tycon(marker)?;
     let bridge = Bridge {
@@ -964,5 +955,5 @@ pub(crate) fn fsharp_core_abbreviation_ty(
         type_typars: 0,
     };
     let path = bridge.generic_path(target).ok()?;
-    (env.entity(target).generic_parameters.len() == args.len()).then_some(Ty::Named { path, args })
+    (env.entity(target).generic_parameters.len() == args.len()).then(|| tys.app(path, args))
 }

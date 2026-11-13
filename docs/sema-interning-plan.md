@@ -5,10 +5,10 @@
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
 > product on ids), 5 (the remaining path and name keys, in three parts), 6a
 > (export-declaration paths on ids), 6b (definitions' names on ids), 6c
-> (exports' published names on ids), 7 (`Ty` paths on ids), 9
+> (exports' published names on ids), 7 (`Ty` paths on ids), 8
+> (hash-consed `Ty`, built at the user's direction past its unmet gate), 9
 > (`OpenScope`), 10 (file-wide unknowables and windows) and 11 (the
-> resolver split) implemented;
-> Stage 8's gate re-measured at Stage 7 and not met.
+> resolver split) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -1066,7 +1066,7 @@ not-converted list (`namespace_paths`, the hidden-value and opaque-case
 sets, the simple-name indexes): a follow-up to 5a, to be taken when a profile
 of resolve shows them, which none has.
 
-### Stage 8 (gated): hash-consed `Ty`
+### Stage 8: hash-consed `Ty`
 
 **Dependencies**: Stage 7. **Implements**: D4's second half.
 
@@ -1085,6 +1085,124 @@ classification over Stage 7's premise profile at `7cf250bd` gives 7.4%; the
 `Vec<String>` and `String` clones that profile counted at 3.5% each were the
 paths', and are 0.6% each now, none of them `Ty`'s. Infer is 159.5
 instructions per byte beside resolve's 865.5.
+
+**Built at the user's direction.** The gate is not met, and the stage was
+built anyway. Another session ran a larger test showing that it pays off once
+the type checker covers more of F#, where inference builds and compares far
+more types than the 5,554 published nodes the census counts today. The
+measurement above stays as the record of where the gate stood.
+
+**Implemented** (`ty.rs`, `ty/table.rs`, `ty/reference.rs`, `unify.rs`):
+
+- **`Ty` is an id.** A `Ty` is a `Copy` index into a `TyTable`, whose node
+  is a `TyKind` (the variants `Ty` had, children as ids). The table interns a
+  node and returns the id it already holds for an equal one, so equality and
+  hashing compare ids. Like the name table's ids, `Ty` has no `Ord`, and in
+  a debug build it carries its table's tag: comparing ids of two tables, or
+  reading one against the wrong table, panics. Each node records its tree's
+  size and depth and whether a variable occurs in it, so `size` and
+  `is_ground` are constant-time.
+- **Two kinds of table.** An inference session (`infer_file`) builds its
+  terms in a table of its own, which dies with it. The env's table
+  (`AssemblyEnv::types`) holds what a file publishes and every scheme: the
+  project's cases and records, and the module functions, union cases and
+  conversion targets the bridge reads off assemblies. All of it is ground,
+  and interning a variable into it panics. A scheme the env holds reaches a
+  session through instantiation, which reads from the table it names
+  (`Gen::instantiate`), and what a session publishes is copied out once, at
+  `finish`, through a memo. **Departure:** D4 says only ground published
+  types can be env-scoped. The schemes are env-scoped too, since they are
+  ground and the session reads both its own file's and earlier files' through
+  the one instantiation; a session-scoped scheme would need a second path for
+  the files before it.
+- **What the tags caught.** While the stage was built, a conversion's
+  target (`int x`'s `int`, an env scheme) was unified into a session's terms
+  without being copied in. Seven tests of the sema suite failed on the tag
+  check, none of them written for it.
+- **The type budget.** A shared subterm is one node in the table and many
+  in the tree, and the budget bounds trees: every walk that resolves, unifies
+  or renders a type visits each place a subterm occurs. So the counts stay
+  the tree's. A node's recorded size is its tree's, saturating. The walks of
+  the unification table count a variable-free subterm (which resolves to
+  itself, holds no occurrence, and unifies with itself) in one step when its
+  whole tree fits what is left of the budget, and node by node otherwise, in
+  the order the walk would visit it, so the bound reported is the walk's.
+  A unification of a variable-free type with itself is then one step, which
+  is what an id comparison buys a unifier.
+- **Interning.** A session's table is probed once, under its lock; the
+  env's, shared by test threads, under the read lock first. A variable's node
+  is read by the variable's index, without hashing.
+- **The LSP's cap.** `AssemblyEnv::interned_count` counts the type table
+  beside the name table, and the server checks the cap after an inference
+  fold as well as after a resolution fold, since inference is what grows the
+  type table (`an_env_an_inference_takes_past_its_cap_is_rebuilt`).
+- **Outside sema.** The LSP and corpus-diff read a published type through
+  `Ty::kind(env)` and build one through `Ty::named`, `Ty::app`, `Ty::tuple`
+  and their siblings, which intern into the env's table.
+  `AssemblyEnv::may_apply` and `must_apply` keep their signatures, over the
+  env's table, beside `_in` variants that take a session's.
+- **Lockstep.** Under `interning-reference` in a debug build, the table keeps
+  a reference index keyed by each node's spelling (its paths' carried
+  segments and its children's ids), apart from `TyKind`'s own `Hash` and
+  `Eq`, and asserts on every intern that the two agree and that the id holds
+  the node. Both renderers stay held to the string form, now walking the
+  table.
+- **Oracles.** `ty::spelled_form` holds the interned form to `SpelledTy`, an
+  owned tree, over generated types that share subterms, in tables pre-filled
+  with decoy paths and types: converting is the identity, two types are one
+  id exactly when their trees are equal, a node's recorded size and
+  groundness are a walk's, copying between tables keeps the tree, and the
+  renderings are the tree's. The unifier's reference MGU now works on owned
+  trees, so it shares nothing with the table.
+  `ground_subterms_count_as_their_nodes_do` holds the one-step counting to
+  node-by-node counting (answers, bounds and recorded walks). The interning-order test
+  fills the second env's type table first with every type the first run
+  published plus decoys, shuffled, and has each of its inference sessions
+  intern them too, in another order, before it starts.
+
+**Planted bugs.** Fourteen, each run against the library suite and the
+inference and interning-order groups of the integration suite:
+
+| planted bug | caught by |
+|---|---|
+| a node's depth not one more than its deepest child's | the size property, the shared-subterm test, the one-step counting property, `infer_type_budget` |
+| a node's count its children's number, not their trees' | the size property, the shared-subterm test, the one-step counting property |
+| a child's variable not making its parent non-ground | 36 library tests and 78 integration tests (the ground table refuses the published variable) |
+| one-step counting a subterm's depth one short | the one-step counting property |
+| one-step counting a subterm a variable occurs in | 56 library and 129 integration tests |
+| a variable-free term unifying in one step with any other | the reference MGU and five other unifier properties, eight inference differentials |
+| interning that never finds a node it holds | the reference index, in 97 library and 151 integration tests |
+| interning that finds an array of another rank | the reference index, the conversion, size, import and render properties, `infer_binder_types_diff`, the interning-order corpus sample |
+| a conversion's target unified without being copied in | the tag check, in five inference differentials and the interning-order corpus sample |
+| receiver types published as the session's ids | the tag check, in the interning-order test's whole-fold comparison |
+| a project record's fields published as the session's ids | the tag check, in six record and union differentials and the interning-order test |
+| a scheme's parameters numbered by their variables' ids | two generalisation unit tests and eight FCS differentials; **passed the interning-order test**, whose sessions moved every id by the same offset and whose generated programs had no generic function. Each session now also interns its first 512 variables in a shuffled order before it starts, and the generated programs declare two generic functions: the test fails on it, and passes on it without the shuffled variables |
+| the env's table taking a variable | `a_ground_table_refuses_an_inference_variable` |
+| a copy between tables memoised under the copy's id | the tag check, in 36 library and 130 integration tests |
+
+**Measured** (on main at `aad4bca5`, after Stage 11): `infer_file` 159.0 →
+160.6 instructions per byte (+1.0%), allocations 0.093 → 0.062 per byte
+(−33%), reallocations 0.008 → 0.009, bytes allocated 7.5 → 8.7 per byte;
+`resolve_file` 865.1 → 863.8 and `resolve_project` 867.0 → 864.1, their code
+unchanged; parse 509.8 → 510.1. A first cut that probed a session's table
+twice per node and hashed every variable's node measured 163.0; probing once
+and reading a variable's node by its index brought it to 160.6. Counting a
+variable-free subterm in one step is neutral on the corpus (160.1 without
+it), whose largest walked type is 54 nodes: it bounds what a large shared type
+costs a walk, which the corpus does not yet hold. The whole-corpus dump of
+Stage 7 (resolutions, attribute resolutions, decline sites, definitions,
+diagnostics, exports, opaque binders and regions, namespace paths and
+inferred types; each file alone, each directory as a project, and each signed
+directory's implementation files inferred as one project) is byte-identical
+before and after, each type printed in Stage 7's Debug layout.
+
+**The gate's profile, after.** The same classification over a Time Profiler
+run of `sema_counts` (six repetitions; 1,129 samples in `infer_file`, 1,504
+before) puts `Ty`'s drop and clone at 0% (2.2% and 1.8% before) and leaves
+1.2% under hashing, all of it the type table hashing a node to intern it; the
+union is 1.2%, against 4.0% before. The table itself — interning, its map's
+growth, copying out — is 5.1% of the samples, about what the instruction count
+says it adds.
 
 ### Stage 9: `OpenScope`
 
