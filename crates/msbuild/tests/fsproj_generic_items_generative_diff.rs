@@ -33,18 +33,20 @@ use common::{Oracle, SplitMix64};
 
 /// `PackageReference` and `FrameworkReference` are captured by the dependency
 /// capture, not the generic tables; `PackageReference` collapses `Update` onto
-/// prior `Include`s. `ProjectReference` is captured by the reference capture.
-const ITEM_TYPES: [&str; 5] = [
+/// prior `Include`s. `PackageVersion` is captured there too, with its own
+/// certainty. `ProjectReference` is captured by the reference capture.
+const ITEM_TYPES: [&str; 6] = [
     "Helper",
     "Known",
     "PackageReference",
     "FrameworkReference",
+    "PackageVersion",
     "ProjectReference",
 ];
 /// What an `Update` names.
 const UPDATES: [&str; 4] = ["a", "A", "b", "@(Helper)"];
 const METADATA: [&str; 3] = ["Version", "Pack", "Flavor"];
-const INCLUDES: [&str; 10] = [
+const INCLUDES: [&str; 11] = [
     "a",
     "a;b",
     "$(Name)",
@@ -54,9 +56,13 @@ const INCLUDES: [&str; 10] = [
     "  b  ",
     "@(Helper->'%(Flavor)')",
     "@(ProjectReference)",
+    // A type this crate keeps in a bucket of its own.
+    "@(PackageReference)",
     // Path-shaped: MSBuild's Unix path fixup may respell it.
     "\\tmp\\foo",
 ];
+/// What an `Exclude` names: MSBuild matches it by normalised path.
+const EXCLUDES: [&str; 6] = ["a", "./a", "A", "b;x%3By", "\\tmp\\foo", "$(Name)"];
 /// Values for a metadata attribute.
 const VALUES: [&str; 17] = [
     "1.0",
@@ -93,12 +99,15 @@ const BODIES: [&str; 8] = [
     "a\r\nb",
     "a&amp;b&#9;c",
 ];
-const CONDITIONS: [&str; 5] = [
+const CONDITIONS: [&str; 6] = [
     "'$(Name)' == 'n'",
     "'$(Name)' == 'other'",
     "'$(Undefined)' == ''",
     "'%(Identity)' == 'a'",
     "'$(Gated)' != ''",
+    // Undecidable for the walk, and false in MSBuild: an item it skips
+    // without knowing.
+    "'$(Gated)' == ''",
 ];
 
 /// The file a generated project may import.
@@ -190,7 +199,12 @@ fn project(rng: &mut SplitMix64) -> (String, bool) {
         let operation = if rng.below(5) == 0 {
             format!("Update=\"{}\"", rng.pick(&UPDATES))
         } else {
-            format!("Include=\"{}\"", rng.pick(&INCLUDES))
+            let exclude = if rng.below(6) == 0 {
+                format!(" Exclude=\"{}\"", rng.pick(&EXCLUDES))
+            } else {
+                String::new()
+            };
+            format!("Include=\"{}\"{exclude}", rng.pick(&INCLUDES))
         };
         item(rng, &mut out, item_type, &operation, &condition);
     }

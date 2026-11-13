@@ -21,7 +21,7 @@ use super::item_pass::{
 };
 use super::{EvaluatedItem, HelperMetadataUncertainty, HelperMetadataUncertaintyKind};
 use super::{State, is_toolset_initial_property_name, item_key};
-use crate::UntrustedCause;
+use crate::{PackageReferenceUncertaintyCauseKind, UntrustedCause};
 
 /// The names a [`ReadProbe`]'s caller wants read at the end of the walk.
 #[derive(Debug, Clone, Default)]
@@ -153,6 +153,24 @@ impl State<'_> {
         PropertyRead::UnsetInexact(why)
     }
 
+    /// Whether the `PackageVersion` list holds what MSBuild's does: no
+    /// `Update` or `Remove` of one ran, and every cause that marks the package
+    /// set uncertain is either a `PackageVersion`'s existence or one recorded
+    /// about another dependency list ([`State::package_causes_elsewhere`]).
+    /// A cause raised anywhere else (on a `PackageVersion`, an item group, an
+    /// import, an item definition) declines.
+    fn package_versions_certain(&self) -> bool {
+        !self.package_versions_untracked
+            && self
+                .package_reference_uncertainties
+                .iter()
+                .enumerate()
+                .all(|(index, cause)| {
+                    self.package_causes_elsewhere.contains(&index)
+                        || cause.kind == PackageReferenceUncertaintyCauseKind::PackageVersion
+                })
+    }
+
     fn read_items(&self, item_type: &str) -> ItemRead {
         let key = item_key(item_type);
         let row = |item: &EvaluatedItem| ItemRow {
@@ -182,20 +200,33 @@ impl State<'_> {
                 .collect(),
             metadata_complete: item.metadata_complete,
         };
-        // `PackageReference` and `FrameworkReference` live in the dependency
-        // capture, whose certainty covers their identities: exact when that set
-        // is certain and nothing was hidden from the walk.
+        // `PackageReference`, `FrameworkReference` and `PackageVersion` live in
+        // the dependency capture, whose certainty covers their identities:
+        // exact when that set is certain and nothing was hidden from the walk.
+        // `PackageVersion` marks the set uncertain merely by existing, so its
+        // list asks the set's causes instead ([`Self::package_versions_certain`]).
         let dependency = if key == item_key("PackageReference") {
             Some((
                 &self.package_reference_rows,
                 Some(&self.package_reference_unknown_names),
+                !self.package_references_uncertain,
             ))
         } else if key == item_key("FrameworkReference") {
-            Some((&self.framework_reference_rows, None))
+            Some((
+                &self.framework_reference_rows,
+                None,
+                !self.package_references_uncertain,
+            ))
+        } else if key == item_key("PackageVersion") {
+            Some((
+                &self.package_version_rows,
+                None,
+                self.package_versions_certain(),
+            ))
         } else {
             None
         };
-        if let Some((dependency_rows, unknown_names)) = dependency {
+        if let Some((dependency_rows, unknown_names, certain)) = dependency {
             let rows = dependency_rows
                 .iter()
                 .map(|item| {
@@ -220,10 +251,8 @@ impl State<'_> {
                 .all(|item| is_package_id_shape(&item.identity));
             return ItemRead {
                 items: Some(rows),
-                exact: self.walk_opaque.is_none()
-                    && !self.package_references_uncertain
-                    && spelled_as_written,
-                tainted: self.package_references_uncertain,
+                exact: self.walk_opaque.is_none() && certain && spelled_as_written,
+                tainted: !certain,
                 untracked: false,
             };
         }
@@ -455,5 +484,96 @@ mod project_reference_tests {
             &["ProjectReference"],
         );
         assert!(!updated.items["ProjectReference"].exact);
+    }
+}
+
+#[cfg(test)]
+mod package_version_tests {
+    use super::tests::read;
+
+    #[test]
+    fn central_versions_are_exact_beside_an_uncertain_package_reference() {
+        // The versionless reference marks the package set uncertain; it says
+        // nothing about the central versions.
+        let reads = read(
+            "<ItemGroup><PackageVersion Include=\"a\" Version=\" 1.0 \" Pin=\"x\" />\
+             <PackageReference Include=\"a\" /></ItemGroup>",
+            &[],
+            &["PackageVersion", "PackageReference"],
+        );
+        let versions = &reads.items["PackageVersion"];
+        assert!(versions.exact, "{versions:?}");
+        let row = &versions.items.as_ref().unwrap()[0];
+        assert_eq!(row.metadata["version"], " 1.0 ");
+        assert_eq!(row.metadata["pin"], "x");
+        assert!(!reads.items["PackageReference"].exact);
+    }
+
+    #[test]
+    fn a_removed_or_updated_central_version_is_not_exact() {
+        for mutation in ["Remove=\"a\"", "Update=\"a\" Version=\"2\""] {
+            let reads = read(
+                &format!(
+                    "<ItemGroup><PackageVersion Include=\"a\" Version=\"1\" />\
+                     <PackageVersion {mutation} /></ItemGroup>"
+                ),
+                &[],
+                &["PackageVersion"],
+            );
+            assert!(!reads.items["PackageVersion"].exact, "{mutation}");
+        }
+    }
+
+    #[test]
+    fn a_central_version_under_an_undecidable_condition_is_not_exact() {
+        let reads = read(
+            "<ItemGroup><PackageVersion Include=\"a\" Version=\"1\" \
+             Condition=\"$([System.String]::IsNullOrWhiteSpace(''))\" /></ItemGroup>",
+            &[],
+            &["PackageVersion"],
+        );
+        assert!(!reads.items["PackageVersion"].exact);
+    }
+}
+
+#[cfg(test)]
+mod dependency_list_tests {
+    use super::tests::read;
+
+    /// MSBuild matches an `Exclude` by normalised path.
+    #[test]
+    fn an_exclude_naming_the_reference_by_path_removes_it() {
+        for item_type in ["PackageVersion", "PackageReference", "FrameworkReference"] {
+            let reads = read(
+                &format!(
+                    "<ItemGroup><{item_type} Include=\"a;b\" Version=\"1\" Exclude=\"./a\" /></ItemGroup>"
+                ),
+                &[],
+                &[item_type],
+            );
+            let read = &reads.items[item_type];
+            let identities: Vec<&str> = read
+                .items
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|r| r.identity.as_str())
+                .collect();
+            assert_eq!(identities, ["b"], "{item_type}");
+        }
+    }
+
+    /// A copy of a list this crate keeps in its own bucket reads nothing the
+    /// bucket holds, so it cannot be exact.
+    #[test]
+    fn a_copy_of_a_bucketed_list_is_not_exact() {
+        let reads = read(
+            "<ItemGroup><PackageReference Include=\"a\" Version=\"1\" \
+             Condition=\"$([System.String]::IsNullOrWhiteSpace(''))\" />\
+             <PackageVersion Include=\"@(PackageReference)\" /></ItemGroup>",
+            &[],
+            &["PackageVersion"],
+        );
+        assert!(!reads.items["PackageVersion"].exact);
     }
 }
