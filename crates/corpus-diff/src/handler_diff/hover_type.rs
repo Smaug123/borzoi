@@ -537,7 +537,7 @@ pub fn grade_shown(u: &ProjectUse, shown: &str) -> Result<TypeVerdict, String> {
 }
 
 /// Rename the type parameters of a displayed type by first appearance — `'a`,
-/// `'b`, … as [`Ty::render_fsharp`] spells [`Ty::Param`] — so two renderings
+/// `'b`, … as [`Ty::render_fsharp`] spells [`TyKind::Param`](borzoi_sema::TyKind::Param) — so two renderings
 /// that differ only in what they call their parameters are equal.
 ///
 /// A parameter is a `'` that does not continue an identifier, followed by an

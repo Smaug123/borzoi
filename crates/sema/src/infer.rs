@@ -1378,7 +1378,8 @@ impl SuspendedMember {
 /// inert constraint set over inference variables, `solve` discharges it — the
 /// eager `Eq`s first, then a worklist waking each suspended `HasMember` once its
 /// receiver's head is concrete — and each recorded expression's type is read back
-/// from its variable, emitted only when fully [`ground`](TyTable::is_ground).
+/// from its variable, emitted only when fully ground (no inference variable
+/// left in it).
 ///
 /// `preceding` is what the files before this one in Compile order published
 /// for their top-level values ([`crate::infer_project()`] folds it): a use the

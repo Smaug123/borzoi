@@ -83,7 +83,7 @@ pub enum PrecedingGap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ModuleValue {
     /// The binder's certain type: ground, or a generalised scheme over
-    /// [`TyKind::Param`]s.
+    /// [`TyKind::Param`](crate::TyKind::Param)s.
     Typed(Ty),
     /// No certain type, and why.
     Declined(PrecedingGap),
@@ -105,7 +105,7 @@ pub struct PrecedingTypes {
     /// Compile index and the type's position among those it declares — the
     /// identity a later file's
     /// [`Resolution::EarlierFileType`](crate::Resolution::EarlierFileType)
-    /// carries — with the path and arity of the [`TyKind::Project`] it denotes.
+    /// carries — with the path and arity of the [`TyKind::Project`](crate::TyKind::Project) it denotes.
     types: HashMap<(usize, u32), (TyPath, usize)>,
     /// The cases of each earlier file's unions its inference types, by the
     /// case's item — the handle a later file's use of one resolves to.
@@ -172,7 +172,7 @@ impl PrecedingTypes {
         }
     }
 
-    /// The path and arity of the [`TyKind::Project`] an annotation naming the
+    /// The path and arity of the [`TyKind::Project`](crate::TyKind::Project) an annotation naming the
     /// type at position `index` of the earlier file `file` denotes; `None` for
     /// a type that file's inference would not bridge either.
     pub(crate) fn earlier_type(&self, file: usize, index: u32) -> Option<&(TyPath, usize)> {

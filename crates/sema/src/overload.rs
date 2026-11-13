@@ -288,8 +288,8 @@ impl AssemblyEnv {
     ///   parameters are supplied (a leading optional omitted, ambiguous alignment)
     ///   — it is conservatively kept.
     ///
-    /// `args` are types of the env's table, as a published type is; see
-    /// [`Self::may_apply_in`] for a session's.
+    /// `args` are types of the env's type table, as a published type is.
+    /// Inference asks it of a session's terms through `may_apply_in`.
     pub fn may_apply(&self, method: &MethodLike, declaring: &str, args: &[Ty]) -> bool {
         self.may_apply_in(method, declaring, self.types(), args)
     }
@@ -492,8 +492,8 @@ impl AssemblyEnv {
     /// (or records a `void` identity) at commit — a return the bridge declines
     /// defers there, not here.
     ///
-    /// `args` are types of the env's table, as a published type is; see
-    /// [`Self::must_apply_in`] for a session's.
+    /// `args` are types of the env's type table, as a published type is.
+    /// Inference asks it of a session's terms through `must_apply_in`.
     pub fn must_apply(&self, method: &MethodLike, declaring: &str, args: &[Ty]) -> bool {
         self.must_apply_in(method, declaring, self.types(), args)
     }

@@ -28,8 +28,6 @@ use crate::def::SemanticClass;
 use crate::hash::{HashMap, HashSet};
 use crate::names::{NameKey, NameTable, PathIdSet, PathKey, PathMap};
 use crate::resolve::{ActivePatternShape, DeclineCause};
-#[cfg(feature = "test-support")]
-use crate::ty::Ty;
 use crate::ty::TyTable;
 
 mod il_types;
@@ -1106,7 +1104,7 @@ pub struct AssemblyEnv {
     /// so that a test can move the ids a session hands out
     /// ([`crate::test_support::names::with_fresh_names_and_types`]).
     #[cfg(feature = "test-support")]
-    session_seed: std::sync::Arc<[Ty]>,
+    session_seed: std::sync::Arc<[crate::Ty]>,
     /// See [`Self::session_seed`].
     #[cfg(feature = "test-support")]
     session_vars: std::sync::Arc<[u32]>,
@@ -1418,7 +1416,7 @@ impl AssemblyEnv {
     /// The types an inference session against this env interns first
     /// ([`Self::with_fresh_names_and_types`]).
     #[cfg(feature = "test-support")]
-    pub(crate) fn session_seed(&self) -> (&[Ty], &[u32]) {
+    pub(crate) fn session_seed(&self) -> (&[crate::Ty], &[u32]) {
         (&self.session_seed, &self.session_vars)
     }
 
@@ -1440,8 +1438,8 @@ impl AssemblyEnv {
         &self,
         first: &[Vec<String>],
         types_from: Option<&AssemblyEnv>,
-        first_types: &[Ty],
-        session_seed: &[Ty],
+        first_types: &[crate::Ty],
+        session_seed: &[crate::Ty],
         session_vars: &[u32],
     ) -> Self {
         let names = std::sync::Arc::new(NameTable::default());
@@ -1450,7 +1448,7 @@ impl AssemblyEnv {
         }
         let from = self.names();
         let types = std::sync::Arc::new(TyTable::ground());
-        let rekeyed = |tys: &[Ty]| -> Vec<Ty> {
+        let rekeyed = |tys: &[crate::Ty]| -> Vec<crate::Ty> {
             tys.iter()
                 .map(|&ty| {
                     let source = types_from.expect("types come with the env they are of");

@@ -281,10 +281,10 @@ impl TyPath {
 }
 
 /// A best-effort F# type, as far as the current inference phase models it:
-/// an id into the [`TyTable`] that interned it, whose node is a [`TyKind`].
+/// an id into the type table that interned it, whose node is a [`TyKind`].
 ///
 /// A type the env publishes ([`crate::InferredFile::types`] and the rest)
-/// is an id into the env's table ([`AssemblyEnv::types`]): read it with
+/// is an id into the env's type table: read it with
 /// [`Self::kind`] and render it with [`Self::render`], against that env.
 /// Like the name table's ids it implements `Eq` and `Hash` and not `Ord`, and
 /// in a debug build it carries its table's tag, so comparing ids of two

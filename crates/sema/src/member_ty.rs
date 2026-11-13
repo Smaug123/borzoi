@@ -1,7 +1,7 @@
 //! The `TypeRef → Ty` bridge for member-access typing (Stage 3.3a).
 //!
 //! When a suspended [`HasMember`](crate::infer) constraint wakes — its receiver
-//! resolves to a concrete [`TyKind::Named`] whose entity has a single unambiguous
+//! resolves to a concrete [`TyKind::Named`](crate::TyKind::Named) whose entity has a single unambiguous
 //! public instance field / non-indexer property named as accessed — the member's
 //! signature ([`TypeRef`], the assembly crate's owned type model) must be brought
 //! into this crate's [`Ty`]. That is a **partial** function: v1 models only the
@@ -10,15 +10,15 @@
 //! guess).
 //!
 //! What converts:
-//! - [`TypeRef::Primitive`] → the canonical BCL [`TyKind::Named`] (`I4` ⇒
+//! - [`TypeRef::Primitive`] → the canonical BCL [`TyKind::Named`](crate::TyKind::Named) (`I4` ⇒
 //!   `System.Int32`), the same FQN convention [`Ty::render`](crate::Ty::render)
 //!   emits, so a bridged type compares against the FCS oracle by string equality.
 //! - A **non-generic, non-nested** [`TypeRef::Named`] (empty `type_args`, a single
-//!   arity-`0` segment, so a plain dotted `Namespace.Name`) → [`TyKind::Named`]. A
-//!   generic instantiation or an open/nested generic is deferred — [`TyKind::Named`]
+//!   arity-`0` segment, so a plain dotted `Namespace.Name`) → [`TyKind::Named`](crate::TyKind::Named). A
+//!   generic instantiation or an open/nested generic is deferred — [`TyKind::Named`](crate::TyKind::Named)
 //!   has no generic-argument list yet (that arrives with a later slice).
 //! - A **plain vector** [`TypeRef::Array`] (`rank == 1`, empty `sizes` /
-//!   `lower_bounds`) whose element converts → [`TyKind::Array`] of rank 1. A
+//!   `lower_bounds`) whose element converts → [`TyKind::Array`](crate::TyKind::Array) of rank 1. A
 //!   multidimensional or bounded array is deferred (the element convention is
 //!   still the same, but v1 keeps the array corner minimal).
 //!
@@ -45,7 +45,7 @@ pub(crate) fn type_ref_to_ty(names: &NameTable, tys: &TyTable, ty: &TypeRef) -> 
         // segment that introduces no generics (`segment_arities == [0]`, i.e. the
         // name has no `/` and declares arity 0). A generic instantiation (non-empty
         // `type_args`), an *open* generic (non-zero arity with empty args), or a
-        // nested type (multiple segments) all defer. [`TyKind::Named`] can carry
+        // nested type (multiple segments) all defer. [`TyKind::Named`](crate::TyKind::Named) can carry
         // arguments, but this bridge does not yet build them: an instantiation's
         // `type_args` are `TypeRef`s needing the same conversion recursively, and
         // an *open* generic has no arguments to convert at all.
@@ -94,7 +94,7 @@ pub(crate) fn type_ref_to_ty(names: &NameTable, tys: &TyTable, ty: &TypeRef) -> 
     }
 }
 
-/// The canonical BCL [`TyKind::Named`] for an ECMA-335 primitive — the same
+/// The canonical BCL [`TyKind::Named`](crate::TyKind::Named) for an ECMA-335 primitive — the same
 /// `(namespace, name)` mapping the assembly crate's display layer uses, kept in
 /// this crate so the bridge does not depend on a private helper there. `Void`
 /// maps to `System.Void` for totality; a real member type is never `Void`.
