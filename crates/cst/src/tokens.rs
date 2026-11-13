@@ -156,6 +156,69 @@ pub struct RawTokens<'src> {
 }
 
 impl<'src> RawTokens<'src> {
+    /// The table of an active-code token stream over `source`, for a caller
+    /// holding the stream rather than the full-trivia table: the swallow-mode
+    /// driver's, or the bare lexer's. Each gap the stream leaves (a directive
+    /// line or inactive region the preprocessor removed) becomes one
+    /// [`RawKind::InactiveCode`] entry, so the table tiles the source; the
+    /// lex-filter, which skips both alike, reads it as it reads the
+    /// full-trivia table.
+    ///
+    /// # Panics
+    ///
+    /// If `source` is 4 GiB or longer, or if the stream's spans are out of
+    /// order, overlap, or lie outside the source.
+    pub fn from_active(
+        source: &'src str,
+        items: impl IntoIterator<Item = (Result<Token<'src>, LexError>, Range<usize>)>,
+    ) -> Self {
+        let len = u32::try_from(source.len()).expect("a source is shorter than 4 GiB");
+        let mut kinds = Vec::new();
+        let mut starts = Vec::new();
+        let mut covered = 0usize;
+        for (res, span) in items {
+            assert!(
+                covered <= span.start && span.start <= span.end && span.end <= source.len(),
+                "active token at {span:?} after byte {covered} of a {}-byte source",
+                source.len()
+            );
+            if covered < span.start {
+                kinds.push(RawKind::InactiveCode);
+                starts.push(covered as u32);
+            }
+            let kind = match res {
+                Ok(token) => {
+                    debug_assert!(
+                        Token::from_kind(token.kind(), &source[span.clone()]) == token,
+                        "{token:?} at {span:?} is not rebuilt from its kind and text"
+                    );
+                    RawKind::Lexed(token.kind())
+                }
+                Err(LexError::UnterminatedString) => RawKind::UnterminatedString,
+                Err(LexError::UnterminatedComment) => RawKind::UnterminatedComment,
+                Err(LexError::Unknown) => RawKind::UnknownToken,
+            };
+            kinds.push(kind);
+            starts.push(span.start as u32);
+            covered = span.end;
+        }
+        if covered < source.len() {
+            kinds.push(RawKind::InactiveCode);
+            starts.push(covered as u32);
+        }
+        starts.push(len);
+        RawTokens {
+            source,
+            kinds,
+            starts,
+        }
+    }
+
+    /// The source the table tiles.
+    pub fn source(&self) -> &'src str {
+        self.source
+    }
+
     /// The number of tokens.
     pub fn len(&self) -> usize {
         self.kinds.len()
@@ -390,9 +453,16 @@ impl FilteredKind {
                 FilteredKind::Token(kind)
             }
             Ok(FilteredToken::Virtual(v)) => FilteredKind::Virtual(*v),
-            Err(LexError::UnterminatedString) => FilteredKind::UnterminatedString,
-            Err(LexError::UnterminatedComment) => FilteredKind::UnterminatedComment,
-            Err(LexError::Unknown) => FilteredKind::UnknownToken,
+            Err(err) => FilteredKind::of_error(*err),
+        }
+    }
+
+    /// The kind of a lexer error passed through from active code.
+    pub fn of_error(err: LexError) -> FilteredKind {
+        match err {
+            LexError::UnterminatedString => FilteredKind::UnterminatedString,
+            LexError::UnterminatedComment => FilteredKind::UnterminatedComment,
+            LexError::Unknown => FilteredKind::UnknownToken,
         }
     }
 
@@ -498,11 +568,22 @@ impl<'src> FilteredTokens<'src> {
         self.push_kind(kind, span);
     }
 
-    fn push_kind(&mut self, kind: FilteredKind, span: Range<usize>) {
+    /// Append a token of kind `kind` spanning `span`.
+    ///
+    /// # Panics
+    ///
+    /// On a span outside the source; in a debug build, also on a lexed token
+    /// ([`FilteredKind::Token`]) whose span does not lie on character
+    /// boundaries, whose text the table could not read.
+    pub(crate) fn push_kind(&mut self, kind: FilteredKind, span: Range<usize>) {
         assert!(
             span.start <= span.end && span.end <= self.source.len(),
             "{kind:?} at {span:?} lies outside a source of {} bytes",
             self.source.len()
+        );
+        debug_assert!(
+            !matches!(kind, FilteredKind::Token(_)) || self.source.get(span.clone()).is_some(),
+            "{kind:?} at {span:?} is not a slice of the source"
         );
         self.kinds.push(kind);
         // In range: `span.end` is at most the source length, which `new`

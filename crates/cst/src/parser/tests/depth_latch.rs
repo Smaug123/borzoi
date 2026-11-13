@@ -120,7 +120,7 @@ fn giving_a_file_up_whole_is_lossless_and_flat() {
     let src = "let x = f a b c\n";
     let symbols = HashSet::new();
     let raw = lex_full_trivia(src, &symbols).tokens;
-    let filtered = filter_collect(src, LanguageVersion::Preview, raw.active()).tokens;
+    let filtered = filter_collect(&raw, LanguageVersion::Preview).tokens;
     let mut parser = Parser::new(src, raw, filtered);
     parser.give_up_whole(FileKind::Impl);
     let root = parser.builder.finish();

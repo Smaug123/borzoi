@@ -25,7 +25,7 @@ use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::lexer::{Token, TokenKind};
 use borzoi_cst::lexfilter::{FilteredToken, Virtual, filter_collect};
 use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
-use borzoi_cst::tokens::{FilteredKind, FilteredTokens, lex_full_trivia};
+use borzoi_cst::tokens::{FilteredKind, FilteredTokens, RawTokens, lex_full_trivia};
 use proptest::prelude::*;
 
 use crate::parser_panic_sweep::{CORE, WIDE};
@@ -66,6 +66,12 @@ const FILTER_SHAPES: &[&str] = &[
 
 /// Hold the live filter's table to the reference filter on `src` under `lang`
 /// and `symbols`, before the sign fold, recording the kinds it saw.
+///
+/// Also hold the filter over the active stream alone
+/// ([`RawTokens::from_active`], what [`borzoi_cst::lexfilter::filter`] and the
+/// FCS differential read) to the filter over the full-trivia table the parser
+/// reads: the gaps where the preprocessor removed code must filter as the
+/// directive and inactive-code entries they replace.
 fn check_table(
     src: &str,
     symbols: &HashSet<String>,
@@ -73,7 +79,7 @@ fn check_table(
     seen: &mut BTreeSet<FilteredKind>,
 ) {
     let lexed = lex_full_trivia(src, symbols);
-    let live = filter_collect(src, lang, lexed.tokens.active());
+    let live = filter_collect(&lexed.tokens, lang);
     let reference =
         borzoi_cst::reference::lexfilter::filter_collect(src, lang, lexed.tokens.active());
     let live_items: Vec<String> = live.tokens.items().map(|t| format!("{t:?}")).collect();
@@ -81,6 +87,27 @@ fn check_table(
     assert_eq!(
         live_items, want,
         "filtered table differs at {lang} on {src:?}"
+    );
+    let from_active = filter_collect(&RawTokens::from_active(src, lexed.tokens.active()), lang);
+    assert_eq!(
+        from_active
+            .tokens
+            .items()
+            .map(|t| format!("{t:?}"))
+            .collect::<Vec<_>>(),
+        live_items,
+        "the active stream filters differently from the table at {lang} on {src:?}"
+    );
+    assert_eq!(
+        (
+            from_active.diagnostics,
+            from_active.shape_depends_on_language_version
+        ),
+        (
+            live.diagnostics.clone(),
+            live.shape_depends_on_language_version
+        ),
+        "the active stream's side outputs differ at {lang} on {src:?}"
     );
     for i in 0..live.tokens.len() {
         let kind = live.tokens.kind(i);
@@ -97,13 +124,22 @@ fn check_table(
 /// parse runs the reference comparison. Also hold the table to the reference
 /// filter directly ([`check_table`]).
 ///
-/// Each source is checked again with a multi-byte character before every line
-/// break: a virtual token the filter places after a line's last token takes a
-/// span from that token's end, which then starts inside the character, so the
-/// table must never slice a virtual token's span.
+/// Each source is checked again followed by an aligned sibling line, so the
+/// filter inserts an `OBLOCKSEP` after whatever token the source ends with.
+/// That token's span decides where the `OBLOCKSEP` starts, and the filter
+/// rewrites some tokens it ends with (a promoted `>`, the pieces of a split),
+/// so a fault in what it records about the token it last emitted shows only
+/// there.
+///
+/// Each of those is checked again with a multi-byte character before every
+/// line break: a virtual token the filter places after a line's last token
+/// takes a span from that token's end, which then starts inside the
+/// character, so the table must never slice a virtual token's span.
 fn check(src: &str, seen: &mut BTreeSet<FilteredKind>) {
+    let sibling = format!("{src}\nx\n");
     let perturbed = src.replace('\n', "😃\n");
-    for src in [src, perturbed.as_str()] {
+    let perturbed_sibling = sibling.replace('\n', "😃\n");
+    for src in [src, &sibling, &perturbed, &perturbed_sibling] {
         for symbols in [HashSet::new(), HashSet::from(["X".to_string()])] {
             for lang in LanguageVersion::SHAPE_REPRESENTATIVES {
                 parse_with_options(

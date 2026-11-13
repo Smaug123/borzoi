@@ -76,7 +76,7 @@ mod tests {
     fn the_lent_token_is_the_table_token_at_every_position() {
         let source = "let f x =\n  match x with\n  | -1 -> f<int> (x)\n  | _ -> 0\n";
         let lexed = lex_full_trivia(source, &HashSet::new());
-        let tokens = filter_collect(source, LanguageVersion::Preview, lexed.tokens.active()).tokens;
+        let tokens = filter_collect(&lexed.tokens, LanguageVersion::Preview).tokens;
         let len = tokens.len();
         assert!(len > 10);
         let mut cursor = FilteredCursor::new(tokens.clone());

@@ -396,6 +396,78 @@ fn compile_update_compile_order_declines_an_unnormalised_spelling() {
     assert!(p.items_uncertain, "{:?}", p.diagnostics);
 }
 
+/// Replaying MSBuild's batching over an `Update` spec costs a lookup per
+/// fragment, not a comparison with every earlier one: a spec of many distinct
+/// targets, against a single item, finishes at once.
+#[test]
+fn compile_update_compile_order_scales_with_a_long_update_spec() {
+    const N: usize = 20_000;
+    let targets: Vec<String> = (0..N).map(|i| format!("T{i}.fs")).collect();
+    let src = format!(
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="T7.fs" />
+    <Compile Update="{}" CompileOrder="CompileFirst" />
+  </ItemGroup>
+</Project>"#,
+        targets.join(";")
+    );
+    let start = std::time::Instant::now();
+    let p = parse(&src);
+    let elapsed = start.elapsed();
+    assert_eq!(file_names(&p.items), ["T7.fs", "A.fs"]);
+    assert!(!p.items_uncertain, "{:?}", p.diagnostics);
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "a {N}-target Update took {elapsed:?}"
+    );
+}
+
+/// MSBuild's lazy evaluator abandons batching an `Update` spec at a fragment
+/// that repeats an earlier one's path or holds an escape, and strands the
+/// fragments before it, which then reach later `Include`s (an upstream bug;
+/// `fsproj_compile_order_generative_diff` pins it). The evaluator declines
+/// exactly where something is stranded.
+#[test]
+fn compile_update_compile_order_declines_a_stranded_prefix() {
+    let stranded = |spec: &str| {
+        let src = format!(
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+    <Compile Update="{spec}" CompileOrder="CompileLast" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        let flagged = p.diagnostics.iter().any(|d| {
+            matches!(
+                &d.kind,
+                DiagnosticKind::StrandedUpdatePrefix { fragment, .. } if !fragment.is_empty()
+            )
+        });
+        assert_eq!(flagged, p.items_uncertain, "{spec}: {:?}", p.diagnostics);
+        flagged
+    };
+    // A repeat, under any spelling, after the first fragment.
+    assert!(stranded("A.fs;A.fs"));
+    assert!(stranded("A.fs;./a.fs"));
+    assert!(stranded("B.fs;A.fs;sub/../A.fs"));
+    // An escape after a literal fragment.
+    assert!(stranded("B.fs;%41.fs"));
+    // Nothing before the stopping fragment: nothing stranded.
+    assert!(!stranded("%41.fs;B.fs"));
+    assert!(!stranded("A.fs;B.fs"));
+    // A fragment written as its own full path is removed by that text.
+    assert!(!stranded("/repo/proj/A.fs;/repo/proj/A.fs"));
+    // Batching stops at the second fragment, stranding nothing, so the later
+    // repeat is never batched at all.
+    assert!(!stranded("/repo/proj/A.fs;/repo/proj/./A.fs;B.fs;B.fs"));
+    assert!(stranded("/repo/proj/./A.fs;/repo/proj/A.fs"));
+}
+
 #[test]
 fn compile_update_compile_order_keeps_original_order_within_bucket() {
     let src = r#"<Project>

@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::language_version::LanguageVersion;
-use crate::lexer::{Token, lex};
+use crate::lexer::lex;
 
 /// Independent oracle: the FCS-faithful position of a byte `offset`. Line is
 /// 1-based and counts `\n` bytes (so `\r\n` is one break, a lone `\r` none);
@@ -30,8 +30,9 @@ fn ref_pos(source: &str, offset: usize) -> Pos {
 
 /// Pull every token through the raw layer, in stream order, including the
 /// synthetic EOF.
-fn pulled_positions(source: &str) -> Vec<TokenTup<'_>> {
-    let mut f = Filter::new(source, LanguageVersion::DEFAULT, lex(source));
+fn pulled_positions(source: &str) -> Vec<TokenTup> {
+    let raw = RawTokens::from_active(source, lex(source));
+    let mut f = Filter::new(&raw, LanguageVersion::DEFAULT);
     let mut out = Vec::new();
     while let Some(tt) = f.pull_raw() {
         let is_eof = matches!(tt.token, TokenContent::Eof);
@@ -43,12 +44,13 @@ fn pulled_positions(source: &str) -> Vec<TokenTup<'_>> {
     out
 }
 
-/// Find the first `Token::Let` and return its `(start, end)`.
+/// Find the first `TokenKind::Let` and return its `(start, end)`.
 fn let_pos(source: &str) -> (Pos, Pos) {
-    let mut f = Filter::new(source, LanguageVersion::DEFAULT, lex(source));
+    let raw = RawTokens::from_active(source, lex(source));
+    let mut f = Filter::new(&raw, LanguageVersion::DEFAULT);
     while let Some(tt) = f.pull_raw() {
         match tt.token {
-            TokenContent::Real(Token::Let) => return (tt.start, tt.end),
+            TokenContent::Real(TokenKind::Let) => return (tt.start, tt.end),
             TokenContent::Eof => break,
             _ => {}
         }
@@ -102,11 +104,12 @@ fn block_comment_then_same_line_token() {
 fn triple_quoted_string_spanning_lines() {
     // `let` on the line after a 3-line triple-quoted string.
     let src = "let s = \"\"\"a\nb\nc\"\"\"\nlet y = 1\n";
-    let mut f = Filter::new(src, LanguageVersion::DEFAULT, lex(src));
+    let raw = RawTokens::from_active(src, lex(src));
+    let mut f = Filter::new(&raw, LanguageVersion::DEFAULT);
     let mut lets = Vec::new();
     while let Some(tt) = f.pull_raw() {
         match tt.token {
-            TokenContent::Real(Token::Let) => lets.push(tt.start),
+            TokenContent::Real(TokenKind::Let) => lets.push(tt.start),
             TokenContent::Eof => break,
             _ => {}
         }
@@ -123,7 +126,7 @@ fn verbatim_string_spanning_lines() {
     let positions = pulled_positions(src);
     let second_let = positions
         .iter()
-        .filter(|tt| matches!(tt.token, TokenContent::Real(Token::Let)))
+        .filter(|tt| matches!(tt.token, TokenContent::Real(TokenKind::Let)))
         .nth(1)
         .expect("two lets");
     assert_eq!(second_let.start, Pos { line: 3, col: 0 });
@@ -136,7 +139,7 @@ fn string_line_continuation_spanning_lines() {
     let positions = pulled_positions(src);
     let second_let = positions
         .iter()
-        .filter(|tt| matches!(tt.token, TokenContent::Real(Token::Let)))
+        .filter(|tt| matches!(tt.token, TokenContent::Real(TokenKind::Let)))
         .nth(1)
         .expect("two lets");
     assert_eq!(second_let.start, Pos { line: 3, col: 0 });
@@ -148,7 +151,7 @@ fn crlf_line_endings() {
     let positions = pulled_positions("let x = 1\r\nlet y = 2\r\n");
     let lets: Vec<_> = positions
         .iter()
-        .filter(|tt| matches!(tt.token, TokenContent::Real(Token::Let)))
+        .filter(|tt| matches!(tt.token, TokenContent::Real(TokenKind::Let)))
         .collect();
     assert_eq!(lets[0].start, Pos { line: 1, col: 0 });
     assert_eq!(lets[1].start, Pos { line: 2, col: 0 });
@@ -170,7 +173,7 @@ fn lone_cr_is_not_a_line_break() {
     let positions = pulled_positions(src);
     let lets: Vec<_> = positions
         .iter()
-        .filter(|tt| matches!(tt.token, TokenContent::Real(Token::Let)))
+        .filter(|tt| matches!(tt.token, TokenContent::Real(TokenKind::Let)))
         .collect();
     assert_eq!(lets[0].start.line, 1);
     // Second `let` is still on line 1 (lone `\r` is not a break).
@@ -187,13 +190,13 @@ proptest::proptest! {
         for tt in &positions {
             proptest::prop_assert_eq!(
                 tt.start,
-                ref_pos(&source, tt.span.start),
+                ref_pos(&source, tt.span.range().start),
                 "start mismatch for {:?} at {:?} in {:?}",
                 tt.token, tt.span, source
             );
             proptest::prop_assert_eq!(
                 tt.end,
-                ref_pos(&source, tt.span.end),
+                ref_pos(&source, tt.span.range().end),
                 "end mismatch for {:?} at {:?} in {:?}",
                 tt.token, tt.span, source
             );

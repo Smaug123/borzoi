@@ -16,9 +16,9 @@ use super::*;
 use proptest::prelude::*;
 
 /// A concrete `Filter` instantiation, only used to name the pure associated
-/// functions `undentation_limit` / `is_pure_skip` (neither touches the iterator
-/// `I` or the borrow `'a`). Never constructed.
-type RefFilter = Filter<'static, std::iter::Empty<(Result<Token<'static>, LexError>, Span)>>;
+/// functions `undentation_limit` / `is_pure_skip` (neither touches the
+/// borrow `'a`). Never constructed.
+type RefFilter = Filter<'static>;
 
 /// Every gate on: the language versions from F# 6.0 up.
 const ALL_GATES: UndentationGates = UndentationGates {

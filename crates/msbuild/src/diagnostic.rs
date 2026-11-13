@@ -126,6 +126,16 @@ pub enum DiagnosticKind {
     /// `Update` elements are ignored unless they write `CompileOrder`, since
     /// that metadata participates in the F# target's source ordering.
     UnsupportedItemOperation { operation: String },
+    /// A compile-order `<Compile Update>` whose spec MSBuild's lazy evaluator
+    /// abandons batching part-way through, leaving the fragments before
+    /// `fragment` *stranded*: `LazyItemEvaluator.ComputeItems` removes them
+    /// from its batch under their written spelling, not the full-path key it
+    /// stored them under, so they apply again at the next flush — to items
+    /// `Include`d *after* the `Update` too. Batching stops at a fragment that
+    /// repeats an earlier one's path (`Update="a.fs;a.fs"`) or holds a `%`
+    /// (an escape). That is an upstream bug the evaluator does not mirror, so
+    /// the Compile order is not claimed.
+    StrandedUpdatePrefix { update: String, fragment: String },
     /// `<Project Sdk="X">` or `<Import Sdk="X" .../>` was encountered,
     /// the with-imports walker was given an SDK resolver, and the
     /// resolver returned `None` for this SDK identifier — i.e. the

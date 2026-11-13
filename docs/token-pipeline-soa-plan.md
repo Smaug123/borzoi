@@ -1,8 +1,9 @@
 # Token pipeline as struct-of-arrays passes
 
 > **Status (2026-11-12).** Stage 0 (count harness), Stage 1 (the raw token
-> table), Stage 2 (the frozen filter reference) and Stage 3 (the filtered
-> token table) implemented.
+> table), Stage 2 (the frozen filter reference), Stage 3 (the filtered
+> token table) and Stage 4 (the filter reads the raw table by index)
+> implemented.
 > Tracks [#542](https://github.com/WoofWare/borzoi/issues/542). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), which changed the
 > parser's tree builder.
@@ -343,6 +344,52 @@ its `TokenTup` loses the `Token` payload; `ODUMMY` carries a `TokenKind`.
 
 **Oracle**: as Stage 3. `parse_counts`: the filter's allocations per byte
 fall to the table's own growth.
+
+**Result.** `lexfilter::filter_collect` and `lexfilter::context_pushes` take
+`&RawTokens`; `Filter::pull_raw` walks the table by index and skips trivia,
+directive lines and inactive code by kind. A `TokenTup` is `Copy`: a
+`TokenContent` that names a `TokenKind` (with the typar promotion of `<` and
+`>` as variants of their own, `TyparLess` and `TyparGreater`, and an
+`ODUMMY` wrapping a `DummyInner` rather than a boxed `Token`), a `u32` span
+and two `Pos`: 32 bytes (asserted at compile time) against 56. The filter
+writes `FilteredKind`s straight into the table. The few rules that read a token's text (operators,
+the `1..` split, the typar scan's fused closers) read `source[span]`, which
+every lexed token's span is; `typars_close_op_split` still returns `Token`s,
+whose kinds the split keeps. The streaming `lexfilter::filter`, which the FCS
+lex-filter differential reads, takes an active-code stream as before and
+builds a table from it with `RawTokens::from_active`, which marks each gap
+the stream leaves as inactive code.
+
+Two lookaheads allocated a vector per call (`is_long_ident_equals_loop`, run
+for most identifiers, and `peek_adjacent_typars`); they reuse a buffer kept in
+the filter, which is most of the allocation drop below.
+
+`filter_reference` now also checks each source followed by an aligned sibling
+line, so an `OBLOCKSEP` follows whatever token the source ends with, and holds
+the filter over `RawTokens::from_active` of the active stream to the filter
+over the full-trivia table. The sibling axis is there because a planted bug
+passed every oracle without it: updating `last_real_end` only for an
+unpromoted token moves the `OBLOCKSEP` after `f<int>` at the end of a line
+by one byte (`do\n  f<int>\n  g\n`), and neither a pair nor a `CORE` triple
+spells a type application, a line break and a sibling. With the axis the
+lexical pairs and the random walk fail on it. A second plant, dropping `-`
+from `is_adjacent_prefix_capable_op`, fails the same two.
+
+Over the corpus's `src/` tree, min of 3, on the loaded machine:
+
+| phase | instr/B before | instr/B after | allocs/B before | allocs/B after | alloc-B/B before | alloc-B/B after |
+|---|---|---|---|---|---|---|
+| lex | 83.6 | 82.9 | 0.0006 | 0.0006 | 4.06 | 4.06 |
+| lex-filter | 263.3 | 196.7 | 0.0276 | 0.0012 | 10.76 | 6.26 |
+| parse | 606.9 | 535.4 | 0.0363 | 0.0099 | 57.45 | 52.95 |
+
+The filter costs 25% fewer instructions and the parse 12% fewer, now below
+the 546 it cost before #542 began. Of the filter's 66, about 46 are the
+payload (the conversion at the input and the output, cloning `Token`s through
+the delayed stack, the boxes), about 4 the two lookaheads' allocations, and
+about 16 the `u32` span, which shrinks what each rule moves. What remains is
+the rules themselves and the newline scan (`advance_cursor_to`, about 8% of
+the filter's samples), which Stage 5 replaces.
 
 ### Stage 5: the newline table
 

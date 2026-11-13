@@ -5,8 +5,8 @@
 > item specs are stored `Escaped` and unescaped once at the point of use, on
 > the literal fast path and across the glob-resolver seam alike. **F0** (the
 > generative compile-order harness) has landed too. The other distinctive
-> Compile-item stages: **F2** (alias matching) has landed; **F3** (batching
-> degrade) and **F4** (ratchet) are outstanding.
+> Compile-item stages: **F2** (alias matching) and **F3** (batching degrade)
+> have landed; **F4** (ratchet) is outstanding.
 
 > Companion to the package-reference certainty work (PR #905, branch
 > `packageref-out-of-order-update`). That branch closed three MSBuild
@@ -106,7 +106,7 @@ sources (`LazyItemEvaluator.ComputeItems` / `ProcessNonWildCardItemUpdates`,
 | Escaped semicolon | `Include="a%3Bb.fs"` | **modelled** (F1, both seams) | Split raw, then unescape fragments |
 | Escaped wildcard | `Include="a%2Ab.fs"` | **modelled** (F1, both seams) | Glob-detect raw, store unescaped |
 | Alias in order-Update target | `Update="./a.fs"` or `Update="A.fs"` vs include `a.fs` | **modelled** (F2) | Normalised full path, compared ignoring case |
-| Stranded-prefix batching | `Update="a.fs;a.fs" CompileOrder=…` before the Include | applied to prior items only, certain-wrong order | **F3**: degrade (upstream bug, not worth mirroring) |
+| Stranded-prefix batching | `Update="a.fs;a.fs" CompileOrder=…` before the Include | **declined** (F3) | Degrade (upstream bug, not worth mirroring) |
 
 Why model where the package side degraded: a package id is an opaque
 identifier — `./Beta` is not a legal id, so declining costs nothing. A
@@ -249,7 +249,19 @@ spellings" flipped on in F0 and green.
 
 ### Stage F3: degrade stranded-prefix compile-order Updates
 
-**Status**: outstanding. **Dependencies**: F1 (decoder) and F2 (the
+**Status**: landed. `UpdateBatch` in `crates/msbuild/src/evaluator/item_pass.rs`
+replays `ComputeItems`' batching over one spec: it stops at a fragment
+holding a `%` or repeating an earlier fragment's key (normalised and
+compared as F2 compares them, a collision resting on unmodelled folding
+counting as one), and the spec declines with
+`DiagnosticKind::StrandedUpdatePrefix` when a fragment before that point is
+stranded: one whose written text is not its own key, which MSBuild's
+removal by written text misses. A fragment written as its own full path, or
+a stop at the first fragment, strands nothing and stays certain. The F0
+generator now emits repeated and escaped `Update` targets, and fails with a
+shrunk witness when the check is removed; `stranded_update_prefix_reaches_a_later_include`
+pins MSBuild's out-of-order application, so an upstream fix is seen.
+**Dependencies**: F1 (decoder) and F2 (the
 duplicate check must run on unescaped, normalised keys — landing it earlier
 would repeat the packageref review cycle where raw-text comparison missed
 escaped/aliased duplicates).

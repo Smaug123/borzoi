@@ -1,13 +1,15 @@
 //! Interpolated-string and paren-balancing rules, plus the tail dispatch
 //! (dummy drop, OBLOCKBEGIN passthrough, CtxtVanilla push).
 
-use super::{AddBlockEnd, Context, Filter, Opener, Step, TokenContent, TokenTup, Virtual};
-use crate::lexer::{InterpKind, LexError, Span, Token};
+use super::{
+    AddBlockEnd, Context, DummyInner, Filter, Opener, Step, TokenContent, TokenTup, Virtual,
+};
+use crate::lexer::TokenKind;
 
-impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> {
+impl<'a> Filter<'a> {
     /// Interpolated-string fill scopes, paren openers/closers, the dummy drop,
     /// the OBLOCKBEGIN passthrough, and the catch-all CtxtVanilla push.
-    pub(super) fn interp_and_paren(&mut self, tt: TokenTup<'a>) -> Step<'a> {
+    pub(super) fn interp_and_paren(&mut self, tt: TokenTup) -> Step {
         // INTERP_STRING_BEGIN_PART (FCS LexFilter.fs:2280-2287, folded
         // into the same arm as TokenLExprParen/SIG). The fill body is a
         // fresh expression scope: push CtxtParen(InterpFill) *anchored at
@@ -28,15 +30,15 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // close-and-reopen dance in the closer arm below.
         if matches!(
             &tt.token,
-            TokenContent::Real(Token::InterpString(
-                InterpKind::Begin
-                    | InterpKind::TripleBegin
-                    | InterpKind::VerbatimBegin
-                    | InterpKind::ExtendedBegin { .. }
-            ))
+            TokenContent::Real(
+                TokenKind::InterpBegin
+                    | TokenKind::InterpTripleBegin
+                    | TokenKind::InterpVerbatimBegin
+                    | TokenKind::InterpExtendedBegin
+            )
         ) {
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::Paren {
                     pos: tt.end,
                     opener: Opener::InterpFill,
@@ -57,18 +59,17 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // so the next fill's body gets its own scope. No ODUMMY is
         // queued at the closer (FCS L1709: `| INTERP_STRING_END _ -> ()`
         // and the PART branch does its own push instead).
-        if let TokenContent::Real(Token::InterpString(
-            kind @ (InterpKind::End { .. } | InterpKind::Part),
-        )) = &tt.token
+        if let TokenContent::Real(
+            kind @ (TokenKind::InterpEnd | TokenKind::InterpEndBytes | TokenKind::InterpPart),
+        ) = tt.token
         {
-            let kind = *kind;
             let balanced = self.token_balances_head_context(&tt, &self.offside_stack);
             if balanced {
                 self.pop_ctxt();
                 self.paren_depth = self.paren_depth.saturating_sub(1);
-                if matches!(kind, InterpKind::Part) {
+                if kind == TokenKind::InterpPart {
                     self.push_ctxt(
-                        tt.span.clone(),
+                        tt.span,
                         Context::Paren {
                             pos: tt.end,
                             opener: Opener::InterpFill,
@@ -94,26 +95,26 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // (LexFilter.fs:2281) is folded into the TokenLExprParen arm and
         // stays NoAddBlockEnd.
         let paren_opener = match &tt.token {
-            TokenContent::Real(Token::LParen) => Some((Opener::Paren, AddBlockEnd::No)),
-            TokenContent::Real(Token::LBrace) => Some((Opener::Brace, AddBlockEnd::No)),
-            TokenContent::Real(Token::LBrack) => Some((Opener::Brack, AddBlockEnd::No)),
-            TokenContent::Real(Token::LBrackBar) => Some((Opener::BrackBar, AddBlockEnd::No)),
-            TokenContent::Real(Token::LBraceBar) => Some((Opener::BraceBar, AddBlockEnd::No)),
-            TokenContent::Real(Token::Begin) => Some((Opener::Begin, AddBlockEnd::No)),
-            TokenContent::Real(Token::Sig) => Some((Opener::Sig, AddBlockEnd::No)),
-            TokenContent::Real(Token::Class) => Some((Opener::Class, AddBlockEnd::Yes)),
-            TokenContent::Real(Token::LQuote) => Some((Opener::Quote, AddBlockEnd::No)),
-            TokenContent::Real(Token::LQuoteRaw) => Some((Opener::QuoteRaw, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::LParen) => Some((Opener::Paren, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::LBrace) => Some((Opener::Brace, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::LBrack) => Some((Opener::Brack, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::LBrackBar) => Some((Opener::BrackBar, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::LBraceBar) => Some((Opener::BraceBar, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::Begin) => Some((Opener::Begin, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::Sig) => Some((Opener::Sig, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::Class) => Some((Opener::Class, AddBlockEnd::Yes)),
+            TokenContent::Real(TokenKind::LQuote) => Some((Opener::Quote, AddBlockEnd::No)),
+            TokenContent::Real(TokenKind::LQuoteRaw) => Some((Opener::QuoteRaw, AddBlockEnd::No)),
             // `<` after `peek_adjacent_typars` has promoted it to a typar
             // opener. Only `Less(true)` participates in offside paren
             // balancing — bare `Less(false)` (comparison) does not push
             // a CtxtParen and must not be balanced against `Greater(true)`.
-            TokenContent::Real(Token::Less(true)) => Some((Opener::TyparAngle, AddBlockEnd::No)),
+            TokenContent::TyparLess => Some((Opener::TyparAngle, AddBlockEnd::No)),
             _ => None,
         };
         if let Some((opener, add_block_end)) = paren_opener {
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::Paren {
                     pos: tt.start,
                     opener,
@@ -136,17 +137,17 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // and vice versa (and likewise for any other mismatched pair in
         // malformed input). (LexFilter.fs:2834, 1698)
         let closer_swallowed = match &tt.token {
-            TokenContent::Real(Token::RParen) => Some(true),
-            TokenContent::Real(Token::RBrace) => Some(true),
-            TokenContent::Real(Token::RBrack) => Some(false),
-            TokenContent::Real(Token::BarRBrack) => Some(false),
-            TokenContent::Real(Token::BarRBrace) => Some(false),
-            TokenContent::Real(Token::End) => Some(false),
+            TokenContent::Real(TokenKind::RParen) => Some(true),
+            TokenContent::Real(TokenKind::RBrace) => Some(true),
+            TokenContent::Real(TokenKind::RBrack) => Some(false),
+            TokenContent::Real(TokenKind::BarRBrack) => Some(false),
+            TokenContent::Real(TokenKind::BarRBrace) => Some(false),
+            TokenContent::Real(TokenKind::End) => Some(false),
             // RQUOTE is emitted by FCS (not swallowed by the outer wrapper).
-            TokenContent::Real(Token::RQuote | Token::RQuoteRaw) => Some(false),
+            TokenContent::Real(TokenKind::RQuote | TokenKind::RQuoteRaw) => Some(false),
             // `>` after the typar scan has promoted it to a typar closer.
             // Emitted by FCS (`GREATER _` in TokenRExprParen): not swallowed.
-            TokenContent::Real(Token::Greater(true)) => Some(false),
+            TokenContent::TyparGreater => Some(false),
             _ => None,
         };
         if let Some(swallowed) = closer_swallowed {
@@ -194,26 +195,25 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
                 // `TokenRExprParen` closer; `is_rexpr_paren_dummy`
                 // unwraps the Dummy and triggers the bump.
                 let queue_dummy = matches!(
-                    &tt.token,
+                    tt.token,
                     TokenContent::Real(
-                        Token::RParen
-                            | Token::RBrace
-                            | Token::RBrack
-                            | Token::BarRBrack
-                            | Token::BarRBrace
-                            | Token::End
-                            | Token::RQuote
-                            | Token::RQuoteRaw
-                            | Token::Greater(true)
-                    )
+                        TokenKind::RParen
+                            | TokenKind::RBrace
+                            | TokenKind::RBrack
+                            | TokenKind::BarRBrack
+                            | TokenKind::BarRBrace
+                            | TokenKind::End
+                            | TokenKind::RQuote
+                            | TokenKind::RQuoteRaw
+                    ) | TokenContent::TyparGreater
                 );
-                if queue_dummy && let TokenContent::Real(inner) = &tt.token {
+                if queue_dummy && let Some(inner) = DummyInner::of(tt.token) {
                     let dummy = TokenTup {
                         token: TokenContent::Dummy {
                             prev_end: self.last_real_end,
-                            inner: Box::new(inner.clone()),
+                            inner,
                         },
-                        span: tt.span.clone(),
+                        span: tt.span,
                         start: tt.start,
                         end: tt.end,
                     };
@@ -253,15 +253,10 @@ impl<'a, I: Iterator<Item = (Result<Token<'a>, LexError>, Span)>> Filter<'a, I> 
         // allowed heads). Without this, the next arm's `->` would open
         // a duplicate OneSided SeqBlock and EOF would emit an extra
         // ORIGHT_BLOCK_END.
-        if matches!(&tt.token, TokenContent::Real(_))
-            && matches!(self.head(), Some(Context::SeqBlock { .. }))
-        {
-            let is_long_ident_equals = match &tt.token {
-                TokenContent::Real(tok) => self.is_long_ident_equals(tok),
-                _ => false,
-            };
+        if tt.token.is_real() && matches!(self.head(), Some(Context::SeqBlock { .. })) {
+            let is_long_ident_equals = self.is_long_ident_equals(tt.token);
             self.push_ctxt(
-                tt.span.clone(),
+                tt.span,
                 Context::Vanilla {
                     pos: tt.start,
                     is_long_ident_equals,
