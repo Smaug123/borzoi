@@ -384,22 +384,17 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(
         &file,
         &resolved,
-        &env,
+        env,
         &borzoi_sema::PrecedingTypes::default(),
     );
     let def_types = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| {
-            (
-                resolved.def(*id).spelling(&env).into_owned(),
-                ty.render(&env),
-            )
-        })
+        .map(|(id, ty)| (resolved.def(*id).spelling(env).into_owned(), ty.render(env)))
         .collect();
     (inferred, def_types)
 }
@@ -524,7 +519,7 @@ fn unknown_member_defers() {
         !inferred
             .types()
             .values()
-            .any(|t| t.render(&env) == "System.Int32"),
+            .any(|t| t.render(env) == "System.Int32"),
         "no bogus int leaks from an unknown member"
     );
 }
@@ -649,11 +644,11 @@ fn infer_bcl_full(src: &str) -> (InferredFile, ResolvedFile) {
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(
         &file,
         &resolved,
-        &env,
+        env,
         &borzoi_sema::PrecedingTypes::default(),
     );
     (inferred, resolved)
@@ -1183,7 +1178,7 @@ fn unproven_object_base_edge_sinks_the_chain_rather_than_capping() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == "f")
-            .map(|(_, ty)| ty.render(&env))
+            .map(|(_, ty)| ty.render(env))
     };
 
     let clean = env_with_object_derived_demo_type();
@@ -1798,7 +1793,7 @@ fn dropped_type_uncertainty_is_namespace_scoped() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == "n")
-            .map(|(_, ty)| ty.render(&env))
+            .map(|(_, ty)| ty.render(env))
     };
 
     let mut env = bcl_env();
@@ -1961,7 +1956,7 @@ fn annotated_receiver_door_is_sealed_by_the_resolver() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == "n")
-            .map(|(_, ty)| ty.render(&env))
+            .map(|(_, ty)| ty.render(env))
     };
 
     assert_eq!(
@@ -3209,7 +3204,7 @@ fn interface_receiver_members_match_fcs() {
             .map(|(r, t)| {
                 (
                     src[usize::from(r.start())..usize::from(r.end())].to_string(),
-                    t.render(&env),
+                    t.render(env),
                 )
             })
             .collect();

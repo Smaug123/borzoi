@@ -487,7 +487,7 @@ fn check(source: &str, cells: &[Cell], tally: &mut Tally) {
         if dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render(&env);
+        let ours = ty.render(env);
         let theirs = dumps.types.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` at {key:?} (`{}`) but FCS reports no node there\n{source}",
@@ -513,7 +513,7 @@ fn check(source: &str, cells: &[Cell], tally: &mut Tally) {
         if dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render(&env);
+        let ours = ty.render(env);
         let theirs = dumps.binders.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
@@ -667,7 +667,7 @@ fn a_pattern_does_not_override_an_earlier_argument_check() {
         );
         for (def, ty) in inferred.def_types() {
             let name = resolved.def(*def).spelling(env).into_owned();
-            let ty = ty.render(&env);
+            let ty = ty.render(env);
             match name.as_str() {
                 "x" | "y" | "v" => assert_eq!(ty, "System.String", "`{name}` in {body}"),
                 "f" => assert!(ty.starts_with("System.String ->"), "`f : {ty}` in {body}"),
@@ -708,7 +708,7 @@ fn a_later_pattern_does_not_override_an_earlier_clause() {
         );
         for (def, ty) in inferred.def_types() {
             if resolved.def(*def).spelling(env) == "x" {
-                assert_eq!(ty.render(&env), x, "`x` in {body}");
+                assert_eq!(ty.render(env), x, "`x` in {body}");
             }
         }
     }
@@ -746,7 +746,7 @@ fn a_pattern_does_not_wake_an_earlier_member_lookup() {
             assert!(
                 !matches!(name.as_str(), "o" | "f"),
                 "`{name} : {}` published in {body}",
-                ty.render(&env)
+                ty.render(env)
             );
         }
     }
@@ -777,7 +777,7 @@ fn a_mismatched_pattern_does_not_leave_its_names_to_the_clause() {
         );
         for (def, ty) in inferred.def_types() {
             if resolved.def(*def).spelling(env) == "x" {
-                assert_eq!(ty.render(&env), "System.Int32", "`x` in {body}");
+                assert_eq!(ty.render(env), "System.Int32", "`x` in {body}");
             }
         }
     }
@@ -802,7 +802,7 @@ fn a_mismatched_field_pattern_does_not_leave_its_names_to_the_clause() {
     );
     for (def, ty) in inferred.def_types() {
         if resolved.def(*def).spelling(env) == "x" {
-            assert_eq!(ty.render(&env), "System.Int32", "`x`");
+            assert_eq!(ty.render(env), "System.Int32", "`x`");
         }
     }
 }
@@ -870,7 +870,7 @@ fn a_pattern_does_not_override_a_condition_on_its_parameter() {
         );
         for (def, ty) in inferred.def_types() {
             let name = resolved.def(*def).spelling(env).into_owned();
-            let ty = ty.render(&env);
+            let ty = ty.render(env);
             let expected = fcs
                 .iter()
                 .find_map(|&(n, t)| (n == name).then_some(t))
@@ -880,7 +880,7 @@ fn a_pattern_does_not_override_a_condition_on_its_parameter() {
         for (range, ty) in inferred.types() {
             let text = &src[usize::from(range.start())..usize::from(range.end())];
             if text == "x" {
-                assert_eq!(ty.render(&env), B, "`x` node in {src}");
+                assert_eq!(ty.render(env), B, "`x` node in {src}");
             }
         }
     }

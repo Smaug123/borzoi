@@ -237,11 +237,11 @@ fn published(
     let exprs = inferred
         .types()
         .iter()
-        .map(|(range, ty)| (format!("expr {range:?}"), ty.render(&env)));
+        .map(|(range, ty)| (format!("expr {range:?}"), ty.render(env)));
     let defs = inferred.def_types().iter().map(|(def, ty)| {
         (
             format!("def {}", resolved.def(*def).spelling(env)),
-            ty.render(&env),
+            ty.render(env),
         )
     });
     exprs.chain(defs).collect()

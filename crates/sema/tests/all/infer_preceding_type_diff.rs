@@ -726,7 +726,7 @@ fn grade_project(c: &Project, expect_errors: bool, g: &mut Graded) -> Result<(),
             if dump_types.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render(&env);
+            let ours = ty.render(env);
             match dump_types.types.get(&key) {
                 Some(theirs) if *theirs == ours => g.graded += 1,
                 theirs => g.wrong.push(format!(
@@ -743,7 +743,7 @@ fn grade_project(c: &Project, expect_errors: bool, g: &mut Graded) -> Result<(),
             if dump_types.is_ungraded(key) {
                 continue;
             }
-            let ours = ty.render(&env);
+            let ours = ty.render(env);
             match dump_types.binders.get(&key) {
                 Some(theirs) if *theirs == ours && !dump_types.hides_constraint(key, &ours) => {
                     g.graded += 1;

@@ -213,7 +213,7 @@ fn check_parsed(
         if dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render(&env);
+        let ours = ty.render(env);
         let theirs = fcs_types.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` at {key:?} (`{}`) but FCS reports no node there\n{source}",
@@ -240,7 +240,7 @@ fn check_parsed(
         if binders_in.as_ref().is_some_and(|r| !r.contains(&key.0)) || dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render(&env);
+        let ours = ty.render(env);
         let theirs = fcs_binders.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \

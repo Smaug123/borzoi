@@ -3,8 +3,8 @@
 //! (`docs/sema-interning-plan.md`, Stage 7).
 //!
 //! It is the representation [`Ty`]'s paths were before they were ids, kept as
-//! the reference the interned form is held to: [`SpelledTy::of`] and
-//! [`SpelledTy::to_ty`] convert between the two through a table, and
+//! the reference the interned form is held to: `SpelledTy::of` and
+//! `SpelledTy::to_ty` convert between the two through a table, and
 //! [`render`] and [`render_fsharp`] are the renderers as they read the
 //! segments, so a test can ask that rendering a [`Ty`] through its ids gives
 //! the same text.

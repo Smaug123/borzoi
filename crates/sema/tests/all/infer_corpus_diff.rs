@@ -393,7 +393,7 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
             .map(|(r, t)| {
                 (
                     (u32::from(r.start()) as usize, u32::from(r.end()) as usize),
-                    t.render(&env),
+                    t.render(env),
                 )
             })
             .collect();
@@ -404,7 +404,7 @@ fn compare_file_with(path: &Path, rel: &str, tally: &Mutex<Tally>, oracle: Oracl
                 let r = resolved.def(*d).range;
                 (
                     (u32::from(r.start()) as usize, u32::from(r.end()) as usize),
-                    t.render(&env),
+                    t.render(env),
                 )
             })
             .collect();

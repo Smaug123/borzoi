@@ -60,22 +60,17 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
     );
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(
         &file,
         &resolved,
-        &env,
+        env,
         &borzoi_sema::PrecedingTypes::default(),
     );
     let def_types = inferred
         .def_types()
         .iter()
-        .map(|(id, ty)| {
-            (
-                resolved.def(*id).spelling(&env).into_owned(),
-                ty.render(&env),
-            )
-        })
+        .map(|(id, ty)| (resolved.def(*id).spelling(env).into_owned(), ty.render(env)))
         .collect();
     (inferred, def_types)
 }
@@ -339,7 +334,7 @@ fn math_abs_int_defers() {
         !inferred
             .types()
             .values()
-            .any(|t| t.render(&env).contains("Int")),
+            .any(|t| t.render(env).contains("Int")),
         "no type leaks from a deferred static call"
     );
 }

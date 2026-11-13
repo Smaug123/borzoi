@@ -491,7 +491,7 @@ fn check(source: &str, cells: &[(u32, String, bool, String)], tally: &mut Tally)
         if dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render(&env);
+        let ours = ty.render(env);
         let theirs = dumps.types.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` at {key:?} (`{}`) but FCS reports no node there\n{source}",
@@ -517,7 +517,7 @@ fn check(source: &str, cells: &[(u32, String, bool, String)], tally: &mut Tally)
         if dumps.is_ungraded(key) {
             continue;
         }
-        let ours = ty.render(&env);
+        let ours = ty.render(env);
         let theirs = dumps.binders.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
@@ -856,9 +856,9 @@ fn value_bindings_with_a_type_variable_decline() {
     for (def, ty) in inferred.def_types() {
         let name = resolved.def(*def).spelling(env);
         assert!(
-            !(name.starts_with('v') && ty.render(&env).contains('\'')),
+            !(name.starts_with('v') && ty.render(env).contains('\'')),
             "`{name}` committed generic `{}`",
-            ty.render(&env)
+            ty.render(env)
         );
     }
 }

@@ -1139,7 +1139,7 @@ impl ProjectCase {
                 fields: scheme.fields.iter().map(|f| f.rekey(from, to)).collect(),
                 union: scheme.union.rekey(from, to),
             },
-            key: key.clone(),
+            key: *key,
             scope: *scope,
         }
     }

@@ -523,7 +523,7 @@ impl Ty {
             }
             // Spelled as F# identifiers, qualified, as the canonical form is.
             Ty::Project { path, args } => render_named(
-                &borzoi_assembly::join_quoted(path.segments_in(names).into_iter()),
+                &borzoi_assembly::join_quoted(path.segments_in(names)),
                 args,
                 render,
             ),

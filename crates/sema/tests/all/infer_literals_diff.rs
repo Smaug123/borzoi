@@ -81,14 +81,14 @@ fn assert_sound(source: &str) -> usize {
         let fcs_ty = fcs.get(&key).unwrap_or_else(|| {
             panic!(
                 "we inferred `{}` at {key:?} but FCS reports no node there in {source:?}",
-                ty.render(&env)
+                ty.render(env)
             )
         });
         assert_eq!(
-            &ty.render(&env),
+            &ty.render(env),
             fcs_ty,
             "type mismatch at {key:?} in {source:?}: ours=`{}`, FCS=`{fcs_ty}`",
-            ty.render(&env)
+            ty.render(env)
         );
         checked += 1;
     }
@@ -214,7 +214,7 @@ fn tuple_binding_matches_fcs() {
     let env = crate::common::empty_env();
     let source = "module T\nlet p = (1, \"hi\")\n";
     let inferred = infer_src(source);
-    let renders: Vec<String> = inferred.types().values().map(|t| t.render(&env)).collect();
+    let renders: Vec<String> = inferred.types().values().map(|t| t.render(env)).collect();
     assert!(
         renders.contains(&"System.Int32 * System.String".to_string()),
         "expected the tuple type among {renders:?}"
@@ -232,7 +232,7 @@ fn nested_tuple_matches_fcs() {
     let env = crate::common::empty_env();
     let source = "module T\nlet p = (1, (2.0, \"x\"))\n";
     let inferred = infer_src(source);
-    let renders: Vec<String> = inferred.types().values().map(|t| t.render(&env)).collect();
+    let renders: Vec<String> = inferred.types().values().map(|t| t.render(env)).collect();
     assert!(
         renders.contains(&"System.Int32 * (System.Double * System.String)".to_string()),
         "expected the nested tuple type among {renders:?}"
@@ -248,7 +248,7 @@ fn tuple_of_value_uses_matches_fcs() {
     let env = crate::common::empty_env();
     let source = "module T\nlet a = 1\nlet b = \"hi\"\nlet p = (a, b)\n";
     let inferred = infer_src(source);
-    let renders: Vec<String> = inferred.types().values().map(|t| t.render(&env)).collect();
+    let renders: Vec<String> = inferred.types().values().map(|t| t.render(env)).collect();
     assert!(
         renders.contains(&"System.Int32 * System.String".to_string()),
         "expected the tuple of uses among {renders:?}"
@@ -272,12 +272,12 @@ fn if_then_else_result_matches_fcs() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) == "System.Int32"),
+            .all(|t| t.render(env) == "System.Int32"),
         "the if-expression and its then-branch are both int: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_eq!(
@@ -312,7 +312,7 @@ fn if_then_uninferrable_defers_whole_expression() {
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_eq!(assert_sound(source), 0);
@@ -332,12 +332,12 @@ fn check_mode_tuple_elements_are_not_emitted() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) != "System.Int32"),
+            .all(|t| t.render(env) != "System.Int32"),
         "else-tuple elements `3`/`4` are check-mode (coerced to int64), not int: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     // The then-tuple `(1L, 2L)` and the `if` are still synthesized as int64 * int64.
@@ -345,12 +345,12 @@ fn check_mode_tuple_elements_are_not_emitted() {
         inferred
             .types()
             .values()
-            .any(|t| t.render(&env) == "System.Int64 * System.Int64"),
+            .any(|t| t.render(env) == "System.Int64 * System.Int64"),
         "the then-tuple and the if-expression are int64 * int64: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     // assert_sound is the real guard: every emitted type agrees with FCS.
@@ -371,12 +371,12 @@ fn nested_check_mode_if_then_is_not_emitted() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) != "System.Int32"),
+            .all(|t| t.render(env) != "System.Int32"),
         "nested check-mode then `2` is coerced to int64, not int: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_sound(source);
@@ -396,12 +396,12 @@ fn else_less_if_is_deferred() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) == "System.Boolean"),
+            .all(|t| t.render(env) == "System.Boolean"),
         "else-less if is deferred; only the bool binder is typed: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_sound(source);
@@ -422,12 +422,12 @@ fn elif_without_final_else_is_deferred() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) == "System.Boolean"),
+            .all(|t| t.render(env) == "System.Boolean"),
         "elif chain without a final else is deferred; only the bool binders type: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_sound(source);
@@ -446,14 +446,14 @@ fn elif_with_final_else_matches_fcs() {
         inferred
             .types()
             .values()
-            .filter(|t| t.render(&env) == "System.Int32")
+            .filter(|t| t.render(env) == "System.Int32")
             .count()
             == 2,
         "the then `1` and the if-expression are int; `2`/`3` are not emitted: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_sound(source);
@@ -472,12 +472,12 @@ fn function_body_result_is_typed() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) == "System.Int32"),
+            .all(|t| t.render(env) == "System.Int32"),
         "the body `if`/then are int; the condition and `f` are not typed: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     // then `1` + the `if` (both int); the condition `c` and else `2` are not emitted.
@@ -500,12 +500,12 @@ fn named_field_function_head_body_is_walked() {
         inferred
             .types()
             .values()
-            .any(|t| t.render(&env) == "System.Int32"),
+            .any(|t| t.render(env) == "System.Int32"),
         "the named-field-head function body `42` should be walked and typed: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
 }
@@ -521,12 +521,12 @@ fn lambda_body_result_is_typed() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) == "System.Int32"),
+            .all(|t| t.render(env) == "System.Int32"),
         "the lambda body `if`/then are int: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_eq!(assert_sound(source), 2);
@@ -547,12 +547,12 @@ fn lambda_body_in_check_mode_is_not_synth_emitted() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) != "System.Int32"),
+            .all(|t| t.render(env) != "System.Int32"),
         "the check-mode lambda body `2` (coerced to int64) must not emit as int: {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     // Only `1L` (int64, f's synth-mode body); the else lambda's `2` is check-mode
@@ -575,7 +575,7 @@ fn while_body_is_unit_check_position() {
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_eq!(assert_sound(source), 0);
@@ -598,12 +598,12 @@ fn ground_application_node_is_typed() {
         inferred
             .types()
             .values()
-            .all(|t| t.render(&env) == "System.Int32"),
+            .all(|t| t.render(env) == "System.Int32"),
         "every emitted type is int (body + application); got {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     // body then `1` + the body `if` + the application `f true` = 3 int nodes.
@@ -625,12 +625,12 @@ fn partial_application_node_is_typed() {
         inferred
             .types()
             .values()
-            .any(|t| t.render(&env) == "System.Boolean -> System.Int32"),
+            .any(|t| t.render(env) == "System.Boolean -> System.Int32"),
         "the partial application node should be `bool -> int`; got {:?}",
         inferred
             .types()
             .values()
-            .map(|t| t.render(&env))
+            .map(|t| t.render(env))
             .collect::<Vec<_>>()
     );
     assert_eq!(
@@ -745,7 +745,7 @@ proptest! {
             let file = ImplFile::cast(parsed.root).expect("impl file");
             let inf = infer(&file, &recovery);
             prop_assert_eq!(inf.len(), 1, "exactly one literal in {:?}", src);
-            let got = inf.types().values().next().expect("one type").render(&env);
+            let got = inf.types().values().next().expect("one type").render(env);
             prop_assert_eq!(got, want.to_string(), "src={:?}", src);
         }
     }
@@ -774,7 +774,7 @@ proptest! {
             let file = ImplFile::cast(parsed.root).expect("impl file");
             let inf = infer(&file, &recovery);
             prop_assert_eq!(inf.len(), 1, "exactly one literal in {:?}", src);
-            let got = inf.types().values().next().expect("one type").render(&env);
+            let got = inf.types().values().next().expect("one type").render(env);
             prop_assert_eq!(got, ty.to_string(), "src={:?}", src);
         }
     }
@@ -805,7 +805,7 @@ proptest! {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == "x")
-            .map(|(_, ty)| ty.render(&env));
+            .map(|(_, ty)| ty.render(env));
         prop_assert_eq!(x_ty, Some("System.Int64".to_string()), "src={:?}", src);
     }
 
@@ -836,7 +836,7 @@ proptest! {
         let inf = infer(&file, &recovery);
         prop_assert_eq!(inf.len(), 2, "literal RHS + the use of `x`: {:?}", src);
         for ty in inf.types().values() {
-            prop_assert_eq!(ty.render(&env), "System.Int32".to_string(), "src={:?}", src);
+            prop_assert_eq!(ty.render(env), "System.Int32".to_string(), "src={:?}", src);
         }
     }
 }

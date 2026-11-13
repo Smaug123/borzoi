@@ -204,15 +204,15 @@ fn inferred_types(files: &[ProjectFile], env: &AssemblyEnv) -> (InferredProject,
         for (range, ty) in file.types() {
             out.push(format!(
                 "{idx} node {range:?} {} | {}",
-                ty.render(&env),
-                ty.render_fsharp(&env)
+                ty.render(env),
+                ty.render_fsharp(env)
             ));
         }
         for (def, ty) in file.def_types() {
             out.push(format!(
                 "{idx} def {def:?} {} | {}",
-                ty.render(&env),
-                ty.render_fsharp(&env)
+                ty.render(env),
+                ty.render_fsharp(env)
             ));
         }
     }

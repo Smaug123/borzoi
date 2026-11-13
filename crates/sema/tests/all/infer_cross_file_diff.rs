@@ -914,7 +914,7 @@ fn grade(label: &str, folded: &Folded) -> Graded {
                 g.ungraded += 1;
                 continue;
             }
-            let ours = ty.render(&env);
+            let ours = ty.render(env);
             let Some(theirs) = dump.types.get(&key) else {
                 if screened {
                     g.ungraded += 1;
@@ -946,7 +946,7 @@ fn grade(label: &str, folded: &Folded) -> Graded {
                 g.ungraded += 1;
                 continue;
             }
-            let ours = ty.render(&env);
+            let ours = ty.render(env);
             let Some(theirs) = dump.binders.get(&key) else {
                 if screened {
                     g.ungraded += 1;
@@ -1400,7 +1400,7 @@ fn a_reusing_fold_infers_what_a_cold_fold_does() {
         panic!("the edit's use resolves to `a_gid`");
     };
     assert_eq!(
-        reusing.item_type(id).map(|t| t.render(&env)),
+        reusing.item_type(id).map(|t| t.render(env)),
         Ok("'a -> 'a".to_string()),
         "the reused file's publication carries over"
     );

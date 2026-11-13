@@ -72,16 +72,16 @@ fn assert_binder_sound(source: &str) -> usize {
             panic!(
                 "we inferred `{}` for binder `{}` at {key:?} but FCS reports no binder there \
                  in {source:?}",
-                ty.render(&env),
+                ty.render(env),
                 def.spelling(crate::common::full_bcl_env())
             )
         });
         assert_eq!(
-            &ty.render(&env),
+            &ty.render(env),
             fcs_ty,
             "binder-type mismatch for `{}` at {key:?} in {source:?}: ours=`{}`, FCS=`{fcs_ty}`",
             def.spelling(crate::common::full_bcl_env()),
-            ty.render(&env)
+            ty.render(env)
         );
         checked += 1;
     }
@@ -330,7 +330,7 @@ fn tuple_containing_a_function_is_parenthesised() {
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(crate::common::full_bcl_env()) == "t")
-        .map(|(_, ty)| ty.render(&env));
+        .map(|(_, ty)| ty.render(env));
     assert_eq!(
         t_ty.as_deref(),
         Some("(System.Boolean -> System.Int32) * System.Int32"),
@@ -369,7 +369,7 @@ fn binder_render_under(source: &str, name: &str, recovery: &SyntaxRecovery) -> O
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-        .map(|(_, ty)| ty.render(&env))
+        .map(|(_, ty)| ty.render(env))
 }
 
 fn binder_render(source: &str, name: &str) -> Option<String> {
@@ -379,7 +379,7 @@ fn binder_render(source: &str, name: &str) -> Option<String> {
         .def_types()
         .iter()
         .find(|(id, _)| resolved.def(**id).spelling(crate::common::full_bcl_env()) == name)
-        .map(|(_, ty)| ty.render(&env))
+        .map(|(_, ty)| ty.render(env))
 }
 
 /// The identity function generalises to `'a -> 'a`, agreeing with FCS's
@@ -492,7 +492,7 @@ fn generalisation_defer_cases_stay_silent() {
             inferred
                 .def_types()
                 .values()
-                .map(|t| t.render(&env))
+                .map(|t| t.render(env))
                 .collect::<Vec<_>>()
         );
         assert_eq!(assert_binder_sound(source), 0);
@@ -955,7 +955,7 @@ fn a_constrained_head_defers_but_its_twin_does_not() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-            .map(|(_, ty)| ty.render(&env))
+            .map(|(_, ty)| ty.render(env))
     };
 
     assert_eq!(
@@ -1018,7 +1018,7 @@ fn an_error_obsolete_head_or_argument_defers_but_a_warning_one_does_not() {
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-            .map(|(_, ty)| ty.render(&env))
+            .map(|(_, ty)| ty.render(env))
     };
 
     assert_eq!(
@@ -1093,7 +1093,7 @@ fn a_rejecting_attribute_on_an_abbreviation_defers_but_a_warning_one_does_not() 
             .def_types()
             .iter()
             .find(|(id, _)| resolved.def(**id).spelling(env) == name)
-            .map(|(_, ty)| ty.render(&env))
+            .map(|(_, ty)| ty.render(env))
     };
 
     assert_eq!(
