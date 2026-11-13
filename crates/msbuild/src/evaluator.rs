@@ -1404,6 +1404,16 @@ struct State<'r> {
     /// on every row.
     #[cfg(any(test, feature = "test-support"))]
     package_reference_unknown_names: HashSet<String>,
+    /// The `PackageVersion` items as an item table reads them, as
+    /// [`Self::package_reference_rows`] holds `PackageReference`s.
+    #[cfg(any(test, feature = "test-support"))]
+    package_version_rows: Vec<EvaluatedItem>,
+    /// Indices into [`Self::package_reference_uncertainties`] of the causes
+    /// recorded while walking a `PackageReference`, `FrameworkReference` or
+    /// `GlobalPackageReference` element, or collapsing `PackageReference`s:
+    /// causes that say nothing about the `PackageVersion` list.
+    #[cfg(any(test, feature = "test-support"))]
+    package_causes_elsewhere: HashSet<usize>,
     /// MSBuild's batch of `Update`s for each item type whose `Update`s the walk
     /// models (`Compile`, `PackageReference`), as far as the walk can follow it
     /// ([`item_pass`]'s `update_strands_late`), keyed by lowercased item type.
@@ -2114,6 +2124,10 @@ impl<'r> State<'r> {
             framework_reference_rows: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             package_reference_unknown_names: HashSet::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            package_version_rows: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            package_causes_elsewhere: HashSet::new(),
             package_versions: Vec::new(),
             package_versions_untracked: false,
             update_batches: HashMap::new(),
@@ -2661,6 +2675,10 @@ impl<'r> State<'r> {
                 framework_reference_rows: _,
             #[cfg(any(test, feature = "test-support"))]
                 package_reference_unknown_names: _,
+            #[cfg(any(test, feature = "test-support"))]
+                package_version_rows: _,
+            #[cfg(any(test, feature = "test-support"))]
+                package_causes_elsewhere: _,
             update_batches: _,
             package_versions,
             package_versions_untracked,
@@ -3118,6 +3136,15 @@ impl<'r> State<'r> {
         let span = self.effective_span(span);
         self.compile_item_uncertainties
             .push(CompileItemUncertaintyCause { kind, span, origin });
+    }
+
+    /// Mark every package-set cause recorded since index `from` as one
+    /// that says nothing about the `PackageVersion` list
+    /// ([`Self::package_causes_elsewhere`]).
+    #[cfg(any(test, feature = "test-support"))]
+    fn attribute_package_causes_elsewhere(&mut self, from: usize) {
+        let to = self.package_reference_uncertainties.len();
+        self.package_causes_elsewhere.extend(from..to);
     }
 
     fn record_package_reference_uncertainty(

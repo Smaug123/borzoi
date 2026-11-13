@@ -238,7 +238,12 @@ pub(super) fn replay_deferred_item_groups(entry_doc: &Document<'_>, state: &mut 
     }
     // All items captured: collapse Include + Update into the effective set and
     // detect the versionless symptom on it (both need every item present).
+    #[cfg(any(test, feature = "test-support"))]
+    let causes_before = state.package_reference_uncertainties.len();
     finalize_package_references(state);
+    // Every cause the collapse records is about a `PackageReference`.
+    #[cfg(any(test, feature = "test-support"))]
+    state.attribute_package_causes_elsewhere(causes_before);
 }
 
 /// Resolve a deferred group's node in a (re-)parsed document, verifying it
@@ -776,6 +781,25 @@ enum PackageItemKind {
 }
 
 fn walk_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
+    #[cfg(any(test, feature = "test-support"))]
+    let causes_before = state.package_reference_uncertainties.len();
+    walk_item_child_unattributed(node, state);
+    // What the package set's causes say about another dependency list is the
+    // probe's business only.
+    #[cfg(any(test, feature = "test-support"))]
+    if matches!(
+        package_item_kind_for_element(node),
+        Some(
+            PackageItemKind::PackageReference
+                | PackageItemKind::FrameworkReference
+                | PackageItemKind::GlobalPackageReference
+        )
+    ) {
+        state.attribute_package_causes_elsewhere(causes_before);
+    }
+}
+
+fn walk_item_child_unattributed(node: Node<'_, '_>, state: &mut State<'_>) {
     // MSBuild's batch of `Update`s, followed for the types whose `Update`s the
     // walk models, before any condition: see [`update_strands_late`].
     let batched = match package_item_kind_for_element(node) {
@@ -2640,6 +2664,8 @@ fn walk_package_version(node: Node<'_, '_>, state: &mut State<'_>) {
     };
     state.note_package_uncertain_from_sdk_property_taint(include);
     let local_version = read_item_metadata(node, "Version", state);
+    #[cfg(any(test, feature = "test-support"))]
+    let exact = read_exact_metadata_quietly(node, state);
     let excluded = resolve_exclude_set(node, state);
     let span = state.effective_span(node.range());
     let package_version_count_before = state.package_versions.len();
@@ -2647,6 +2673,11 @@ fn walk_package_version(node: Node<'_, '_>, state: &mut State<'_>) {
     for source in resolve_dependency_identity_sources(include, node, state) {
         if excluded.contains(&source.identity.to_ascii_lowercase()) {
             continue;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let row = included_row(state, "PackageVersion", &source, &exact);
+            state.package_version_rows.push(row);
         }
         note_inherited_helper_version_uncertainties(
             &source.metadata_uncertainties,

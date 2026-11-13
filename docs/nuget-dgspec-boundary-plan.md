@@ -1708,9 +1708,9 @@ So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
    discipline (landed; see *A₁.3b: every metadatum* below);
 2. expose the dedicated buckets as item lists the executor can read
-   (`PackageReference`, `FrameworkReference` and `ProjectReference` landed;
-   see *A₁.3b: `PackageReference` rows* and *A₁.3b: `ProjectReference` rows*
-   below; `PackageVersion` remains);
+   (`PackageReference`, `FrameworkReference`, `ProjectReference` and
+   `PackageVersion` landed; see the *A₁.3b* sections below;
+   `GlobalPackageReference` remains);
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
@@ -1861,6 +1861,30 @@ exact list whose identities are not MSBuild's panics there. Every corpus
 project and single-target fixture holds no reference, so each reads as an
 exact empty list. The one fixture with a reference, `cpm`, is a
 multi-targeting outer build, whose walk is opaque.
+
+##### A₁.3b: `PackageVersion` rows — landed
+
+`PackageVersion` takes the same rows as `PackageReference` (`included_row`),
+but not its certainty. Every `PackageVersion` marks the package set uncertain
+until central versions are applied, so that flag cannot vouch for the list.
+The list asks the set's recorded causes instead. Each cause raised while
+walking a `PackageReference`, `FrameworkReference` or
+`GlobalPackageReference` element, or while collapsing `PackageReference`s,
+is attributed to that list (`State::package_causes_elsewhere`). The
+`PackageVersion` list is exact when every other cause is a
+`PackageVersion`'s own existence, no `Update` or `Remove` of one ran, the
+walk is not opaque, and every identity has the package-id shape. A cause
+raised anywhere else declines: on a `PackageVersion`, an item group, an
+import, an item definition.
+
+The attribution is sound only because every write of the package set's flag
+records a cause. `fsproj_generic_items_generative_diff` generates
+`PackageVersion` items like the other types. Counting every cause as
+attributed fails it. Ignoring an `Update` or `Remove` fails the soak and a
+unit test. On every single-target corpus project and fixture the list is
+exact (and empty), beside a `PackageReference` set that stays uncertain.
+`cpm` and `TypeEquality` are multi-targeting outer builds, whose walks are
+opaque.
 
 #### A₁.4: the task leaves
 

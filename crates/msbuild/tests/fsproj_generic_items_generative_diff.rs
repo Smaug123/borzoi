@@ -33,12 +33,14 @@ use common::{Oracle, SplitMix64};
 
 /// `PackageReference` and `FrameworkReference` are captured by the dependency
 /// capture, not the generic tables; `PackageReference` collapses `Update` onto
-/// prior `Include`s. `ProjectReference` is captured by the reference capture.
-const ITEM_TYPES: [&str; 5] = [
+/// prior `Include`s. `PackageVersion` is captured there too, with its own
+/// certainty. `ProjectReference` is captured by the reference capture.
+const ITEM_TYPES: [&str; 6] = [
     "Helper",
     "Known",
     "PackageReference",
     "FrameworkReference",
+    "PackageVersion",
     "ProjectReference",
 ];
 /// What an `Update` names.
