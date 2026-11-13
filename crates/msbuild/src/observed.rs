@@ -140,10 +140,46 @@ impl ReadSet {
 }
 
 /// One query and its answer.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// Reads compare by the path's raw spelling, not by `Path`'s equality, which
+/// ignores a trailing separator: `p/child/` demands a directory and
+/// `p/child` does not, so they are different queries.
+#[derive(Clone, Debug)]
 pub struct Read {
     pub path: PathBuf,
     pub observation: Observation,
+}
+
+impl Read {
+    fn key(&self) -> (&std::ffi::OsStr, &Observation) {
+        (self.path.as_os_str(), &self.observation)
+    }
+}
+
+impl PartialEq for Read {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for Read {}
+
+impl Hash for Read {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl PartialOrd for Read {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Read {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
 }
 
 /// A query, with everything its asker could learn from the answer.
@@ -535,6 +571,27 @@ mod tests {
             read_set.first_stale().map(|read| read.path.clone()),
             Some(dir.clone())
         );
+    }
+
+    /// `p/child/` and `p/child` are different queries (the slash demands a
+    /// directory), though `Path` compares them equal. With `p` a file both
+    /// fail alike; once `p` is a directory holding a file `child`, only the
+    /// slash-ended one still fails, so the read set must keep both.
+    #[test]
+    fn a_trailing_separator_is_a_different_query() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        std::fs::write(dir.join("p"), "").unwrap();
+        let observer = Observer::new();
+        let slashed = PathBuf::from(format!("{}/p/child/", dir.display()));
+        let _ = kind(&observer, &slashed);
+        let _ = kind(&observer, &dir.join("p/child"));
+        let (read_set, _) = observer.finish();
+        assert_eq!(read_set.len(), 2, "{read_set:#?}");
+        std::fs::remove_file(dir.join("p")).unwrap();
+        std::fs::create_dir(dir.join("p")).unwrap();
+        std::fs::write(dir.join("p/child"), "").unwrap();
+        assert!(read_set.first_stale().is_some());
     }
 
     /// Two evaluations that ask the same queries in different orders (a walk

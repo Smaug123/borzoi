@@ -1164,7 +1164,10 @@ corpus project is reported, so Stage 3b's validation cost is known in advance.
   The reads are sorted, so the read set is a set: workload manifest
   resolution probes in a `HashMap`'s order, and two equal evaluations
   otherwise compared unequal (found by Codex;
-  `the_read_set_does_not_depend_on_the_order_of_its_queries`).
+  `the_read_set_does_not_depend_on_the_order_of_its_queries`). Reads compare
+  by the path's raw spelling, since `Path` equality ignores a trailing
+  separator and `p/child/` is a different query from `p/child` (Codex;
+  `a_trailing_separator_is_a_different_query`).
 - The query functions are public, so a caller's own resolver can query
   through the observer it is handed.
 - **One `Observer` per evaluation, shared by reference.** It lives in the
@@ -1239,6 +1242,11 @@ The oracle (`crates/msbuild/src/observed/soundness.rs`):
   and some perturbation exercises the precision check.
   `a_full_world_records_every_kind_of_query` checks that the read set holds
   a query of each kind, an absence among them.
+- The sweep changes only paths that lie under its root lexically and
+  physically (a read of `../outside/x` is recorded but not perturbed), and
+  counts any change as touching a read whose path passes through a symlink
+  under the root (Codex found both; `the_sweep_writes_only_under_its_root`,
+  `a_symlink_whose_target_moves_is_swept`, `a_dangling_symlink_is_swept`).
 - `fsproj_corpus::fixture_read_sets_are_sound_through_the_real_sdk_chain`
   copies three of the crate's project fixtures into temporary directories
   and sweeps them through the real SDK chain and the glob resolver.

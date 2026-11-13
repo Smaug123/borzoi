@@ -374,3 +374,55 @@ fn a_symlink_whose_target_moves_is_swept() {
 fn a_dangling_symlink_is_swept() {
     sweep_symlinked_exists(false);
 }
+
+/// A query that climbs out of the swept root (`Exists('../outside/…')`) is
+/// recorded, but the sweep plans no change outside its root.
+#[test]
+fn the_sweep_writes_only_under_its_root() {
+    let tmp = TempDir::new().unwrap();
+    let base = canon(tmp.path());
+    let root = base.join("root");
+    let source = r#"<Project>
+  <PropertyGroup Condition="Exists('../outside/marker.props')"><Out>yes</Out></PropertyGroup>
+</Project>"#;
+    let project = write_at(&root, "Demo.fsproj", source);
+    let evaluate = || {
+        parse_fsproj_with_imports(
+            source,
+            &project,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+        )
+        .expect("well-formed XML parses")
+    };
+    assert!(
+        evaluate()
+            .read_set
+            .reads()
+            .iter()
+            .any(|read| read.path.ends_with("outside/marker.props"))
+    );
+    let planned = crate::observed::soundness::perturbations(&root, &evaluate().read_set);
+    for perturbation in &planned {
+        for edit in &perturbation.edits {
+            let (Edit::Write(path, _) | Edit::Delete(path)) = edit;
+            let lexical: PathBuf = path.components().fold(PathBuf::new(), |mut out, c| {
+                match c {
+                    std::path::Component::ParentDir => {
+                        out.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    other => out.push(other),
+                }
+                out
+            });
+            assert!(
+                lexical.starts_with(&root),
+                "{perturbation:?} leaves the root"
+            );
+        }
+    }
+    sweep(&root, &evaluate, &[]);
+}

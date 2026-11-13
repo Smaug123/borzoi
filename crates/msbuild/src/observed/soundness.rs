@@ -227,8 +227,8 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The perturbations the module docs list.
-fn perturbations(root: &Path, read_set: &ReadSet) -> Vec<Perturbation> {
+/// The perturbations the module docs list, which [`sweep`] makes.
+pub fn perturbations(root: &Path, read_set: &ReadSet) -> Vec<Perturbation> {
     let mut out = Vec::new();
     let mut files = Vec::new();
     let mut dirs = vec![root.to_path_buf()];
@@ -288,10 +288,17 @@ fn perturbations(root: &Path, read_set: &ReadSet) -> Vec<Perturbation> {
             edits: vec![Edit::Delete(file)],
         });
     }
-    for read in read_set
+    // A read set may name paths outside the root (`../outside/…`, or through a
+    // symlink); the sweep changes only the paths that lie, lexically and
+    // physically, under it, and spells each lexically.
+    let inside = |path: &Path| {
+        let path = lexical(path);
+        (under_root(&path) && !through_a_link(root, &path)).then_some(path)
+    };
+    for (read, path) in read_set
         .reads()
         .iter()
-        .filter(|read| under_root(&read.path))
+        .filter_map(|read| inside(&read.path).map(|path| (read, path)))
     {
         let absent = match &read.observation {
             Observation::Text(Err(failure))
@@ -302,17 +309,17 @@ fn perturbations(root: &Path, read_set: &ReadSet) -> Vec<Perturbation> {
         };
         // A dangling symlink fails a following query as absent, but its
         // entry is there: it is not a path to create a file at.
-        if absent && host_fs::symlink_metadata(&read.path).is_err() {
+        if absent && host_fs::symlink_metadata(&path).is_err() {
             out.push(Perturbation {
                 why: Why::CreateAbsent,
-                edits: vec![Edit::Write(read.path.clone(), PROPERTY_FILE.to_vec())],
+                edits: vec![Edit::Write(path.clone(), PROPERTY_FILE.to_vec())],
             });
         }
         if let Observation::Listing(Ok(_)) = &read.observation {
             for name in ["zz_perturbed.fs", "zz_perturbed.props"] {
                 out.push(Perturbation {
                     why: Why::GrowListing,
-                    edits: vec![Edit::Write(read.path.join(name), PROPERTY_FILE.to_vec())],
+                    edits: vec![Edit::Write(path.join(name), PROPERTY_FILE.to_vec())],
                 });
             }
         }
