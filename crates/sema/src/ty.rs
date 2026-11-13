@@ -23,6 +23,9 @@
 //! equality — the same projection-to-a-shared-form discipline the parser
 //! differential uses.
 
+#[cfg(any(test, all(feature = "interning-reference", debug_assertions)))]
+pub(crate) mod reference;
+
 /// The most nodes a type inference builds or walks may have, counting every
 /// [`Ty`] variant as one node, with its variables resolved.
 ///
@@ -816,5 +819,129 @@ mod tests {
             Ty::named("System.Collections.Generic.List").render_fsharp(),
             "System.Collections.Generic.List"
         );
+    }
+}
+
+/// The interned form held to the string form it replaced
+/// ([`reference`]), over generated types.
+#[cfg(test)]
+mod spelled_form {
+    use proptest::prelude::*;
+
+    use super::reference::{self, SpelledTy};
+    use super::*;
+    use crate::names::NameTable;
+
+    /// Paths over few segments, so two paths often share a prefix or
+    /// differ only in their last segment, plus the paths the renderers
+    /// treat specially: an alias, `unit`, a renamed FSharp.Core generic, a
+    /// name F# writes quoted, a segment holding a dot (which renders like
+    /// two segments but is one), and the empty path.
+    fn path() -> impl Strategy<Value = Vec<String>> {
+        let special = prop::sample::select(vec![
+            vec![],
+            vec!["System", "Int32"],
+            vec!["System", "Object"],
+            vec!["System", "Void"],
+            vec!["Microsoft", "FSharp", "Core", "Unit"],
+            vec!["Microsoft", "FSharp", "Collections", "FSharpList"],
+            vec!["Microsoft", "FSharp", "Core", "FSharpResult"],
+            vec!["Ns", "Odd Type", "Inner@42"],
+            vec!["Ns", "Odd", "Type"],
+            vec!["Weird.Name"],
+            vec!["Weird", "Name"],
+        ])
+        .prop_map(|p| p.into_iter().map(str::to_owned).collect());
+        let small = prop::collection::vec(
+            prop::sample::select(vec!["A", "B", "System", "Int32", "Unit"]).prop_map(str::to_owned),
+            0..4,
+        );
+        prop_oneof![special, small]
+    }
+
+    fn spelled() -> impl Strategy<Value = SpelledTy> {
+        let leaf = prop_oneof![
+            (path(), Just(Vec::new())).prop_map(|(path, args)| SpelledTy::Named { path, args }),
+            (path(), Just(Vec::new())).prop_map(|(path, args)| SpelledTy::Project { path, args }),
+            (0u32..30).prop_map(SpelledTy::Param),
+            (0u32..4).prop_map(|v| SpelledTy::Var(TyVid(v))),
+        ];
+        leaf.prop_recursive(3, 24, 3, |inner| {
+            prop_oneof![
+                (path(), prop::collection::vec(inner.clone(), 1..3))
+                    .prop_map(|(path, args)| SpelledTy::Named { path, args }),
+                (path(), prop::collection::vec(inner.clone(), 1..3))
+                    .prop_map(|(path, args)| SpelledTy::Project { path, args }),
+                (inner.clone(), 1u32..3).prop_map(|(elem, rank)| SpelledTy::Array {
+                    elem: Box::new(elem),
+                    rank,
+                }),
+                prop::collection::vec(inner.clone(), 2..4).prop_map(SpelledTy::Tuple),
+                (inner.clone(), inner).prop_map(|(arg, ret)| SpelledTy::Fun {
+                    arg: Box::new(arg),
+                    ret: Box::new(ret),
+                }),
+            ]
+        })
+    }
+
+    /// A pair of types, often equal and often differing in one place.
+    fn pair() -> impl Strategy<Value = (SpelledTy, SpelledTy)> {
+        spelled().prop_flat_map(|a| {
+            let same = Just(a.clone());
+            let wrapped = path().prop_map({
+                let a = a.clone();
+                move |path| SpelledTy::Named {
+                    path,
+                    args: vec![a.clone()],
+                }
+            });
+            (Just(a), prop_oneof![same, wrapped, spelled()])
+        })
+    }
+
+    /// A table already holding `decoys`, so ids are not handed out in the
+    /// order the type meets its paths.
+    fn table(decoys: &[Vec<String>]) -> NameTable {
+        let names = NameTable::default();
+        for decoy in decoys {
+            names.intern_path(decoy);
+        }
+        names
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+        #[test]
+        fn a_type_converts_to_and_from_its_spelling(
+            s in spelled(),
+            decoys in prop::collection::vec(path(), 0..6),
+        ) {
+            let names = table(&decoys);
+            let ty = s.to_ty(&names);
+            prop_assert_eq!(&SpelledTy::of(&names, &ty), &s);
+            prop_assert_eq!(&SpelledTy::of(&names, &ty.clone()), &s);
+        }
+
+        #[test]
+        fn types_are_equal_exactly_when_their_spellings_are(
+            (a, b) in pair(),
+            decoys in prop::collection::vec(path(), 0..6),
+        ) {
+            let names = table(&decoys);
+            prop_assert_eq!(a.to_ty(&names) == b.to_ty(&names), a == b);
+        }
+
+        #[test]
+        fn a_type_renders_as_its_spelling_does(
+            s in spelled(),
+            decoys in prop::collection::vec(path(), 0..6),
+        ) {
+            let names = table(&decoys);
+            let ty = s.to_ty(&names);
+            prop_assert_eq!(ty.render(), reference::render(&s));
+            prop_assert_eq!(ty.render_fsharp(), reference::render_fsharp(&s));
+        }
     }
 }
