@@ -97,6 +97,17 @@ const CONDITIONS: [&str; 5] = [
 /// The file a generated project may import.
 const IMPORTED: &str = "<Project>\n  <ItemGroup>\n    <Helper Include=\"imported\" Flavor=\"f\" />\n    <Known Remove=\"a\" />\n  </ItemGroup>\n</Project>\n";
 
+/// Conditions on an item definition or its group: no `%(…)`, which a
+/// definition cannot batch on.
+const DEFINITION_CONDITIONS: [&str; 5] = [
+    "'$(Name)' == 'n'",
+    "'$(Name)' == 'other'",
+    "'$(Undefined)' == ''",
+    "'$(Gated)' != ''",
+    // Undecidable for the walk, and false in MSBuild.
+    "'$(Gated)' == ''",
+];
+
 /// A condition MSBuild accepts and this evaluator cannot decide, so that
 /// `Gated` is untrusted.
 const UNDECIDABLE: &str = "$([System.String]::IsNullOrWhiteSpace(''))";
@@ -128,12 +139,25 @@ fn project(rng: &mut SplitMix64) -> (String, bool) {
             "  <ItemGroup>\n    <ProjectReference Include=\"q.fsproj\" Flavor=\"x\" />\n  </ItemGroup>\n",
         );
     }
-    if rng.below(3) == 0 {
+    // Item definitions: up to two groups, each optionally conditioned, each
+    // defining one type with metadata as attributes or children, which may be
+    // conditioned too. Pass 2 evaluates them all before any item, wherever
+    // they sit.
+    for _ in 0..rng.below(3) {
         let item_type = rng.pick(&ITEM_TYPES);
-        let name = rng.pick(&METADATA);
-        out.push_str(&format!(
-            "  <ItemDefinitionGroup>\n    <{item_type}><{name}>def</{name}></{item_type}>\n  </ItemDefinitionGroup>\n"
-        ));
+        let group_condition = if rng.below(4) == 0 {
+            format!(" Condition=\"{}\"", rng.pick(&DEFINITION_CONDITIONS))
+        } else {
+            String::new()
+        };
+        let definition_condition = if rng.below(4) == 0 {
+            format!(" Condition=\"{}\"", rng.pick(&DEFINITION_CONDITIONS))
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("  <ItemDefinitionGroup{group_condition}>\n"));
+        item(rng, &mut out, item_type, "", &definition_condition);
+        out.push_str("  </ItemDefinitionGroup>\n");
     }
     out.push_str("  <ItemGroup>\n");
     if rng.below(2) == 0 {
@@ -180,6 +204,20 @@ fn item(rng: &mut SplitMix64, out: &mut String, item_type: &str, operation: &str
     if rng.below(8) == 0 {
         attributes.push_str(" Label=\"group\"");
     }
+    // An item definition (no operation) cannot reference items or batch on
+    // metadata.
+    let definition = operation.is_empty();
+    let value = |rng: &mut SplitMix64| loop {
+        let value = *rng.pick(&VALUES);
+        if !definition || !(value.contains("%(") || value.contains("@(")) {
+            break value;
+        }
+    };
+    let conditions: &[&str] = if definition {
+        &DEFINITION_CONDITIONS
+    } else {
+        &CONDITIONS
+    };
     let mut children = String::new();
     for name in METADATA {
         // A `Version` attribute already in `operation` is not repeated.
@@ -187,17 +225,17 @@ fn item(rng: &mut SplitMix64, out: &mut String, item_type: &str, operation: &str
             continue;
         }
         match rng.below(4) {
-            0 => attributes.push_str(&format!(" {name}=\"{}\"", rng.pick(&VALUES))),
+            0 => attributes.push_str(&format!(" {name}=\"{}\"", value(rng))),
             1 => {
                 let condition = if rng.below(2) == 0 {
-                    format!(" Condition=\"{}\"", rng.pick(&CONDITIONS))
+                    format!(" Condition=\"{}\"", rng.pick(conditions))
                 } else {
                     String::new()
                 };
                 let body = if rng.below(3) == 0 {
                     rng.pick(&BODIES)
                 } else {
-                    rng.pick(&VALUES)
+                    value(rng)
                 };
                 children.push_str(&format!("      <{name}{condition}>{body}</{name}>\n"));
             }
@@ -358,4 +396,33 @@ fn most_lists_are_clean() {
 fn soak() {
     let (seed, cases) = common::soak_parameters("fsproj_generic_items_generative_diff", 5000);
     sweep(seed, cases);
+}
+
+/// The shape a copy's definitions turn on, fixed: `Known` defines a name the
+/// copied `Helper` items give no value (MSBuild applies `Known`'s default),
+/// and one `Helper` defines too (MSBuild keeps `Helper`'s). Every list must
+/// reach the comparison.
+#[test]
+fn a_copy_takes_the_destination_definitions_beneath_the_source() {
+    const XML: &str = r#"<Project>
+  <ItemDefinitionGroup>
+    <Known><Pack>kdef</Pack><Flavor>kflav</Flavor></Known>
+    <Helper><Flavor>hdef</Flavor></Helper>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Helper Include="h1" />
+    <Helper Include="h2" Flavor="own" />
+    <Known Include="@(Helper)" Version="v" />
+    <Known Include="direct" />
+  </ItemGroup>
+</Project>
+"#;
+    let mut oracle = Oracle::spawn();
+    let mut tally = Tally::default();
+    check(&mut oracle, XML, false, &mut tally);
+    assert_eq!(tally.rejected, 0);
+    assert_eq!(
+        tally.clean, tally.lists,
+        "every list in the fixed case must be exact"
+    );
 }

@@ -1126,7 +1126,22 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
                 }
                 match excluded.excludes(&item.identity, &state.entry_project_dir) {
                     Some(true) => {}
-                    Some(false) => captured.push(item.with_metadata_applied(&metadata)),
+                    Some(false) => {
+                        #[allow(unused_mut)]
+                        let mut copy = item.with_metadata_applied(&metadata);
+                        // A copy takes this type's definitions beneath what it
+                        // carries from its source (the source's own definitions
+                        // among it): probed, `<K Include="@(H)"/>` holds K's
+                        // default for a name H gives no value, and H's where both
+                        // define one. A source whose definitions are not known
+                        // (a `@(ProjectReference)` copy) leaves them uncertain.
+                        #[cfg(any(test, feature = "test-support"))]
+                        if copy.definitions_applied {
+                            copy.exact_metadata =
+                                with_definitions(state, item_type, &copy.exact_metadata);
+                        }
+                        captured.push(copy)
+                    }
                     None => state.taint_item_list(item_type),
                 }
             }
@@ -1151,9 +1166,11 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
                 identity,
                 metadata: metadata.values.clone(),
                 #[cfg(any(test, feature = "test-support"))]
-                exact_metadata: metadata.exact.clone(),
+                exact_metadata: with_definitions(state, item_type, &metadata.exact),
                 #[cfg(any(test, feature = "test-support"))]
                 metadata_complete: true,
+                #[cfg(any(test, feature = "test-support"))]
+                definitions_applied: true,
                 metadata_uncertainties: metadata.uncertainties.clone(),
             }),
             None => state.taint_item_list(item_type),
@@ -1438,6 +1455,8 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
                 exact_metadata: HashMap::new(),
                 #[cfg(any(test, feature = "test-support"))]
                 metadata_complete: false,
+                #[cfg(any(test, feature = "test-support"))]
+                definitions_applied: false,
                 metadata_uncertainties: PACKAGE_METADATA_NAMES
                     .iter()
                     .map(|name| HelperMetadataUncertainty::new(name, "@(ProjectReference)"))
@@ -2256,7 +2275,15 @@ fn walk_package_reference(node: Node<'_, '_>, state: &mut State<'_>) {
                 op,
                 #[cfg(any(test, feature = "test-support"))]
                 row: match op {
-                    PackageRefOp::Include => source.row.clone().with_metadata_applied(&exact),
+                    PackageRefOp::Include => {
+                        let mut row = source.row.clone();
+                        if source.direct {
+                            row.exact_metadata =
+                                with_definitions(state, "PackageReference", &row.exact_metadata);
+                        }
+                        row.definitions_applied = source.direct;
+                        row.with_metadata_applied(&exact)
+                    }
                     PackageRefOp::Update => EvaluatedItem::bare(&id).with_metadata_applied(&exact),
                 },
                 id,
@@ -2931,6 +2958,10 @@ struct DependencyIdentitySource {
     /// bare literal identity.
     #[cfg(any(test, feature = "test-support"))]
     row: EvaluatedItem,
+    /// Whether the item is declared here (a literal identity), and so takes
+    /// its type's definitions, rather than copied from a helper.
+    #[cfg(any(test, feature = "test-support"))]
+    direct: bool,
 }
 
 fn read_package_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> PackageMetadata {
@@ -2991,6 +3022,8 @@ fn resolve_dependency_identity_sources(
                     metadata_uncertainties,
                     #[cfg(any(test, feature = "test-support"))]
                     row,
+                    #[cfg(any(test, feature = "test-support"))]
+                    direct: false,
                 });
             }
             continue;
@@ -3031,6 +3064,8 @@ fn resolve_dependency_identity_sources(
         resolved.push(DependencyIdentitySource {
             #[cfg(any(test, feature = "test-support"))]
             row: EvaluatedItem::bare(&identity),
+            #[cfg(any(test, feature = "test-support"))]
+            direct: true,
             identity,
             metadata: PackageMetadata::default(),
             metadata_uncertainties: Vec::new(),
@@ -3084,6 +3119,7 @@ impl EvaluatedItem {
             exact_metadata: HashMap::new(),
             metadata_uncertainties: Vec::new(),
             metadata_complete: true,
+            definitions_applied: false,
         }
     }
 
@@ -3977,7 +4013,63 @@ fn record_helper_item_definition_defaults(node: Node<'_, '_>, state: &mut State<
         for metadata in names {
             state.record_helper_item_definition_default(&item_type, &metadata.name);
         }
+        #[cfg(any(test, feature = "test-support"))]
+        record_item_definition_values(node, child, &item_type, state);
     }
+}
+
+/// Record the defaults one item definition (`child`, in the group `group`)
+/// gives its type, as [`State::item_definition_values`] keeps them. A later
+/// definition of a name replaces an earlier one, as in MSBuild's pass 2. A
+/// definition whose group or own condition the walk cannot decide may or may
+/// not apply, so each name it sets becomes unknown; a metadatum whose value
+/// or condition it cannot decide is unknown too. Read quietly: no dependency
+/// consumer reads these values.
+#[cfg(any(test, feature = "test-support"))]
+fn record_item_definition_values(
+    group: Node<'_, '_>,
+    child: Node<'_, '_>,
+    item_type: &str,
+    state: &mut State<'_>,
+) {
+    let previous = state.quiet_target_framework_reads.replace(true);
+    let (group_gate, group_tainted) = evaluate_item_condition_silent_with_sdk_taint(group, state);
+    let (child_gate, child_tainted) = evaluate_item_condition_silent_with_sdk_taint(child, state);
+    let decided = !group_tainted && !child_tainted;
+    let skipped =
+        decided && (!matches!(group_gate, CondGate::Run) || !matches!(child_gate, CondGate::Run));
+    let metadata = (!skipped).then(|| read_generic_item_metadata(child, state));
+    state.quiet_target_framework_reads.set(previous);
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let defaults = state
+        .item_definition_values
+        .entry(item_key(item_type))
+        .or_default();
+    for (name, value) in metadata.exact {
+        defaults.insert(name, value.filter(|_| decided));
+    }
+    for uncertainty in metadata.uncertainties {
+        defaults.insert(item_key(&uncertainty.name), None);
+    }
+}
+
+/// `exact` (an item's own metadata) over `item_type`'s definition defaults:
+/// the exact metadata of an item declared directly.
+#[cfg(any(test, feature = "test-support"))]
+fn with_definitions(
+    state: &State<'_>,
+    item_type: &str,
+    exact: &HashMap<String, Option<String>>,
+) -> HashMap<String, Option<String>> {
+    let mut merged = state
+        .item_definition_values
+        .get(&item_key(item_type))
+        .cloned()
+        .unwrap_or_default();
+    merged.extend(exact.iter().map(|(k, v)| (k.clone(), v.clone())));
+    merged
 }
 
 struct ItemDefinitionMetadataName {

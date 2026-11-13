@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use super::item_pass::{
     helper_item_definition_default_uncertainties, is_package_id_shape, item_list_view,
 };
-use super::{EvaluatedItem, HelperMetadataUncertainty};
+use super::{EvaluatedItem, HelperMetadataUncertainty, HelperMetadataUncertaintyKind};
 use super::{State, is_toolset_initial_property_name, item_key};
 use crate::UntrustedCause;
 
@@ -162,9 +162,16 @@ impl State<'_> {
                 .iter()
                 .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
                 .collect(),
+            // A row whose definitions are applied holds them in `exact_metadata`
+            // (as `None` where unknown), so a mark that only says "an item
+            // definition may set this" says nothing more.
             uncertain_metadata: item
                 .metadata_uncertainties
                 .iter()
+                .filter(|u| {
+                    !(item.definitions_applied
+                        && u.kind == HelperMetadataUncertaintyKind::ItemDefinitionDefault)
+                })
                 .map(|u| u.name.to_ascii_lowercase())
                 .chain(
                     item.exact_metadata
@@ -184,9 +191,11 @@ impl State<'_> {
                 .iter()
                 .map(|item| {
                     let mut item = item.clone();
-                    item.metadata_uncertainties.extend(
-                        helper_item_definition_default_uncertainties(&key, &item, self),
-                    );
+                    if !item.definitions_applied {
+                        item.metadata_uncertainties.extend(
+                            helper_item_definition_default_uncertainties(&key, &item, self),
+                        );
+                    }
                     for name in &self.package_reference_unknown_names {
                         item.exact_metadata.remove(name);
                         item.metadata_uncertainties
@@ -219,19 +228,24 @@ impl State<'_> {
         let exact = view
             .as_ref()
             .is_some_and(|items| items.iter().all(|item| !item.identity.contains('\\')));
-        let items = match view {
-            Some(items) => Some(items.iter().map(row).collect()),
-            None => self.evaluated_items.get(&key).map(|list| {
+        // The rows are the table's own: an item declared directly holds its
+        // type's definitions already, and only a copy is left with them
+        // uncertain. A type with no table (`ProjectReference`) reads as the view.
+        let items = match self.evaluated_items.get(&key) {
+            Some(list) => Some(
                 list.iter()
                     .map(|item| {
                         let mut item = item.clone();
-                        item.metadata_uncertainties.extend(
-                            helper_item_definition_default_uncertainties(&key, &item, self),
-                        );
+                        if !item.definitions_applied {
+                            item.metadata_uncertainties.extend(
+                                helper_item_definition_default_uncertainties(&key, &item, self),
+                            );
+                        }
                         row(&item)
                     })
-                    .collect()
-            }),
+                    .collect(),
+            ),
+            None => view.map(|items| items.iter().map(row).collect()),
         };
         ItemRead {
             items,

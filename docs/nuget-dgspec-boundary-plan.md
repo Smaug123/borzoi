@@ -1802,6 +1802,37 @@ F# SDK's item-definition default, which the walk records but does not
 apply. Applying item-definition defaults, rather than declining them, is
 what would make it exact.
 
+##### A₁.3b: item-definition defaults — landed
+
+The walk records each type's item-definition defaults with their values
+(`State::item_definition_values`), as MSBuild's pass 2 leaves them:
+- a later definition of a name replaces an earlier one;
+- a definition whose group or own condition the walk cannot decide makes
+  every name it sets unknown;
+- so does a metadatum whose value or condition it cannot decide.
+
+An item declared directly takes them beneath its own metadata. A copy
+(`<K Include="@(H)"/>`) takes K's definitions beneath everything it carries
+from H, H's own definitions included; probed, MSBuild does the same. Such
+rows are `definitions_applied`, and the probe no longer marks a name
+uncertain because a definition may set it. A copy of `@(ProjectReference)`,
+whose definitions are not known, keeps that mark. As before, the dependency
+capture keeps its own reading. It only runs in the differential tests'
+build.
+
+`fsproj_generic_items_generative_diff` now writes up to two definition
+groups per project, with conditions on the group, the definition and each
+metadatum: decidable either way, and undecidable for the walk while either
+true or false in MSBuild. A fixed case pins the copy semantics. Each of
+these reversals fails it:
+- the first definition winning;
+- trusting an undecidable condition;
+- an item's definitions overriding its own metadata;
+- a copy without its destination's definitions.
+
+On the fixtures, every `PackageReference` now agrees with MSBuild on every
+name, `GeneratePathProperty` included.
+
 #### A₁.4: the task leaves
 
 These are the 23 non-built-in tasks of stage 8's census. (`RemoveDuplicates`
