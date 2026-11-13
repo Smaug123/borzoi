@@ -1708,7 +1708,9 @@ So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
    discipline (landed; see *A₁.3b: every metadatum* below);
 2. expose the dedicated buckets as item lists the executor can read
-   (`PackageReference` landed; see *A₁.3b: `PackageReference` rows* below);
+   (`PackageReference` and `FrameworkReference` landed; see *A₁.3b:
+   `PackageReference` rows* below; `PackageVersion` and `ProjectReference`
+   remain);
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
@@ -1832,6 +1834,13 @@ these reversals fails it:
 
 On the fixtures, every `PackageReference` now agrees with MSBuild on every
 name, `GeneratePathProperty` included.
+
+`FrameworkReference` takes the same rows (`included_row`, shared with
+`PackageReference`) and the same exactness: a certain dependency set, no
+opacity, and package-id-shaped identities. Every fixture's reference agrees
+with MSBuild on every name. `PackageVersion` needs its own exactness first.
+Until central versions are applied, any `PackageVersion` marks the whole
+dependency set uncertain, so that flag cannot vouch for its rows.
 
 #### A₁.4: the task leaves
 

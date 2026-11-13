@@ -182,12 +182,21 @@ impl State<'_> {
                 .collect(),
             metadata_complete: item.metadata_complete,
         };
-        // `PackageReference` lives in the dependency capture, whose certainty
-        // covers its identities: exact when that set is certain and nothing
-        // was hidden from the walk.
-        if key == item_key("PackageReference") {
-            let rows = self
-                .package_reference_rows
+        // `PackageReference` and `FrameworkReference` live in the dependency
+        // capture, whose certainty covers their identities: exact when that set
+        // is certain and nothing was hidden from the walk.
+        let dependency = if key == item_key("PackageReference") {
+            Some((
+                &self.package_reference_rows,
+                Some(&self.package_reference_unknown_names),
+            ))
+        } else if key == item_key("FrameworkReference") {
+            Some((&self.framework_reference_rows, None))
+        } else {
+            None
+        };
+        if let Some((dependency_rows, unknown_names)) = dependency {
+            let rows = dependency_rows
                 .iter()
                 .map(|item| {
                     let mut item = item.clone();
@@ -196,7 +205,7 @@ impl State<'_> {
                             helper_item_definition_default_uncertainties(&key, &item, self),
                         );
                     }
-                    for name in &self.package_reference_unknown_names {
+                    for name in unknown_names.into_iter().flatten() {
                         item.exact_metadata.remove(name);
                         item.metadata_uncertainties
                             .push(HelperMetadataUncertainty::new(name, "an Update"));
@@ -206,8 +215,7 @@ impl State<'_> {
                 .collect();
             // An identity outside the package-id shape is one MSBuild may spell
             // otherwise (the Unix path fixup rewrites `\a\b`).
-            let spelled_as_written = self
-                .package_reference_rows
+            let spelled_as_written = dependency_rows
                 .iter()
                 .all(|item| is_package_id_shape(&item.identity));
             return ItemRead {
