@@ -475,6 +475,10 @@ pub mod host_fs {
         std::fs::symlink_metadata(path)
     }
 
+    pub fn read_link(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+        std::fs::read_link(path)
+    }
+
     /// The `Path` probes, under names that do not collide with the inherent
     /// methods (which would win method resolution).
     pub trait HostPath {

@@ -1201,6 +1201,14 @@ corpus project is reported, so Stage 3b's validation cost is known in advance.
   the `test-support` feature: about 130 test call sites were rewritten,
   as Stage 2a rewrote the LSP's, rather than allowing the lint (which
   would lift the spawn bans too). No test's assertions changed.
+- The restore-cone read census (`evaluator::reads`, stage A₁.3a of
+  `docs/nuget-dgspec-boundary-plan.md`) is a different kind of read: which
+  properties and item types the restore targets read from the evaluation's
+  end state, against MSBuild's. It records no file-system query, so it
+  neither duplicates the read set nor offers a second record of it. The two
+  meet in one place: the census asserts that a probed walk returns the same
+  `ParsedProject` as an unprobed one, and that comparison now includes the
+  read set.
 - The LSP emits each evaluation's counts and read-set size as an
   `observed.evaluation` event (`observed::report_evaluation`), and
   `edit_counts` prints them as `e.open`, `e.stat`, `e.list`, `e.canon` and
@@ -1257,6 +1265,13 @@ The oracle (`crates/msbuild/src/observed/soundness.rs`):
   evaluation reading the host's order could change with no entry changing
   (Codex; `a_listing_is_sorted_by_name`). Every reader sorted or selected
   by version already, so no result moves.
+- After every perturbation the sweep asserts that the tree is back exactly
+  as it was (each entry's kind, permissions, bytes and symlink target),
+  rather than trusting its undo. Codex's last rounds found the undo
+  changing permissions and failing on unreadable files one shape at a time;
+  the snapshot catches any such infidelity, and the undo now keeps
+  permissions and leaves unreadable files alone
+  (`the_sweep_keeps_permissions`).
 - Workload manifest resolution probes its manifests in key order: a probe
   that degrades stops the loop, so `HashMap` order decided what the probes
   before it recorded (Codex;

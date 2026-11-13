@@ -432,3 +432,44 @@ fn the_sweep_writes_only_under_its_root() {
     }
     sweep(&root, &evaluate, &[]);
 }
+
+/// An unreadable import is left alone, and a read-only one is put back with
+/// its permissions.
+#[cfg(unix)]
+#[test]
+fn the_sweep_keeps_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let tmp = TempDir::new().unwrap();
+    let root = canon(tmp.path());
+    let unreadable = write_at(&root, "proj/unreadable.props", &writes("U", "1"));
+    let read_only = write_at(&root, "proj/read_only.props", &writes("R", "1"));
+    let mode = |path: &Path| {
+        crate::observed::host_fs::metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let source = r#"<Project>
+  <Import Project="unreadable.props" />
+  <Import Project="read_only.props" />
+</Project>"#;
+    let project = write_at(&root, "proj/Demo.fsproj", source);
+    let evaluate = || {
+        parse_fsproj_with_imports(
+            source,
+            &project,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            None,
+        )
+        .expect("well-formed XML parses")
+    };
+    sweep(&root, &evaluate, &[]);
+    assert_eq!(mode(&unreadable), 0o000);
+    assert_eq!(mode(&read_only), 0o444);
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+}

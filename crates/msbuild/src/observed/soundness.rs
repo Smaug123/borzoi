@@ -132,6 +132,7 @@ pub fn sweep(root: &Path, evaluate: &dyn Fn() -> ParsedProject, extra: &[Perturb
         "a read set is stale straight after its evaluation"
     );
     assert_eq!(evaluate(), base, "the evaluation is not deterministic");
+    let before = snapshot(root);
     let mut tally = Tally::default();
     for perturbation in perturbations(root, &base.read_set).iter().chain(extra) {
         let undo = match apply(&perturbation.edits) {
@@ -168,13 +169,49 @@ pub fn sweep(root: &Path, evaluate: &dyn Fn() -> ParsedProject, extra: &[Perturb
                 }
             }
         }
+        assert!(
+            snapshot(root) == before,
+            "restoring after {perturbation:?} left the tree changed"
+        );
         assert_eq!(
             base.read_set.first_stale(),
             None,
-            "restoring after {perturbation:?} left the tree changed"
+            "restoring after {perturbation:?} left a read stale"
         );
     }
     tally
+}
+
+/// Everything under `root` a restore must put back: each entry's kind,
+/// permissions, and bytes (a file's, if readable) or target (a symlink's).
+fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, (String, Option<Vec<u8>>)> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = host_fs::read_dir(&dir) else {
+            continue;
+        };
+        for path in entries.flatten().map(|e| e.path()) {
+            let Ok(meta) = host_fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let kind = format!("{:?} {:?}", meta.file_type(), meta.permissions());
+            let content = if meta.file_type().is_symlink() {
+                host_fs::read_link(&path)
+                    .ok()
+                    .map(|t| t.into_os_string().into_encoded_bytes())
+            } else if meta.is_file() {
+                host_fs::read(&path).ok()
+            } else {
+                if meta.is_dir() {
+                    stack.push(path.clone());
+                }
+                None
+            };
+            out.insert(path, (kind, content));
+        }
+    }
+    out
 }
 
 /// The first field that differs, for a failure message.
@@ -409,7 +446,8 @@ enum Prior {
         /// The topmost directory the perturbation had to create, if any.
         created: Option<PathBuf>,
     },
-    File(Vec<u8>),
+    /// Its bytes and permissions.
+    File(Vec<u8>, std::fs::Permissions),
     Dir(PathBuf),
 }
 
@@ -423,7 +461,12 @@ fn apply(edits: &[Edit]) -> Result<Undo, Undo> {
     for edit in edits {
         let path = edit.path();
         let prior = match host_fs::symlink_metadata(path) {
-            Ok(meta) if meta.is_file() => Prior::File(host_fs::read(path).expect("read")),
+            Ok(meta) if meta.is_file() => match host_fs::read(path) {
+                Ok(bytes) => Prior::File(bytes, meta.permissions()),
+                // An unreadable file (a test of unreadable trees) cannot be
+                // put back as it was, so it is not perturbed.
+                Err(_) => return Err(Undo { priors }),
+            },
             Ok(meta) if meta.is_dir() => {
                 let aside = path.with_extension("perturbation-aside");
                 std::fs::rename(path, &aside).expect("move the directory aside");
@@ -441,7 +484,7 @@ fn apply(edits: &[Edit]) -> Result<Undo, Undo> {
                 .map_or(Ok(()), std::fs::create_dir_all)
                 .and_then(|()| std::fs::write(path, bytes)),
             Edit::Delete(path) => match prior {
-                Prior::File(_) => std::fs::remove_file(path),
+                Prior::File(..) => std::fs::remove_file(path),
                 _ => Ok(()),
             },
         };
@@ -490,7 +533,10 @@ impl Undo {
                         std::fs::remove_dir_all(created).expect("remove created directories");
                     }
                 }
-                Prior::File(bytes) => std::fs::write(&path, bytes).expect("restore"),
+                Prior::File(bytes, permissions) => {
+                    std::fs::write(&path, bytes).expect("restore");
+                    std::fs::set_permissions(&path, permissions).expect("restore permissions");
+                }
                 Prior::Dir(aside) => std::fs::rename(aside, &path).expect("restore"),
             }
         }
