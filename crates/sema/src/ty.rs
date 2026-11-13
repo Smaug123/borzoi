@@ -1229,6 +1229,20 @@ mod spelled_form {
         }
 
         #[test]
+        fn a_path_is_exactly_the_segments_it_spells(
+            a in path(),
+            b in path(),
+            decoys in prop::collection::vec(path(), 0..6),
+        ) {
+            let names = table(&decoys);
+            let ty_path = TyPath::new(&names, &a);
+            let b: Vec<&str> = b.iter().map(String::as_str).collect();
+            prop_assert_eq!(ty_path.is(&names, &b), a == b);
+            let a: Vec<&str> = a.iter().map(String::as_str).collect();
+            prop_assert!(ty_path.is(&names, &a));
+        }
+
+        #[test]
         fn a_type_renders_as_its_spelling_does(
             s in spelled(),
             decoys in prop::collection::vec(path(), 0..6),
