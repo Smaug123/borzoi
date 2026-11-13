@@ -78,14 +78,20 @@ use contributors::FileContributions;
 use decl_path::{DeclPath, ExportName};
 use open_scope::OpenScope;
 use path_set::PathSet;
+use prescan::Prescan;
+use unknowables::{Unknowable, Unknowables};
+use windows::Windows;
 mod decls;
 mod exprs;
 mod lookup;
 mod model;
 mod open_scope;
 mod path_set;
+mod prescan;
 mod state;
 mod types;
+mod unknowables;
+mod windows;
 
 pub use model::{
     CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
@@ -118,7 +124,8 @@ pub fn resolve_file(
     // scaffolding is `#[cfg]`'d out (and `tracing`-free) in the default build.
     #[cfg(feature = "otel")]
     let _phase = tracing::info_span!("resolver_new").entered();
-    let mut r = Resolver::new(preceding, assemblies);
+    let prescan = prescan::Prescan::of(file.syntax());
+    let mut r = Resolver::new(preceding, assemblies, &prescan);
     r.recovery = recovery.clone();
     r.dropped_decls = dropped_in_namespace(file);
     #[cfg(feature = "otel")]
@@ -132,17 +139,7 @@ pub fn resolve_file(
     // FooAttribute` is declared before or after it, or in a sibling block.
     // Over-approximate (an augmentation target's last segment counts too),
     // which is sound: a spurious match only adds a defer.
-    if file
-        .syntax()
-        .descendants_of::<ExceptionDefnDecl>()
-        .any(|e| exception_named_like_core_attribute(&e))
-    {
-        r.declares_core_attribute_alias = true;
-    }
     for defn in file.syntax().descendants_of::<TypeDefn>() {
-        if type_defn_renames_core_attribute(&defn) {
-            r.declares_core_attribute_alias = true;
-        }
         if custom_operations::type_defn_renames_custom_operation(&defn) {
             r.contributions.declares_custom_operation_alias = true;
         }
@@ -562,7 +559,7 @@ pub fn resolve_file(
         if matches!(module.kind(), ModuleOrNamespaceKind::GlobalNamespace)
             && r.scope.latest_open_pos != 0
         {
-            r.global_block_opened = true;
+            r.unknowables.raise(Unknowable::GlobalBlockOpen);
         }
         let mut frame = r
             .scopes
@@ -1913,7 +1910,7 @@ fn signature_type_places_under(
 /// ([`thread_forward`]) and the incremental fold's in-sync comparison can
 /// never disagree about what a file contributes.
 fn wholesale_extension_contribution(rf: &ResolvedFile, assemblies: &AssemblyEnv) -> bool {
-    rf.augmentation_names_unknowable || rf.attributes_may_declare_extension(assemblies)
+    rf.augmentation_names_unknowable() || rf.attributes_may_declare_extension(assemblies)
 }
 
 /// Whether two Compile items are the **same file**: equal kind and
@@ -2260,8 +2257,11 @@ fn module_prefix(module: &ModuleOrNamespace) -> Option<Vec<String>> {
 }
 
 impl<'a> Resolver<'a> {
-    fn new(preceding: &'a ProjectItems, assemblies: &'a AssemblyEnv) -> Self {
+    fn new(preceding: &'a ProjectItems, assemblies: &'a AssemblyEnv, prescan: &'a Prescan) -> Self {
         Resolver {
+            prescan,
+            unknowables: Unknowables::default(),
+            windows: Windows::default(),
             defs: Vec::new(),
             items: Vec::new(),
             resolutions: HashMap::default(),
@@ -2302,7 +2302,6 @@ impl<'a> Resolver<'a> {
             namespace_paths: Vec::new(),
             block_namespace_start: 0,
             block_container_len: 0,
-            global_block_opened: false,
             lexical_auto_open_paths: Vec::new(),
             nested_module_locals: PathSet::default(),
             top_level_nested_locals: HashMap::default(),
@@ -2318,7 +2317,6 @@ impl<'a> Resolver<'a> {
             modules_with_hidden_values: HashSet::default(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
-            open_extension_unknowable: false,
             attribute_resolutions: HashMap::default(),
             own_type_simple_names: HashSet::default(),
             own_module_simple_names: HashSet::default(),
@@ -2336,28 +2334,21 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::default(),
             own_abbrev_type_simple_names: HashSet::default(),
             own_auto_open_type_names: HashSet::default(),
-            attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::default(),
             augmentation_static_names: HashSet::default(),
-            augmentation_names_unknowable: false,
             block_type_defs: HashSet::default(),
             block_starts: Vec::new(),
             augmentable_types: HashSet::default(),
             module_aliases: HashMap::default(),
             contributions: FileContributions::default(),
             own_extension_statics: std::collections::BTreeSet::new(),
-            rec_contribution: None,
-            declares_core_attribute_alias: false,
             custom_operation_clauses: HashMap::default(),
             in_file_constructions: HashMap::default(),
             module_frames: Vec::new(),
             auto_open_type_paths: HashSet::default(),
             anonymous_root: false,
-            pending_items: HashSet::default(),
-            ap_body_case_names: HashSet::default(),
             active_pattern_shape: HashMap::default(),
             excluded_param_ranges: HashSet::default(),
-            decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
             recovery: SyntaxRecovery::Unretained,
@@ -2634,6 +2625,7 @@ impl<'a> Resolver<'a> {
         self.debug_assert_shadowable_types_are_attributed();
         self.debug_assert_commit_maps_are_disjoint();
         self.debug_assert_opaque_regions_record_nothing();
+        self.windows.assert_closed();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,
@@ -2648,11 +2640,10 @@ impl<'a> Resolver<'a> {
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
             contributions: self.contributions,
-            declares_core_attribute_alias: self.declares_core_attribute_alias,
-            attribute_shape_unknowable: self.attribute_shape_unknowable,
+            declares_core_attribute_alias: self.prescan.declares_core_attribute_alias,
+            unknowables: self.unknowables,
             augmentation_instance_names: self.augmentation_instance_names,
             augmentation_static_names: self.augmentation_static_names,
-            augmentation_names_unknowable: self.augmentation_names_unknowable,
             // Stamped by the Compile-order fold; a single file has no
             // preceding files.
             preceding_augmentation_instance_names: HashSet::default(),
@@ -2664,7 +2655,6 @@ impl<'a> Resolver<'a> {
             // `resolve_project`; a single file has no preceding files.
             preceding_declares_extension_source: false,
             open_extension_namespaces: self.open_extension_namespaces,
-            open_extension_unknowable: self.open_extension_unknowable,
             active_pattern_shape: self.active_pattern_shape,
             diagnostics: self.diagnostics,
             resolution_trace: model::ResolutionTrace {

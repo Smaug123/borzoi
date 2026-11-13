@@ -5,8 +5,9 @@
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
 > product on ids), 5 (the remaining path and name keys, in three parts), 6a
 > (export-declaration paths on ids), 6b (definitions' names on ids), 6c
-> (exports' published names on ids), 7 (`Ty` paths on ids) and 9
-> (`OpenScope`) implemented.
+> (exports' published names on ids), 7 (`Ty` paths on ids), 9
+> (`OpenScope`) and 10 (file-wide unknowables and windows) implemented;
+> Stage 8's gate re-measured at Stage 7 and not met.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -1062,6 +1063,17 @@ puts `Ty`'s clone, drop, equality and hashing above about 10% of infer's
 instructions. The oracle, if it is built, is the same as Stage 7's, plus the
 interning-order test over types.
 
+**Gate, measured at Stage 7** (`ca1eda3f`, the head that squash-merged as
+`451254e0`): **not met.** A Time Profiler run of `sema_counts` as for Stage
+7's premise (1,528 samples in `infer_file`) puts `Ty`'s drop (its drop glue,
+`Vec<Ty>`'s and `Rc<Ty>`'s) at 2.6% inclusive and its clone (`Ty`'s and
+`Vec<Ty>`'s) at 1.1%; equality and hashing have no frame of their own (they
+inline), and the samples under any of these frames together are 3.7%. The same
+classification over Stage 7's premise profile at `7cf250bd` gives 7.4%; the
+`Vec<String>` and `String` clones that profile counted at 3.5% each were the
+paths', and are 0.6% each now, none of them `Ty`'s. Infer is 159.5
+instructions per byte beside resolve's 865.5.
+
 ### Stage 9: `OpenScope`
 
 **Dependencies**: none. It conflicts textually with Stage 4 (the same fields
@@ -1096,6 +1108,101 @@ and D5's implication is false, not merely unencoded.
 **Dependencies**: Stage 9. **Implements**: the rest of D5.
 
 **Oracle**: every gate is unchanged.
+
+**Premise, re-measured** at Stage 7's head (`ca1eda3f`): the flags are
+read on paths no profile of resolve has attributed time to, so the stage is
+structural, and its counts are about 0, as D5 expects.
+
+**Implemented** (`resolve/unknowables.rs`, `resolve/prescan.rs`,
+`resolve/windows.rs`):
+
+- **`Unknowables`.** `open_extension_unknowable`,
+  `attribute_shape_unknowable`, `augmentation_names_unknowable` and
+  `global_block_opened` are one set of `Unknowable` reasons, a bitset with
+  `raise` and `contains` and no way to lower a reason. Each raise site names
+  its reason; the read sites ask `contains`. `ResolvedFile` carries the set,
+  and its public accessors (`open_extension_unknowable`,
+  `augmentation_names_unknowable`, `attributes_may_declare_extension`) read
+  it, so nothing outside sema changes. A property test
+  (`unknowables::tests`) holds the set to exactly the reasons raised into it
+  after every raise.
+- **`Prescan`.** Of the five file-wide flags, only
+  `declares_core_attribute_alias` is computed before the walk; it is a
+  `Prescan` that `resolve_file` builds first and the `Resolver` borrows
+  (`&'a Prescan`), so the compiler rejects a write from the walk. The test it
+  computes is the one a signature file's contributions use, now one function
+  (`prescan::declares_core_attribute_alias`). The rest of the prescan facts
+  (`own_type_simple_names`, `own_binder_simple_names` and their siblings) are
+  D6's group and move into `Prescan` with Stage 11.
+- **`Windows`.** The state set for a call's dynamic extent and restored
+  after it is `Windows`: the binding-head flag
+  (`decline_binding_head_param_exprs`), and, with the same lifetime though D5's
+  table counted only booleans, the non-`rec` group's pending binders
+  (`pending_items`) and the recognizer-body case names (`ap_body_case_names`).
+  Its fields are private to its module, read through predicates
+  (`in_binding_head`, `is_pending`, `is_ap_body_case`), and written only by
+  scoped calls (`with_binding_head`, `with_pending_items`,
+  `with_ap_body_cases`), each of which restores the outer value after the
+  body, so no early return in the body can skip it. In debug builds a scoped
+  call asserts that the body hands the window back holding the value it was
+  opened with, and the finished walk asserts that every window is closed.
+  `with_ap_body_cases` leaves the window as it is for a binding with no
+  cases, where the hand-written version cloned the set to restore it.
+- **The rec block joins `OpenScope`.** `rec_contribution` (renamed
+  `OpenScope::rec_block`) has the open scope's lifetime, reset at each
+  top-level block and restored when a nested module ends, but Stage 9 left it
+  outside, with the last hand-written save and restore in `nested_module`.
+  Inside `OpenScope` it comes back through `leave`, whose debug assertion now
+  covers it.
+- **Not taken**: `anonymous_root`, D5's per-block row, is set once at each
+  block's start and only read; it has no save or restore to replace, and
+  Stage 11's split decides its group. The scope and type-parameter frame
+  stacks (`scopes`, `typar_scopes`) are pushed and popped around calls too,
+  but a pop's frame is often read back (a block's frame is stored for the
+  next same-named block), so they are stacks, not windows.
+
+**Oracle and planted bugs.** Every gate is unchanged, and the whole-corpus
+dump of Stage 7 is byte-identical before and after. Eight planted bugs, run
+against the whole sema suite:
+
+- two reasons sharing a bit: the property test;
+- an attribute-shape raise filed as an augmentation one: **passed the whole
+  suite**, since both reasons make the extension gate defer. A routing table
+  (`each_construct_raises_exactly_its_reason`) now holds each construct, a
+  plain file included, to exactly the reasons it raises, and the public
+  accessors to the set, and fails on it. The second attribute-shape raise
+  site (a name node with no identifier) is reached by none of the inputs
+  probed, so the table cannot pin it;
+- a scoped call that does not restore a `bool` window: the closed-windows
+  assertion, in 71 cases of the library suite;
+- a write inside a window's extent that bypasses the scoped calls (a bare
+  case use adding to the recognizer-body set): the scoped call's exit
+  assertion, in `def::tests`;
+- a recognizer-body window that does not accumulate for a nested
+  recognizer: **passed the whole suite**. A test that an outer recognizer's
+  case declines inside a nested recognizer's body
+  (`an_outer_recognizer_case_declines_inside_a_nested_recognizer_body`) now
+  fails on it, binding the earlier same-named value;
+- a prescan that drops the exception half of the alias test:
+  `union_rqa_attribute_grid`;
+- the binding-head window opened for match-clause patterns too: 13 cases of
+  `resolve_active_patterns`, `resolve_scoping`, `resolve_diff` and their
+  neighbours;
+- a nested module's rec block leaking out through `leave`: `leave`'s
+  assertion, in the library suite.
+
+**Measured** (on Stage 7 at `ca1eda3f`): `resolve_file` 865.5 → 863.5
+instructions per byte (−0.2%), allocations 0.686 per byte before and after;
+the whole tree as one project (`resolve_project`, the throwaway variant of
+5a) 865.1 → 867.2 (+0.2%), allocations 0.609 before and after; infer 159.5 →
+161.8 with its code unchanged (it runs on the heap resolve leaves behind, as
+at Stage 4); parse 512.7 → 511.4, its code unchanged. About 0, as expected:
+the stage buys the lifetimes, not speed. The census is unchanged, and the
+whole-corpus dump of Stage 7 (resolutions, attribute resolutions, decline
+sites, definitions, diagnostics, exports, opaque binders and regions,
+namespace paths and inferred types; each file alone, each directory as a
+project, and each signed directory's implementation files inferred as one
+project) is byte-identical before and after.
 
 ### Stage 11: the resolver split
 

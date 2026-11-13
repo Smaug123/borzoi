@@ -93,9 +93,7 @@ impl<'a> Resolver<'a> {
                     _ => None,
                 })
                 .collect();
-            let saved = std::mem::replace(&mut self.pending_items, pending);
-            self.resolve_rhss(&prepared);
-            self.pending_items = saved;
+            self.with_pending_items(pending, |r| r.resolve_rhss(&prepared));
             self.add_eager_entries(&prepared);
             self.add_items(&prepared);
         }
@@ -488,11 +486,11 @@ impl<'a> Resolver<'a> {
             // Mark the binding's own case names for its RHS (mirrors the
             // module-level [`resolve_rhss`]): a bare body use of the recognizer's
             // own case name declines rather than commit an outer value or the case.
-            let restore = self.enter_ap_body(ap_cases);
-            if let Some(rhs) = rhs {
-                self.resolve_expr(rhs);
-            }
-            self.ap_body_case_names = restore;
+            self.with_ap_body_cases(ap_cases, |r| {
+                if let Some(rhs) = rhs {
+                    r.resolve_expr(rhs);
+                }
+            });
             self.scopes.pop();
             if pushed_typars {
                 self.typar_scopes.pop();
@@ -546,29 +544,16 @@ impl<'a> Resolver<'a> {
             // [`resolve_name_use`](Self::resolve_name_use) declines a bare use
             // rather than commit an outer same-named value (the AP-body-shadow bug)
             // or the case. Only bare uses are affected; a qualified head is untouched.
-            let restore = self.enter_ap_body(&p.eager_entries);
-            if let Some(rhs) = &p.rhs {
-                self.resolve_expr(rhs);
-            }
-            self.ap_body_case_names = restore;
+            self.with_ap_body_cases(&p.eager_entries, |r| {
+                if let Some(rhs) = &p.rhs {
+                    r.resolve_expr(rhs);
+                }
+            });
             self.scopes.pop();
             if pushed_typars {
                 self.typar_scopes.pop();
             }
         }
-    }
-
-    /// Add each entry's case name to [`Self::ap_body_case_names`] for the duration
-    /// of a recognizer's RHS, returning the previous set to restore afterward
-    /// (accumulating for nested recognizers). A no-op when `case_entries` is empty
-    /// (an ordinary, non-active-pattern binding).
-    fn enter_ap_body(&mut self, case_entries: &[ScopeEntry]) -> HashSet<String> {
-        let restore = self.ap_body_case_names.clone();
-        for e in case_entries {
-            self.ap_body_case_names
-                .insert(self.assemblies.names().text(e.name).to_string());
-        }
-        restore
     }
 
     /// The frame top-level bindings of the *current* module are added to. At

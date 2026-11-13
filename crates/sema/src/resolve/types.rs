@@ -26,6 +26,7 @@ use super::open_scope::PrefixRef;
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
 };
+use super::unknowables::Unknowable;
 use crate::names::{NameKey, PathKey, Segments};
 use crate::recovery::SyntaxRecovery;
 
@@ -699,7 +700,7 @@ impl<'a> Resolver<'a> {
     ///   result-case construction (FCS `ActivePatternCase`) and a fresh uppercase
     ///   pattern rebinding (FCS a fresh local), which this pass cannot tell apart,
     ///   so the caller pushes a decline *barrier* around the RHS
-    ///   ([`enter_ap_body`](Self::enter_ap_body), see
+    ///   ([`with_ap_body_cases`](Self::with_ap_body_cases), see
     ///   [`resolve_local_let_rhss`](Self::resolve_local_let_rhss))
     ///   that only stops the body use committing an outer same-named value. A
     ///   sound coverage gap, never a wrong answer.
@@ -2320,7 +2321,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     // No name node at all: the gate cannot key this attribute
                     // and must keep the presence defer for the file.
-                    self.attribute_shape_unknowable = true;
+                    self.unknowables.raise(Unknowable::AttributeShape);
                 }
             }
         }
@@ -2364,7 +2365,7 @@ impl<'a> Resolver<'a> {
         let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
             // A name node with no ident tokens: unkeyable, like the nameless
             // case — the gate keeps the presence defer.
-            self.attribute_shape_unknowable = true;
+            self.unknowables.raise(Unknowable::AttributeShape);
             return;
         };
         // FCS records the attribute-type use at the written path's range
@@ -3639,23 +3640,24 @@ impl<'a> Resolver<'a> {
         // (`let f (DivBy divisor) = …`, or a later curried param referencing an
         // earlier one) must not commit its expression against the enclosing scope
         // before the earlier curried params are visible (see
-        // [`Self::decline_binding_head_param_exprs`]). Decline such argument
-        // resolutions for the duration; the binder exclusion still runs.
-        let saved = std::mem::replace(&mut self.decline_binding_head_param_exprs, true);
-        if let Pat::LongIdent(p) = head
-            && p.active_pat_name().is_none()
-            && (p.args().next().is_some() || p.name_pat_pairs().is_some())
-            && p.head().is_some_and(|h| h.idents().take(2).count() == 1)
-        {
-            // Function-binding form (`let DivBy x = x`, `let f a b = …`): the head
-            // is the defined function's name (a binder, interned by the caller's
-            // `binders` loop), so record no case reference and apply no split. The
-            // arguments are ordinary param patterns.
-            self.resolve_applied_arg_patterns(p);
-        } else {
-            self.resolve_pat_types(head);
-        }
-        self.decline_binding_head_param_exprs = saved;
+        // [`Windows::in_binding_head`](super::windows::Windows::in_binding_head)).
+        // Decline such argument resolutions for the duration; the binder
+        // exclusion still runs.
+        self.with_binding_head(true, |r| {
+            if let Pat::LongIdent(p) = head
+                && p.active_pat_name().is_none()
+                && (p.args().next().is_some() || p.name_pat_pairs().is_some())
+                && p.head().is_some_and(|h| h.idents().take(2).count() == 1)
+            {
+                // Function-binding form (`let DivBy x = x`, `let f a b = …`): the
+                // head is the defined function's name (a binder, interned by the
+                // caller's `binders` loop), so record no case reference and apply
+                // no split. The arguments are ordinary param patterns.
+                r.resolve_applied_arg_patterns(p);
+            } else {
+                r.resolve_pat_types(head);
+            }
+        });
     }
 
     /// Split the curried `args` of an applied *same-file active-pattern* head of
@@ -3799,7 +3801,7 @@ impl<'a> Resolver<'a> {
     /// - **Value uses** — a `Named` leaf, or a single-segment `LongIdent` head
     ///   (nullary `Eq A`, or applied `Eq (Foo x)`; resolved through the *value*
     ///   namespace, not the constructor one) — are gated on
-    ///   [`decline_binding_head_param_exprs`](Self::decline_binding_head_param_exprs):
+    ///   the binding-head window ([`Windows::in_binding_head`](super::windows::Windows::in_binding_head)):
     ///   in a binding-head position an earlier curried parameter that should shadow
     ///   the name is not yet in scope, so committing to an enclosing value would be
     ///   a wrong target — decline there (the binder exclusion still runs, so no
@@ -3820,7 +3822,7 @@ impl<'a> Resolver<'a> {
         // exclusion already ran) rather than risk committing to an enclosing value
         // an earlier, not-yet-in-scope curried parameter should shadow. Type uses are
         // unaffected and always resolve.
-        let resolve_values = !self.decline_binding_head_param_exprs;
+        let resolve_values = !self.windows.in_binding_head();
         match arg {
             Pat::Named(p) => {
                 if resolve_values && let Some(tok) = p.ident() {
@@ -4004,8 +4006,8 @@ impl<'a> Resolver<'a> {
     /// *emission* index ([`Self::index_augmentation_members`], which needs the
     /// head to resolve), the names are walkable for **every** augmentation
     /// shape; only a member whose name itself cannot be extracted (an
-    /// active-pattern head, an `inherit`) sets
-    /// [`Resolver::augmentation_names_unknowable`], keeping the wholesale
+    /// active-pattern head, an `inherit`) raises
+    /// [`Unknowable::AugmentationNames`], keeping the wholesale
     /// defer. Deliberately over-approximate where classification is uncertain:
     /// an unknown staticness lands in both sets, an `override` counts as an
     /// instance name — spurious entries only defer that one name.
@@ -4045,7 +4047,7 @@ impl<'a> Resolver<'a> {
                                 self.augmentation_instance_names.insert(name);
                             }
                         }
-                        None => self.augmentation_names_unknowable = true,
+                        None => self.unknowables.raise(Unknowable::AugmentationNames),
                     }
                 }
                 MemberDefn::GetSetMember(g) => {
@@ -4061,7 +4063,7 @@ impl<'a> Resolver<'a> {
                                 self.augmentation_instance_names.insert(name);
                             }
                         }
-                        None => self.augmentation_names_unknowable = true,
+                        None => self.unknowables.raise(Unknowable::AugmentationNames),
                     }
                 }
                 MemberDefn::AutoProperty(a) => match a.ident() {
@@ -4073,7 +4075,7 @@ impl<'a> Resolver<'a> {
                             self.augmentation_instance_names.insert(name);
                         }
                     }
-                    None => self.augmentation_names_unknowable = true,
+                    None => self.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 // These shapes are illegal in an augmentation (FCS rejects
                 // them), but a name we *can* read defers that name in both
@@ -4084,7 +4086,7 @@ impl<'a> Resolver<'a> {
                         self.augmentation_instance_names.insert(name.clone());
                         self.augmentation_static_names.insert(name);
                     }
-                    None => self.augmentation_names_unknowable = true,
+                    None => self.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 MemberDefn::ValField(v) => match v.ident() {
                     Some(name) => {
@@ -4092,7 +4094,7 @@ impl<'a> Resolver<'a> {
                         self.augmentation_instance_names.insert(name.clone());
                         self.augmentation_static_names.insert(name);
                     }
-                    None => self.augmentation_names_unknowable = true,
+                    None => self.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 MemberDefn::MemberSig(ms) => match ms.val_sig().and_then(|v| v.ident()) {
                     Some(name) => {
@@ -4100,11 +4102,11 @@ impl<'a> Resolver<'a> {
                         self.augmentation_instance_names.insert(name.clone());
                         self.augmentation_static_names.insert(name);
                     }
-                    None => self.augmentation_names_unknowable = true,
+                    None => self.unknowables.raise(Unknowable::AugmentationNames),
                 },
                 // An `inherit` pulls the base's members in under names we
                 // cannot enumerate.
-                MemberDefn::Inherit(_) => self.augmentation_names_unknowable = true,
+                MemberDefn::Inherit(_) => self.unknowables.raise(Unknowable::AugmentationNames),
                 // Class-local bindings are lexically private; an interface
                 // implementation's members are reachable only through the
                 // interface, never the receiver's own name group.

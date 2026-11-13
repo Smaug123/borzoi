@@ -265,6 +265,26 @@ fn body_case_construction_does_not_bind_a_shadowed_outer_value() {
 }
 
 #[test]
+fn an_outer_recognizer_case_declines_inside_a_nested_recognizer_body() {
+    // The recognizer-body decline accumulates: inside a recognizer nested in
+    // another's body, the *outer* recognizer's case names are still being
+    // constructed, so a bare `USome` there declines as it does in the outer
+    // body, rather than binding the earlier `let USome` value. "USome": outer
+    // `let` (0), the outer recognizer's case token (1), the use in the inner
+    // recognizer's body (2).
+    let src = "let USome x = x + 1\n\
+               let (|UNone|USome|) x =\n\
+               \x20   let (|Small|Big|) y = if y > 0 then (USome y; Small) else Big\n\
+               \x20   if x > 0 then UNone else UNone\n";
+    let rf = resolve(src);
+    let inner_use = rf.resolution_at(nth(src, "USome", 2));
+    assert!(
+        !matches!(inner_use, Some(Resolution::Local(_) | Resolution::Item(_))),
+        "the outer case in the nested body must not bind the outer value, got {inner_use:?}"
+    );
+}
+
+#[test]
 fn qualified_head_sharing_a_case_name_still_resolves_in_recognizer_body() {
     // The recognizer-body case-name decline must affect only BARE case-name
     // expressions, never a *qualified* head. With `type A` (a static-member type)
