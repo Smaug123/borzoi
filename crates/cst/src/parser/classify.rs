@@ -1385,9 +1385,9 @@ pub(super) fn raw_is_trivia(tt: &TriviaToken<'_>) -> bool {
 
 /// The significant (non-trivia) real token a raw entry carries, or `None`
 /// if it is active trivia or a directive / inactive-code marker.
-pub(super) fn raw_significant<'a, 'src>(tt: &'a TriviaToken<'src>) -> Option<&'a Token<'src>> {
+pub(super) fn raw_significant(tt: TriviaToken<'_>) -> Option<Token<'_>> {
     match tt {
-        TriviaToken::Lexed(t) if trivia_kind(t).is_none() => Some(t),
+        TriviaToken::Lexed(t) if trivia_kind(&t).is_none() => Some(t),
         _ => None,
     }
 }

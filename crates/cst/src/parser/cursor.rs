@@ -7,15 +7,14 @@ use super::*;
 impl<'src> Parser<'src> {
     pub(super) fn new(
         source: &'src str,
-        raw_tokens: Vec<RawTok<'src>>,
-        filtered_tokens: Vec<FilteredTok<'src>>,
+        raw_tokens: RawTokens<'src>,
+        filtered_tokens: FilteredTokens<'src>,
     ) -> Self {
         Self {
             source,
             raw_tokens,
             raw_pos: 0,
-            filtered_tokens,
-            pos: 0,
+            filtered: FilteredCursor::new(filtered_tokens),
             raw_consumed_end: 0,
             builder: TreeBuilder::new(),
             errors: Vec::new(),
@@ -39,7 +38,7 @@ impl<'src> Parser<'src> {
         self.builder.discard();
         Self {
             tree_height_stop: stop,
-            ..Self::new(self.source, self.raw_tokens, self.filtered_tokens)
+            ..Self::new(self.source, self.raw_tokens, self.filtered.into_tokens())
         }
     }
 
@@ -147,11 +146,12 @@ impl<'src> Parser<'src> {
         }
         self.builder.finish_node();
         self.raw_pos = self.raw_tokens.len();
-        self.pos = self.filtered_tokens.len();
+        self.filtered.advance_to_end();
     }
 
+    /// The filtered token at the cursor.
     pub(super) fn peek(&self) -> Option<&FilteredTok<'src>> {
-        self.filtered_tokens.get(self.pos)
+        self.filtered.current()
     }
 
     /// Drain raw tokens whose span ends at-or-before `up_to`, emitting each
@@ -166,47 +166,72 @@ impl<'src> Parser<'src> {
     /// already covered by the directive's trivia token, and the LSP lexer
     /// producer owns the diagnostic).
     pub(super) fn drain_raw_up_to(&mut self, up_to: usize) {
-        while let Some((res, span)) = self.raw_tokens.get(self.raw_pos).cloned() {
+        while self.raw_pos < self.raw_tokens.len() {
+            let span = self.raw_tokens.span(self.raw_pos);
             if span.end > up_to {
                 break;
             }
-            let emit = match res {
-                Ok(TriviaToken::Lexed(tok)) => match trivia_kind(&tok) {
-                    Some(k) => Some((k, None)),
-                    None => Some((
+            // Trivia (active whitespace and comments, and the directive and
+            // inactive-code markers, which are never in the filtered stream,
+            // so this raw drain is their only path into the tree) is emitted
+            // as itself; anything else reaching the drain is an `ERROR`.
+            let kind = self.raw_tokens.kind(self.raw_pos);
+            let (kind, error) = match kind.trivia_syntax_kind() {
+                Some(k) => (k, None),
+                None => match self.raw_tokens.get(self.raw_pos).map(|(res, _)| res) {
+                    Some(Ok(TriviaToken::Lexed(tok))) => (
                         SyntaxKind::ERROR,
                         Some(format!(
                             "unsupported token {tok:?} rewritten by LexFilter; Phase 1 does not \
                              parse the surrounding construct"
                         )),
-                    )),
+                    ),
+                    Some(Err(PreprocError::Lex(e))) => {
+                        (SyntaxKind::ERROR, Some(format!("lex error: {e:?}")))
+                    }
+                    other => unreachable!(
+                        "a non-trivia table entry is a token or a lex error, not {other:?}"
+                    ),
                 },
-                // Directive / inactive-code trivia: never in the filtered
-                // stream, so this raw drain is the only path into the tree.
-                Ok(marker) => Some((
-                    marker
-                        .trivia_syntax_kind()
-                        .expect("non-Lexed marker is trivia"),
-                    None,
-                )),
-                Err(PreprocError::Lex(e)) => {
-                    Some((SyntaxKind::ERROR, Some(format!("lex error: {e:?}"))))
-                }
-                // Structural directive error — bytes already covered by the
-                // directive trivia token; skip (advance only).
-                Err(_) => None,
             };
-            if let Some((kind, error)) = emit {
-                if let Some(message) = error {
-                    self.errors.push(ParseError {
-                        message,
-                        span: span.clone(),
-                    });
-                }
-                self.emit_text(kind, span);
+            if let Some(message) = error {
+                self.errors.push(ParseError {
+                    message,
+                    span: span.clone(),
+                });
             }
+            self.emit_text(kind, span);
             self.raw_pos += 1;
         }
+    }
+
+    /// Whether the raw token at `raw_pos` is a significant token whose text the
+    /// tree already holds part of: a fused raw token the lex-filter split, of
+    /// which an earlier piece has been bumped (see
+    /// [`Self::next_non_trivia_raw_at_pos`]).
+    fn raw_pos_is_a_split_token(&self) -> bool {
+        self.raw_pos < self.raw_tokens.len()
+            && self.raw_tokens.span(self.raw_pos).start < self.raw_consumed_end
+            && matches!(self.raw_tokens.kind(self.raw_pos), RawKind::Lexed(_))
+            && !self.raw_tokens.kind(self.raw_pos).is_trivia()
+    }
+
+    /// The first significant raw token at or after index `from` whose span
+    /// starts at or after byte `skip_before`, with its span. Trivia is skipped;
+    /// a lexer error ends the scan with `None`, as does the end of the stream.
+    fn significant_raw_from(
+        &self,
+        from: usize,
+        skip_before: usize,
+    ) -> Option<(Token<'src>, Range<usize>)> {
+        for i in from..self.raw_tokens.len() {
+            let span = self.raw_tokens.span(i);
+            if span.start < skip_before || self.raw_tokens.kind(i).is_trivia() {
+                continue;
+            }
+            return self.raw_tokens.token(i).map(|t| (t, span));
+        }
+        None
     }
 
     /// Emit a token whose text is the source slice `span`, clamped
@@ -254,7 +279,7 @@ impl<'src> Parser<'src> {
     /// handing consumers a zero-width identifier or keyword.
     #[track_caller]
     pub(super) fn bump_into(&mut self, kind: SyntaxKind) {
-        let Some((res, span)) = self.filtered_tokens.get(self.pos).cloned() else {
+        let Some((res, span)) = self.filtered.current().cloned() else {
             return;
         };
         let is_virtual = matches!(&res, Ok(FilteredToken::Virtual(_)));
@@ -289,16 +314,16 @@ impl<'src> Parser<'src> {
         // virtual conceptually inserts, and any raw whose span fully
         // precedes that point is trivia the virtual logically follows.
         let drain_to = if is_virtual {
-            self.filtered_tokens
-                .get(self.pos + 1)
-                .map(|(_, next)| next.start)
-                .unwrap_or(usize::MAX)
+            self.filtered
+                .tokens()
+                .span_at(self.filtered.pos() + 1)
+                .map_or(usize::MAX, |next| next.start)
         } else {
             span.start
         };
         self.drain_raw_up_to(drain_to);
 
-        self.pos += 1;
+        self.filtered.advance();
         // For Raw filtered tokens, advance `raw_pos` past every raw token the
         // filtered span fully covers (`raw.end <= span.end`). This is:
         // * **1:1** — one raw, equal spans: advances once.
@@ -311,8 +336,8 @@ impl<'src> Parser<'src> {
         //   advances twice. The next raw token starts at/after `span.end`, so
         //   the loop stops there.
         if !is_virtual {
-            while let Some((_, raw_span)) = self.raw_tokens.get(self.raw_pos)
-                && raw_span.end <= span.end
+            while self.raw_pos < self.raw_tokens.len()
+                && self.raw_tokens.span(self.raw_pos).end <= span.end
             {
                 self.raw_pos += 1;
             }
@@ -356,7 +381,7 @@ impl<'src> Parser<'src> {
     }
 
     /// First non-trivia *filtered* token strictly after the current
-    /// position (`self.pos`). Unlike the raw lookahead helpers this
+    /// position (`self.filtered.pos()`). Unlike the raw lookahead helpers this
     /// surfaces layout virtuals (`Virtual::BlockSep`, offside closes, …):
     /// they live in the filtered stream but not the raw stream, so a
     /// raw-only lookahead skips straight over them. The function-form
@@ -366,8 +391,8 @@ impl<'src> Parser<'src> {
     /// offside-laid-out list-pattern elements (`[ x⏎ y ]`) — blocks
     /// promotion, while the raw lookahead still rejects a
     /// LexFilter-swallowed `)`. Lex errors count as stoppers (`None`).
-    pub(super) fn next_non_trivia_filtered_after_pos(&self) -> Option<&FilteredToken<'src>> {
-        self.next_non_trivia_filtered_after_index(self.pos)
+    pub(super) fn next_non_trivia_filtered_after_pos(&self) -> Option<FilteredToken<'src>> {
+        self.next_non_trivia_filtered_after_index(self.filtered.pos())
     }
 
     /// As [`Self::next_non_trivia_filtered_after_pos`] but scanning the
@@ -375,19 +400,16 @@ impl<'src> Parser<'src> {
     /// Used by the parenthesised-operator head lookahead
     /// ([`Parser::operator_head_after`]), whose head spans *two* filtered
     /// tokens (`(` then the operator), so the "what follows the head" probe
-    /// must start past `idx = self.pos + 1`, not the cursor.
+    /// must start past `idx = self.filtered.pos() + 1`, not the cursor.
     pub(super) fn next_non_trivia_filtered_after_index(
         &self,
         idx: usize,
-    ) -> Option<&FilteredToken<'src>> {
-        for (res, _) in self.filtered_tokens.iter().skip(idx + 1) {
-            match res {
-                Ok(FilteredToken::Raw(t)) if trivia_kind(t).is_some() => continue,
-                Ok(ft) => return Some(ft),
-                Err(_) => return None,
-            }
-        }
-        None
+    ) -> Option<FilteredToken<'src>> {
+        self.filtered
+            .tokens()
+            .get(self.next_non_trivia_filtered_index_after(idx)?)?
+            .0
+            .ok()
     }
 
     /// The *index* of the first non-trivia filtered token strictly after `idx`
@@ -397,14 +419,11 @@ impl<'src> Parser<'src> {
     /// `at_paren_op_value_pat` probe needs the head's *position*, not just the
     /// token kind.
     pub(super) fn next_non_trivia_filtered_index_after(&self, idx: usize) -> Option<usize> {
-        for (i, (res, _)) in self.filtered_tokens.iter().enumerate().skip(idx + 1) {
-            match res {
-                Ok(FilteredToken::Raw(t)) if trivia_kind(t).is_some() => continue,
-                Ok(_) => return Some(i),
-                Err(_) => return None,
-            }
-        }
-        None
+        // The filtered stream holds no trivia (`FilteredKind::of`), so the
+        // first non-trivia token after `idx` is the next one.
+        let next = idx + 1;
+        (next < self.filtered.tokens().len() && !self.filtered.tokens().kind(next).is_error())
+            .then_some(next)
     }
 
     /// First non-trivia raw token whose span starts at-or-after `byte`.
@@ -415,26 +434,15 @@ impl<'src> Parser<'src> {
     /// otherwise `( <bad> )` would commit to unit and then
     /// `bump_swallowed_rparen` would hit its `unreachable!` on the
     /// `Err` token it didn't expect.
-    pub(super) fn next_non_trivia_raw_after(&self, byte: usize) -> Option<&Token<'src>> {
+    pub(super) fn next_non_trivia_raw_after(&self, byte: usize) -> Option<Token<'src>> {
         // Raw spans are sorted and contiguous (the full-trivia stream covers
         // every byte in order), so binary-search to the first token starting
         // at-or-after `byte` rather than rescanning from index 0. The callers
         // are hot (the per-operator continuation gates, head-classification
         // lookaheads) and `byte` advances monotonically through the file, so a
         // from-zero skip is O(position) per call — O(n²) over a large file.
-        let start = self
-            .raw_tokens
-            .partition_point(|(_, span)| span.start < byte);
-        for (res, _) in &self.raw_tokens[start..] {
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(t) => return Some(t),
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
-        }
-        None
+        let start = self.raw_tokens.count_starting_before(byte);
+        self.significant_raw_from(start, 0).map(|(t, _)| t)
     }
 
     /// `true` if the next significant raw token after byte `op_end` is a
@@ -470,10 +478,10 @@ impl<'src> Parser<'src> {
     /// gate linear over the body. A decl's own `OBLOCKBEGIN` is consumed inside
     /// its production but still advances `pos`, so it is counted here.
     pub(super) fn advance_block_depth(&self, depth: &mut i32, from: &mut usize) {
-        while *from < self.pos {
-            match &self.filtered_tokens[*from].0 {
-                Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => *depth += 1,
-                Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => *depth -= 1,
+        while *from < self.filtered.pos() {
+            match self.filtered.tokens().kind(*from) {
+                FilteredKind::Virtual(Virtual::BlockBegin) => *depth += 1,
+                FilteredKind::Virtual(Virtual::BlockEnd) => *depth -= 1,
                 _ => {}
             }
             *from += 1;
@@ -495,24 +503,15 @@ impl<'src> Parser<'src> {
     /// `)` (not an atomic-pat start), so the args lookahead declines. Lex
     /// errors and a non-`)` significant token (which `at_paren_op_value`
     /// rules out) both stop the scan (`None`).
-    pub(super) fn raw_after_paren_op_close(&self, op_end: usize) -> Option<&Token<'src>> {
+    pub(super) fn raw_after_paren_op_close(&self, op_end: usize) -> Option<Token<'src>> {
         // Binary-search to the first raw token at-or-after `op_end` (spans are
         // sorted/contiguous) rather than rescanning from index 0 — see
         // [`Self::next_non_trivia_raw_after`].
-        let start = self
-            .raw_tokens
-            .partition_point(|(_, span)| span.start < op_end);
-        for (res, span) in &self.raw_tokens[start..] {
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(Token::RParen) => return self.next_non_trivia_raw_after(span.end),
-                    Some(_) => return None,
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
+        let start = self.raw_tokens.count_starting_before(op_end);
+        match self.significant_raw_from(start, 0)? {
+            (Token::RParen, span) => self.next_non_trivia_raw_after(span.end),
+            _ => None,
         }
-        None
     }
 
     /// First non-trivia raw token at-or-after `raw_pos`, accounting
@@ -553,28 +552,15 @@ impl<'src> Parser<'src> {
     ///
     /// Mirrors the loop in [`Parser::at_tuple_continuation`]; lex
     /// errors count as stoppers (return `None`).
-    pub(super) fn next_non_trivia_raw_at_pos(&self) -> Option<&Token<'src>> {
+    pub(super) fn next_non_trivia_raw_at_pos(&self) -> Option<Token<'src>> {
         let consumed = self.raw_consumed_end;
-        if let Some((Ok(TriviaToken::Lexed(raw)), raw_span)) = self.raw_tokens.get(self.raw_pos)
-            && raw_span.start < consumed
-            && trivia_kind(raw).is_none()
+        if self.raw_pos_is_a_split_token()
             && let Some((Ok(FilteredToken::Raw(t)), _)) = self.peek()
         {
-            return Some(t);
+            return Some(t.clone());
         }
-        for (res, span) in self.raw_tokens.iter().skip(self.raw_pos) {
-            if span.start < consumed {
-                continue;
-            }
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(t) => return Some(t),
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
-        }
-        None
+        self.significant_raw_from(self.raw_pos, consumed)
+            .map(|(t, _)| t)
     }
 
     /// The `n`-th (0-based) significant (non-trivia) raw token at/after the
@@ -593,29 +579,28 @@ impl<'src> Parser<'src> {
     /// normal raw scan (which skips the partially-consumed fused raw because its
     /// span starts before `raw_consumed_end`). Without this, index 0 would be
     /// the *ident* behind the split tail and a head typar would be missed.
-    pub(super) fn nth_significant_raw_at_pos(&self, n: usize) -> Option<&Token<'src>> {
+    pub(super) fn nth_significant_raw_at_pos(&self, n: usize) -> Option<Token<'src>> {
         let consumed = self.raw_consumed_end;
         let mut shift = 0;
-        if let Some((Ok(TriviaToken::Lexed(raw)), raw_span)) = self.raw_tokens.get(self.raw_pos)
-            && raw_span.start < consumed
-            && trivia_kind(raw).is_none()
+        if self.raw_pos_is_a_split_token()
             && let Some((Ok(FilteredToken::Raw(t)), _)) = self.peek()
         {
             if n == 0 {
-                return Some(t);
+                return Some(t.clone());
             }
             shift = 1;
         }
-        self.raw_tokens
-            .iter()
-            .skip(self.raw_pos)
-            .filter(move |(_, span)| span.start >= consumed)
-            .map_while(|(res, _)| match res {
-                Ok(tt) => Some(raw_significant(tt)),
-                Err(_) => None,
+        let raw = &self.raw_tokens;
+        (self.raw_pos..raw.len())
+            .filter(|&i| raw.span(i).start >= consumed)
+            .map_while(|i| match raw.kind(i) {
+                RawKind::Lexed(_) => Some(i),
+                kind if kind.is_trivia() => Some(i),
+                _ => None,
             })
-            .flatten()
+            .filter(|&i| !raw.kind(i).is_trivia())
             .nth(n - shift)
+            .and_then(|i| raw.token(i))
     }
 
     /// First non-trivia raw token at-or-after `raw_pos`, paired with its
@@ -625,28 +610,14 @@ impl<'src> Parser<'src> {
     /// [`Parser::next_non_trivia_raw_after`] for two-token lookahead.
     pub(super) fn next_non_trivia_raw_at_pos_with_span(
         &self,
-    ) -> Option<(&Token<'src>, Range<usize>)> {
+    ) -> Option<(Token<'src>, Range<usize>)> {
         let consumed = self.raw_consumed_end;
-        if let Some((Ok(TriviaToken::Lexed(raw)), raw_span)) = self.raw_tokens.get(self.raw_pos)
-            && raw_span.start < consumed
-            && trivia_kind(raw).is_none()
+        if self.raw_pos_is_a_split_token()
             && let Some((Ok(FilteredToken::Raw(t)), span)) = self.peek()
         {
-            return Some((t, span.clone()));
+            return Some((t.clone(), span.clone()));
         }
-        for (res, span) in self.raw_tokens.iter().skip(self.raw_pos) {
-            if span.start < consumed {
-                continue;
-            }
-            match res {
-                Ok(tt) => match raw_significant(tt) {
-                    Some(t) => return Some((t, span.clone())),
-                    None => continue,
-                },
-                Err(_) => return None,
-            }
-        }
-        None
+        self.significant_raw_from(self.raw_pos, consumed)
     }
 
     /// Consume exactly one FCS `seps` / `seps_block` group, returning whether
@@ -761,7 +732,7 @@ impl<'src> Parser<'src> {
         closer: &str,
         construct: &str,
     ) {
-        while let Some((res, span)) = self.raw_tokens.get(self.raw_pos).cloned() {
+        while let Some((res, span)) = self.raw_tokens.get(self.raw_pos) {
             if let Ok(tt) = &res
                 && let Some(tk) = raw_trivia_kind(tt)
             {
@@ -891,14 +862,15 @@ impl Parser<'_> {
     /// stream. A layout virtual at the same span stands for nothing: LexFilter
     /// places one at the span of the token it precedes.
     pub(super) fn filtered_stream_carries(&self, start: usize) -> bool {
-        self.filtered_tokens[self.pos..]
-            .iter()
+        self.filtered
+            .tokens()
+            .items_from(self.filtered.pos())
             .take_while(|(_, span)| span.start <= start)
             .any(|(res, span)| {
                 span.start == start
                     && match res {
                         Ok(FilteredToken::Raw(_)) => true,
-                        Ok(FilteredToken::Virtual(v)) => virtual_class(v) == VirtualClass::Relabel,
+                        Ok(FilteredToken::Virtual(v)) => virtual_class(&v) == VirtualClass::Relabel,
                         Err(_) => false,
                     }
             })
@@ -915,13 +887,13 @@ impl Parser<'_> {
     /// (`HighPrecedence*`) has no raw token and is passed over.
     pub(super) fn next_tokens_unbroken(&self, n: usize) -> bool {
         let mut met = 0;
-        for (res, _) in &self.filtered_tokens[self.pos..] {
+        for (res, _) in self.filtered.tokens().items_from(self.filtered.pos()) {
             if met == n {
                 return true;
             }
             match res {
                 Ok(FilteredToken::Raw(_)) => met += 1,
-                Ok(FilteredToken::Virtual(v)) => match virtual_class(v) {
+                Ok(FilteredToken::Virtual(v)) => match virtual_class(&v) {
                     VirtualClass::Layout => return false,
                     VirtualClass::Relabel => met += 1,
                     VirtualClass::Marker => {}
@@ -941,13 +913,13 @@ impl Parser<'_> {
     /// filtered token counts disagree).
     pub(super) fn reaches_unbroken_outside_attributes(&self, start: usize) -> bool {
         let mut in_attribute = false;
-        for (res, span) in &self.filtered_tokens[self.pos..] {
+        for (res, span) in self.filtered.tokens().items_from(self.filtered.pos()) {
             match res {
                 Ok(FilteredToken::Raw(_)) if span.start >= start => return span.start == start,
                 Ok(FilteredToken::Raw(Token::LBrackLess)) => in_attribute = true,
                 Ok(FilteredToken::Raw(Token::GreaterRBrack)) => in_attribute = false,
                 Ok(FilteredToken::Raw(_)) => {}
-                Ok(FilteredToken::Virtual(v)) if is_layout_virtual(v) && !in_attribute => {
+                Ok(FilteredToken::Virtual(v)) if is_layout_virtual(&v) && !in_attribute => {
                     return false;
                 }
                 Ok(FilteredToken::Virtual(_)) => {}
@@ -1020,11 +992,14 @@ mod tests {
     fn parser_parked_on_a_virtual() -> Parser<'static> {
         let mut parser = Parser::new(
             "a",
-            vec![(Ok(TriviaToken::Lexed(Token::Ident("a"))), 0..1)],
-            vec![
-                (Ok(FilteredToken::Virtual(Virtual::BlockBegin)), 0..1),
-                (Ok(FilteredToken::Raw(Token::Ident("a"))), 0..1),
-            ],
+            lex_full_trivia("a", &HashSet::new()).tokens,
+            FilteredTokens::from_items(
+                "a",
+                [
+                    (Ok(FilteredToken::Virtual(Virtual::BlockBegin)), 0..1),
+                    (Ok(FilteredToken::Raw(Token::Ident("a"))), 0..1),
+                ],
+            ),
         );
         parser.builder.start_node(SyntaxKind::IMPL_FILE);
         parser

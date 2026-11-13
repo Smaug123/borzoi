@@ -68,12 +68,12 @@ impl<'src> Parser<'src> {
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                     if depth == 0 {
                         return;
                     }
@@ -142,7 +142,7 @@ impl<'src> Parser<'src> {
                     // A typar `<` (`type C<'T>`) — part of the header, not a
                     // boundary. Step over it (zero-width, like the typar parser).
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 Ok(FilteredToken::Raw(Token::LBrackLess)) => {
                     // An after-keyword attribute (`and [<A>] …`). Parse the list
@@ -155,7 +155,7 @@ impl<'src> Parser<'src> {
                         Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
                     ) {
                         self.builder.token(SyntaxKind::ERROR, "");
-                        self.pos += 1;
+                        self.filtered.advance();
                     }
                 }
                 // A same-line top separator (`;`/`;;`) in the *header* — before any
@@ -183,12 +183,12 @@ impl<'src> Parser<'src> {
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                     if depth == 0 {
                         return;
                     }
@@ -217,12 +217,12 @@ impl<'src> Parser<'src> {
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 _ => self.bump_into(SyntaxKind::ERROR),
             }
@@ -244,25 +244,25 @@ impl<'src> Parser<'src> {
     pub(super) fn skip_owith_block_as_error(&mut self) {
         // The `OWITH` itself (zero-width).
         self.builder.token(SyntaxKind::ERROR, "");
-        self.pos += 1;
+        self.filtered.advance();
         let mut depth = 0u32;
         while let Some((res, _)) = self.peek() {
             match res {
                 Ok(FilteredToken::Virtual(Virtual::End)) if depth == 0 => {
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                     return;
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) if depth == 0 => return,
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 Ok(FilteredToken::Virtual(Virtual::BlockEnd)) => {
                     depth -= 1;
                     self.builder.token(SyntaxKind::ERROR, "");
-                    self.pos += 1;
+                    self.filtered.advance();
                 }
                 _ => self.bump_into(SyntaxKind::ERROR),
             }

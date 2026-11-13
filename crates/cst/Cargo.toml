@@ -21,9 +21,13 @@ accessor-trace = []
 # the rowan reference differential (`tests/all/flat_tree_reference.rs`).
 # Test-only, on for this crate's own tests through the self-reference below.
 rowan-reference = ["dep:rowan"]
+# Asserts on every parse that each token table rebuilds exactly the stream of
+# the pipeline stage it replaces (`docs/token-pipeline-soa-plan.md`, D7).
+# Test-only, on for this crate's own tests through the self-reference below.
+token-reference = []
 
 [dev-dependencies]
-borzoi-cst = { path = ".", features = ["accessor-trace", "rowan-reference"] }
+borzoi-cst = { path = ".", features = ["accessor-trace", "rowan-reference", "token-reference"] }
 borzoi-oracle-harness.workspace = true
 # The metric-path walk the stats dashboard plots by, so a generator's
 # pinned metric namespace is read exactly as it is published.

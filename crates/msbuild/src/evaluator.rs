@@ -5625,37 +5625,19 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     }
     for segment in expansion.value.split_list() {
         // Wildcard-ness is classified on the **escaped** segment, before
-        // decoding: an escaped `%2a` is a literal star in a filename, and
-        // MSBuild imports that one file rather than globbing (classify, then
-        // unescape — the same order item specs use). Decoding first would turn
-        // `star%2afile.props` into a glob and silently import every match.
+        // decoding (classify, then unescape — the same order item specs use).
+        // An escaped `%2a` is a literal star in a filename, so
+        // `star%2afile.props` imports that one file; decoding first would glob
+        // it. A segment carrying an escaped wildcard beside a live one is
+        // literal too, whole: `*.props%2a` imports the file named `*.props*`
+        // ([`Escaped::is_filespec_wildcard`]). So a glob's decoded pattern has
+        // no `*`/`?` that was data.
         //
         // Backslash-to-forward-slash normalisation matches what
         // `push_include_entry` does for `Include` attributes; MSBuild accepts
         // both on either platform.
         let normalised = segment.unescape().replace('\\', "/");
-        if segment.has_live_wildcard() {
-            // A *decoded* `*`/`?` alongside a live one is not expressible as a
-            // glob pattern — after decoding we could not tell the literal star
-            // from the wildcard — so decline rather than import the wrong set.
-            if properties::escaping::decodes_to_any(segment.as_escaped(), &['*', '?']) {
-                state.push(
-                    DiagnosticKind::UnsupportedGlob {
-                        pattern: segment.as_escaped().to_string(),
-                    },
-                    node.range(),
-                );
-                // A declined import is a file's worth of content we did not
-                // enter — it could match (MSBuild imports a literal
-                // `*.props*` for `Project="*.props%2a"`) and define
-                // properties. Latch opacity so a later undefined read of such
-                // a name is not wrongly classified exact (C.2b).
-                state.latch_walk_opaque(OpacityCause::Unentered(format!(
-                    "the wildcard import `{}`",
-                    segment.as_escaped()
-                )));
-                continue;
-            }
+        if segment.is_filespec_wildcard() {
             follow_wildcard_import(&normalised, current_file_dir, node.range(), state);
             continue;
         }

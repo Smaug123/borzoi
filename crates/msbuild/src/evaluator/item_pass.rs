@@ -9,6 +9,7 @@
 //! passes in one module made that ordering easy to violate.
 
 use super::*;
+use crate::glob::SpecFragment;
 use crate::properties::escaping;
 
 /// The fragments of an expanded item spec.
@@ -47,26 +48,6 @@ fn msbuild_spelling(raw: &str, expanded: &Escaped) -> Escaped {
 /// MSBuild records (an `Include="a%20b.fs"` names the file `a b.fs`).
 fn fragment_identity(fragment: &str) -> String {
     escaping::unescape(fragment)
-}
-
-/// A fragment handed to the **glob resolver**, which splits on `;` and parses
-/// `*`/`?` itself, downstream of us.
-///
-/// Unescaping a `%3b`/`%2a`/`%3f` before that seam would smuggle a
-/// metacharacter past the classification that has already happened — the
-/// resolver would re-split one item into two, or glob a literal star. Those
-/// fragments decline (`None`), which is what they did before the escaped domain
-/// existed. Stage E4 of `docs/msbuild-escaped-value-plan.md` deletes this guard
-/// by handing the resolver a fragment list it never re-scans; until then the
-/// guard is what keeps the seam sound.
-fn fragment_for_resolver(fragment: &str) -> Option<String> {
-    (!decodes_to_metacharacter(fragment)).then(|| escaping::unescape(fragment))
-}
-
-/// Whether any `%XX` in `fragment` decodes to a character the glob resolver
-/// would re-scan as syntax. See [`fragment_for_resolver`].
-fn decodes_to_metacharacter(fragment: &str) -> bool {
-    escaping::decodes_to_any(fragment, &[';', '*', '?'])
 }
 
 /// A scalar value (item metadata, a `CompileOrder`) at its point of use, as the
@@ -1653,17 +1634,28 @@ fn apply_compile_order_update(node: Node<'_, '_>, state: &mut State<'_>) {
         return;
     }
     let effect = compile_order_effect_from_value(&order);
-    let mut moved = take_matching_compile_items(state, &targets);
+    let Some(mut moved) = take_matching_compile_items(state, &targets, node.range()) else {
+        return;
+    };
     moved.sort_by_key(|item| item.order);
     for item in moved {
         insert_ordered_compile_item(state, effect, item);
     }
 }
 
+/// One fragment of a compile-order `Update` spec: the file it names (decoded,
+/// joined onto the project directory), and whether MSBuild compares its
+/// spelling as written rather than as a full path
+/// ([`crate::glob::compares_unnormalised`]).
+struct UpdateTarget {
+    path: PathBuf,
+    unnormalised: bool,
+}
+
 fn resolve_compile_update_targets(
     node: Node<'_, '_>,
     state: &mut State<'_>,
-) -> Option<Vec<PathBuf>> {
+) -> Option<Vec<UpdateTarget>> {
     if diagnose_item_op(node, "Exclude", state) {
         return None;
     }
@@ -1705,49 +1697,294 @@ fn resolve_compile_update_targets(
         // it, so the target decodes too — an `Update="a%20b.fs"` names the same
         // file as `Include="a%20b.fs"`, and comparing escaped against decoded
         // would silently match nothing.
-        let normalised = fragment_identity(entry).replace('\\', "/");
-        targets.push(state.entry_project_dir.join(normalised));
+        let decoded = fragment_identity(entry);
+        let unnormalised = crate::glob::compares_unnormalised(&decoded);
+        let normalised = decoded.replace('\\', "/");
+        targets.push(UpdateTarget {
+            path: if separator_only(&normalised) {
+                state.entry_project_dir.clone()
+            } else {
+                state.entry_project_dir.join(normalised)
+            },
+            unnormalised,
+        });
     }
     Some(targets)
 }
 
-fn take_matching_compile_items(
-    state: &mut State<'_>,
-    targets: &[PathBuf],
-) -> Vec<OrderedResolvedItem> {
-    let mut moved = Vec::new();
-    take_matching_compile_items_from_bucket(&mut state.compile_first, targets, &mut moved);
-    take_matching_compile_items_from_bucket(
-        &mut state.explicit_compile_before,
-        targets,
-        &mut moved,
-    );
-    take_matching_compile_items_from_bucket(&mut state.compile_before, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_main, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_after, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.explicit_compile_after, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_last, targets, &mut moved);
-    take_matching_compile_items_from_bucket(&mut state.compile_excluded, targets, &mut moved);
-    moved
+/// Whether an `Update` fragment names a Compile item, as MSBuild decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateMatch {
+    Match,
+    NoMatch,
+    /// MSBuild's verdict rests on something not modelled here (see
+    /// [`MatchKey::matches`]).
+    Undecided(&'static str),
 }
 
-fn take_matching_compile_items_from_bucket(
-    bucket: &mut Vec<OrderedResolvedItem>,
-    targets: &[PathBuf],
-    moved: &mut Vec<OrderedResolvedItem>,
-) {
-    let mut index = 0;
-    while index < bucket.len() {
-        let matches = bucket[index].item.kind == ItemKind::Compile
-            && targets
-                .iter()
-                .any(|target| bucket[index].item.include == *target);
-        if matches {
-            moved.push(bucket.remove(index));
+/// One side of an `Update` comparison, computed once: the path as
+/// `Path.GetFullPath` writes it ([`comparison_key`]), and whether MSBuild
+/// compares the spelling as written instead
+/// ([`crate::glob::compares_unnormalised`]).
+struct MatchKey {
+    key: String,
+    unnormalised: bool,
+}
+
+impl MatchKey {
+    /// The key of a captured item. An absolute spelling is captured verbatim
+    /// (joining it onto the project directory replaces the directory), so a
+    /// separator-only capture is a separator-only spelling: see
+    /// [`separator_only`].
+    fn of_item(include: &Path, project_dir: &Path) -> MatchKey {
+        let text = include.to_string_lossy();
+        let key = if separator_only(&text) {
+            comparison_key(&project_dir.to_string_lossy())
         } else {
-            index += 1;
+            comparison_key(&text)
+        };
+        MatchKey {
+            key,
+            unnormalised: crate::glob::compares_unnormalised(&text),
         }
     }
+
+    fn of_target(target: &UpdateTarget) -> MatchKey {
+        MatchKey {
+            key: comparison_key(&target.path.to_string_lossy()),
+            unnormalised: target.unnormalised,
+        }
+    }
+
+    /// Whether an `Update` fragment keyed `target` names the Compile item
+    /// keyed `self`, as MSBuild's lazy evaluator decides it: both sides go
+    /// through `NormalizePathForComparisonNoThrow` (the full path, so `./a.fs`,
+    /// `sub/../a.fs`, `.\a.fs` and the rooted spelling all name `a.fs`), and
+    /// the two are compared `OrdinalIgnoreCase` — on every host, unlike file
+    /// existence, since the batched path keys an `OrdinalIgnoreCase`
+    /// dictionary and the unbatched one compares the same way (both
+    /// oracle-pinned on Linux, `docs/compile-item-fidelity-plan.md`).
+    ///
+    /// ASCII case folding is mirrored exactly, and a non-ASCII character never
+    /// matches an ASCII one (`ı`, `ſ`, `İ` and the Kelvin sign match no ASCII
+    /// letter: oracle, Linux). Two things are not mirrored, and decline:
+    ///
+    /// - a pair differing where both sides have a non-ASCII character, since
+    ///   .NET folds those by tables not reproduced here (`é` matches `É`; the
+    ///   Angstrom sign does not match `å`);
+    /// - a pair that would match where either spelling is one MSBuild
+    ///   compares as written, not normalised: the item is captured joined
+    ///   onto the project directory, so its spelling as written is gone.
+    fn matches(&self, target: &MatchKey) -> UpdateMatch {
+        // `OrdinalIgnoreCase` maps one UTF-16 unit to one, so differing
+        // lengths never match.
+        if self.key.encode_utf16().count() != target.key.encode_utf16().count() {
+            return UpdateMatch::NoMatch;
+        }
+        let mut needs_unicode_folding = false;
+        for (x, y) in self.key.encode_utf16().zip(target.key.encode_utf16()) {
+            if x == y {
+                continue;
+            }
+            match (ascii_unit(x), ascii_unit(y)) {
+                (Some(x), Some(y)) => {
+                    if !x.eq_ignore_ascii_case(&y) {
+                        return UpdateMatch::NoMatch;
+                    }
+                }
+                (None, None) => needs_unicode_folding = true,
+                _ => return UpdateMatch::NoMatch,
+            }
+        }
+        if needs_unicode_folding {
+            return UpdateMatch::Undecided("non-ASCII case folding");
+        }
+        if self.unnormalised || target.unnormalised {
+            return UpdateMatch::Undecided("a spelling MSBuild compares as written");
+        }
+        UpdateMatch::Match
+    }
+}
+
+/// The UTF-16 unit as an ASCII byte, if it is one.
+fn ascii_unit(unit: u16) -> Option<u8> {
+    u8::try_from(unit).ok().filter(u8::is_ascii)
+}
+
+/// What every key a [`MatchKey`] could match (or be undecided against)
+/// shares: its UTF-16 units, ASCII folded to lower case and every non-ASCII
+/// unit replaced by one placeholder. Two keys of different shapes differ at
+/// some position by an ASCII letter (folding agrees there) or by an ASCII
+/// unit against a non-ASCII one (which never match), so they cannot match.
+fn match_shape(key: &str) -> Vec<u16> {
+    key.encode_utf16()
+        .map(|unit| match ascii_unit(unit) {
+            Some(byte) => u16::from(byte.to_ascii_lowercase()),
+            None => u16::MAX,
+        })
+        .collect()
+}
+
+/// An `Update` spec's targets, keyed for matching many items: each item is
+/// compared only with the targets of its [`match_shape`], so an `Update`
+/// against a large Compile list costs a lookup per item, whatever the
+/// characters in the project's path.
+struct UpdateTargets {
+    by_shape: HashMap<Vec<u16>, Vec<MatchKey>>,
+}
+
+impl UpdateTargets {
+    fn new(targets: &[UpdateTarget]) -> UpdateTargets {
+        let mut by_shape: HashMap<Vec<u16>, Vec<MatchKey>> = HashMap::new();
+        for target in targets {
+            let key = MatchKey::of_target(target);
+            by_shape.entry(match_shape(&key.key)).or_default().push(key);
+        }
+        UpdateTargets { by_shape }
+    }
+
+    /// Whether any target names the item keyed `item`. An undecided pair
+    /// outranks a match: the verdict as a whole rests on it.
+    fn verdict(&self, item: &MatchKey) -> UpdateMatch {
+        let mut verdict = UpdateMatch::NoMatch;
+        for target in self
+            .by_shape
+            .get(&match_shape(&item.key))
+            .into_iter()
+            .flatten()
+        {
+            match item.matches(target) {
+                UpdateMatch::Undecided(reason) => return UpdateMatch::Undecided(reason),
+                UpdateMatch::Match => verdict = UpdateMatch::Match,
+                UpdateMatch::NoMatch => {}
+            }
+        }
+        verdict
+    }
+}
+
+/// Whether a spelling is separators alone (`/`, `//`). MSBuild trims a
+/// spelling's trailing separators before combining it with the project
+/// directory (`NormalizeForPathComparison`), so such a spelling names the
+/// project directory, not the root (`/..` names the root). Every other
+/// trailing separator lands where [`comparison_key`] already puts it.
+fn separator_only(spelling: &str) -> bool {
+    !spelling.is_empty() && spelling.bytes().all(|b| b == b'/')
+}
+
+/// A path as `Path.GetFullPath` writes it, for comparison: `.` and empty
+/// segments dropped, `..` resolved lexically (at the root, a `..` stays at the
+/// root, as `GetFullPath` keeps it). No filesystem access: a symlinked
+/// directory is not resolved, and neither side resolves one in MSBuild.
+fn comparison_key(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut segs: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if segs.last().is_some_and(|last| *last != "..") {
+                    segs.pop();
+                } else if !absolute {
+                    segs.push("..");
+                }
+            }
+            seg => segs.push(seg),
+        }
+    }
+    let joined = segs.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// Take every Compile item the `Update` targets name out of its bucket, in
+/// bucket order. `None`, with a diagnostic, when a match is
+/// [`UpdateMatch::Undecided`]: the move would rest on a comparison not
+/// modelled, so the order is not claimed. Each item is keyed and judged once.
+fn take_matching_compile_items(
+    state: &mut State<'_>,
+    targets: &[UpdateTarget],
+    span: Range<usize>,
+) -> Option<Vec<OrderedResolvedItem>> {
+    let targets = UpdateTargets::new(targets);
+    let project_dir = state.entry_project_dir.clone();
+    let verdicts = compile_buckets(state)
+        .map(|bucket| {
+            bucket
+                .iter()
+                .map(|ordered| {
+                    if ordered.item.kind != ItemKind::Compile {
+                        return Ok(false);
+                    }
+                    match targets.verdict(&MatchKey::of_item(&ordered.item.include, &project_dir)) {
+                        UpdateMatch::Match => Ok(true),
+                        UpdateMatch::NoMatch => Ok(false),
+                        UpdateMatch::Undecided(reason) => Err(format!(
+                            "CompileOrder Update whose match against {} rests on {reason}",
+                            ordered.item.include.display()
+                        )),
+                    }
+                })
+                .collect::<Result<Vec<bool>, String>>()
+        })
+        .collect::<Result<Vec<_>, String>>();
+    let verdicts = match verdicts {
+        Ok(verdicts) => verdicts,
+        Err(operation) => {
+            state.push(DiagnosticKind::UnsupportedItemOperation { operation }, span);
+            return None;
+        }
+    };
+    let mut moved = Vec::new();
+    for (bucket, verdicts) in compile_buckets_mut(state).zip(verdicts) {
+        let mut verdicts = verdicts.into_iter();
+        let mut kept = Vec::with_capacity(bucket.len());
+        for item in bucket.drain(..) {
+            if verdicts.next().expect("one verdict per item") {
+                moved.push(item);
+            } else {
+                kept.push(item);
+            }
+        }
+        *bucket = kept;
+    }
+    Some(moved)
+}
+
+/// Every Compile-order bucket, in the order [`take_matching_compile_items`]
+/// takes from them.
+fn compile_buckets<'s>(state: &'s State<'_>) -> impl Iterator<Item = &'s Vec<OrderedResolvedItem>> {
+    [
+        &state.compile_first,
+        &state.explicit_compile_before,
+        &state.compile_before,
+        &state.compile_main,
+        &state.compile_after,
+        &state.explicit_compile_after,
+        &state.compile_last,
+        &state.compile_excluded,
+    ]
+    .into_iter()
+}
+
+/// [`compile_buckets`], mutably and in the same order.
+fn compile_buckets_mut<'s>(
+    state: &'s mut State<'_>,
+) -> impl Iterator<Item = &'s mut Vec<OrderedResolvedItem>> {
+    [
+        &mut state.compile_first,
+        &mut state.explicit_compile_before,
+        &mut state.compile_before,
+        &mut state.compile_main,
+        &mut state.compile_after,
+        &mut state.explicit_compile_after,
+        &mut state.compile_last,
+        &mut state.compile_excluded,
+    ]
+    .into_iter()
 }
 
 fn insert_ordered_compile_item(
@@ -3003,7 +3240,9 @@ fn route_item_through_resolver(
         }
         include_specs.push(entry);
     }
-    let any_glob = include_specs.iter().any(|s| contains_glob(s));
+    let any_glob = include_specs
+        .iter()
+        .any(|s| escaping::filespec_has_wildcards(s));
     let exclude_attr = node.attribute("Exclude");
     // A pure-literal include with no Exclude can't gain anything from the
     // resolver — keep the literal fast path (same items, no IO).
@@ -3013,7 +3252,7 @@ fn route_item_through_resolver(
         }
         return;
     }
-    let mut excludes: Vec<String> = Vec::new();
+    let mut excludes: Vec<SpecFragment> = Vec::new();
     if let Some(raw) = exclude_attr {
         let expansion = state.expand(raw, node.range());
         if expansion.had_issue() {
@@ -3045,31 +3284,23 @@ fn route_item_through_resolver(
                 );
                 return;
             }
-            let Some(exclude) = fragment_for_resolver(entry) else {
-                unsupported_across_resolver_seam(node, entry, state);
-                return;
-            };
-            excludes.push(exclude);
+            excludes.push(SpecFragment::from_split(entry));
         }
     }
-    // Across the seam the resolver re-splits on `;` and parses `*`/`?`, so each
-    // fragment leaves the domain here — declining the ones whose decoded form
-    // would smuggle a metacharacter past the classification above.
-    let mut resolver_specs: Vec<String> = Vec::with_capacity(include_specs.len());
-    for entry in &include_specs {
-        let Some(spec) = fragment_for_resolver(entry) else {
-            unsupported_across_resolver_seam(node, entry, state);
-            return;
-        };
-        resolver_specs.push(spec);
-    }
-    let include_joined = resolver_specs.join(";");
+    // The fragments cross the seam still split and still escaped: the
+    // resolver classifies each on its escaped text and decodes it at its own
+    // point of use, so nothing it does can re-split an escaped `%3b` or turn
+    // an escaped `%2a` into a wildcard.
+    let include: Vec<SpecFragment> = include_specs
+        .iter()
+        .map(|entry| SpecFragment::from_split(entry))
+        .collect();
     // Scope the request so its immutable borrow of `state` ends before we
     // mutably push the results.
     let matched = {
         let request = GlobRequest {
             base_dir: &state.entry_project_dir,
-            include: &include_joined,
+            include: &include,
             excludes: &excludes,
         };
         resolver(&request)
@@ -3086,7 +3317,7 @@ fn route_item_through_resolver(
             }
             state.push(
                 DiagnosticKind::GlobDeclined {
-                    include: include_joined.clone(),
+                    include: include_specs.join(";"),
                     reason,
                 },
                 node.range(),
@@ -3116,27 +3347,12 @@ fn route_item_through_resolver(
     }
 }
 
-/// Decline an item spec whose decoded form cannot cross the glob-resolver seam
-/// (see [`fragment_for_resolver`]).
-///
-/// This is the same diagnostic — and so the same fail-safe consumer behaviour —
-/// that the substitution-level escape withdrawal raised before the escaped
-/// domain existed, so nothing downstream sees a new class of failure. Stage E4
-/// of `docs/msbuild-escaped-value-plan.md` removes it, by giving the resolver a
-/// fragment list it never re-scans.
-fn unsupported_across_resolver_seam(node: Node<'_, '_>, entry: &str, state: &mut State<'_>) {
-    state.push(
-        DiagnosticKind::UnsupportedPropertyExpression {
-            expression: entry.to_string(),
-        },
-        node.range(),
-    );
-}
-
 /// `entry` is an **escaped** fragment: the glob classification below has to run
 /// before decoding (an escaped `%2a` is a literal star in a filename, not a
 /// wildcard — decoding first turns data into syntax), so the decode happens here,
-/// once, after the scan.
+/// once, after the scan. A fragment with an escaped wildcard beside a live one
+/// is literal too ([`escaping::filespec_has_wildcards`]): `a%2a*.fs` is the
+/// one item `a**.fs`.
 fn push_include_entry(
     node: Node<'_, '_>,
     kind: ItemKind,
@@ -3145,7 +3361,7 @@ fn push_include_entry(
     metadata: &ItemMetadata,
     state: &mut State<'_>,
 ) {
-    if contains_glob(entry) {
+    if escaping::filespec_has_wildcards(entry) {
         state.push(
             DiagnosticKind::UnsupportedGlob {
                 pattern: entry.to_string(),

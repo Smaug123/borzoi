@@ -78,7 +78,7 @@ impl<'src> Parser<'src> {
         // arguments: there the `.Bar` of `f(+).Bar` must bind to the whole
         // application (`DotGet(App(f, (+)), [Bar])`), so the `(+)` argument stays
         // head-only (`fold = false`).
-        let head = if self.at_paren_op_value(self.pos) {
+        let head = if self.at_paren_op_value(self.filtered.pos()) {
             self.parse_paren_op_value_expr(true);
             EndsInAdjacentApp::No
         } else if matches!(
@@ -165,7 +165,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::Struct)), struct_span)) => {
                 // `struct (…)` → struct tuple; `struct {| … |}` → struct
                 // anon-record. A `struct` followed by neither is a clean error.
-                match self.filtered_tokens.get(self.pos + 1) {
+                match self.filtered.tokens().get(self.filtered.pos() + 1) {
                     Some((Ok(FilteredToken::Raw(Token::LParen)), _)) => {
                         self.parse_struct_tuple_expr();
                     }
@@ -206,7 +206,7 @@ impl<'src> Parser<'src> {
             // do that lookahead, so `Underscore` stays out of
             // `raw_starts_atomic_expr`).
             Some((Ok(FilteredToken::Raw(Token::Underscore)), _))
-                if self.at_dot_lambda(self.pos) =>
+                if self.at_dot_lambda(self.filtered.pos()) =>
             {
                 self.parse_dot_lambda_expr();
             }
@@ -227,7 +227,7 @@ impl<'src> Parser<'src> {
             // [`Self::at_paren_op_value`] keeps `(- x)` / `(..3)` as paren
             // expressions. Head-only (`fold = false`) — see the `(*)` arm.
             Some((Ok(FilteredToken::Raw(Token::LParen)), _))
-                if self.at_paren_op_value(self.pos) =>
+                if self.at_paren_op_value(self.filtered.pos()) =>
             {
                 self.parse_paren_op_value_expr(false);
             }
@@ -267,7 +267,7 @@ impl<'src> Parser<'src> {
                     // above, so the shared `(`-after predicate's `RParen` arm is
                     // unreachable here; using it keeps this dispatch in lockstep
                     // with the lookaheads that admitted the `(`.
-                    Some(t) if raw_after_lparen_starts_expr(t) => self.parse_paren_expr(),
+                    Some(t) if raw_after_lparen_starts_expr(&t) => self.parse_paren_expr(),
                     other => unreachable!(
                         "parse_atomic_expr LParen dispatch: peek_is_expr_start should have filtered {other:?}",
                     ),
@@ -292,7 +292,7 @@ impl<'src> Parser<'src> {
     /// (`?ident`). Convenience for [`Self::qmark_opens_optional_arg_at`] at the
     /// cursor.
     pub(super) fn qmark_opens_optional_arg(&self) -> bool {
-        self.qmark_opens_optional_arg_at(self.pos)
+        self.qmark_opens_optional_arg_at(self.filtered.pos())
     }
 
     /// `true` when the filtered token at `idx` is a `?` opening an
@@ -313,7 +313,7 @@ impl<'src> Parser<'src> {
     /// follow-up). Mirrors [`Self::at_dot_lambda`]'s offset-based two-token shape.
     pub(super) fn qmark_opens_optional_arg_at(&self, idx: usize) -> bool {
         let Some((Ok(FilteredToken::Raw(Token::QMark)), qmark_span)) =
-            self.filtered_tokens.get(idx)
+            self.filtered.tokens().get(idx)
         else {
             return false;
         };
@@ -436,7 +436,7 @@ impl<'src> Parser<'src> {
     /// stamp that virtual as the `DOT_TOK`.
     pub(super) fn at_dot_lambda(&self, idx: usize) -> bool {
         let Some((Ok(FilteredToken::Raw(Token::Underscore)), us_span)) =
-            self.filtered_tokens.get(idx)
+            self.filtered.tokens().get(idx)
         else {
             return false;
         };
@@ -627,13 +627,13 @@ impl<'src> Parser<'src> {
             debug_assert!(
                 matches!(
                     self.raw_tokens.get(self.raw_pos),
-                    Some((Ok(TriviaToken::Lexed(Token::DoBang)), s)) if *s == do_span,
+                    Some((Ok(TriviaToken::Lexed(Token::DoBang)), s)) if s == do_span,
                 ),
                 "Virtual::DoBang must be backed by a raw Token::DoBang at raw_pos with matching span"
             );
             self.emit_text(SyntaxKind::DO_BANG_TOK, do_span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         // Body block: `Virtual::BlockBegin` … body … `Virtual::BlockEnd`,
@@ -683,13 +683,13 @@ impl<'src> Parser<'src> {
             debug_assert!(
                 matches!(
                     self.raw_tokens.get(self.raw_pos),
-                    Some((Ok(TriviaToken::Lexed(Token::Do)), s)) if *s == do_span,
+                    Some((Ok(TriviaToken::Lexed(Token::Do)), s)) if s == do_span,
                 ),
                 "Virtual::Do must be backed by a raw Token::Do at raw_pos with matching span"
             );
             self.emit_text(SyntaxKind::DO_TOK, do_span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         // Body block: `Virtual::BlockBegin` … body … `Virtual::BlockEnd`,
@@ -730,13 +730,13 @@ impl<'src> Parser<'src> {
             matches!(
                 self.raw_tokens.get(self.raw_pos),
                 Some((Ok(TriviaToken::Lexed(Token::LetBang | Token::UseBang | Token::AndBang)), s))
-                    if *s == span,
+                    if s == span,
             ),
             "binder virtual must be backed by a raw let!/use!/and! at raw_pos with matching span"
         );
         self.emit_text(kind, span);
         self.raw_pos += 1;
-        self.pos += 1;
+        self.filtered.advance();
     }
 
     /// Consume the current filtered token as a zero-width `ERROR` placeholder
@@ -747,7 +747,7 @@ impl<'src> Parser<'src> {
     pub(super) fn eat_zero_width_virtual(&mut self, v: Virtual) -> bool {
         if matches!(self.peek(), Some((Ok(FilteredToken::Virtual(vv)), _)) if *vv == v) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
             true
         } else {
             false
@@ -887,13 +887,13 @@ impl<'src> Parser<'src> {
         debug_assert!(
             matches!(
                 self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::Let | Token::Use)), s)) if *s == span,
+                Some((Ok(TriviaToken::Lexed(Token::Let | Token::Use)), s)) if s == span,
             ),
             "Virtual::Let must be backed by a raw Token::Let / Token::Use at raw_pos with matching span"
         );
         self.emit_text(SyntaxKind::LET_TOK, span.clone());
         self.raw_pos += 1;
-        self.pos += 1;
+        self.filtered.advance();
         span
     }
 
@@ -1019,7 +1019,7 @@ impl<'src> Parser<'src> {
         //    where the `in` is never layout-rewritten.
         let explicit_in_terminator = self
             .binding_terminator_index()
-            .filter(|&term_idx| match self.filtered_tokens.get(term_idx) {
+            .filter(|&term_idx| match self.filtered.tokens().get(term_idx) {
                 Some((Ok(FilteredToken::Virtual(Virtual::DeclEnd)), _)) => matches!(
                     self.next_non_trivia_raw_at_pos_with_span(),
                     Some((Token::In, _))
@@ -1036,12 +1036,10 @@ impl<'src> Parser<'src> {
         // +b))`, with the operator in prefix position.
         let layout_body_idx = self.binding_terminator_index().filter(|&term_idx| {
             explicit_in_terminator.is_none()
+                && (self.filtered.tokens().kind_at(term_idx)
+                    == Some(FilteredKind::Virtual(Virtual::DeclEnd)))
                 && matches!(
-                    self.filtered_tokens.get(term_idx),
-                    Some((Ok(FilteredToken::Virtual(Virtual::DeclEnd)), _))
-                )
-                && matches!(
-                    self.filtered_tokens.get(term_idx + 1),
+                    self.filtered.tokens().get(term_idx + 1),
                     Some((Ok(FilteredToken::Raw(_)), _))
                 )
                 && self.expr_start_at(term_idx + 1)
@@ -1113,17 +1111,11 @@ impl<'src> Parser<'src> {
     /// to decide between the flat and let-in forms without assuming a particular
     /// terminator shape.
     fn binding_terminator_index(&self) -> Option<usize> {
-        let mut i = self.pos;
-        if !matches!(
-            self.filtered_tokens.get(i),
-            Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
-        ) {
+        let mut i = self.filtered.pos();
+        if self.filtered.tokens().kind_at(i) != Some(FilteredKind::Virtual(Virtual::BlockEnd)) {
             return None;
         }
-        while matches!(
-            self.filtered_tokens.get(i),
-            Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
-        ) {
+        while self.filtered.tokens().kind_at(i) == Some(FilteredKind::Virtual(Virtual::BlockEnd)) {
             i += 1;
         }
         Some(i)
@@ -1152,7 +1144,7 @@ impl<'src> Parser<'src> {
     /// preserving the ordinary attributed-`let` behaviour.
     pub(super) fn module_let_is_inline_in_expr(&self) -> bool {
         if !matches!(
-            self.filtered_tokens.get(self.pos),
+            self.peek(),
             Some((
                 Ok(FilteredToken::Virtual(Virtual::Let)
                     | FilteredToken::Raw(Token::Let | Token::Use)),
@@ -1163,8 +1155,8 @@ impl<'src> Parser<'src> {
         }
         let mut depth: i32 = 0;
         let mut saw_block = false;
-        let mut i = self.pos + 1;
-        while let Some((res, span)) = self.filtered_tokens.get(i) {
+        let mut i = self.filtered.pos() + 1;
+        while let Some((res, span)) = self.filtered.tokens().get(i) {
             match res {
                 Ok(FilteredToken::Virtual(Virtual::BlockBegin)) => {
                     depth += 1;
@@ -1358,16 +1350,14 @@ impl<'src> Parser<'src> {
     }
 
     /// `true` iff the `{ … }` body's first filtered token (after the `{` at
-    /// `self.pos`) is the raw `new` keyword — the head of either an object
+    /// `self.filtered.pos()`) is the raw `new` keyword — the head of either an object
     /// expression (`{ new T with member … }`) or a computation expression
     /// wrapping a bare construction (`{ new T(args) }`). The cursor is at the
     /// `{`. Used by [`Self::parse_brace_expr`] to divert to the dedicated
     /// [`Self::parse_obj_or_computation_brace`] handler.
     fn peek_brace_body_is_new_head(&self) -> bool {
-        matches!(
-            self.filtered_tokens.get(self.pos + 1),
-            Some((Ok(FilteredToken::Raw(Token::New)), _))
-        )
+        self.filtered.tokens().kind_at(self.filtered.pos() + 1)
+            == Some(FilteredKind::Token(TokenKind::New))
     }
 
     /// Parse a `new`-headed brace expression — either an object expression
@@ -1624,9 +1614,9 @@ impl<'src> Parser<'src> {
         if !matches!(self.next_non_trivia_raw_at_pos(), Some(Token::Interface)) {
             return false;
         }
-        let mut i = self.pos;
+        let mut i = self.filtered.pos();
         loop {
-            match self.filtered_tokens.get(i) {
+            match self.filtered.tokens().get(i) {
                 Some((
                     Ok(FilteredToken::Virtual(
                         Virtual::BlockEnd | Virtual::DeclEnd | Virtual::BlockSep,
@@ -1684,7 +1674,7 @@ impl<'src> Parser<'src> {
             ))
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
     }
 
@@ -1911,13 +1901,13 @@ impl<'src> Parser<'src> {
     }
 
     /// `true` if a `{| … |}` body is the copy-and-update form `{| e with … |}`.
-    /// The cursor is at the `{|` (`self.pos`); scans the *filtered* tokens after
+    /// The cursor is at the `{|` (`self.filtered.pos()`); scans the *filtered* tokens after
     /// it for a longident head followed by `with`, mirroring the copy-update
     /// arm of [`Self::classify_brace_body`].
     fn peek_anon_recd_is_copy_update(&self) -> bool {
-        let mut i = self.pos + 1; // past `{|`
+        let mut i = self.filtered.pos() + 1; // past `{|`
         if !matches!(
-            self.filtered_tokens.get(i),
+            self.filtered.tokens().get(i),
             Some((
                 Ok(FilteredToken::Raw(
                     Token::Ident(_) | Token::QuotedIdent(_) | Token::Global
@@ -1928,20 +1918,19 @@ impl<'src> Parser<'src> {
             return false;
         }
         i += 1;
-        while matches!(
-            self.filtered_tokens.get(i),
-            Some((Ok(FilteredToken::Raw(Token::Dot)), _))
-        ) && matches!(
-            self.filtered_tokens.get(i + 1),
-            Some((
-                Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
-                _
-            ))
-        ) {
+        while (self.filtered.tokens().kind_at(i) == Some(FilteredKind::Token(TokenKind::Dot)))
+            && matches!(
+                self.filtered.tokens().get(i + 1),
+                Some((
+                    Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
+                    _
+                ))
+            )
+        {
             i += 2;
         }
         matches!(
-            self.filtered_tokens.get(i),
+            self.filtered.tokens().get(i),
             Some((Ok(FilteredToken::Virtual(Virtual::With)), _))
                 | Some((Ok(FilteredToken::Raw(Token::With)), _))
         )
@@ -1963,7 +1952,7 @@ impl<'src> Parser<'src> {
                 self.drain_raw_up_to(with_span.start);
                 self.emit_text(SyntaxKind::WITH_TOK, with_span);
                 self.raw_pos += 1;
-                self.pos += 1;
+                self.filtered.advance();
             } else if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::With)), _))) {
                 self.bump_into(SyntaxKind::WITH_TOK);
             }
@@ -2014,10 +2003,8 @@ impl<'src> Parser<'src> {
     /// (caller checked [`Self::peek_is_record_field_start`]).
     fn parse_anon_recd_field(&mut self, copy_update: bool) {
         if !copy_update
-            && matches!(
-                self.filtered_tokens.get(self.pos + 1),
-                Some((Ok(FilteredToken::Raw(Token::Dot)), _))
-            )
+            && (self.filtered.tokens().kind_at(self.filtered.pos() + 1)
+                == Some(FilteredKind::Token(TokenKind::Dot)))
         {
             let span = self
                 .peek()
@@ -2034,7 +2021,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Lookahead disambiguating a non-`new`-headed `{ … }` brace body
-    /// (`braceExprBody`). The cursor is at the `{` (`self.pos`); this scans the
+    /// (`braceExprBody`). The cursor is at the `{` (`self.filtered.pos()`); this scans the
     /// *filtered* tokens after it without consuming. A leading longident
     /// (`Ident (DOT Ident)*`) directly followed by `=` is a record field-list;
     /// directly followed by `with` it is a bare-longident copy-update; followed
@@ -2068,19 +2055,18 @@ impl<'src> Parser<'src> {
         // first alt, `INHERIT atomType … recdExprBindings`) → `SynExpr.Record`
         // with a `baseInfo`. Route it to the record body (which parses the
         // `inherit` clause then the fields); it is not a computation expression.
-        if matches!(
-            self.filtered_tokens.get(self.pos + 1),
-            Some((Ok(FilteredToken::Raw(Token::Inherit)), _))
-        ) {
+        if self.filtered.tokens().kind_at(self.filtered.pos() + 1)
+            == Some(FilteredKind::Token(TokenKind::Inherit))
+        {
             return BraceBody::Record { copy_update: false };
         }
-        let mut i = self.pos + 1; // past `{`
+        let mut i = self.filtered.pos() + 1; // past `{`
         // A record starts with a longident head — an ident or F#'s `global`
         // path root (`{ global.N.F = 1 }`), matching `parse_long_ident_path`.
         // `inherit` / `_` records are deferred → CE. (A `new` head was diverted
         // earlier to the object-expression handler and never reaches here.)
         if !matches!(
-            self.filtered_tokens.get(i),
+            self.filtered.tokens().get(i),
             Some((
                 Ok(FilteredToken::Raw(
                     Token::Ident(_) | Token::QuotedIdent(_) | Token::Global
@@ -2109,9 +2095,9 @@ impl<'src> Parser<'src> {
             // recursing the brace disambiguation. A PREFIX_OP head (`!anchor`,
             // FCS's `PREFIX_OP atomicExpr`, an `appExpr`) is routed separately —
             // it is not in `raw_starts_atomic_expr`.
-            return match self.filtered_tokens.get(i) {
+            return match self.filtered.tokens().get(i) {
                 Some((Ok(FilteredToken::Raw(t)), _))
-                    if raw_starts_atomic_expr(t)
+                    if raw_starts_atomic_expr(&t)
                         && !matches!(t, Token::LBrace)
                         && self.is_expr_start_at(i) =>
                 {
@@ -2125,16 +2111,15 @@ impl<'src> Parser<'src> {
         }
         i += 1;
         // Consume the rest of a dotted longident: (DOT Ident)*.
-        while matches!(
-            self.filtered_tokens.get(i),
-            Some((Ok(FilteredToken::Raw(Token::Dot)), _))
-        ) && matches!(
-            self.filtered_tokens.get(i + 1),
-            Some((
-                Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
-                _
-            ))
-        ) {
+        while (self.filtered.tokens().kind_at(i) == Some(FilteredKind::Token(TokenKind::Dot)))
+            && matches!(
+                self.filtered.tokens().get(i + 1),
+                Some((
+                    Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))),
+                    _
+                ))
+            )
+        {
             i += 2;
         }
         // The copy-update `with` must belong to *this* brace. With the source's
@@ -2149,7 +2134,8 @@ impl<'src> Parser<'src> {
         // through to the appExpr/CE route, which re-checks ownership before
         // claiming the `with`.
         let with_is_own = self
-            .filtered_tokens
+            .filtered
+            .tokens()
             .get(i - 1)
             .is_some_and(|(_, head_span)| {
                 matches!(
@@ -2157,7 +2143,7 @@ impl<'src> Parser<'src> {
                     Some(Token::With)
                 )
             });
-        match self.filtered_tokens.get(i) {
+        match self.filtered.tokens().get(i) {
             Some((Ok(FilteredToken::Raw(Token::Equals)), _)) => {
                 BraceBody::Record { copy_update: false }
             }
@@ -2278,7 +2264,7 @@ impl<'src> Parser<'src> {
             self.drain_raw_up_to(with_span.start);
             self.emit_text(SyntaxKind::WITH_TOK, with_span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         } else if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::With)), _))) {
             self.bump_into(SyntaxKind::WITH_TOK);
         }
@@ -2999,7 +2985,7 @@ impl<'src> Parser<'src> {
         // stays a single `SynExpr.Ident` — `cons.( :: ).1` is
         // `LibraryOnlyUnionCaseFieldGet(Ident "cons", …)`, not over a one-segment
         // `LongIdent`.
-        if !self.at_long_ident_segment() || self.at_cons_field_get(self.pos) {
+        if !self.at_long_ident_segment() || self.at_cons_field_get(self.filtered.pos()) {
             self.builder.start_node_at(cp, SyntaxKind::IDENT_EXPR);
             self.builder.finish_node();
             return;
@@ -3030,7 +3016,7 @@ impl<'src> Parser<'src> {
         // `LIBRARY_ONLY_FIELD_GET_EXPR` instead. Stop the path here and leave it
         // for the postfix tail ([`Self::parse_postfix_tail`]), which the atomic
         // wrapper runs after this head.
-        while self.at_long_ident_segment() && !self.at_cons_field_get(self.pos) {
+        while self.at_long_ident_segment() && !self.at_cons_field_get(self.filtered.pos()) {
             let dot_span = match self.peek().cloned() {
                 Some((_, span)) => span,
                 None => unreachable!("at_raw_adjacent_dot implies a peeked Dot"),
@@ -3047,7 +3033,7 @@ impl<'src> Parser<'src> {
                 // `.( op )` / `.( * )` — operator-value qualification (the
                 // spaced star is the multiply operator here).
                 Some((Ok(FilteredToken::Raw(Token::LParen)), _))
-                    if self.at_dot_paren_op_value(self.pos) =>
+                    if self.at_dot_paren_op_value(self.filtered.pos()) =>
                 {
                     self.consume_paren_op_value();
                 }
@@ -3086,7 +3072,7 @@ impl<'src> Parser<'src> {
     pub(super) fn parse_base_expr(&mut self) {
         let cp = self.builder.checkpoint();
         self.bump_into(SyntaxKind::IDENT_TOK);
-        if self.at_long_ident_segment() && !self.at_cons_field_get(self.pos) {
+        if self.at_long_ident_segment() && !self.at_cons_field_get(self.filtered.pos()) {
             // `base.Member(.Member)*` — fold the `.member` chain into a
             // `LONG_IDENT_EXPR` (FCS's `LongIdent(["base"; …])`).
             self.build_long_ident_expr(cp);
@@ -3135,7 +3121,7 @@ impl<'src> Parser<'src> {
     pub(super) fn parse_global_expr(&mut self) {
         let cp = self.builder.checkpoint();
         self.bump_into(SyntaxKind::IDENT_TOK);
-        if self.at_long_ident_segment() && !self.at_cons_field_get(self.pos) {
+        if self.at_long_ident_segment() && !self.at_cons_field_get(self.filtered.pos()) {
             // `global.Member(.Member)*` — fold the `.member` chain into a
             // `LONG_IDENT_EXPR` (FCS's `LongIdent(["`global`"; …])`).
             self.build_long_ident_expr(cp);
@@ -3197,15 +3183,15 @@ impl<'src> Parser<'src> {
     /// (typically via [`Self::at_raw_adjacent_dot`]).
     fn dot_is_followed_by_lbrack(&self) -> bool {
         let Some((Ok(FilteredToken::Raw(Token::LBrack)), lbrack)) =
-            self.filtered_tokens.get(self.pos + 1)
+            self.filtered.tokens().get(self.filtered.pos() + 1)
         else {
             return false;
         };
         let Some((_, dot)) = self.peek() else {
             return false;
         };
-        self.raw_tokens[self.raw_pos..]
-            .iter()
+        self.raw_tokens
+            .items(self.raw_pos..)
             .filter(|(_, s)| s.start >= dot.end)
             .find_map(|(res, s)| match res {
                 Ok(tt) => raw_significant(tt).map(|_| s.start),
@@ -3231,7 +3217,7 @@ impl<'src> Parser<'src> {
     /// loop ([`Self::build_long_ident_expr`]) before this qualification and to
     /// dispatch it in [`Self::parse_postfix_tail`].
     fn at_cons_field_get(&self, idx: usize) -> bool {
-        let raw = |i: usize| match self.filtered_tokens.get(i) {
+        let raw = |i: usize| match self.filtered.tokens().get(i) {
             Some((Ok(FilteredToken::Raw(t)), _)) => Some(t),
             _ => None,
         };
@@ -3241,7 +3227,7 @@ impl<'src> Parser<'src> {
         // lexed `IntSuffixed`/`XIntSuffixed` and classified `INT32_LIT`). A
         // non-int32 suffix (`1L` int64, `1u` uint32, …) is a different int type,
         // which FCS rejects here (FS0010).
-        let is_int32 = |t: Option<&Token>| match t {
+        let is_int32 = |t: Option<Token>| match t {
             Some(Token::Int(_) | Token::XInt(_)) => true,
             Some(Token::IntSuffixed(s) | Token::XIntSuffixed(s)) => {
                 matches!(classify_suffixed_int(s), Ok(SyntaxKind::INT32_LIT))
@@ -3341,7 +3327,7 @@ impl<'src> Parser<'src> {
             // only by crossing a LexFilter-swallowed `)` belongs to an
             // enclosing construct (see [`Self::at_raw_adjacent_dot`]).
             if self.at_raw_adjacent_dot() {
-                if self.at_cons_field_get(self.pos) {
+                if self.at_cons_field_get(self.filtered.pos()) {
                     // `.( :: ).<int>` — FSharp.Core's library-only cons-cell field
                     // read (`SynExpr.LibraryOnlyUnionCaseFieldGet`). Checked first:
                     // its `.( :: )` would otherwise be misread by the `.( op )`
@@ -3351,15 +3337,15 @@ impl<'src> Parser<'src> {
                     // `.[` — a dotted indexer read.
                     self.parse_dot_indexed_get_tail(cp);
                 } else if matches!(
-                    self.filtered_tokens.get(self.pos + 1),
+                    self.filtered.tokens().get(self.filtered.pos() + 1),
                     Some((
                         Ok(FilteredToken::Raw(
                             Token::Ident(_) | Token::QuotedIdent(_) | Token::LParenStarRParen
                         )),
                         _
                     )),
-                ) || self.at_dot_paren_op_value(self.pos + 1)
-                    || self.at_active_pat_name_at(self.pos + 1)
+                ) || self.at_dot_paren_op_value(self.filtered.pos() + 1)
+                    || self.at_active_pat_name_at(self.filtered.pos() + 1)
                 {
                     // `.member` — postfix member access (one or more segments) —
                     // or a `.( op )` / `.(*)` / `.( * )` operator-value or
@@ -3502,14 +3488,14 @@ impl<'src> Parser<'src> {
     /// [`SyntaxKind::APP_TYPE`] (`parse_atomic_type`).
     ///
     /// The filtered stream is trivia-free and the measure marker directly
-    /// follows the numeric token, so the token at `self.pos - 1` is exactly the
+    /// follows the numeric token, so the token at `self.filtered.pos() - 1` is exactly the
     /// head literal.
     fn prev_filtered_is_measure_numeric(&self) -> bool {
-        let Some(prev) = self.pos.checked_sub(1) else {
+        let Some(prev) = self.filtered.pos().checked_sub(1) else {
             return false;
         };
         matches!(
-            self.filtered_tokens.get(prev),
+            self.filtered.tokens().get(prev),
             Some((
                 Ok(FilteredToken::Raw(
                     Token::Int(_)
@@ -3659,7 +3645,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => {
                 match self.next_non_trivia_raw_after(lparen_span.end) {
                     Some(t)
-                        if raw_after_lparen_starts_expr(t)
+                        if raw_after_lparen_starts_expr(&t)
                             && !matches!(t, Token::RParen | Token::Hash) =>
                     {
                         // A genuine non-empty paren body — the shared paren path
@@ -3784,17 +3770,17 @@ impl<'src> Parser<'src> {
     /// dot-qualification and pattern position, false at a bare expression atom
     /// where `( * )` is the whole-dimension wildcard).
     fn paren_op_value_at(&self, lparen_pos: usize, allow_star: bool) -> bool {
-        if !matches!(
-            self.filtered_tokens.get(lparen_pos),
-            Some((Ok(FilteredToken::Raw(Token::LParen)), _))
-        ) {
+        if self.filtered.tokens().kind_at(lparen_pos)
+            != Some(FilteredKind::Token(TokenKind::LParen))
+        {
             return false;
         }
-        let Some((Ok(FilteredToken::Raw(op)), op_span)) = self.filtered_tokens.get(lparen_pos + 1)
+        let Some((Ok(FilteredToken::Raw(op)), op_span)) =
+            self.filtered.tokens().get(lparen_pos + 1)
         else {
             return false;
         };
-        if !(is_paren_operator_name(op) || (allow_star && matches!(op, Token::Op("*")))) {
+        if !(is_paren_operator_name(&op) || (allow_star && matches!(op, Token::Op("*")))) {
             return false;
         }
         matches!(
@@ -3888,9 +3874,9 @@ impl<'src> Parser<'src> {
     /// past the one token.
     pub(super) fn consume_star_op_value(&mut self) {
         let (_, span) = self
-            .filtered_tokens
-            .get(self.pos)
-            .cloned()
+            .filtered
+            .tokens()
+            .get(self.filtered.pos())
             .expect("consume_star_op_value entered without a token");
         debug_assert!(span.end - span.start == 3, "`(*)` token spans 3 bytes");
         self.drain_raw_up_to(span.start);
@@ -3898,7 +3884,7 @@ impl<'src> Parser<'src> {
         self.emit_text(SyntaxKind::LPAREN_TOK, s..s + 1);
         self.emit_text(SyntaxKind::IDENT_TOK, s + 1..s + 2);
         self.emit_text(SyntaxKind::RPAREN_TOK, s + 2..s + 3);
-        self.pos += 1;
+        self.filtered.advance();
         while let Some((_, raw_span)) = self.raw_tokens.get(self.raw_pos) {
             if raw_span.end <= span.end {
                 self.raw_pos += 1;
@@ -3936,7 +3922,7 @@ impl<'src> Parser<'src> {
     /// operator-value heads and [`Self::parse_dot_get_tail`].
     fn consume_long_ident_qualification_segments(&mut self) {
         while self.at_long_ident_segment() {
-            match self.filtered_tokens.get(self.pos + 1).cloned() {
+            match self.filtered.tokens().get(self.filtered.pos() + 1) {
                 Some((Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))), _)) => {
                     self.bump_into(SyntaxKind::DOT_TOK);
                     self.bump_into(SyntaxKind::IDENT_TOK);
@@ -3946,7 +3932,7 @@ impl<'src> Parser<'src> {
                     self.consume_star_op_value();
                 }
                 Some((Ok(FilteredToken::Raw(Token::LParen)), _))
-                    if self.at_dot_paren_op_value(self.pos + 1) =>
+                    if self.at_dot_paren_op_value(self.filtered.pos() + 1) =>
                 {
                     self.bump_into(SyntaxKind::DOT_TOK);
                     self.consume_paren_op_value();
@@ -3956,7 +3942,7 @@ impl<'src> Parser<'src> {
                 // `|` after the segment's `(` is detected one token ahead, like
                 // the operator-value arm above.
                 Some((Ok(FilteredToken::Raw(Token::LParen)), _))
-                    if self.at_active_pat_name_at(self.pos + 1) =>
+                    if self.at_active_pat_name_at(self.filtered.pos() + 1) =>
                 {
                     self.bump_into(SyntaxKind::DOT_TOK);
                     self.parse_active_pat_name();
@@ -4214,10 +4200,7 @@ impl<'src> Parser<'src> {
     /// alternative and is left to [`Parser::parse_type_alt_operand`] to parse (or
     /// reject) — the commit itself is already sound, since a `(`-headed typar has
     /// no other parse in this position.
-    fn consume_trait_call_support<'a>(sig: &mut impl Iterator<Item = &'a Token<'src>>) -> bool
-    where
-        'src: 'a,
-    {
+    fn consume_trait_call_support(sig: &mut impl Iterator<Item = Token<'src>>) -> bool {
         match sig.next() {
             // Single head typar `^a`.
             Some(Token::Op("^")) => {
@@ -4261,13 +4244,10 @@ impl<'src> Parser<'src> {
     /// is non-empty. That is enough for the commit (a paren-headed typar has no
     /// other parse here); rejecting an ill-formed alternative is
     /// [`Parser::parse_type_alt_operand`]'s job, as it is on the constraint side.
-    fn consume_type_alts_tail<'a>(
-        sig: &mut impl Iterator<Item = &'a Token<'src>>,
+    fn consume_type_alts_tail(
+        sig: &mut impl Iterator<Item = Token<'src>>,
         requires_or: bool,
-    ) -> bool
-    where
-        'src: 'a,
-    {
+    ) -> bool {
         // The first alternative is a *typar*, whose extent is known, so directly
         // after it only the separator or the list's closer is legal. `requires_or`
         // (a `'a`-sigil first typar) rules the closer out: FCS rejects the
@@ -4439,7 +4419,7 @@ impl<'src> Parser<'src> {
             self.peek(),
             Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), _))
         ) {
-            self.pos += 1;
+            self.filtered.advance();
         }
     }
 

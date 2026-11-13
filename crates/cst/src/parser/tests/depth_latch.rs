@@ -119,8 +119,8 @@ fn a_chain_of_missing_pattern_operands_stops_at_the_bound() {
 fn giving_a_file_up_whole_is_lossless_and_flat() {
     let src = "let x = f a b c\n";
     let symbols = HashSet::new();
-    let raw: Vec<RawTok<'_>> = lex_with_symbols_full_trivia(src, &symbols).collect();
-    let filtered = filter_collect(src, LanguageVersion::Preview, active_tokens(&raw)).tokens;
+    let raw = lex_full_trivia(src, &symbols).tokens;
+    let filtered = filter_collect(src, LanguageVersion::Preview, raw.active()).tokens;
     let mut parser = Parser::new(src, raw, filtered);
     parser.give_up_whole(FileKind::Impl);
     let root = parser.builder.finish();

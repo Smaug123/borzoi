@@ -15,6 +15,7 @@ mod corpus;
 mod corpus_walk;
 mod fcs_divergence;
 mod fcs_record_stack_bound;
+mod filter_reference;
 mod flat_tree_reference;
 mod flat_tree_scans;
 mod kind_name_totality;
@@ -105,6 +106,7 @@ mod parser_panic_sweep;
 mod parser_tree_height;
 mod recovery_sweep;
 mod shape_sensitivity;
+mod token_table_reference;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is
 /// silently never compiled or run. See the module for why that is worth a test.

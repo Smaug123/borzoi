@@ -319,7 +319,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _)),
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
     }
 
@@ -565,7 +565,7 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
             ) {
                 self.builder.token(SyntaxKind::ERROR, "");
-                self.pos += 1;
+                self.filtered.advance();
             }
         }
         if count > 1 {
@@ -1352,7 +1352,7 @@ impl<'src> Parser<'src> {
     /// only atomic + ADJACENT_PREFIX_OP, since `f - x` is infix
     /// application, not `f (-x)`.
     pub(super) fn peek_is_expr_start(&self) -> bool {
-        self.expr_start_at(self.pos)
+        self.expr_start_at(self.filtered.pos())
     }
 
     /// [`Self::peek_is_expr_start`] at an arbitrary offset into the filtered
@@ -1364,7 +1364,7 @@ impl<'src> Parser<'src> {
     /// leading `..` or `do`). Used by the module let-in dispatch
     /// ([`Self::parse_module_let`]) to decide whether a body follows the `in`.
     pub(super) fn expr_start_at(&self, offset: usize) -> bool {
-        match self.filtered_tokens.get(offset) {
+        match self.filtered.tokens().get(offset) {
             // `LParen` is in `raw_starts_minus_expr`, so this arm must
             // come first — the wildcard one would otherwise short-circuit
             // and skip the lex-error lookahead that gates paren-expr. The paren
@@ -1373,8 +1373,9 @@ impl<'src> Parser<'src> {
             // predicate every `(`-after lookahead uses.
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => self
                 .next_non_trivia_raw_after(lparen_span.end)
+                .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
-            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_minus_expr(t) => true,
+            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_minus_expr(&t) => true,
             // `_.member` — the accessor-function shorthand (FCS's `UNDERSCORE
             // DOT atomicExpr`). `Underscore` is deliberately *not* in
             // `raw_starts_atomic_expr` (a bare `_` is not an expression), so the
@@ -1426,7 +1427,7 @@ impl<'src> Parser<'src> {
             // [`DualKeyword::lambda_head`] that `parse_minus_expr` dispatches
             // on, so the gate and the dispatch agree by construction. Admits
             // `fun … -> …` at file top, in tuple elements, in paren bodies, etc.
-            Some((Ok(tok), _)) if DualKeyword::lambda_head(tok).is_some() => true,
+            Some((Ok(tok), _)) if DualKeyword::lambda_head(&tok).is_some() => true,
             // `Virtual::DoBang` — LexFilter's rewrite of `Token::DoBang`.
             // Like `fun`, the filtered stream only surfaces the virtual, so
             // recognise it here (`do! e` is an expression-start in a CE body,
@@ -1499,13 +1500,14 @@ impl<'src> Parser<'src> {
             // `let`/`use` after `(`.
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => self
                 .next_non_trivia_raw_after(lparen_span.end)
+                .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
             Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_atomic_expr(t) => true,
             // `_.member` — the accessor-function shorthand as a bare application
             // argument (`List.map _.Length xs`). `Underscore` is not an atomic
             // starter on its own, so the `_.` shape is recognised here.
             Some((Ok(FilteredToken::Raw(Token::Underscore)), _))
-                if self.at_dot_lambda(self.pos) =>
+                if self.at_dot_lambda(self.filtered.pos()) =>
             {
                 true
             }
@@ -1545,7 +1547,7 @@ impl<'src> Parser<'src> {
                 // so `new C(|Foo|_|)` / `[<A(|Foo|_|)>]` are FCS errors, just
                 // like `new C(+)`. Reject it here alongside the operator-value.
                 self.peek_is_expr_start()
-                    && !self.at_paren_op_value(self.pos)
+                    && !self.at_paren_op_value(self.filtered.pos())
                     && !self.at_active_pat_name()
             }
             Some((Ok(FilteredToken::Raw(t)), _)) => raw_starts_attribute_arg(t),
@@ -1565,13 +1567,14 @@ impl<'src> Parser<'src> {
             // (see [`raw_after_lparen_starts_expr`], incl. a block `let`/`use`).
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => self
                 .next_non_trivia_raw_after(lparen_span.end)
+                .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
             Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_atomic_expr(t) => true,
             // `_.member` — the accessor-function shorthand is an `atomicExpr`,
             // so prefix-form operand recovery accepts it (`! _.Foo`). Recognised
             // via the `_.` two-token shape, like the other gates.
             Some((Ok(FilteredToken::Raw(Token::Underscore)), _))
-                if self.at_dot_lambda(self.pos) =>
+                if self.at_dot_lambda(self.filtered.pos()) =>
             {
                 true
             }

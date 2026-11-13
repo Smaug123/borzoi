@@ -558,13 +558,13 @@ impl<'src> Parser<'src> {
             debug_assert!(
                 matches!(
                     self.raw_tokens.get(self.raw_pos),
-                    Some((Ok(TriviaToken::Lexed(Token::Lazy | Token::Assert)), s)) if *s == span,
+                    Some((Ok(TriviaToken::Lexed(Token::Lazy | Token::Assert)), s)) if s == span,
                 ),
                 "Virtual::Lazy/Assert must be backed by a raw lazy/assert at raw_pos with matching span"
             );
             self.emit_text(kw_kind, span);
             self.raw_pos += 1;
-            self.pos += 1;
+            self.filtered.advance();
         } else {
             self.bump_into(kw_kind);
         }
@@ -924,9 +924,9 @@ impl<'src> Parser<'src> {
         // operator belongs to the enclosing expression — bail so the body
         // stops at the closer and the outer Pratt loop takes the operator
         // (`( 1 ) + 2`, `{ 1 } + 2`).
-        for (res, _) in self.raw_tokens.iter().skip(self.raw_pos) {
+        for (res, _) in self.raw_tokens.items(self.raw_pos..) {
             match res {
-                Ok(t) if raw_is_trivia(t) => continue,
+                Ok(t) if raw_is_trivia(&t) => continue,
                 Ok(TriviaToken::Lexed(Token::RParen | Token::RBrace)) => return None,
                 _ => break,
             }
@@ -944,7 +944,7 @@ impl<'src> Parser<'src> {
             return None;
         }
         // RHS-must-exist gate.
-        if !self.is_expr_start_at(self.pos + 1) {
+        if !self.is_expr_start_at(self.filtered.pos() + 1) {
             return None;
         }
         // ADJACENT_PREFIX_OP gate.
@@ -998,9 +998,9 @@ impl<'src> Parser<'src> {
         // Swallowed-closer gate (same as `peek_infix_continuation`): if the next
         // non-trivia raw token is a LexFilter-stripped `)` / `}`, the operator
         // belongs to the enclosing expression.
-        for (res, _) in self.raw_tokens.iter().skip(self.raw_pos) {
+        for (res, _) in self.raw_tokens.items(self.raw_pos..) {
             match res {
-                Ok(t) if raw_is_trivia(t) => continue,
+                Ok(t) if raw_is_trivia(&t) => continue,
                 Ok(TriviaToken::Lexed(Token::RParen | Token::RBrace)) => return None,
                 _ => break,
             }
@@ -1069,9 +1069,9 @@ impl<'src> Parser<'src> {
         };
         // Swallowed-closer-*before* gate: a closer pending at the cursor means
         // the `::` belongs to the enclosing frame.
-        for (res, _) in self.raw_tokens.iter().skip(self.raw_pos) {
+        for (res, _) in self.raw_tokens.items(self.raw_pos..) {
             match res {
-                Ok(t) if raw_is_trivia(t) => continue,
+                Ok(t) if raw_is_trivia(&t) => continue,
                 Ok(TriviaToken::Lexed(Token::RParen | Token::RBrace)) => return None,
                 _ => break,
             }
@@ -1083,7 +1083,7 @@ impl<'src> Parser<'src> {
             return None;
         }
         // RHS-must-exist gate.
-        if !self.is_expr_start_at(self.pos + 1) {
+        if !self.is_expr_start_at(self.filtered.pos() + 1) {
             return None;
         }
         Some((45, 45))
@@ -1127,9 +1127,9 @@ impl<'src> Parser<'src> {
         // Swallowed-closer-*before* gate: a `)` / `}` pending at the cursor means
         // the join belongs to the enclosing frame, not this (inner paren-body)
         // one.
-        for (res, _) in self.raw_tokens.iter().skip(self.raw_pos) {
+        for (res, _) in self.raw_tokens.items(self.raw_pos..) {
             match res {
-                Ok(t) if raw_is_trivia(t) => continue,
+                Ok(t) if raw_is_trivia(&t) => continue,
                 Ok(TriviaToken::Lexed(Token::RParen | Token::RBrace)) => return None,
                 _ => break,
             }
@@ -1151,13 +1151,13 @@ impl<'src> Parser<'src> {
         debug_assert!(
             matches!(
                 self.raw_tokens.get(self.raw_pos),
-                Some((Ok(TriviaToken::Lexed(Token::In)), s)) if *s == span,
+                Some((Ok(TriviaToken::Lexed(Token::In)), s)) if s == span,
             ),
             "Virtual::JoinIn must be backed by a raw Token::In at raw_pos with matching span"
         );
         self.emit_text(SyntaxKind::IN_TOK, span);
         self.raw_pos += 1;
-        self.pos += 1;
+        self.filtered.advance();
     }
 
     /// FCS LexFilter rule at `SyntaxTree/LexFilter.fs:2694`: when the
@@ -1218,9 +1218,7 @@ impl<'src> Parser<'src> {
         // are unique by start, so the only candidate for an exact match is the
         // first token starting at-or-after `op_span.start`; require the exact
         // span the old `.position()` did (rejecting a split's sub-range).
-        let cand = self
-            .raw_tokens
-            .partition_point(|(_, span)| span.start < op_span.start);
+        let cand = self.raw_tokens.count_starting_before(op_span.start);
         let op_raw_idx = self
             .raw_tokens
             .get(cand)
@@ -1229,14 +1227,13 @@ impl<'src> Parser<'src> {
         let Some(idx) = op_raw_idx else {
             return false;
         };
-        let next_real_start =
-            self.raw_tokens
-                .iter()
-                .skip(idx + 1)
-                .find_map(|(res, span)| match res {
-                    Ok(t) if raw_is_trivia(t) => None,
-                    Ok(_) | Err(_) => Some(span.start),
-                });
+        let next_real_start = self
+            .raw_tokens
+            .items(idx + 1..)
+            .find_map(|(res, span)| match res {
+                Ok(t) if raw_is_trivia(&t) => None,
+                Ok(_) | Err(_) => Some(span.start),
+            });
         let adjacent_right = matches!(next_real_start, Some(start) if start == op_span.end);
         if !adjacent_right {
             return false;
@@ -1248,11 +1245,12 @@ impl<'src> Parser<'src> {
         // only gets here after parsing an LHS expression atom, so any
         // real preceding raw token is at an atomic boundary. Reduces to
         // "gap before the op, or no preceding real token."
-        let prev_real_end = self.raw_tokens[..idx]
-            .iter()
+        let prev_real_end = self
+            .raw_tokens
+            .items(..idx)
             .rev()
             .find_map(|(res, span)| match res {
-                Ok(t) if raw_is_trivia(t) => None,
+                Ok(t) if raw_is_trivia(&t) => None,
                 Ok(_) => Some(span.end),
                 Err(_) => None,
             });
@@ -1267,7 +1265,7 @@ impl<'src> Parser<'src> {
     /// [`Parser::peek_infix_continuation`] to peer past the operator at
     /// the cursor and decide whether an expression atom follows.
     pub(super) fn is_expr_start_at(&self, offset: usize) -> bool {
-        match self.filtered_tokens.get(offset) {
+        match self.filtered.tokens().get(offset) {
             // `LParen` as atom-starter must look past the swallowed
             // `RParen` (same logic as `peek_is_expr_start`). RHS of an
             // infix operator parses through `parse_pratt_expr` →
@@ -1276,8 +1274,9 @@ impl<'src> Parser<'src> {
             // ([`raw_after_lparen_starts_expr`], incl. a block `let`/`use`).
             Some((Ok(FilteredToken::Raw(Token::LParen)), lparen_span)) => self
                 .next_non_trivia_raw_after(lparen_span.end)
+                .as_ref()
                 .is_some_and(raw_after_lparen_starts_expr),
-            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_minus_expr(t) => true,
+            Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_minus_expr(&t) => true,
             // A non-block `let … in` operand surfaces as a raw `Token::Let` in
             // the filtered stream (block-leading lets are `Virtual(Let)` instead).
             // It is deliberately *not* in `raw_starts_minus_expr` (that classifier
@@ -1316,7 +1315,7 @@ impl<'src> Parser<'src> {
             // A lambda head (`fun`/`function`, either spelling) — kept symmetric
             // with the `peek_is_expr_start` arm, and classified by the same
             // [`DualKeyword::lambda_head`] that `parse_minus_expr` dispatches on.
-            Some((Ok(tok), _)) if DualKeyword::lambda_head(tok).is_some() => true,
+            Some((Ok(tok), _)) if DualKeyword::lambda_head(&tok).is_some() => true,
             // `Virtual::Let` — a *block-leading* `let … in` as the infix RHS,
             // `a &&⏎    let y = x⏎    y` (the `&&`-at-end-of-line layout, where
             // LexFilter promotes the next-line `let` to the virtual rather than

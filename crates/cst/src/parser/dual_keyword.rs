@@ -160,14 +160,14 @@ impl<'src> Parser<'src> {
                 debug_assert!(
                     matches!(
                         self.raw_tokens.get(self.raw_pos),
-                        Some((Ok(TriviaToken::Lexed(t)), s)) if kw.is_raw(t) && *s == span,
+                        Some((Ok(TriviaToken::Lexed(t)), s)) if kw.is_raw(&t) && s == span,
                     ),
                     "{kw:?}'s offside relabel must be backed by its raw token at raw_pos with \
                      a matching span"
                 );
                 self.emit_text(kw.syntax_kind(), span);
                 self.raw_pos += 1;
-                self.pos += 1;
+                self.filtered.advance();
             }
             KeywordForm::Raw => self.bump_into(kw.syntax_kind()),
         }

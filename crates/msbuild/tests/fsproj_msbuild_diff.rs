@@ -188,7 +188,7 @@ fn compile_order_metadata_matches_fsharp_source_code_compile_order() {
     assert_eq!(ours, theirs);
 }
 
-/// The sixth finding of `docs/msbuild-escaped-value-plan.md`, guarded where it
+/// The sixth finding of `docs/completed/msbuild-escaped-value-plan.md`, guarded where it
 /// actually bites.
 ///
 /// MSBuild escapes **nine** characters when it seeds a reserved path property

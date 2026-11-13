@@ -58,7 +58,7 @@ impl LineEnd {
     /// `source`). A line breaks at `\n` alone, as FCS's lexer counts lines,
     /// and a line that starts inside a multi-line token (a string or comment)
     /// is part of the line that token starts on.
-    fn head(&mut self, source: &str, raw: &[RawTok<'_>], offset: usize) -> LineHead {
+    fn head(&mut self, source: &str, raw: &RawTokens<'_>, offset: usize) -> LineHead {
         if let Some(head) = self.head
             && head.start <= offset
             && offset <= head.end
@@ -71,7 +71,7 @@ impl LineEnd {
             None => 0,
         };
         let mut start = line_start(offset);
-        while let Some((_, s)) = raw[..raw.partition_point(|(_, s)| s.start < start)].last()
+        while let Some((_, s)) = raw.items(..raw.count_starting_before(start)).next_back()
             && s.end > start
             && s.start < start
         {
@@ -80,19 +80,21 @@ impl LineEnd {
         let end = source[offset..]
             .find('\n')
             .map_or(source.len(), |nl| offset + nl);
-        let first = raw[raw.partition_point(|(_, s)| s.start < start)..]
-            .iter()
+        let first = raw
+            .items(raw.count_starting_before(start)..)
             .find_map(|(tok, s)| match tok {
-                Ok(TriviaToken::Lexed(t)) if trivia_kind(t).is_none() => Some((s.start, t)),
-                Err(_) => Some((s.start, &Token::Newline)),
+                Ok(TriviaToken::Lexed(t)) if trivia_kind(&t).is_none() => Some((s.start, t)),
+                Err(_) => Some((s.start, Token::Newline)),
                 _ => None,
             })
             .filter(|&(at, _)| at <= offset);
         let head = LineHead {
             start,
             end,
-            first: first.map_or(offset, |(at, _)| at),
-            declares: first.is_some_and(|(_, t)| matches!(t, Token::Type | Token::Module)),
+            first: first.as_ref().map_or(offset, |(at, _)| *at),
+            declares: first
+                .as_ref()
+                .is_some_and(|(_, t)| matches!(t, Token::Type | Token::Module)),
         };
         self.head = Some(head);
         head
@@ -864,7 +866,7 @@ impl<'src> Parser<'src> {
         // `!seen_decl` re-base there resets `depth`/`depth_pos` past that leading
         // scaffolding so the body top level still reads as depth 0.
         let mut depth = 0i32;
-        let mut depth_pos = self.pos;
+        let mut depth_pos = self.filtered.pos();
         let mut line_ends = LineEnd::default();
         while let Some((res, span)) = self.peek().cloned() {
             self.advance_block_depth(&mut depth, &mut depth_pos);
@@ -1336,7 +1338,7 @@ impl<'src> Parser<'src> {
                             // typar, hence not global), and the open-lower range
                             // operators `..` / `..^` (`[<Obsolete>]⏎ ..^1` → attrs +
                             // `IndexRange`).
-                            raw_starts_minus_expr(t)
+                            raw_starts_minus_expr(&t)
                                 || matches!(
                                     t,
                                     Token::Do | Token::Op("^") | Token::DotDot | Token::DotDotHat
@@ -1514,7 +1516,7 @@ impl<'src> Parser<'src> {
                 // register as a change against this baseline.
                 if !seen_decl {
                     depth = 0;
-                    depth_pos = self.pos;
+                    depth_pos = self.filtered.pos();
                 }
                 continue;
             }
@@ -1610,7 +1612,7 @@ impl<'src> Parser<'src> {
         let in_a_declaration = head.declares && head.first < span.start;
         // The scan starts past the stray token itself, which may be the
         // keyword or closer that would otherwise end the debris at once.
-        let mut next_raw = self.raw_tokens.partition_point(|(_, s)| s.start < span.end);
+        let mut next_raw = self.raw_tokens.count_starting_before(span.end);
         // A line indented past the stray's line continues what that line
         // began (`_ x =⏎    let inner = 1`): FCS's offside rule reads it as
         // part of the construct, so it is debris too. The column is that of
@@ -1643,10 +1645,10 @@ impl<'src> Parser<'src> {
                 }
                 next_raw += 1;
                 if let Ok(TriviaToken::Lexed(t)) = raw {
-                    let significant = trivia_kind(t).is_none();
+                    let significant = trivia_kind(&t).is_none();
                     let was_open = open.iter().any(|b| b.holds_open());
                     keyword |=
-                        (after_access || in_a_declaration) && !was_open && begins_module_decl(t);
+                        (after_access || in_a_declaration) && !was_open && begins_module_decl(&t);
                     if !keyword && (was_open || s.start < line_end) {
                         absorbed_end = Some(s.end);
                         // A comment or string the debris absorbs may run on
@@ -1659,7 +1661,7 @@ impl<'src> Parser<'src> {
                     if !significant {
                         continue;
                     }
-                    let (closes, opens) = debris_brackets(t, after_equals);
+                    let (closes, opens) = debris_brackets(&t, after_equals);
                     after_equals = in_type_head && matches!(t, Token::Equals);
                     in_type_head = match t {
                         Token::Type => true,
@@ -1683,8 +1685,9 @@ impl<'src> Parser<'src> {
             // indented past the stray's line.
             if span.start >= line_end
                 && !keyword
-                && self.raw_tokens[self.raw_tokens.partition_point(|(_, s)| s.start < line_end)..]
-                    .iter()
+                && self
+                    .raw_tokens
+                    .items(self.raw_tokens.count_starting_before(line_end)..)
                     .find(|(raw, s)| {
                         s.start >= line_end
                             && matches!(raw, Ok(TriviaToken::Lexed(t)) if trivia_kind(t).is_none())
@@ -1717,11 +1720,11 @@ impl<'src> Parser<'src> {
                 if let Some((Ok(TriviaToken::Lexed(t)), s)) = self.raw_tokens.get(next_raw)
                     && s.start == span.start
                     && (matches!(t, Token::Semi | Token::SemiSemi)
-                        || debris_brackets(t, false)
+                        || debris_brackets(&t, false)
                             .0
                             .iter()
                             .any(|kinds| !open.iter().any(|b| kinds.contains(b)))
-                        || ((after_access || in_a_declaration) && begins_module_decl(t)))
+                        || ((after_access || in_a_declaration) && begins_module_decl(&t)))
                 {
                     break;
                 }
@@ -1909,8 +1912,8 @@ impl<'src> Parser<'src> {
     fn raw_leading_whole_file_module_head(&self) -> bool {
         let mut it = self
             .raw_tokens
-            .iter()
-            .map_while(|(res, _)| res.as_ref().ok())
+            .items(..)
+            .map_while(|(res, _)| res.ok())
             .filter_map(|tt| match tt {
                 TriviaToken::Lexed(t) => Some(t),
                 _ => None,
@@ -1990,9 +1993,8 @@ impl<'src> Parser<'src> {
         // error (a `module` header can't usefully span one).
         let mut it = self
             .raw_tokens
-            .iter()
-            .skip(self.raw_pos)
-            .map_while(|(res, _)| res.as_ref().ok())
+            .items(self.raw_pos..)
+            .map_while(|(res, _)| res.ok())
             .filter_map(|tt| match tt {
                 TriviaToken::Lexed(t) => Some(t),
                 // Directive / inactive-code markers are trivia — skip past
@@ -2087,8 +2089,9 @@ impl<'src> Parser<'src> {
     /// see a dedent's `OBLOCKEND` between the attributes and the `let`; there
     /// the `let` belongs to an enclosing scope, not to these attributes.
     fn let_keyword_follows_block_seps(&self) -> bool {
-        self.filtered_tokens[self.pos..]
-            .iter()
+        self.filtered
+            .tokens()
+            .items_from(self.filtered.pos())
             .find(|(res, _)| !matches!(res, Ok(FilteredToken::Virtual(Virtual::BlockSep))))
             .is_some_and(|(res, _)| {
                 matches!(
@@ -2102,7 +2105,7 @@ impl<'src> Parser<'src> {
     fn bump_layout_virtual(&mut self) {
         if self.raw_module_head_eq().is_some() || self.raw_leading_type_defn() {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         } else {
             self.bump_into(SyntaxKind::ERROR);
         }
@@ -2435,7 +2438,7 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
         ) {
             self.builder.token(SyntaxKind::ERROR, "");
-            self.pos += 1;
+            self.filtered.advance();
         }
 
         is_abbrev
@@ -2482,11 +2485,10 @@ impl<'src> Parser<'src> {
             return false;
         }
         let mut it = self
-            .filtered_tokens
-            .iter()
-            .skip(self.pos)
-            .filter_map(|(res, _)| res.as_ref().ok())
-            .filter(|ft| !matches!(ft, FilteredToken::Raw(t) if trivia_kind(t).is_some()));
+            .filtered
+            .tokens()
+            .items_from(self.filtered.pos())
+            .filter_map(|(res, _)| res.ok());
 
         // First path segment must be an identifier (or the `global` head).
         if !matches!(

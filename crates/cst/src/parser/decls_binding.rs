@@ -201,11 +201,10 @@ impl<'src> Parser<'src> {
             // offside name after the `BlockSep` must keep the `BlockSep` in place
             // for the carrier dispatch's own drain (the 10.7a type-header path).
             let next_is_same_scope_list = self
-                .filtered_tokens
-                .iter()
-                .skip(self.pos)
+                .filtered
+                .tokens()
+                .items_from(self.filtered.pos())
                 .find_map(|(res, _)| match res {
-                    Ok(FilteredToken::Raw(t)) if trivia_kind(t).is_some() => None,
                     Ok(FilteredToken::Virtual(Virtual::BlockSep)) => None,
                     other => Some(other),
                 })
@@ -988,14 +987,14 @@ impl<'src> Parser<'src> {
         &self,
         pred: impl Fn(&FilteredToken<'_>) -> bool,
     ) -> bool {
-        let mut i = self.pos;
+        let mut i = self.filtered.pos();
         loop {
-            match self.filtered_tokens.get(i) {
+            match self.filtered.tokens().get(i) {
                 Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd | Virtual::BlockSep)), _)) => {
                     i += 1
                 }
                 Some((Ok(FilteredToken::Virtual(_)), _)) => return false,
-                Some((Ok(tok), _)) => return pred(tok),
+                Some((Ok(tok), _)) => return pred(&tok),
                 _ => return false,
             }
         }

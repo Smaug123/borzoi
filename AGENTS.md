@@ -12,7 +12,9 @@ This is a Cargo workspace with nine members:
   (`docs/flat-syntax-tree-plan.md`) behind rowan's red-tree API, written
   directly by the parser. Its tests turn on the `rowan-reference` feature,
   under which every parse also builds rowan's green tree and asserts the two
-  trees are the same. Self-contained: depends only on `logos` and
+  trees are the same, and `token-reference`, under which every parse asserts
+  that the token tables rebuild the streams of the pipeline stages they
+  replace (`docs/token-pipeline-soa-plan.md`). Self-contained: depends only on `logos` and
   `text-size` (and, behind that test-only feature, `rowan`). Intended to be
   reusable outside this repo.
 - `crates/msbuild/` — `borzoi-msbuild`. MSBuild `.fsproj` parser /
@@ -46,7 +48,7 @@ This is a Cargo workspace with nine members:
   `fsproj_item_escape_generative_diff.rs` (item specs over an escape-bearing
   alphabet — the harness that guards MSBuild's escaped-value domain, where the
   rule is *scan and split before you decode; trim in the domain; decode at the
-  leaf*; see `docs/msbuild-escaped-value-plan.md`), and
+  leaf*; see `docs/completed/msbuild-escaped-value-plan.md`), and
   `fsproj_global_perturbation_diff.rs`. All assert
   *certain-implies-exact*: when we commit a value, MSBuild must agree exactly;
   a decline makes no claim.
@@ -68,7 +70,12 @@ This is a Cargo workspace with nine members:
   (`OutDir`/`OutputPath`/`DefineConstants` are untrusted under every global set
   on a real SDK project), which makes such a dimension a coverage investment,
   not a soundness fix.
-  The oracle has one op that executes rather than evaluates: `restoreCone`
+  Two ops execute rather than evaluate. `targetItems` runs one target on an
+  evaluation and reads back an item list: `fsproj_compile_order_generative_diff.rs`
+  runs F#'s `FSharpSourceCodeCompileOrder` (its text lifted from the installed
+  SDK into a synthetic SDK) and holds the compile order we commit to
+  certain-implies-exact, since the order the compiler sees is not the evaluated
+  `@(Compile)`. `restoreCone`
   builds `GenerateRestoreGraphFile` in-process and reports every target and
   task that ran, with file hashes and task-assembly identities.
   `restore_cone_census.rs` pins that cone per project and per installed SDK
@@ -502,7 +509,7 @@ nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --i
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_diff_feature_gates:: -- --ignored  # ~2 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_panic_sweep::fresh_seed -- --ignored  # ~10 s
-nix develop -c cargo test -p borzoi-cst  --test all layout_perturbation_sweep:: -- --ignored  # ~10 min
+nix develop -c cargo test -p borzoi-cst  --profile gate --test all layout_perturbation_sweep:: -- --ignored  # ~1.5 min
 nix develop -c cargo test -p borzoi-cst  --test all recovery_sweep::       -- --ignored  # ~3 min
 nix develop -c cargo test -p borzoi-cst  --test all flat_tree_reference::corpus -- --ignored  # ~2.5 min
 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s

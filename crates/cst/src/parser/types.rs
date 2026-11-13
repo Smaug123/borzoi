@@ -527,10 +527,9 @@ impl<'src> Parser<'src> {
         // [pos + 1]` (the bar is at `pos`; `bump_into` advances by exactly
         // one). Confirm it is the `null` itself, not a layout virtual the
         // raw checks above can't see.
-        if !matches!(
-            self.filtered_tokens.get(self.pos + 1),
-            Some((Ok(FilteredToken::Raw(Token::Null)), _)),
-        ) {
+        if self.filtered.tokens().kind_at(self.filtered.pos() + 1)
+            != Some(FilteredKind::Token(TokenKind::Null))
+        {
             return;
         }
 
@@ -614,11 +613,9 @@ impl<'src> Parser<'src> {
             Some((Ok(FilteredToken::Raw(Token::Quote)), _)) => SyntaxKind::QUOTE_TOK,
             Some((Ok(FilteredToken::Raw(Token::Op("^"))), _)) => SyntaxKind::HAT_TOK,
             Some((Ok(FilteredToken::Raw(Token::Underscore)), underscore_span)) => {
-                let colon_idx = self.next_non_trivia_filtered_index_after(self.pos)?;
-                let filtered_cg = matches!(
-                    self.filtered_tokens.get(colon_idx),
-                    Some((Ok(FilteredToken::Raw(Token::ColonGreater)), _))
-                );
+                let colon_idx = self.next_non_trivia_filtered_index_after(self.filtered.pos())?;
+                let filtered_cg = self.filtered.tokens().kind_at(colon_idx)
+                    == Some(FilteredKind::Token(TokenKind::ColonGreater));
                 let raw_cg = matches!(
                     self.next_non_trivia_raw_after(underscore_span.end),
                     Some(Token::ColonGreater)
@@ -627,16 +624,14 @@ impl<'src> Parser<'src> {
             }
             _ => return None,
         };
-        let ident_idx = self.next_non_trivia_filtered_index_after(self.pos)?;
-        let ident_end = match self.filtered_tokens.get(ident_idx) {
+        let ident_idx = self.next_non_trivia_filtered_index_after(self.filtered.pos())?;
+        let ident_end = match self.filtered.tokens().get(ident_idx) {
             Some((Ok(FilteredToken::Raw(Token::Ident(_) | Token::QuotedIdent(_))), s)) => s.end,
             _ => return None,
         };
         let colon_idx = self.next_non_trivia_filtered_index_after(ident_idx)?;
-        let filtered_cg = matches!(
-            self.filtered_tokens.get(colon_idx),
-            Some((Ok(FilteredToken::Raw(Token::ColonGreater)), _))
-        );
+        let filtered_cg = self.filtered.tokens().kind_at(colon_idx)
+            == Some(FilteredKind::Token(TokenKind::ColonGreater));
         let raw_cg = matches!(
             self.next_non_trivia_raw_after(ident_end),
             Some(Token::ColonGreater)
@@ -833,7 +828,7 @@ impl<'src> Parser<'src> {
                     });
                 }
                 self.builder.finish_node();
-            } else if next.is_some_and(raw_starts_postfix_app_head)
+            } else if next.as_ref().is_some_and(raw_starts_postfix_app_head)
                 && matches!(
                     self.peek(),
                     Some((Ok(FilteredToken::Raw(t)), _)) if raw_starts_postfix_app_head(t)
@@ -2330,9 +2325,9 @@ impl<'src> Parser<'src> {
         // First non-trivia raw at-or-after `raw_pos`. A swallowed `)`
         // (or any other non-Comma raw) here means the comma is for a
         // surrounding construct, not us.
-        for (res, _) in self.raw_tokens.iter().skip(self.raw_pos) {
+        for (res, _) in self.raw_tokens.items(self.raw_pos..) {
             match res {
-                Ok(t) if raw_is_trivia(t) => continue,
+                Ok(t) if raw_is_trivia(&t) => continue,
                 Ok(TriviaToken::Lexed(Token::Comma)) => return true,
                 _ => return false,
             }
@@ -2383,7 +2378,7 @@ impl<'src> Parser<'src> {
         let Some((tok, span)) = self.next_non_trivia_raw_at_pos_with_span() else {
             return false;
         };
-        if raw_starts_anon_recd_type(tok) {
+        if raw_starts_anon_recd_type(&tok) {
             return true;
         }
         if matches!(tok, Token::Struct) {
@@ -2436,6 +2431,7 @@ impl<'src> Parser<'src> {
             return true;
         }
         self.next_non_trivia_raw_at_pos()
+            .as_ref()
             .is_some_and(raw_starts_atomic_type)
     }
 
@@ -2499,13 +2495,14 @@ impl<'src> Parser<'src> {
                 matches!(self.next_non_trivia_raw_at_pos(), Some(Token::LParen))
                     && self
                         .next_non_trivia_raw_after(after)
-                        .is_some_and(|t| matches!(t, Token::RParen) || raw_starts_minus_expr(t))
+                        .is_some_and(|t| matches!(t, Token::RParen) || raw_starts_minus_expr(&t))
             }
             Some((Ok(FilteredToken::Raw(t)), _))
                 if raw_starts_atomic_expr(t) || token_is_folded_signed_literal(t) =>
             {
-                self.next_non_trivia_raw_at_pos()
-                    .is_some_and(|r| raw_starts_atomic_expr(r) || matches!(r, Token::Op("-" | "+")))
+                self.next_non_trivia_raw_at_pos().is_some_and(|r| {
+                    raw_starts_atomic_expr(&r) || matches!(r, Token::Op("-" | "+"))
+                })
             }
             _ => false,
         }

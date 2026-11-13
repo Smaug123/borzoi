@@ -4,7 +4,7 @@
 //!
 //! FCS folds the sign at the token layer, *before* the grammar runs, so a
 //! folded literal is a single token by the time the parser sees it. We
-//! reproduce that here as a pass over the parser's filtered-token vector
+//! reproduce that here as a pass over the parser's filtered token table
 //! (run in [`super::parse_with_symbols`] after `lexfilter::filter`, before
 //! [`super::Parser`] consumes it). Doing it at the token layer means **both**
 //! expression and pattern positions — and arg position (`f -1`), paren bodies
@@ -43,29 +43,31 @@ use crate::lexer::Span;
 // pass share the one definition.
 use crate::lexfilter::is_atomic_expr_end;
 
-/// If `lit` is a numeric literal FCS folds a sign into, rebuild it carrying
-/// `merged` (the source slice spanning the sign *and* the digits) as its
-/// text. Returns `None` for non-foldable tokens — unsigned suffixed ints
-/// (suffix contains `u`/`U`) and everything that isn't a foldable numeric
-/// literal.
-fn rebuild_signed_literal<'src>(lit: &Token<'src>, merged: &'src str) -> Option<Token<'src>> {
-    match lit {
-        Token::Int(_) => Some(Token::Int(merged)),
-        Token::XInt(_) => Some(Token::XInt(merged)),
-        Token::Float64(_) => Some(Token::Float64(merged)),
-        Token::Float32(_) => Some(Token::Float32(merged)),
-        Token::XIEEE64(_) => Some(Token::XIEEE64(merged)),
-        Token::XIEEE32(_) => Some(Token::XIEEE32(merged)),
-        Token::Decimal(_) => Some(Token::Decimal(merged)),
-        Token::BigNum(_) => Some(Token::BigNum(merged)),
+/// Whether a sign folds into filtered token `i`: FCS's fold set. Unsigned
+/// suffixed ints (suffix contains `u`/`U`) and every non-numeric kind do not
+/// fold. Only a numeric literal's text is read, since a virtual token's span
+/// need not lie on character boundaries.
+fn folds_into(filtered: &FilteredTokens<'_>, i: usize) -> bool {
+    match filtered.kind(i) {
+        FilteredKind::Token(
+            TokenKind::Int
+            | TokenKind::XInt
+            | TokenKind::Float64
+            | TokenKind::Float32
+            | TokenKind::XIEEE64
+            | TokenKind::XIEEE32
+            | TokenKind::Decimal
+            | TokenKind::BigNum,
+        ) => true,
         // Suffixed ints fold only when the suffix is *signed*. The suffix
         // set is `{y,u,s,l,n,L,U}`; an unsigned form is exactly one
         // containing `u`/`U` (`uy`/`us`/`u`/`ul`/`un`/`uL`/`UL`). Hex/oct/bin
         // prefixes (`0x`/`0o`/`0b`) and digits never contain `u`/`U`, so a
         // whole-text check is unambiguous.
-        Token::IntSuffixed(s) if !s.contains(['u', 'U']) => Some(Token::IntSuffixed(merged)),
-        Token::XIntSuffixed(s) if !s.contains(['u', 'U']) => Some(Token::XIntSuffixed(merged)),
-        _ => None,
+        FilteredKind::Token(TokenKind::IntSuffixed | TokenKind::XIntSuffixed) => {
+            !filtered.text(i).contains(['u', 'U'])
+        }
+        _ => false,
     }
 }
 
@@ -73,63 +75,49 @@ fn rebuild_signed_literal<'src>(lit: &Token<'src>, merged: &'src str) -> Option<
 /// the token immediately to the left of the op (in the **raw** stream, which
 /// still carries any LexFilter-swallowed `)`/`}`) is an atomic-expr-end token
 /// glued to the op's start. When `true`, the op is infix and must *not* fold.
-fn glued_to_atomic_end(raw_tokens: &[RawTok<'_>], op_span: &Span) -> bool {
+fn glued_to_atomic_end(raw_tokens: &RawTokens<'_>, op_span: &Span) -> bool {
     // `raw_tokens` is position-sorted and non-overlapping, so binary-search to
     // the first token ending *after* the op rather than scanning from the end —
     // keeping the whole fold pass ~linear even in files dense with signed
     // literals (`[| -1; -2; … |]`). The predecessors are then the short
     // trailing trivia run before `pp`, walked backward to the first
     // significant token.
-    let pp = raw_tokens.partition_point(|(_, s)| s.end <= op_span.start);
-    let prev = raw_tokens[..pp]
-        .iter()
-        .rev()
-        .find_map(|(res, s)| match res {
-            Ok(tt) => raw_significant(tt).map(|t| (t, s.end)),
-            Err(_) => None,
-        });
+    let pp = raw_tokens.count_ending_by(op_span.start);
+    let prev = raw_tokens.items(..pp).rev().find_map(|(res, s)| match res {
+        Ok(tt) => raw_significant(tt).map(|t| (t, s.end)),
+        Err(_) => None,
+    });
     match prev {
-        Some((tok, end)) => end == op_span.start && is_atomic_expr_end(tok),
+        Some((tok, end)) => end == op_span.start && is_atomic_expr_end(&tok),
         None => false,
     }
 }
 
-/// Try to fold the op at filtered index `i` with the literal at `i + 1`.
-/// Returns the merged filtered token on success.
-fn try_fold<'src>(
-    source: &'src str,
-    raw_tokens: &[RawTok<'src>],
-    filtered: &[FilteredTok<'src>],
-    i: usize,
-) -> Option<FilteredTok<'src>> {
-    let (op_res, op_span) = filtered.get(i)?;
-    let Ok(FilteredToken::Raw(Token::Op(op_text))) = op_res else {
-        return None;
-    };
-    if *op_text != "-" && *op_text != "+" {
-        return None;
+/// Whether the op at filtered index `i` folds with the literal at `i + 1`.
+/// The merged token is the literal's kind spanning both, whose text is the
+/// sign and the digits.
+fn folds_at(raw_tokens: &RawTokens<'_>, filtered: &FilteredTokens<'_>, i: usize) -> bool {
+    if i + 1 >= filtered.len() {
+        return false;
     }
-
-    let (lit_res, lit_span) = filtered.get(i + 1)?;
-    let Ok(FilteredToken::Raw(lit_tok)) = lit_res else {
-        return None;
-    };
+    if filtered.kind(i) != FilteredKind::Token(TokenKind::Op) {
+        return false;
+    }
+    let op_text = filtered.text(i);
+    if op_text != "-" && op_text != "+" {
+        return false;
+    }
+    let op_span = filtered.span(i);
+    let lit_span = filtered.span(i + 1);
     // Adjacent-right: the literal must begin exactly where the op ends.
     if lit_span.start != op_span.end {
-        return None;
+        return false;
     }
-    let merged_text = &source[op_span.start..lit_span.end];
-    let merged_tok = rebuild_signed_literal(lit_tok, merged_text)?;
-
+    if !folds_into(filtered, i + 1) {
+        return false;
+    }
     // Non-adjacent-left, against the raw stream.
-    if glued_to_atomic_end(raw_tokens, op_span) {
-        return None;
-    }
-
-    Some((
-        Ok(FilteredToken::Raw(merged_tok)),
-        op_span.start..lit_span.end,
-    ))
+    !glued_to_atomic_end(raw_tokens, &op_span)
 }
 
 /// Fold every adjacent `±literal` pair in `filtered` into a single signed
@@ -140,33 +128,27 @@ fn try_fold<'src>(
 /// tree stays lossless. Non-foldable `+`/`-` (spaced, glued-left, or a
 /// non-literal/unsigned operand) are left untouched for the parser's existing
 /// prefix/infix/`ADJACENT_PREFIX_OP` handling.
-pub(super) fn fold_adjacent_signs<'src>(
-    source: &'src str,
-    raw_tokens: &[RawTok<'src>],
-    mut filtered: Vec<FilteredTok<'src>>,
-) -> Vec<FilteredTok<'src>> {
+pub(super) fn fold_adjacent_signs(raw_tokens: &RawTokens<'_>, filtered: &mut FilteredTokens<'_>) {
     // In-place left-compaction: a fold merges two tokens into one, so the
-    // output is never longer than the input. Rewrite the Vec we already own —
-    // a `write` cursor trailing a `read` cursor — instead of cloning the whole
-    // stream into a fresh allocation. `write <= read` always, so `[write, read)`
-    // only ever holds already-consumed entries; overwriting them loses nothing,
-    // and `try_fold`'s immutable borrow ends before each mutation.
+    // output is never longer than the input. A `write` cursor trails a `read`
+    // cursor, so `[write, read)` only ever holds already-consumed entries and
+    // overwriting them loses nothing.
     let mut read = 0;
     let mut write = 0;
     while read < filtered.len() {
-        if let Some(merged) = try_fold(source, raw_tokens, &filtered, read) {
-            filtered[write] = merged;
+        if folds_at(raw_tokens, filtered, read) {
+            let merged = filtered.span(read).start..filtered.span(read + 1).end;
+            filtered.set(write, filtered.kind(read + 1), merged);
             read += 2;
         } else {
             if write != read {
-                filtered.swap(write, read);
+                filtered.copy_within(read, write);
             }
             read += 1;
         }
         write += 1;
     }
     filtered.truncate(write);
-    filtered
 }
 
 #[cfg(test)]
