@@ -30,8 +30,9 @@
 //! resolution, no owning project, no resolvable URL — all map to `None`,
 //! never an LSP error envelope.
 
-use crate::observed::{Sources, Unobserved};
+use crate::observed::Unobserved;
 use crate::uri::UriExt as _;
+use crate::vfs::Vfs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -635,7 +636,7 @@ fn location_for_resolution(
     resolved: &borzoi_sema::ResolvedProject,
     res: Resolution,
     request_uri: &Uri,
-    docs: &Sources,
+    docs: &Vfs,
 ) -> Option<Location> {
     match res {
         Resolution::Local(id) => {

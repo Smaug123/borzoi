@@ -46,10 +46,11 @@ use crate::handlers::definition::{
     DefinitionOutcome, PendingFetch, default_source_fetcher, location_for_pending, url_location,
 };
 use crate::handlers::workspace_diagnostic::{Step, Sweep};
-use crate::observed::{Sources, Unobserved};
+use crate::observed::Unobserved;
 use crate::project_deferral;
 use crate::publish::PublishState;
 use crate::semantic::{ProjectId, SemanticState};
+use crate::vfs::{Clock, Vfs};
 use crate::workspace::Workspace;
 use crate::{diagnostics, fsproj_diagnostics};
 
@@ -145,7 +146,11 @@ pub fn client_capabilities_from_initialize(
 
 /// Mutable server state threaded through every request and notification.
 pub struct State {
-    pub docs: Sources,
+    /// Every source's text: the client's buffers, and the disk as of the
+    /// current generation.
+    pub docs: Vfs,
+    /// Where each generation's time comes from ([`crate::vfs`]'s racy rule).
+    pub clock: Clock,
     /// Per-file preprocessor symbol resolution. Looks up the owning
     /// `.fsproj` on first request for each new project and caches the
     /// evaluated `$(DefineConstants)` (including SDK-supplied defines
@@ -222,7 +227,8 @@ pub struct State {
 impl State {
     pub fn new() -> Self {
         Self {
-            docs: Sources::new(),
+            docs: Vfs::new(),
+            clock: Clock::Host,
             workspace: Workspace::new(),
             publish: PublishState::new(),
             semantic: SemanticState::new(),
@@ -393,6 +399,13 @@ impl State {
     pub fn apply_watched_changes(&mut self, changes: &[FileEvent]) -> WatchedChangeEffect {
         let mut structural = false;
         let mut assembly_input = false;
+        // Whatever its class, each event names a path the disk moved at: a
+        // hint to re-read it, which covers a write its stamp cannot see.
+        let hinted: Vec<PathBuf> = changes
+            .iter()
+            .filter_map(|change| change.uri.to_file_path().ok())
+            .collect();
+        self.docs.hint(hinted.iter().map(PathBuf::as_path));
         for change in changes {
             match classify_change(&change.uri, change.typ) {
                 ChangeClass::Structural => structural = true,
@@ -651,7 +664,7 @@ pub fn run_with_fetcher(
                 Err(_) => {
                     // A sweep step is a unit of work of its own, so it is a
                     // generation of its own.
-                    state.docs.begin_generation();
+                    state.docs.begin_generation(state.clock.now());
                     let stepped = advance_sweep(&mut state, &connection, in_flight);
                     state.docs.end_generation();
                     sweep = stepped?;
@@ -662,7 +675,7 @@ pub fn run_with_fetcher(
         // Each message is handled in a generation of its own: what its
         // handling reads from disk is counted against it
         // ([`crate::observed`]).
-        state.docs.begin_generation();
+        state.docs.begin_generation(state.clock.now());
         match msg {
             Message::Request(req) => {
                 if req.method == Shutdown::METHOD {

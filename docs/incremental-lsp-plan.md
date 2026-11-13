@@ -1,8 +1,8 @@
 # An incremental LSP: file state, derived values and the edit loop
 
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness),
-> Stage 1 (the inference cutoff) and Stage 2a (counted source reads)
-> implemented. Tracks
+> Stage 1 (the inference cutoff), Stage 2a (counted source reads) and Stage 2b
+> (the `Vfs` owns source text) implemented. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -966,6 +966,152 @@ the kernel's share of the 80 reads, extrapolated from a microbenchmark, is
 roughly 13 M of `semanticTokens E`'s 24.4 M with warm vnodes, and more when
 they are recycled (see "Kernel instructions"). The stage measures both levels. The other expected effect is that `semanticTokens E` falls
 toward the cost of parsing and resolving `E` alone.
+
+**Implemented** (`crates/lsp/src/vfs.rs`, `crates/lsp/src/observed.rs`,
+`crates/lsp/src/semantic.rs`):
+
+- `vfs::Vfs` replaces `observed::Sources` as `State::docs`. It holds the
+  buffers as `Arc<str>`, indexed by normalised path, so `text_of` is a hash
+  lookup rather than a scan of every buffer. Its disk side is a `vfs::Disk`:
+  `observed::HostDisk` in the server (`metadata` for a `stat`; open, `fstat`
+  on the descriptor, then read), and a model with a generated clock in the
+  tests. Generic over the disk, with `HostDisk` as the default parameter, so
+  no server signature names it. The stamp is `(dev, ino, size, mtime, ctime)`
+  from `MetadataExt`. On a non-unix host `std` exposes no change time, so the
+  stamp is the size and mtime with no ctime, and a stamp without one is
+  always racy: such a host re-reads every unbuffered item in every
+  fold-reading generation, as Stage 2a did.
+- A disk entry is `Present` (stamp, the generation time it was taken, and the
+  text, `None` when not UTF-8), `Absent`, or `Failed` (any other error,
+  re-read in every generation). Racy stamps (mtime or ctime within `G` = 2 s
+  of the generation's time) are re-read in every generation, and a re-read
+  whose text is unchanged keeps the old allocation, so pointer identity
+  survives the racy window.
+- The generation log (`log_generations`, and `end_generation` returning the
+  `Generation`) moves from `Sources` to the `Vfs` unchanged, with `stats`
+  beside `opens` in its counts and in the `observed.generation` event.
+- Outside a generation the `Vfs` remembers nothing and reads every time. That
+  keeps the semantic layer's unit tests, which call it directly with no loop,
+  on today's semantics.
+- The generation's time is `State::clock` (`vfs::Clock`), read in the loop
+  and passed to `begin_generation`. `Clock::HostAhead` and `Clock::HostBehind`
+  exist for tests whose disk does not change while the server runs: ahead
+  makes freshly written files read as old, behind makes every stamp racy.
+- **The witness is the text, not the stamp.** `ProjectParses::texts` already
+  held each item's text; they are now the `Vfs`'s own allocations, and
+  `SemanticState::validate_cached_fold` asks the `Vfs` for every item again
+  and compares by pointer, then by bytes. That covers a buffer (its `Arc`
+  changes with every edit) and a disk file (the same `Arc` while its stamp
+  holds) with one rule, and it keeps the fold when an item is rewritten to
+  the text it had, which a recorded stamp or version would drop. The plan
+  said to record stamps and buffer versions; this is the deviation.
+- Validation runs at the top of `resolved_prefix_and_env_for` (before its
+  fast path) and `parses_for_project`, and is memoised per generation on
+  the cached entry (`CachedParses::validated_in`). A mismatch drops the
+  parses, the resolved fold and the fold refusal, and owes a
+  `semanticTokens/refresh`, as `invalidate_file` does. `inferred_prefix_for`
+  reads only after `resolved_prefix_and_env_for`. `fold_outcome`, which the
+  deferral refresh reads after every message, does not validate: a deferral
+  message about a project whose item moved on disk unwatched is corrected by
+  the next request that reads the fold, not before.
+- A fold that succeeds where the last one was refused owes a
+  `semanticTokens/refresh` too: an unwatched restore of a deleted item is
+  noticed by the fold itself, and nothing else would tell the client that
+  its single-file tokens are stale.
+- The parse cache compares texts by pointer first, and a byte-equal hit
+  adopts the `Vfs`'s allocation, so the next comparison is a pointer test.
+- Watched-file events still call `invalidate_file` (and everything else they
+  called), and each event's path is also a `Vfs::hint`, which forgets the
+  entry so the next read re-reads it whatever its stamp says.
+- A disk text the `Vfs` re-reads is not, by itself, reported to a
+  workspace-diagnostic client: an unwatched write that no fold reads owes no
+  `workspace/diagnostic/refresh`. The client's next pull sees it, since its
+  `resultId` hashes the text.
+
+The oracle:
+
+- `incremental_state_machine` gains `InputClass` (`SourceContent`,
+  `ProjectFiles`, `DirectoryMembership`, and `ReferencedAssemblies` for the
+  assets file and the DLL, which the plan's list had no class for) and
+  `WITNESSED = [SourceContent]`. A source write is `DirectoryMembership` when
+  it creates or deletes a source in a directory a project on disk globs, and
+  `SourceContent` otherwise. A `Check` runs whenever every pending event is
+  witnessed, and `run_case` checks once more before its final flush. An
+  unflushed `Check` asks the direct queries first and compares what the
+  client displays after the refreshes they owed: until the server has had a
+  message since the write, nothing could have told the client.
+- `unwatched_source_writes_agree_with_a_fresh_session` generates scripts whose
+  disk writes and deletes are all sources and which never flush, and asserts
+  that comparisons with writes pending happened (`unflushed_checks`).
+- Four pinned no-flush scripts: a rewrite of a closed source, the same at
+  the same size (`x` renamed `y`), a delete (the fresh session refuses the
+  fold), and that delete followed by the file's restore (found by Codex; the
+  generated test does not reach it at its default case count). Run against Stage 2a, the first three fail, as does the existing "external
+  write" script now that `run_case` checks before its final flush, and the
+  generated test (minimal script: open `A`, rewrite `Shared/S.fs` without
+  `x`).
+- `vfs::tests` holds the property with a generated clock and a model disk
+  ticking at 1 ns, 1 ms, 1 s or 2 s: over writes (same-size and back to
+  earlier content, a byte-order-mark spelling, non-UTF-8), deletes, buffer
+  edits, clock moves, writes in the middle of a generation and writes landing
+  between a read's stamp and its bytes, **every** generation's first read is
+  exact. The argument in the module docs shows why the plan's "within `G` it
+  may be the old bytes" is not needed: a write after a non-racy stamp always
+  carries a later timestamp, and a racy stamp is re-read. Later reads in a
+  generation return the same allocation and touch nothing, and an unchanged
+  file read more than `G` after its mtime costs exactly one `stat`.
+  `the_generator_reaches_the_racy_and_the_stamp_only_cases` is the
+  non-vacuity check (190 hidden writes caught, 1,056 stamp-only reads and
+  1,424 absent re-checks over its seed).
+  `a_same_size_write_within_the_window_of_the_stamp_is_not_missed` walks the
+  racy hole step by step on a one-second disk.
+- `observed_counts` flips: on a clock ahead of the files, the cold request
+  opens `N − 2`, and the keystroke plus request, and the other document's
+  request, each open 0 and `stat` exactly `N − 2`. The control runs on a
+  clock behind, where every stamp is racy, and each of the three opens
+  `N − 2`.
+
+Planted, each caught, then removed:
+
+- Skipping `validate_cached_fold`: the pinned and generated no-flush tests and
+  both `observed_counts` properties fail.
+- Validating only the items open in buffers: the same four fail.
+- Not owing a refresh on a validation mismatch: the pinned and generated
+  no-flush tests fail (the displayed tokens of the other open document).
+- Ignoring the racy window: the `Vfs` property, the step-by-step racy test,
+  the allocation test and the non-vacuity test fail, and so does the
+  `observed_counts` control. The state machine does not see it on macOS,
+  whose APFS stamps move at nanosecond granularity.
+- Reusing a disk entry without comparing stamps, and treating a recorded
+  absence as permanent: the `Vfs` property and its non-vacuity test fail.
+
+**Measured** on WoofWare.Incremental, 20 keystrokes per run. "Before" is
+#636's head (2e19e69c), the minimum over six runs; "after" is the minimum
+over three. The rows that touch the disk (`semanticTokens E` before; the three
+fold-reading rows after) are kernel-heavy (see "Kernel instructions"); their
+runs agreed to within 1.3% before and 0.4% after, so every run sat at the
+vnode-cached level.
+
+| message, per keystroke | instructions before | after | allocs before | after | opens before | after | stats after |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `didChange E` | 0.17 M | 0.17 M | 98 | 99 | 0 | 0 | 0 |
+| `diagnostic E` | 4.85 M | 4.86 M | 1,526 | 1,525 | 0 | 0 | 0 |
+| `diagnostic L` (`unchanged`) | 3.32 M | 3.34 M | 1,522 | 1,521 | 0 | 0 | 0 |
+| `semanticTokens E` | **23.9 M** | **8.26 M** | 7,804 | 6,092 | **80** | **0** | 80 |
+| `semanticTokens L` | 14.2 M | 16.2 M | 17,113 | 17,635 | 0 | 0 | 80 |
+| `hover L` | 6.42 M | 8.37 M | 7,015 | 7,536 | 0 | 0 | 80 |
+| **keystroke total** | **53.0 M** | **41.2 M** | 35,078 | 34,408 | **80** | **0** | **240** |
+
+`semanticTokens E`'s opens fall to 0, as expected, and it falls toward the
+cost of parsing and resolving `E` alone: 15.7 M less, of which the kernel's
+share of the 80 reads was predicted at about 13 M. The path `stat`s are the
+predicted 240: one per unbuffered item in each of the three requests that read
+the fold. The cost of validating a cached fold is what `semanticTokens L` and
+`hover L` gained: about 1.95 M instructions and 521 allocations for 80 items,
+roughly 24 k instructions and 6.5 allocations per item (the `stat`, and the
+normalised path the buffer lookup builds). The cold rows move by under 2%:
+`semanticTokens L` and `hover L` validate the fold the first request built (80
+`stat`s each, about 2.3 M), and the cold `semanticTokens E` still opens 80.
 
 ### Stage 3a: the MSBuild evaluation records its read set
 

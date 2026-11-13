@@ -50,11 +50,20 @@
 //!
 //! The server watches nothing itself: file-watch events are whatever the client
 //! sends in `workspace/didChangeWatchedFiles`. The model therefore queues one
-//! event per disk write and delivers the queue on [`Cmd::Flush`]. Between a write
-//! and its event the server *cannot* know the disk moved, so no comparison is
-//! made while events are pending — but requests still are ([`Cmd::Peek`]), which
-//! is how the server comes to cache state read from disk before the event that
-//! should invalidate it.
+//! event per disk write and delivers the queue on [`Cmd::Flush`]. Requests are
+//! made while events are pending ([`Cmd::Peek`]), which is how the server comes
+//! to cache state read from disk before the event that should invalidate it.
+//!
+//! Each queued event has an [`InputClass`], and [`WITNESSED`] names the classes
+//! whose writes the server is meant to notice on its own
+//! (`docs/incremental-lsp-plan.md`, D7). A [`Cmd::Check`] compares while events
+//! are pending exactly when every pending event's class is witnessed. Until the
+//! server has done some work since such a write it has had no chance to notice
+//! it, so its client cannot have been told anything: an unflushed comparison
+//! asks the direct queries first, and compares what the client displays only
+//! after the refreshes those queries owed ([`check`]).
+//! [`unwatched_source_writes_agree_with_a_fresh_session`] generates scripts
+//! that write sources and never flush.
 //!
 //! Text sync is FULL only (the server advertises `TextDocumentSyncKind::FULL`),
 //! so every `didChange` carries the whole document.
@@ -457,7 +466,8 @@ enum Cmd {
     Delete(FileId),
     /// Deliver the queued watch events as one `didChangeWatchedFiles`.
     Flush,
-    /// Compare against fresh sessions. Skipped while watch events are queued.
+    /// Compare against fresh sessions. Skipped while a watch event is queued
+    /// whose class is not [`WITNESSED`].
     Check,
     /// Ask the warm session for one file's diagnostics (and, if it is open, its
     /// tokens and hovers) without comparing — warms caches, including from disk
@@ -759,7 +769,39 @@ fn cmd_strategy() -> impl Strategy<Value = Cmd> {
     ]
 }
 
+/// A source file, for the edits, saves, writes and deletes of a script that
+/// never flushes: a write to any other kind of file is an unwitnessed event,
+/// which would suspend every comparison until the final flush.
+fn source_file_strategy() -> impl Strategy<Value = FileId> {
+    prop_oneof![
+        4 => Just(FileId::Src(Src::A)),
+        4 => Just(FileId::Src(Src::B)),
+        2 => Just(FileId::Src(Src::C)),
+        2 => Just(FileId::Src(Src::S)),
+    ]
+}
+
+/// Commands that write sources behind the server's back and never deliver the
+/// watch events: every write is [`InputClass::SourceContent`] unless a glob
+/// sees it, and comparisons are frequent.
+fn unwatched_cmd_strategy() -> impl Strategy<Value = Cmd> {
+    prop_oneof![
+        3 => buffer_file_strategy().prop_map(Cmd::Open),
+        4 => with_content(buffer_file_strategy()).prop_map(|(f, c)| Cmd::Edit(f, c)),
+        3 => buffer_file_strategy().prop_map(Cmd::Close),
+        2 => source_file_strategy().prop_map(Cmd::Save),
+        6 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        3 => source_file_strategy().prop_map(Cmd::Delete),
+        4 => Just(Cmd::Check),
+        3 => src_strategy().prop_map(Cmd::Peek),
+    ]
+}
+
 fn case_strategy() -> impl Strategy<Value = Case> {
+    case_strategy_with(cmd_strategy().boxed())
+}
+
+fn case_strategy_with(cmds: BoxedStrategy<Cmd>) -> impl Strategy<Value = Case> {
     let mode = prop_oneof![Just(Mode::Push), Just(Mode::Pull)];
     // A healthy world (see `Damage`): every source and `common.props` exist,
     // `P.fsproj` always and the other projects often, and most projects are
@@ -816,17 +858,13 @@ fn case_strategy() -> impl Strategy<Value = Case> {
     // `documentSymbol`, `references` and `completion` answer only for open
     // buffers, so most scripts start by opening a few files.
     let opens = prop::collection::vec(buffer_file_strategy(), 0..5);
-    (
-        mode,
-        disk,
-        opens,
-        prop::collection::vec(cmd_strategy(), 1..20),
-    )
-        .prop_map(|(mode, disk, opens, cmds)| Case {
+    (mode, disk, opens, prop::collection::vec(cmds, 1..20)).prop_map(|(mode, disk, opens, cmds)| {
+        Case {
             mode,
             disk,
             cmds: opens.into_iter().map(Cmd::Open).chain(cmds).collect(),
-        })
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,6 +1144,34 @@ fn publish_view(params: &Value) -> Value {
 // The world: the real disk, the model's buffers, the queued watch events.
 // ---------------------------------------------------------------------------
 
+/// What a disk write changes, as the server's caches see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputClass {
+    /// The text of a source, where no project's glob reads its directory: a
+    /// rewrite, or a creation or deletion that only an explicitly listed item
+    /// sees.
+    SourceContent,
+    /// A `.fsproj` or `common.props`: an input to project evaluation.
+    ProjectFiles,
+    /// Which sources a directory holds, where a project's `*.fs` glob reads
+    /// it: a source created or deleted beside such a project.
+    DirectoryMembership,
+    /// The assets file and the framework DLL: inputs to the assembly env's
+    /// reference resolution.
+    ReferencedAssemblies,
+}
+
+/// The input classes the server notices without a watch event. Stage 2b
+/// validates each cached fold's Compile item texts in every generation that
+/// reads the fold.
+const WITNESSED: &[InputClass] = &[InputClass::SourceContent];
+
+/// A watch event the server has not yet been sent, and what its write changed.
+struct Pending {
+    event: Value,
+    class: InputClass,
+}
+
 struct World {
     root: PathBuf,
     /// Open buffers, by file, with their current text.
@@ -1113,7 +1179,7 @@ struct World {
     /// Buffer versions, so each `didChange` is well-formed.
     versions: BTreeMap<FileId, i32>,
     /// Watch events for disk writes the server has not yet been told about.
-    pending: Vec<Value>,
+    pending: Vec<Pending>,
 }
 
 impl World {
@@ -1138,25 +1204,62 @@ impl World {
         }
     }
 
+    /// What a write of `file` changes, `existence` saying whether it creates
+    /// or deletes the file rather than rewriting it. Decided when the write is
+    /// made: any later change to a project that would decide it differently is
+    /// itself a pending [`InputClass::ProjectFiles`] event, so no comparison
+    /// runs until both are flushed.
+    fn class_of(&self, file: FileId, existence: bool) -> InputClass {
+        match file {
+            FileId::Src(src) => {
+                let globbed = [Proj::O, Proj::P, Proj::Q].into_iter().any(|proj| {
+                    src.rel().starts_with(&format!("{}/", proj.dir()))
+                        && self
+                            .disk(FileId::Proj(proj))
+                            .is_some_and(|text| text.contains("Include=\"*.fs\""))
+                });
+                if existence && globbed {
+                    InputClass::DirectoryMembership
+                } else {
+                    InputClass::SourceContent
+                }
+            }
+            FileId::Proj(_) | FileId::Props => InputClass::ProjectFiles,
+            FileId::Assets(_) | FileId::Dll => InputClass::ReferencedAssemblies,
+        }
+    }
+
     fn write(&mut self, file: FileId, bytes: &[u8]) {
         let path = self.path(file);
         let existed = path.host_exists();
+        let class = self.class_of(file, !existed);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         // FileChangeType: 1 = Created, 2 = Changed, 3 = Deleted.
         let typ = if existed { 2 } else { 1 };
-        self.pending
-            .push(json!({ "uri": self.uri(file), "type": typ }));
+        self.pending.push(Pending {
+            event: json!({ "uri": self.uri(file), "type": typ }),
+            class,
+        });
     }
 
     fn delete(&mut self, file: FileId) -> bool {
+        let class = self.class_of(file, true);
         let path = self.path(file);
         if fs::remove_file(&path).is_err() {
             return false;
         }
-        self.pending
-            .push(json!({ "uri": self.uri(file), "type": 3 }));
+        self.pending.push(Pending {
+            event: json!({ "uri": self.uri(file), "type": 3 }),
+            class,
+        });
         true
+    }
+
+    /// Whether a [`Cmd::Check`] compares now: no event is pending whose class
+    /// the server is not meant to notice on its own.
+    fn comparable(&self) -> bool {
+        self.pending.iter().all(|p| WITNESSED.contains(&p.class))
     }
 
     fn open_uris(&self) -> BTreeSet<String> {
@@ -1399,6 +1502,8 @@ fn reference_answers(world: &World, mode: Mode, queries: &[Query]) -> (ByKey, By
 #[derive(Default, Debug)]
 struct Coverage {
     checks: usize,
+    /// Checks made while witnessed watch events were still pending.
+    unflushed_checks: usize,
     queries: usize,
     /// A definition landing in a different file from the one asked about.
     cross_file_definitions: usize,
@@ -1446,27 +1551,27 @@ fn short(v: &Value) -> String {
     }
 }
 
-/// Compare the warm session, and what its client is displaying, against fresh
-/// sessions over the same world.
-fn check(
-    warm: &mut Client,
-    world: &World,
-    coverage: &RefCell<Coverage>,
-) -> Result<(), TestCaseError> {
-    let queries = queries(world);
-    let (want, want_published) = reference_answers(world, warm.mode, &queries);
-    let mut mismatches = Vec::new();
-    let mut differ = |label: &str, got: &Value, want: &Value| {
-        if got != want {
-            mismatches.push(format!(
-                "{label}\n  warm:  {}\n  fresh: {}",
-                short(got),
-                short(want)
-            ));
-        }
-    };
+/// Record a mismatch between the warm session's `got` and the reference's
+/// `want`, under `label`.
+fn differ(mismatches: &mut Vec<String>, label: &str, got: &Value, want: &Value) {
+    if got != want {
+        mismatches.push(format!(
+            "{label}\n  warm:  {}\n  fresh: {}",
+            short(got),
+            short(want)
+        ));
+    }
+}
 
-    // What the client is displaying.
+/// Compare what the warm session's client is displaying with what a fresh
+/// session's would.
+fn compare_displayed(
+    warm: &Client,
+    world: &World,
+    want: &ByKey,
+    want_published: &ByKey,
+    mismatches: &mut Vec<String>,
+) {
     for file in world.open.keys() {
         let uri = world.uri(*file);
         if warm.mode == Mode::Pull {
@@ -1475,12 +1580,22 @@ fn check(
                 .get(&uri)
                 .map_or(Value::Null, |(_, items)| items.clone());
             let want = &want[&format!("diagnostic {file:?}")]["result"]["items"];
-            differ(&format!("displayed pull diagnostics {file:?}"), &got, want);
+            differ(
+                mismatches,
+                &format!("displayed pull diagnostics {file:?}"),
+                &got,
+                want,
+            );
         }
         if let FileId::Src(_) = file {
             let got = warm.tokens.get(&uri).cloned().unwrap_or(Value::Null);
             let want = &want[&format!("semanticTokens {file:?}")];
-            differ(&format!("displayed semantic tokens {file:?}"), &got, want);
+            differ(
+                mismatches,
+                &format!("displayed semantic tokens {file:?}"),
+                &got,
+                want,
+            );
         }
     }
     if warm.mode == Mode::Push {
@@ -1498,11 +1613,37 @@ fn check(
                 .cloned()
                 .unwrap_or_else(|| json!([]));
             differ(
+                mismatches,
                 &format!("displayed published diagnostics {uri}"),
                 &got,
                 &want,
             );
         }
+    }
+}
+
+/// Compare the warm session, and what its client is displaying, against fresh
+/// sessions over the same world.
+///
+/// With every watch event delivered, what the client displays is compared
+/// first: the direct queries fold projects and may owe refreshes, which would
+/// hide a refresh the events should have owed. With witnessed events still
+/// pending, the server has had no message since the writes, so nothing could
+/// yet have told the client; the direct queries go first, and the display is
+/// compared once the refreshes they owed are drained. That still fails a
+/// server that notices a write but owes no refresh for it.
+fn check(
+    warm: &mut Client,
+    world: &World,
+    coverage: &RefCell<Coverage>,
+) -> Result<(), TestCaseError> {
+    let queries = queries(world);
+    let (want, want_published) = reference_answers(world, warm.mode, &queries);
+    let mut mismatches = Vec::new();
+    let unflushed = !world.pending.is_empty();
+
+    if !unflushed {
+        compare_displayed(warm, world, &want, &want_published, &mut mismatches);
     }
 
     // Direct queries, `references` last: the warm session extends whatever
@@ -1512,23 +1653,34 @@ fn check(
     {
         let mut coverage = coverage.borrow_mut();
         coverage.checks += 1;
+        if unflushed {
+            coverage.unflushed_checks += 1;
+        }
         for q in ordered {
             let got = warm.request(q.method, q.params.clone());
             let want = &want[&q.label];
             coverage.record(q, want);
-            differ(&q.label, &got, want);
+            differ(&mut mismatches, &q.label, &got, want);
         }
     }
     // The comparison's own requests may have folded projects and so owed
     // refreshes; drain them so they do not leak into the next command.
     warm.sync_views(&world.open_uris(), None);
+    if unflushed {
+        compare_displayed(warm, world, &want, &want_published, &mut mismatches);
+    }
     if mismatches.is_empty() {
         return Ok(());
     }
     let total = mismatches.len();
     mismatches.truncate(6);
     Err(TestCaseError::fail(format!(
-        "{total} answer(s) differ from a fresh session's.\n\n{}\n\nWorld:\n{}",
+        "{total} answer(s) differ from a fresh session's{}.\n\n{}\n\nWorld:\n{}",
+        if unflushed {
+            " with watch events pending"
+        } else {
+            ""
+        },
         mismatches.join("\n\n"),
         world.describe()
     )))
@@ -1581,6 +1733,11 @@ fn run_case(case: &Case, coverage: &RefCell<Coverage>) -> Result<(), TestCaseErr
     warm.settle();
     for cmd in &case.cmds {
         apply(&mut warm, &mut world, cmd, coverage)?;
+    }
+    // Once with whatever is still pending, if the server should notice it
+    // unaided, and again once it has been told.
+    if !world.pending.is_empty() {
+        apply(&mut warm, &mut world, &Cmd::Check, coverage)?;
     }
     apply(&mut warm, &mut world, &Cmd::Flush, coverage)?;
     apply(&mut warm, &mut world, &Cmd::Check, coverage)
@@ -1655,7 +1812,10 @@ fn apply(
             if world.pending.is_empty() {
                 return Ok(());
             }
-            let changes = std::mem::take(&mut world.pending);
+            let changes: Vec<Value> = std::mem::take(&mut world.pending)
+                .into_iter()
+                .map(|p| p.event)
+                .collect();
             warm.notify(
                 "workspace/didChangeWatchedFiles",
                 json!({ "changes": changes }),
@@ -1663,7 +1823,7 @@ fn apply(
             warm.sync_views(&world.open_uris(), None);
         }
         Cmd::Check => {
-            if world.pending.is_empty() {
+            if world.comparable() {
                 check(warm, world, coverage)?;
             }
         }
@@ -1856,6 +2016,37 @@ fn warm_session_agrees_with_a_fresh_one() {
     );
 }
 
+/// For all generated scripts that write sources on disk and never deliver a
+/// watch event, every answer agrees with fresh sessions at every comparison:
+/// a source's content is a [`WITNESSED`] input, so the server notices the
+/// writes itself (`docs/incremental-lsp-plan.md`, Stage 2b).
+#[test]
+fn unwatched_source_writes_agree_with_a_fresh_session() {
+    let cases = env_u64("BORZOI_LSP_STATE_MACHINE_CASES").map_or(DEFAULT_CASES, |n| n as u32);
+    let seed = env_u64("BORZOI_LSP_STATE_MACHINE_SEED").unwrap_or(DEFAULT_SEED);
+    let coverage = RefCell::new(Coverage::default());
+    let strategy = case_strategy_with(unwatched_cmd_strategy().boxed());
+    let result = runner(cases, seed).run(&strategy, |case| run_case(&case, &coverage));
+    let coverage = coverage.into_inner();
+    eprintln!("seed {seed}: {coverage:#?}");
+    match result {
+        Ok(()) => {}
+        Err(TestError::Fail(_, case)) => {
+            let (case, message) = minimise(case);
+            panic!("seed {seed}: {message}\n\nminimal script: {case:?}");
+        }
+        Err(err) => panic!("seed {seed}: {err}"),
+    }
+    // Non-vacuity: the comparisons this test exists for are the ones made with
+    // writes still unannounced, and they must have compared real answers.
+    assert!(
+        coverage.unflushed_checks > 0
+            && coverage.cross_file_definitions > 0
+            && coverage.references > 0,
+        "the generated cases made no comparison with writes pending: {coverage:#?}"
+    );
+}
+
 /// The reference must be a function of the world, or the property above is
 /// noise: a session that has just opened every buffer — with no history but
 /// that — agrees with the per-group fresh sessions, even though it answers every
@@ -2030,6 +2221,100 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                     (FileId::Dll, Content::Dll),
                 ],
                 cmds: vec![Cmd::Open(FileId::Src(Src::A)), Cmd::Delete(FileId::Dll)],
+            },
+        ),
+        (
+            // A cached fold served without validating its Compile items: `B`'s
+            // open folds `P` with `A`'s disk text, `A` is rewritten without
+            // `x` and no watch event follows, and `A.x` stays bound.
+            "an unwatched write to a closed source reaches the files after it",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (FileId::Src(Src::A), source(vec![x_is_zero()])),
+                    (
+                        FileId::Src(Src::B),
+                        source(vec![Item::Let(Name::Y, Expr::Qual(Src::A, Name::X))]),
+                    ),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::B)),
+                    Cmd::Write(FileId::Src(Src::A), source(vec![])),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // The same, with `A`'s rewrite the same size (`x` renamed `y`): a
+            // stamp that only compared sizes, or a filesystem tick too coarse
+            // to move the mtime, would leave `A.x` bound.
+            "a same-size unwatched write to a closed source is not missed",
+            Case {
+                mode: Mode::Pull,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (FileId::Src(Src::A), source(vec![x_is_zero()])),
+                    (
+                        FileId::Src(Src::B),
+                        source(vec![Item::Let(Name::Y, Expr::Qual(Src::A, Name::X))]),
+                    ),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::B)),
+                    Cmd::Write(
+                        FileId::Src(Src::A),
+                        source(vec![Item::Let(Name::Y, Expr::Lit(0))]),
+                    ),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // An unwatched delete: the fresh session refuses `P`'s fold (a
+            // Compile item is missing), so `A.x` is unbound there; a fold
+            // that never re-reads `A` keeps it bound.
+            "an unwatched delete of a closed source refuses its project's fold",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (FileId::Src(Src::A), source(vec![x_is_zero()])),
+                    (
+                        FileId::Src(Src::B),
+                        source(vec![Item::Let(Name::Y, Expr::Qual(Src::A, Name::X))]),
+                    ),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::B)),
+                    Cmd::Delete(FileId::Src(Src::A)),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // A refused fold that recovers without a watch event owing no
+            // refresh: `A`'s deletion refuses `P` and `B`'s tokens fall back
+            // to single-file; `A` comes back and a query re-folds, but the
+            // client keeps showing the single-file tokens.
+            "an unwatched restore of a deleted source refreshes the files after it",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (FileId::Src(Src::A), source(vec![x_is_zero()])),
+                    (
+                        FileId::Src(Src::B),
+                        source(vec![Item::Let(Name::Y, Expr::Qual(Src::A, Name::X))]),
+                    ),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::B)),
+                    Cmd::Delete(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::Src(Src::A), source(vec![x_is_zero()])),
+                    Cmd::Check,
+                ],
             },
         ),
         (

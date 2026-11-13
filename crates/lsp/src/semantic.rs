@@ -11,7 +11,8 @@
 //! invalidates strictly by project path; sema's prefix-monotone fold makes
 //! sub-project incrementality a later optimisation, not a v1 requirement.
 
-use crate::observed::{Sources, Unobserved};
+use crate::observed::Unobserved;
+use crate::vfs::Vfs;
 use borzoi_cst::parser::FileKind;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -154,11 +155,26 @@ impl ReferencedAssemblyProjection {
 /// be read or didn't parse to its grammar's root is omitted; the file's index
 /// in `files`/`paths`/`texts` is therefore not necessarily its index in the
 /// original `items` list (D5 "under-resolve, never wrong").
+///
+/// `texts` is also what makes a cached `ProjectParses` checkable: each is the
+/// [`Vfs`]'s own allocation for its item, so
+/// `SemanticState::validate_cached_fold` can ask the `Vfs` for every item
+/// again and compare by pointer, falling back to the bytes.
 #[derive(Debug, Clone)]
 pub struct ProjectParses {
     pub files: Vec<ProjectFile>,
     pub paths: Vec<PathBuf>,
     pub texts: Vec<Arc<str>>,
+}
+
+/// A project's cached [`ProjectParses`], and the generation in which its
+/// texts were last found current ([`SemanticState::validate_cached_fold`]).
+#[derive(Debug)]
+struct CachedParses {
+    parses: ProjectParses,
+    /// The [`Vfs::generation`] that last validated `parses`; `None` before
+    /// any has, or when the last validation ran outside a generation.
+    validated_in: Option<u64>,
 }
 
 impl ProjectParses {
@@ -255,7 +271,11 @@ pub struct SemanticState {
     /// by [`Self::invalidate_project`] on text-sync and by
     /// [`Self::invalidate_all`] when `workspace/didChangeWatchedFiles` reports
     /// a structural (`.fsproj` / assets / import) change.
-    project_parses: HashMap<ProjectId, ProjectParses>,
+    ///
+    /// Each entry is validated in every generation that reads it
+    /// ([`Self::validate_cached_fold`]), so a Compile item rewritten on disk
+    /// with no watch event is still seen.
+    project_parses: HashMap<ProjectId, CachedParses>,
     /// The last fold outcome per project, keyed by [`ProjectId`].
     /// **Absence means [`FoldOutcome::Unknown`]** — no fold has run since the
     /// inputs last changed — which is a third state, not a synonym for success.
@@ -682,8 +702,9 @@ impl SemanticState {
         let to_drop: Vec<ProjectId> = self
             .project_parses
             .iter()
-            .filter(|(_, parses)| {
-                parses
+            .filter(|(_, cached)| {
+                cached
+                    .parses
                     .paths
                     .iter()
                     .any(|p| paths_equal(&lexically_normalize(p), &target))
@@ -1009,7 +1030,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &Sources,
+        docs: &Vfs,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
         // `usize::MAX` clamps to the project size, i.e. the whole project.
         self.resolved_prefix_and_env_for(project, usize::MAX, workspace, docs)
@@ -1036,7 +1057,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &Sources,
+        docs: &Vfs,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
         let key = ProjectId::new(project);
         let project = key.as_path();
@@ -1049,6 +1070,7 @@ impl SemanticState {
             cached_files = tracing::field::Empty,
         );
         let _lookup_guard = lookup_span.enter();
+        self.validate_cached_fold(&key, docs);
         let cached_files = self
             .resolved_projects
             .get(&key)
@@ -1064,8 +1086,8 @@ impl SemanticState {
         // env drops the entry via `invalidate_assembly_state`), so no env re-check
         // is needed. If the parses aren't cached, neither is the fold (they are
         // built and dropped together), so this correctly falls through.
-        if let Some(cached_parses) = self.project_parses.get(&key) {
-            let want_len = up_to_index.saturating_add(1).min(cached_parses.files.len());
+        if let Some(cached) = self.project_parses.get(&key) {
+            let want_len = up_to_index.saturating_add(1).min(cached.parses.files.len());
             lookup_span.record("requested_files", want_len as i64);
             if let Some((resolved, env)) = self.resolved_projects.get(&key)
                 && resolved.len() >= want_len
@@ -1295,7 +1317,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &Sources,
+        docs: &Vfs,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>, Arc<InferredProject>)> {
         let (resolved, env) =
             self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)?;
@@ -1311,7 +1333,7 @@ impl SemanticState {
         {
             return Some((resolved, env, Arc::clone(cached)));
         }
-        let files = self.project_parses.get(&key)?.files.clone();
+        let files = self.project_parses.get(&key)?.parses.files.clone();
         let inferred = {
             let _span = tracing::info_span!("infer_project").entered();
             let (inferred, reused) = match &cached {
@@ -1346,7 +1368,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &Sources,
+        docs: &Vfs,
     ) -> Option<Arc<ResolvedProject>> {
         self.resolved_project_and_env_for(project, workspace, docs)
             .map(|(resolved, _env)| resolved)
@@ -1365,7 +1387,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &Sources,
+        docs: &Vfs,
     ) -> Option<Arc<ResolvedProject>> {
         self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)
             .map(|(resolved, _env)| resolved)
@@ -1389,23 +1411,74 @@ impl SemanticState {
     /// (matches [`Workspace::owning_project`]'s `Membership::Unknown`
     /// discipline).
     ///
-    /// `docs` is the live buffer map ([`crate::server::State::docs`]); a
-    /// missing entry falls through to a counted disk read
-    /// ([`Sources::text_of`]). A file we
+    /// `docs` is the server's [`Vfs`] ([`crate::server::State::docs`]): each
+    /// item's open buffer, else its disk text ([`Vfs::text_of`]). A cached
+    /// answer is validated against it first (`Self::validate_cached_fold`).
+    /// A file we
     /// can read neither from the buffer nor from disk is skipped — never an
     /// error, never a panic.
     pub fn parses_for_project<'a>(
         &'a mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &Sources,
+        docs: &Vfs,
     ) -> Option<&'a ProjectParses> {
         let key = ProjectId::new(project);
+        self.validate_cached_fold(&key, docs);
         if !self.project_parses.contains_key(&key) {
             let parses = self.fold(project, workspace, docs).ok()?;
-            self.project_parses.insert(key.clone(), parses);
+            self.project_parses.insert(
+                key.clone(),
+                CachedParses {
+                    parses,
+                    // Every text was read through `docs` just now.
+                    validated_in: docs.generation(),
+                },
+            );
         }
-        self.project_parses.get(&key)
+        self.project_parses.get(&key).map(|cached| &cached.parses)
+    }
+
+    /// Drop `key`'s cached parses and resolved fold, exactly as
+    /// [`Self::invalidate_file`] would, if any Compile item's text is no longer
+    /// the text they were built from. Called by every read of a cached fold,
+    /// and costs nothing after the first call in a generation.
+    ///
+    /// Each item is asked of `docs` again: the open buffer, or a disk read the
+    /// [`Vfs`] confirms with one `stat` per generation and answers with the
+    /// allocation it gave before. So an unchanged item compares by pointer,
+    /// and only a re-read compares bytes. Comparing texts rather than stamps
+    /// keeps the fold when an item is rewritten to the text it had.
+    fn validate_cached_fold(&mut self, key: &ProjectId, docs: &Vfs) {
+        let Some(cached) = self.project_parses.get_mut(key) else {
+            return;
+        };
+        let generation = docs.generation();
+        if generation.is_some() && cached.validated_in == generation {
+            return;
+        }
+        let current = cached
+            .parses
+            .paths
+            .iter()
+            .zip(&cached.parses.texts)
+            .all(|(path, text)| {
+                docs.text_of(path)
+                    .is_some_and(|now| Arc::ptr_eq(&now, text) || *now == **text)
+            });
+        if current {
+            cached.validated_in = generation;
+            return;
+        }
+        tracing::debug!(
+            project = %key.as_path().display(),
+            "a Compile item's text moved under a cached fold; dropping it"
+        );
+        self.project_parses.remove(key);
+        self.resolved_projects.remove(key);
+        self.observed_fold_refusals.remove(key);
+        // As for an edit: another open buffer's tokens may now be stale.
+        self.wants_refresh = true;
     }
 
     /// The one place the fold runs, so that **every** outcome is observed no
@@ -1421,13 +1494,19 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &Sources,
+        docs: &Vfs,
     ) -> Result<ProjectParses, FoldRefusal> {
         let key = ProjectId::new(project);
         let outcome = build_parses(key.as_path(), workspace, docs, &mut self.file_parses);
         match &outcome {
             Ok(_) => {
-                self.observed_fold_refusals.remove(&key);
+                // A refusal recovering changes every open buffer's tokens
+                // from single-file to folded. An edit or a watch event owes
+                // that refresh when it invalidates; an unwatched disk write
+                // the fold itself noticed has nothing else to owe it.
+                if self.observed_fold_refusals.remove(&key).is_some() {
+                    self.wants_refresh = true;
+                }
             }
             Err(refusal) => {
                 self.observed_fold_refusals.insert(key, refusal.clone());
@@ -1458,7 +1537,7 @@ impl SemanticState {
 fn build_parses(
     project: &Path,
     workspace: &mut Workspace,
-    docs: &Sources,
+    docs: &Vfs,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
 ) -> Result<ProjectParses, FoldRefusal> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
@@ -1569,18 +1648,25 @@ fn build_parses(
         // straddle-flagged file, re-run the gate) and records a variant. The
         // input comparison is what keeps a stale variant from being served, so no
         // invalidation hook is load-bearing.
-        if let Some(hit) = file_parses.get(&include).and_then(|variants| {
+        //
+        // The text compares by pointer first: the `Vfs` hands out one
+        // allocation per unchanged file. A byte-equal hit adopts the `Vfs`'s
+        // allocation, so the next comparison is a pointer test again.
+        if let Some(hit) = file_parses.get_mut(&include).and_then(|variants| {
             variants
-                .iter()
+                .iter_mut()
                 .find(|c| {
                     c.lang == lang
                         && c.lang_version_untrusted == lang_version_untrusted
                         && c.symbols == symbols
-                        && *c.text == *text
+                        && (Arc::ptr_eq(&c.text, &text) || *c.text == *text)
                 })
-                .map(|c| (c.file.clone(), Arc::clone(&c.text), c.recovery.clone()))
+                .map(|c| {
+                    c.text = Arc::clone(&text);
+                    (c.file.clone(), c.recovery.clone())
+                })
         }) {
-            let (source_file, text, recovery) = hit;
+            let (source_file, recovery) = hit;
             files.push(source_file);
             paths.push(include);
             texts.push(text);
@@ -1708,7 +1794,6 @@ fn build_parses(
         // if present (a new text after an edit — no growth on repeated edits),
         // else append (a linked file under another project's settings — kept
         // alongside so neither project's build thrashes the other's).
-        let text: Arc<str> = Arc::from(text);
         let variant = CachedParse {
             symbols: symbols.clone(),
             lang,
@@ -3703,7 +3788,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("project parses");
         assert_eq!(parses.len(), 2);
         assert!(parses.paths[0].ends_with("A.fs"));
@@ -3724,14 +3809,14 @@ mod tests {
         // First lookup with no buffer: disk wins.
         {
             let parses = sema
-                .parses_for_project(&proj, &mut ws, &Sources::new())
+                .parses_for_project(&proj, &mut ws, &Vfs::new())
                 .expect("project parses");
             assert!(text_contains(&parses.texts[0], "disk"));
         }
 
         // Now overlay a buffer and force a re-build (invalidate first).
         sema.invalidate_project(&proj);
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         docs.insert(
             Uri::from_file_path(&file).unwrap(),
             "let buffer = 1\n".to_string(),
@@ -3759,7 +3844,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &Sources::new())
+            sema.parses_for_project(&proj, &mut ws, &Vfs::new())
                 .is_none()
         );
     }
@@ -3789,7 +3874,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("a .fsi-bearing project folds (Stage 1)")
             .clone();
         assert_eq!(parses.len(), 3, "the .fsi keeps its Compile slot");
@@ -3800,7 +3885,7 @@ mod tests {
         assert!(parses.files[1].file.as_impl().is_some());
 
         let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &Sources::new())
+            .resolved_project_for(&proj, &mut ws, &Vfs::new())
             .expect("a .fsi-bearing project resolves (Stage 1)");
         assert_eq!(resolved.len(), 3);
         // The signature slot owns no exports of its own; its surface rides
@@ -3845,13 +3930,13 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("a namespace-headed .fsi project folds (Stage 1)")
             .clone();
         assert_eq!(parses.len(), 2);
         assert!(parses.files[0].file.as_sig().is_some());
         assert!(
-            sema.resolved_project_for(&proj, &mut ws, &Sources::new())
+            sema.resolved_project_for(&proj, &mut ws, &Vfs::new())
                 .is_some()
         );
     }
@@ -3875,7 +3960,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("an uppercase .FSI project folds (Stage 1)")
             .clone();
         assert!(
@@ -3904,7 +3989,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &Sources::new())
+            sema.parses_for_project(&proj, &mut ws, &Vfs::new())
                 .is_none()
         );
     }
@@ -3937,7 +4022,7 @@ mod tests {
             assert!(!parsed.items_uncertain, "but the Compile set is intact");
         }
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("trustworthy Compile set must still yield parses");
         assert_eq!(parses.paths.len(), 1);
     }
@@ -3963,7 +4048,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let cold = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("first parses")
             .files[0]
             .recovery
@@ -3973,7 +4058,7 @@ mod tests {
         // what makes the rebuild take the hit branch rather than re-parse.
         sema.invalidate_project(&proj);
         let hit = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("rebuilt parses")
             .files[0]
             .recovery
@@ -4051,8 +4136,11 @@ mod tests {
         );
     }
 
+    /// A cached fold is served while its Compile items' texts are unchanged,
+    /// and is dropped once one moves on disk, with or without an
+    /// invalidation: every read validates it against the `Vfs`.
     #[test]
-    fn caches_until_invalidated() {
+    fn a_cached_fold_holds_until_its_text_moves() {
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");
         let file = tmp.path().join("Lib.fs");
@@ -4062,30 +4150,42 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
 
-        {
-            let parses = sema
-                .parses_for_project(&proj, &mut ws, &Sources::new())
-                .expect("first parses");
-            assert!(text_contains(&parses.texts[0], "first"));
-        }
+        let first = Arc::clone(
+            &sema
+                .parses_for_project(&proj, &mut ws, &Vfs::new())
+                .expect("first parses")
+                .texts[0],
+        );
+        let again = Arc::clone(
+            &sema
+                .parses_for_project(&proj, &mut ws, &Vfs::new())
+                .expect("cached parses")
+                .texts[0],
+        );
+        // Outside a generation every read allocates afresh, so the same
+        // allocation can only be the cached entry's.
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "an unchanged text is served from the cache"
+        );
 
         // Edit the on-disk file, but don't invalidate.
         fs::write(&file, "let second = 2\n").unwrap();
         {
             let parses = sema
-                .parses_for_project(&proj, &mut ws, &Sources::new())
-                .expect("cached parses");
+                .parses_for_project(&proj, &mut ws, &Vfs::new())
+                .expect("revalidated parses");
             assert!(
-                text_contains(&parses.texts[0], "first"),
-                "expected cached `first`, got {:?}",
+                text_contains(&parses.texts[0], "second"),
+                "expected the disk edit, got {:?}",
                 parses.texts[0]
             );
         }
 
-        // After invalidation the on-disk edit shows up.
+        // An invalidation changes nothing further.
         sema.invalidate_project(&proj);
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("rebuilt parses");
         assert!(text_contains(&parses.texts[0], "second"));
     }
@@ -4112,7 +4212,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("project parses");
         let resolved = resolve_file(
             parses.files[0]
@@ -4161,7 +4261,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &Sources::new())
+            .parses_for_project(&proj, &mut ws, &Vfs::new())
             .expect("project parses");
 
         assert_eq!(parses.len(), 3, "{:?}", parses.paths);
@@ -4188,7 +4288,7 @@ mod tests {
 
         // Open the buffer under a different casing.
         let opened = tmp.path().join("lib.fs");
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         docs.insert(
             Uri::from_file_path(&opened).unwrap(),
             "let buffer = 1\n".to_string(),
@@ -4626,7 +4726,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &Sources::new())
+            sema.parses_for_project(&proj, &mut ws, &Vfs::new())
                 .is_none(),
             "unknowable version × version-dependent parse shape must refuse the fold"
         );
@@ -4639,7 +4739,7 @@ mod tests {
         );
         write(&tmp.path().join("Plain/B.fs"), "let b = 1\n");
         assert!(
-            sema.parses_for_project(&plain, &mut ws, &Sources::new())
+            sema.parses_for_project(&plain, &mut ws, &Vfs::new())
                 .is_some(),
             "a version-invariant parse is provably safe under any LangVersion"
         );
@@ -4657,7 +4757,7 @@ mod tests {
         );
         write(&tmp.path().join("MidEdit/D.fs"), "module M =\n");
         assert!(
-            sema.parses_for_project(&midedit, &mut ws, &Sources::new())
+            sema.parses_for_project(&midedit, &mut ws, &Vfs::new())
                 .is_some(),
             "a flagged parse that reconverges to the same tree is provably \
              safe and must fold"
@@ -4676,7 +4776,7 @@ mod tests {
         );
         write(&tmp.path().join("Pinned/C.fs"), straddling);
         assert!(
-            sema.parses_for_project(&pinned, &mut ws, &Sources::new())
+            sema.parses_for_project(&pinned, &mut ws, &Vfs::new())
                 .is_some(),
             "a trustworthily pinned version resolves the shape dependence"
         );
@@ -4709,7 +4809,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = Sources::new();
+        let docs = Vfs::new();
         assert!(
             sema.parses_for_project(&proj, &mut ws, &docs).is_some(),
             "multi-TFM project must fold under the chosen TFM"
@@ -6736,7 +6836,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let (resolved, env) = sema
-            .resolved_project_and_env_for(&proj, &mut ws, &Sources::new())
+            .resolved_project_and_env_for(&proj, &mut ws, &Vfs::new())
             .expect("resolved project");
         assert_eq!(resolved.len(), 2);
 
@@ -6778,7 +6878,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.resolved_project_for(&proj, &mut ws, &Sources::new())
+            sema.resolved_project_for(&proj, &mut ws, &Vfs::new())
                 .is_none()
         );
     }
@@ -6795,10 +6895,10 @@ mod tests {
         let mut sema = SemanticState::new();
 
         let first = sema
-            .resolved_project_for(&proj, &mut ws, &Sources::new())
+            .resolved_project_for(&proj, &mut ws, &Vfs::new())
             .expect("first fold");
         let second = sema
-            .resolved_project_for(&proj, &mut ws, &Sources::new())
+            .resolved_project_for(&proj, &mut ws, &Vfs::new())
             .expect("cached fold");
         assert!(
             Arc::ptr_eq(&first, &second),
@@ -6808,7 +6908,7 @@ mod tests {
         // A text-sync invalidation forces a re-fold; the new Arc differs.
         sema.invalidate_project(&proj);
         let third = sema
-            .resolved_project_for(&proj, &mut ws, &Sources::new())
+            .resolved_project_for(&proj, &mut ws, &Vfs::new())
             .expect("re-fold after invalidate");
         assert!(
             !Arc::ptr_eq(&first, &third),
@@ -6827,7 +6927,7 @@ mod tests {
         write(&proj, &fsproj(&["Lib.fs"]));
         write(&file, "let disk = 1\n");
 
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         docs.insert(
             Uri::from_file_path(&file).unwrap(),
             "let buffer = 1\n".to_string(),
@@ -6868,7 +6968,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         sema.resolved_project_for(&proj, &mut ws, &docs)
             .expect("warm initial");
 
@@ -6945,7 +7045,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         sema.inferred_prefix_for(&proj, 2, &mut ws, &docs)
             .expect("warm initial");
         assert_eq!(
@@ -6954,7 +7054,7 @@ mod tests {
             "a first fold is cold"
         );
 
-        let cold = |docs: &Sources| {
+        let cold = |docs: &Vfs| {
             let mut ws = Workspace::default();
             let mut sema = SemanticState::new();
             sema.inferred_prefix_for(&proj, 2, &mut ws, docs)
@@ -7022,7 +7122,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let warm0 = sema
-            .resolved_project_for(&proj, &mut ws, &Sources::new())
+            .resolved_project_for(&proj, &mut ws, &Vfs::new())
             .expect("warm");
         assert!(
             matches!(
@@ -7033,7 +7133,7 @@ mod tests {
         );
 
         // Remove A.x through a buffer overlay and re-fold incrementally.
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         docs.insert(a_uri, "module A\nlet other = 1\n".to_string());
         sema.invalidate_project(&proj);
         let warm1 = sema
@@ -7068,9 +7168,8 @@ mod tests {
         write(&tmp.path().join("B.fs"), b_src);
         let b_uri = Uri::from_file_path(tmp.path().join("B.fs")).unwrap();
         let b_edit = "module D\nmodule A =\n    module D =\n        let z = 2\nlet y = (A.B.C.x)\n";
-        let buffers = |text: &str| -> Sources {
-            std::iter::once((b_uri.clone(), text.to_string())).collect()
-        };
+        let buffers =
+            |text: &str| -> Vfs { std::iter::once((b_uri.clone(), text.to_string())).collect() };
 
         // Fold, edit and fold, edit back and fold: the entries after the
         // first two folds, whether the last two shared an env, and how many
@@ -7080,7 +7179,7 @@ mod tests {
             let mut sema = SemanticState::new();
             sema.name_table_cap = NameTableCap(cap);
             let (_, first) = sema
-                .resolved_project_and_env_for(&proj, &mut ws, &Sources::new())
+                .resolved_project_and_env_for(&proj, &mut ws, &Vfs::new())
                 .expect("first fold");
             let first_entries = first.interned_count();
             sema.invalidate_project(&proj);
@@ -7132,7 +7231,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = Sources::new();
+        let docs = Vfs::new();
         sema.resolved_project_for(&proj, &mut ws, &docs)
             .expect("initial");
         assert_eq!(
@@ -7181,7 +7280,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = Sources::new();
+        let docs = Vfs::new();
 
         // Request file 0 (A): folds only file 0, so C and B are never resolved.
         let (p0, _) = sema
@@ -7259,7 +7358,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
 
         // Warm: request file 2 (C) — folds prefix [0, 1, 2], not D.
         let (p, _) = sema
@@ -7318,7 +7417,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
 
         // Warm the FULL project (as a hover/references request would).
         let (full, _) = sema
@@ -7372,7 +7471,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
 
         // Warm the whole project (as an open editor would): a cold fold, no refresh.
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
@@ -7413,7 +7512,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("warm");
         assert!(
@@ -7446,7 +7545,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = Sources::new();
+        let docs = Vfs::new();
 
         // Token request for the first file: a short prefix, cold, no refresh.
         sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
@@ -7479,7 +7578,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs = Sources::new();
+        let mut docs = Vfs::new();
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("warm");
         assert!(!sema.take_wants_refresh());

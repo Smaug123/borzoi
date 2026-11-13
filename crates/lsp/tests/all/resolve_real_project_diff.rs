@@ -284,7 +284,7 @@ fn project_resolution_matches_fcs() {
     // A restored-and-built project the caller chose: resolve it as a host that
     // trusts the workspace would, C# project references included.
     sema.set_csharp_project_references_enabled(true);
-    let docs = borzoi::observed::Sources::new();
+    let docs = borzoi::vfs::Vfs::new();
     let dotnet_root = workspace.dotnet_root_for_project(&project);
 
     let parses = sema

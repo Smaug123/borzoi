@@ -299,7 +299,7 @@ pub fn load_lsp_project_with_options(
 ) -> Result<LoadedProject, LoadSkip> {
     let mut workspace = workspace_with(options.build_properties.clone());
     let mut semantic = corpus_semantic_state();
-    let docs = borzoi::observed::Sources::new();
+    let docs = borzoi::vfs::Vfs::new();
 
     let parsed = workspace
         .project(project)

@@ -77,7 +77,7 @@ fn on_demand_restore_populates_the_env_without_a_project_assets_json() {
     let mut state = State::default();
     // On-demand restore is a trust opt-in, off by default; enable it for the test.
     state.semantic.set_on_demand_restore_enabled(true);
-    let docs = borzoi::observed::Sources::new();
+    let docs = borzoi::vfs::Vfs::new();
 
     // Resolving the project builds and caches its assembly env; with no assets
     // file this runs the on-demand restore.
@@ -175,7 +175,7 @@ fn on_demand_restore_is_off_by_default() {
     let fsproj = root.join("App.fsproj");
 
     let mut state = State::default(); // on-demand restore NOT enabled
-    let docs = borzoi::observed::Sources::new();
+    let docs = borzoi::vfs::Vfs::new();
     state
         .semantic
         .resolved_project_for(&fsproj, &mut state.workspace, &docs);

@@ -31,12 +31,14 @@
 //!   counts as an allocation of the new size, as in `borzoi-sema`'s
 //!   `parse_counts`).
 //!
-//! - **opens**: the files the server opened to read source text, as
-//!   `borzoi::observed` counts them per generation and reports in its
-//!   [`GENERATION_EVENT`]. The plan counts file-system calls inside the
-//!   lint-enforced modules that perform them (`docs/incremental-lsp-plan.md`,
-//!   D3), where a test can assert them on any platform; the server's other
-//!   reads (`borzoi::observed::Unobserved`) are not counted yet.
+//! - **opens** and **stats**: the files the server opened to read source
+//!   text (each followed by an `fstat` of the open file), and the paths it
+//!   `stat`ed to confirm what an earlier message read, as `borzoi::vfs`
+//!   counts them per generation and reports in its [`GENERATION_EVENT`]. The
+//!   plan counts file-system calls inside the lint-enforced modules that
+//!   perform them (`docs/incremental-lsp-plan.md`, D3), where a test can
+//!   assert them on any platform; the server's other reads
+//!   (`borzoi::observed::Unobserved`) are not counted yet.
 //!
 //! The counts describe the project fold only if the requests take it, and a
 //! handler that falls back to single-file analysis still answers. So the run
@@ -216,9 +218,10 @@ const ENV_BUILD_SPAN: &str = "build_env_from_dll_paths";
 static ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 static EMPTY_ENV_BUILDS: AtomicU64 = AtomicU64::new(0);
 
-/// Files opened by every generation that has ended, from each
-/// [`GENERATION_EVENT`]'s `opens`.
+/// Files opened and paths `stat`ed by every generation that has ended, from
+/// each [`GENERATION_EVENT`]'s `opens` and `stats`.
 static OPENS: AtomicU64 = AtomicU64::new(0);
+static STATS: AtomicU64 = AtomicU64::new(0);
 
 /// A `tracing` subscriber interested in [`PROJECT_LOOKUP_SPAN`],
 /// [`ENV_BUILD_SPAN`] and [`GENERATION_EVENT`] alone. Every
@@ -260,13 +263,19 @@ impl tracing::field::Visit for ProjectField {
     }
 }
 
-/// A generation event's `opens` field.
-struct Opens(Option<u64>);
+/// A generation event's `opens` and `stats` fields.
+#[derive(Default)]
+struct ReadFields {
+    opens: Option<u64>,
+    stats: Option<u64>,
+}
 
-impl tracing::field::Visit for Opens {
+impl tracing::field::Visit for ReadFields {
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        if field.name() == "opens" {
-            self.0 = Some(value);
+        match field.name() {
+            "opens" => self.opens = Some(value),
+            "stats" => self.stats = Some(value),
+            _ => {}
         }
     }
     fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
@@ -328,10 +337,14 @@ impl tracing::Subscriber for FoldObserver {
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
         if counted() {
-            let mut opens = Opens(None);
-            event.record(&mut opens);
+            let mut fields = ReadFields::default();
+            event.record(&mut fields);
             OPENS.fetch_add(
-                opens.0.expect("a generation event carries `opens`"),
+                fields.opens.expect("a generation event carries `opens`"),
+                Relaxed,
+            );
+            STATS.fetch_add(
+                fields.stats.expect("a generation event carries `stats`"),
                 Relaxed,
             );
         }
@@ -353,6 +366,7 @@ struct Cost {
     allocations: u64,
     allocated_bytes: u64,
     opens: u64,
+    stats: u64,
 }
 
 impl Cost {
@@ -369,6 +383,7 @@ impl Cost {
             allocations: self.allocations + other.allocations,
             allocated_bytes: self.allocated_bytes + other.allocated_bytes,
             opens: self.opens + other.opens,
+            stats: self.stats + other.stats,
         }
     }
 }
@@ -380,6 +395,7 @@ struct Reading {
     allocations: u64,
     allocated_bytes: u64,
     opens: u64,
+    stats: u64,
 }
 
 impl Reading {
@@ -393,6 +409,7 @@ impl Reading {
             allocations: ALLOCATIONS.load(Relaxed),
             allocated_bytes: ALLOCATED_BYTES.load(Relaxed),
             opens: OPENS.load(Relaxed),
+            stats: STATS.load(Relaxed),
         }
     }
 
@@ -411,6 +428,7 @@ impl Reading {
             allocations: later.allocations - self.allocations,
             allocated_bytes: later.allocated_bytes - self.allocated_bytes,
             opens: later.opens - self.opens,
+            stats: later.stats - self.stats,
         }
     }
 }
@@ -771,15 +789,15 @@ fn columns(cost: &Cost) -> String {
         .instructions
         .map_or_else(|| "n/a".to_string(), |i| i.to_string());
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6}",
-        cost.allocations, cost.allocated_bytes, cost.opens,
+        "{instructions:>14} {:>10} {:>13} {:>6} {:>6}",
+        cost.allocations, cost.allocated_bytes, cost.opens, cost.stats,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6}",
-        "message", "instructions", "allocs", "alloc-bytes", "opens"
+        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6}",
+        "message", "instructions", "allocs", "alloc-bytes", "opens", "stats"
     )
 }
 
@@ -794,6 +812,7 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             allocations: f(a.allocations, b.allocations),
             allocated_bytes: f(a.allocated_bytes, b.allocated_bytes),
             opens: f(a.opens, b.opens),
+            stats: f(a.stats, b.stats),
         })
     };
     (pick(u64::min), pick(u64::max))

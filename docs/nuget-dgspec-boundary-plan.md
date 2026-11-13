@@ -1539,26 +1539,119 @@ against: a stage that produces entries can be held to this op's output.
 
 #### A₁.3: target execution
 
-`borzoi-msbuild` gains target execution for the cone's subset of it:
-- the target graph (`DependsOnTargets`, `BeforeTargets`, `AfterTargets`, each
-  target run once, conditions evaluated as the target starts);
-- intrinsic `PropertyGroup` and `ItemGroup` inside targets (`Include`,
-  `Remove`, metadata, `KeepDuplicates`, `%(…)` batching);
-- task `Output` and target `Returns`.
+**What the cone reads.** A static census of the 50 targets' bodies on SDK
+10.0.401 (references in conditions, bodies and task parameters) finds:
+- 178 distinct properties;
+- 56 item types, among them the SDK's `Known*` tables
+  (`KnownFrameworkReference`, `KnownRuntimePack`, `KnownAppHostPack`, …)
+  and many target-local `_Foo` lists;
+- 16 metadata names;
+- two static functions, `[MSBuild]::IsTargetFrameworkCompatible` and
+  `[System.Guid]::NewGuid`.
 
-A task call goes through a registry keyed on the task's name and assembly
-identity, and a task with no model declines. **Oracle:** the `targetItems` op,
-extended to return properties and metadata, run on generated targets the way
-`fsproj_compile_order_generative_diff` runs one. The engine executes the SDK's
-own target XML rather than hand-written Rust, so a release that changes only
-target text needs re-verifying, not new code.
+The `MSBuild` task re-enters the project with `TargetFramework=<x>` (inner
+builds) and enters referenced projects, so evaluation under other global
+properties is needed too.
+
+**How much of that evaluation already commits.** A one-off measurement
+evaluated five corpus projects as the LSP does, under `restore_globals`,
+which gives 890 property reads (5 × 178). Against MSBuild's
+`-getProperty` it found:
+
+| outcome | reads |
+|---|---|
+| committed, equal to MSBuild | 241 |
+| committed, differing only in the SDK path's spelling (the devshell's linked `DOTNET_ROOT`, as stage 8 found) | 14 |
+| global or reserved, outside the property table | 95 |
+| absent, and empty in MSBuild | 537 |
+| absent, but set in MSBuild | 3 |
+| untrusted | 0 |
+| committed and wrong | 0 |
+
+The three absent-but-set reads are `PackageVersion` and
+`RuntimeIdentifierGraphPath`, which the SDK's `.targets` half defines. That
+half is not walked. So the property side is close, with two gaps:
+- the targets half of the import chain;
+- treating absence as a claim of "unset".
+
+Untrusted reads, the risk that would sink A₁.3 whatever its design, do not
+occur on these projects. The item side is the gap. `walk_generic_item_child`
+(`evaluator/item_pass.rs`) already captures arbitrary item types with their
+metadata into `State::evaluated_items`, with a taint per list, but
+`into_project` discards those tables, and `<Target>`/`<UsingTask>` elements
+are recorded only as unsupported constructs.
+
+**Design: one evaluation, a second output.** Neither a separate evaluator
+nor a hand-written model of the cone:
+- **Not a separate evaluator.** The hard part of `borzoi-msbuild` is the
+  import walk: explicit imports, the `Directory.Build.*` splices, the toolset,
+  sticky globals and `TreatAsLocalProperty`. A second evaluation would
+  duplicate it, and only one copy would sit under
+  `fsproj_property_table_diff` and `fsproj_global_perturbation_diff`.
+- **Not a hand-written cone.** It would have no oracle per piece, since
+  `targetItems` runs XML. It would also forfeit the property that a release
+  changing only target text needs re-verifying, not new code.
+
+So the one evaluation gains an opt-in mode that also exports:
+- the target definitions, carried by the retained-file mechanism the item
+  pass already uses;
+- the item tables, with their taint.
+
+Execution lives in its own module, over copies of those tables. Every read
+joins the trust of what it reads into what it writes. Target conditions go
+through `decide_without`'s Kleene evaluation. Batching or `%(…)` outside
+the modelled shapes declines. Trust is per property name and per item list,
+which is fine enough: the answer is one `_RestoreGraphEntry` list, every
+entry of which must be trusted. `NewGuid` yields a synthetic fresh identity,
+which `write_restore_graph` never reads.
+
+The stages are:
+
+1. **A₁.3a, the read census.** An ignored test evaluates the corpus projects
+   and the census fixtures under `restore_globals`. For each of the cone's
+   properties and item types it reports whether the value is committed,
+   untrusted (with its cause) or absent, and whether an item list sits
+   untainted in the evaluated tables. A manifest pins the result, and the
+   census is regenerated from the cone itself rather than from a list
+   written once. It is A₁.3's worklist, and its go/no-go.
+2. **A₁.3b, the evaluation's second output.** Behind the opt-in mode, the
+   evaluation retains `<Target>` elements (name, attributes, file, order) and
+   exports the item tables instead of dropping them. Two checks:
+   - an invariant test: `ParsedProject` is identical with the mode on and
+     off over the corpus, which is what protects the LSP;
+   - an oracle: the `itemsMeta` op, widened to any item type on SDK
+     projects, grades the exported tables.
+3. **A₁.3c, the executor.** It covers:
+   - intrinsic `PropertyGroup` and `ItemGroup` in targets;
+   - `DependsOnTargets`, `BeforeTargets` and `AfterTargets`;
+   - `Output` and `Returns`;
+   - MSBuild's built-in tasks (`Message`, `RemoveDuplicates`,
+     `ConvertToAbsolutePath`);
+   - the `MSBuild` task within a project.
+
+   A registry declines every other task. There are two oracles:
+   - **Generated targets.** The `targetItems` op, widened to return properties
+     and item metadata, runs generated targets as
+     `fsproj_compile_order_generative_diff` does.
+   - **Replay on real cones.** `restoreCone`'s `LogTaskInputs` capture widens
+     to every task's inputs and outputs (`TaskParameterEventArgs` of both
+     kinds). The executor runs with every leaf task replaced by its recorded
+     outputs. That grades the engine at about two dozen checkpoints per
+     corpus project before any A₁.4 leaf exists. It later grades each leaf
+     against its recorded inputs and outputs, so A₁.3 and A₁.4 do not wait on
+     each other.
 
 #### A₁.4: the task leaves
 
-These are the 23 non-built-in tasks of stage 8's census, plus `RemoveDuplicates`
-and `ConvertToAbsolutePath`. Each gets a Rust model and a per-task
-differential, which runs the real task inside a generated project through the
-oracle. They come in this order:
+These are the 23 non-built-in tasks of stage 8's census. (`RemoveDuplicates`
+and `ConvertToAbsolutePath` are MSBuild built-ins, which A₁.3c covers.) Each
+gets a Rust model and two oracles:
+- a per-task differential, which runs the real task inside a generated
+  project;
+- A₁.3c's replay, which holds the model to the inputs and outputs the task
+  recorded on every real cone.
+
+They come in this order:
 1. **NuGet's `GetRestore*Task` converters.** These are thin.
 2. **`GetRestoreSettingsTask`.** This is `NuGet.Configuration`, and it overlaps
    `settings::global_packages_folder`.
