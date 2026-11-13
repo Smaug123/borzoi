@@ -791,7 +791,7 @@ fn unwatched_cmd_strategy() -> impl Strategy<Value = Cmd> {
         3 => buffer_file_strategy().prop_map(Cmd::Close),
         2 => source_file_strategy().prop_map(Cmd::Save),
         6 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
-        1 => source_file_strategy().prop_map(Cmd::Delete),
+        3 => source_file_strategy().prop_map(Cmd::Delete),
         4 => Just(Cmd::Check),
         3 => src_strategy().prop_map(Cmd::Peek),
     ]
@@ -2288,6 +2288,31 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                 cmds: vec![
                     Cmd::Open(FileId::Src(Src::B)),
                     Cmd::Delete(FileId::Src(Src::A)),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // A refused fold that recovers without a watch event owing no
+            // refresh: `A`'s deletion refuses `P` and `B`'s tokens fall back
+            // to single-file; `A` comes back and a query re-folds, but the
+            // client keeps showing the single-file tokens.
+            "an unwatched restore of a deleted source refreshes the files after it",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (FileId::Src(Src::A), source(vec![x_is_zero()])),
+                    (
+                        FileId::Src(Src::B),
+                        source(vec![Item::Let(Name::Y, Expr::Qual(Src::A, Name::X))]),
+                    ),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::B)),
+                    Cmd::Delete(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::Src(Src::A), source(vec![x_is_zero()])),
                     Cmd::Check,
                 ],
             },

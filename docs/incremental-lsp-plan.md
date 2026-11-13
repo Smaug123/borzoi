@@ -1006,6 +1006,10 @@ toward the cost of parsing and resolving `E` alone.
   deferral refresh reads after every message, does not validate: a deferral
   message about a project whose item moved on disk unwatched is corrected by
   the next request that reads the fold, not before.
+- A fold that succeeds where the last one was refused owes a
+  `semanticTokens/refresh` too: an unwatched restore of a deleted item is
+  noticed by the fold itself, and nothing else would tell the client that
+  its single-file tokens are stale.
 - The parse cache compares texts by pointer first, and a byte-equal hit
   adopts the `Vfs`'s allocation, so the next comparison is a pointer test.
 - Watched-file events still call `invalidate_file` (and everything else they
@@ -1031,9 +1035,10 @@ The oracle:
 - `unwatched_source_writes_agree_with_a_fresh_session` generates scripts whose
   disk writes and deletes are all sources and which never flush, and asserts
   that comparisons with writes pending happened (`unflushed_checks`).
-- Three pinned no-flush scripts: a rewrite of a closed source, the same at
-  the same size (`x` renamed `y`), and a delete (the fresh session refuses the
-  fold). Run against Stage 2a, all three fail, as does the existing "external
+- Four pinned no-flush scripts: a rewrite of a closed source, the same at
+  the same size (`x` renamed `y`), a delete (the fresh session refuses the
+  fold), and that delete followed by the file's restore (found by Codex; the
+  generated test does not reach it at its default case count). Run against Stage 2a, the first three fail, as does the existing "external
   write" script now that `run_case` checks before its final flush, and the
   generated test (minimal script: open `A`, rewrite `Shared/S.fs` without
   `x`).

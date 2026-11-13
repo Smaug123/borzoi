@@ -1500,7 +1500,13 @@ impl SemanticState {
         let outcome = build_parses(key.as_path(), workspace, docs, &mut self.file_parses);
         match &outcome {
             Ok(_) => {
-                self.observed_fold_refusals.remove(&key);
+                // A refusal recovering changes every open buffer's tokens
+                // from single-file to folded. An edit or a watch event owes
+                // that refresh when it invalidates; an unwatched disk write
+                // the fold itself noticed has nothing else to owe it.
+                if self.observed_fold_refusals.remove(&key).is_some() {
+                    self.wants_refresh = true;
+                }
             }
             Err(refusal) => {
                 self.observed_fold_refusals.insert(key, refusal.clone());
