@@ -200,14 +200,47 @@ const PROP_VALUES: &[&str] = &[
     "a%20b.fs", "a%3bb.fs", "a%2ab.fs", "plain.fs", "pct%", "a%2a*.fs",
 ];
 
+/// A fragment built from a small grammar of path shapes — a fixed directory,
+/// a wildcard directory, a filename, each optional but the last — rather than
+/// picked from [`FRAGMENTS`]. The hand-written list holds the shapes someone
+/// thought of; this crosses fixed include roots with wildcard exclude
+/// directories, which is where #615's wrong commit lived and which no listed
+/// pair reached.
+fn structural(rng: &mut SplitMix64) -> String {
+    const FIXED: &[&str] = &[
+        "sub",
+        "sub/Deep",
+        ".hidden",
+        "bin",
+        "sub/..",
+        "$(MSBuildProjectDirectory)",
+        "$(MSBuildProjectDirectory)/sub",
+    ];
+    const WILD: &[&str] = &[
+        "**", "*", "D*", ".*", "s*", "**/Deep", "*/Deep", "**/*", "Deep/**",
+    ];
+    const NAME: &[&str] = &["*.fs", "*.*", "*", "d.fs", "c.fs", "x.fs", "?.fs", "**"];
+    let mut parts: Vec<&str> = Vec::new();
+    if rng.below(2) == 0 {
+        parts.push(rng.pick(FIXED));
+    }
+    if rng.below(2) == 0 {
+        parts.push(rng.pick(WILD));
+    }
+    parts.push(rng.pick(NAME));
+    parts.join("/")
+}
+
 fn gen_spec(rng: &mut SplitMix64) -> String {
     let n = 1 + rng.below(2);
     (0..n)
         .map(|_| {
             if rng.below(12) == 0 {
-                *rng.pick(OUTSIDE_ALLOW_LIST)
+                rng.pick(OUTSIDE_ALLOW_LIST).to_string()
+            } else if rng.below(4) == 0 {
+                structural(rng)
             } else {
-                *rng.pick(FRAGMENTS)
+                rng.pick(FRAGMENTS).to_string()
             }
         })
         .collect::<Vec<_>>()
@@ -599,7 +632,10 @@ fn generated_item_specs_are_certain_implies_exact() {
     let mut fast_committed = 0usize;
     let mut resolver_committed = 0usize;
     let mut declined_through_resolver = Vec::new();
-    const CASES: usize = 300;
+    // The oracle answers in well under a millisecond a case, so the sweep runs
+    // thousands: a rare pairing (an include rooted inside a directory a `**`
+    // exclude names, #615) needs that many to turn up.
+    const CASES: usize = 2000;
     for _ in 0..CASES {
         let fixture = Fixture::generate(&mut rng);
         if check_with(&mut oracle, &fixture, false) == Outcome::Committed {
