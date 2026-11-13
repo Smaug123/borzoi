@@ -4,8 +4,8 @@
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
 > product on ids), 5 (the remaining path and name keys, in three parts), 6a
-> (export-declaration paths on ids), 6b (definitions' names on ids) and 9
-> (`OpenScope`) implemented.
+> (export-declaration paths on ids), 6b (definitions' names on ids), 6c
+> (exports' published names on ids) and 9 (`OpenScope`) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -885,6 +885,80 @@ the same change measured 877.7 → 866.8 and 0.741 → 0.693 on `2ed2dfb7`. The
 census is unchanged. The whole-corpus dump of 6a, with each definition printed
 as its spelling, range, kind and provisionality, is byte-identical before and
 after, against both bases.
+
+**6c, implemented** (`resolve/decl_path.rs`, `resolve/model.rs`):
+
+- **`ExportedItem` on ids.** An export's name is an `ExportName` (the
+  definition's `Name`, which the walk already holds) and its value path an
+  `Option<DeclPath>`: when `Some`, it is the declaration's own path, which the
+  walk interns for the `ExportDecl` anyway, so an export builds no path and
+  clones no string. `FileExportIndices::derive` asserts both halves of that:
+  the value path is the declaration's, and it ends in the published name.
+- **`SigExport` on ids.** Its name is an `ExportName`, its path and
+  type-qualified path `DeclPath`s interned under the signature container's
+  id, and its value path a `bool`: the signature's value path was always
+  `Some(path)` or `None`, so a `bool` says the same with no way to disagree
+  with `path`. Materialising it at the implementation's slot clones ids.
+  The screen's exemption sets (`exported_value_paths`,
+  `exported_case_paths`) are string-keyed, as 5a left the signature screens,
+  and spell the paths once per signature.
+- **The lookups.** The ten same-file scans of `Resolver::items` that read
+  `qualified` ask the `DeclPath`: `is` (the path is exactly a key's),
+  `is_child_of`, `is_strictly_under` and `accessible_from` (the access root's
+  id against the site's prefix ids). Each scan looks its key up once
+  (`PathKey::of`) and compares integers per item where it compared a
+  `Vec<String>` before; a key the table never interned matches no item, since
+  every value path was interned. The scan that hands a case's path to
+  `ProjectItems::module_value_may_be_constant_pattern` spells it there.
+- **The public API.** `ExportedItem::name(env)` and `qualified_path(env)`
+  read through the env the export was resolved against, as `Def::spelling`
+  does. Outside sema, three LSP tests in `semantic.rs` read export names and
+  now take the fold's env from `resolved_project_and_env_for`.
+- **Not converted**: `ExportedItem::repr_access_root`, the container of a
+  union whose representation is `private`. It feeds `ProjectItems`'
+  string-keyed `case_repr_roots`, which 5a left, and only such unions carry
+  one.
+- **Lockstep.** Under `interning-reference` in a debug build an
+  `ExportName` carries the text the walk published, and reading it, comparing
+  two, and re-keying assert that the id spells it; a value path is a
+  `DeclPath`, which carries its spelling (6a), and each new question asserts
+  its answer against the string expression it replaced. The property test
+  `a_declaration_path_answers_as_its_segments_do` holds the four questions
+  to those expressions over generated tables and sites, and
+  `an_export_name_answers_as_its_text_does` holds `ExportName`. Two tests
+  were written against the string fields first and passed there:
+  `exported_names` pins the name, value path, case kind and binder file of
+  every way the walk makes an export (quoted and operator names, a private
+  value, union, enum, `[<RequireQualifiedAccess>]` and `exception` cases,
+  active-pattern cases, a nested module, a headerless file, and a signature's
+  materialised exports with a contested name), and
+  `signature_exports_resolve_the_same_in_any_interning_order` re-keys a
+  signature-bearing project, which the interning-order test had not covered.
+  Five planted bugs fail: a child test that accepts any proper ancestor (the
+  property, and the lockstep in 14 cases of `resolve_module_opens` and its
+  neighbours); an access root read one segment up (the property, and the
+  lockstep in 10 cases across the suite, `case_access_grid` and
+  `value_access_open_grid` among them); re-keying that skips the exports'
+  names, or a signature's stashed exports (the interning-order tests, by the
+  debug tag check, the second only in the new signature case); a signature
+  export materialised with a value path its container contests
+  (`exported_names`); and an export's name interned from the definition's
+  spelling (the `ExportName` check, in `exported_names`, `resolve_project`
+  and `resolve_scoping`). An access root read at the path's last segment
+  instead of at its own length fails only the property: the walk never makes
+  an access root as long as the path.
+
+**Measured** (6c, on 6b at `0b97b6e6`): `resolve_file` 864.7 → 861.3
+instructions per byte (−0.4%), allocations 0.693 → 0.686 per byte (−1.0%);
+the whole tree as one project (`resolve_project`, the throwaway variant of
+5a) 876.7 → 868.4 (−0.9%), allocations 0.617 → 0.609 per byte (−1.3%); infer
+173.2 → 173.3; parse 514.8 → 510.0, with its code unchanged. As for 6a and 6b,
+the stage buys the identity domain, not speed. The whole-corpus dump of 6b,
+with each export printed as its name, value path and the rest of its fields
+in 6b's layout, and extended by every directory holding a `.fsi` folded as
+one project with each signature before its implementation (1,185
+implementation files and 361 signature slots, 6,595 signature-derived
+exports), is byte-identical before and after.
 
 ### Stage 7: `Ty` paths on ids
 
