@@ -2102,7 +2102,7 @@ impl<'src> Parser<'src> {
             })
     }
 
-    fn bump_layout_virtual(&mut self) {
+    pub(super) fn bump_layout_virtual(&mut self) {
         if self.raw_module_head_eq().is_some() || self.raw_leading_type_defn() {
             self.builder.token(SyntaxKind::ERROR, "");
             self.filtered.advance();

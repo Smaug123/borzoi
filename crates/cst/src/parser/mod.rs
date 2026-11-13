@@ -841,6 +841,9 @@ struct Parser<'src> {
     /// Trivia-free token stream as seen by the productions, with the cursor
     /// that walks it. The cursor is monotonic — we only index, never pop.
     filtered: FilteredCursor<'src>,
+    /// `block_depth_prefix[i]`: `OBLOCKBEGIN`s minus `OBLOCKEND`s among the
+    /// filtered tokens `0..i` ([`Self::block_balance`]).
+    block_depth_prefix: Vec<i32>,
     /// High-water mark of source bytes already emitted into the tree.
     /// Used to clamp filtered-token text starts so FCS-faithful *overlapping*
     /// splits — `RQuoteBarRBrace` becomes `RQUOTE=[s,e-2)` + `BAR_RBRACE=
@@ -849,6 +852,17 @@ struct Parser<'src> {
     raw_consumed_end: usize,
     builder: TreeBuilder,
     errors: Vec<ParseError>,
+    /// Whether the binding [`Self::parse_binding_with_modifiers`] finished
+    /// last owns the `OBLOCKEND` at the cursor: its RHS opened an offside
+    /// block after the `=` and closed it cleanly ([`Self::rhs_closed_cleanly`]).
+    /// A failed head, no block, or leftovers own none. A binding nested in
+    /// another's RHS finishes first, so after a `let` group this is its last
+    /// binding's.
+    last_binding_owns_close: bool,
+    /// Whether the RHS [`Self::parse_let_equals_rhs`] parsed last opened a
+    /// block and its gatherer stopped exactly at that block's `BlockEnd`,
+    /// with nothing left for the recovery drain.
+    rhs_closed_cleanly: bool,
     /// Warning-severity diagnostics (FCS `warning(...)` cases that leave
     /// `hadErrors` false). Kept separate from `errors` — see [`Parse`].
     warnings: Vec<ParseError>,

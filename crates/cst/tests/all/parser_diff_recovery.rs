@@ -852,6 +852,8 @@ const SCOPE_GRID_RHS: &[&str] = &[
     ".",
     ".Foo.Bar",
     ")",
+    "1)",
+    "1 }",
     "]",
     "}",
     "|]",
@@ -949,13 +951,22 @@ struct ScopeCase {
 /// An attribute on a `let`'s own line anchors the `let`'s context at the
 /// `let`, so the lines after it are offside of it in FCS: that placement
 /// grades layout recovery as much as the module boundary.
+///
+/// Two more `let` shapes vary which `OBLOCKEND` the binding owns, without the
+/// attribute placements: a raw `let` after a same-line `;` (no `ODECLEND`
+/// follows it), and the second binding of an `and` chain, whose head fails
+/// when the right-hand side is a stray `=`.
 fn scope_grid() -> Vec<ScopeCase> {
+    const PLACEMENTS: &[(&str, &str)] = &[("", ""), ("[<A>]⏎", ""), ("[<A>] ", ""), ("", "[<A>] ")];
     let mut out = Vec::new();
-    for keyword in ["type T", "let w"] {
+    for (keyword, placements) in [
+        ("type T", PLACEMENTS),
+        ("let w", PLACEMENTS),
+        ("open System; let w", &PLACEMENTS[..1]),
+        ("let rec v = 1⏎and w", &PLACEMENTS[..1]),
+    ] {
         for rhs in SCOPE_GRID_RHS {
-            for (before_decl, before_rhs) in
-                [("", ""), ("[<A>]⏎", ""), ("[<A>] ", ""), ("", "[<A>] ")]
-            {
+            for &(before_decl, before_rhs) in placements {
                 let decl = format!("{before_decl}{keyword} = {before_rhs}{rhs}")
                     .trim_end()
                     .to_string();
@@ -1097,5 +1108,59 @@ fn recover_debris_ends_at_a_crlf_line_end() {
     assert!(
         decls.contains(&"let after = 1".to_string()) && decls.contains(&"let z = 2".to_string()),
         "{decls:?}"
+    );
+}
+
+/// A module `let` owns the `OBLOCKEND` of the block its RHS opened, and no
+/// other: one with no RHS (`let f x =` with nothing after it on a same-line
+/// raw `let`) leaves the next `OBLOCKEND` to its scope, which FCS closes
+/// there, so `y` lands in `M`.
+#[test]
+fn recover_let_without_rhs_owns_no_block_end() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    open System; let f x =\n    let y = 1\nlet z = 2\n",
+        1,
+    );
+}
+
+/// A chained `and` whose head fails owns nothing, whatever the binding
+/// before it owned, so the module's `OBLOCKEND` stays the module's and FCS
+/// closes `A` there: `y` lands in `M`.
+#[test]
+fn recover_failed_and_head_owns_no_block_end() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    open System; let rec x = 1\n    and;;\nlet y = 2\n",
+        1,
+    );
+}
+
+/// An error in a binding nested in a module `let`'s RHS leaves the module's
+/// `OBLOCKEND` to the module, as FCS does: `x` lands in `M`. (`type V`
+/// diverges independently: we keep it clean in `M`, FCS does not.)
+#[test]
+fn recover_nested_binding_error_leaves_the_module_close() {
+    let src = "module M\nmodule A =\n    let w = let q =\n        1\n    type V = int\n    let x = 1\nlet z = 2\n";
+    let decls = top_level_decls(src);
+    assert!(decls.iter().any(|d| d == "let x = 1"), "{decls:?}");
+}
+
+/// A stray closer the lex filter swallowed after a raw `let`'s RHS is an
+/// error FCS meets there, so the module's `OBLOCKEND` stays the module's.
+#[test]
+fn recover_swallowed_closer_after_a_raw_let_leaves_the_module_close() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    open System; let w = 1)\n    let after = 1\nlet z = 2\n",
+        1,
+    );
+}
+
+/// A binding's RHS with leftovers does not own the `OBLOCKEND` its drain
+/// stops at: the drain counts no blocks, so that may be an inner binding's.
+/// FCS discards `after` with the rest.
+#[test]
+fn recover_rhs_leftovers_own_no_block_end() {
+    crate::common::recovery::assert_recovered_trees_agree(
+        "module M\nmodule A =\n    let w = 1\n        2; let after = 2\nlet last = 3\n",
+        1,
     );
 }

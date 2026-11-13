@@ -892,6 +892,7 @@ impl<'src> Parser<'src> {
         if allow_modifiers {
             self.parse_binding_modifiers();
         }
+        let mut opened_block = false;
         if self.parse_head_binding_pat() {
             self.parse_binding_return_info();
             // `allow_modifiers` is precisely the `localBinding`-vs-CE-binder
@@ -899,8 +900,10 @@ impl<'src> Parser<'src> {
             // `localBinding`, which admits static optimization), `false` for a
             // computation-expression `let!`/`use!`/`and!` (`ceBindingCore`,
             // which does not). So it doubles as the static-optimization gate.
-            self.parse_let_equals_rhs(allow_modifiers);
+            opened_block = self.parse_let_equals_rhs(allow_modifiers);
         }
+        // Recorded last, after any binding nested in the RHS recorded its own.
+        self.last_binding_owns_close = opened_block && self.rhs_closed_cleanly;
         self.builder.finish_node();
     }
 

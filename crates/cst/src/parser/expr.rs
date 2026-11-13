@@ -72,6 +72,7 @@ impl<'src> Parser<'src> {
         // Checkpoint first so a trailing FSharp.Core static-optimization run can
         // wrap the main expression and its `when` clauses in one node.
         let rhs_cp = self.builder.checkpoint();
+        let rhs_start = self.filtered.pos();
         self.parse_seq_block_body("expected expression after `=`");
 
         // FSharp.Core static-optimization clauses — `mainExpr when 'T : ty =
@@ -96,9 +97,23 @@ impl<'src> Parser<'src> {
         // it for the impl-file loop. Without it, such leftovers would escape via
         // the loop's `Virtual::BlockSep` fallthrough and be mis-accepted as a
         // fresh top-level decl.
+        //
+        // The block is closed cleanly when the gatherer stopped at *its*
+        // `BlockEnd` with nothing left to drain: every block opened inside the
+        // RHS since `rhs_start` has closed (a nested production may leave an
+        // inner binding's `BlockEnd` for its caller, and the drain counts no
+        // blocks).
+        let before_drain = self.filtered.pos();
         if opened_block {
             self.drain_let_rhs_block();
         }
+        self.rhs_closed_cleanly = opened_block
+            && self.filtered.pos() == before_drain
+            && self.block_balance(rhs_start, before_drain) == 0
+            && matches!(
+                self.peek(),
+                Some((Ok(FilteredToken::Virtual(Virtual::BlockEnd)), _))
+            );
 
         opened_block
     }

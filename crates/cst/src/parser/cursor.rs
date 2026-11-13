@@ -10,14 +10,28 @@ impl<'src> Parser<'src> {
         raw_tokens: RawTokens<'src>,
         filtered_tokens: FilteredTokens<'src>,
     ) -> Self {
+        let mut block_depth_prefix = Vec::with_capacity(filtered_tokens.len() + 1);
+        let mut depth = 0i32;
+        block_depth_prefix.push(depth);
+        for i in 0..filtered_tokens.len() {
+            match filtered_tokens.kind(i) {
+                FilteredKind::Virtual(Virtual::BlockBegin) => depth += 1,
+                FilteredKind::Virtual(Virtual::BlockEnd) => depth -= 1,
+                _ => {}
+            }
+            block_depth_prefix.push(depth);
+        }
         Self {
             source,
             raw_tokens,
             raw_pos: 0,
             filtered: FilteredCursor::new(filtered_tokens),
+            block_depth_prefix,
             raw_consumed_end: 0,
             builder: TreeBuilder::new(),
             errors: Vec::new(),
+            last_binding_owns_close: false,
+            rhs_closed_cleanly: false,
             warnings: Vec::new(),
             interp_nest: Vec::new(),
             obj_brace_base_new: None,
@@ -486,6 +500,12 @@ impl<'src> Parser<'src> {
             }
             *from += 1;
         }
+    }
+
+    /// `OBLOCKBEGIN`s minus `OBLOCKEND`s among the filtered tokens `from..to`,
+    /// in O(1) from [`Self::block_depth_prefix`].
+    pub(super) fn block_balance(&self, from: usize, to: usize) -> i32 {
+        self.block_depth_prefix[to] - self.block_depth_prefix[from]
     }
 
     /// The first significant raw token *after* the `)` that closes a
