@@ -355,3 +355,111 @@ impl Def {
         ident_name(&self.name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! What a definition publishes about its name: the spelling a consumer
+    //! shows, and the logical name the walk keys it by. Every way the walk
+    //! makes a [`Def`] is generated, under spellings that differ from their
+    //! logical names (quoted identifiers, operators, a quoted operator).
+
+    use super::*;
+    use crate::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
+    use borzoi_cst::parser::parse;
+    use borzoi_cst::syntax::{ActivePatName, AstNode, ImplFile, SyntaxKind};
+    use proptest::prelude::*;
+
+    /// A value's spellings: plain, quoted, a quoted keyword, a quoted
+    /// operator (the identifier `+`, not `op_Addition`).
+    const VALUES: &[&str] = &["x", "y", "``x``", "``a b``", "``type``", "``+``"];
+    /// A type's, a case's or an active-pattern case's spellings.
+    const UPPERS: &[&str] = &["A", "B", "``A``", "``A B``"];
+    /// An operator binder's spellings, inside its parentheses.
+    const OPERATORS: &[&str] = &["+", "+++", "<*>", "~~~", "|>>"];
+
+    /// One declaration, built from indices into the spelling pools.
+    fn declaration() -> impl Strategy<Value = String> {
+        let value = || prop::sample::select(VALUES);
+        let upper = || prop::sample::select(UPPERS);
+        let operator = || prop::sample::select(OPERATORS);
+        prop_oneof![
+            value().prop_map(|v| format!("let {v} = 0")),
+            (value(), value()).prop_map(|(f, p)| format!("let {f} {p} = {p}")),
+            operator().prop_map(|o| format!("let ( {o} ) a b = a")),
+            (upper(), upper()).prop_map(|(t, c)| format!("type {t}<'T> = | {c} of int | Z")),
+            (upper(), upper()).prop_map(|(t, c)| format!("type {t} = | {c} = 0 | Z = 1")),
+            upper().prop_map(|e| format!("exception {e} of string")),
+            upper().prop_map(|a| format!("let (|{a}|_|) x = None")),
+            (upper(), upper()).prop_map(|(a, b)| format!("let (|{a}|{b}|) x = {a}")),
+            Just("type L = | ([]) | ( :: ) of int * L".to_string()),
+            value().prop_map(|m| format!("type R() =\n    static member {m} = 1")),
+            value().prop_map(|v| format!("let m = match 1 with {v} -> {v}")),
+            value().prop_map(|v| format!("let g = fun {v} -> {v}")),
+        ]
+    }
+
+    /// The spelling `def` publishes.
+    fn spelling<'e>(def: &'e Def, _env: &'e AssemblyEnv) -> &'e str {
+        &def.name
+    }
+
+    /// The logical name `def` is keyed by.
+    fn logical<'e>(def: &'e Def, _env: &'e AssemblyEnv) -> Cow<'e, str> {
+        def.key()
+    }
+
+    proptest! {
+        #[test]
+        fn a_definition_publishes_its_spelling_and_keys_its_logical_name(
+            decls in prop::collection::vec(declaration(), 1..6),
+        ) {
+            let src = format!("module M\n\n{}\n", decls.join("\n\n"));
+            let parsed = parse(&src);
+            prop_assert!(parsed.errors.is_empty(), "{src:?}: {:?}", parsed.errors);
+            let recovery = SyntaxRecovery::of(&parsed);
+            let root = parsed.root.clone();
+            let file = ImplFile::cast(parsed.root).expect("an impl file");
+            let env = AssemblyEnv::default();
+            let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+            prop_assert!(resolved.defs().next().is_some());
+            for def in resolved.defs() {
+                let at = &src[usize::from(def.range.start())..usize::from(def.range.end())];
+                let shown = spelling(def, &env);
+                // The census's exceptions: a recognizer shows its parenthesised
+                // name, a case use its case's name, an operator case its
+                // compiled name. Every other definition shows its token.
+                let expected: Vec<String> = match def.kind {
+                    DefKind::ActivePattern => {
+                        let apn = root
+                            .covering_element(def.range)
+                            .ancestors()
+                            .find_map(ActivePatName::cast)
+                            .expect("a recognizer span sits in its name");
+                        std::iter::once(apn.syntax().text().to_string())
+                            .chain(
+                                apn.case_tokens()
+                                    .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+                                    .map(|t| ident_name(t.text()).into_owned()),
+                            )
+                            .collect()
+                    }
+                    DefKind::UnionCase if at == "[]" || at.trim() == "::" => {
+                        vec!["op_Nil".to_string(), "op_ColonColon".to_string()]
+                    }
+                    _ => vec![at.to_string()],
+                };
+                prop_assert!(
+                    expected.iter().any(|e| e == shown),
+                    "{src:?}: {def:?} shows {shown:?}, not one of {expected:?}"
+                );
+                prop_assert_eq!(
+                    &*logical(def, &env),
+                    &*ident_name(shown),
+                    "{:?}: {:?}",
+                    src,
+                    def
+                );
+            }
+        }
+    }
+}
