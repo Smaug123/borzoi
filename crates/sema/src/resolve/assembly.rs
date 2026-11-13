@@ -8,6 +8,7 @@ use crate::assembly_env::{AheadOfType, EntityHandle, StaticLookup};
 
 use super::model::{DeclineCause, DeclineSite, DeclineTier, DeferredReason, Resolution};
 use super::open_scope::PrefixRef;
+use super::path_set::PathPrefixes;
 use super::state::{AssemblyPath, Resolver, ShadowVeto, TieredResolution, TypePathReading};
 use crate::names::{NameKey, PathKey, Segments};
 
@@ -64,9 +65,10 @@ impl<'a> Resolver<'a> {
         let mut names: Vec<String> = prefix.text.to_vec();
         names.extend(source.texts.iter().cloned());
         let n = names.len();
-        // The ids of `names[..k]` for each source position `k`, offset by
-        // `base`: a namespace the env's table never interned holds no type.
-        let ids = self.assemblies.names().extend_ids(prefix.id, &source.names);
+        // The ids of `names[..k]`, for the project shadow below and for each
+        // source position's namespace: a namespace the env's table never
+        // interned holds no type.
+        let prefixes = PathPrefixes::under(self.assemblies.names(), prefix, &source.names, &names);
 
         // Decline a path F# resolves within the project (see
         // [`Self::project_shadow_cause`]), searched before referenced
@@ -75,7 +77,7 @@ impl<'a> Resolver<'a> {
         // `M` is FS0039), so an `open` / implicit `[<AutoOpen>]` may still supply
         // it (`List.fold` inside `module List` → `Microsoft.FSharp.Collections`):
         // it defers at the *root* but must not preempt the opens tier.
-        if let Some(cause) = self.project_shadow_cause(&names) {
+        if let Some(cause) = self.project_shadow_cause(&prefixes) {
             // Two questions, and they are not the same one:
             //
             // - is the **written** path a self-qualifier? A fact about what the
@@ -134,7 +136,7 @@ impl<'a> Resolver<'a> {
         let mut any_rooting = false;
         for k in (base..n).rev() {
             let candidates = self.rooting_candidates(
-                PathKey::new(ids[k - base], &names[..k]),
+                PathKey::new(prefixes.id(k), &names[..k]),
                 NameKey::new(source.names[k - base], &names[k]),
             );
             if candidates.is_empty() {
@@ -1302,10 +1304,9 @@ impl<'a> Resolver<'a> {
         let mut names: Vec<String> = prefix.text.to_vec();
         names.extend(segments.iter().cloned());
         let n = names.len();
-        // As in [`Self::assembly_path_records`]: the ids of each source
-        // position's namespace.
-        let ids = self.assemblies.names().extend_ids(prefix.id, &source.names);
-        let namespace_at = |k: usize| PathKey::new(ids[k - base], &names[..k]);
+        // As in [`Self::assembly_path_records`]: the ids of `names[..k]`.
+        let prefixes = PathPrefixes::under(self.assemblies.names(), prefix, &source.names, &names);
+        let namespace_at = |k: usize| PathKey::new(prefixes.id(k), &names[..k]);
         let name_at = |k: usize| NameKey::new(source.names[k - base], &names[k]);
 
         // Decline a path F# resolves to a project **type/module** ahead of the
@@ -1314,7 +1315,7 @@ impl<'a> Resolver<'a> {
         // (`module Demo; let Thing = 1` elsewhere does not stop `x : Demo.Thing`
         // resolving to the assembly type), so it must not pull in the value-space
         // shadowing that the expression sibling's `project_shadow_cause` adds.
-        if let Some(cause) = self.project_type_shadow_cause(&names) {
+        if let Some(cause) = self.project_type_shadow_cause(&prefixes) {
             return AssemblyPath::Occupied(cause);
         }
 
@@ -1782,7 +1783,8 @@ impl<'a> Resolver<'a> {
     /// Committing the assembly's statics there is a wrong target, so the open
     /// goes opaque.
     fn open_type_target_shadowed(&self, names: &[String]) -> bool {
-        self.path_is_project_type_shadowed(names) || self.path_is_augmentation_head_shadowed(names)
+        let path = self.prefixes(names);
+        self.path_is_project_type_shadowed(&path) || self.path_is_augmentation_head_shadowed(&path)
     }
 
     /// Whether `path` names (or sits under) an in-project **module** — an F#
@@ -1804,10 +1806,19 @@ impl<'a> Resolver<'a> {
     ///
     /// [`Preceding`]: super::model::ProjectItems
     pub(super) fn open_imports_project_values(&self, path: &[String]) -> bool {
-        self.module_paths.contains(path)
-            || self.nested_module_locals.has_nonempty_prefix_of(path)
-            || self.nested_module_exports.has_nonempty_prefix_of(path)
-            || self.preceding.is_exact_project_module(path)
-            || self.preceding.is_rooted_at_nested_module(path)
+        self.module_paths
+            .contains_path(self.assemblies.names(), path)
+            || self
+                .nested_module_locals
+                .has_nonempty_prefix_of_path(self.assemblies.names(), path)
+            || self
+                .nested_module_exports
+                .has_nonempty_prefix_of_path(self.assemblies.names(), path)
+            || self
+                .preceding
+                .is_exact_project_module(self.assemblies.names(), self.path_key(path))
+            || self
+                .preceding
+                .is_rooted_at_nested_module_path(self.assemblies.names(), path)
     }
 }

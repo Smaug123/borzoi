@@ -8,7 +8,7 @@
 //! [`resolve`](super) module.
 
 use crate::hash::{HashMap, HashSet};
-use crate::names::{NameTable, PathId, PathMap};
+use crate::names::{NameKey, NameTable, PathId, PathKey, PathMap};
 use crate::recovery::SyntaxRecovery;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::contributors::{Contribution, FileContributions};
-use super::path_set::PathSet;
+use super::path_set::{Extended, PathPrefixes, PathSet};
 use super::state::ActivePatternShape;
 
 /// One export recorded at a qualified path, in the Compile order
@@ -732,13 +732,13 @@ impl ProjectItems {
     /// The lengths `k`, ascending, for which `names[..k]` followed by `written`
     /// is a path [`Self::type_qualified_case`] holds a case at, whatever the
     /// reference site: one walk along `names`, building no path.
-    pub(super) fn type_qualified_case_prefix_lens<'a>(
-        &'a self,
-        names: &'a [String],
-        written: &'a [String],
-    ) -> impl Iterator<Item = usize> + 'a {
+    pub(super) fn type_qualified_case_prefix_lens(
+        &self,
+        names: &NameTable,
+        question: &Extended<'_, '_, String>,
+    ) -> Vec<usize> {
         self.type_qualified_case_paths
-            .suffix_member_prefix_lens(names, written)
+            .suffix_member_prefix_lens(names, question)
     }
 
     /// Whether an earlier file exports a **type** at exactly `path`, and if so
@@ -866,12 +866,15 @@ impl ProjectItems {
     /// namespace with `name` as any of its segments. Position-blind and
     /// over-approximate: FCS searches every module and namespace of a dotted
     /// expression head before any type of it, whichever tier brings it.
-    pub(super) fn may_name_module_or_namespace(&self, name: &str) -> bool {
+    pub(super) fn may_name_module_or_namespace(&self, names: &NameTable, name: &str) -> bool {
         self.project_module_simple_names.contains(name)
             || self
                 .module_headers
                 .iter()
-                .chain(&self.namespace_paths)
+                .any(|id| names.segments(id).contains(&name))
+            || self
+                .namespace_paths
+                .iter()
                 .any(|p| p.iter().any(|s| s == name))
     }
 
@@ -904,30 +907,58 @@ impl ProjectItems {
     /// the module and the assembly namespace merge, and F# falls through to the
     /// assembly when the module does not provide the tail (see
     /// [`Self::module_headers`]).
-    pub(super) fn is_exact_project_module(&self, names: &[String]) -> bool {
-        self.module_headers.contains(names)
+    pub(super) fn is_exact_project_module(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        self.module_headers.contains(names, path)
+    }
+
+    /// [`Self::is_exact_project_module`] of `parent` extended by `name`, by
+    /// id.
+    pub(super) fn is_exact_project_module_child(
+        &self,
+        names: &NameTable,
+        parent: PathKey<'_>,
+        name: NameKey<'_>,
+    ) -> bool {
+        self.module_headers.contains_child(names, parent, name)
     }
 
     /// Whether `names` is rooted at (equal to, or a path under) a declared
     /// *nested* project module from an earlier file. Such a reference defers
     /// rather than falling through to a colliding assembly member — see
     /// [`Self::nested_module_paths`].
-    pub(super) fn is_rooted_at_nested_module(&self, names: &[String]) -> bool {
-        self.nested_module_paths.has_prefix_of(names)
+    pub(super) fn is_rooted_at_nested_module(
+        &self,
+        names: &NameTable,
+        path: &PathPrefixes<'_>,
+    ) -> bool {
+        self.nested_module_paths.has_prefix_of(names, path)
+    }
+
+    /// [`Self::is_rooted_at_nested_module`] by the path's segments.
+    pub(super) fn is_rooted_at_nested_module_path(
+        &self,
+        names: &NameTable,
+        path: &[String],
+    ) -> bool {
+        self.nested_module_paths.has_prefix_of_path(names, path)
     }
 
     /// Whether `names` is rooted at (equal to, or a path under) a path an
     /// earlier file's augmentation head names — see
     /// [`Self::augmentation_head_paths`]. **Value namespace only.**
-    pub(super) fn is_rooted_at_augmentation_head(&self, names: &[String]) -> bool {
-        self.augmentation_head_paths.has_prefix_of(names)
+    pub(super) fn is_rooted_at_augmentation_head(
+        &self,
+        names: &NameTable,
+        path: &PathPrefixes<'_>,
+    ) -> bool {
+        self.augmentation_head_paths.has_prefix_of(names, path)
     }
 
     /// Whether `names` is *exactly* a declared *nested* project module from an
     /// earlier file (not merely a path under one). The cross-file half of the
     /// enumerable-module predicate ([`Resolver::is_project_module_path`](super::state::Resolver::is_project_module_path)).
-    pub(super) fn is_exact_nested_module(&self, names: &[String]) -> bool {
-        self.nested_module_paths.contains(names)
+    pub(super) fn is_exact_nested_module(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        self.nested_module_paths.contains(names, path)
     }
 
     /// Whether an earlier file binds **any resolvable entity along `path`** — a
@@ -957,13 +988,14 @@ impl ProjectItems {
                 .get(p)
                 .is_some_and(|h| h.iter().any(|r| !r.pattern_only))
         };
+        let whole = PathKey::new(prefix_ids.get(path.len()).copied(), path);
         let exact = value_at(path)
-            || self.module_headers.contains(path)
-            || self.nested_module_paths.contains(path)
+            || self.module_headers.contains(names, whole)
+            || self.nested_module_paths.contains(names, whole)
             // An augmentation head binds *members* along its path even though it
             // declares no type, and this predicate only ever withholds the
             // self-qualifier relaxation, so it counts here.
-            || self.augmentation_head_paths.contains(path)
+            || self.augmentation_head_paths.contains(names, whole)
             || type_at(path.len())
             || self.type_qualified_cases.contains_key(path);
         exact || (1..path.len()).any(|k| value_at(&path[..k]) || type_at(k))
@@ -973,24 +1005,35 @@ impl ProjectItems {
     /// `names` (see [`Self::real_nested_modules`] — unlike
     /// [`Self::is_exact_nested_module`]'s shadow set, a type/exception/alias/
     /// `extern` name does not answer).
-    pub(super) fn is_real_nested_module(&self, names: &[String]) -> bool {
-        self.real_nested_modules.contains(names)
+    pub(super) fn is_real_nested_module(&self, names: &NameTable, path: PathKey<'_>) -> bool {
+        self.real_nested_modules.contains(names, path)
+    }
+
+    /// [`Self::is_real_nested_module`] of `parent` extended by `name`, by id.
+    pub(super) fn is_real_nested_module_child(
+        &self,
+        names: &NameTable,
+        parent: PathKey<'_>,
+        name: NameKey<'_>,
+    ) -> bool {
+        self.real_nested_modules.contains_child(names, parent, name)
     }
 
     /// The lengths `k` for which `names[..k]` followed by `suffix` is
     /// [an earlier file's module header](Self::is_exact_project_module) or
     /// [nested module](Self::is_exact_nested_module), reading each
     /// segment of `names` once per set.
-    pub(super) fn module_suffix_prefix_lens<'a, S: AsRef<str>>(
-        &'a self,
-        names: &'a [String],
-        suffix: &'a [S],
-    ) -> impl Iterator<Item = usize> + 'a {
+    pub(super) fn module_suffix_prefix_lens<S: AsRef<str>>(
+        &self,
+        names: &NameTable,
+        question: &Extended<'_, '_, S>,
+    ) -> impl Iterator<Item = usize> {
         self.module_headers
-            .suffix_member_prefix_lens(names, suffix)
+            .suffix_member_prefix_lens(names, question)
+            .into_iter()
             .chain(
                 self.nested_module_paths
-                    .suffix_member_prefix_lens(names, suffix),
+                    .suffix_member_prefix_lens(names, question),
             )
     }
 
@@ -998,16 +1041,17 @@ impl ProjectItems {
     /// [an earlier file's module header](Self::is_exact_project_module) or
     /// [real nested module](Self::is_real_nested_module), reading each
     /// segment of `names` once per set.
-    pub(super) fn real_module_suffix_prefix_lens<'a, S: AsRef<str>>(
-        &'a self,
-        names: &'a [String],
-        suffix: &'a [S],
-    ) -> impl Iterator<Item = usize> + 'a {
+    pub(super) fn real_module_suffix_prefix_lens<S: AsRef<str>>(
+        &self,
+        names: &NameTable,
+        question: &Extended<'_, '_, S>,
+    ) -> impl Iterator<Item = usize> {
         self.module_headers
-            .suffix_member_prefix_lens(names, suffix)
+            .suffix_member_prefix_lens(names, question)
+            .into_iter()
             .chain(
                 self.real_nested_modules
-                    .suffix_member_prefix_lens(names, suffix),
+                    .suffix_member_prefix_lens(names, question),
             )
     }
 
@@ -1225,8 +1269,8 @@ impl ProjectItems {
     /// Joins `nested_module_paths` (the qualified-path shadow) and its own
     /// set (the `open`-fold demotion — kept apart so real nested modules,
     /// whose members *are* modelled, keep their definite open entries).
-    pub(super) fn note_implicit_module_shadow(&mut self, path: Vec<String>) {
-        self.nested_module_paths.insert(path.clone());
+    pub(super) fn note_implicit_module_shadow(&mut self, names: &NameTable, path: Vec<String>) {
+        self.nested_module_paths.insert(names, &path);
         self.implicit_module_shadows.insert(path);
     }
 
@@ -1484,16 +1528,16 @@ impl ProjectItems {
             }
         };
         for module in idx.module_headers {
-            self.module_headers.insert(module);
+            self.module_headers.insert(names, &module);
         }
         for nested in idx.nested_module_paths {
-            self.nested_module_paths.insert(nested);
+            self.nested_module_paths.insert(names, &nested);
         }
         for head in idx.augmentation_head_paths {
-            self.augmentation_head_paths.insert(head);
+            self.augmentation_head_paths.insert(names, &head);
         }
         for nested in idx.real_nested_modules {
-            self.real_nested_modules.insert(nested);
+            self.real_nested_modules.insert(names, &nested);
         }
         for (path, entry) in idx.type_qualified_cases {
             if self
@@ -1501,7 +1545,7 @@ impl ProjectItems {
                 .insert(path.clone(), entry)
                 .is_none()
             {
-                self.type_qualified_case_paths.insert(path);
+                self.type_qualified_case_paths.insert(names, &path);
             }
         }
         for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
