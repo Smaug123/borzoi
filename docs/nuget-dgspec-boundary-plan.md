@@ -1706,12 +1706,42 @@ The item side is the gap the census was built to size:
 
 So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
-   discipline;
+   discipline (landed; see *A₁.3b: every metadatum* below);
 2. expose the dedicated buckets as item lists the executor can read;
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
 and the gaps have known causes.
+
+##### A₁.3b: every metadatum — landed
+
+The generic item tables keep every metadatum an item declaration gives,
+not just NuGet's five package metadata names. The package consumers still
+read only those five, and ignore an uncertainty on any other name. Nothing
+they commit to moves.
+
+One side effect needed care. Reading a metadatum can read an undefined
+`$(TargetFramework)`, and the walk records such a read: it is what decides
+whether the walk keeps its first pass. A metadatum only a target reads must
+not steer that choice. So the extra names are read with
+`quiet_target_framework_reads` set, under which such a read is inexact and
+records nothing. An item definition's default for any name marks that name
+uncertain on the type's items, since the walk does not apply defaults.
+
+Two checks hold it:
+- **`fsproj_generic_items_generative_diff`** generates projects over the
+  constructs the taint and uncertainty marks guard. These are literal,
+  `$(…)` and escaped identities, `@(…)` copies and transforms, `Remove`,
+  attribute and child metadata, conditions on either, `%(…)` and `@(…)` in
+  metadata, item definitions, and an untrusted property. It holds every
+  clean list to MSBuild's `itemsMeta`: identities in order, and every
+  metadatum not marked uncertain. It fails when the probe stops reporting
+  item-definition defaults.
+- **The read census** compares metadata on real projects. On every corpus
+  project and fixture, each `Known*` table and
+  `ImplicitPackageReferenceVersion` now agrees with MSBuild on every name:
+  12 for `KnownFrameworkReference`, 6 for `KnownRuntimePack`, and so on. No
+  name is uncertain or missing.
 
 #### A₁.4: the task leaves
 

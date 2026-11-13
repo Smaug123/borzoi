@@ -16,6 +16,7 @@
 
 use std::collections::BTreeMap;
 
+use super::item_pass::helper_item_definition_default_uncertainties;
 use super::{State, is_toolset_initial_property_name, item_key};
 use crate::UntrustedCause;
 
@@ -81,14 +82,15 @@ pub struct ItemRead {
     pub untracked: bool,
 }
 
-/// One captured item: its identity, decoded, and the metadata the walk kept
-/// (which is only the package metadata names; see the item pass's
-/// `is_package_metadata_name`), keyed lowercase.
+/// One captured item: its identity, decoded, and every metadatum its declaration
+/// gave it, keyed lowercase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemRow {
     pub identity: String,
     pub metadata: BTreeMap<String, String>,
-    /// Metadata names the walk could not evaluate, lowercase.
+    /// Metadata names whose value the walk does not know, lowercase: one it
+    /// could not evaluate, or one an item definition may give a default (which
+    /// the walk does not apply).
     pub uncertain_metadata: Vec<String>,
 }
 
@@ -155,6 +157,9 @@ impl State<'_> {
                     uncertain_metadata: item
                         .metadata_uncertainties
                         .iter()
+                        .chain(&helper_item_definition_default_uncertainties(
+                            &key, item, self,
+                        ))
                         .map(|u| u.name.to_ascii_lowercase())
                         .collect(),
                 })

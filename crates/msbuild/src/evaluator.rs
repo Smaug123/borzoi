@@ -1692,6 +1692,13 @@ struct State<'r> {
     /// `true` for `TargetFramework` — an answer
     /// [`TargetFrameworkReads::CarvedOut`] would have withheld.
     target_framework_read_exempted: Cell<bool>,
+    /// Set while the item pass reads a generic item's metadatum that no
+    /// dependency consumer reads (anything but NuGet's package metadata
+    /// names). An undefined `$(TargetFramework)` read then counts as inexact
+    /// without marking [`Self::target_framework_read_exempted`]: the walk's
+    /// choice of pass, and so its [`ParsedProject`], must not turn on a value
+    /// only a target reads.
+    quiet_target_framework_reads: Cell<bool>,
     /// The root each root-surfacing diagnostic stood for, by its index in
     /// `diagnostics`, captured when it was pushed. A diagnostic carries only a
     /// name, and that name's root may change later in the walk;
@@ -2051,6 +2058,7 @@ impl<'r> State<'r> {
             walk_opaque: None,
             target_framework_reads: TargetFrameworkReads::CarvedOut,
             target_framework_read_exempted: Cell::new(false),
+            quiet_target_framework_reads: Cell::new(false),
             diagnostic_roots: HashMap::new(),
         }
     }
@@ -2090,6 +2098,9 @@ impl<'r> State<'r> {
             && self.trust_of(name).is_certain()
             && !is_toolset_initial_property_name(&lower);
         if lower == "targetframework" {
+            if self.quiet_target_framework_reads.get() {
+                return false;
+            }
             match self.target_framework_reads {
                 TargetFrameworkReads::CarvedOut => return false,
                 TargetFrameworkReads::Exact if exact => {
@@ -2585,6 +2596,7 @@ impl<'r> State<'r> {
             walk_opaque: _,
             target_framework_reads: _,
             target_framework_read_exempted: _,
+            quiet_target_framework_reads: _,
             diagnostic_roots: _,
         } = self;
         // Central Package Management opt-in: a versionless

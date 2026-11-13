@@ -2558,6 +2558,10 @@ fn note_inherited_helper_metadata_uncertainties(
     reported: &mut HashSet<(HelperMetadataUncertaintyKind, String, String)>,
 ) {
     for uncertainty in uncertainties {
+        // The tables keep every metadatum; a dependency reads only these.
+        if !is_package_metadata_name(&uncertainty.name) {
+            continue;
+        }
         if local_metadata.overrides_name(&uncertainty.name) {
             continue;
         }
@@ -2962,7 +2966,7 @@ fn resolve_dependency_identity_sources(
     resolved
 }
 
-fn helper_item_definition_default_uncertainties(
+pub(super) fn helper_item_definition_default_uncertainties(
     item_type_key: &str,
     item: &EvaluatedItem,
     state: &State<'_>,
@@ -3036,47 +3040,64 @@ impl GenericItemMetadataBuilder {
     }
 }
 
+/// Every metadatum `node` declares, as attributes and as child elements. A
+/// dependency consumer reads only NuGet's package metadata names; the rest are
+/// read with [`State::quiet_target_framework_reads`] set, so that reading them
+/// cannot move the walk's result.
 fn read_generic_item_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> GenericItemMetadata {
     let mut metadata = GenericItemMetadataBuilder::default();
     for attr in node.attributes() {
-        if is_item_metadata_attribute(attr.name()) && is_package_metadata_name(attr.name()) {
+        if is_item_metadata_attribute(attr.name()) {
+            let previous = quieten(attr.name(), state);
             set_generic_metadata_value(attr.name(), attr.value(), false, state, &mut metadata);
+            state.quiet_target_framework_reads.set(previous);
         }
     }
     for child in node.children().filter(Node::is_element) {
         let name = child.tag_name().name();
-        if !is_package_metadata_name(name) {
-            continue;
-        }
-        let (gate, condition_tainted) = evaluate_item_condition_silent_with_sdk_taint(child, state);
-        match gate {
-            CondGate::Run => {
-                // An unmodellable body (CDATA / entity-encoded whitespace —
-                // see `collect_element_text`) drops the metadatum and marks it
-                // uncertain, exactly like an expansion we couldn't evaluate.
-                match collect_element_text(child) {
-                    Some(raw) => set_generic_metadata_value(
-                        name,
-                        &raw,
-                        condition_tainted,
-                        state,
-                        &mut metadata,
-                    ),
-                    None => {
-                        metadata.values.remove(&item_key(name));
-                        mark_generic_metadata_uncertain(name, "", &mut metadata.uncertainties);
-                    }
+        let previous = quieten(name, state);
+        read_generic_metadata_child(child, name, state, &mut metadata);
+        state.quiet_target_framework_reads.set(previous);
+    }
+    metadata.finish()
+}
+
+/// Set [`State::quiet_target_framework_reads`] for a metadatum named `name`
+/// that no dependency consumer reads, returning the flag's previous value.
+fn quieten(name: &str, state: &State<'_>) -> bool {
+    let quiet = state.quiet_target_framework_reads.get() || !is_package_metadata_name(name);
+    state.quiet_target_framework_reads.replace(quiet)
+}
+
+fn read_generic_metadata_child(
+    child: Node<'_, '_>,
+    name: &str,
+    state: &mut State<'_>,
+    metadata: &mut GenericItemMetadataBuilder,
+) {
+    let (gate, condition_tainted) = evaluate_item_condition_silent_with_sdk_taint(child, state);
+    match gate {
+        CondGate::Run => {
+            // An unmodellable body (CDATA / entity-encoded whitespace —
+            // see `collect_element_text`) drops the metadatum and marks it
+            // uncertain, exactly like an expansion we couldn't evaluate.
+            match collect_element_text(child) {
+                Some(raw) => {
+                    set_generic_metadata_value(name, &raw, condition_tainted, state, metadata)
+                }
+                None => {
+                    metadata.values.remove(&item_key(name));
+                    mark_generic_metadata_uncertain(name, "", &mut metadata.uncertainties);
                 }
             }
-            CondGate::Skip | CondGate::Unsupported => {
-                if condition_tainted {
-                    let raw = collect_element_text(child).unwrap_or_default();
-                    mark_generic_metadata_uncertain(name, &raw, &mut metadata.uncertainties);
-                }
+        }
+        CondGate::Skip | CondGate::Unsupported => {
+            if condition_tainted {
+                let raw = collect_element_text(child).unwrap_or_default();
+                mark_generic_metadata_uncertain(name, &raw, &mut metadata.uncertainties);
             }
         }
     }
-    metadata.finish()
 }
 
 fn set_generic_metadata_value(
@@ -3086,7 +3107,6 @@ fn set_generic_metadata_value(
     state: &mut State<'_>,
     metadata: &mut GenericItemMetadataBuilder,
 ) {
-    debug_assert!(is_package_metadata_name(name));
     let key = item_key(name);
     let metadata_tainted = condition_tainted || state.raw_uses_sdk_package_taint(raw);
     if raw.is_empty() {
@@ -3758,38 +3778,44 @@ fn record_helper_item_definition_defaults(node: Node<'_, '_>, state: &mut State<
         let Some(item_type) = generic_helper_item_type(child) else {
             continue;
         };
-        for metadata in item_definition_child_package_metadata_names(child, state) {
+        for metadata in item_definition_child_metadata_names(child, state) {
             state.record_helper_item_definition_default(&item_type, &metadata.name);
         }
     }
 }
 
-struct ItemDefinitionPackageMetadataName {
+struct ItemDefinitionMetadataName {
     name: String,
 }
 
-fn item_definition_child_package_metadata_names(
+/// Every metadata name an item definition may give its type a default for.
+/// A name no dependency consumer reads has its condition read quietly (see
+/// [`State::quiet_target_framework_reads`]).
+fn item_definition_child_metadata_names(
     node: Node<'_, '_>,
     state: &State<'_>,
-) -> Vec<ItemDefinitionPackageMetadataName> {
+) -> Vec<ItemDefinitionMetadataName> {
     let mut names = Vec::new();
     let mut seen = HashSet::new();
     for attr in node.attributes() {
-        if is_package_metadata_name(attr.name()) && seen.insert(item_key(attr.name())) {
-            names.push(ItemDefinitionPackageMetadataName {
+        if is_item_metadata_attribute(attr.name()) && seen.insert(item_key(attr.name())) {
+            names.push(ItemDefinitionMetadataName {
                 name: attr.name().to_string(),
             });
         }
     }
     for child in node.children().filter(Node::is_element) {
         let name = child.tag_name().name();
-        if !is_package_metadata_name(name) || !item_child_condition_may_run(child, state) {
+        let previous = quieten(name, state);
+        let may_run = item_child_condition_may_run(child, state);
+        state.quiet_target_framework_reads.set(previous);
+        if !may_run {
             continue;
         }
         if !seen.insert(item_key(name)) {
             continue;
         }
-        names.push(ItemDefinitionPackageMetadataName {
+        names.push(ItemDefinitionMetadataName {
             name: name.to_string(),
         });
     }
