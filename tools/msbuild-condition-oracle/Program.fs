@@ -61,13 +61,20 @@
 ///   {"op":"restoreCone","project":s,"globals":{name:value, ..}}
 ///     -> {"ok":true,"succeeded":b,"errors":[..],"msbuildDirectory":s,
 ///         "sdkVersion":s,"targets":[..],"tasks":[..],"files":{..},
-///         "assemblies":{..},"loadedDuringBuilds":[..],"dgspec":s|null}
+///         "assemblies":{..},"loadedDuringBuilds":[..],"dgspec":s|null,
+///         "writer":{"restoreRecursive":s|null,"invocations":n,
+///                   "entries":[{"identity":s,"metadata":{..}}, ..]}|null}
 ///     The restore-cone census of docs/nuget-dgspec-boundary-plan.md (stage
 ///     8): builds `GenerateRestoreGraphFile` on the project file in-process,
 ///     under exactly `globals`, and reports every target and task that
 ///     executed, the SHA-256 of each file they come from, each task assembly's
 ///     identity, and the spec written to `RestoreGraphOutputPath`. See
-///     `restoreCone` below. Unlike the evaluation ops this one *executes*
+///     `restoreCone` below. `writer` is the inputs of the one
+///     `WriteRestoreGraphTask` invocation that wrote `RestoreGraphOutputPath`,
+///     as it was handed them: its items with their custom metadata as it reads
+///     them (unescaped), and its `RestoreRecursive` (null when unset). It is
+///     null unless exactly one invocation wrote that path. This is the item
+///     seam of A₁. Unlike the evaluation ops this one *executes*
 ///     targets, so it reaches the SDK's task code.
 ///
 ///   {"op":"targetItems","path":s,"target":s,"itemType":s,"globals":{..}?}
@@ -486,6 +493,11 @@ type ConeLogger() =
     let tasks = ResizeArray<TaskRun>()
     let errors = ResizeArray<string>()
     let targetNames = Collections.Generic.Dictionary<struct (int * int * int), string>()
+    let taskNames = Collections.Generic.Dictionary<struct (int * int * int * int), string>()
+    let writers =
+        Collections.Generic.Dictionary<struct (int * int * int * int), Collections.Generic.Dictionary<string, obj list>>()
+
+    let writerOrder = ResizeArray<struct (int * int * int * int)>()
     let mutable verbosity = Microsoft.Build.Framework.LoggerVerbosity.Normal
     let mutable parameters: string = null
 
@@ -495,6 +507,10 @@ type ConeLogger() =
     member internal _.Targets = List.ofSeq targets
     member internal _.Tasks = List.ofSeq tasks
     member internal _.Errors = List.ofSeq errors
+    /// Each `WriteRestoreGraphTask` invocation's inputs, by parameter, in the
+    /// order the invocations started, as MSBuild logs a task's inputs (only when
+    /// the build sets `LogTaskInputs`). An unset parameter is absent.
+    member internal _.WriterInvocations = writerOrder |> Seq.map (fun key -> writers[key]) |> List.ofSeq
 
     interface Microsoft.Build.Framework.ILogger with
         member _.Verbosity
@@ -515,6 +531,9 @@ type ConeLogger() =
                       Project = e.ProjectFile })
 
             source.TaskStarted.Add(fun e ->
+                let c = e.BuildEventContext
+                taskNames[struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)] <- e.TaskName
+
                 let target =
                     match targetNames.TryGetValue(contextKey e.BuildEventContext) with
                     | true, name -> name
@@ -525,6 +544,29 @@ type ConeLogger() =
                       Target = target
                       File = e.TaskFile
                       Assembly = e.TaskAssemblyLocation })
+
+            source.MessageRaised.Add(fun e ->
+                match e with
+                | :? Microsoft.Build.Framework.TaskParameterEventArgs as p when
+                    p.Kind = Microsoft.Build.Framework.TaskParameterMessageKind.TaskInput
+                    ->
+                    let c = p.BuildEventContext
+                    let key = struct (c.NodeId, c.ProjectContextId, c.TargetId, c.TaskId)
+
+                    match taskNames.TryGetValue key with
+                    // By name, bare or qualified with its namespace, in any case, as
+                    // MSBuild looks tasks up.
+                    | true, name when
+                        name.Equals("WriteRestoreGraphTask", StringComparison.OrdinalIgnoreCase)
+                        || name.EndsWith(".WriteRestoreGraphTask", StringComparison.OrdinalIgnoreCase)
+                        ->
+                        if not (writers.ContainsKey key) then
+                            writers[key] <- Collections.Generic.Dictionary<string, obj list>()
+                            writerOrder.Add key
+
+                        writers[key][p.ItemType] <- p.Items |> Seq.cast<obj> |> List.ofSeq
+                    | _ -> ()
+                | _ -> ())
 
             source.ErrorRaised.Add(fun e -> errors.Add $"%s{e.File}(%d{e.LineNumber}): %s{e.Code} %s{e.Message}")
 
@@ -583,7 +625,9 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
             collection,
             Loggers = [ logger :> Microsoft.Build.Framework.ILogger ],
             MaxNodeCount = 1,
-            EnableNodeReuse = false
+            EnableNodeReuse = false,
+            // So that `WriteRestoreGraphTask`'s input is logged, and recorded.
+            LogTaskInputs = true
         )
 
     let request =
@@ -630,6 +674,52 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
         | true, path when File.Exists path -> File.ReadAllText path
         | _ -> null
 
+    // The inputs of the writer invocation that wrote the requested spec: a
+    // hook may run the task again for another file, and change the properties
+    // its inputs come from after it ran. Every input is as the invocation was
+    // handed it. `null` unless exactly one invocation wrote the requested path.
+    let writer =
+        let scalar (inputs: Collections.Generic.Dictionary<string, obj list>) name =
+            match inputs.TryGetValue name with
+            | true, [ :? string as value ] -> Some value
+            // A bool parameter is logged as the boxed value it was converted to.
+            | true, [ :? bool as value ] -> Some(if value then "true" else "false")
+            | true, [ :? Microsoft.Build.Framework.ITaskItem as item ] -> Some item.ItemSpec
+            | _ -> None
+
+        let requested =
+            match globals.TryGetValue "RestoreGraphOutputPath" with
+            | true, path -> Some(Path.GetFullPath path)
+            | _ -> None
+
+        let writing =
+            logger.WriterInvocations
+            |> List.filter (fun inputs ->
+                requested.IsSome
+                && (scalar inputs "RestoreGraphOutputPath" |> Option.map Path.GetFullPath) = requested)
+
+        match writing with
+        | [ inputs ] ->
+            let items =
+                match inputs.TryGetValue "RestoreGraphItems" with
+                | true, items -> items |> List.map (fun item -> item :?> Microsoft.Build.Framework.ITaskItem)
+                | _ -> []
+
+            box
+                {| restoreRecursive = scalar inputs "RestoreRecursive" |> Option.toObj
+                   invocations = logger.WriterInvocations.Length
+                   entries =
+                    items
+                    |> List.map (fun item ->
+                        {| identity = item.ItemSpec
+                           metadata =
+                            item.CloneCustomMetadata().Keys
+                            |> Seq.cast<string>
+                            |> Seq.sort
+                            |> Seq.map (fun name -> (name, item.GetMetadata name))
+                            |> dict |}) |}
+        | _ -> null
+
     {| ok = true
        succeeded = (result.OverallResult = BuildResultCode.Success)
        errors = logger.Errors
@@ -647,7 +737,8 @@ let private restoreCone (project: string) (globals: Collections.Generic.IDiction
                name = Reflection.AssemblyName.GetAssemblyName(path).Name
                informationalVersion = Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductVersion |})
         |> List.ofSeq
-       dgspec = dgspec |}
+       dgspec = dgspec
+       writer = writer |}
 
 let private respondRestoreCone (root: JsonElement) : string =
     let project = root.GetProperty("project").GetString()
