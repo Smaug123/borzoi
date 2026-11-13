@@ -30,12 +30,10 @@
 //!   system allocator that skips the client thread (a reallocation
 //!   counts as an allocation of the new size, as in `borzoi-sema`'s
 //!   `parse_counts`).
-//! - **file-system calls**: `open`, `fstat`, the path `stat` family,
-//!   `opendir` and `realpath`, counted by redirecting this executable's own import slots for
-//!   those libc functions to counting wrappers (std is linked statically, so
-//!   every Rust caller goes through them). A calibration at start-up checks
-//!   that each std operation moves exactly the counter it should, and refuses
-//!   to report file-system counts otherwise.
+//!
+//! File-system calls are not counted here. The plan counts them inside the
+//! lint-enforced modules that perform them (`docs/incremental-lsp-plan.md`,
+//! D3), where a test can assert them on any platform.
 //!
 //! The counts describe the project fold only if the requests take it, and a
 //! handler that falls back to single-file analysis still answers. So the run
@@ -44,8 +42,7 @@
 //! subscriber interested in nothing else), and fails on any project-deferral
 //! toast.
 //!
-//! Instruction and file-system counts need macOS on arm64; elsewhere those
-//! columns read `n/a`. Wall time is not reported: the machines these run on are
+//! Instruction counts need macOS; elsewhere that column reads `n/a`. Wall time is not reported: the machines these run on are
 //! loaded, and these counts barely move with load. Each keystroke row reports
 //! the minimum and the maximum over the keystrokes.
 //!
@@ -88,7 +85,7 @@ use serde_json::{Value, json};
 thread_local! {
     /// Set on the client thread, which is the one thread not counted: the
     /// server thread and any worker it starts (the env build reads DLLs on a
-    /// pool of them) are. Cleared briefly to calibrate. A `const` initialiser
+    /// pool of them) are. A `const` initialiser
     /// with no destructor, so reading it from inside the allocator or a libc
     /// wrapper can neither allocate nor recurse.
     static CLIENT: Cell<bool> = const { Cell::new(false) };
@@ -173,438 +170,6 @@ fn instructions() -> Option<(u64, u64)> {
 #[cfg(not(target_os = "macos"))]
 fn instructions() -> Option<(u64, u64)> {
     None
-}
-
-// ---------------------------------------------------------------------------
-// File-system calls.
-// ---------------------------------------------------------------------------
-
-/// What the libc wrappers count, by kind.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct FsCalls {
-    /// `open`: every file read starts with one.
-    open: u64,
-    /// `fstat`: the metadata of an open file, which std's whole-file reads
-    /// ask for to size their buffer.
-    fstat: u64,
-    /// `stat`, `lstat`, `fstatat`: metadata and existence probes by path.
-    stat: u64,
-    /// `opendir`, `fdopendir`: directory listings.
-    opendir: u64,
-    /// `realpath`: canonicalisation, which `lstat`s every component itself.
-    realpath: u64,
-}
-
-impl FsCalls {
-    /// `f` applied kind by kind.
-    fn combine(self, other: FsCalls, f: impl Fn(u64, u64) -> u64) -> FsCalls {
-        FsCalls {
-            open: f(self.open, other.open),
-            fstat: f(self.fstat, other.fstat),
-            stat: f(self.stat, other.stat),
-            opendir: f(self.opendir, other.opendir),
-            realpath: f(self.realpath, other.realpath),
-        }
-    }
-}
-
-static FS_OPEN: AtomicU64 = AtomicU64::new(0);
-static FS_FSTAT: AtomicU64 = AtomicU64::new(0);
-static FS_STAT: AtomicU64 = AtomicU64::new(0);
-static FS_OPENDIR: AtomicU64 = AtomicU64::new(0);
-static FS_REALPATH: AtomicU64 = AtomicU64::new(0);
-
-fn fs_calls() -> FsCalls {
-    FsCalls {
-        open: FS_OPEN.load(Relaxed),
-        fstat: FS_FSTAT.load(Relaxed),
-        stat: FS_STAT.load(Relaxed),
-        opendir: FS_OPENDIR.load(Relaxed),
-        realpath: FS_REALPATH.load(Relaxed),
-    }
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-mod fs_hooks {
-    //! Counting wrappers for the libc file-system entry points std calls, and
-    //! the patch that installs them.
-    //!
-    //! dyld honours `__interpose` only in inserted libraries, not in the main
-    //! executable, so the wrappers are installed by rewriting this image's own
-    //! import slots: every slot in `__got`, `__auth_got`, `__la_symbol_ptr` or
-    //! `__nl_symbol_ptr` that holds the address dyld bound for a function is
-    //! pointed at its wrapper, and the wrapper calls the original through the
-    //! saved address. Only this image's calls are redirected; std is linked in
-    //! statically, so that is every Rust caller. [`super::calibrate`] checks the
-    //! result rather than trusting it.
-
-    use super::{FS_FSTAT, FS_OPEN, FS_OPENDIR, FS_REALPATH, FS_STAT, counted};
-    use std::ffi::{CStr, c_char, c_int, c_void};
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-
-    unsafe extern "C" {
-        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-        fn _dyld_get_image_header(index: u32) -> *const MachHeader64;
-        fn _dyld_get_image_vmaddr_slide(index: u32) -> isize;
-        fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> c_int;
-        fn sysconf(name: c_int) -> isize;
-    }
-
-    /// `dlsym`'s "search every image" handle.
-    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
-    const PROT_READ_WRITE: c_int = 0x1 | 0x2;
-    const SC_PAGESIZE: c_int = 29;
-    const LC_SEGMENT_64: u32 = 0x19;
-
-    #[repr(C)]
-    struct MachHeader64 {
-        magic: u32,
-        cputype: i32,
-        cpusubtype: i32,
-        filetype: u32,
-        ncmds: u32,
-        sizeofcmds: u32,
-        flags: u32,
-        reserved: u32,
-    }
-
-    #[repr(C)]
-    struct LoadCommand {
-        cmd: u32,
-        cmdsize: u32,
-    }
-
-    #[repr(C)]
-    struct SegmentCommand64 {
-        cmd: u32,
-        cmdsize: u32,
-        segname: [u8; 16],
-        vmaddr: u64,
-        vmsize: u64,
-        fileoff: u64,
-        filesize: u64,
-        maxprot: i32,
-        initprot: i32,
-        nsects: u32,
-        flags: u32,
-    }
-
-    #[repr(C)]
-    struct Section64 {
-        sectname: [u8; 16],
-        segname: [u8; 16],
-        addr: u64,
-        size: u64,
-        offset: u32,
-        align: u32,
-        reloff: u32,
-        nreloc: u32,
-        flags: u32,
-        reserved1: u32,
-        reserved2: u32,
-        reserved3: u32,
-    }
-
-    static REAL_OPEN: AtomicUsize = AtomicUsize::new(0);
-    static REAL_FSTAT: AtomicUsize = AtomicUsize::new(0);
-    static REAL_STAT: AtomicUsize = AtomicUsize::new(0);
-    static REAL_LSTAT: AtomicUsize = AtomicUsize::new(0);
-    static REAL_FSTATAT: AtomicUsize = AtomicUsize::new(0);
-    static REAL_OPENDIR: AtomicUsize = AtomicUsize::new(0);
-    static REAL_FDOPENDIR: AtomicUsize = AtomicUsize::new(0);
-    static REAL_REALPATH: AtomicUsize = AtomicUsize::new(0);
-    static REAL_REALPATH_EXTSN: AtomicUsize = AtomicUsize::new(0);
-
-    fn bump(counter: &std::sync::atomic::AtomicU64) {
-        if counted() {
-            counter.fetch_add(1, Relaxed);
-        }
-    }
-
-    type Open = unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int;
-    type Stat = unsafe extern "C" fn(*const c_char, *mut c_void) -> c_int;
-    type FStatAt = unsafe extern "C" fn(c_int, *const c_char, *mut c_void, c_int) -> c_int;
-    type OpenDir = unsafe extern "C" fn(*const c_char) -> *mut c_void;
-    type FdOpenDir = unsafe extern "C" fn(c_int) -> *mut c_void;
-    type RealPath = unsafe extern "C" fn(*const c_char, *mut c_char) -> *mut c_char;
-
-    /// `open(path, flags, ...)`. Apple's arm64 ABI passes a variadic argument
-    /// on the stack, where a ninth integer argument also goes, so the
-    /// wrapper reads `open`'s optional mode as its ninth parameter and passes
-    /// it on through a variadic call. `x2`–`x7` hold nothing the caller set.
-    #[allow(clippy::too_many_arguments)]
-    unsafe extern "C" fn open_hook(
-        path: *const c_char,
-        flags: c_int,
-        _x2: usize,
-        _x3: usize,
-        _x4: usize,
-        _x5: usize,
-        _x6: usize,
-        _x7: usize,
-        mode: c_int,
-    ) -> c_int {
-        bump(&FS_OPEN);
-        // SAFETY: the slot held this function's address before the patch.
-        let real: Open = unsafe { std::mem::transmute(REAL_OPEN.load(Relaxed)) };
-        unsafe { real(path, flags, mode) }
-    }
-
-    type FStat = unsafe extern "C" fn(c_int, *mut c_void) -> c_int;
-
-    unsafe extern "C" fn fstat_hook(fd: c_int, buf: *mut c_void) -> c_int {
-        bump(&FS_FSTAT);
-        let real: FStat = unsafe { std::mem::transmute(REAL_FSTAT.load(Relaxed)) };
-        unsafe { real(fd, buf) }
-    }
-
-    unsafe extern "C" fn stat_hook(path: *const c_char, buf: *mut c_void) -> c_int {
-        bump(&FS_STAT);
-        let real: Stat = unsafe { std::mem::transmute(REAL_STAT.load(Relaxed)) };
-        unsafe { real(path, buf) }
-    }
-
-    unsafe extern "C" fn lstat_hook(path: *const c_char, buf: *mut c_void) -> c_int {
-        bump(&FS_STAT);
-        let real: Stat = unsafe { std::mem::transmute(REAL_LSTAT.load(Relaxed)) };
-        unsafe { real(path, buf) }
-    }
-
-    unsafe extern "C" fn fstatat_hook(
-        fd: c_int,
-        path: *const c_char,
-        buf: *mut c_void,
-        flags: c_int,
-    ) -> c_int {
-        bump(&FS_STAT);
-        let real: FStatAt = unsafe { std::mem::transmute(REAL_FSTATAT.load(Relaxed)) };
-        unsafe { real(fd, path, buf, flags) }
-    }
-
-    unsafe extern "C" fn opendir_hook(path: *const c_char) -> *mut c_void {
-        bump(&FS_OPENDIR);
-        let real: OpenDir = unsafe { std::mem::transmute(REAL_OPENDIR.load(Relaxed)) };
-        unsafe { real(path) }
-    }
-
-    unsafe extern "C" fn fdopendir_hook(fd: c_int) -> *mut c_void {
-        bump(&FS_OPENDIR);
-        let real: FdOpenDir = unsafe { std::mem::transmute(REAL_FDOPENDIR.load(Relaxed)) };
-        unsafe { real(fd) }
-    }
-
-    unsafe extern "C" fn realpath_hook(path: *const c_char, out: *mut c_char) -> *mut c_char {
-        bump(&FS_REALPATH);
-        let real: RealPath = unsafe { std::mem::transmute(REAL_REALPATH.load(Relaxed)) };
-        unsafe { real(path, out) }
-    }
-
-    unsafe extern "C" fn realpath_extsn_hook(path: *const c_char, out: *mut c_char) -> *mut c_char {
-        bump(&FS_REALPATH);
-        let real: RealPath = unsafe { std::mem::transmute(REAL_REALPATH_EXTSN.load(Relaxed)) };
-        unsafe { real(path, out) }
-    }
-
-    fn name(bytes: &[u8; 16]) -> &[u8] {
-        let len = bytes.iter().position(|&b| b == 0).unwrap_or(16);
-        &bytes[..len]
-    }
-
-    /// Every import slot of the main executable, as raw pointers.
-    ///
-    /// # Safety
-    ///
-    /// Reads dyld's in-memory image of the main executable.
-    unsafe fn import_slots() -> Vec<*mut usize> {
-        let mut slots = Vec::new();
-        // SAFETY: image 0 is the main executable, always loaded.
-        let header = unsafe { _dyld_get_image_header(0) };
-        let slide = unsafe { _dyld_get_image_vmaddr_slide(0) };
-        let mut cursor = unsafe { header.cast::<u8>().add(size_of::<MachHeader64>()) };
-        for _ in 0..unsafe { (*header).ncmds } {
-            let command = cursor.cast::<LoadCommand>();
-            if unsafe { (*command).cmd } == LC_SEGMENT_64 {
-                let segment = cursor.cast::<SegmentCommand64>();
-                let mut section =
-                    unsafe { cursor.add(size_of::<SegmentCommand64>()) }.cast::<Section64>();
-                for _ in 0..unsafe { (*segment).nsects } {
-                    let section_name = name(unsafe { &(*section).sectname });
-                    if matches!(
-                        section_name,
-                        b"__got" | b"__auth_got" | b"__la_symbol_ptr" | b"__nl_symbol_ptr"
-                    ) {
-                        let base = (unsafe { (*section).addr } as isize + slide) as *mut usize;
-                        let count = unsafe { (*section).size } as usize / size_of::<usize>();
-                        slots.extend((0..count).map(|i| unsafe { base.add(i) }));
-                    }
-                    section = unsafe { section.add(1) };
-                }
-            }
-            cursor = unsafe { cursor.add((*command).cmdsize as usize) };
-        }
-        slots
-    }
-
-    /// Point every import slot bound to `symbol` at `hook`, saving the
-    /// original in `real`. Returns how many slots moved.
-    ///
-    /// # Safety
-    ///
-    /// `hook` must have `symbol`'s calling convention, and call through `real`.
-    unsafe fn patch(slots: &[*mut usize], symbol: &CStr, real: &AtomicUsize, hook: usize) -> usize {
-        // SAFETY: `symbol` is NUL-terminated.
-        let target = unsafe { dlsym(RTLD_DEFAULT, symbol.as_ptr()) } as usize;
-        if target == 0 {
-            return 0;
-        }
-        real.store(target, Relaxed);
-        let page = unsafe { sysconf(SC_PAGESIZE) } as usize;
-        let mut moved = 0;
-        for &slot in slots {
-            // SAFETY: `slot` lies in one of the image's pointer sections.
-            if unsafe { *slot } != target {
-                continue;
-            }
-            let start = (slot as usize) & !(page - 1);
-            // SAFETY: the page holds the slot; widening its protection to
-            // read-write changes nothing else about it.
-            let rc = unsafe { mprotect(start as *mut c_void, page, PROT_READ_WRITE) };
-            assert_eq!(rc, 0, "mprotect an import slot for {symbol:?}");
-            unsafe { *slot = hook };
-            moved += 1;
-        }
-        moved
-    }
-
-    /// Install every wrapper.
-    pub(super) fn install() {
-        // SAFETY: each wrapper has its function's signature (`open_hook`'s
-        // reads its variadic argument as the ABI places it) and calls the
-        // address it replaced.
-        unsafe {
-            let slots = import_slots();
-            patch(&slots, c"open", &REAL_OPEN, open_hook as *const () as usize);
-            patch(
-                &slots,
-                c"fstat",
-                &REAL_FSTAT,
-                fstat_hook as *const () as usize,
-            );
-            patch(&slots, c"stat", &REAL_STAT, stat_hook as *const () as usize);
-            patch(
-                &slots,
-                c"lstat",
-                &REAL_LSTAT,
-                lstat_hook as *const () as usize,
-            );
-            patch(
-                &slots,
-                c"fstatat",
-                &REAL_FSTATAT,
-                fstatat_hook as *const () as usize,
-            );
-            patch(
-                &slots,
-                c"opendir",
-                &REAL_OPENDIR,
-                opendir_hook as *const () as usize,
-            );
-            patch(
-                &slots,
-                c"fdopendir",
-                &REAL_FDOPENDIR,
-                fdopendir_hook as *const () as usize,
-            );
-            patch(
-                &slots,
-                c"realpath",
-                &REAL_REALPATH,
-                realpath_hook as *const () as usize,
-            );
-            patch(
-                &slots,
-                c"realpath$DARWIN_EXTSN",
-                &REAL_REALPATH_EXTSN,
-                realpath_extsn_hook as *const () as usize,
-            );
-        }
-    }
-}
-
-/// Install the file-system wrappers and check that each std operation the
-/// server uses moves exactly the counter it should. `false` when the platform
-/// has no wrappers or the check fails, in which case no file-system count is
-/// reported: a wrong count is worse than none.
-fn calibrate() -> bool {
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        return false;
-    }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fs_hooks::install();
-
-    let dir = std::env::temp_dir().join(format!("borzoi-edit-counts-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create the calibration directory");
-    let file = dir.join("probe.txt");
-    std::fs::write(&file, "probe").expect("write the calibration file");
-    type Probe = Box<dyn Fn(&Path)>;
-    let probes: [(&str, Probe, FsCalls); 5] = [
-        (
-            "read_to_string",
-            Box::new(|f| drop(std::fs::read_to_string(f))),
-            FsCalls {
-                open: 1,
-                fstat: 1,
-                ..FsCalls::default()
-            },
-        ),
-        (
-            "metadata",
-            Box::new(|f| drop(std::fs::metadata(f))),
-            FsCalls {
-                stat: 1,
-                ..FsCalls::default()
-            },
-        ),
-        (
-            "symlink_metadata",
-            Box::new(|f| drop(std::fs::symlink_metadata(f))),
-            FsCalls {
-                stat: 1,
-                ..FsCalls::default()
-            },
-        ),
-        (
-            "read_dir",
-            Box::new(|f| drop(std::fs::read_dir(f.parent().unwrap()).map(Iterator::count))),
-            FsCalls {
-                opendir: 1,
-                ..FsCalls::default()
-            },
-        ),
-        (
-            "canonicalize",
-            Box::new(|f| drop(std::fs::canonicalize(f))),
-            FsCalls {
-                realpath: 1,
-                ..FsCalls::default()
-            },
-        ),
-    ];
-    let mut ok = true;
-    CLIENT.set(false);
-    for (label, probe, expected) in &probes {
-        let before = fs_calls();
-        probe(&file);
-        let after = fs_calls();
-        let moved = after.combine(before, |a, b| a - b);
-        if moved != *expected {
-            eprintln!("calibration: {label} moved {moved:?}, expected {expected:?}");
-            ok = false;
-        }
-    }
-    CLIENT.set(true);
-    drop(std::fs::remove_dir_all(&dir));
-    ok
 }
 
 // ---------------------------------------------------------------------------
@@ -748,7 +313,6 @@ struct Cost {
     instructions: Option<u64>,
     allocations: u64,
     allocated_bytes: u64,
-    fs: FsCalls,
 }
 
 impl Cost {
@@ -764,7 +328,6 @@ impl Cost {
                 .map(|(a, b)| a + b),
             allocations: self.allocations + other.allocations,
             allocated_bytes: self.allocated_bytes + other.allocated_bytes,
-            fs: self.fs.combine(other.fs, |a, b| a + b),
         }
     }
 }
@@ -775,7 +338,6 @@ struct Reading {
     instructions: Option<(u64, u64)>,
     allocations: u64,
     allocated_bytes: u64,
-    fs: FsCalls,
 }
 
 impl Reading {
@@ -788,7 +350,6 @@ impl Reading {
             instructions: instructions(),
             allocations: ALLOCATIONS.load(Relaxed),
             allocated_bytes: ALLOCATED_BYTES.load(Relaxed),
-            fs: fs_calls(),
         }
     }
 
@@ -806,7 +367,6 @@ impl Reading {
                 .map(|((process0, own0), (process1, own1))| (process1 - process0) - (own1 - own0)),
             allocations: later.allocations - self.allocations,
             allocated_bytes: later.allocated_bytes - self.allocated_bytes,
-            fs: later.fs.combine(self.fs, |a, b| a - b),
         }
     }
 }
@@ -1140,41 +700,20 @@ fn default_project() -> PathBuf {
 // The report.
 // ---------------------------------------------------------------------------
 
-fn columns(cost: &Cost, fs_ok: bool) -> String {
+fn columns(cost: &Cost) -> String {
     let instructions = cost
         .instructions
         .map_or_else(|| "n/a".to_string(), |i| i.to_string());
-    let fs = |n: u64| {
-        if fs_ok {
-            n.to_string()
-        } else {
-            "n/a".to_string()
-        }
-    };
     format!(
-        "{instructions:>14} {:>10} {:>13} {:>6} {:>6} {:>6} {:>7} {:>8}",
-        cost.allocations,
-        cost.allocated_bytes,
-        fs(cost.fs.open),
-        fs(cost.fs.fstat),
-        fs(cost.fs.stat),
-        fs(cost.fs.opendir),
-        fs(cost.fs.realpath),
+        "{instructions:>14} {:>10} {:>13}",
+        cost.allocations, cost.allocated_bytes,
     )
 }
 
 fn header() -> String {
     format!(
-        "{:<34} {:>14} {:>10} {:>13} {:>6} {:>6} {:>6} {:>7} {:>8}",
-        "message",
-        "instructions",
-        "allocs",
-        "alloc-bytes",
-        "open",
-        "fstat",
-        "stat",
-        "opendir",
-        "realpath"
+        "{:<34} {:>14} {:>10} {:>13}",
+        "message", "instructions", "allocs", "alloc-bytes"
     )
 }
 
@@ -1188,7 +727,6 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
             instructions: a.instructions.zip(b.instructions).map(|(x, y)| f(x, y)),
             allocations: f(a.allocations, b.allocations),
             allocated_bytes: f(a.allocated_bytes, b.allocated_bytes),
-            fs: a.fs.combine(b.fs, f),
         })
     };
     (pick(u64::min), pick(u64::max))
@@ -1196,10 +734,6 @@ fn min_max(costs: &[Cost]) -> (Cost, Cost) {
 
 fn main() {
     CLIENT.set(true);
-    let fs_ok = calibrate();
-    if !fs_ok {
-        eprintln!("file-system calls are not counted on this platform or build");
-    }
     let project = std::env::var_os("EDIT_COUNTS_PROJECT")
         .map(PathBuf::from)
         .unwrap_or_else(default_project);
@@ -1295,7 +829,7 @@ fn main() {
     let mut result_ids = BTreeMap::new();
     let once = |client: &mut Client, label: &str, step: Step| {
         let (cost, result) = client.measure(&step);
-        println!("{label:<34} {}", columns(&cost, fs_ok));
+        println!("{label:<34} {}", columns(&cost));
         result
     };
     once(&mut client, "didOpen E", did_open(&e));
@@ -1385,16 +919,16 @@ fn main() {
     }
     println!("per keystroke (min, then max, over {keystrokes}):");
     let (min, max) = min_max(&barriers);
-    println!("{:<34} {}", "barrier min", columns(&min, fs_ok));
-    println!("{:<34} {}", "barrier max", columns(&max, fs_ok));
+    println!("{:<34} {}", "barrier min", columns(&min));
+    println!("{:<34} {}", "barrier max", columns(&max));
     for (label, costs) in rows.values() {
         let (min, max) = min_max(costs);
-        println!("{:<34} {}", format!("{label} min"), columns(&min, fs_ok));
-        println!("{:<34} {}", format!("{label} max"), columns(&max, fs_ok));
+        println!("{:<34} {}", format!("{label} min"), columns(&min));
+        println!("{:<34} {}", format!("{label} max"), columns(&max));
     }
     let (min, max) = min_max(&totals);
-    println!("{:<34} {}", "keystroke total min", columns(&min, fs_ok));
-    println!("{:<34} {}", "keystroke total max", columns(&max, fs_ok));
+    println!("{:<34} {}", "keystroke total min", columns(&min));
+    println!("{:<34} {}", "keystroke total max", columns(&max));
 
     client.shut_down();
 }

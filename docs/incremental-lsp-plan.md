@@ -2,7 +2,9 @@
 
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness)
 > implemented. Tracks [#544](https://github.com/WoofWare/borzoi/issues/544).
-> Every count below was taken at 369039e9 (`origin/main`).
+> The counts below were taken at 369039e9 (`origin/main`), with the harness at
+> 3e426d12. Its file-system columns came from a one-off instrument (below) that
+> the committed harness no longer carries.
 
 ## Problem
 
@@ -55,8 +57,18 @@ workers it starts to read DLLs in parallel when it builds an env.
 - **allocations**: from a counting allocator;
 - **file-system calls**: `open`, `fstat` (std's whole-file reads ask for the
   size of the file they opened), the path `stat` family, `opendir` and
-  `realpath`. They are counted by redirecting the executable's own libc
-  import slots, and a start-up calibration checks these hooks.
+  `realpath`. These are a **one-off measurement**, made at 3e426d12 by
+  redirecting the executable's own libc import slots to counting wrappers.
+  That only works on macOS arm64. CI is Linux-only, so a committed version
+  could never be checked there, and the committed harness drops it. Later
+  stages count file-system calls inside the modules that make them (D3),
+  where a test can assert them on any platform.
+
+After merging d3a4a131 into the branch, the committed harness moves on two
+rows: `semanticTokens E` goes from 24.5 M to 36.1 M and the keystroke total
+from 164.0 M to 176.0 M. Every other keystroke row moves by under 4%. The
+movement comes from main's #596, #600 and #622, not from this plan, and Stage 1
+re-measures from the new base.
 
 Wall time is not reported, because the machine is heavily loaded. Across two
 runs, the keystroke rows' minima agree to within 0.2% and the cold rows to
@@ -319,28 +331,62 @@ entry is one of:
 - `Disk { text: Arc<str>, stamp }`: read from disk;
 - `Absent { stamp }`: a probe that found nothing, which is a fact like any other.
 
-A **stamp** is `(dev, ino, size, mtime_ns, ctime_ns)` from one `stat`. A disk
-entry is validated once per **generation**. A generation is the unit of work
-between two dispatched messages: the first read in a generation `stat`s the
-file, re-reads it only if the stamp moved, and later reads in that generation
-use the result. `ctime` cannot be set from user space, so a rewrite that keeps
-the size and resets the mtime still moves the stamp.
+A **stamp** is `(dev, ino, size, mtime_ns, ctime_ns)`. A disk entry is
+validated once per **generation**. A generation is the unit of work between
+two dispatched messages: the first read in a generation `stat`s the file,
+re-reads it only if the stamp moved, and later reads in that generation use
+the result. `ctime` cannot be set from user space, so a rewrite that keeps the
+size and resets the mtime still moves the stamp.
 
-The guarantee: within a generation, every read of a path returns the same text.
-That text is what the disk held at the generation's first read of it, or the
-buffer. The residual hole is a rewrite inside the filesystem's timestamp
-granularity, with identical size, inode and ctime. On APFS (nanosecond
-timestamps) that cannot happen. The existing on-disk caches accept a wider
-hole than this.
+**Reading is stamp-then-read.** A read opens the file, takes the stamp from
+`fstat` on that descriptor, and then reads. A write that lands after the stamp
+moves the stamp, so the next generation re-reads. Taking the stamp after the
+read would be wrong: it could record the new stamp beside the old text, and
+nothing would ever re-read it.
 
-A directory listing (ownership, glob expansion) is an entry too, stamped by the
-directory's own `stat`. Creating, deleting or renaming an entry moves the
-directory's mtime.
+**Racy timestamps.** A filesystem's timestamps tick at its granularity. On
+Linux that is the kernel's coarse clock (a few milliseconds) even where the
+stored field has nanoseconds; on HFS+ it is a second, and on FAT two. So two
+same-size writes within one tick can leave the stamp unchanged. The `Vfs`
+adopts git's racy-timestamp rule (its `racy-git` design note).
+Each stamp records the wall-clock time it was taken. A stamp whose mtime or
+ctime is within `G` of that time is **racy**: it is used for this generation
+and re-read in the next, until a later observation is more than `G` past it.
+`G` is 2 s, the coarsest local timestamp granularity in common use. The
+observation time is a value passed to `Vfs::begin_generation(now)`, not read
+from a clock inside the `Vfs`, so the rule can be property-tested with
+generated clocks.
+
+The guarantee: within a generation, every read of a path returns the same
+text. That text is the buffer, or what the disk held at the moment of the
+generation's stamp. Once a write is more than `G` old, the first generation
+after it sees it. Per platform:
+
+- **Linux** (ext4, xfs, btrfs, tmpfs), **macOS** (APFS, HFS+) and
+  **Windows** (NTFS): the guarantee holds as stated. Each has local timestamps
+  at granularity `G` or finer, and `ctime` moves on every write.
+- **Not covered**: filesystems whose timestamps come from another machine's
+  clock (NFS and SMB mounts with clock skew greater than `G`), and those that
+  do not maintain `ctime`. A write there can be missed until its stamp moves
+  for another reason. A watch event, which is a hint (below), still covers it.
+
+The existing on-disk caches accept a wider hole: they have no racy rule.
+
+A directory listing that ownership consults (D4) is an entry too, stamped by
+the directory's own `stat`. Creating, deleting or renaming an entry moves the
+directory's mtime, and the racy rule applies as for files. Listings for
+`<Compile>` glob expansion are **deferred**. No stage consumes them until the
+evaluator's read set does (D3), which records them itself.
 
 A watched-file event becomes a hint: it marks the named paths for an immediate
 re-`stat`, and stops being the only way the server learns that the disk moved.
-So the server needs no file-watch support from its client to be correct.
-Agent clients, which this server is scoped for, mostly have none.
+So for every input class it witnesses (D7), the server needs no file-watch
+support from its client to be correct. Agent clients, which this server is
+scoped for, mostly have none. One class stays unwitnessed:
+**`CSharpSources`**. The `.cs` and `.csproj` files behind a C# project
+reference are read by the sidecar process, not through the `Vfs`, so a `.cs`
+edit with no watch event can serve stale C# metadata (Stage 6b). Closing that
+needs the sidecar to report its read set.
 
 **Edits are values.** `enum Edit { Open, Change, Close, Watched }` is applied
 by one function, `Vfs::apply(&mut self, Edit)`, which is the only mutator. An
@@ -360,9 +406,9 @@ whose recorded inputs equal them:
 | a parse | text (`Arc<str>`, compared by pointer and then by bytes), symbol set, language version, provenance trust: today's `CachedParse` key |
 | a project evaluation | its **read set** (D3), re-validated against the `Vfs` |
 | a file's owning project | the stamped ancestor listings, and the evaluations the walk consulted |
-| an assembly env | the evaluation's reference inputs, plus the stamps of every DLL in its `dlls` list |
+| an assembly env | the read set of its reference resolution (D3, Stage 6a) |
 | a file's resolution | as today: same tree, same pairing, same env, and an equal threaded prefix |
-| a file's inference | its resolution (`Arc`), the env, and an **equal** published-types prefix |
+| a file's inference | its resolution (`Arc`), the env, and a published prefix in which every earlier file's own contribution is equal to before |
 | a file's syntactic diagnostics | the parse |
 
 Hashes only *find* a candidate. A hit is confirmed by equality: of the bytes
@@ -374,9 +420,10 @@ texts it no longer has.
 **Early cutoff** is equality of a derived value's *output* with its previous
 output, at the points where a sequential fold threads state from file to file.
 Resolution already does this (`same_export_contribution`). Inference does it
-on the `PrecedingTypes` published so far. A file is reused when its resolution
-is the same allocation **and** the published types entering it are equal to
-those its cached inference saw. Today, only the leading run is reused.
+on each file's contribution to `PrecedingTypes` (Stage 1). A file is reused
+while every earlier file's contribution equals its previous one and the
+file's own resolution is the same allocation. Today, only the leading run is
+reused.
 
 A memo table is bounded by the inputs it can still match. When a newer value
 is stored for the same file and settings, the entry it replaces is dropped, as
@@ -390,8 +437,13 @@ are passed:
 - the MSBuild evaluation, with about 70 `std::fs` call sites in
   `borzoi-msbuild`: imports, `Exists()`, globs, SDK resolution;
 - the ownership walk;
-- the assembly env's reference resolution: the assets file, the output-DLL
-  search, the packs.
+- the assembly env's reference resolution: the assets file, the project
+  graph, the output-DLL search, the packs. In `crates/lsp/src`, about 380
+  lines touch the file system across 23 files (a grep, inline tests included).
+  Most of them are this.
+
+The fourth reader, the fold's source reads (`read_text`, `document_text`),
+becomes the `Vfs`'s disk side (D1).
 
 Making them pure by passing every file in would mean knowing the read set in
 advance, which is impossible. Instead each records what it observed, **as
@@ -402,12 +454,26 @@ current `Vfs`. Recording absence is required, not optional: an evaluation that
 concluded "no `Directory.Build.props` here" depends on that file staying
 absent. "Absent vs unread" is the recurring defect class in this repository.
 
-The evaluator keeps its direct code. Each of its file-system calls moves into
-one module that performs the call and appends the observation. A
-`clippy.toml` `disallowed-methods` entry, scoped to `borzoi-msbuild`, bans
-`std::fs` everywhere else in the crate. `borzoi-spawn` enforces its rule the
-same way. So a new call site that skips the read set is a lint error, not a
-review finding.
+Each reader keeps its direct code. Its file-system calls move into an
+**`observed` module**, which performs each call and appends the observation.
+That module is also the only place file-system calls are **counted**: it keeps
+per-generation counts by kind (opens, `stat`s, listings), and a test reads
+them. So "a comment keystroke performs 0 opens" is an assertion that runs on
+Linux CI, not a measurement on one developer's Mac.
+
+`disallowed-methods` entries ban `std::fs` outside the `observed` modules, as
+`clippy.toml` already bans direct child-process spawns.
+
+- `borzoi-msbuild` gets a crate-local `clippy.toml` that repeats the
+  workspace's spawn bans and adds `std::fs`.
+- In `borzoi`, the ban lands in Stage 2a. Call sites on paths no stage routes
+  yet carry `#[allow(clippy::disallowed_methods)]` naming the stage that will
+  route them (4a for ownership, 6a for env resolution), and inline test
+  modules allow it wholesale. The remaining allows are then a visible
+  worklist.
+
+So a new call site that skips the read set and the counts is a lint error,
+not a review finding.
 
 **Immutable roots.** The SDK install and the NuGet global packages folder hold
 versioned directories whose *contents* are immutable at their path.
@@ -500,7 +566,10 @@ So two steps come first, both on one thread:
 
 A snapshot worker (Stage 9) is built only if, after those steps, a
 representative script still blocks edits behind requests for longer than a
-stated budget. If it is built, the snapshot is the `Vfs` (cloned: about a
+stated budget. Stage 9 writes the budget and the script down now. Coalescing
+cannot interrupt a request that is already running, so the case it leaves
+open is an edit that arrives during a cold fold. That is the case the issue's
+snapshot proposal addressed. If it is built, the snapshot is the `Vfs` (cloned: about a
 hundred `Arc`s) plus the memo tables behind a lock. It is not a persistent data
 structure.
 
@@ -521,12 +590,15 @@ scripts.
 It has one blind spot, which matters to this plan: it never compares while
 watch events are pending, because today the server cannot know that the disk
 moved. This plan makes the server able to know (D1, D3, D4). So each stage
-widens one data value in the test, `WITNESSED: &[InputClass]`, where
-`InputClass` is `SourceContent`, `ProjectFiles` or `DirectoryMembership`. A
-`Check` then runs with events pending whenever every pending event's class is
-witnessed. A stage that claims to witness a class has to survive generated
-scripts that write files of that class and never flush. Once every class is
-witnessed, a script with no `Flush` at all must agree with a fresh session.
+widens one data value in the test, `WITNESSED: &[InputClass]`. `InputClass`
+is `SourceContent`, `ProjectFiles`, `DirectoryMembership` or
+`CSharpSources`. The last is **unwitnessed by design** (D1, Stage 6b): it is
+named so that no claim can include it by accident. A `Check` runs with events
+pending whenever every pending event's class is witnessed. A stage that claims
+to witness a class has to survive generated scripts that write files of that
+class and never flush. Once the three witnessable classes are witnessed, a
+script with no `Flush` at all must agree with a fresh session. The world has
+no C# project, so `CSharpSources` never arises there.
 
 Four more oracles, because equivalence cannot see missed work:
 
@@ -545,7 +617,9 @@ Four more oracles, because equivalence cannot see missed work:
   was recorded `Absent`.
 - **Counts.** Each stage reports `edit_counts` before and after. A claimed gain
   that does not show up there is a defect in the stage, even if every
-  equivalence test passes.
+  equivalence test passes. File-system counts come from the `observed`
+  modules (D3), so an LSP test can assert them on CI ("a comment keystroke
+  performs 0 opens") as well as the harness reporting them.
 
 ## Implementation plan
 
@@ -555,11 +629,18 @@ Four more oracles, because equivalence cannot see missed work:
 Every stage lands alone on `main`, with the full gate, the whole-project gate
 and `incremental_state_machine` green. Each reports `edit_counts` before and
 after on WoofWare.Incremental, with the default script. The expected gains are
-derived from the Stage 0 rows and from the `EDIT_COUNTS_EARLY=79` attribution
+derived from the measured rows and from the `EDIT_COUNTS_EARLY=79` attribution
 run. Each stage restates its gain as a measurement when it lands.
 
+File-system counts in these stages come from the `observed` modules (D3), not
+from the one-off instrument behind the Measurements table. A stage that
+routes a reader through its module, with behaviour unchanged, **reproduces**
+the one-off count (the "a" stages) before a later stage changes it. That ties
+the new counter to the old measurement before anything moves. `edit_counts`
+prints the `observed` counts as columns from Stage 2a on, on every platform.
+
 The order puts the largest cheap win first (Stage 1). The concretely wrong
-item (Stage 3) follows as soon as the state it needs exists (Stage 2). The
+item (Stage 3) follows as soon as the state it needs exists (Stage 2b). The
 rest are ordered by size.
 
 ### Stage 0: the edit-loop count harness
@@ -567,28 +648,38 @@ rest are ordered by size.
 **Dependencies**: none. **Implements**: the measurement every later stage
 reports.
 
-`crates/lsp/examples/edit_counts.rs`, described under "Measurements". It counts
-server-thread instructions, allocations and file-system calls per message for
-a scripted session on a restored project. A calibration refuses to report
-file-system counts that it cannot vouch for, and the run fails if any
-semantic request does not reach the measured project's fold (see
-"Measurements").
+`crates/lsp/examples/edit_counts.rs`, described under "Measurements". It
+counts instructions and allocations per message for a scripted session on a
+restored project, across every thread except the client's. The run fails if
+any semantic request does not reach the measured project's fold, if an env is
+built from no DLLs, or on a deferral toast.
 
 **Oracle**: it runs to completion under `nix develop` and reproduces the
-baseline table, to within run-to-run noise (0.2% on instructions; the
-allocation and file-system counts are exact).
+instruction and allocation baseline, to within run-to-run noise (0.2% on
+instructions; allocations are exact).
 
 ### Stage 1: an export-equality cutoff for inference
 
 **Dependencies**: none. **Implements**: D2's cutoff for inference (item 5).
 
-`infer_project_reusing` reuses file `i` when its `ResolvedFile` is the same
-allocation as the one `prev` inferred, **and** the `PrecedingTypes` entering
-`i` equal those `prev` saw entering it. Today it reuses only the leading run.
-`PrecedingTypes` gets `PartialEq` by value. `InferredProject` keeps, per file,
-the published state entering it (or enough to compare it: the published
-entries are few, 4,547 types over the whole corpus tree per
-`docs/sema-interning-plan.md`). `inferred_prefix_for` is unchanged apart from
+`PrecedingTypes::publish` is a deterministic function of
+`(idx, resolved, inferred, screened)`. So a file's **contribution**, what
+`publish` adds for it, is a value that can be computed on its own and
+compared. `publish` is split into computing a `FileContribution` and merging
+it, with no change to the result.
+
+`infer_project_reusing` then folds with a running "prefix still equal" flag,
+as the resolver's `in_sync` does. While the flag holds, a file is reused when
+its `ResolvedFile` is the same allocation as the one `prev` inferred and its
+pairing is unchanged. A file that is re-inferred while the flag holds has its
+contribution compared with the contribution `prev`'s file makes, computed
+from `prev`'s own `(resolved, inferred)` and not stored. The flag stays set
+only if they are equal.
+
+Each comparison is one file's contribution. Nothing stores or compares a
+whole `PrecedingTypes` per file, which would be O(files × published).
+`ModuleValue` and `Ty` already derive `Eq`; the case, record and type entries
+gain it where they lack it. `inferred_prefix_for` is unchanged apart from
 calling the new reuse.
 
 **Oracle**:
@@ -596,56 +687,90 @@ calling the new reuse.
   inference, over the edit sequences `resolve_incremental_diff` already
   generates.
 - `body_edit_preserves_full_inference_reuse`: after an export-preserving body
-  edit to file `k`, exactly one file is re-inferred. An inference reuse count
-  sits beside `last_fold_reused_files` so the LSP can assert it too.
+  edit to file `k`, exactly one file is re-inferred. This guards the
+  missed-reuse direction, which the equivalence test cannot see. An inference
+  reuse count sits beside `last_fold_reused_files` so the LSP can assert it
+  too.
 - `incremental_state_machine` and the inference corpus gate are unchanged.
 
 **Expected gain**: about 107 M of re-inference leaves `hover L`, taking it
 from 117 M toward the 9.7 M measured with `E` next to `L`. The keystroke total
-goes from 164 M to about 57 M, and allocations fall by about 130 k per
-keystroke.
+goes from 164 M to about 57 M at 369039e9 (176 M → about 69 M from
+d3a4a131), and allocations fall by about 130 k per keystroke.
 
-### Stage 2: the `Vfs` owns file text
+### Stage 2a: source reads are observed and counted
 
-**Dependencies**: none (parallel with Stage 1). **Implements**: D1 for source
-files.
+**Dependencies**: none (parallel with Stage 1). **Implements**: D3's `observed`
+module and counts, for the fold's source reads.
 
-The `Vfs` replaces `State::docs` and every source read on the fold and
-diagnostic paths (`read_text`, `document_text`, `disk_text::read` in
-`build_parses`). Generations begin in the dispatch loop. `build_parses` asks
-the `Vfs` for each Compile item. An unchanged disk file then costs one `stat`
-per generation and returns the same `Arc<str>`, so the parse-cache comparison
+`read_text`, `document_text` and `disk_text::read` move into an `observed`
+module of `borzoi`. It counts opens per generation, and generations begin in
+the dispatch loop. The crate-wide `disallowed-methods` ban on `std::fs` lands
+here, with the allow worklist of D3. Behaviour is unchanged.
+
+**Oracle**:
+- Every test and manifest is unchanged.
+- A new LSP test on a generated `N`-item project with two buffers open: a
+  comment keystroke followed by a semantic-tokens request performs exactly
+  `N − 2` opens. This pins today's behaviour.
+- `edit_counts` prints 80 opens per keystroke on WoofWare.Incremental,
+  reproducing the one-off count.
+- `cargo clippy` fails on a new direct `std::fs` call outside the module and
+  the worklist.
+
+**Expected gain**: none (the stage is infrastructure).
+
+### Stage 2b: the `Vfs` owns file text
+
+**Dependencies**: Stage 2a. **Implements**: D1 for source files.
+
+The `Vfs` replaces `State::docs` and the `observed` source reads. Its disk
+side reads stamp-then-read and applies the racy rule. `build_parses` asks the
+`Vfs` for each Compile item. An unchanged disk file then costs one `stat` per
+generation and returns the same `Arc<str>`, so the parse-cache comparison
 becomes a pointer test. `read_text`'s scan of every buffer goes away. Watched
 source events become re-`stat` hints.
 
 **Oracle**:
-- `incremental_state_machine` gains `WITNESSED = [SourceContent]`. Scripts that
-  `Write` a source and `Check` without `Flush` must agree with a fresh session.
-  At least one pinned script does exactly that and fails on `main` (checked
-  once while writing the stage, by running it against the parent commit).
-- A `Vfs` property test: over generated sequences of buffer edits and disk
-  writes, `Vfs::read` equals "buffer if open, else the disk's bytes without a
-  BOM" at every step. The sequences include same-size rewrites and a rewrite
-  back to earlier content.
+- Stage 2a's count test flips: the comment keystroke performs **0 opens** and
+  at most `N` `stat`s.
+- `incremental_state_machine` gains `WITNESSED = [SourceContent]`. Scripts
+  that `Write` a source and `Check` without `Flush` must agree with a fresh
+  session. At least one pinned script does exactly that and fails on `main`
+  (checked once while writing the stage, by running it against the parent
+  commit). The world's writes go through the real filesystem, so on Linux CI
+  the racy rule is what keeps two same-size writes within a tick from being
+  missed.
+- A `Vfs` property test with a generated clock. Over generated sequences of
+  buffer edits, disk writes (same-size rewrites and rewrites back to earlier
+  content included) and `begin_generation(now)` calls, `Vfs::read` equals
+  "buffer if open, else the disk's bytes without a BOM" at every generation
+  that is more than `G` after the last write. Within `G` it equals either the
+  old or the new bytes, and the next generation re-reads. The disk is a model
+  whose timestamps tick at a generated granularity up to `G`, so the property
+  covers coarse-clock filesystems that the CI machine does not have.
 
-**Expected gain**: per keystroke, 80 `open`s and 80 `fstat`s become 0, and
-0 path `stat`s become at most 80. Instructions are not estimated: the stage measures them. The other
-expected effect is that `semanticTokens E` falls toward the cost of parsing
-and resolving `E` alone.
+**Expected gain**: per keystroke, 80 opens and 80 `fstat`s become 0, and 0
+path `stat`s become at most 80. Instructions are not estimated: the stage
+measures them. The other expected effect is that `semanticTokens E` falls
+toward the cost of parsing and resolving `E` alone.
 
 ### Stage 3a: the MSBuild evaluation records its read set
 
 **Dependencies**: none. **Implements**: D3, in `borzoi-msbuild`.
 
 Every `std::fs` call in `crates/msbuild/src` (non-test) moves into one
-`observed` module. That module performs the call and appends a
+`observed` module. That module performs the call, counts it, and appends a
 `(path, Observation)` to the evaluation's `ReadSet`. `ParsedProject` carries
-the `ReadSet`. A crate-scoped `disallowed-methods` entry bans `std::fs`
+the `ReadSet` and the counts. A crate-local `clippy.toml` bans `std::fs`
 outside the module. Nothing consumes the read set yet.
 
 **Oracle**:
 - Every msbuild differential and corpus manifest is unchanged: the
   evaluation's results move by zero lines.
+- The counts reproduce the one-off `didOpen E` row on WoofWare.Incremental
+  (117 opens, 371 `stat`s, 67 listings, 252 `realpath`s), up to the reads the
+  LSP makes outside the evaluator, which the stage itemises.
 - `cargo clippy` fails on a new direct `std::fs` call in the crate.
 - The read-set soundness property of D7, over the crate's project fixtures and
   the `with_imports_tests` trees.
@@ -655,12 +780,12 @@ corpus project is reported, so Stage 3b's validation cost is known in advance.
 
 ### Stage 3b: evaluations are validated, not trusted
 
-**Dependencies**: Stages 2 and 3a. **Implements**: D3 in the LSP (item 2).
+**Dependencies**: Stages 2b and 3a. **Implements**: D3 in the LSP (item 2).
 
 `Workspace::projects` entries carry their read set. A lookup in a new
 generation validates every entry except the immutable-root contents (D3)
-against the `Vfs`, and re-evaluates on any mismatch. The structural watch event still clears
-everything (D3's immutable-roots fallback).
+against the `Vfs`, and re-evaluates on any mismatch. The structural watch
+event still clears everything (D3's immutable-roots fallback).
 
 **Oracle**:
 - `WITNESSED += [ProjectFiles]`. Generated scripts that write `.fsproj` and
@@ -673,15 +798,32 @@ everything (D3's immutable-roots fallback).
   listings under the immutable roots are still validated.
 - The read-set soundness property, now through the LSP.
 
-**Expected gain**: a correctness fix. Its cost is the validation `stat`s,
-measured by `edit_counts` as the user-owned read set plus the listed
-directories under the immutable roots (expected to be a few dozen `stat`s) per
-generation that reads an evaluation.
+**Expected gain**: a correctness fix. Its cost is the validation `stat`s:
+the user-owned read set plus the listed directories under the immutable
+roots, per generation that reads an evaluation. That is expected to be a few
+dozen, and the counts report it.
 
-### Stage 4: ownership is memoised
+### Stage 4a: ownership listings are observed and counted
 
-**Dependencies**: Stage 3b (ownership consults evaluations). **Implements**:
-D4 (item 4).
+**Dependencies**: Stage 2a. **Implements**: D3's `observed` module for the
+ownership walk.
+
+`all_fsproj_in` and `find_owning_project`'s listings move into an `observed`
+module and are counted per generation. Their worklist allows go. Behaviour is
+unchanged.
+
+**Oracle**:
+- Every ownership test is unchanged.
+- A count test pins today's walks: a pull of an unchanged file one directory
+  below its project performs four listings of two directories (eight).
+- `edit_counts` prints 13 listings per keystroke on WoofWare.Incremental,
+  reproducing the one-off count.
+
+**Expected gain**: none (the stage is infrastructure).
+
+### Stage 4b: ownership is memoised
+
+**Dependencies**: Stages 3b and 4a. **Implements**: D4 (item 4).
 
 `owning_project` memoises its answer per file. The key is the stamped
 ancestor listings and the evaluations consulted, validated per generation.
@@ -689,6 +831,8 @@ ancestor listings and the evaluations consulted, validated per generation.
 four walks become one memo hit.
 
 **Oracle**:
+- Stage 4a's count test flips to 0 listings, with one directory `stat` per
+  ancestor the memo depends on.
 - A property test: over generated directory trees (projects at random depths,
   ties, partial evaluations, files added and removed), the memoised answer
   equals `owning_project`'s uncached walk, which is kept as a test-only
@@ -696,14 +840,14 @@ four walks become one memo hit.
 - `WITNESSED += [DirectoryMembership]`: a `.fsproj` created beside an open
   file without an event.
 
-**Expected gain**: per keystroke, 13 `opendir`s become 0. The `unchanged`
+**Expected gain**: per keystroke, 13 listings become 0. The `unchanged`
 diagnostic pull falls from 3.35 M toward the cost of hashing the text twice
 (about 0.2 M on `L`).
 
 ### Stage 5: one parse per text
 
-**Dependencies**: Stage 2. **Implements**: D2 for parses, which diagnostics and
-the fold share.
+**Dependencies**: Stage 2b. **Implements**: D2 for parses, which diagnostics
+and the fold share.
 
 The per-file parse memo becomes the only place a source is parsed. Syntactic
 diagnostics read the memoised parse (the parse plus its diagnostics, recorded
@@ -717,27 +861,52 @@ together) instead of parsing again.
 **Expected gain**: `diagnostic E` from 4.85 M to near the floor. One parse of
 `E` (under 5 M) leaves the keystroke.
 
-### Stage 6: targeted assembly invalidation
+### Stage 6a: env reference resolution records its read set
 
-**Dependencies**: Stage 3b (an env's evaluation inputs are known).
-**Implements**: D2's env key (item 3).
+**Dependencies**: Stage 2a. **Implements**: D3 for the assembly env's
+reference resolution.
 
-An env is validated against the read set of its reference resolution (D3):
-the stamps of the DLLs in its own `dlls` list, the assets file, the
-evaluations of the projects in its graph, and the directory listings the
-output-DLL search made, so that a sibling's first build is seen. A `.dll`
-event marks paths for re-`stat`. It no longer clears every env.
-`pdb_images` is keyed by the DLL's stamp.
+The env's reference resolution touches the disk from the LSP crate itself:
+`project_assets`, the project graph, `locate_fsharp_output_dll` and
+`child_dirs`, `entry_ref_tfms`' canonicalisation, and the DLL reads. All of it
+moves into its own `observed` module, which counts each call and returns a
+`ReadSet` beside the `ReferenceSet`. `CachedAssemblyEnv` carries it. The
+module's worklist allows go. Nothing validates against the read set yet, so
+behaviour is unchanged. Without this stage, Stage 6b's env key would be
+hand-wired invalidation under another name.
 
-**C# references** keep their event-driven invalidation in this stage. With
+**Oracle**:
+- `reference_set_msbuild_diff`, `resolve_real_project_diff` and the
+  whole-project gate are unchanged.
+- A read-set soundness property over generated restored-project fixtures (an
+  assets file, framework and package DLLs, sibling projects built and
+  unbuilt). Perturbing anything outside the read set leaves
+  `reference_dlls_for_project` unchanged. Perturbing anything inside it,
+  including creating a recorded-`Absent` output DLL or adding a pack version
+  to a recorded listing, fails validation.
+- `cargo clippy` fails on a new direct `std::fs` call on the path.
+
+**Expected gain**: none (the stage is infrastructure). The read set's size on
+WoofWare.Incremental is reported, which bounds Stage 7's validation cost.
+
+### Stage 6b: targeted assembly invalidation
+
+**Dependencies**: Stages 3b and 6a. **Implements**: D2's env key (item 3).
+
+An env is valid while its read set validates against the `Vfs`, with the
+immutable-root contents exempt as in D3. A `.dll` event marks paths for
+re-`stat`. It no longer clears every env. `pdb_images` is keyed by the DLL's
+stamp.
+
+**C# references** keep their event-driven invalidation. With
 `enableCSharpProjectReferences`, a `.cs` edit changes neither the F#
-project's evaluation nor any DLL the env has read. The sidecar re-derives its
-content-addressed metadata only when the env is rebuilt
+project's evaluation nor any DLL in the env's read set. The sidecar
+re-derives its content-addressed metadata only when the env is rebuilt
 (`metadata_dlls_for_csproj`). So a `.cs`/`.csproj` event still drops every
-env that has a C# edge, and only those. That makes a C# edit without a watch
-event a stated gap in the envelope. Closing it needs the sidecar to report
-its input set (the `.csproj` closure's sources and imports) as a read set,
-which is follow-up work, not part of this stage.
+env that has a C# edge, and only those. `CSharpSources` is therefore an
+explicitly **unwitnessed** input class (D1, D7). A C# edit with no watch event
+serves stale metadata until the sidecar reports its read set (the `.csproj`
+closure's sources and imports), which is follow-up work outside this plan.
 
 **Oracle**:
 - `incremental_state_machine` (its `.dll` writes) is unchanged.
@@ -755,33 +924,51 @@ WoofWare.Incremental with the on-disk cache off).
 
 ### Stage 7: delete the hand-wired invalidation
 
-**Dependencies**: Stages 2–6. **Implements**: the end state of D2.
+**Dependencies**: Stages 2b–6b. **Implements**: the end state of D2.
 
 With every cache keyed on its inputs, `invalidate_file`, `invalidate_project`
-and `invalidate_all` delete: what remains of them is the refresh
-bookkeeping. `invalidate_assembly_state` shrinks to the C#-edge case that
-Stage 6 keeps, until the sidecar reports a read set. `project_parses` and `resolved_projects` become
-lookups through the memo tables. `apply_watched_changes` reduces to `Vfs`
+and `invalidate_all` delete; what remains of them is the refresh bookkeeping.
+`invalidate_assembly_state` shrinks to Stage 6b's C#-edge case.
+`project_parses` and `resolved_projects` become lookups through the memo
+tables, validated per generation. `apply_watched_changes` reduces to `Vfs`
 hints plus the refresh decisions it makes today.
 
 **Oracle**:
-- `incremental_state_machine` passes with every input class witnessed, and a
-  generated run with **no** `Flush` command agrees with fresh sessions.
+- `incremental_state_machine` passes with every witnessed input class
+  (`SourceContent`, `ProjectFiles`, `DirectoryMembership`), and a generated
+  run with **no** `Flush` command agrees with fresh sessions. The world has no
+  C# project, and `CSharpSources` is excluded from the claim by name.
 - #313's planted mutations M1–M10 are re-planted where their code still
   exists, and are still caught.
 
-**Expected gain**: none in counts. The stage removes the class of defect in
-the misses table.
+**Expected cost**: this stage *raises* the file-system counts. A
+`project_parses` hit stops being free. Every generation that reads the fold
+validates it: about 80 Compile-item `stat`s, plus the evaluation's validated
+read set, plus the env's (DLL contents under immutable roots exempt, listings
+not). On WoofWare.Incremental that is roughly 130 `stat`s per fold-reading
+request, and a keystroke has three (`semanticTokens E`, `semanticTokens L`,
+`hover L`), so roughly **400 `stat`s per keystroke**, against 0 path `stat`s
+and 80 opens today. The `observed` counters measure it per message in
+`edit_counts`, and the read-set sizes reported by Stages 3a and 6a predict it
+before the stage is written. If the measured instructions matter, the
+remedy to weigh is validating once per revision plus once per bounded time
+window: that is a stated staleness bound, which the guarantee section would
+then have to carry. It is not adopted by default.
 
 ### Stage 8: coalescing in the dispatch loop
 
-**Dependencies**: Stage 2 (document versions live in the `Vfs`).
+**Dependencies**: Stage 2b (document versions live in the `Vfs`).
 **Implements**: D6's first step.
 
 The loop drains the channel before handling a message. A `didChange`
 superseded in the batch is applied but not diagnosed. A request cancelled in
 the batch is answered `RequestCancelled` without running. A semantic request
 whose document has a newer queued change is answered `ContentModified`.
+
+This only touches messages that are still queued. It cannot interrupt a
+request that is already running, so an edit that arrives during a cold fold
+(3.1 G instructions today) still waits for the whole fold. That case is the
+one the issue's snapshot proposal addresses, and Stage 9's gate measures it.
 
 **Oracle**:
 - A loop-level test over generated interleavings of changes, requests and
@@ -798,11 +985,32 @@ changes before draining, to measure it.
 ### Stage 9 (gated): requests on a snapshot
 
 **Dependencies**: Stage 8 and its measurement. **Implements**: D6's second
-step, only if the gate holds.
+step, only if the gate fails.
 
-**Gate**: after Stage 8, with `edit_counts` extended to time-to-answer an edit
-queued behind a cold request, a representative script still blocks an edit
-for longer than an agreed budget. If it does not, this stage is not built.
+**The measurement**, fixed now so that the gate is not set after the fact, is
+an `edit_counts` mode, `EDIT_COUNTS_SCRIPT=blocked-edit`:
+
+1. Open `E` and `L`, and warm the fold as the default script does.
+2. Rewrite the `.fsproj` on disk with one more `<DefineConstants>` symbol, so
+   the next fold re-evaluates the project and re-parses every item (no watch
+   event; Stage 3b's validation sees it).
+3. Send `semanticTokens L`. Without waiting for its answer, send
+   `didChange E` (a comment keystroke) and `diagnostic E`.
+4. Report the server instructions retired between `semanticTokens L` arriving
+   and the answer to `diagnostic E`, beside the instructions of
+   `didChange E` + `diagnostic E` measured on their own. The difference is
+   what the edit waited for.
+
+**The budget**: the edit waits for at most **50 M** server instructions. That
+is less than one steady keystroke is expected to cost after Stages 1–5 (about
+60 M from d3a4a131), so an edit never waits longer than the work it causes. The gate is measured on macOS, where the instruction
+counter exists, on WoofWare.Incremental and on WoofWare.PawPrint.Domain.
+
+**The gate**: if either project's wait exceeds the budget after Stage 8, this
+stage is built. Otherwise it is not, and the measurement is recorded here.
+On today's numbers the wait is a whole re-fold, so the gate fails unless
+Stages 3b–7 make the post-save fold far cheaper than a cold one. Writing it
+down now means measurement decides, not preference.
 
 If built: a worker runs semantic requests against a cloned `Vfs` and the memo
 tables behind a lock. The dispatch thread applies edits and answers syntactic
@@ -810,7 +1018,8 @@ requests. A superseded request is cancelled at its next memo boundary.
 
 **Oracle**: `incremental_state_machine` with the worker enabled, a loom-style
 or exhaustive interleaving test of the memo table's insert-versus-read race,
-and the Stage 8 interleaving property.
+the Stage 8 interleaving property, and the `blocked-edit` measurement under
+budget.
 
 ## Non-goals
 
