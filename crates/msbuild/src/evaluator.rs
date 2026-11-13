@@ -1408,12 +1408,20 @@ struct State<'r> {
     /// [`Self::package_reference_rows`] holds `PackageReference`s.
     #[cfg(any(test, feature = "test-support"))]
     package_version_rows: Vec<EvaluatedItem>,
-    /// Indices into [`Self::package_reference_uncertainties`] of the causes
-    /// recorded while walking a `PackageReference`, `FrameworkReference` or
-    /// `GlobalPackageReference` element, or collapsing `PackageReference`s:
-    /// causes that say nothing about the `PackageVersion` list.
+    /// The `GlobalPackageReference` items as an item table reads them, as
+    /// [`Self::package_reference_rows`] holds `PackageReference`s.
     #[cfg(any(test, feature = "test-support"))]
-    package_causes_elsewhere: HashSet<usize>,
+    global_package_reference_rows: Vec<EvaluatedItem>,
+    /// Whether a `GlobalPackageReference` `Update` or `Remove` ran.
+    #[cfg(any(test, feature = "test-support"))]
+    global_package_references_mutated: bool,
+    /// The dependency list each package-set cause is about, by its index in
+    /// [`Self::package_reference_uncertainties`]: the type of the element
+    /// being walked when it was recorded, or `PackageReference` for the
+    /// collapse. A cause with no owner (an item group, an import, an item
+    /// definition) may be about any list.
+    #[cfg(any(test, feature = "test-support"))]
+    package_cause_owners: HashMap<usize, item_pass::PackageItemKind>,
     /// MSBuild's batch of `Update`s for each item type whose `Update`s the walk
     /// models (`Compile`, `PackageReference`), as far as the walk can follow it
     /// ([`item_pass`]'s `update_strands_late`), keyed by lowercased item type.
@@ -2127,7 +2135,12 @@ impl<'r> State<'r> {
             #[cfg(any(test, feature = "test-support"))]
             package_version_rows: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
-            package_causes_elsewhere: HashSet::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            global_package_reference_rows: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            global_package_references_mutated: false,
+            #[cfg(any(test, feature = "test-support"))]
+            package_cause_owners: HashMap::new(),
             package_versions: Vec::new(),
             package_versions_untracked: false,
             update_batches: HashMap::new(),
@@ -2678,7 +2691,11 @@ impl<'r> State<'r> {
             #[cfg(any(test, feature = "test-support"))]
                 package_version_rows: _,
             #[cfg(any(test, feature = "test-support"))]
-                package_causes_elsewhere: _,
+                global_package_reference_rows: _,
+            #[cfg(any(test, feature = "test-support"))]
+                global_package_references_mutated: _,
+            #[cfg(any(test, feature = "test-support"))]
+                package_cause_owners: _,
             update_batches: _,
             package_versions,
             package_versions_untracked,
@@ -3138,13 +3155,13 @@ impl<'r> State<'r> {
             .push(CompileItemUncertaintyCause { kind, span, origin });
     }
 
-    /// Mark every package-set cause recorded since index `from` as one
-    /// that says nothing about the `PackageVersion` list
-    /// ([`Self::package_causes_elsewhere`]).
+    /// Attribute every package-set cause recorded since index `from` to the
+    /// `owner` list ([`Self::package_cause_owners`]).
     #[cfg(any(test, feature = "test-support"))]
-    fn attribute_package_causes_elsewhere(&mut self, from: usize) {
+    fn attribute_package_causes(&mut self, from: usize, owner: item_pass::PackageItemKind) {
         let to = self.package_reference_uncertainties.len();
-        self.package_causes_elsewhere.extend(from..to);
+        self.package_cause_owners
+            .extend((from..to).map(|index| (index, owner)));
     }
 
     fn record_package_reference_uncertainty(

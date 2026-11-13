@@ -664,7 +664,6 @@ fn cone_text(cone: &Cone, key: &str) -> ConeText {
 /// the generic item tables, with how many items each bucket holds.
 fn dedicated_bucket(parsed: &borzoi_msbuild::ParsedProject, item_type: &str) -> Option<usize> {
     Some(match item_type.to_ascii_lowercase().as_str() {
-        "globalpackagereference" => parsed.global_package_references.len(),
         "compile" => parsed.items.len(),
         _ => return None,
     })
