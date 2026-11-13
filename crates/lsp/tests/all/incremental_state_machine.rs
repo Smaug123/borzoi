@@ -842,6 +842,25 @@ fn unwatched_project_cmd_strategy() -> impl Strategy<Value = Cmd> {
     ]
 }
 
+/// Commands that create and delete projects behind the server's back, most
+/// often `O`, which shares `P`'s directory and sorts before it, so that it
+/// takes over whichever of `P`'s sources it lists, and never deliver the
+/// watch events. Only sources are opened, as for
+/// [`unwatched_project_cmd_strategy`].
+fn unwatched_ownership_cmd_strategy() -> impl Strategy<Value = Cmd> {
+    prop_oneof![
+        3 => source_file_strategy().prop_map(Cmd::Open),
+        2 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Edit(f, c)),
+        1 => source_file_strategy().prop_map(Cmd::Close),
+        5 => with_content(Just(FileId::Proj(Proj::O))).prop_map(|(f, c)| Cmd::Write(f, c)),
+        3 => Just(Cmd::Delete(FileId::Proj(Proj::O))),
+        2 => with_content(project_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        1 => project_file_strategy().prop_map(Cmd::Delete),
+        4 => Just(Cmd::Check),
+        2 => src_strategy().prop_map(Cmd::Peek),
+    ]
+}
+
 fn case_strategy() -> impl Strategy<Value = Case> {
     case_strategy_with(cmd_strategy().boxed(), buffer_file_strategy().boxed())
 }
@@ -1217,9 +1236,9 @@ enum InputClass {
     /// (`docs/incremental-lsp-plan.md`, Stage 3b, "Split").
     FsprojBufferInputs,
     /// Which projects a directory holds: a `.fsproj` created or deleted,
-    /// which moves which project owns the sources around it. Ownership is
-    /// recomputed by every request, so what a request answers is current,
-    /// but nothing owes the client a refresh of what it is showing.
+    /// which moves which project owns the sources around it. A file's owner
+    /// is remembered with the listings its walk read, and confirmed by their
+    /// directories' stamps.
     DirectoryMembership,
     /// The assets file and the framework DLL: inputs to the assembly env's
     /// reference resolution.
@@ -1230,11 +1249,14 @@ enum InputClass {
 /// validates each cached fold's Compile item texts in every generation that
 /// reads the fold; Stage 3b validates each cached project evaluation's read
 /// set (its project files, imports, SDK resolution and `<Compile>` glob
-/// listings) in every generation that reads the evaluation.
+/// listings) in every generation that reads the evaluation; Stage 4b
+/// validates each remembered owner's directory listings and consulted
+/// evaluations in every generation that asks for it.
 const WITNESSED: &[InputClass] = &[
     InputClass::SourceContent,
     InputClass::ProjectFiles,
     InputClass::GlobMembership,
+    InputClass::DirectoryMembership,
 ];
 
 /// A watch event the server has not yet been sent, and what its write changed.
@@ -1613,6 +1635,9 @@ struct Coverage {
     /// Of those, the ones with a globbed directory's membership change
     /// pending.
     unflushed_membership_checks: usize,
+    /// Of those, the ones with a `.fsproj` created or deleted, which moves
+    /// ownership, pending.
+    unflushed_ownership_checks: usize,
     queries: usize,
     /// A definition landing in a different file from the one asked about.
     cross_file_definitions: usize,
@@ -1770,6 +1795,9 @@ fn check(
             }
             if pending(InputClass::GlobMembership) {
                 coverage.unflushed_membership_checks += 1;
+            }
+            if pending(InputClass::DirectoryMembership) {
+                coverage.unflushed_ownership_checks += 1;
             }
         }
         for q in ordered {
@@ -2194,13 +2222,51 @@ fn unwatched_project_writes_agree_with_a_fresh_session() {
         }
         Err(err) => panic!("seed {seed}: {err}"),
     }
-    // Non-vacuity: comparisons were made with a project file's write still
-    // unannounced, and they compared real answers.
+    // Non-vacuity: comparisons were made with a project file's write, and
+    // with a project's creation or deletion, still unannounced, and they
+    // compared real answers.
     assert!(
         coverage.unflushed_project_checks > 0
+            && coverage.unflushed_ownership_checks > 0
             && coverage.cross_file_definitions > 0
             && coverage.nonempty_diagnostics > 0,
         "the generated cases made no comparison with a project write pending: {coverage:#?}"
+    );
+}
+
+/// For all generated scripts that create and delete projects beside the
+/// sources (and write project files and sources) and never deliver a watch
+/// event, every answer agrees with fresh sessions at every comparison, and so
+/// does what the client displays: which projects a directory holds is a
+/// [`WITNESSED`] input, so the server notices a file's owner move itself
+/// (`docs/incremental-lsp-plan.md`, Stage 4b).
+#[test]
+fn unwatched_project_creations_agree_with_a_fresh_session() {
+    let cases = env_u64("BORZOI_LSP_STATE_MACHINE_CASES").map_or(DEFAULT_CASES, |n| n as u32);
+    let seed = env_u64("BORZOI_LSP_STATE_MACHINE_SEED").unwrap_or(DEFAULT_SEED);
+    let coverage = RefCell::new(Coverage::default());
+    let strategy = case_strategy_with(
+        unwatched_ownership_cmd_strategy().boxed(),
+        source_file_strategy().boxed(),
+    );
+    let result = runner(cases, seed).run(&strategy, |case| run_case(&case, &coverage));
+    let coverage = coverage.into_inner();
+    eprintln!("seed {seed}: {coverage:#?}");
+    match result {
+        Ok(()) => {}
+        Err(TestError::Fail(_, case)) => {
+            let (case, message) = minimise(case);
+            panic!("seed {seed}: {message}\n\nminimal script: {case:?}");
+        }
+        Err(err) => panic!("seed {seed}: {err}"),
+    }
+    // Non-vacuity: comparisons were made with a project's creation or
+    // deletion still unannounced, and they compared real answers.
+    assert!(
+        coverage.unflushed_ownership_checks > 0
+            && coverage.cross_file_definitions > 0
+            && coverage.nonempty_diagnostics > 0,
+        "the generated cases made no comparison with a project created or deleted: {coverage:#?}"
     );
 }
 
@@ -2630,6 +2696,105 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                             defines: vec![Sym::Foo],
                         }),
                     ),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // A `.fsproj` created beside an open file with no watch event:
+            // `O` lists `A` and sorts before `P`, so it owns `A` now, and its
+            // `FOO` makes the line under `#if FOO` an error. The remembered
+            // owner rests on the listing of `P/`, whose stamp moved; and what
+            // the push client shows for `A` was computed under `P`.
+            "an unwatched project created beside an open file takes it over",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (
+                        FileId::Src(Src::A),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                    (FileId::Src(Src::B), source(vec![x_is_zero()])),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::Proj(Proj::O), project(vec![Sym::Foo], vec![Src::A])),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // The same for a pull client, which is owed a diagnostic
+            // refresh; then the project deleted again, which hands `A` back.
+            "an unwatched project created and deleted beside an open file",
+            Case {
+                mode: Mode::Pull,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (
+                        FileId::Src(Src::A),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                    (FileId::Src(Src::B), source(vec![x_is_zero()])),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::Proj(Proj::O), project(vec![Sym::Foo], vec![Src::A])),
+                    Cmd::Check,
+                    Cmd::Delete(FileId::Proj(Proj::O)),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // A project beside the open file rewritten in place to list it,
+            // with no watch event: no directory's listing moves, but the
+            // remembered owner consulted `O`'s evaluation, which did.
+            "an unwatched rewrite of a sibling project to list an open file takes it over",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), project(vec![], vec![Src::A, Src::B])),
+                    (FileId::Proj(Proj::O), project(vec![Sym::Foo], vec![Src::B])),
+                    (
+                        FileId::Src(Src::A),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                    (FileId::Src(Src::B), source(vec![x_is_zero()])),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(
+                        FileId::Proj(Proj::O),
+                        project(vec![Sym::Foo], vec![Src::A, Src::B]),
+                    ),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // A file no project owns, under a directory where a project is
+            // then created that does not list it: the heuristic's fallback
+            // hands it to the nearest project, and the remembered "no owner"
+            // rests on the listings up to the file system's root.
+            "an unwatched project created above an orphan file adopts it",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (
+                        FileId::Src(Src::C),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                    (FileId::Src(Src::A), source(vec![x_is_zero()])),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::C)),
+                    Cmd::Check,
+                    Cmd::Write(FileId::Proj(Proj::Q), project(vec![Sym::Foo], vec![])),
                     Cmd::Check,
                 ],
             },

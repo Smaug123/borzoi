@@ -3,8 +3,9 @@
 > **Status (2026-11-13).** Plan written; Stage 0 (the edit-loop count harness),
 > Stage 1 (the inference cutoff), Stage 2a (counted source reads), Stage 2b
 > (the `Vfs` owns source text), Stage 3a (the MSBuild evaluation records
-> its read set), Stage 3b (evaluations are validated, not trusted) and
-> Stage 4a (ownership listings are observed and counted) implemented. Tracks
+> its read set), Stage 3b (evaluations are validated, not trusted),
+> Stage 4a (ownership listings are observed and counted) and Stage 4b
+> (ownership is memoised) implemented. Tracks
 > [#544](https://github.com/WoofWare/borzoi/issues/544).
 > The counts below were taken at 369039e9 (`origin/main`), with the harness at
 > 3e426d12. Its file-system columns came from a one-off instrument (below) that
@@ -1771,6 +1772,155 @@ four walks become one memo hit.
 **Expected gain**: per keystroke, 13 listings become 0. The `unchanged`
 diagnostic pull falls from 3.35 M toward the cost of hashing the text twice
 (about 0.2 M on `L`).
+
+**Implemented** (`crates/lsp/src/workspace.rs`, `crates/lsp/src/read_checks.rs`):
+
+- **The memo.** `Workspace::owners` holds, per file spelling, the owner a
+  walk inside a generation found, the directories it listed and the
+  evaluations whose membership verdicts it consulted, each by an identity:
+  `ListingId` for a listing, and `EvaluationId`, which every
+  `CachedEvaluation` gets when it is cached. The first ask in a later
+  generation confirms the answer: every directory's listing is still the
+  one the walk read and still holds (`ReadChecks::holds`, Stage 3b's
+  witnesses: the directory's stamp), and every consulted evaluation, once
+  `Workspace::validate` has confirmed it for this generation, is still the
+  entry with that identity. Later asks in the generation are hits. An
+  answer that does not stand is walked again. Validation is exact, with no
+  staleness window: Stage 3b's racy rule applies to every witness.
+- **One listing per directory.** The listings live in one table
+  (`DirListings`), one per directory, confirmed at most once per
+  generation and shared by every owner whose walk read it; a walk reads a
+  directory's listing from it when it still holds. An owner holding copies
+  of its listings would keep, after a sweep over a directory of `N` files,
+  `N` copies of a listing of `N` entries (Codex measured 257 MB for 2,000
+  files).
+- **Born witnesses.** `ReadChecks::list` stamps a directory, then lists it,
+  and returns the check with that stamp as its witness when the listing is
+  an answer and a fact. So the generation after a walk confirms it by the
+  `stat`s alone; a check built from an observer's read set would have
+  listed once more, to take its witness.
+- **Its own checker.** The listings are made and confirmed through a
+  `ReadChecks` of their own, not the one confirming evaluations, so its
+  counts are the generation's ownership counts (`o.list`, `o.stat`). The price is that
+  a directory both confirm (the project's) is `stat`ed twice per
+  generation.
+- **An owner that moves.** A walk that finds another owner than the answer
+  it replaces ends the `projects_generation`, and the loop does what it
+  does for a moved evaluation (`respond_to_moved_evaluations`): it
+  republishes the open buffers to a push client, owes a pull client the
+  diagnostic and semantic-token refreshes, drops the semantic caches and
+  recomputes the deferral scope. The request itself was answered from the
+  fresh walk; what this closes is what the client is shown, which Stage 3b
+  named as `DirectoryMembership`'s gap.
+- **Outside a generation** nothing confirms an answer, so none is
+  remembered: every ask walks, as before. A structural watch event
+  (`invalidate_projects`) forgets every owner with every evaluation, so a
+  watch event still covers a file system whose stamps do not move (D1's
+  "not covered").
+
+**Departures.**
+
+- `symbols_for` and `lang_version_for` do not share one lookup. Each asks
+  the memo; the first ask in a generation confirms the answer and the rest
+  are hash lookups, which the counts below show cost nothing measurable.
+- The property test's reference is a fresh `Workspace`'s walk, outside any
+  generation, rather than a test-only copy of the walk: the production walk
+  is the reference, and the property is the memo against it.
+- A `stat` per directory is the confirmation's whole file-system cost, as
+  planned. The keystroke falls by more than the listings cost, because a
+  walk also asks each candidate project whether it lists the file, which
+  scans its Compile items; a hit skips that too.
+
+The oracle:
+
+- `observed_counts` flips: a pull of a file `d` directories below its
+  project, `unchanged` or `full`, lists nothing and `stat`s each of the
+  `d + 1` directories the walk read, once. The control on a racy clock
+  lists and `stat`s each once: no witness is trusted.
+- `workspace::tests::ownership_memo`: for all generated trees (projects in
+  three nested directories, two names per directory so that they tie,
+  broken projects whose membership is unknown, projects listing files
+  above, beside and below them, sources created and deleted beside them)
+  and the changes made between generations, the answer of a long-lived
+  workspace inside a generation equals a fresh workspace's walk. Its
+  non-vacuity check counts asks answered by confirming a remembered
+  answer, remembered answers that no longer stood, and owners that moved.
+  Beside it: a walk lists each directory once and records what it
+  consulted; a generation after the walk confirms by one `stat` per
+  directory however often it asks; the owners of ten files in one
+  directory share its listing (one listing of each directory, one kept);
+  outside a generation every ask walks.
+- `read_checks`: the model property holds every listing `ReadChecks::list`
+  makes to the same rule as every other check, in each later generation,
+  with a non-vacuity count of listings confirmed by their born witness and
+  of listings found moved. The model gains a change that lands at a
+  `stat`, just before its stamp.
+- `incremental_state_machine`: `WITNESSED` gains `DirectoryMembership`.
+  `unwatched_project_creations_agree_with_a_fresh_session` generates
+  scripts that create, rewrite and delete projects (most often `O`, which
+  sorts before `P` in `P`'s directory and takes over whichever of its
+  sources it lists) and never flush; its non-vacuity check asks for
+  comparisons with a creation or deletion pending (36 at its default 16
+  cases). `unwatched_project_writes_agree_with_a_fresh_session` now
+  compares with those pending too. Four pinned no-flush scripts: a project
+  created beside an open file that takes it over (push), the same created
+  and deleted again (pull), a project created above an orphan file that the
+  fallback hands it to, and a sibling project rewritten in place to list an
+  open file (no directory's listing moves; only the consulted evaluation
+  does). Against Stage 4a, the first three pinned scripts fail (the client
+  is shown diagnostics computed under the old owner), and so does the new
+  generated test; the fourth passes there, since every request walks, and
+  is for the memo's consulted evaluations.
+
+Planted, each caught, then removed:
+
+| plant | caught by |
+|---|---|
+| a remembered owner never confirmed again | both `ownership_memo` tests, `an_owner_is_walked_once_and_confirmed_by_stamps`, both `observed_counts` properties, four pinned scripts, the generated creation test |
+| no `projects_generation` move when an owner moves | three pinned scripts, the generated creation test |
+| consulted evaluations not confirmed | both `ownership_memo` tests, the sibling-rewrite pinned script, the generated creation test |
+| owners remembered and served outside a generation | `outside_a_generation_every_ask_walks` (added for it: the plant first passed every test) |
+| a shared listing never confirmed again | both `ownership_memo` tests, `an_owner_is_walked_once_and_confirmed_by_stamps`, both `observed_counts` properties, three pinned scripts, the generated creation test |
+
+One plant is not a defect: `ReadChecks::list` asking before it stamps.
+A change landing between the listing and the stamp carries a time after
+the generation's, so the stamp is racy and the next generation lists
+again. No test can tell the two orders apart, and the model's change at a
+`stat` confirms it; the stamp comes first anyway, as it does everywhere
+else in `read_checks`.
+
+**Measured** on WoofWare.Incremental, 20 keystrokes per run, each row the
+minimum over three runs of each binary: Stage 3b (2eb1b108), Stage 4a
+(33c211b9) and this stage. Every source-read and validation column is unchanged (80
+`stat`s on each fold-reading row, 137 validation `stat`s on each row that
+reads the evaluation).
+
+| message, per keystroke | instructions 3b | 4a | 4b | allocs 3b | 4a | 4b | o.list 4a | 4b | o.stat 4b |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `didChange E` | 0.14 M | 0.17 M | 0.18 M | 99 | 99 | 99 | 0 | 0 | 0 |
+| `diagnostic E` | 7.08 M | 7.62 M | **3.63 M** | 1,531 | 2,227 | 238 | 4 | 0 | 1 |
+| `diagnostic L` (`unchanged`) | 5.58 M | 5.89 M | **2.68 M** | 1,519 | 1,891 | 84 | 4 | 0 | 2 |
+| `semanticTokens E` | 9.88 M | 10.01 M | 9.01 M | 5,357 | 5,531 | 5,036 | 1 | 0 | 1 |
+| `semanticTokens L` | 13.87 M | 13.96 M | 12.40 M | 12,177 | 12,363 | 11,461 | 2 | 0 | 2 |
+| `hover L` | 9.23 M | 9.40 M | 7.83 M | 5,060 | 5,246 | 4,344 | 2 | 0 | 2 |
+| **keystroke total** | **45.81 M** | **47.32 M** | **35.81 M** | 25,743 | 27,357 | 21,262 | **13** | **0** | **8** |
+
+The 13 listings become 0, and each message that asks for an owner
+confirms it with one `stat` of each directory the walk read: 8 per
+keystroke. The keystroke falls by 10.0 M instructions (22%) and 4,481
+allocations against Stage 3b, and by 11.5 M against Stage 4a's counted
+listings. That is more than the listings cost: each of the 13 walks also
+asked the project whether it lists the file, a scan of its 82 Compile
+items that normalises each path, and a hit asks nothing. The `unchanged`
+pull of `L` falls to 2.68 M, not to the plan's 0.2 M: the plan predates
+Stage 3b, whose confirmation of the evaluation (137 `stat`s, about 2.4 M
+here) every message that reads the evaluation pays. The cold rows that
+walk for the first time cost one `stat` per directory more than Stage
+4a's (the stamp a walk takes before it lists), and `didOpen L` lists only
+`Skeleton/`, reading the project's directory from the listing `didOpen E`
+made; the cold `diagnostic` rows fall by 4 M and 7 M for the same reason
+as the keystroke's. `didChange E` reads no file and moves within its
+runs' spread (0.13–0.19 M across the three binaries).
 
 ### Stage 5: one parse per text
 

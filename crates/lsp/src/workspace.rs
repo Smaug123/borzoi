@@ -11,10 +11,11 @@
 //! - [`Workspace::symbols_for`] given a file path, returns the active
 //!   symbol set as a [`HashSet<String>`]. Lazily evaluates the owning
 //!   `.fsproj` on first lookup and caches the result.
-//! - [`find_owning_project`] is the pure ancestor walk — `file`'s
-//!   directory first, then its parents, returning the first directory
-//!   that contains at least one `.fsproj`. Multiple `.fsproj`s in the
-//!   same directory are tie-broken alphabetically for determinism.
+//! - [`Workspace::owning_project`] finds the project that owns a file: the
+//!   nearest ancestor project that lists it, else the first ancestor
+//!   directory holding a `.fsproj` (`find_owning_project`). Multiple
+//!   `.fsproj`s in the same directory are tie-broken alphabetically for
+//!   determinism.
 //!
 //! The cache needs no file watching: each evaluation keeps every file-system
 //! query it and the reads preparing it made, with the answers, and within a
@@ -41,7 +42,7 @@ use crate::observed::{EvaluationCounts, Unobserved};
 use crate::read_checks::{Check, ReadChecks, a_fact};
 use crate::vfs::Nanos;
 use borzoi_msbuild::observed::{
-    self as msbuild_observed, Observation, Observer, Read, ReadCounts, ReadSet,
+    self as msbuild_observed, Listed, Observation, Observer, Read, ReadCounts, ReadSet,
 };
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -128,9 +129,17 @@ pub struct Workspace {
     checker: ReadChecks,
     /// MSBuild evaluations run in the open generation.
     evaluated: Cell<u64>,
-    /// What the ownership walks ([`Self::owning_project`]) observed in the
-    /// open generation.
-    ownership: Cell<ReadCounts>,
+    /// Each file's owner ([`Self::owning_project`]) as a walk inside a
+    /// generation found it, keyed by the file's spelling, with what the walk
+    /// read. Confirmed once per generation that asks for it.
+    owners: HashMap<PathBuf, Owner>,
+    /// The directory listings the ownership walks read, one per directory,
+    /// which every owner whose walk read it shares; its counts are the
+    /// generation's ownership counts.
+    dir_listings: DirListings,
+    /// The identity the next cached evaluation gets
+    /// ([`CachedEvaluation::id`]).
+    next_evaluation: Cell<u64>,
     /// SDK-resolution environment used to build a [`SdkDiscovery`] per
     /// project on first evaluation. Held by value so tests can supply
     /// a hermetic env without mutating the host's environment.
@@ -234,6 +243,10 @@ pub struct WorkspaceCounts {
 /// One cached project evaluation and what it depends on.
 #[derive(Debug)]
 struct CachedEvaluation {
+    /// Which evaluation this is: no two entries the workspace caches share
+    /// one, so an ownership answer that consulted this entry can tell
+    /// whether the entry it would consult now is the same.
+    id: EvaluationId,
     evaluated: Option<EvaluatedProject>,
     /// The reads to confirm before serving `evaluated` again: everything the
     /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
@@ -242,6 +255,110 @@ struct CachedEvaluation {
     /// The generation that last confirmed `checks` (or that evaluated it);
     /// `None` when it was evaluated outside a generation.
     validated_in: Option<u64>,
+}
+
+/// The identity of one cached evaluation ([`CachedEvaluation::id`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EvaluationId(u64);
+
+/// A file's owner as one ownership walk found it, and everything that answer
+/// depends on: the listings of the directories it read, and the evaluations
+/// whose membership verdicts it consulted. While every listing holds and
+/// every consulted evaluation is still the entry cached, the walk would find
+/// the same owner again: it is a function of those listings and verdicts,
+/// and a verdict is a function of the evaluation and the file.
+#[derive(Debug)]
+struct Owner {
+    project: Option<PathBuf>,
+    /// The directories the walk listed, each with the listing it read.
+    listings: Vec<(PathBuf, ListingId)>,
+    consulted: Vec<(ProjectId, EvaluationId)>,
+    /// The generation that last confirmed the answer (or that walked).
+    validated_in: u64,
+}
+
+/// The directory listings the ownership walks read: one per directory,
+/// confirmed at most once per generation and shared by every owner whose
+/// walk read it, so a sweep that asks for every file of a directory keeps
+/// one copy of its listing, not one per file.
+#[derive(Debug, Default)]
+struct DirListings {
+    /// Lists the directories, and confirms the listings by the
+    /// directories' stamps.
+    checks: ReadChecks,
+    by_dir: HashMap<PathBuf, DirListing>,
+    /// The identity the next listing gets.
+    next: u64,
+}
+
+/// One directory's listing, and the projects it holds.
+#[derive(Debug)]
+struct DirListing {
+    id: ListingId,
+    check: Check,
+    /// The `.fsproj` entries, sorted ([`fsproj_entries`]).
+    projects: Vec<PathBuf>,
+    /// The generation that last confirmed it (or that listed it).
+    confirmed_in: u64,
+}
+
+/// The identity of one listing a [`DirListings`] made: a directory listed
+/// again gets a new one, so an owner can tell whether the listing it read
+/// is the one that stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ListingId(u64);
+
+impl DirListings {
+    /// The `.fsproj`s in `dir`, sorted by name, and the listing they come
+    /// from: inside a generation, the remembered listing when it still
+    /// holds, and otherwise a new one (stamped before it is listed:
+    /// [`ReadChecks::list`]), remembered. Outside a generation nothing
+    /// confirms a listing, so `dir` is listed afresh and nothing is
+    /// remembered.
+    fn projects_in(&mut self, dir: &Path) -> (Vec<PathBuf>, ListingId) {
+        let generation = self.checks.generation();
+        if let Some(generation) = generation
+            && let Some(id) = self.current(dir, generation)
+        {
+            return (self.by_dir[dir].projects.clone(), id);
+        }
+        let check = self.checks.list(dir);
+        let projects = fsproj_entries(dir, &check.read().observation);
+        let id = ListingId(self.next);
+        self.next += 1;
+        if let Some(generation) = generation {
+            self.by_dir.insert(
+                dir.to_path_buf(),
+                DirListing {
+                    id,
+                    check,
+                    projects: projects.clone(),
+                    confirmed_in: generation,
+                },
+            );
+        }
+        (projects, id)
+    }
+
+    /// The remembered listing of `dir`, once confirmed for `generation`;
+    /// `None` when there is none, or it no longer holds, in which case it is
+    /// forgotten.
+    fn current(&mut self, dir: &Path, generation: u64) -> Option<ListingId> {
+        let listing = self.by_dir.get_mut(dir)?;
+        if listing.confirmed_in != generation {
+            if !self.checks.holds(&listing.check) {
+                self.by_dir.remove(dir);
+                return None;
+            }
+            listing.confirmed_in = generation;
+        }
+        Some(listing.id)
+    }
+
+    /// Forget every listing.
+    fn forget(&mut self) {
+        self.by_dir.clear();
+    }
 }
 
 /// What [`evaluate_project`] produced and read.
@@ -533,7 +650,9 @@ impl Workspace {
             projects_generation: ProjectsGeneration(0),
             checker: ReadChecks::default(),
             evaluated: Cell::new(0),
-            ownership: Cell::new(ReadCounts::default()),
+            owners: HashMap::new(),
+            dir_listings: DirListings::default(),
+            next_evaluation: Cell::new(0),
             env,
             extra_build_properties,
         }
@@ -577,6 +696,8 @@ impl Workspace {
     /// cache refills lazily on the next lookup.
     pub fn invalidate_projects(&mut self) {
         self.projects.clear();
+        self.owners.clear();
+        self.dir_listings.forget();
         self.projects_generation.0 += 1;
     }
 
@@ -591,7 +712,8 @@ impl Workspace {
     /// on-disk project state — the cache is the only path to an evaluation,
     /// and a generation ends whenever an evaluation it served is dropped
     /// ([`Self::invalidate_projects`], or a validation that finds its reads
-    /// moved) — so a consumer accumulating facts across many lookups (the
+    /// moved), and whenever a file's owner it served moves
+    /// ([`Self::owning_project`]) — so a consumer accumulating facts across many lookups (the
     /// stepped `workspace/diagnostic` sweep, the semantic layer's folds)
     /// checks it to know its facts are mutually consistent.
     pub fn projects_generation(&self) -> ProjectsGeneration {
@@ -608,8 +730,8 @@ impl Workspace {
     /// evaluation is served as it is.
     pub fn begin_generation(&mut self, now: Nanos) {
         self.checker.begin_generation(now);
+        self.dir_listings.checks.begin_generation(now);
         self.evaluated.set(0);
-        self.ownership.set(ReadCounts::default());
     }
 
     /// End the generation, returning what reading evaluations and finding
@@ -620,7 +742,7 @@ impl Workspace {
                 evaluated: self.evaluated.get(),
                 validation: self.checker.end_generation(),
             },
-            ownership: self.ownership.get(),
+            ownership: self.dir_listings.checks.end_generation(),
         }
     }
 
@@ -1040,7 +1162,7 @@ impl Workspace {
     /// it neither proves nor disproves ownership. We never climb past a
     /// directory holding such a project to hand ownership to a farther one,
     /// nor let its listed items claim the file — we stop and fall back to
-    /// [`find_owning_project`]'s nearest-ancestor, alphabetically-first rule,
+    /// `find_owning_project`'s nearest-ancestor, alphabetically-first rule,
     /// exactly as the pre-refinement heuristic would.
     ///
     /// When no ancestor project conclusively lists `file` (e.g. a brand-new
@@ -1055,6 +1177,17 @@ impl Workspace {
     /// cache as a side effect, so the immediate `symbols_for` follow-up is a
     /// cache hit.
     ///
+    /// Inside a generation the answer is remembered per file, with the
+    /// listings the walk read and the evaluations it consulted
+    /// (`docs/incremental-lsp-plan.md`, D4). The first ask in each later
+    /// generation confirms it: every listing by its directory's stamp
+    /// ([`ReadChecks::list`]), and every consulted evaluation by its own
+    /// validation and its identity. One that moved is walked again, and a
+    /// walk that finds another owner than before ends the
+    /// [`Self::projects_generation`], since what was derived from the old
+    /// owner (what the client is shown for the file) is stale. Outside a
+    /// generation every ask walks.
+    ///
     /// Out of scope: a project that links `file` but is *not* an ancestor
     /// directory (a sibling linking a shared file). Closing it *in general*
     /// needs a workspace-wide project index, which was explored and shelved
@@ -1065,21 +1198,90 @@ impl Workspace {
     /// answer; every other path degrades such a file to the implicit symbol
     /// set for its kind.
     pub fn owning_project(&mut self, file: &Path) -> Option<PathBuf> {
-        let observer = Observer::new();
-        let owner = self.owning_project_observed(file, &observer);
-        let (_, counts) = observer.finish();
-        self.ownership.set(self.ownership.get() + counts);
-        owner
+        let Some(generation) = self.dir_listings.checks.generation() else {
+            // Outside a generation nothing confirms an answer, so nothing
+            // is remembered.
+            return self.walk_for_owner(file, 0).project;
+        };
+        // The answer the last walk found, when it no longer stands.
+        let moved_from = if self.owners.contains_key(file) {
+            if self.owner_holds(file, generation) {
+                return self.owners[file].project.clone();
+            }
+            self.owners.remove(file).map(|owner| owner.project)
+        } else {
+            None
+        };
+        let walked = self.walk_for_owner(file, generation);
+        let project = walked.project.clone();
+        if moved_from.is_some_and(|before| before != project) {
+            // What the client was shown for this file came from another
+            // project: everything derived from the old answer is stale.
+            tracing::info!(
+                file = %file.display(),
+                "a file's owning project moved; dropping what was derived from it"
+            );
+            self.projects_generation.0 += 1;
+        }
+        self.owners.insert(file.to_path_buf(), walked);
+        project
     }
 
-    /// [`Self::owning_project`], listing directories through `observer`.
-    fn owning_project_observed(&mut self, file: &Path, observer: &Observer) -> Option<PathBuf> {
+    /// Whether the remembered owner of `file` still stands in `generation`:
+    /// confirmed in it already, or every listing its walk read holds and
+    /// every evaluation it consulted is still the entry cached, once
+    /// confirmed for this generation ([`Self::validate`]).
+    fn owner_holds(&mut self, file: &Path, generation: u64) -> bool {
+        let Some(owner) = self.owners.get(file) else {
+            return false;
+        };
+        if owner.validated_in == generation {
+            return true;
+        }
+        let listings = &mut self.dir_listings;
+        if !owner
+            .listings
+            .iter()
+            .all(|(dir, id)| listings.current(dir, generation) == Some(*id))
+        {
+            return false;
+        }
+        let consulted = owner.consulted.clone();
+        for (project, id) in &consulted {
+            self.validate(project);
+            if self.projects.get(project).map(|cached| cached.id) != Some(*id) {
+                return false;
+            }
+        }
+        if let Some(owner) = self.owners.get_mut(file) {
+            owner.validated_in = generation;
+        }
+        true
+    }
+
+    /// The ownership walk itself: [`Self::owning_project`]'s rule, reading
+    /// every directory's listing through [`Self::dir_listings`] and
+    /// recording each evaluation whose verdict it consulted.
+    fn walk_for_owner(&mut self, file: &Path, generation: u64) -> Owner {
+        let mut listings = Vec::new();
+        let mut consulted = Vec::new();
         let mut dir = file.parent();
-        while let Some(d) = dir {
+        let mut owner = None;
+        'climb: while let Some(d) = dir {
             let mut inconclusive = false;
-            for cand in all_fsproj_in(d, observer) {
-                match self.membership(&cand, file) {
-                    Membership::Member => return Some(cand),
+            let (projects, listing) = self.dir_listings.projects_in(d);
+            listings.push((d.to_path_buf(), listing));
+            for cand in projects {
+                let project = ProjectId::new(&cand);
+                let membership = self.membership(&cand, file);
+                if let Some(cached) = self.projects.get(&project) {
+                    consulted.push((project, cached.id));
+                }
+                match membership {
+                    Membership::Member => {
+                        owner = Some(Some(cand));
+                        break 'climb;
+                    }
                     Membership::Unknown => inconclusive = true,
                     Membership::NotMember => {}
                 }
@@ -1092,7 +1294,16 @@ impl Workspace {
             }
             dir = d.parent();
         }
-        find_owning_project(file, observer)
+        let project = match owner {
+            Some(member) => member,
+            None => find_owning_project(file, &mut self.dir_listings, &mut listings),
+        };
+        Owner {
+            project,
+            listings,
+            consulted,
+            validated_in: generation,
+        }
     }
 
     /// The evaluated project at `project_path`, lazily computed and cached
@@ -1169,12 +1380,16 @@ impl Workspace {
         // Read before the evaluation starts, as the generation's time is.
         let started = self.checker.now();
         let checker = &self.checker;
+        let next_evaluation = &self.next_evaluation;
         self.projects
             .entry(project.clone())
             .or_insert_with(|| {
                 let evaluation =
                     evaluate_project(project.as_path(), env, extra_build_properties, evaluated);
+                let id = EvaluationId(next_evaluation.get());
+                next_evaluation.set(id.0 + 1);
                 CachedEvaluation {
+                    id,
                     checks: evaluation
                         .checks(|version| nuget_committed_before(checker, version, started)),
                     evaluated: evaluation.evaluated,
@@ -1366,39 +1581,48 @@ enum Membership {
 }
 
 /// Walk `file`'s ancestor directories looking for the closest one that
-/// contains a `.fsproj`, listing each through `observer`. Returns the
-/// absolute path of the chosen project file, or `None` when no ancestor
-/// contains any `.fsproj`.
+/// contains a `.fsproj`, reading each directory's listing through
+/// `dir_listings` and adding it to `listings`. Returns the absolute path of
+/// the chosen project file, or `None` when no ancestor contains any
+/// `.fsproj`.
 ///
 /// On ties (a single directory containing more than one `.fsproj`), the
 /// alphabetically-first filename wins. This is the membership-blind
 /// heuristic; [`Workspace::owning_project`] layers `<Compile>`-membership on
 /// top and uses this only as the fallback when no candidate lists `file`.
-pub fn find_owning_project(file: &Path, observer: &Observer) -> Option<PathBuf> {
+fn find_owning_project(
+    file: &Path,
+    dir_listings: &mut DirListings,
+    listings: &mut Vec<(PathBuf, ListingId)>,
+) -> Option<PathBuf> {
     // Start from the file's parent (the file itself may not exist).
     let mut dir = file.parent()?;
     loop {
-        if let Some(found) = all_fsproj_in(dir, observer).into_iter().next() {
+        let (projects, listing) = dir_listings.projects_in(dir);
+        listings.push((dir.to_path_buf(), listing));
+        if let Some(found) = projects.into_iter().next() {
             return Some(found);
         }
         dir = dir.parent()?;
     }
 }
 
-/// All `.fsproj` directly in `dir`, sorted by filename for determinism,
-/// listed through `observer`. Errors from the listing (no permission, not a
-/// directory, an entry it could not read) yield no entry: the caller treats
-/// "no `.fsproj` here" the same way.
-fn all_fsproj_in(dir: &Path, observer: &Observer) -> Vec<PathBuf> {
-    let Ok(entries) = msbuild_observed::read_dir(observer, dir) else {
-        return Vec::new();
+/// The `.fsproj` entries of `dir`'s listing `observation`, as paths in
+/// `dir`, sorted by name. A listing that failed (no permission, not a
+/// directory) and an entry it could not read yield no project: the walk
+/// treats "no `.fsproj` here" the same way.
+fn fsproj_entries(dir: &Path, observation: &Observation) -> Vec<PathBuf> {
+    let mut hits: Vec<PathBuf> = match observation {
+        Observation::Listing(Ok(entries)) => entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Listed::Entry { name, .. } => Some(dir.join(name)),
+                Listed::Unreadable(_) => None,
+            })
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("fsproj"))
+            .collect(),
+        _ => Vec::new(),
     };
-    let mut hits: Vec<PathBuf> = entries
-        .into_iter()
-        .filter_map(Result::ok)
-        .map(|e| e.path)
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("fsproj"))
-        .collect();
     hits.sort();
     hits
 }
@@ -2317,6 +2541,11 @@ mod tests {
     use proptest::prelude::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// [`find_owning_project`], listing through listings nobody keeps.
+    fn heuristic(file: &Path) -> Option<PathBuf> {
+        find_owning_project(file, &mut DirListings::default(), &mut Vec::new())
+    }
 
     fn write_file(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
@@ -3405,7 +3634,7 @@ mod tests {
         write_file(&proj, &fsproj_with_defines(""));
         write_file(&file, "let x = 1");
 
-        assert_eq!(find_owning_project(&file, &Observer::new()), Some(proj));
+        assert_eq!(heuristic(&file), Some(proj));
     }
 
     #[test]
@@ -3416,7 +3645,7 @@ mod tests {
         write_file(&proj, &fsproj_with_defines(""));
         write_file(&file, "let x = 1");
 
-        assert_eq!(find_owning_project(&file, &Observer::new()), Some(proj));
+        assert_eq!(heuristic(&file), Some(proj));
     }
 
     #[test]
@@ -3428,7 +3657,7 @@ mod tests {
         // The temp dir's ancestors (system temp, then `/tmp`, then `/`)
         // are extremely unlikely to contain a `.fsproj`. If they do, this
         // assertion catches it as a test-environment issue.
-        assert_eq!(find_owning_project(&file, &Observer::new()), None);
+        assert_eq!(heuristic(&file), None);
     }
 
     #[test]
@@ -3441,7 +3670,7 @@ mod tests {
         write_file(&zeta, &fsproj_with_defines(""));
         write_file(&alpha, &fsproj_with_defines(""));
 
-        assert_eq!(find_owning_project(&file, &Observer::new()), Some(alpha));
+        assert_eq!(heuristic(&file), Some(alpha));
     }
 
     #[test]
@@ -3456,10 +3685,7 @@ mod tests {
         write_file(&inner_proj, &fsproj_with_defines(""));
         write_file(&file, "");
 
-        assert_eq!(
-            find_owning_project(&file, &Observer::new()),
-            Some(inner_proj)
-        );
+        assert_eq!(heuristic(&file), Some(inner_proj));
     }
 
     #[test]
@@ -3472,7 +3698,7 @@ mod tests {
         write_file(&csproj, "<Project/>");
         write_file(&file, "");
 
-        assert_eq!(find_owning_project(&file, &Observer::new()), None);
+        assert_eq!(heuristic(&file), None);
     }
 
     // ----- Stage 1.1: membership-aware `Workspace::owning_project` -----
@@ -3491,7 +3717,7 @@ mod tests {
         write_file(&file, "let x = 1");
 
         // Sanity: the membership-blind heuristic picks the wrong one here.
-        assert_eq!(find_owning_project(&file, &Observer::new()), Some(alpha));
+        assert_eq!(heuristic(&file), Some(alpha));
 
         let mut ws = Workspace::default();
         assert_eq!(ws.owning_project(&file), Some(zeta));
@@ -3533,10 +3759,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         assert_eq!(ws.owning_project(&file), Some(alpha));
-        assert_eq!(
-            ws.owning_project(&file),
-            find_owning_project(&file, &Observer::new())
-        );
+        assert_eq!(ws.owning_project(&file), heuristic(&file));
     }
 
     // ----- `symbols_for_linked` / `lang_version_for_linked` -----
@@ -3701,15 +3924,14 @@ mod tests {
         write_file(&file, "let x = 1");
 
         // The membership-blind heuristic stops at the nearer (wrong) project.
-        assert_eq!(find_owning_project(&file, &Observer::new()), Some(other));
+        assert_eq!(heuristic(&file), Some(other));
 
         let mut ws = Workspace::default();
         assert_eq!(ws.owning_project(&file), Some(root));
     }
 
     /// The walk lists every directory from the file's up to the first that
-    /// holds a project listing it, each once, through the observer it is
-    /// handed, and stops there.
+    /// holds a project listing it, each once, and stops there.
     #[test]
     fn the_ownership_walk_lists_each_directory_up_to_the_listing_project() {
         let tmp = TempDir::new().unwrap();
@@ -3719,37 +3941,35 @@ mod tests {
         write_file(&file, "let x = 1");
 
         let mut ws = Workspace::default();
-        let observer = Observer::new();
-        assert_eq!(ws.owning_project_observed(&file, &observer), Some(root));
-        let (reads, counts) = observer.finish();
-        let listed: Vec<&Path> = reads
-            .reads()
+        let walked = ws.walk_for_owner(&file, 0);
+        assert_eq!(walked.project, Some(root.clone()));
+        let listed: Vec<&Path> = walked
+            .listings
             .iter()
-            .inspect(|read| assert!(matches!(read.observation, Observation::Listing(Ok(_)))))
-            .map(|read| read.path.as_path())
+            .map(|(dir, _)| dir.as_path())
             .collect();
         assert_eq!(
             listed,
             [
-                tmp.path(),
-                tmp.path().join("src").as_path(),
                 tmp.path().join("src").join("sub").as_path(),
+                tmp.path().join("src").as_path(),
+                tmp.path(),
             ]
         );
         assert_eq!(
-            counts,
-            ReadCounts {
-                listings: 3,
-                ..ReadCounts::default()
-            }
+            walked.consulted,
+            [(
+                ProjectId::new(&root),
+                ws.projects[&ProjectId::new(&root)].id
+            )]
         );
     }
 
     /// A file no project lists climbs to the file system's root, then falls
     /// back to the nearest project, listing the directories up to it again:
-    /// every listing of both passes is observed.
+    /// every listing of both passes is kept.
     #[test]
-    fn the_ownership_walks_fallback_lists_through_the_observer_too() {
+    fn the_ownership_walks_fallback_keeps_its_listings_too() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("Root.fsproj");
         let file = tmp.path().join("src").join("sub").join("New.fs");
@@ -3757,16 +3977,18 @@ mod tests {
         write_file(&file, "let x = 1");
 
         let mut ws = Workspace::default();
-        let observer = Observer::new();
-        assert_eq!(ws.owning_project_observed(&file, &observer), Some(root));
-        let (_, counts) = observer.finish();
-        let climbed = file.parent().unwrap().ancestors().count() as u64;
-        assert_eq!(counts.listings, climbed + 3, "{counts:?}");
+        let walked = ws.walk_for_owner(&file, 0);
+        assert_eq!(walked.project, Some(root));
+        let climbed = file.parent().unwrap().ancestors().count();
+        assert_eq!(walked.listings.len(), climbed + 3);
     }
 
-    /// What the walks list is counted in the generation that made them.
+    /// Inside generations the answer is remembered: the generation that
+    /// walks lists each directory once (stamping it first), and a later one
+    /// confirms the answer by one `stat` of each directory, however often it
+    /// asks.
     #[test]
-    fn the_ownership_walks_are_counted_per_generation() {
+    fn an_owner_is_walked_once_and_confirmed_by_stamps() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("Root.fsproj");
         let file = tmp.path().join("sub").join("Foo.fs");
@@ -3774,14 +3996,84 @@ mod tests {
         write_file(&file, "let x = 1");
 
         let mut ws = Workspace::default();
-        for walks in [1, 3] {
-            ws.begin_generation(Nanos(i128::MAX / 2));
-            for _ in 0..walks {
+        let old = Nanos(i128::MAX / 2);
+        let generation = |ws: &mut Workspace, asks: usize| {
+            ws.begin_generation(old);
+            for _ in 0..asks {
                 assert_eq!(ws.owning_project(&file), Some(root.clone()));
             }
-            let counts = ws.end_generation();
-            assert_eq!(counts.ownership.listings, 2 * walks, "{counts:?}");
+            ws.end_generation().ownership
+        };
+        let walked = generation(&mut ws, 1);
+        assert_eq!((walked.listings, walked.stats), (2, 2), "{walked:?}");
+        for asks in [1, 3] {
+            let confirmed = generation(&mut ws, asks);
+            assert_eq!(
+                (confirmed.listings, confirmed.stats),
+                (0, 2),
+                "{confirmed:?}"
+            );
         }
+        // Outside a generation nothing is remembered or confirmed: every
+        // ask walks.
+        let projects_generation = ws.projects_generation();
+        assert_eq!(ws.owning_project(&file), Some(root.clone()));
+        assert_eq!(ws.projects_generation(), projects_generation);
+    }
+
+    /// The owners of every file in a directory share its listing: a
+    /// generation asking for all of them lists each directory once, and
+    /// the workspace keeps one listing per directory, not one per file.
+    #[test]
+    fn the_owners_of_a_directorys_files_share_its_listing() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("Root.fsproj");
+        let files: Vec<PathBuf> = (0..10)
+            .map(|i| tmp.path().join("sub").join(format!("F{i}.fs")))
+            .collect();
+        let includes: String = (0..10)
+            .map(|i| format!("<Compile Include=\"sub/F{i}.fs\" />"))
+            .collect();
+        write_file(
+            &root,
+            &format!("<Project><ItemGroup>{includes}</ItemGroup></Project>"),
+        );
+        for file in &files {
+            write_file(file, "let x = 1");
+        }
+
+        let mut ws = Workspace::default();
+        ws.begin_generation(Nanos(i128::MAX / 2));
+        for file in &files {
+            assert_eq!(ws.owning_project(file), Some(root.clone()));
+        }
+        let counts = ws.end_generation().ownership;
+        assert_eq!(counts.listings, 2, "{counts:?}");
+        assert_eq!(ws.owners.len(), 10);
+        assert_eq!(ws.dir_listings.by_dir.len(), 2);
+    }
+
+    /// Outside a generation nothing confirms an answer, so none is served
+    /// from memory: a project created between two asks is seen, whether or
+    /// not a generation remembered the file's owner before.
+    #[test]
+    fn outside_a_generation_every_ask_walks() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("P.fsproj");
+        let o = tmp.path().join("O.fsproj");
+        let file = tmp.path().join("Foo.fs");
+        write_file(&p, &fsproj_with_compile("Foo.fs"));
+        write_file(&file, "let x = 1");
+
+        let mut ws = Workspace::default();
+        ws.begin_generation(Nanos(i128::MAX / 2));
+        assert_eq!(ws.owning_project(&file), Some(p.clone()));
+        ws.end_generation();
+        assert_eq!(ws.owning_project(&file), Some(p.clone()));
+        write_file(&o, &fsproj_with_compile("Foo.fs"));
+        assert_eq!(ws.owning_project(&file), Some(o.clone()));
+        fs::remove_file(&o).unwrap();
+        assert_eq!(ws.owning_project(&file), Some(p));
     }
 
     #[test]
@@ -3858,10 +4150,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         assert_ne!(ws.owning_project(&file), Some(root));
-        assert_eq!(
-            ws.owning_project(&file),
-            find_owning_project(&file, &Observer::new())
-        );
+        assert_eq!(ws.owning_project(&file), heuristic(&file));
     }
 
     // ----- Stage 3.1: `Workspace::project_graph` over real fsproj trees -----
@@ -5571,6 +5860,179 @@ mod tests {
     /// Stub a `$DOTNET_ROOT` layout in a tempdir so `SdkDiscovery` can
     /// resolve a fictional SDK name without touching the host's real
     /// install. Keeps the tests hermetic.
+    /// The memoised owner against a fresh walk (`docs/incremental-lsp-plan.md`,
+    /// Stage 4b): for all generated trees of projects and the changes made to
+    /// them between generations, the answer a long-lived workspace gives
+    /// inside a generation equals the one a fresh workspace's walk gives.
+    #[cfg(unix)]
+    mod ownership_memo {
+        use super::*;
+        use crate::vfs::{Clock, RACY_WINDOW};
+
+        /// Directories a project can sit in, below the tree's root.
+        const DIRS: [&str; 3] = ["", "a", "a/b"];
+        /// Project file names; two in one directory tie, alphabetically.
+        const NAMES: [&str; 2] = ["A.fsproj", "B.fsproj"];
+        /// The files whose owners are asked for.
+        const FILES: [&str; 4] = ["x.fs", "a/x.fs", "a/b/x.fs", "a/b/y.fs"];
+
+        #[derive(Clone, Debug)]
+        enum Content {
+            /// A project compiling these of [`FILES`] (by index).
+            Lists(Vec<usize>),
+            /// Malformed XML: the evaluation fails, so membership is unknown.
+            Broken,
+        }
+
+        #[derive(Clone, Debug)]
+        enum Op {
+            /// Write the project at `(dir, name)`, or delete it.
+            Project(usize, usize, Option<Content>),
+            /// Create or delete a source beside the projects, which moves a
+            /// directory's listing and no owner.
+            Source(usize, bool),
+            /// Begin a generation and ask for the owners of these files.
+            Ask(Vec<usize>),
+        }
+
+        fn content() -> impl Strategy<Value = Content> {
+            prop_oneof![
+                4 => prop::collection::vec(0..FILES.len(), 0..3).prop_map(Content::Lists),
+                1 => Just(Content::Broken),
+            ]
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                4 => (0..DIRS.len(), 0..NAMES.len(), prop::option::weighted(0.7, content()))
+                    .prop_map(|(d, n, c)| Op::Project(d, n, c)),
+                1 => (0..DIRS.len(), any::<bool>()).prop_map(|(d, b)| Op::Source(d, b)),
+                4 => prop::collection::vec(0..FILES.len(), 1..4).prop_map(Op::Ask),
+            ]
+        }
+
+        /// The project's text, its includes spelt absolute under `root`, so
+        /// a project anywhere can list a file anywhere in the tree.
+        fn render(content: &Content, root: &Path) -> String {
+            match content {
+                Content::Lists(files) => {
+                    let items: String = files
+                        .iter()
+                        .map(|&f| {
+                            format!("<Compile Include=\"{}\" />", root.join(FILES[f]).display())
+                        })
+                        .collect();
+                    format!("<Project><ItemGroup>{items}</ItemGroup></Project>")
+                }
+                Content::Broken => "<Project><ItemGroup>".to_string(),
+            }
+        }
+
+        /// What a run saw, for the non-vacuity check.
+        #[derive(Default, Debug)]
+        struct Seen {
+            /// Asks answered by confirming what an earlier generation
+            /// remembered.
+            confirmed: usize,
+            /// Asks whose remembered answer no longer stood, and walked.
+            rewalked: usize,
+            /// Answers that differed from the one the same file got in the
+            /// generation before.
+            moved: usize,
+        }
+
+        fn run(ops: &[Op], seen: &mut Seen) -> Result<(), TestCaseError> {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("t");
+            for dir in DIRS {
+                fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            let mut ws = Workspace::default();
+            let mut last: Vec<Option<Option<PathBuf>>> = vec![None; FILES.len()];
+            for op in ops {
+                match op {
+                    Op::Project(d, n, content) => {
+                        let path = root.join(DIRS[*d]).join(NAMES[*n]);
+                        match content {
+                            Some(content) => fs::write(&path, render(content, &root)).unwrap(),
+                            None => {
+                                let _ = fs::remove_file(&path);
+                            }
+                        }
+                    }
+                    Op::Source(d, create) => {
+                        let path = root.join(DIRS[*d]).join("other.fs");
+                        if *create {
+                            fs::write(&path, "").unwrap();
+                        } else {
+                            let _ = fs::remove_file(&path);
+                        }
+                    }
+                    Op::Ask(files) => {
+                        ws.begin_generation(Clock::HostAhead(RACY_WINDOW * 30).now());
+                        for &f in files {
+                            let file = root.join(FILES[f]);
+                            let before = ws.owners.get(&file).map(|o| o.listings.as_ptr());
+                            let remembered = ws.owning_project(&file);
+                            match (before, ws.owners.get(&file).map(|o| o.listings.as_ptr())) {
+                                (Some(before), Some(after)) if before == after => {
+                                    seen.confirmed += 1
+                                }
+                                (Some(_), _) => seen.rewalked += 1,
+                                (None, _) => {}
+                            }
+                            let fresh = Workspace::default().owning_project(&file);
+                            prop_assert_eq!(&remembered, &fresh, "the owner of {}", FILES[f]);
+                            if last[f].as_ref().is_some_and(|before| *before != fresh) {
+                                seen.moved += 1;
+                            }
+                            last[f] = Some(fresh);
+                        }
+                        ws.end_generation();
+                        continue;
+                    }
+                }
+                // Longer than a coarse file system's timestamp tick, so the
+                // directory's stamp moves; the generations run ahead of the
+                // files' clock, so no stamp is racy and the witnesses are
+                // what confirms an answer.
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+            Ok(())
+        }
+
+        fn ops() -> impl Strategy<Value = Vec<Op>> {
+            prop::collection::vec(op(), 1..24)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+            #[test]
+            fn the_remembered_owner_is_a_fresh_walks(ops in ops()) {
+                run(&ops, &mut Seen::default())?;
+            }
+        }
+
+        /// The generator reaches what the property is about: answers confirmed
+        /// from what an earlier generation remembered, remembered answers
+        /// that no longer stood, and owners that moved.
+        #[test]
+        fn the_generator_reaches_remembered_and_moved_owners() {
+            use proptest::strategy::ValueTree as _;
+            let mut runner = proptest::test_runner::TestRunner::deterministic();
+            let mut seen = Seen::default();
+            for _ in 0..24 {
+                let ops = ops().new_tree(&mut runner).unwrap().current();
+                run(&ops, &mut seen).unwrap();
+            }
+            assert!(
+                seen.confirmed > 20 && seen.rewalked > 20 && seen.moved > 10,
+                "{seen:?}"
+            );
+        }
+    }
+
     mod sdk {
         use super::*;
 

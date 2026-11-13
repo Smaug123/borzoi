@@ -11,9 +11,10 @@
 //! because nothing on disk moved.
 //!
 //! Finding the project that owns a file lists the directories from the file's
-//! up to its project's (`Workspace::owning_project`), and those listings are
-//! counted too: a pull of a file `d` directories below its project pins how
-//! many walks the server makes, and how far each climbs.
+//! up to its project's (`Workspace::owning_project`), and the answer is
+//! remembered and confirmed in each later generation by one `stat` of each
+//! of those directories: a pull of a file `d` directories below its project
+//! pins that.
 //!
 //! The project is written just before the server starts, so every stamp would
 //! be racy ([`borzoi::vfs::RACY_WINDOW`]) and re-read in every generation; the
@@ -389,11 +390,12 @@ proptest! {
     }
 }
 
-/// What a pull client's second diagnostic request for one file `depth`
-/// directories below its project lists, after a first that warmed
-/// everything: an `unchanged` report, or, after a keystroke in the file, a
-/// `full` one.
-fn second_pull_listings(depth: usize, keystroke: bool) -> u64 {
+/// What finding the owner of one file `depth` directories below its project
+/// cost a pull client's second diagnostic request for it, after a first that
+/// warmed everything: an `unchanged` report, or, after a keystroke in the
+/// file, a `full` one. The listings and `stat`s of the ownership walks and
+/// of confirming what they remembered.
+fn second_pull_ownership(depth: usize, keystroke: bool, clock: Clock) -> (u64, u64) {
     let tmp = TempDir::new().unwrap();
     let dir = (0..depth).fold(tmp.path().to_path_buf(), |dir, i| dir.join(format!("d{i}")));
     std::fs::create_dir_all(&dir).unwrap();
@@ -406,7 +408,7 @@ fn second_pull_listings(depth: usize, keystroke: bool) -> u64 {
     let file = dir.join("A.fs");
     let text = "module A\n\nlet a = 1\n";
     std::fs::write(&file, text).unwrap();
-    let mut client = Client::start(tmp.path(), true, settled());
+    let mut client = Client::start(tmp.path(), true, clock);
     let uri = Uri::from_file_path(&file).unwrap();
     client.notify(
         "textDocument/didOpen",
@@ -440,39 +442,45 @@ fn second_pull_listings(depth: usize, keystroke: bool) -> u64 {
     assert_eq!(second["kind"], kind, "{second}");
     // The loop answers before it ends the request's generation.
     client.settle();
-    let listings = client.generations()[mark..]
-        .iter()
-        .map(|g| g.ownership.listings)
-        .sum();
+    let new = &client.generations()[mark..];
+    let counts = (
+        new.iter().map(|g| g.ownership.listings).sum(),
+        new.iter().map(|g| g.ownership.stats).sum(),
+    );
     client.shut_down();
-    listings
-}
-
-/// A pull of a file one directory below its project that the file's text
-/// answers `unchanged` walks for the file's owner twice (for its symbols and
-/// for its language version, which its result id hashes), and each walk
-/// lists the file's directory and its project's
-/// (`docs/incremental-lsp-plan.md`, Stage 4a): four listings. After a
-/// keystroke, the `full` report walks twice more to compute the diagnostics:
-/// eight.
-#[test]
-fn a_pull_one_directory_below_its_project_lists_four_or_eight_times() {
-    assert_eq!(second_pull_listings(1, false), 4);
-    assert_eq!(second_pull_listings(1, true), 8);
+    counts
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 8, ..ProptestConfig::default() })]
 
-    /// The same at any depth: each walk lists every directory from the
-    /// file's up to its project's, and stops there because the project
-    /// lists the file.
+    /// A pull walks for the file's owner two or four times (twice for the
+    /// result id's symbols and language version, and twice more for a
+    /// `full` report's diagnostics), and an earlier generation has already
+    /// walked and remembered the answer (`docs/incremental-lsp-plan.md`,
+    /// Stage 4b). So the pull lists nothing, and confirms the answer by one
+    /// `stat` of each directory the walk read: those from the file's up to
+    /// its project's, where the project lists the file.
     #[test]
-    fn a_pull_lists_every_directory_up_to_the_project(
+    fn a_pull_confirms_its_owner_by_one_stat_per_directory(
         depth in 0usize..4,
         keystroke in any::<bool>(),
     ) {
-        let walks = if keystroke { 4 } else { 2 };
-        prop_assert_eq!(second_pull_listings(depth, keystroke), walks * (depth as u64 + 1));
+        let directories = depth as u64 + 1;
+        prop_assert_eq!(second_pull_ownership(depth, keystroke, settled()), (0, directories));
+    }
+
+    /// The control: with every stamp racy, no witness is trusted, so the
+    /// pull lists each of those directories again, once, and stamps it.
+    #[test]
+    fn with_racy_stamps_a_pull_lists_its_owners_directories_once(
+        depth in 0usize..4,
+        keystroke in any::<bool>(),
+    ) {
+        let directories = depth as u64 + 1;
+        prop_assert_eq!(
+            second_pull_ownership(depth, keystroke, racy()),
+            (directories, directories)
+        );
     }
 }

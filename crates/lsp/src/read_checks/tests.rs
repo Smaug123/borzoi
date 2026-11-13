@@ -44,6 +44,10 @@ struct Model {
     /// A change made at the next query: one that lands between a check's
     /// stamps and its question.
     interleaved: Option<Op>,
+    /// A change made at the next `stat`, just before it takes its stamp:
+    /// one that lands between a query and a stamp taken after it, which
+    /// the stamp sees and the query did not.
+    interleaved_at_stat: Option<Op>,
     /// Every listing also reports an entry it could not read, as a
     /// transient I/O error during iteration does.
     unreadable_entry: bool,
@@ -61,6 +65,7 @@ impl Model {
             granularity,
             next_ino: 1,
             interleaved: None,
+            interleaved_at_stat: None,
             unreadable_entry: false,
         };
         model.entries.insert(
@@ -194,6 +199,7 @@ impl Model {
                 self.create(&from, Node::Link(to));
             }
             Op::Interleave(op) => self.interleaved = Some((**op).clone()),
+            Op::InterleaveAtStat(op) => self.interleaved_at_stat = Some((**op).clone()),
             Op::Unreadable(on) => self.unreadable_entry = *on,
             Op::Generation => {}
         }
@@ -301,6 +307,10 @@ impl Model {
 
 impl Disk for Rc<RefCell<Model>> {
     fn stat(&self, path: &Path) -> io::Result<Stamp> {
+        let pending = self.borrow_mut().interleaved_at_stat.take();
+        if let Some(op) = pending {
+            self.borrow_mut().apply(&op);
+        }
         self.borrow().stamp(path)
     }
 
@@ -373,6 +383,8 @@ enum Op {
     MoveAndLink(usize),
     /// Make this change at the next query a check asks.
     Interleave(Box<Op>),
+    /// Make this change at the next `stat`, just before it takes its stamp.
+    InterleaveAtStat(Box<Op>),
     /// Make every listing report an entry it could not read, or stop. The
     /// generator does not make it: a transient failure appearing is no
     /// change to the disk, and nothing stamped can see it; what the checker
@@ -401,6 +413,7 @@ fn op() -> impl Strategy<Value = Op> {
         3 => prop_oneof![1u32..50, 50u32..1_500, 1_500u32..4_000].prop_map(Op::Advance),
         6 => change(),
         1 => change().prop_map(|op| Op::Interleave(Box::new(op))),
+        1 => change().prop_map(|op| Op::InterleaveAtStat(Box::new(op))),
         4 => Just(Op::Generation),
     ]
 }
@@ -417,6 +430,12 @@ struct Seen {
     witnessed: usize,
     /// Checks that found their answer moved.
     moved: usize,
+    /// Listings [`ReadChecks::list`] made that a later generation confirmed
+    /// by their born witness alone, with no listing asked.
+    born_witnessed: usize,
+    /// Listings [`ReadChecks::list`] made that a later generation found
+    /// moved.
+    born_moved: usize,
 }
 
 /// Every non-text query at every path, recorded against the model as it is.
@@ -446,6 +465,10 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
     }
     let checks = checks(&model.borrow());
     let mut checker = ReadChecks::with_disk(Rc::clone(&model));
+    // Listings the checker made itself, as a reader that depends on them
+    // does (`ReadChecks::list`): one more per generation, held to the same
+    // property in every later generation.
+    let mut born: Vec<Check> = Vec::new();
     for op in ops {
         if !matches!(op, Op::Generation) {
             model.borrow_mut().apply(op);
@@ -464,6 +487,9 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
             })
             .collect();
         checker.begin_generation(Nanos(now));
+        // First in the generation, so that a pending interleaved change
+        // lands around its stamp and its listing.
+        let listed = checker.list(&path(born.len() % PATHS.len()));
         for (check, before) in checks.iter().zip(&before) {
             let holds = checker.holds(check);
             let truth = model
@@ -484,6 +510,33 @@ fn run(granularity: i128, setup: &[Op], ops: &[Op], seen: &mut Seen) -> Result<(
         if counts.listings + counts.canonicalizations < 2 * PATHS.len() as u64 {
             seen.witnessed += 1;
         }
+        // The born listings, each alone in a generation of its own, so
+        // that a confirmation asking no listing shows its witness held.
+        for check in &born {
+            let before = model
+                .borrow()
+                .answer(&check.read().path, &check.read().observation);
+            checker.begin_generation(Nanos(now));
+            let holds = checker.holds(check);
+            let asked = checker.end_generation().listings;
+            let truth = model
+                .borrow()
+                .answer(&check.read().path, &check.read().observation);
+            if holds {
+                prop_assert!(
+                    truth == check.read().observation || before == check.read().observation,
+                    "{:?}, listed by the checker, held, but the disk moved: {:?}",
+                    check.read().path,
+                    truth
+                );
+                if asked == 0 {
+                    seen.born_witnessed += 1;
+                }
+            } else {
+                seen.born_moved += 1;
+            }
+        }
+        born.push(listed);
     }
     Ok(())
 }
@@ -532,7 +585,10 @@ fn the_generator_reaches_witnessed_and_moved_checks() {
             .current();
         run(granularity, &setup, &ops, &mut seen).unwrap();
     }
-    assert!(seen.witnessed > 50 && seen.moved > 50, "{seen:?}");
+    assert!(
+        seen.witnessed > 50 && seen.moved > 50 && seen.born_witnessed > 50 && seen.born_moved > 50,
+        "{seen:?}"
+    );
 }
 
 /// A listing confirmed by its directory's stamp alone costs one `stat`, and
