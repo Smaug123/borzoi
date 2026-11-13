@@ -185,7 +185,7 @@ pub enum LanguageFeature {
     LowerSimpleMappingsInComprehensionsToFastLoops,
     /// F# 9.0: `` # directives with non-quoted string arguments `` (its FS3350 name).
     ParsedHashDirectiveArgumentNonQuotes,
-    /// F# 9.0: `` Support for computation expressions with empty bodies: builder {{ }} `` (its FS3350 name).
+    /// F# 9.0: `` Support for computation expressions with empty bodies: builder { } `` (its FS3350 name).
     EmptyBodiedComputationExpressions,
     /// F# 10.0: `` Enforce AttributeTargets `` (its FS3350 name).
     EnforceAttributeTargets,
@@ -598,7 +598,7 @@ impl LanguageFeature {
                 "# directives with non-quoted string arguments"
             }
             LanguageFeature::EmptyBodiedComputationExpressions => {
-                "Support for computation expressions with empty bodies: builder {{ }}"
+                "Support for computation expressions with empty bodies: builder { }"
             }
             LanguageFeature::EnforceAttributeTargets => "Enforce AttributeTargets",
             LanguageFeature::UseTypeSubsumptionCache => {

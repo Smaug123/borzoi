@@ -28,7 +28,7 @@
 #                 outside `//` comments, as path=count joined by `,` (paths
 #                 under src/Compiler); `-` for none. Held to the compiler by
 #                 borzoi-cst's language_features test.
-#   display_name  FCS's name for it in FS3350 (FSComp.txt), verbatim.
+#   display_name  FCS's name for it in FS3350 (FSComp.txt, braces unescaped as FCS does).
 #   notes         Free text.
 feature	introduced	fcs_stage	fcs_effect	borzoi	engaged	fcs_sites	display_name	notes
 SingleUnderscorePattern	4.7	parse	Reshape	Unmodelled(lenient at every version until PR 3)	-	pars.fsy=2	single underscore pattern	FCS raises a parse error on `_.` in a pattern long identifier below 4.7 and recovers to a different tree.
@@ -102,7 +102,7 @@ LowerInterpolatedStringToConcat	9.0	check	-	Unmodelled(checker-only)	-	-	Optimiz
 LowerIntegralRangesToFastLoops	9.0	check	-	Unmodelled(checker-only)	-	-	Optimizes certain uses of the integral range (..) and range-step (.. ..) operators to fast while-loops.	
 LowerSimpleMappingsInComprehensionsToFastLoops	9.0	check	-	Unmodelled(checker-only)	-	-	Lowers [for x in xs -> f x] and [|for x in xs -> f x|] to fast loops when xs is a list or an array, respectively.	
 ParsedHashDirectiveArgumentNonQuotes	9.0	lex+post-parse	Diagnose	Trivia	live	SyntaxTree/SyntaxTreeOps.fs=3,SyntaxTree/WarnScopes.fs=1	# directives with non-quoted string arguments	Directive::warning_numbers reads it; its FS3350 and FS0203 are not reported.
-EmptyBodiedComputationExpressions	9.0	check	-	Unmodelled(checker-only)	-	-	Support for computation expressions with empty bodies: builder {{ }}	
+EmptyBodiedComputationExpressions	9.0	check	-	Unmodelled(checker-only)	-	-	Support for computation expressions with empty bodies: builder { }	
 EnforceAttributeTargets	10.0	check	-	Unmodelled(checker-only)	-	-	Enforce AttributeTargets	
 UseTypeSubsumptionCache	10.0	check	-	Unmodelled(checker-only)	-	-	Use type conversion cache during compilation	
 AllowObjectExpressionWithoutOverrides	10.0	check	-	Unmodelled(checker-only)	-	-	Allow object expressions without overrides	

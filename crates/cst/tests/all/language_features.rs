@@ -190,7 +190,11 @@ fn read_fcs_features(src: &Path) -> FcsFeatures {
     }
 }
 
-/// `FSComp.txt`'s text for a resource: lines `[number,]name,"text"`.
+/// `FSComp.txt`'s text for a resource, as FCS returns it. Lines are
+/// `[number,]name,"text"`, and FCS's resource generator
+/// (`FSharpEmbedResourceText.fs`) passes the quoted text through
+/// `String.Format` with no arguments, so the text FCS prints is that call's
+/// result: see [`format_without_arguments`].
 fn fscomp_text(fscomp: &str, resource: &str) -> Option<String> {
     fscomp.lines().find_map(|line| {
         let rest = line
@@ -198,8 +202,43 @@ fn fscomp_text(fscomp: &str, resource: &str) -> Option<String> {
             .filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit()))
             .map_or(line, |(_, rest)| rest);
         let text = rest.strip_prefix(resource)?.strip_prefix(",\"")?;
-        Some(text.strip_suffix('"').unwrap_or(text).to_string())
+        let text = text.strip_suffix('"').unwrap_or(text);
+        Some(format_without_arguments(text).unwrap_or_else(|| {
+            panic!(
+                "FSComp.txt's {resource} text {text:?} has a brace String.Format rejects \
+                 with no arguments, so FCS's build would fail on it; the test's reader \
+                 needs updating"
+            )
+        }))
     })
+}
+
+/// .NET's `String.Format(text)` with no arguments: `{{` is `{`, `}}` is
+/// `}`, and any other brace opens a format item (which has no argument to
+/// name) or is unbalanced, both of which throw. `None` where it would throw.
+fn format_without_arguments(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if (c == '{' || c == '}') && chars.next_if_eq(&c).is_none() {
+            return None;
+        }
+        out.push(c);
+    }
+    Some(out)
+}
+
+#[test]
+fn format_without_arguments_matches_string_format() {
+    assert_eq!(format_without_arguments("plain").as_deref(), Some("plain"));
+    assert_eq!(
+        format_without_arguments("builder {{ }}").as_deref(),
+        Some("builder { }")
+    );
+    assert_eq!(format_without_arguments("{{{{}}").as_deref(), Some("{{}"));
+    for rejected in ["{0}", "{", "}", "a } b", "{{{"] {
+        assert_eq!(format_without_arguments(rejected), None, "{rejected:?}");
+    }
 }
 
 /// A ready-to-paste row for a feature the table lacks.

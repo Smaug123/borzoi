@@ -376,10 +376,12 @@ Everything in PRs 2–8 above. Beyond them:
 - **Stale issues.** #21's text predates the relax-whitespace and `#nowarn`
   work; its remaining scope is PR 3's list. #14's "interval data below 8.0" is
   the table's job; what remains of it is PR 6.
-- **`display_name` is FSComp.txt's text verbatim.** For the gated features that
-  is the FS3350 text FCS prints (the differentials check it); for a
-  checker-only row it is unverified until the row is gated (one spells
-  `builder {{ }}`, which FCS may render differently).
+- **`display_name` is FSComp.txt's text as FCS returns it**: the quoted text
+  after `String.Format` with no arguments, which is what FCS's resource
+  generator applies (so `builder {{ }}` reads `builder { }`). For the gated
+  features that is the FS3350 text the differentials check; for a
+  checker-only row it is checked only against that reading of FSComp.txt
+  until the row is gated.
 
 ## Open questions
 
