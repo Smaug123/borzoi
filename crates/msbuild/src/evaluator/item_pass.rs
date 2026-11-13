@@ -11,6 +11,7 @@
 use super::*;
 use crate::glob::SpecFragment;
 use crate::properties::escaping;
+use crate::properties::path_fixup;
 
 /// The fragments of an expanded item spec.
 ///
@@ -1149,6 +1150,8 @@ fn walk_generic_item_child(node: Node<'_, '_>, state: &mut State<'_>) {
             Some(false) => captured.push(EvaluatedItem {
                 identity,
                 metadata: metadata.values.clone(),
+                exact_metadata: metadata.exact.clone(),
+                metadata_complete: true,
                 metadata_uncertainties: metadata.uncertainties.clone(),
             }),
             None => state.taint_item_list(item_type),
@@ -1375,7 +1378,7 @@ fn evaluate_item_expression(
 /// it untracked, and `<ProjectReference>` is exact when its list is trusted, no
 /// `Include` went uncaptured, and every item carries an identity MSBuild spells
 /// the same way. The other modelled types are not offered.
-fn item_list_view(item_type: &str, state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
+pub(super) fn item_list_view(item_type: &str, state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
     if state.walk_opaque.is_some() {
         return None;
     }
@@ -1429,6 +1432,8 @@ fn project_reference_view(state: &State<'_>) -> Option<Vec<EvaluatedItem>> {
                 // the package metadata a helper item records: a consumer
                 // reading one through the copy must treat it as unknown.
                 metadata: HashMap::new(),
+                exact_metadata: HashMap::new(),
+                metadata_complete: false,
                 metadata_uncertainties: PACKAGE_METADATA_NAMES
                     .iter()
                     .map(|name| HelperMetadataUncertainty::new(name, "@(ProjectReference)"))
@@ -2558,6 +2563,10 @@ fn note_inherited_helper_metadata_uncertainties(
     reported: &mut HashSet<(HelperMetadataUncertaintyKind, String, String)>,
 ) {
     for uncertainty in uncertainties {
+        // The tables keep every metadatum; a dependency reads only these.
+        if !is_package_metadata_name(&uncertainty.name) {
+            continue;
+        }
         if local_metadata.overrides_name(&uncertainty.name) {
             continue;
         }
@@ -2962,7 +2971,7 @@ fn resolve_dependency_identity_sources(
     resolved
 }
 
-fn helper_item_definition_default_uncertainties(
+pub(super) fn helper_item_definition_default_uncertainties(
     item_type_key: &str,
     item: &EvaluatedItem,
     state: &State<'_>,
@@ -2990,7 +2999,10 @@ fn helper_item_has_package_metadata_name(item: &EvaluatedItem, name: &str) -> bo
 
 #[derive(Debug, Clone, Default)]
 struct GenericItemMetadata {
+    /// Package metadata names, trimmed; see [`EvaluatedItem`]'s `metadata`.
     values: HashMap<String, String>,
+    /// Every name, exact; see [`EvaluatedItem`]'s `exact_metadata`.
+    exact: HashMap<String, Option<String>>,
     uncertainties: Vec<HelperMetadataUncertainty>,
 }
 
@@ -3000,7 +3012,7 @@ impl EvaluatedItem {
     /// or leaves uncertain replaces whatever the source carried for it.
     fn with_metadata_applied(mut self, metadata: &GenericItemMetadata) -> EvaluatedItem {
         let element_names: HashSet<String> = metadata
-            .values
+            .exact
             .keys()
             .cloned()
             .chain(metadata.uncertainties.iter().map(|u| item_key(&u.name)))
@@ -3012,8 +3024,12 @@ impl EvaluatedItem {
         for (name, value) in &metadata.values {
             self.metadata.insert(name.clone(), value.clone());
         }
+        for (name, value) in &metadata.exact {
+            self.exact_metadata.insert(name.clone(), value.clone());
+        }
         for uncertainty in &metadata.uncertainties {
             self.metadata.remove(&item_key(&uncertainty.name));
+            self.exact_metadata.remove(&item_key(&uncertainty.name));
         }
         self
     }
@@ -3022,6 +3038,7 @@ impl EvaluatedItem {
 #[derive(Default)]
 struct GenericItemMetadataBuilder {
     values: HashMap<String, String>,
+    exact: HashMap<String, Option<String>>,
     uncertainties: HashMap<String, HelperMetadataUncertainty>,
 }
 
@@ -3031,95 +3048,159 @@ impl GenericItemMetadataBuilder {
         uncertainties.sort_by(|left, right| left.name.cmp(&right.name));
         GenericItemMetadata {
             values: self.values,
+            exact: self.exact,
             uncertainties,
         }
     }
 }
 
+/// Every metadatum `node` declares, as attributes and as child elements. A
+/// dependency consumer reads only NuGet's package metadata names; the rest are
+/// read with [`State::quiet_target_framework_reads`] set, so that reading them
+/// cannot move the walk's result.
 fn read_generic_item_metadata(node: Node<'_, '_>, state: &mut State<'_>) -> GenericItemMetadata {
     let mut metadata = GenericItemMetadataBuilder::default();
     for attr in node.attributes() {
-        if is_item_metadata_attribute(attr.name()) && is_package_metadata_name(attr.name()) {
-            set_generic_metadata_value(attr.name(), attr.value(), false, state, &mut metadata);
+        if is_item_metadata_attribute(attr.name()) {
+            let previous = quieten(attr.name(), state);
+            set_generic_metadata_value(
+                attr.name(),
+                attr.value(),
+                false,
+                attribute_is_plain(node, &attr),
+                state,
+                &mut metadata,
+            );
+            state.quiet_target_framework_reads.set(previous);
         }
     }
     for child in node.children().filter(Node::is_element) {
         let name = child.tag_name().name();
-        if !is_package_metadata_name(name) {
-            continue;
-        }
-        let (gate, condition_tainted) = evaluate_item_condition_silent_with_sdk_taint(child, state);
-        match gate {
-            CondGate::Run => {
-                // An unmodellable body (CDATA / entity-encoded whitespace —
-                // see `collect_element_text`) drops the metadatum and marks it
-                // uncertain, exactly like an expansion we couldn't evaluate.
-                match collect_element_text(child) {
-                    Some(raw) => set_generic_metadata_value(
-                        name,
-                        &raw,
-                        condition_tainted,
-                        state,
-                        &mut metadata,
-                    ),
-                    None => {
-                        metadata.values.remove(&item_key(name));
-                        mark_generic_metadata_uncertain(name, "", &mut metadata.uncertainties);
-                    }
+        let previous = quieten(name, state);
+        read_generic_metadata_child(child, name, state, &mut metadata);
+        state.quiet_target_framework_reads.set(previous);
+    }
+    metadata.finish()
+}
+
+/// Whether `element`'s body is nothing but comments and text that is its
+/// source verbatim. Text that line-ending normalisation or entity decoding
+/// touched (a CRLF, which MSBuild keeps; a `&amp;`) is not the text roxmltree
+/// hands back, and an element or processing instruction makes MSBuild take the
+/// inner XML.
+fn body_is_plain(element: Node<'_, '_>) -> bool {
+    let source = element.document().input_text();
+    element.children().all(|c| {
+        c.is_comment()
+            || (c.is_text()
+                && source
+                    .get(c.range())
+                    .is_some_and(|raw| Some(raw) == c.text()))
+    })
+}
+
+/// Whether `attr`'s value is its source text verbatim, free of what XML
+/// attribute-value normalisation and entity decoding touch (a tab, a line
+/// break, a `&`). Only then is the value roxmltree hands back the one MSBuild
+/// evaluates: it reads such spellings otherwise (a literal tab survives; an
+/// encoded CDATA section is decoded).
+fn attribute_is_plain(node: Node<'_, '_>, attr: &roxmltree::Attribute<'_, '_>) -> bool {
+    let raw = node.document().input_text().get(attr.range_value());
+    raw == Some(attr.value()) && !attr.value().contains(['\t', '\n', '\r', '&'])
+}
+
+/// Set [`State::quiet_target_framework_reads`] for a metadatum named `name`
+/// that no dependency consumer reads, returning the flag's previous value.
+fn quieten(name: &str, state: &State<'_>) -> bool {
+    let quiet = state.quiet_target_framework_reads.get() || !is_package_metadata_name(name);
+    state.quiet_target_framework_reads.replace(quiet)
+}
+
+fn read_generic_metadata_child(
+    child: Node<'_, '_>,
+    name: &str,
+    state: &mut State<'_>,
+    metadata: &mut GenericItemMetadataBuilder,
+) {
+    let (gate, condition_tainted) = evaluate_item_condition_silent_with_sdk_taint(child, state);
+    match gate {
+        CondGate::Run => {
+            // An unmodellable body (CDATA / entity-encoded whitespace —
+            // see `collect_element_text`) drops the metadatum and marks it
+            // uncertain, exactly like an expansion we couldn't evaluate.
+            // A body holding more than text and comments (an element, a
+            // processing instruction) is one MSBuild takes as its inner XML: the
+            // dependency capture reads its text as it always has, and the exact
+            // table holds no value for it.
+            let body_exact = body_is_plain(child);
+            match collect_element_text(child) {
+                Some(raw) => set_generic_metadata_value(
+                    name,
+                    &raw,
+                    condition_tainted,
+                    body_exact,
+                    state,
+                    metadata,
+                ),
+                None => {
+                    metadata.values.remove(&item_key(name));
+                    mark_generic_metadata_uncertain(name, "", &mut metadata.uncertainties);
                 }
             }
-            CondGate::Skip | CondGate::Unsupported => {
-                if condition_tainted {
-                    let raw = collect_element_text(child).unwrap_or_default();
-                    mark_generic_metadata_uncertain(name, &raw, &mut metadata.uncertainties);
-                }
+        }
+        CondGate::Skip | CondGate::Unsupported => {
+            if condition_tainted {
+                let raw = collect_element_text(child).unwrap_or_default();
+                mark_generic_metadata_uncertain(name, &raw, &mut metadata.uncertainties);
             }
         }
     }
-    metadata.finish()
 }
 
 fn set_generic_metadata_value(
     name: &str,
     raw: &str,
     condition_tainted: bool,
+    body_exact: bool,
     state: &mut State<'_>,
     metadata: &mut GenericItemMetadataBuilder,
 ) {
-    debug_assert!(is_package_metadata_name(name));
     let key = item_key(name);
     let metadata_tainted = condition_tainted || state.raw_uses_sdk_package_taint(raw);
-    if raw.is_empty() {
-        metadata.values.insert(key.clone(), String::new());
-        if metadata_tainted {
-            mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
-        } else {
-            metadata.uncertainties.remove(&key);
-        }
-        return;
-    }
-    let expansion = expand_silent(raw, state);
-    if expansion.had_issue() {
+    let package = is_package_metadata_name(name);
+    let forget = |metadata: &mut GenericItemMetadataBuilder, value: &str| {
         metadata.values.remove(&key);
-        mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
-        return;
-    }
-    let (escaped, value) = scalar_use(&expansion.value);
-    if escaped.is_empty() {
-        metadata.values.insert(key.clone(), String::new());
-        if metadata_tainted {
-            mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
-        } else {
-            metadata.uncertainties.remove(&key);
+        metadata.exact.remove(&key);
+        mark_generic_metadata_uncertain(name, value, &mut metadata.uncertainties);
+    };
+    let (normalised, exact, rewritable) = if raw.is_empty() {
+        (String::new(), String::new(), false)
+    } else {
+        let expansion = expand_silent(raw, state);
+        if expansion.had_issue() {
+            forget(metadata, raw);
+            return;
         }
-        return;
+        let full = expansion.value.as_escaped();
+        if contains_item_reference(full) || contains_metadata_reference(full) {
+            forget(metadata, scalar_use(&expansion.value).0);
+            return;
+        }
+        // The dependency capture reads the value trimmed in the escaped domain;
+        // MSBuild's item table holds it whole. MSBuild's Unix path fixup may
+        // rewrite a backslash-bearing value, or not, by a probe of its working
+        // directory; it decides on the escaped value, so `%24(` is no `$(`.
+        (
+            scalar_use(&expansion.value).1,
+            escaping::unescape(full),
+            path_fixup::worlds(full).is_some(),
+        )
+    };
+    let exact = (body_exact && !rewritable).then_some(exact);
+    if package {
+        metadata.values.insert(key.clone(), normalised);
     }
-    if contains_item_reference(escaped) || contains_metadata_reference(escaped) {
-        metadata.values.remove(&key);
-        mark_generic_metadata_uncertain(name, escaped, &mut metadata.uncertainties);
-        return;
-    }
-    metadata.values.insert(key.clone(), value);
+    metadata.exact.insert(key.clone(), exact);
     if metadata_tainted {
         mark_generic_metadata_uncertain(name, raw, &mut metadata.uncertainties);
     } else {
@@ -3242,6 +3323,7 @@ fn is_item_metadata_attribute(name: &str) -> bool {
             | "include"
             | "keepduplicates"
             | "keepmetadata"
+            | "label"
             | "matchonmetadata"
             | "matchonmetadataoptions"
             | "remove"
@@ -3758,38 +3840,44 @@ fn record_helper_item_definition_defaults(node: Node<'_, '_>, state: &mut State<
         let Some(item_type) = generic_helper_item_type(child) else {
             continue;
         };
-        for metadata in item_definition_child_package_metadata_names(child, state) {
+        for metadata in item_definition_child_metadata_names(child, state) {
             state.record_helper_item_definition_default(&item_type, &metadata.name);
         }
     }
 }
 
-struct ItemDefinitionPackageMetadataName {
+struct ItemDefinitionMetadataName {
     name: String,
 }
 
-fn item_definition_child_package_metadata_names(
+/// Every metadata name an item definition may give its type a default for.
+/// A name no dependency consumer reads has its condition read quietly (see
+/// [`State::quiet_target_framework_reads`]).
+fn item_definition_child_metadata_names(
     node: Node<'_, '_>,
     state: &State<'_>,
-) -> Vec<ItemDefinitionPackageMetadataName> {
+) -> Vec<ItemDefinitionMetadataName> {
     let mut names = Vec::new();
     let mut seen = HashSet::new();
     for attr in node.attributes() {
-        if is_package_metadata_name(attr.name()) && seen.insert(item_key(attr.name())) {
-            names.push(ItemDefinitionPackageMetadataName {
+        if is_item_metadata_attribute(attr.name()) && seen.insert(item_key(attr.name())) {
+            names.push(ItemDefinitionMetadataName {
                 name: attr.name().to_string(),
             });
         }
     }
     for child in node.children().filter(Node::is_element) {
         let name = child.tag_name().name();
-        if !is_package_metadata_name(name) || !item_child_condition_may_run(child, state) {
+        let previous = quieten(name, state);
+        let may_run = item_child_condition_may_run(child, state);
+        state.quiet_target_framework_reads.set(previous);
+        if !may_run {
             continue;
         }
         if !seen.insert(item_key(name)) {
             continue;
         }
-        names.push(ItemDefinitionPackageMetadataName {
+        names.push(ItemDefinitionMetadataName {
             name: name.to_string(),
         });
     }

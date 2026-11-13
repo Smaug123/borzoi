@@ -1706,12 +1706,65 @@ The item side is the gap the census was built to size:
 
 So A₁.3b's work, in order, is:
 1. keep every metadatum on the generic tables, under the same taint
-   discipline;
+   discipline (landed; see *A₁.3b: every metadatum* below);
 2. expose the dedicated buckets as item lists the executor can read;
 3. seed the two toolset names.
 
 Nothing in the census argues against going on. No trusted read is wrong,
 and the gaps have known causes.
+
+##### A₁.3b: every metadatum — landed
+
+The generic item tables keep every metadatum an item declaration gives,
+not just NuGet's five package metadata names. Each value is kept as MSBuild
+holds it, untrimmed, beside the trimmed value the dependency capture reads.
+Three kinds of value are uncertain in the table:
+- an attribute or body text whose source XML normalisation or entity
+  decoding touches (a tab or line break in an attribute, a CRLF, a `&`),
+  which MSBuild reads its own way;
+- a body holding more than text and comments, which MSBuild takes as inner
+  XML;
+- a value MSBuild's Unix path fixup may rewrite.
+
+The dependency capture keeps its own reading of all three (#642). The package
+consumers still read only their five names, and ignore an uncertainty on any
+other name. Nothing they commit to moves.
+
+The probe makes a claim about a list only when the walk itself would take
+that list as exact: it reads the list through `item_list_view`, the
+predicate an `@(…)` reference in the walk uses. So an opaque walk, a tainted
+list and an untracked one all decline together. A row copied from
+`@(ProjectReference)`, whose metadata this crate keeps in its own model, says
+its metadata is incomplete, so a name it lacks is unknown rather than
+absent.
+
+One side effect needed care. Reading a metadatum can read an undefined
+`$(TargetFramework)`, and the walk records such a read: it is what decides
+whether the walk keeps its first pass. A metadatum only a target reads must
+not steer that choice. So the extra names are read with
+`quiet_target_framework_reads` set, under which such a read is inexact and
+records nothing. An item definition's default for any name marks that name
+uncertain on the type's items, since the walk does not apply defaults.
+
+Two checks hold it:
+- **`fsproj_generic_items_generative_diff`** generates projects over the
+  constructs the taint and uncertainty marks guard. These are literal,
+  `$(…)` and escaped identities, `@(…)` copies and transforms, `Remove`,
+  attribute and child metadata, conditions on either, `%(…)` and `@(…)` in
+  metadata, padded, backslash-bearing and escaped path values, attributes
+  with tabs, line breaks and entities, CRLF and entity bodies, bodies
+  holding elements, processing instructions, comments or CDATA, the
+  structural `Label` attribute, item definitions, an untrusted property, an
+  imported item file (plain, or under a condition that turns the walk
+  opaque), and copies of `@(ProjectReference)`.
+  It holds every clean list to MSBuild's `itemsMeta`: identities in order,
+  and every metadatum not marked uncertain, on every name either side holds.
+  Reverting any of the capture's guards fails it.
+- **The read census** compares metadata on real projects. On every corpus
+  project and fixture, each `Known*` table and
+  `ImplicitPackageReferenceVersion` now agrees with MSBuild on every name:
+  12 for `KnownFrameworkReference`, 6 for `KnownRuntimePack`, and so on. No
+  name is uncertain or missing.
 
 #### A₁.4: the task leaves
 
