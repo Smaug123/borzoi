@@ -29,25 +29,26 @@
 //! conditions, SDK/project property interleavings) — the value added here is
 //! the *combinations*, especially across the SDK/project boundary.
 //!
-//! Each certain case spawns `dotnet msbuild`, so this runs under `nix develop`
+//! MSBuild is the resident oracle (`itemsMeta`), its default SDK resolver
+//! pointed at the synthetic SDK (`--sdks-path`), so a case costs milliseconds
+//! rather than a `dotnet msbuild` launch; this runs under `nix develop`
 //! (offline SDK) like the sibling differential tests.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 mod common;
 
 use borzoi_msbuild::{
     ParsedProject, SdkPaths, SdkResolution, SdkResolveError, parse_fsproj_with_imports,
 };
-use borzoi_oracle_harness::BoundedCommand;
+use common::Oracle;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config as ProptestConfig, TestRunner};
-use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
 // Fixture model. Everything renders from small index pools so shrinking is
@@ -333,8 +334,8 @@ impl Fixture {
         out
     }
 
-    fn project_xml(&self) -> String {
-        let mut out = String::from("<Project Sdk=\"MySdk\">\n");
+    fn project_xml(&self, sdk: &str) -> String {
+        let mut out = format!("<Project Sdk=\"{sdk}\">\n");
         for group in &self.project_groups {
             group.render(&mut out);
         }
@@ -468,46 +469,83 @@ fn fixture_strategy() -> impl Strategy<Value = Fixture> {
 // Both-ways evaluation.
 // ---------------------------------------------------------------------------
 
-/// On-disk fixture: the tempdir keeps everything alive, `proj` and `sdks`
-/// are the paths the oracle needs.
+/// The resident oracle and the `Sdks` directory its default SDK resolver
+/// reads (`--sdks-path`), shared by every test in the binary. Each case lays
+/// out an SDK of its own name there, so no resolution or file can be served
+/// from an earlier case.
+struct Shared {
+    root: PathBuf,
+    oracle: Mutex<Oracle>,
+}
+
+fn shared() -> &'static Shared {
+    static SHARED: OnceLock<Shared> = OnceLock::new();
+    SHARED.get_or_init(|| {
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("packageref-generative-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Sdks")).expect("mkdir Sdks");
+        let root = std::fs::canonicalize(root).expect("canonicalize root");
+        let oracle = Oracle::spawn_with_sdks_path(&root.join("Sdks"));
+        Shared {
+            root,
+            oracle: Mutex::new(oracle),
+        }
+    })
+}
+
+/// One case laid out on disk: `Sdks/<sdk>/Sdk/Sdk.{props,targets}` under the
+/// shared root, and the project in a directory of its own, removed on drop.
 struct Laid {
-    _dir: tempfile::TempDir,
+    case_dir: PathBuf,
+    sdk_root: PathBuf,
     proj: PathBuf,
-    sdks: PathBuf,
+    project_xml: String,
+}
+
+impl Drop for Laid {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.case_dir);
+        let _ = std::fs::remove_dir_all(&self.sdk_root);
+    }
 }
 
 /// Lay the fixture out on disk in the canonical `MSBuildSDKsPath` shape
-/// (`Sdks/MySdk/Sdk/Sdk.{props,targets}`) shared by both walkers, and parse
+/// (`Sdks/<name>/Sdk/Sdk.{props,targets}`) shared by both walkers, and parse
 /// it with our evaluator.
 fn write_and_parse(fixture: &Fixture) -> (Laid, ParsedProject) {
-    let dir = tempfile::TempDir::new().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize tempdir");
-    let sdks = root.join("Sdks");
-    let sdk_dir = sdks.join("MySdk/Sdk");
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let shared = shared();
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let sdk = format!("MySdk{n}");
+    let sdks = shared.root.join("Sdks");
+    let sdk_root = sdks.join(&sdk);
+    let sdk_dir = sdk_root.join("Sdk");
     std::fs::create_dir_all(&sdk_dir).expect("mkdir sdk");
     let props = sdk_dir.join("Sdk.props");
     let targets = sdk_dir.join("Sdk.targets");
     std::fs::write(&props, fixture.sdk_props_xml()).expect("write Sdk.props");
     std::fs::write(&targets, "<Project/>").expect("write Sdk.targets");
-    std::fs::create_dir_all(root.join("proj")).expect("mkdir proj");
-    let proj = root.join("proj/Demo.fsproj");
-    let project_xml = fixture.project_xml();
+    let case_dir = shared.root.join(format!("case{n}"));
+    std::fs::create_dir_all(case_dir.join("proj")).expect("mkdir proj");
+    let proj = case_dir.join("proj/Demo.fsproj");
+    let project_xml = fixture.project_xml(&sdk);
     std::fs::write(&proj, &project_xml).expect("write project");
-
-    let resolver = move |name: &str| {
-        if name == "MySdk" {
-            Ok(SdkResolution::Single(SdkPaths {
-                root: sdk_dir.clone(),
-                props: props.clone(),
-                targets: targets.clone(),
-            }))
-        } else {
-            Err(SdkResolveError::NotFound)
+    let resolver = {
+        let sdk = sdk.clone();
+        move |name: &str| {
+            if name == sdk {
+                Ok(SdkResolution::Single(SdkPaths {
+                    root: sdk_dir.clone(),
+                    props: props.clone(),
+                    targets: targets.clone(),
+                }))
+            } else {
+                Err(SdkResolveError::NotFound)
+            }
         }
     };
-    // The oracle child gets `MSBuildSDKsPath` as an environment variable
-    // (see `run_get_item`), which MSBuild folds in as an initial property;
-    // mirror the exact same snapshot on our side.
+    // The oracle sets `MSBuildSDKsPath` in its own environment, which MSBuild
+    // folds in as an initial property; our side sees the same snapshot.
     let mut environment = common::oracle_environment();
     environment.insert(
         "MSBuildSDKsPath".to_string(),
@@ -524,90 +562,34 @@ fn write_and_parse(fixture: &Fixture) -> (Laid, ParsedProject) {
     .unwrap_or_else(|e| panic!("our parse: {e}\n{project_xml}"));
     (
         Laid {
-            _dir: dir,
+            case_dir,
+            sdk_root,
             proj,
-            sdks,
+            project_xml,
         },
         parsed,
     )
 }
 
-#[derive(Deserialize)]
-struct MsbuildItem {
-    #[serde(rename = "Identity")]
-    identity: String,
-    #[serde(flatten)]
-    metadata: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-struct Items {
-    #[serde(rename = "PackageReference", default)]
-    package_reference: Vec<MsbuildItem>,
-    #[serde(rename = "FrameworkReference", default)]
-    framework_reference: Vec<MsbuildItem>,
-}
-
-#[derive(Deserialize)]
-struct GetItemOutput {
-    #[serde(rename = "Items")]
-    items: Items,
-}
-
-/// Budget for one `dotnet msbuild` evaluation. A cold one restores packages and
-/// walks the whole SDK import chain, which is legitimately minutes, so the bound
-/// is far above the harness's per-request default: it is there to stop an
-/// evaluation that has *stalled* — blocked on a NuGet lock held by a concurrent
-/// run in a sibling worktree, say — from hanging the suite forever, not to police
-/// a slow one.
-const MSBUILD_TIMEOUT: Duration = Duration::from_secs(1800);
-
-/// Mirror of `fsproj_packageref_diff::run_get_item`, plus the
-/// `MSBuildSDKsPath` override that points MSBuild at the synthetic SDK. The
-/// environment is cleared for the same reason as there: every inherited env
-/// var is an MSBuild initial property.
-fn run_get_item(proj: &Path, sdks_path: &Path) -> GetItemOutput {
-    let mut cmd = Command::new("dotnet");
-    cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
-    cmd.env_clear();
-    for var in ["PATH", "HOME", "TMPDIR"] {
-        if let Ok(value) = std::env::var(var) {
-            cmd.env(var, value);
-        }
-    }
-    for (key, value) in std::env::vars() {
-        if key.starts_with("DOTNET_") || key.starts_with("NUGET_") {
-            cmd.env(key, value);
-        }
-    }
-    cmd.env("MSBuildSDKsPath", sdks_path);
-    cmd.args([
-        "msbuild",
-        "-nologo",
-        "-getItem:PackageReference,FrameworkReference",
-    ]);
-    cmd.arg(proj);
-    let out = BoundedCommand::new(cmd)
-        .timeout(MSBUILD_TIMEOUT)
-        .run_ok(format_args!("dotnet msbuild for {}", proj.display()));
-    let stdout = String::from_utf8(out.stdout).expect("msbuild stdout is UTF-8");
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("parse -getItem JSON for {}: {e}\n{stdout}", proj.display()))
-}
+/// The dependency metadata the capture models, as the oracle's `itemsMeta`
+/// op reads it (an unset metadatum reads back as `""`).
+const PKG_METADATA: [&str; 5] = [
+    "Version",
+    "VersionOverride",
+    "IncludeAssets",
+    "ExcludeAssets",
+    "PrivateAssets",
+];
 
 type PkgFields = (String, Vec<(&'static str, Option<String>)>);
 
-fn msbuild_pkg_fields(item: &MsbuildItem) -> PkgFields {
-    let g = |k: &str| item.metadata.get(k).filter(|v| !v.is_empty()).cloned();
+fn msbuild_pkg_fields((identity, metadata): &(String, HashMap<String, String>)) -> PkgFields {
     (
-        item.identity.clone(),
-        vec![
-            ("Version", g("Version")),
-            ("VersionOverride", g("VersionOverride")),
-            ("IncludeAssets", g("IncludeAssets")),
-            ("ExcludeAssets", g("ExcludeAssets")),
-            ("PrivateAssets", g("PrivateAssets")),
-        ],
+        identity.clone(),
+        PKG_METADATA
+            .iter()
+            .map(|&k| (k, metadata.get(k).filter(|v| !v.is_empty()).cloned()))
+            .collect(),
     )
 }
 
@@ -624,6 +606,26 @@ fn ours_pkg_fields(pr: &borzoi_msbuild::PackageReference) -> PkgFields {
     )
 }
 
+/// MSBuild's evaluated `item_type` items, with `metadata`, through the
+/// resident oracle.
+fn msbuild_items(
+    laid: &Laid,
+    item_type: &str,
+    metadata: &[&str],
+) -> Vec<(String, HashMap<String, String>)> {
+    shared()
+        .oracle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .items_meta(&laid.project_xml, &laid.proj, item_type, metadata)
+        .unwrap_or_else(|| {
+            panic!(
+                "MSBuild rejected a generated project:\n{}",
+                laid.project_xml
+            )
+        })
+}
+
 /// The property body: certain ⇒ both item sets match MSBuild exactly.
 /// Returns whether the case was certain (i.e. the oracle actually ran).
 fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError> {
@@ -631,16 +633,12 @@ fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError>
     if parsed.package_references_uncertain {
         return Ok(false);
     }
-    let msbuild = run_get_item(&laid.proj, &laid.sdks);
-
     let ours_pkg: Vec<_> = parsed
         .package_references
         .iter()
         .map(ours_pkg_fields)
         .collect();
-    let theirs_pkg: Vec<_> = msbuild
-        .items
-        .package_reference
+    let theirs_pkg: Vec<_> = msbuild_items(&laid, "PackageReference", &PKG_METADATA)
         .iter()
         .map(msbuild_pkg_fields)
         .collect();
@@ -649,7 +647,7 @@ fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError>
         &theirs_pkg,
         "claimed certain, but PackageReference capture diverges.\n--- Sdk.props ---\n{}\n--- project ---\n{}",
         fixture.sdk_props_xml(),
-        fixture.project_xml()
+        laid.project_xml
     );
 
     let ours_fw: Vec<&str> = parsed
@@ -657,18 +655,16 @@ fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError>
         .iter()
         .map(|f| f.name.as_str())
         .collect();
-    let theirs_fw: Vec<&str> = msbuild
-        .items
-        .framework_reference
-        .iter()
-        .map(|i| i.identity.as_str())
+    let theirs_fw: Vec<String> = msbuild_items(&laid, "FrameworkReference", &[])
+        .into_iter()
+        .map(|(identity, _)| identity)
         .collect();
     prop_assert_eq!(
         &ours_fw,
         &theirs_fw,
         "claimed certain, but FrameworkReference capture diverges.\n--- Sdk.props ---\n{}\n--- project ---\n{}",
         fixture.sdk_props_xml(),
-        fixture.project_xml()
+        laid.project_xml
     );
     Ok(true)
 }
@@ -680,7 +676,8 @@ fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError>
 #[test]
 fn certain_capture_matches_msbuild() {
     let mut runner = TestRunner::new(ProptestConfig {
-        cases: 64,
+        // The resident oracle answers a case in milliseconds.
+        cases: 1000,
         source_file: Some(file!()),
         ..ProptestConfig::default()
     });
