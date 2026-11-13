@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the base files of the cst recovery grids
+# Regenerate the base files of the cst differential grids
 # (crates/cst/tests/manifests/<grid>.base.txt): the cells where the parser at
 # REV (default origin/main) diverges from FCS. Each grid asserts that the
 # parser under test diverges only on those cells
@@ -32,7 +32,8 @@ mkdir "$scratch/out"
 (cd "$scratch/base" &&
   BORZOI_UPDATE_MANIFESTS=1 BORZOI_GRID_BASE_OUT="$scratch/out" \
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo/target/grid-base}" \
-    nix develop -c cargo test -p borzoi-cst --test all parser_diff_recovery:: \
+    nix develop -c cargo test -p borzoi-cst --test all -- \
+    parser_diff_recovery:: parser_diff_decl_sequence_grid:: \
     >"$scratch/run.log" 2>&1) || true
 
 for checked_in in "$manifests"/*.base.txt; do
