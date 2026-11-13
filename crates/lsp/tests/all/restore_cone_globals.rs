@@ -36,7 +36,7 @@ fn the_census_globals_are_the_ones_restore_rs_generates_the_graph_with() {
     let tmp = tempfile::tempdir().unwrap();
     // By its real path: a project named through a symlink declines before any
     // command is built, and the temporary directory is one on macOS.
-    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let root = crate::common::host_fs::canonicalize(tmp.path()).unwrap();
     let project_dir = root.join("app");
     std::fs::create_dir_all(&project_dir).unwrap();
     let project = project_dir.join("App.fsproj");
@@ -62,7 +62,8 @@ fn the_census_globals_are_the_ones_restore_rs_generates_the_graph_with() {
         "the recording dotnet fails, so the oracle declines"
     );
 
-    let arguments = std::fs::read_to_string(&record).expect("restore_graph ran the dotnet");
+    let arguments =
+        crate::common::host_fs::read_to_string(&record).expect("restore_graph ran the dotnet");
     let (properties, positional): (Vec<&str>, Vec<&str>) =
         arguments.lines().partition(|a| a.starts_with("-p:"));
     assert_eq!(

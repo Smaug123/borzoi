@@ -3,6 +3,7 @@
 //! Split out of the former single-file `csharp_sidecar.rs`.
 
 use super::support::*;
+use crate::common::host_fs::HostPath as _;
 
 /// Phase 4 of `docs/completed/multi-tfm-resolution-plan.md` — the load-bearing
 /// integration test for the multi-TFM picker: the multi-tfm fixture has a
@@ -37,11 +38,15 @@ fn build_metadata_multi_tfm_picker_emits_leaf_under_net6() {
     // at `../leaf/Leaf.csproj` and the closure walker preserves that join
     // shape, so we canonicalise both sides for the comparison.
     let leaf_canon = leaf_csproj
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", leaf_csproj.display()));
     let leaf_tfm = tfms
         .iter()
-        .find(|(p, _)| p.canonicalize().map(|c| c == leaf_canon).unwrap_or(false))
+        .find(|(p, _)| {
+            p.host_canonicalize()
+                .map(|c| c == leaf_canon)
+                .unwrap_or(false)
+        })
         .map(|(_, t)| t.as_str())
         .unwrap_or_else(|| {
             panic!("project_tfms_for did not return an entry for the leaf; got {tfms:?}")
@@ -66,19 +71,19 @@ fn build_metadata_multi_tfm_picker_emits_leaf_under_net6() {
     let entry = &result.transitive_project_refs[0];
     let entry_canon = entry
         .csproj_path
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", entry.csproj_path.display()));
     assert_eq!(
         entry_canon, leaf_canon,
         "transitive entry should point at the multi-tfm Leaf.csproj",
     );
     assert!(
-        entry.metadata_dll_path.exists(),
+        entry.metadata_dll_path.host_exists(),
         "leaf metadata DLL should exist at {}",
         entry.metadata_dll_path.display(),
     );
 
-    let bytes = std::fs::read(&entry.metadata_dll_path).expect("read leaf DLL");
+    let bytes = crate::common::host_fs::read(&entry.metadata_dll_path).expect("read leaf DLL");
     let view = Ecma335Assembly::parse(&bytes).expect("parse leaf DLL");
     let entities = view
         .enumerate_type_defs()
@@ -144,7 +149,7 @@ fn build_metadata_matches_dotnet_ref_assembly_multi_tfm_leaf() {
 
     let dotnet_leaf_ref = build_ref_assembly(&dotnet, &leaf_dir, "MultiTfmLeaf", "Debug", "net6.0");
     assert!(
-        dotnet_leaf_ref.exists(),
+        dotnet_leaf_ref.host_exists(),
         "expected dotnet leaf ref assembly at {}",
         dotnet_leaf_ref.display(),
     );
@@ -208,15 +213,19 @@ fn build_metadata_multi_tfm_cond_inner_ref_discovered_under_net6() {
     // raw join shape (`top_dir/../leaf/Leaf.csproj`) while
     // std::fs::canonicalize emits the realpath form.
     let leaf_canon = leaf_csproj
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", leaf_csproj.display()));
     let polyfill_canon = polyfill_csproj
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", polyfill_csproj.display()));
 
     let leaf_tfm = tfms
         .iter()
-        .find(|(p, _)| p.canonicalize().map(|c| c == leaf_canon).unwrap_or(false))
+        .find(|(p, _)| {
+            p.host_canonicalize()
+                .map(|c| c == leaf_canon)
+                .unwrap_or(false)
+        })
         .map(|(_, t)| t.as_str())
         .unwrap_or_else(|| panic!("project_tfms_for did not include the leaf; got {tfms:?}"));
     assert_eq!(
@@ -226,7 +235,7 @@ fn build_metadata_multi_tfm_cond_inner_ref_discovered_under_net6() {
     let polyfill_tfm = tfms
         .iter()
         .find(|(p, _)| {
-            p.canonicalize()
+            p.host_canonicalize()
                 .map(|c| c == polyfill_canon)
                 .unwrap_or(false)
         })
@@ -263,7 +272,7 @@ fn build_metadata_multi_tfm_cond_inner_ref_discovered_under_net6() {
             .iter()
             .find(|r| {
                 r.csproj_path
-                    .canonicalize()
+                    .host_canonicalize()
                     .map(|c| c == canon)
                     .unwrap_or(false)
             })
@@ -278,12 +287,12 @@ fn build_metadata_multi_tfm_cond_inner_ref_discovered_under_net6() {
     let leaf_entry = entry_for(&leaf_canon);
     let polyfill_entry = entry_for(&polyfill_canon);
     assert!(
-        leaf_entry.metadata_dll_path.exists(),
+        leaf_entry.metadata_dll_path.host_exists(),
         "leaf metadata DLL should exist at {}",
         leaf_entry.metadata_dll_path.display(),
     );
     assert!(
-        polyfill_entry.metadata_dll_path.exists(),
+        polyfill_entry.metadata_dll_path.host_exists(),
         "polyfill metadata DLL should exist at {}",
         polyfill_entry.metadata_dll_path.display(),
     );
@@ -291,7 +300,7 @@ fn build_metadata_multi_tfm_cond_inner_ref_discovered_under_net6() {
     // Type-existence checks pin that the per-project workspaces actually
     // emitted real metadata (vs. e.g. an empty DLL).
     let assert_has_type = |dll: &Path, fqn: &str| {
-        let bytes = std::fs::read(dll).expect("read DLL");
+        let bytes = crate::common::host_fs::read(dll).expect("read DLL");
         let view = Ecma335Assembly::parse(&bytes).expect("parse DLL");
         let entities = view.enumerate_type_defs().expect("enumerate type defs");
         let fqns: Vec<String> = entities
@@ -356,18 +365,18 @@ fn build_metadata_multi_tfm_cond_fsharp_top_dispatches_csharp_subtree() {
     );
 
     let leaf_canon = leaf_csproj
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", leaf_csproj.display()));
     let polyfill_canon = polyfill_csproj
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", polyfill_csproj.display()));
     let fsproj_canon = fsproj
-        .canonicalize()
+        .host_canonicalize()
         .unwrap_or_else(|e| panic!("canonicalize {}: {e}", fsproj.display()));
 
     let tfm_for = |canon: &Path| -> &str {
         tfms.iter()
-            .find(|(p, _)| p.canonicalize().map(|c| c == *canon).unwrap_or(false))
+            .find(|(p, _)| p.host_canonicalize().map(|c| c == *canon).unwrap_or(false))
             .map(|(_, t)| t.as_str())
             .unwrap_or_else(|| {
                 panic!(
@@ -431,7 +440,7 @@ fn build_metadata_multi_tfm_cond_fsharp_top_dispatches_csharp_subtree() {
         .iter()
         .find(|r| {
             r.csproj_path
-                .canonicalize()
+                .host_canonicalize()
                 .map(|c| c == polyfill_canon)
                 .unwrap_or(false)
         })
@@ -442,18 +451,18 @@ fn build_metadata_multi_tfm_cond_fsharp_top_dispatches_csharp_subtree() {
             )
         });
     assert!(
-        result.metadata_dll_path.exists(),
+        result.metadata_dll_path.host_exists(),
         "leaf metadata DLL should exist at {}",
         result.metadata_dll_path.display(),
     );
     assert!(
-        polyfill_entry.metadata_dll_path.exists(),
+        polyfill_entry.metadata_dll_path.host_exists(),
         "polyfill metadata DLL should exist at {}",
         polyfill_entry.metadata_dll_path.display(),
     );
 
     let assert_has_type = |dll: &Path, fqn: &str| {
-        let bytes = std::fs::read(dll).expect("read DLL");
+        let bytes = crate::common::host_fs::read(dll).expect("read DLL");
         let view = Ecma335Assembly::parse(&bytes).expect("parse DLL");
         let entities = view.enumerate_type_defs().expect("enumerate type defs");
         let fqns: Vec<String> = entities

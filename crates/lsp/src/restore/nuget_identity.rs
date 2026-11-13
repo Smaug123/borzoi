@@ -26,6 +26,7 @@
 //! prediction of the same fact, which A₁'s model of the restore cone has to
 //! make.
 
+use crate::observed::Unobserved;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -107,7 +108,9 @@ pub fn nuget_commands_identity(path: &Path) -> Result<NuGetIdentity, IdentityDec
         path: path.to_path_buf(),
         why,
     };
-    let bytes = std::fs::read(path).map_err(|e| unreadable(e.to_string()))?;
+    let bytes = Unobserved::Restore
+        .read(path)
+        .map_err(|e| unreadable(e.to_string()))?;
     let assembly = Ecma335Assembly::parse(&bytes).map_err(|e| unreadable(format!("{e:?}")))?;
     match assembly.informational_version() {
         Ok(Some(version)) => Ok(NuGetIdentity::new(version)),

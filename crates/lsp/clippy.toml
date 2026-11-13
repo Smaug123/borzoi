@@ -1,0 +1,54 @@
+# Clippy reads the first `clippy.toml` it finds walking up from the crate, so
+# this file replaces the workspace's for `borzoi`: it repeats the workspace's
+# entries verbatim (`clippy_config_repeats_the_workspace_bans` holds it to
+# them) and adds the crate's own.
+
+# Child-process launches must go through a serialised spawn wrapper —
+# `borzoi::spawn` in any process that links the LSP library,
+# or the SPAWN_LOCK wrappers each crate's tests/common carries. On
+# macOS (no `pipe2`) the stdio pipes a spawn creates get FD_CLOEXEC
+# only after `pipe()`, so concurrent spawns leak raw descriptors into
+# each other's children; a long-lived inheritor then holds a one-shot
+# child's stdout open forever and the draining `read()` never sees EOF
+# (observed 2026-07-10 as the parser_diff_ifdef suite hang — full
+# account in crates/lsp/src/spawn.rs). The wrappers themselves, and
+# call sites in provably single-threaded processes, carry
+# `#[allow(clippy::disallowed_methods)]` with a justification.
+disallowed-methods = [
+    { path = "std::process::Command::spawn", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
+    { path = "std::process::Command::status", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
+    { path = "std::process::Command::output", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
+    # Observing the file system: every read, probe and listing goes through
+    # `borzoi::observed`, which counts it per generation
+    # (`docs/incremental-lsp-plan.md`, D3). A call site that no stage routes
+    # yet carries `#[allow(clippy::disallowed_methods)]` naming the stage that
+    # will route it; those allows are the plan's worklist. Writes are not
+    # observations, so they are not banned.
+    { path = "std::fs::read", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::read_to_string", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::read_dir", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::read_link", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::metadata", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::symlink_metadata", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::canonicalize", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::exists", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::File::open", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::OpenOptions::open", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::fs::DirEntry::metadata", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::exists", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::try_exists", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::is_file", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::is_dir", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::is_symlink", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::metadata", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::symlink_metadata", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::canonicalize", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::read_dir", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+    { path = "std::path::Path::read_link", reason = "observe the file system through borzoi::observed — see crates/lsp/clippy.toml" },
+]
+
+# `lsp_types::Uri` wraps a `fluent_uri::Uri`, which caches its parsed
+# authority in a `Cell`; `lsp_types::Uri`'s `Hash`/`Eq` read only
+# `as_str()`, so the cache cannot move a key and `mutable_key_type` is a
+# false positive for it.
+ignore-interior-mutability = ["lsp_types::Uri"]

@@ -12,6 +12,7 @@
 // against a disabled cache on a non-POSIX host.
 #![cfg(unix)]
 
+use crate::common::host_fs::HostPath as _;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -23,10 +24,10 @@ fn find_fsharp_core() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let root = PathBuf::from(home).join(".nuget/packages/fsharp.core");
     let mut best: Option<PathBuf> = None;
-    for ver in std::fs::read_dir(&root).ok()?.flatten() {
+    for ver in crate::common::host_fs::read_dir(&root).ok()?.flatten() {
         for tfm in ["netstandard2.1", "netstandard2.0"] {
             let dll = ver.path().join("lib").join(tfm).join("FSharp.Core.dll");
-            if dll.is_file() {
+            if dll.host_is_file() {
                 best = Some(dll); // last wins; any is fine
             }
         }
@@ -44,7 +45,7 @@ fn projection_survives_cache_round_trip_and_warm_is_faster() {
 
     // Cold: read + parse + project directly (what a cache miss recomputes).
     let compute = || {
-        let bytes = std::fs::read(&dll).unwrap();
+        let bytes = crate::common::host_fs::read(&dll).unwrap();
         Ecma335Assembly::parse(&bytes)
             .unwrap()
             .enumerate_type_defs()

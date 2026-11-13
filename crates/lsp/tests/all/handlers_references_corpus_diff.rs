@@ -40,6 +40,7 @@
 //! a versioned `summary.json` are written under `references-diff/` at the
 //! workspace root; override that with `BORZOI_REFERENCES_DIFF_OUT`.
 
+use crate::common::host_fs::HostPath as _;
 use borzoi::uri::UriExt as _;
 use std::collections::{BTreeSet, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -392,7 +393,7 @@ fn compare_file(file: &FileCensus, ordinal: usize, tally: &mut Tally) {
     if file.has_check_errors {
         tally.fcs_with_check_errors += 1;
     }
-    let Ok(source) = std::fs::read_to_string(&path) else {
+    let Ok(source) = crate::common::host_fs::read_to_string(&path) else {
         tally.unreadable += 1;
         return;
     };
@@ -1015,15 +1016,15 @@ proptest! {
 }
 
 fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::common::host_fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_symlink() {
+        if path.host_is_symlink() {
             continue;
         }
-        if path.is_dir() {
+        if path.host_is_dir() {
             if matches!(
                 path.file_name().and_then(|name| name.to_str()),
                 Some(".git" | "target" | "artifacts" | "bin" | "obj")

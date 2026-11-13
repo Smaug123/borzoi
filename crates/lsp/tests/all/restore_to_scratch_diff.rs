@@ -14,6 +14,7 @@
 //! Requires the .NET SDK + the vendored NuGet cache — the Nix devShell provides
 //! both.
 
+use crate::common::host_fs::HostPath as _;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,7 +53,7 @@ fn restore_to_obj(project: &Path) {
 /// on-disk files they name, not by incidental path spelling.
 fn canonical_set(dlls: &[PathBuf]) -> BTreeSet<PathBuf> {
     dlls.iter()
-        .map(|dll| std::fs::canonicalize(dll).unwrap_or_else(|_| dll.clone()))
+        .map(|dll| crate::common::host_fs::canonicalize(dll).unwrap_or_else(|_| dll.clone()))
         .collect()
 }
 
@@ -83,7 +84,7 @@ fn write_project(tag: &str, item_group: &str) -> PathBuf {
     // By its real path: the on-demand restore declines a project whose
     // directory is reached through a symlink, and the temporary directory is
     // one on macOS.
-    let root = std::fs::canonicalize(&root).unwrap();
+    let root = crate::common::host_fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         format!(
@@ -138,7 +139,7 @@ fn assert_scratch_matches_obj(project: &Path) {
     scratch_dlls.extend(scratch.framework_dlls);
     let scratch_set = canonical_set(&scratch_dlls);
     assert!(
-        !project.parent().unwrap().join("obj").exists(),
+        !project.parent().unwrap().join("obj").host_exists(),
         "the scratch restore must not create the project's obj/"
     );
 
@@ -179,7 +180,7 @@ fn write_multi_project(tag: &str) -> PathBuf {
     // By its real path: the on-demand restore declines a project whose
     // directory is reached through a symlink, and the temporary directory is
     // one on macOS.
-    let root = std::fs::canonicalize(&root).unwrap();
+    let root = crate::common::host_fs::canonicalize(&root).unwrap();
     std::fs::write(
         root.join("App.fsproj"),
         r#"<Project Sdk="Microsoft.NET.Sdk">
@@ -236,11 +237,13 @@ fn explicit_pinned_reference_matches_obj_restore() {
             "    <PackageReference Include=\"FSharp.Core\" Version=\"{FSHARP_CORE_VERSION}\" />"
         ),
     );
-    let text = std::fs::read_to_string(&project).unwrap().replace(
-        "<TargetFramework>net10.0</TargetFramework>",
-        "<TargetFramework>net10.0</TargetFramework>\n    \
+    let text = crate::common::host_fs::read_to_string(&project)
+        .unwrap()
+        .replace(
+            "<TargetFramework>net10.0</TargetFramework>",
+            "<TargetFramework>net10.0</TargetFramework>\n    \
          <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>",
-    );
+        );
     std::fs::write(&project, text).unwrap();
     assert_scratch_matches_obj(&project);
     std::fs::remove_dir_all(project.parent().unwrap()).ok();

@@ -1099,7 +1099,7 @@ public class E { }
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
     let xml = fx.dll.with_extension("xml");
-    let compact: String = std::fs::read_to_string(&xml)
+    let compact: String = crate::common::host_fs::read_to_string(&xml)
         .unwrap()
         .lines()
         .map(str::trim)
@@ -1140,7 +1140,7 @@ public class D : B { }
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
     let xml = fx.dll.with_extension("xml");
-    let compiled = std::fs::read_to_string(&xml).unwrap();
+    let compiled = crate::common::host_fs::read_to_string(&xml).unwrap();
     let body = compiled
         .trim_start()
         .strip_prefix("<?xml version=\"1.0\"?>")
@@ -1697,7 +1697,7 @@ fn accessor_ids_are_known_or_every_method_id_of_the_type_is_suspect() {
     use borzoi::xml_doc::key::DocIdIndex;
     use borzoi_assembly::{EcmaView, Member};
 
-    let bytes = std::fs::read(ensure_system_runtime_dll()).unwrap();
+    let bytes = crate::common::host_fs::read(ensure_system_runtime_dll()).unwrap();
     let view = borzoi_assembly::Ecma335Assembly::parse(&bytes).unwrap();
     let types = view.enumerate_type_defs().unwrap();
     let system = |name: &str, arity: usize| {
@@ -1921,7 +1921,7 @@ public class D : B { }
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
     let xml = fx.dll.with_extension("xml");
-    let compact: String = std::fs::read_to_string(&xml)
+    let compact: String = crate::common::host_fs::read_to_string(&xml)
         .unwrap()
         .lines()
         .map(str::trim)
@@ -1960,7 +1960,7 @@ public class D : B { }
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
     let xml = fx.dll.with_extension("xml");
-    let compiled = std::fs::read_to_string(&xml).unwrap();
+    let compiled = crate::common::host_fs::read_to_string(&xml).unwrap();
     let body = compiled
         .trim_start()
         .strip_prefix("<?xml version=\"1.0\"?>")
@@ -2838,7 +2838,7 @@ public class U
     )
     .unwrap_or_else(|e| panic!("fixture does not compile: {e:#?}"));
     let xml = fx.dll.with_extension("xml");
-    let text = std::fs::read_to_string(&xml).unwrap();
+    let text = crate::common::host_fs::read_to_string(&xml).unwrap();
     let text = text.replacen(
         "<members>",
         "<members>\n        <member name=\"F:F.E.value__\"><summary>The backing field.</summary></member>",

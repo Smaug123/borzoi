@@ -36,6 +36,7 @@ mod ifdef_diagnostics_integration;
 mod incremental_state_machine;
 mod lsp_integration;
 mod lsp_msbuild_user_extensions_e2e;
+mod observed_counts;
 mod parse_cache;
 mod parser_corpus_sweep;
 mod project_assets_integration;

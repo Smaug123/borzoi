@@ -17,6 +17,7 @@
 //!
 //! Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 
+use crate::common::host_fs::HostPath as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -42,7 +43,8 @@ fn fsproj_to_csharp_metadata_e2e() {
     // Everything else about the walk should be clean: exactly one explicit
     // Compile, exactly one ProjectReference pointing at the sibling csproj,
     // and no other diagnostics.
-    let fsproj_src = std::fs::read_to_string(fixture.fsproj_path()).expect("read fsproj");
+    let fsproj_src =
+        crate::common::host_fs::read_to_string(fixture.fsproj_path()).expect("read fsproj");
     let parsed = parse_fsproj(
         &fsproj_src,
         fixture.fsproj_path(),
@@ -77,10 +79,10 @@ fn fsproj_to_csharp_metadata_e2e() {
         "fsproj should declare exactly one ProjectReference, got {:?}",
         parsed.project_references,
     );
-    let pr_canon = std::fs::canonicalize(&parsed.project_references[0].include)
+    let pr_canon = crate::common::host_fs::canonicalize(&parsed.project_references[0].include)
         .expect("canonicalise resolved ProjectReference");
-    let csproj_canon =
-        std::fs::canonicalize(fixture.csproj_path()).expect("canonicalise fixture csproj");
+    let csproj_canon = crate::common::host_fs::canonicalize(fixture.csproj_path())
+        .expect("canonicalise fixture csproj");
     assert_eq!(
         pr_canon, csproj_canon,
         "ProjectReference should resolve to the sibling Lib.csproj",
@@ -103,12 +105,12 @@ fn fsproj_to_csharp_metadata_e2e() {
         .expect("buildMetadata of the C# fixture should succeed");
 
     assert!(
-        result.metadata_dll_path.exists(),
+        result.metadata_dll_path.host_exists(),
         "expected metadata DLL at {}",
         result.metadata_dll_path.display(),
     );
 
-    let bytes = std::fs::read(&result.metadata_dll_path).expect("read emitted DLL");
+    let bytes = crate::common::host_fs::read(&result.metadata_dll_path).expect("read emitted DLL");
     let view = Ecma335Assembly::parse(&bytes).expect("parse emitted DLL");
     let entities = view
         .enumerate_type_defs()

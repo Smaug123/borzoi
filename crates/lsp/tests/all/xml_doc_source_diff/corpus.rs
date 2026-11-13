@@ -25,6 +25,7 @@
 //! `BORZOI_XMLDOC_CORPUS_LIMIT` tune the sample; the manifest describes the
 //! default, so a run with either set checks only the gate.
 
+use crate::common::host_fs::HostPath as _;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -46,15 +47,15 @@ fn env_usize_or(name: &str, default: usize) -> usize {
 }
 
 fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::common::host_fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_symlink() {
+        if path.host_is_symlink() {
             continue;
         }
-        if path.is_dir() {
+        if path.host_is_dir() {
             if matches!(
                 path.file_name().and_then(|s| s.to_str()),
                 Some(".git" | "target" | "artifacts" | "bin" | "obj")
@@ -97,7 +98,7 @@ fn source_docs_match_fcs_over_corpus() {
         let _silence = silence_panics_here();
         for path in &sample {
             let key = corpus_relative(&root, path);
-            let Ok(text) = std::fs::read_to_string(path) else {
+            let Ok(text) = crate::common::host_fs::read_to_string(path) else {
                 manifest.push((key, "skipped unreadable".to_string()));
                 continue;
             };

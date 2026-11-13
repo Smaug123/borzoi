@@ -30,6 +30,7 @@
 //! See [`crate::position::offset_to_position`] for how byte spans (from
 //! roxmltree, by way of the msbuild parser) become UTF-16 LSP positions.
 
+use crate::observed::Unobserved;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -334,7 +335,7 @@ fn reference_problem(target: &Path) -> Option<String> {
             normalized.display(),
         )),
         ProjectKind::FSharp | ProjectKind::CSharp => {
-            if normalized.exists() {
+            if Unobserved::Evaluation.exists(&normalized) {
                 None
             } else {
                 Some(format!(
@@ -471,7 +472,7 @@ fn reference_diagnostic(text: &str, span: &std::ops::Range<usize>, message: Stri
 fn assets_present(project_path: &Path) -> bool {
     project_path
         .parent()
-        .map(|dir| dir.join("obj").join("project.assets.json").exists())
+        .map(|dir| Unobserved::Evaluation.exists(dir.join("obj").join("project.assets.json")))
         .unwrap_or(false)
 }
 

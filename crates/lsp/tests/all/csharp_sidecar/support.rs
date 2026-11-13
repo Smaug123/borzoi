@@ -3,6 +3,7 @@
 //! Split out of the former single-file `csharp_sidecar.rs`; pure code
 //! motion (helpers are unchanged beyond `pub(crate)` visibility).
 
+use crate::common::host_fs::HostPath as _;
 pub use std::collections::{BTreeMap, HashMap};
 pub use std::path::{Path, PathBuf};
 pub use std::process::Command;
@@ -121,7 +122,7 @@ pub(crate) fn diff_sidecar_against_ref_assembly(
 
     let ref_dll = build_ref_assembly(dotnet, &fixture, asm_name, "Debug", "net10.0");
     assert!(
-        ref_dll.exists(),
+        ref_dll.host_exists(),
         "ProduceReferenceAssembly did not produce a DLL at {}",
         ref_dll.display(),
     );
@@ -189,7 +190,8 @@ pub(crate) fn read_and_normalise(
     asm_label: &str,
     user_namespace: &str,
 ) -> NormalisedAssembly {
-    let bytes = std::fs::read(dll).unwrap_or_else(|e| panic!("read {}: {e}", dll.display()));
+    let bytes =
+        crate::common::host_fs::read(dll).unwrap_or_else(|e| panic!("read {}: {e}", dll.display()));
     let view =
         Ecma335Assembly::parse(&bytes).unwrap_or_else(|e| panic!("parse {}: {e:?}", dll.display()));
     let entities = view

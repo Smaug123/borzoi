@@ -90,10 +90,10 @@
 //!   cargo test -p borzoi --test all resolve_real_project_diff:: -- --ignored --nocapture
 //! ```
 
+use crate::common::host_fs::HostPath as _;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 
 use std::cell::OnceCell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::common::{
@@ -284,7 +284,7 @@ fn project_resolution_matches_fcs() {
     // A restored-and-built project the caller chose: resolve it as a host that
     // trusts the workspace would, C# project references included.
     sema.set_csharp_project_references_enabled(true);
-    let docs: HashMap<lsp_types::Uri, String> = HashMap::new();
+    let docs = borzoi::observed::Sources::new();
     let dotnet_root = workspace.dotnet_root_for_project(&project);
 
     let parses = sema
@@ -346,7 +346,7 @@ fn project_resolution_matches_fcs() {
     //    being adjudicated.
     let assets = project_dir.join("obj").join("project.assets.json");
     assert!(
-        assets.is_file(),
+        assets.host_is_file(),
         "no project.assets.json at {assets:?} — restore the project first \
          (`dotnet restore {project:?}`)"
     );

@@ -261,6 +261,14 @@ This is a Cargo workspace with nine members:
   (`docs/fsproj-consumption-plan.md` tracks the remaining consumers).
   `borzoi-assembly` is runtime-live too: referenced assemblies are
   read into each project's `AssemblyEnv` (`crates/lsp/src/semantic.rs`).
+  The crate observes the file system only through `crates/lsp/src/observed.rs`
+  (`docs/incremental-lsp-plan.md`, D3): source reads go through `Sources`,
+  which counts them per generation of the dispatch loop, and every other read
+  is a method of `Unobserved`, whose variant names the reader and the plan
+  stage that will route it. `crates/lsp/clippy.toml` bans the `std` calls
+  everywhere else; test code reaches them through `host_fs` (the lib's
+  `observed::host_fs`, `tests/all/common/host_fs.rs`), never through a
+  wholesale allow, which would also lift the spawn ban.
   Hover's XML documentation lives in `crates/lsp/src/xml_doc/`. Its
   `<inheritdoc>` work is held to Roslyn's IDE through
   `tools/inheritdoc-oracle`, a test-only C# JSONL batch tool (the

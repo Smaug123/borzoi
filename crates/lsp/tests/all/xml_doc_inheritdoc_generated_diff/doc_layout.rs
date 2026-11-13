@@ -468,7 +468,7 @@ fn run(c: &Case) -> Vec<(Compared, BTreeSet<Dim>)> {
     }
     .unwrap_or_else(|e| panic!("the generated program does not compile: {e:#?}\n{source}"));
     let path = fx.dll.with_extension("xml");
-    let compiled = std::fs::read_to_string(&path).unwrap();
+    let compiled = crate::common::host_fs::read_to_string(&path).unwrap();
     let (xml, touched) = render(&entries_of(&compiled), &c.layout);
     std::fs::write(&path, &xml).unwrap();
     let compared = compare(&fx);

@@ -10,6 +10,7 @@
 //! lookup found nothing" rather than "the symbol did not resolve": every
 //! negative case first checks the signature hover is still there.
 
+use crate::common::host_fs::HostPath as _;
 use borzoi::uri::UriExt as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,7 +48,11 @@ struct Shipped {
 fn system_runtime() -> Shipped {
     let dll = ensure_system_runtime_dll();
     let xml = dll.with_extension("xml");
-    assert!(xml.is_file(), "the reference pack ships {}", xml.display());
+    assert!(
+        xml.host_is_file(),
+        "the reference pack ships {}",
+        xml.display()
+    );
     Shipped { dll, xml }
 }
 
@@ -58,7 +63,7 @@ fn sdk_fsharp_core() -> Shipped {
         .map(PathBuf::from)
         .expect("DOTNET_ROOT unset (run under `nix develop`)");
     let sdk = dotnet_root.join("sdk");
-    let mut pairs: Vec<Shipped> = fs::read_dir(&sdk)
+    let mut pairs: Vec<Shipped> = crate::common::host_fs::read_dir(&sdk)
         .unwrap_or_else(|e| panic!("read {}: {e}", sdk.display()))
         .filter_map(Result::ok)
         .map(|e| {
@@ -68,7 +73,7 @@ fn sdk_fsharp_core() -> Shipped {
                 xml: fsharp.join("FSharp.Core.xml"),
             }
         })
-        .filter(|p| p.dll.is_file() && p.xml.is_file())
+        .filter(|p| p.dll.host_is_file() && p.xml.host_is_file())
         .collect();
     pairs.sort_by(|a, b| a.dll.cmp(&b.dll));
     pairs.pop().unwrap_or_else(|| {
@@ -192,7 +197,12 @@ fn project_with(src: &str, runtime_xml: Xml, packages: Vec<Package>) -> Project 
 /// The hover body at the first occurrence of `needle` on `line` (cursor one
 /// character into it).
 fn hover_at(p: &mut Project, line: u32, needle: &str) -> String {
-    let text = p.state.docs[&p.uri].clone();
+    let text = p
+        .state
+        .docs
+        .get(&p.uri)
+        .expect("the document is open")
+        .clone();
     let line_text = text.lines().nth(line as usize).expect("line exists");
     let col = line_text.find(needle).expect("needle on line") as u32 + 1;
     let params = HoverParams {
@@ -279,7 +289,7 @@ fn an_fsharp_core_module_shows_its_doc() {
 /// members show none — though `List.map` has an entry.
 #[test]
 fn an_fsharp_core_function_shows_no_doc() {
-    let shipped = fs::read_to_string(sdk_fsharp_core().xml).unwrap();
+    let shipped = crate::common::host_fs::read_to_string(sdk_fsharp_core().xml).unwrap();
     assert!(shipped.contains(r#"<member name="M:Microsoft.FSharp.Collections.ListModule.Map``2("#));
     let src = "module M\nlet ys = List.map (fun x -> x + 1) [1]\n";
     let mut p = project(src, Xml::Absent, Some(Xml::Shipped));
@@ -293,7 +303,7 @@ fn an_fsharp_core_function_shows_no_doc() {
 /// signature still stands.
 #[test]
 fn a_member_with_no_entry_shows_no_doc() {
-    let shipped = fs::read_to_string(system_runtime().xml).unwrap();
+    let shipped = crate::common::host_fs::read_to_string(system_runtime().xml).unwrap();
     let entry = "<member name=\"M:System.String.IsNullOrEmpty(System.String)\">";
     let start = shipped.find(entry).expect("shipped entry");
     let end = start + shipped[start..].find("</member>").unwrap() + "</member>".len();
@@ -424,7 +434,7 @@ fn every_build_of_an_fsharp_assembly_is_the_fsharp_dialect() {
     use borzoi_assembly::doc_id::DocIdDialect;
     use borzoi_assembly::{Ecma335Assembly, EcmaView};
     for how in [Build::Plain, Build::Stripped] {
-        let bytes = fs::read(measure_key(how).dll).unwrap();
+        let bytes = crate::common::host_fs::read(measure_key(how).dll).unwrap();
         let view = Ecma335Assembly::parse(&bytes).unwrap();
         if let Build::Stripped = how {
             assert_eq!(view.fsharp_resources().unwrap(), Vec::new());
@@ -446,7 +456,7 @@ fn every_build_of_an_fsharp_assembly_is_the_fsharp_dialect() {
 #[test]
 fn an_fsharp_member_never_shows_another_members_doc() {
     let fixture = measure_key(Build::Plain);
-    let shipped = fs::read_to_string(&fixture.xml).unwrap();
+    let shipped = crate::common::host_fs::read_to_string(&fixture.xml).unwrap();
     assert!(
         shipped.contains(r#"<member name="M:MeasureKey.D.F``1(System.Double)">"#),
         "fsc keys `measured` with its measure parameter counted:\n{shipped}"
@@ -484,7 +494,7 @@ fn an_fsharp_member_never_shows_another_members_doc() {
 /// The shipped System.Runtime.xml with the entry for `key` replaced by
 /// `<member name="key">{body}</member>`.
 fn with_entry(key: &str, body: &str) -> String {
-    let shipped = fs::read_to_string(system_runtime().xml).unwrap();
+    let shipped = crate::common::host_fs::read_to_string(system_runtime().xml).unwrap();
     let entry = format!("<member name=\"{key}\">");
     let start = shipped.find(&entry).expect("shipped entry");
     let end = start + shipped[start..].find("</member>").unwrap() + "</member>".len();
@@ -569,7 +579,7 @@ mod keys {
     use super::{sdk_fsharp_core, system_runtime};
 
     fn roots(dll: &Path) -> Vec<Entity> {
-        let bytes = std::fs::read(dll).unwrap();
+        let bytes = crate::common::host_fs::read(dll).unwrap();
         Ecma335Assembly::parse(&bytes)
             .unwrap()
             .enumerate_type_defs()
@@ -577,7 +587,7 @@ mod keys {
     }
 
     fn dialect(dll: &Path) -> DocIdDialect {
-        let bytes = std::fs::read(dll).unwrap();
+        let bytes = crate::common::host_fs::read(dll).unwrap();
         Ecma335Assembly::parse(&bytes)
             .unwrap()
             .doc_id_dialect()

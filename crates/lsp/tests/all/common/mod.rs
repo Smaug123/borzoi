@@ -24,8 +24,10 @@ use std::time::Duration;
 use borzoi_oracle_harness::{BatchChild, default_timeout};
 use borzoi_sema::test_support::{DeclaringEntity, StructuralName, logical_full_name};
 use borzoi_spawn::BoundedCommand;
+use host_fs::HostPath as _;
 use serde::Deserialize;
 
+pub mod host_fs;
 pub mod inheritdoc_diff;
 pub mod inheritdoc_oracle;
 
@@ -156,7 +158,7 @@ pub fn ensure_system_runtime_dll() -> PathBuf {
         .map(PathBuf::from)
         .expect("DOTNET_ROOT unset (run under `nix develop`, or set BORZOI_SYSTEM_RUNTIME_DLL)");
     let packs = dotnet_root.join("packs").join("Microsoft.NETCore.App.Ref");
-    std::fs::read_dir(&packs)
+    crate::common::host_fs::read_dir(&packs)
         .unwrap_or_else(|e| panic!("read ref packs dir {}: {e}", packs.display()))
         .filter_map(|e| e.ok())
         .map(|e| {
@@ -165,7 +167,7 @@ pub fn ensure_system_runtime_dll() -> PathBuf {
                 .join("net10.0")
                 .join("System.Runtime.dll")
         })
-        .find(|p| p.exists())
+        .find(|p| p.host_exists())
         .unwrap_or_else(|| {
             panic!(
                 "no ref/net10.0/System.Runtime.dll under any pack in {}",
@@ -769,8 +771,8 @@ fn ensure_condition_oracle_built() -> &'static Path {
             let marker = bin.join(".msbuild-condition-oracle-built");
             let want = format!("{:016x}", condition_oracle_source_fingerprint(&project));
 
-            let fresh = apphost.exists()
-                && std::fs::read_to_string(&marker)
+            let fresh = apphost.host_exists()
+                && crate::common::host_fs::read_to_string(&marker)
                     .map(|recorded| recorded.trim() == want)
                     .unwrap_or(false);
             if !fresh {
@@ -781,7 +783,7 @@ fn ensure_condition_oracle_built() -> &'static Path {
                     .timeout(BUILD_TIMEOUT)
                     .run_ok("dotnet build msbuild-condition-oracle");
                 assert!(
-                    apphost.exists(),
+                    apphost.host_exists(),
                     "dotnet build msbuild-condition-oracle produced no apphost at {apphost:?}"
                 );
                 let tmp = bin.join(format!(
@@ -804,7 +806,7 @@ fn condition_oracle_source_fingerprint(project: &Path) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut sources: Vec<PathBuf> = std::fs::read_dir(project)
+    let mut sources: Vec<PathBuf> = crate::common::host_fs::read_dir(project)
         .into_iter()
         .flatten()
         .flatten()
@@ -825,7 +827,9 @@ fn condition_oracle_source_fingerprint(project: &Path) -> u64 {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .hash(&mut h);
-        std::fs::read(p).unwrap_or_default().hash(&mut h);
+        crate::common::host_fs::read(p)
+            .unwrap_or_default()
+            .hash(&mut h);
     }
     h.finish()
 }
@@ -1098,7 +1102,7 @@ pub fn doc_key_env(dlls: &[PathBuf]) -> borzoi_sema::AssemblyEnv {
     doc_key_env_of(
         dlls.iter()
             .filter_map(|dll| {
-                let bytes = std::fs::read(dll).ok()?;
+                let bytes = crate::common::host_fs::read(dll).ok()?;
                 let view = Ecma335Assembly::parse(&bytes).ok()?;
                 let roots = view.enumerate_type_defs().ok()?;
                 let dialect = view.doc_id_dialect().expect("doc-ID dialect");
@@ -1143,7 +1147,7 @@ pub fn doc_key_env_of(
 pub fn checkout_key(path: &Path) -> String {
     let root = path
         .ancestors()
-        .find(|d| d.join(".git").exists())
+        .find(|d| d.join(".git").host_exists())
         .unwrap_or_else(|| panic!("{} is not inside a checkout", path.display()));
     let name = root.file_name().unwrap().to_string_lossy();
     let rel = path.strip_prefix(root).unwrap();

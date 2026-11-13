@@ -118,6 +118,7 @@
 //! background worker pool (keeping the single-threaded LSP dispatch loop
 //! responsive) with only the shell around it changing.
 
+use crate::observed::Unobserved;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -340,12 +341,12 @@ pub fn restore_to_scratch(
     // NuGet writes the spec it read, and the assets file, even when
     // resolution fails.
     let Some(spec) = restored_spec_path(&scratch.path, project)
-        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|path| Unobserved::Restore.read_to_string(path).ok())
     else {
         return outcome(RestoreOutcome::Declined);
     };
     let assets_path = scratch.path.join("project.assets.json");
-    let assets_text = std::fs::read_to_string(&assets_path).ok();
+    let assets_text = Unobserved::Restore.read_to_string(&assets_path).ok();
     let shadow = Some(run_shadow(
         env,
         &spec,
@@ -381,7 +382,7 @@ fn run_shadow(
     assets: Option<&str>,
 ) -> ShadowRun {
     let started = std::time::Instant::now();
-    let identity = match std::fs::read_to_string(restore_log(scratch)) {
+    let identity = match Unobserved::Restore.read_to_string(restore_log(scratch)) {
         Ok(log) => nuget_identity::restoring_nuget(&log),
         Err(e) => Err(nuget_identity::IdentityDecline::NoLog(e.to_string())),
     };
@@ -414,7 +415,9 @@ fn run_shadow(
 /// which it writes whether or not the restore succeeds.
 fn nuget_restore_succeeded(scratch: &Path) -> Result<bool, String> {
     let path = scratch.join("project.nuget.cache");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = Unobserved::Restore
+        .read_to_string(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let cache: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     cache["success"]
@@ -525,7 +528,7 @@ fn restore_inputs(project: &Path, env: &SdkDiscoveryEnv) -> Option<RestoreInputs
     // sibling path is the overwhelmingly common lock-file location.
     if project
         .parent()
-        .is_some_and(|dir| dir.join("packages.lock.json").is_file())
+        .is_some_and(|dir| Unobserved::Restore.is_file(dir.join("packages.lock.json")))
     {
         tracing::info!(
             project = %project.display(),
@@ -593,12 +596,15 @@ fn is_within(path: &Path, directory: &Path) -> bool {
     if under(path, directory) {
         return true;
     }
-    let Some(existing) = path.ancestors().find(|ancestor| ancestor.exists()) else {
+    let Some(existing) = path
+        .ancestors()
+        .find(|ancestor| Unobserved::Restore.exists(ancestor))
+    else {
         return true;
     };
     let (Ok(real), Ok(real_directory)) = (
-        std::fs::canonicalize(existing),
-        std::fs::canonicalize(directory),
+        Unobserved::Restore.canonicalize(existing),
+        Unobserved::Restore.canonicalize(directory),
     ) else {
         return true;
     };
@@ -675,7 +681,7 @@ fn loads_the_modelled_config_files(text: &str, inputs: &RestoreInputs) -> bool {
 fn in_its_real_directory(project: &Path) -> Option<PathBuf> {
     let spelt = ordinary(lexically_normalize(&std::path::absolute(project).ok()?));
     let directory = spelt.parent()?;
-    let real = ordinary(std::fs::canonicalize(directory).ok()?);
+    let real = ordinary(Unobserved::Restore.canonicalize(directory).ok()?);
     paths_equal(&real, directory).then_some(spelt)
 }
 
@@ -786,7 +792,7 @@ pub fn restore_graph(
         // A restore that fails to resolve has still written the spec it read.
         (RunResult::Declined | RunResult::Succeeded, _) => {}
     }
-    match std::fs::read_to_string(&written) {
+    match Unobserved::Restore.read_to_string(&written) {
         Ok(text) if loads_the_modelled_config_files(&text, &inputs) => {
             RestoreGraph::Written { text, scratch }
         }
@@ -881,7 +887,7 @@ fn offline_restore_command(
         "dotnet"
     };
     let dotnet_exe = dotnet_root.join(dotnet_exe_name);
-    let mut cmd = if dotnet_exe.is_file() {
+    let mut cmd = if Unobserved::Restore.is_file(&dotnet_exe) {
         Command::new(dotnet_exe)
     } else {
         Command::new(dotnet_exe_name)

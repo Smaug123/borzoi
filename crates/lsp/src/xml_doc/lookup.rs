@@ -8,6 +8,7 @@
 //! installation — and collapsing them into an `Option` is how a "we did not
 //! look" comes to be read as "provably none".
 
+use crate::observed::Unobserved;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -90,7 +91,7 @@ impl DocFileCache {
     /// The index of the doc file at `path`, parsing it if this version of it
     /// has not been parsed yet.
     pub fn load(&mut self, path: &Path) -> Result<Arc<DocFile>, LoadError> {
-        let meta = match std::fs::metadata(path) {
+        let meta = match Unobserved::XmlDoc.metadata(path) {
             Ok(meta) if meta.is_file() => meta,
             Ok(_) => {
                 self.files.remove(path);
@@ -111,7 +112,9 @@ impl DocFileCache {
         {
             return parsed.clone().map_err(LoadError::Doc);
         }
-        let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
+        let bytes = Unobserved::XmlDoc
+            .read(path)
+            .map_err(|e| LoadError::Io(e.to_string()))?;
         let parsed = {
             let _span =
                 tracing::info_span!("parse_xml_doc", path = %path.display(), bytes = bytes.len())

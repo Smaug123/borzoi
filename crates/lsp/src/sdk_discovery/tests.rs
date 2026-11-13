@@ -1,3 +1,4 @@
+use crate::observed::host_fs::HostPath as _;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -81,7 +82,7 @@ fn dotnet_root_falls_back_to_path_lookup() {
     });
     let resolved = resolve_dotnet_root(&env).expect("found on PATH");
 
-    let expected = fs::canonicalize(&dotnet_install).unwrap();
+    let expected = crate::observed::host_fs::canonicalize(&dotnet_install).unwrap();
     assert_eq!(resolved, expected);
 }
 
@@ -108,7 +109,7 @@ fn dotnet_root_canonicalises_symlinks_on_path() {
     });
     let resolved = resolve_dotnet_root(&env).expect("found via symlink");
 
-    let expected = fs::canonicalize(&real_install).unwrap();
+    let expected = crate::observed::host_fs::canonicalize(&real_install).unwrap();
     assert_eq!(
         resolved, expected,
         "should return the real install root, not the symlink's parent dir"
@@ -133,7 +134,10 @@ fn dotnet_root_skips_path_entries_without_dotnet() {
     let env = env_with(|e| e.search_path = Some(path_joined));
     let resolved = resolve_dotnet_root(&env).expect("found in third PATH entry");
 
-    assert_eq!(resolved, fs::canonicalize(&real).unwrap());
+    assert_eq!(
+        resolved,
+        crate::observed::host_fs::canonicalize(&real).unwrap()
+    );
 }
 
 #[test]
@@ -161,7 +165,7 @@ fn dotnet_root_skips_shim_dir_without_sdk_sibling() {
 
     assert_eq!(
         resolved,
-        fs::canonicalize(&real).unwrap(),
+        crate::observed::host_fs::canonicalize(&real).unwrap(),
         "should skip the shim dir (no sdk/ sibling) and pick the real install"
     );
 }
@@ -298,7 +302,7 @@ fn discovery_never_executes_a_dotnet_shim_on_path() {
     for &(label, global_json, paths) in cases {
         for explicit_root in [false, true] {
             let tmp = TempDir::new().unwrap();
-            let root = fs::canonicalize(tmp.path()).unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
             let reported = root.join("reported-by-shim");
             install_sdk(&reported, "8.0.401", "Microsoft.NET.Sdk");
             let alt = root.join("alt");
@@ -337,7 +341,7 @@ fn discovery_never_executes_a_dotnet_shim_on_path() {
             let outcome = SdkDiscovery::for_project(&project, &env);
             let case = format!("{label}, DOTNET_ROOT set: {explicit_root}");
             assert!(
-                !sentinel.exists(),
+                !sentinel.host_exists(),
                 "{case}: discovery executed the `dotnet` shim on PATH"
             );
             match (expected, outcome) {

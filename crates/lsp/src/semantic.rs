@@ -11,7 +11,7 @@
 //! invalidates strictly by project path; sema's prefix-monotone fold makes
 //! sub-project incrementality a later optimisation, not a v1 requirement.
 
-use crate::uri::UriExt as _;
+use crate::observed::{Sources, Unobserved};
 use borzoi_cst::parser::FileKind;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -27,7 +27,6 @@ use borzoi_sema::{
     AbbreviationVisibility, AssemblyEnv, InferredProject, ProjectFile, ResolvedProject, SourceFile,
     SyntaxRecovery,
 };
-use lsp_types::Uri;
 
 use crate::assembly_cache::AssemblyCache;
 use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
@@ -1010,7 +1009,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Uri, String>,
+        docs: &Sources,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
         // `usize::MAX` clamps to the project size, i.e. the whole project.
         self.resolved_prefix_and_env_for(project, usize::MAX, workspace, docs)
@@ -1037,7 +1036,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &HashMap<Uri, String>,
+        docs: &Sources,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
         let key = ProjectId::new(project);
         let project = key.as_path();
@@ -1296,7 +1295,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &HashMap<Uri, String>,
+        docs: &Sources,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>, Arc<InferredProject>)> {
         let (resolved, env) =
             self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)?;
@@ -1347,7 +1346,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Uri, String>,
+        docs: &Sources,
     ) -> Option<Arc<ResolvedProject>> {
         self.resolved_project_and_env_for(project, workspace, docs)
             .map(|(resolved, _env)| resolved)
@@ -1366,7 +1365,7 @@ impl SemanticState {
         project: &Path,
         up_to_index: usize,
         workspace: &mut Workspace,
-        docs: &HashMap<Uri, String>,
+        docs: &Sources,
     ) -> Option<Arc<ResolvedProject>> {
         self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)
             .map(|(resolved, _env)| resolved)
@@ -1391,14 +1390,15 @@ impl SemanticState {
     /// discipline).
     ///
     /// `docs` is the live buffer map ([`crate::server::State::docs`]); a
-    /// missing entry falls through to [`crate::disk_text::read`]. A file we
+    /// missing entry falls through to a counted disk read
+    /// ([`Sources::text_of`]). A file we
     /// can read neither from the buffer nor from disk is skipped — never an
     /// error, never a panic.
     pub fn parses_for_project<'a>(
         &'a mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Uri, String>,
+        docs: &Sources,
     ) -> Option<&'a ProjectParses> {
         let key = ProjectId::new(project);
         if !self.project_parses.contains_key(&key) {
@@ -1421,7 +1421,7 @@ impl SemanticState {
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
-        docs: &HashMap<Uri, String>,
+        docs: &Sources,
     ) -> Result<ProjectParses, FoldRefusal> {
         let key = ProjectId::new(project);
         let outcome = build_parses(key.as_path(), workspace, docs, &mut self.file_parses);
@@ -1458,7 +1458,7 @@ impl SemanticState {
 fn build_parses(
     project: &Path,
     workspace: &mut Workspace,
-    docs: &HashMap<Uri, String>,
+    docs: &Sources,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
 ) -> Result<ProjectParses, FoldRefusal> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
@@ -1553,7 +1553,7 @@ fn build_parses(
         // module — a *wrong* go-to-def, not just under-resolution. Per
         // correctness-over-availability we refuse the project; handlers fall
         // back to single-file `resolve_file` for orphan-style queries.
-        let Some(text) = read_text(&include, docs) else {
+        let Some(text) = docs.text_of(&include) else {
             tracing::warn!(
                 file = %include.display(),
                 "Compile item unreadable from buffer and disk; refusing to resolve project"
@@ -2113,7 +2113,7 @@ fn resolve_reference_dlls(
     // present-file branch does, so cross-project F#/C# edges resolve in both
     // cases. A cold cache / timeout / no restore environment declines to today's
     // empty env.
-    let resolved = if assets_path.is_file() {
+    let resolved = if Unobserved::EnvResolution.is_file(&assets_path) {
         // Root-only enumeration: the assets file supplies only *artifacts* here
         // (package/framework DLLs and per-producer TFMs — the edges are
         // `ref_targets`'), and chasing the transitive closure would error on a
@@ -2473,7 +2473,14 @@ fn entry_ref_tfms(entry_project: &Path, entry_tfm: Option<&str>) -> BTreeMap<Pat
     match resolve_transitive_project_tfms(entry_project, tfm) {
         Ok(map) => map
             .into_iter()
-            .map(|(path, tfm)| (std::fs::canonicalize(&path).unwrap_or(path), tfm))
+            .map(|(path, tfm)| {
+                (
+                    Unobserved::EnvResolution
+                        .canonicalize(&path)
+                        .unwrap_or(path),
+                    tfm,
+                )
+            })
             .collect(),
         Err(err) => {
             tracing::info!(
@@ -2497,7 +2504,7 @@ fn dotnet_exe_for(dotnet_root: &Path) -> PathBuf {
         "dotnet"
     };
     let candidate = dotnet_root.join(exe);
-    if candidate.is_file() {
+    if Unobserved::EnvResolution.is_file(&candidate) {
         candidate
     } else {
         PathBuf::from(exe)
@@ -2677,7 +2684,7 @@ fn locate_fsharp_output_dll(
             // put an output we could not examine into the proven-absence
             // bucket. Ask for the metadata so a non-`NotFound` error is a
             // refusal to decide instead.
-            match dll.metadata() {
+            match Unobserved::EnvResolution.metadata(&dll) {
                 Ok(meta) if meta.is_file() => {
                     candidates.push(dll);
                     tfm_dirs.push(dir_name.to_ascii_lowercase());
@@ -2766,7 +2773,7 @@ enum OutputLocation {
 /// hide the matching directory and make an unread tree look empty, so both
 /// propagate.
 fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match Unobserved::EnvResolution.read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
         Err(err) => {
@@ -2784,7 +2791,7 @@ fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
             }
         };
         let path = entry.path();
-        match path.metadata() {
+        match Unobserved::EnvResolution.metadata(&path) {
             Ok(meta) if meta.is_dir() => dirs.push(path),
             Ok(_) => {}
             // A dangling symlink, or an entry unlinked between the `read_dir`
@@ -3142,7 +3149,7 @@ fn enumerate_dll_type_defs_cached(
 /// — the file is not a managed assembly — from every refusal that is a fact
 /// about *this reader*. Only the latter leaves anything unknown.
 fn enumerate_dll_type_defs(path: &Path) -> Result<ReferencedAssemblyProjection, SkipCause> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match Unobserved::EnvResolution.read(path) {
         Ok(b) => b,
         Err(err) => {
             tracing::warn!(dll = %path.display(), error = %err, "failed to read DLL; skipping");
@@ -3310,27 +3317,6 @@ fn catch_reader_panic<T>(path: &Path, stage: &str, op: impl FnOnce() -> T) -> Op
     }
 }
 
-/// Pick the text for `path`: prefer the editor buffer if open, else read
-/// from disk. `None` if neither is available.
-///
-/// Buffer lookup is by **platform path equality**, not by exact `Uri` match:
-/// on case-insensitive filesystems (Windows, macOS) the client may open
-/// `lib.fs` while the project lists `Lib.fs`, and the buffer must still win
-/// over disk. Matches the rule [`crate::workspace::Workspace::owning_project`]
-/// already uses, so an open buffer that decides project ownership also
-/// supplies the text we fold. O(N) over open `docs`; N is small in practice.
-fn read_text(path: &Path, docs: &HashMap<Uri, String>) -> Option<String> {
-    let target = lexically_normalize(path);
-    for (url, text) in docs {
-        if let Ok(doc_path) = url.to_file_path()
-            && paths_equal(&lexically_normalize(&doc_path), &target)
-        {
-            return Some(text.clone());
-        }
-    }
-    crate::disk_text::read(path).ok()
-}
-
 /// A file's identity *as a file*: its real path, or the literal path when
 /// `canonicalize` fails (e.g. the file doesn't exist on disk yet).
 ///
@@ -3339,7 +3325,9 @@ fn read_text(path: &Path, docs: &HashMap<Uri, String>) -> Option<String> {
 /// file. Never for identifying a *project*: two spellings of one `.fsproj` can
 /// be two different MSBuild projects (see [`ProjectId`]).
 fn canonicalise(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    Unobserved::EnvResolution
+        .canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// A project, identified by the spelling it is evaluated under: the caller's
@@ -3422,6 +3410,7 @@ fn is_signature_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::observed::host_fs::HostPath as _;
 
     use proptest::prelude::*;
 
@@ -3492,11 +3481,13 @@ mod tests {
     }
 
     use super::*;
+    use crate::uri::UriExt as _;
     use borzoi_assembly::{
         Access, AssemblyIdentity, AssemblyProjectionSkips, EntityKind, FSharpResource,
         FsharpOverlayKind, ImportError, SkippedFsharpOverlay, UnionCases, Version,
     };
     use borzoi_sema::test_support::names::rekeyed;
+    use lsp_types::Uri;
     use std::fs;
     use tempfile::TempDir;
 
@@ -3712,7 +3703,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("project parses");
         assert_eq!(parses.len(), 2);
         assert!(parses.paths[0].ends_with("A.fs"));
@@ -3733,14 +3724,14 @@ mod tests {
         // First lookup with no buffer: disk wins.
         {
             let parses = sema
-                .parses_for_project(&proj, &mut ws, &HashMap::new())
+                .parses_for_project(&proj, &mut ws, &Sources::new())
                 .expect("project parses");
             assert!(text_contains(&parses.texts[0], "disk"));
         }
 
         // Now overlay a buffer and force a re-build (invalidate first).
         sema.invalidate_project(&proj);
-        let mut docs = HashMap::new();
+        let mut docs = Sources::new();
         docs.insert(
             Uri::from_file_path(&file).unwrap(),
             "let buffer = 1\n".to_string(),
@@ -3768,7 +3759,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &HashMap::new())
+            sema.parses_for_project(&proj, &mut ws, &Sources::new())
                 .is_none()
         );
     }
@@ -3798,7 +3789,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("a .fsi-bearing project folds (Stage 1)")
             .clone();
         assert_eq!(parses.len(), 3, "the .fsi keeps its Compile slot");
@@ -3809,7 +3800,7 @@ mod tests {
         assert!(parses.files[1].file.as_impl().is_some());
 
         let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+            .resolved_project_for(&proj, &mut ws, &Sources::new())
             .expect("a .fsi-bearing project resolves (Stage 1)");
         assert_eq!(resolved.len(), 3);
         // The signature slot owns no exports of its own; its surface rides
@@ -3854,13 +3845,13 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("a namespace-headed .fsi project folds (Stage 1)")
             .clone();
         assert_eq!(parses.len(), 2);
         assert!(parses.files[0].file.as_sig().is_some());
         assert!(
-            sema.resolved_project_for(&proj, &mut ws, &HashMap::new())
+            sema.resolved_project_for(&proj, &mut ws, &Sources::new())
                 .is_some()
         );
     }
@@ -3884,7 +3875,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("an uppercase .FSI project folds (Stage 1)")
             .clone();
         assert!(
@@ -3913,7 +3904,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &HashMap::new())
+            sema.parses_for_project(&proj, &mut ws, &Sources::new())
                 .is_none()
         );
     }
@@ -3946,7 +3937,7 @@ mod tests {
             assert!(!parsed.items_uncertain, "but the Compile set is intact");
         }
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("trustworthy Compile set must still yield parses");
         assert_eq!(parses.paths.len(), 1);
     }
@@ -3972,7 +3963,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let cold = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("first parses")
             .files[0]
             .recovery
@@ -3982,7 +3973,7 @@ mod tests {
         // what makes the rebuild take the hit branch rather than re-parse.
         sema.invalidate_project(&proj);
         let hit = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("rebuilt parses")
             .files[0]
             .recovery
@@ -4073,7 +4064,7 @@ mod tests {
 
         {
             let parses = sema
-                .parses_for_project(&proj, &mut ws, &HashMap::new())
+                .parses_for_project(&proj, &mut ws, &Sources::new())
                 .expect("first parses");
             assert!(text_contains(&parses.texts[0], "first"));
         }
@@ -4082,7 +4073,7 @@ mod tests {
         fs::write(&file, "let second = 2\n").unwrap();
         {
             let parses = sema
-                .parses_for_project(&proj, &mut ws, &HashMap::new())
+                .parses_for_project(&proj, &mut ws, &Sources::new())
                 .expect("cached parses");
             assert!(
                 text_contains(&parses.texts[0], "first"),
@@ -4094,7 +4085,7 @@ mod tests {
         // After invalidation the on-disk edit shows up.
         sema.invalidate_project(&proj);
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("rebuilt parses");
         assert!(text_contains(&parses.texts[0], "second"));
     }
@@ -4121,7 +4112,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("project parses");
         let resolved = resolve_file(
             parses.files[0]
@@ -4170,7 +4161,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let parses = sema
-            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .parses_for_project(&proj, &mut ws, &Sources::new())
             .expect("project parses");
 
         assert_eq!(parses.len(), 3, "{:?}", parses.paths);
@@ -4197,7 +4188,7 @@ mod tests {
 
         // Open the buffer under a different casing.
         let opened = tmp.path().join("lib.fs");
-        let mut docs = HashMap::new();
+        let mut docs = Sources::new();
         docs.insert(
             Uri::from_file_path(&opened).unwrap(),
             "let buffer = 1\n".to_string(),
@@ -4303,7 +4294,7 @@ mod tests {
         // reach the developer's real `~/.nuget`. The other fields the resolver
         // reads (targets/libraries/project.frameworks) are left untouched.
         let nuget = tmp.path().join("nuget");
-        let raw = fs::read_to_string(&fixture).unwrap();
+        let raw = crate::observed::host_fs::read_to_string(&fixture).unwrap();
         let mut doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let mut folders = serde_json::Map::new();
         folders.insert(
@@ -4635,7 +4626,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &HashMap::new())
+            sema.parses_for_project(&proj, &mut ws, &Sources::new())
                 .is_none(),
             "unknowable version × version-dependent parse shape must refuse the fold"
         );
@@ -4648,7 +4639,7 @@ mod tests {
         );
         write(&tmp.path().join("Plain/B.fs"), "let b = 1\n");
         assert!(
-            sema.parses_for_project(&plain, &mut ws, &HashMap::new())
+            sema.parses_for_project(&plain, &mut ws, &Sources::new())
                 .is_some(),
             "a version-invariant parse is provably safe under any LangVersion"
         );
@@ -4666,7 +4657,7 @@ mod tests {
         );
         write(&tmp.path().join("MidEdit/D.fs"), "module M =\n");
         assert!(
-            sema.parses_for_project(&midedit, &mut ws, &HashMap::new())
+            sema.parses_for_project(&midedit, &mut ws, &Sources::new())
                 .is_some(),
             "a flagged parse that reconverges to the same tree is provably \
              safe and must fold"
@@ -4685,7 +4676,7 @@ mod tests {
         );
         write(&tmp.path().join("Pinned/C.fs"), straddling);
         assert!(
-            sema.parses_for_project(&pinned, &mut ws, &HashMap::new())
+            sema.parses_for_project(&pinned, &mut ws, &Sources::new())
                 .is_some(),
             "a trustworthily pinned version resolves the shape dependence"
         );
@@ -4718,7 +4709,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = HashMap::new();
+        let docs = Sources::new();
         assert!(
             sema.parses_for_project(&proj, &mut ws, &docs).is_some(),
             "multi-TFM project must fold under the chosen TFM"
@@ -4785,7 +4776,7 @@ mod tests {
         );
 
         let recovered = entry_ref_tfms(&entry, Some("net8.0-windows"));
-        let canon_cs = fs::canonicalize(&cs).unwrap();
+        let canon_cs = crate::observed::host_fs::canonicalize(&cs).unwrap();
         assert_eq!(
             recovered.get(&canon_cs).map(String::as_str),
             Some("net8.0-windows"),
@@ -4939,7 +4930,7 @@ mod tests {
         assert_eq!(
             targets.fsharp,
             vec![FsharpRefTarget {
-                path: fs::canonicalize(&dep).unwrap(),
+                path: crate::observed::host_fs::canonicalize(&dep).unwrap(),
                 tfm: crate::project_graph::NodeTfm::NotEvaluated,
                 output_name: None,
             }]
@@ -4983,7 +4974,7 @@ mod tests {
                     .expect("spawn dotnet build for MiniLibFs fixture");
                 assert!(status.success(), "dotnet build MiniLibFs fixture failed");
                 let dll = project.join("bin/Release/net10.0/MiniLibFs.dll");
-                std::fs::read(&dll).expect("read MiniLibFs.dll fixture")
+                crate::observed::host_fs::read(&dll).expect("read MiniLibFs.dll fixture")
             })
             .clone()
     }
@@ -4996,12 +4987,14 @@ mod tests {
     /// dirs yields a pristine source tree that builds from scratch.
     fn copy_tree_no_build_dirs(src: &Path, dst: &Path) {
         fs::create_dir_all(dst).unwrap_or_else(|e| panic!("create {}: {e}", dst.display()));
-        for entry in fs::read_dir(src).unwrap_or_else(|e| panic!("read {}: {e}", src.display())) {
+        for entry in crate::observed::host_fs::read_dir(src)
+            .unwrap_or_else(|e| panic!("read {}: {e}", src.display()))
+        {
             let entry = entry.expect("read fixture tree entry");
             let name = entry.file_name();
             let from = entry.path();
             let to = dst.join(&name);
-            if from.is_dir() {
+            if from.host_is_dir() {
                 if name == "bin" || name == "obj" {
                     continue;
                 }
@@ -5951,11 +5944,11 @@ mod tests {
         );
 
         assert!(
-            !sentinel.exists(),
+            !sentinel.host_exists(),
             "the sidecar's `dotnet` ran although C# project references are off"
         );
         assert!(
-            !tmp.path().join("obj/borzoi").exists(),
+            !tmp.path().join("obj/borzoi").host_exists(),
             "something wrote under obj/borzoi/ although C# project references are off"
         );
         assert!(
@@ -5974,7 +5967,8 @@ mod tests {
         assert_eq!(
             refs.edges,
             [ReferenceEdge {
-                project: fs::canonicalize(tmp.path().join("Cs/Cs.csproj")).unwrap(),
+                project: crate::observed::host_fs::canonicalize(tmp.path().join("Cs/Cs.csproj"))
+                    .unwrap(),
                 outcome: ReferenceOutcome::Unread {
                     why: CSHARP_REFERENCES_DISABLED,
                     transient: false,
@@ -5983,8 +5977,8 @@ mod tests {
         );
         assert!(CSHARP_REFERENCES_DISABLED.contains("`enableCSharpProjectReferences`"));
         assert!(!refs.retryable);
-        assert!(!sentinel.exists());
-        assert!(!tmp.path().join("obj/borzoi").exists());
+        assert!(!sentinel.host_exists());
+        assert!(!tmp.path().join("obj/borzoi").host_exists());
     }
 
     /// The control that keeps the test above from passing vacuously: on the
@@ -6006,7 +6000,7 @@ mod tests {
         );
 
         assert!(
-            sentinel.exists(),
+            sentinel.host_exists(),
             "with C# project references on, the env build must start the sidecar"
         );
         assert!(env.identities_incomplete());
@@ -6019,7 +6013,8 @@ mod tests {
         assert_eq!(
             refs.edges,
             [ReferenceEdge {
-                project: fs::canonicalize(tmp.path().join("Cs/Cs.csproj")).unwrap(),
+                project: crate::observed::host_fs::canonicalize(tmp.path().join("Cs/Cs.csproj"))
+                    .unwrap(),
                 outcome: ReferenceOutcome::Unread {
                     why: "the sidecar produced no metadata assembly",
                     transient: false,
@@ -6042,7 +6037,7 @@ mod tests {
             &ServedTfm::NoneDeclared,
             &Workspace::default(),
         );
-        assert!(!sentinel.exists());
+        assert!(!sentinel.host_exists());
 
         sema.set_csharp_project_references_enabled(true);
         let on = sema.assembly_env_for_project(
@@ -6055,7 +6050,7 @@ mod tests {
             !Arc::ptr_eq(&off, &on),
             "the env built with C# references off was served after turning them on"
         );
-        assert!(sentinel.exists(), "the rebuilt env drives the sidecar");
+        assert!(sentinel.host_exists(), "the rebuilt env drives the sidecar");
     }
 
     /// Graph-sourced edges (plan E1/E2): a project reference recorded in a
@@ -6691,7 +6686,7 @@ mod tests {
         // the projector's positive determination, not via some earlier refusal
         // that would make the assertions below pass for the wrong reason.
         assert_eq!(
-            Ecma335Assembly::parse(&std::fs::read(&native).unwrap()).err(),
+            Ecma335Assembly::parse(&crate::observed::host_fs::read(&native).unwrap()).err(),
             Some(ImportError::NotAManagedAssembly)
         );
         assert_eq!(
@@ -6741,7 +6736,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let resolved = sema
-            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+            .resolved_project_for(&proj, &mut ws, &Sources::new())
             .expect("resolved project");
         assert_eq!(resolved.len(), 2);
 
@@ -6783,7 +6778,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         assert!(
-            sema.resolved_project_for(&proj, &mut ws, &HashMap::new())
+            sema.resolved_project_for(&proj, &mut ws, &Sources::new())
                 .is_none()
         );
     }
@@ -6800,10 +6795,10 @@ mod tests {
         let mut sema = SemanticState::new();
 
         let first = sema
-            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+            .resolved_project_for(&proj, &mut ws, &Sources::new())
             .expect("first fold");
         let second = sema
-            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+            .resolved_project_for(&proj, &mut ws, &Sources::new())
             .expect("cached fold");
         assert!(
             Arc::ptr_eq(&first, &second),
@@ -6813,7 +6808,7 @@ mod tests {
         // A text-sync invalidation forces a re-fold; the new Arc differs.
         sema.invalidate_project(&proj);
         let third = sema
-            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+            .resolved_project_for(&proj, &mut ws, &Sources::new())
             .expect("re-fold after invalidate");
         assert!(
             !Arc::ptr_eq(&first, &third),
@@ -6832,7 +6827,7 @@ mod tests {
         write(&proj, &fsproj(&["Lib.fs"]));
         write(&file, "let disk = 1\n");
 
-        let mut docs = HashMap::new();
+        let mut docs = Sources::new();
         docs.insert(
             Uri::from_file_path(&file).unwrap(),
             "let buffer = 1\n".to_string(),
@@ -6873,7 +6868,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Uri, String> = HashMap::new();
+        let mut docs = Sources::new();
         sema.resolved_project_for(&proj, &mut ws, &docs)
             .expect("warm initial");
 
@@ -6950,7 +6945,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Uri, String> = HashMap::new();
+        let mut docs = Sources::new();
         sema.inferred_prefix_for(&proj, 2, &mut ws, &docs)
             .expect("warm initial");
         assert_eq!(
@@ -6959,7 +6954,7 @@ mod tests {
             "a first fold is cold"
         );
 
-        let cold = |docs: &HashMap<Uri, String>| {
+        let cold = |docs: &Sources| {
             let mut ws = Workspace::default();
             let mut sema = SemanticState::new();
             sema.inferred_prefix_for(&proj, 2, &mut ws, docs)
@@ -7027,7 +7022,7 @@ mod tests {
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
         let warm0 = sema
-            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+            .resolved_project_for(&proj, &mut ws, &Sources::new())
             .expect("warm");
         assert!(
             matches!(
@@ -7038,7 +7033,7 @@ mod tests {
         );
 
         // Remove A.x through a buffer overlay and re-fold incrementally.
-        let mut docs = HashMap::new();
+        let mut docs = Sources::new();
         docs.insert(a_uri, "module A\nlet other = 1\n".to_string());
         sema.invalidate_project(&proj);
         let warm1 = sema
@@ -7073,7 +7068,7 @@ mod tests {
         write(&tmp.path().join("B.fs"), b_src);
         let b_uri = Uri::from_file_path(tmp.path().join("B.fs")).unwrap();
         let b_edit = "module D\nmodule A =\n    module D =\n        let z = 2\nlet y = (A.B.C.x)\n";
-        let buffers = |text: &str| -> HashMap<Uri, String> {
+        let buffers = |text: &str| -> Sources {
             std::iter::once((b_uri.clone(), text.to_string())).collect()
         };
 
@@ -7085,7 +7080,7 @@ mod tests {
             let mut sema = SemanticState::new();
             sema.name_table_cap = NameTableCap(cap);
             let (_, first) = sema
-                .resolved_project_and_env_for(&proj, &mut ws, &HashMap::new())
+                .resolved_project_and_env_for(&proj, &mut ws, &Sources::new())
                 .expect("first fold");
             let first_entries = first.interned_count();
             sema.invalidate_project(&proj);
@@ -7137,7 +7132,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = HashMap::new();
+        let docs = Sources::new();
         sema.resolved_project_for(&proj, &mut ws, &docs)
             .expect("initial");
         assert_eq!(
@@ -7186,7 +7181,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = HashMap::new();
+        let docs = Sources::new();
 
         // Request file 0 (A): folds only file 0, so C and B are never resolved.
         let (p0, _) = sema
@@ -7264,7 +7259,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Uri, String> = HashMap::new();
+        let mut docs = Sources::new();
 
         // Warm: request file 2 (C) — folds prefix [0, 1, 2], not D.
         let (p, _) = sema
@@ -7323,7 +7318,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Uri, String> = HashMap::new();
+        let mut docs = Sources::new();
 
         // Warm the FULL project (as a hover/references request would).
         let (full, _) = sema
@@ -7377,7 +7372,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Uri, String> = HashMap::new();
+        let mut docs = Sources::new();
 
         // Warm the whole project (as an open editor would): a cold fold, no refresh.
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
@@ -7418,7 +7413,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Uri, String> = HashMap::new();
+        let mut docs = Sources::new();
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("warm");
         assert!(
@@ -7451,7 +7446,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let docs = HashMap::new();
+        let docs = Sources::new();
 
         // Token request for the first file: a short prefix, cold, no refresh.
         sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
@@ -7484,7 +7479,7 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
-        let mut docs: HashMap<Uri, String> = HashMap::new();
+        let mut docs = Sources::new();
         sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
             .expect("warm");
         assert!(!sema.take_wants_refresh());

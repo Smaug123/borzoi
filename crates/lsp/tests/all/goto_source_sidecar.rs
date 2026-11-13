@@ -88,7 +88,7 @@ fn embedded_pdb_id_equals_the_dll_codeview_id() {
     // equals the GUID++stamp the DLL records in its CodeView entry. This is the
     // exact comparison `sidecar_pdb_matches` makes for a sidecar `.pdb`.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes)
         .expect("debug directory parses")
         .expect("FSharp.Core ships an embedded portable PDB");
@@ -106,7 +106,7 @@ fn definition_source_reads_a_standalone_pdb_image() {
     // would inflate. Feeding the extracted image straight to the image-taking
     // core yields the same result as the embedded convenience wrapper.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let pdb = PortablePdb::read(&image).unwrap();
     let rid = (1..=pdb.method_debug_info_count())
@@ -126,7 +126,7 @@ fn pdb_image_for_prefers_the_embedded_pdb() {
     // When the DLL embeds its PDB, no sidecar is consulted: the result is the
     // embedded image, even with nothing on disk beside the DLL.
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let embedded = embedded_portable_pdb(&bytes).unwrap().unwrap();
     assert_eq!(pdb_image_for(&dll, &bytes), Some(embedded));
 }
@@ -134,7 +134,7 @@ fn pdb_image_for_prefers_the_embedded_pdb() {
 #[test]
 fn pdb_image_for_loads_a_matching_sidecar() {
     let dll = ensure_fsharp_core_dll();
-    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let bytes = crate::common::host_fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
     let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
     let stripped = strip_embedded_pdb_entry(&bytes);
     assert!(

@@ -105,7 +105,7 @@ fn build_metadata_ivt_internal_survives_metadata_only_emit() {
         .expect("sidecar buildMetadata succeeds on the IVT fixture");
     handle.shutdown().expect("shutdown clean");
 
-    let bytes = std::fs::read(&result.metadata_dll_path).expect("read sidecar DLL");
+    let bytes = crate::common::host_fs::read(&result.metadata_dll_path).expect("read sidecar DLL");
     let view = Ecma335Assembly::parse(&bytes).expect("parse sidecar DLL");
     let entities = view.enumerate_type_defs().expect("enumerate type defs");
 
