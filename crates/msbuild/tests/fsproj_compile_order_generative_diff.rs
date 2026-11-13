@@ -808,12 +808,12 @@ fn check_certain_implies_exact(fixture: &Fixture) -> Result<bool, TestCaseError>
 #[test]
 fn certain_compile_order_matches_msbuild() {
     let mut runner = TestRunner::new(ProptestConfig {
-        // 256 cases cost a couple of seconds; set
+        // 1,000 cases cost about five seconds; set
         // `BORZOI_COMPILE_ORDER_CASES` to sweep deeper.
         cases: std::env::var("BORZOI_COMPILE_ORDER_CASES")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(256),
+            .unwrap_or(1000),
         source_file: Some(file!()),
         ..ProptestConfig::default()
     });
