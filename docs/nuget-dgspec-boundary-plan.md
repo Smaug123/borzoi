@@ -1389,8 +1389,9 @@ it makes of them.
 #### A₁.1: the item seam
 
 `borzoi_nuget::dgspec::from_restore_graph_items` takes the entries as the task
-reads them and returns the `DependencyGraphSpec` that NuGet would write, or
-declines. The entries are a type plus metadata, after `ITaskItem.GetMetadata`
+reads them, together with the task's `RestoreRecursive` flag (true by
+default, which puts every `PackageReference` project in `restore`), and
+returns the `DependencyGraphSpec` that NuGet would write, or declines. The entries are a type plus metadata, after `ITaskItem.GetMetadata`
 has unescaped it. The function declines anything it does not model, in the
 same way `parse_dgspec` does: a project style other than `PackageReference`,
 runtime identifiers, `PackageTargetFallback`, C++/CLI, and any value the typed
