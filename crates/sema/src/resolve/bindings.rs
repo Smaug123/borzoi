@@ -233,8 +233,7 @@ impl<'a> Resolver<'a> {
                     // The export-decl-list twin of the `ExportedItem` push: an
                     // ordinary `let` value (no case, no type-qualified path). Its
                     // `value_exports` row derives from the referenced item.
-                    let mut decl_path = self.container_path.to_vec();
-                    decl_path.push(name.clone());
+                    let decl_path = self.decl_path(std::slice::from_ref(&name));
                     self.push_export_decl(
                         decl_path,
                         range.start(),

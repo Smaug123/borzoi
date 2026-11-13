@@ -72,7 +72,9 @@ mod bindings;
 mod container;
 mod contributors;
 mod custom_operations;
+mod decl_path;
 use contributors::FileContributions;
+use decl_path::DeclPath;
 use open_scope::OpenScope;
 use path_set::PathSet;
 mod decls;
@@ -439,7 +441,7 @@ pub fn resolve_file(
             // unconditionally exported.
             let header_pos = module_header_pos(&module);
             r.push_export_decl(
-                path.clone(),
+                DeclPath::new(assemblies.names(), path),
                 header_pos,
                 model::ExportDeclKind::Module {
                     header: true,
@@ -477,11 +479,13 @@ pub fn resolve_file(
         r.block_container_len = r.container_path.len();
         for k in 1..=ns_upto {
             let ns = r.container_path[..k].to_vec();
-            r.namespace_paths.push(ns.clone());
             // The export-decl-list twin: one `Namespace` decl per ancestor prefix,
             // reproducing the `ns_upto` bound verbatim (plan pitfall 4).
+            let decl_path =
+                DeclPath::interned(assemblies.names(), r.container_path.prefix_id(k), &ns);
+            r.namespace_paths.push(ns);
             r.push_export_decl(
-                ns,
+                decl_path,
                 module_header_pos(&module),
                 model::ExportDeclKind::Namespace,
             );
@@ -1673,7 +1677,7 @@ fn resolve_project_files_impl(
         if matches!(&pf.file, SourceFile::Impl(_))
             && let Some(sig_idx) = partners[index].filter(|&p| p < index)
         {
-            rf.append_signature_exports(&resolved[sig_idx], sig_idx);
+            rf.append_signature_exports(&resolved[sig_idx], sig_idx, assemblies.names());
         }
         // The screen of the signature this file is the paired implementation
         // of, if any — the sig sits strictly earlier in Compile order, so its
@@ -2167,7 +2171,7 @@ fn resolve_project_files_incremental_impl(
             if matches!(&pf.file, SourceFile::Impl(_))
                 && let Some(sig_idx) = partners_new[i].filter(|&p| p < i)
             {
-                rf.append_signature_exports(&resolved[sig_idx], sig_idx);
+                rf.append_signature_exports(&resolved[sig_idx], sig_idx, assemblies.names());
             }
             if in_sync {
                 // Entering state matched prev's, so the item base matched and the
@@ -2180,7 +2184,7 @@ fn resolve_project_files_incremental_impl(
                 // fold can never disagree with the cold one about a file's
                 // downstream contribution.
                 in_sync = same_pairing
-                    && rf.same_export_contribution(&prev.files[i])
+                    && rf.same_export_contribution(&prev.files[i], assemblies.names())
                     && wholesale_extension_contribution(&rf, assemblies)
                         == wholesale_extension_contribution(&prev.files[i], assemblies)
                     && rf.augmentation_instance_names == prev.files[i].augmentation_instance_names
@@ -2345,7 +2349,7 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::default(),
             export_decls: Vec::new(),
-            member_decl_counts: HashMap::default(),
+            member_decl_counts: crate::names::PathMap::default(),
         }
     }
 
@@ -2357,7 +2361,7 @@ impl<'a> Resolver<'a> {
     /// today's ordering by construction.
     pub(super) fn push_export_decl(
         &mut self,
-        path: Vec<String>,
+        path: DeclPath,
         pos: borzoi_cst::syntax::TextSize,
         kind: model::ExportDeclKind,
     ) {
@@ -2370,9 +2374,26 @@ impl<'a> Resolver<'a> {
         // The walk is never screened: a signature replaces this file's own
         // identities only when the fold publishes them.
         if let Some(member) = decl.member_path(&self.items, false) {
-            *self.member_decl_counts.entry(member).or_default() += 1;
+            let names = self.assemblies.names();
+            self.member_decl_counts.update_id(
+                names,
+                member.id(),
+                || member.reference_text(names),
+                |count| *count += 1,
+            );
         }
         self.export_decls.push(decl);
+    }
+
+    /// The current container extended by `segments`: the path of a
+    /// declaration the walk is at.
+    pub(super) fn decl_path<S: AsRef<str>>(&self, segments: &[S]) -> DeclPath {
+        DeclPath::under(
+            self.assemblies.names(),
+            self.container_path.id(),
+            &self.container_path,
+            segments,
+        )
     }
 
     /// Attach a case's type-qualified path to the most recently appended
@@ -2381,7 +2402,7 @@ impl<'a> Resolver<'a> {
     /// [`export_type_qualified_case`](Self::export_type_qualified_case) call sites
     /// invoke it immediately after the item's decl append — no other decl can
     /// intervene). Feeds the `type_qualified_cases` derivation.
-    pub(super) fn set_last_decl_type_qualified(&mut self, tq: Vec<String>) {
+    pub(super) fn set_last_decl_type_qualified(&mut self, tq: DeclPath) {
         match self.export_decls.last_mut().map(|d| &mut d.kind) {
             Some(model::ExportDeclKind::Item { type_qualified, .. }) => {
                 debug_assert!(
@@ -3039,7 +3060,7 @@ mod contribution_tests {
     use super::*;
     use borzoi_cst::parser::parse;
 
-    fn resolve_one(src: &str) -> ResolvedFile {
+    fn resolve_one(src: &str, env: &AssemblyEnv) -> ResolvedFile {
         let p = parse(src);
         assert!(
             p.errors.is_empty(),
@@ -3048,12 +3069,7 @@ mod contribution_tests {
         );
         let recovery = SyntaxRecovery::of(&p);
         let file = ImplFile::cast(p.root).expect("impl file");
-        resolve_file(
-            &file,
-            &ProjectItems::default(),
-            &AssemblyEnv::default(),
-            &recovery,
-        )
+        resolve_file(&file, &ProjectItems::default(), env, &recovery)
     }
 
     /// A body-only edit that adds a *local* binder must not count as an export
@@ -3069,10 +3085,11 @@ mod contribution_tests {
     fn body_local_binder_does_not_change_export_contribution() {
         // `g`'s binder is interned after `f`'s body; adding a local `y` there
         // shifts `g`'s `DefId` (`f`=0 in both; `g`=1 before, =2 after `y`).
-        let before = resolve_one("module M\nlet f x = x\nlet g = 1\n");
-        let after = resolve_one("module M\nlet f x = (let y = x in y)\nlet g = 1\n");
+        let env = AssemblyEnv::default();
+        let before = resolve_one("module M\nlet f x = x\nlet g = 1\n", &env);
+        let after = resolve_one("module M\nlet f x = (let y = x in y)\nlet g = 1\n", &env);
         assert!(
-            before.same_export_contribution(&after),
+            before.same_export_contribution(&after, env.names()),
             "a body-local binder must not change the downstream contribution"
         );
         assert_ne!(
@@ -3086,10 +3103,11 @@ mod contribution_tests {
     /// change (a new qualified path / `ItemId`), so the check must return false.
     #[test]
     fn added_export_changes_contribution() {
-        let before = resolve_one("module M\nlet f = 1\n");
-        let after = resolve_one("module M\nlet f = 1\nlet h = 2\n");
+        let env = AssemblyEnv::default();
+        let before = resolve_one("module M\nlet f = 1\n", &env);
+        let after = resolve_one("module M\nlet f = 1\nlet h = 2\n", &env);
         assert!(
-            !before.same_export_contribution(&after),
+            !before.same_export_contribution(&after, env.names()),
             "a new top-level export must change the contribution"
         );
     }
@@ -3218,6 +3236,14 @@ mod export_decl_tests {
     use borzoi_cst::syntax::{AstNode, ImplFile};
     use model::{ExportDeclKind, ProjectItems};
 
+    /// The one env every test here resolves against: a declaration's path is
+    /// an id in its env's table, so a file and the indices folded from it, or
+    /// two files compared, must share one.
+    fn env() -> &'static AssemblyEnv {
+        static ENV: std::sync::OnceLock<AssemblyEnv> = std::sync::OnceLock::new();
+        ENV.get_or_init(AssemblyEnv::default)
+    }
+
     fn resolve_one(src: &str) -> ResolvedFile {
         let parsed = parse(src);
         assert!(
@@ -3227,12 +3253,7 @@ mod export_decl_tests {
         );
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(
-            &file,
-            &ProjectItems::default(),
-            &AssemblyEnv::default(),
-            &recovery,
-        )
+        resolve_file(&file, &ProjectItems::default(), env(), &recovery)
     }
 
     /// Resolve `src` tolerating parse errors — for recovery / malformed cases.
@@ -3240,12 +3261,7 @@ mod export_decl_tests {
         let parsed = parse(src);
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(
-            &file,
-            &ProjectItems::default(),
-            &AssemblyEnv::default(),
-            &recovery,
-        )
+        resolve_file(&file, &ProjectItems::default(), env(), &recovery)
     }
 
     /// Resolution never *reads* the recovery reading — it threads it through to
@@ -3277,16 +3293,11 @@ mod export_decl_tests {
                 saw_a_difference = true;
             }
             let file = ImplFile::cast(parsed.root).expect("impl file");
-            let of_parse = resolve_file(
-                &file,
-                &ProjectItems::default(),
-                &AssemblyEnv::default(),
-                &reported,
-            );
+            let of_parse = resolve_file(&file, &ProjectItems::default(), env(), &reported);
             let mut without = resolve_file(
                 &file,
                 &ProjectItems::default(),
-                &AssemblyEnv::default(),
+                env(),
                 &SyntaxRecovery::without_inference(),
             );
             assert_eq!(
@@ -3340,7 +3351,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
+        pi.extend_with(&rf, env().names(), None, None);
         assert!(
             pi.modules_with_hidden_values
                 .contains(&Vec::<String>::new()),
@@ -3373,7 +3384,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, &crate::names::NameTable::default(), None, None);
+        pi.extend_with(&rf, env().names(), None, None);
         assert!(
             pi.auto_open_module_paths.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
@@ -3396,7 +3407,7 @@ mod export_decl_tests {
             rf2.export_decls
         );
         let mut pi2 = ProjectItems::default();
-        pi2.extend_with(&rf2, &crate::names::NameTable::default(), None, None);
+        pi2.extend_with(&rf2, env().names(), None, None);
         assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
     }
 
@@ -3417,10 +3428,10 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            let names = crate::names::NameTable::default();
-            pi.extend_with(&rf, &names, None, None);
+            let names = env().names();
+            pi.extend_with(&rf, names, None, None);
             assert!(
-                !pi.nested_module_paths.contains_path(&names, &segs(&["M"])),
+                !pi.nested_module_paths.contains_path(names, &segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
             );
         }
@@ -3439,8 +3450,8 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        let names = crate::names::NameTable::default();
-        pi.extend_with(&rf, &names, None, None);
+        let names = env().names();
+        pi.extend_with(&rf, names, None, None);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(
@@ -3449,6 +3460,6 @@ mod export_decl_tests {
         );
         // The full path is the module header, not a namespace.
         let path = segs(&["A", "B", "C"]);
-        assert!(pi.is_exact_project_module(&names, crate::names::PathKey::of(&names, &path)));
+        assert!(pi.is_exact_project_module(names, crate::names::PathKey::of(names, &path)));
     }
 }

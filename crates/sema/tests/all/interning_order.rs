@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::test_support::names::{interned_paths, with_fresh_names};
+use borzoi_sema::test_support::names::{interned_paths, rekeyed, with_fresh_names};
 use borzoi_sema::{AssemblyEnv, ResolvedProject, resolve_project};
 use proptest::prelude::*;
 
@@ -59,6 +59,9 @@ fn assert_order_invariant(sources: &[String], base: &AssemblyEnv, seed: u64) -> 
     shuffle(&mut paths, seed);
     let second_env = with_fresh_names(base, &paths);
     let second = resolve(sources, &second_env);
+    // A result holds ids of the table it was computed against, so the first
+    // is compared in the second's ids, translated by spelling.
+    let first = rekeyed(&first, &first_env, &second_env);
     assert!(
         first == second,
         "resolution moved with interning order (seed {seed}):\nfirst: {first:#?}\nsecond: {second:#?}"

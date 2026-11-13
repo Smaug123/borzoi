@@ -3,8 +3,8 @@
 > **Status (2026-11-13).** Plan written; Stages 0 (count harness), 1 (the
 > hasher, [#577](https://github.com/WoofWare/borzoi/pull/577)), 2 (memoised
 > namespace fold surfaces), 3 (the name table), 4 (the open-prefix × head
-> product on ids), 5 (the remaining path and name keys, in three parts) and
-> 9 (`OpenScope`) implemented.
+> product on ids), 5 (the remaining path and name keys, in three parts), 6a
+> (export-declaration paths on ids) and 9 (`OpenScope`) implemented.
 > Tracks [#543](https://github.com/WoofWare/borzoi/issues/543). Stacked on the
 > flat syntax table (`docs/flat-syntax-tree-plan.md`), whose stack tip is
 > where every count below was taken.
@@ -744,6 +744,83 @@ position) and every gate are unchanged.
 
 **Expected**: about −0.5% of resolve's allocations. The stage buys one identity
 domain across sema's API, not speed.
+
+**Split.** The three items differ in who reads them, so they land apart:
+
+- **6a**: export-declaration paths. `ExportDecl` is internal to `resolve`;
+  its only readers are the walk itself and `ProjectItems::extend_with`, so
+  the change touches no public API. It is also what kept
+  `walk_cost_scaling`'s `MEMORY_EXEMPT` entry for `named_nested_modules`:
+  measured on main before 6a, `resolve_file` alone holds working memory
+  linear in the nesting (7.0× over 8× the depth), while the whole fold grows
+  37.2× (58.5× in a release build, so not the reference maps): the
+  quadratic is `extend_with`'s `FileExportIndices`, which cloned each
+  module's full path into two index lists.
+- **6b**: `Def::name` and the published names of `ExportedItem` (`name`,
+  `qualified`), which the LSP and corpus-diff read, with the spelling
+  question above.
+- The paths inside `Resolution` payloads are already gone: every variant
+  holds a handle, an index or an id (`DefId`, `ItemId`, `EntityHandle`,
+  `MemberIndex`, `UnionCaseIndex`), so nothing is left to convert.
+
+**6a, implemented** (`resolve/decl_path.rs`):
+
+- **`DeclPath`.** `ExportDecl::path`, an `Item`'s type-qualified path and an
+  `extern`'s shadow (the container extended by the function's name, which
+  replaces the name's segments in the kind) are `DeclPath`s: a `PathId`
+  interned when the walk pushes the declaration, from the container's id
+  (`Resolver::decl_path`), so a declaration builds no path. Its operations
+  (`parent`, `last`, `starts_with`, `has_segment`, `spells`, `spell`) go by
+  the table.
+- **The derived indices.** `FileExportIndices` holds `DeclPath`s, so a file's
+  contribution costs an id per entry, and `extend_with` inserts each into the
+  `PathSet`s and `PathMap`s by id (`insert_id`, `update_id`), spelling a path
+  only for the string-keyed sets 5a left (`namespace_paths`, the hidden-value
+  sets, `opaque_cases`, `auto_open_module_paths`). `member_decl_counts` is a
+  `PathMap`. `same_export_contribution` compares the indices by id, under the
+  incremental fold's precondition that both files were resolved against one
+  env.
+- **The nested module's own path.** `nested_module` spells its path only for
+  an `[<AutoOpen>]` module: a spelled path kept for the call would be live at
+  every enclosing level while the body is walked, which is the same
+  quadratic one level up.
+- **Lockstep.** Under `interning-reference` in a debug build a `DeclPath`
+  carries the spelling the walk built by the string operations the id
+  replaced (the container's segments extended by the written ones), shared
+  by an `Arc` so a derived index entry copies no segment. Construction
+  asserts that the id spells it, every operation asserts its answer against
+  the same operation on the spelling, and an index keyed by the id takes the
+  walk's spelling, not the id's, for its reference, so an index that files a
+  declaration under another id disagrees with its reference at its next
+  query. A property test (`a_declaration_path_answers_as_its_segments_do`)
+  holds every operation to its string counterpart over generated tables.
+  Three planted bugs fail: building a path under the container's parent
+  (`decl_path`'s construction check, in `interning_order`); filing each
+  module's parent in `extend_with`'s path sets (the `PathSet` lockstep, in
+  `interning_order`); and an `is_prefix` that looks one level up only (the
+  property test).
+- **The interning-order test** now compares the two runs in the second
+  table's ids (`test_support::names::rekeyed`), since a `ResolvedFile` holds
+  ids of the table it was resolved against. Comparing ids of two tables
+  panics in a debug build, which is how the test found it.
+- **`MEMORY_EXEMPT` is empty.** From an eighth of its tallest clean depth
+  (63 modules) to that depth (504), `named_nested_modules`' working memory
+  grows 7.0× in a debug build and 7.5× in a release one (before: 37.2× and
+  58.5×), under the 12× bound. The result it returns is linear now too: in a
+  release build it holds 90 KB at depth 504, from 6.36 MB. In a debug build
+  the reference's spellings keep it quadratic, 3.3 MB from 6.4 MB (a
+  declaration's `Vec` no longer carries doubled capacity).
+
+**Measured** (6a, on `37b46c37`): `resolve_file` 883.0 → 879.0 instructions
+per byte (−0.5%), allocations 0.759 → 0.741 per byte (−2.4%); the whole tree
+as one project (`resolve_project`, the throwaway variant of 5a) 888.6 → 882.3
+(−0.7%), allocations 0.701 → 0.664 per byte (−5.3%), where `extend_with`'s
+derivation runs; infer 174.0 → 173.7. As the plan expected, the stage buys
+little speed: what it buys is the bound on the fold's memory. A whole-corpus
+dump (resolutions, attribute
+resolutions, decline sites, definitions, diagnostics, exported items, opaque
+binders and regions, namespace paths, inferred types; each of 5,202 files
+alone and each directory as a project) is byte-identical before and after.
 
 ### Stage 7: `Ty` paths on ids
 

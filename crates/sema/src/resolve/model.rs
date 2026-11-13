@@ -22,6 +22,7 @@ use crate::def::{Def, DefId, SemanticClass};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::contributors::{Contribution, FileContributions};
+use super::decl_path::DeclPath;
 use super::path_set::{Extended, PathPrefixes, PathSet};
 use super::state::ActivePatternShape;
 
@@ -1577,34 +1578,45 @@ impl ProjectItems {
             }
         }
         let idx = match paired_screen {
-            None => FileExportIndices::from_decls(file),
-            Some(screen) => {
-                FileExportIndices::from_decls_screened(file, screen, trust_attribute_spellings)
-            }
+            None => FileExportIndices::from_decls(file, names),
+            Some(screen) => FileExportIndices::from_decls_screened(
+                file,
+                names,
+                screen,
+                trust_attribute_spellings,
+            ),
         };
-        for module in idx.module_headers {
-            self.module_headers.insert(names, &module);
-        }
-        for nested in idx.nested_module_paths {
-            self.nested_module_paths.insert(names, &nested);
-        }
-        for head in idx.augmentation_head_paths {
-            self.augmentation_head_paths.insert(names, &head);
-        }
-        for nested in idx.real_nested_modules {
-            self.real_nested_modules.insert(names, &nested);
+        for (set, paths) in [
+            (&mut self.module_headers, &idx.module_headers),
+            (&mut self.nested_module_paths, &idx.nested_module_paths),
+            (
+                &mut self.augmentation_head_paths,
+                &idx.augmentation_head_paths,
+            ),
+            (&mut self.real_nested_modules, &idx.real_nested_modules),
+        ] {
+            for path in paths {
+                set.insert_id(names, path.id(), || path.reference_text(names));
+            }
         }
         for (path, entry) in idx.type_qualified_cases {
-            let is_new = self.type_qualified_cases.get(names, &path).is_none();
-            self.type_qualified_cases.insert(names, &path, entry);
+            let text = || path.reference_text(names);
+            let is_new = self
+                .type_qualified_cases
+                .get_id(names, Some(path.id()), text)
+                .is_none();
+            self.type_qualified_cases
+                .insert_id(names, path.id(), text, entry);
             if is_new {
-                self.type_qualified_case_paths.insert(names, &path);
+                self.type_qualified_case_paths
+                    .insert_id(names, path.id(), text);
             }
         }
         for (path, (cases_enumerable, slot, ordinal)) in idx.type_paths {
-            self.type_paths.insert(
+            self.type_paths.insert_id(
                 names,
-                &path,
+                path.id(),
+                || path.reference_text(names),
                 ExportedTypePath {
                     cases_enumerable,
                     slot,
@@ -1697,13 +1709,13 @@ impl ProjectItems {
                 .merge(c);
         }
         for ns in idx.namespace_paths {
-            self.namespace_paths.insert(ns);
+            self.namespace_paths.insert(ns.spell(names));
         }
         for hidden in idx.modules_with_hidden_values {
-            self.modules_with_hidden_values.insert(hidden);
+            self.modules_with_hidden_values.insert(hidden.spell(names));
         }
         for hidden in idx.opaque_hidden_value_modules {
-            self.opaque_hidden_value_modules.insert(hidden);
+            self.opaque_hidden_value_modules.insert(hidden.spell(names));
         }
         for (namespace, name) in idx.namespace_shadow_names {
             self.namespace_shadow_names
@@ -1713,22 +1725,31 @@ impl ProjectItems {
         }
         for (path, superseded) in idx.opaque_cases {
             // Superseded only where every declaration of the path is.
-            *self.opaque_cases.entry(path).or_insert(true) &= superseded;
+            *self.opaque_cases.entry(path.spell(names)).or_insert(true) &= superseded;
         }
         for auto_open in idx.auto_open_module_paths {
-            self.auto_open_module_paths.push((auto_open, file_idx));
+            self.auto_open_module_paths
+                .push((auto_open.spell(names), file_idx));
         }
         for path in idx.member_decls {
-            self.member_decl_files
-                .update(names, &path, |files| files.push(file_idx));
+            self.member_decl_files.update_id(
+                names,
+                path.id(),
+                || path.reference_text(names),
+                |files| files.push(file_idx),
+            );
         }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
             // constructor namespaces read this same history through different
             // predicates; no export is lost to a shadow).
-            self.value_exports
-                .update(names, &path, |history| history.push(record));
+            self.value_exports.update_id(
+                names,
+                path.id(),
+                || path.reference_text(names),
+                |history| history.push(record),
+            );
         }
         for id in idx.case_item_ids {
             self.case_item_ids.insert(id);
@@ -1886,23 +1907,23 @@ type QualifiedCaseExport = (ItemId, Option<usize>);
 /// body-only edit.
 #[derive(Default, PartialEq, Eq)]
 struct FileExportIndices {
-    value_exports: Vec<(Vec<String>, ExportRecord)>,
-    member_decls: Vec<Vec<String>>,
+    value_exports: Vec<(DeclPath, ExportRecord)>,
+    member_decls: Vec<DeclPath>,
     case_item_ids: Vec<ItemId>,
     attributed_value_ids: Vec<ItemId>,
     case_repr_roots: Vec<(ItemId, Vec<String>)>,
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
-    module_headers: Vec<Vec<String>>,
-    nested_module_paths: Vec<Vec<String>>,
-    augmentation_head_paths: Vec<Vec<String>>,
-    real_nested_modules: Vec<Vec<String>>,
-    namespace_paths: Vec<Vec<String>>,
-    modules_with_hidden_values: Vec<Vec<String>>,
-    opaque_hidden_value_modules: Vec<Vec<String>>,
-    opaque_cases: Vec<(Vec<String>, bool)>,
-    type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
-    type_paths: Vec<(Vec<String>, ExportedTypeFacts)>,
-    auto_open_module_paths: Vec<Vec<String>>,
+    module_headers: Vec<DeclPath>,
+    nested_module_paths: Vec<DeclPath>,
+    augmentation_head_paths: Vec<DeclPath>,
+    real_nested_modules: Vec<DeclPath>,
+    namespace_paths: Vec<DeclPath>,
+    modules_with_hidden_values: Vec<DeclPath>,
+    opaque_hidden_value_modules: Vec<DeclPath>,
+    opaque_cases: Vec<(DeclPath, bool)>,
+    type_qualified_cases: Vec<(DeclPath, QualifiedCaseExport)>,
+    type_paths: Vec<(DeclPath, ExportedTypeFacts)>,
+    auto_open_module_paths: Vec<DeclPath>,
     namespace_shadow_names: Vec<(Vec<String>, String)>,
 }
 
@@ -1965,7 +1986,7 @@ pub(super) fn top_level_block_ordinals(decls: &[ExportDecl]) -> impl Fn(TextSize
 }
 
 /// Record `path` as a hidden-value module, filed by marker provenance.
-fn push_hidden(fi: &mut FileExportIndices, path: Vec<String>, names: HiddenNames) {
+fn push_hidden(fi: &mut FileExportIndices, path: DeclPath, names: HiddenNames) {
     if matches!(names, HiddenNames::Borrowed) {
         fi.opaque_hidden_value_modules.push(path.clone());
     }
@@ -1975,17 +1996,22 @@ fn push_hidden(fi: &mut FileExportIndices, path: Vec<String>, names: HiddenNames
 /// [`push_hidden`] for `path`'s **container** (`path` minus its last
 /// segment) — the derivation of the `note_hidden_value_module` markers whose
 /// legacy path is `self.container_path`.
-fn push_container_hidden(fi: &mut FileExportIndices, path: &[String], names: HiddenNames) {
-    if let Some((_, container)) = path.split_last() {
-        push_hidden(fi, container.to_vec(), names);
+fn push_container_hidden(
+    fi: &mut FileExportIndices,
+    table: &NameTable,
+    path: &DeclPath,
+    names: HiddenNames,
+) {
+    if let Some(container) = path.parent(table) {
+        push_hidden(fi, container, names);
     }
 }
 
 impl FileExportIndices {
     /// Derive the file's cross-file index contributions from its source-ordered
     /// [`ExportDecl`] list.
-    fn from_decls(file: &ResolvedFile) -> Self {
-        Self::derive(file, None)
+    fn from_decls(file: &ResolvedFile, names: &NameTable) -> Self {
+        Self::derive(file, names, None)
     }
 
     /// Like [`Self::from_decls`], but for the **paired implementation of a
@@ -2020,13 +2046,18 @@ impl FileExportIndices {
     /// signature model at all.
     fn from_decls_screened(
         file: &ResolvedFile,
+        names: &NameTable,
         screen: &SigScreen,
         trust_attribute_spellings: bool,
     ) -> Self {
-        Self::derive(file, Some((screen, trust_attribute_spellings)))
+        Self::derive(file, names, Some((screen, trust_attribute_spellings)))
     }
 
-    fn derive(file: &ResolvedFile, screened: Option<(&SigScreen, bool)>) -> Self {
+    fn derive(
+        file: &ResolvedFile,
+        names: &NameTable,
+        screened: Option<(&SigScreen, bool)>,
+    ) -> Self {
         let screen = screened.map(|(screen, _)| screen);
         let trust_attribute_spellings = screened.is_some_and(|(_, trust)| trust);
         let mut fi = Self::default();
@@ -2057,18 +2088,28 @@ impl FileExportIndices {
                         // own name list ([`SigScreen::namespace_unexported_names`],
                         // pushed below) replaces the per-item marker.
                         let in_sig_namespace = trust_attribute_spellings
-                            && decl.path.split_last().is_some_and(|(_, container)| {
-                                screen.namespaces.contains(container)
+                            && decl.path.parent(names).is_some_and(|container| {
+                                screen.namespaces.contains(&container.spell(names))
                             });
                         if !in_sig_namespace {
-                            push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                            push_container_hidden(
+                                &mut fi,
+                                names,
+                                &decl.path,
+                                HiddenNames::SigDeclared,
+                            );
                         }
                     }
                     Some(item_idx) => {
                         let it = &file.exports.items[*item_idx];
                         if let Some(path) = it.qualified_path() {
+                            // An item's qualified path is its declaration's.
+                            debug_assert!(
+                                decl.path.spells(names, path),
+                                "an item's qualified path {path:?} is not its declaration's"
+                            );
                             fi.value_exports.push((
-                                path.to_vec(),
+                                decl.path.clone(),
                                 ExportRecord {
                                     id: it.id,
                                     access_root_len: it.access_root_len,
@@ -2113,7 +2154,7 @@ impl FileExportIndices {
                             anon,
                             "an Item decl with no ExportedItem must be anonymous-root"
                         );
-                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                        push_container_hidden(&mut fi, names, &decl.path, HiddenNames::SigDeclared);
                     }
                 },
                 ExportDeclKind::Type { info, auto_open } => {
@@ -2156,7 +2197,7 @@ impl FileExportIndices {
                         // ignores (impl-only), which is kept deliberately as a
                         // backstop against a gap in that collection — the class
                         // that produced two findings in this slice's review.
-                        push_container_hidden(&mut fi, &decl.path, HiddenNames::Borrowed);
+                        push_container_hidden(&mut fi, names, &decl.path, HiddenNames::Borrowed);
                     }
                 }
                 ExportDeclKind::TypeAugmentation => {
@@ -2187,7 +2228,10 @@ impl FileExportIndices {
                         // none.
                         let effective_auto_open = match screen {
                             None => *auto_open,
-                            Some(s) => s.roots.iter().any(|r| r.auto_open && r.path == decl.path),
+                            Some(s) => s
+                                .roots
+                                .iter()
+                                .any(|r| r.auto_open && decl.path.spells(names, &r.path)),
                         };
                         if effective_auto_open && !*private {
                             fi.auto_open_module_paths.push(decl.path.clone());
@@ -2218,11 +2262,9 @@ impl FileExportIndices {
                         superseded_by_a_value(&file.export_decls, &file.exports.items, decl);
                     fi.opaque_cases.push((decl.path.clone(), superseded));
                 }
-                ExportDeclKind::Extern { name } => {
-                    if !anon && !name.is_empty() {
-                        let mut shadow = decl.path.clone();
-                        shadow.extend(name.iter().cloned());
-                        fi.nested_module_paths.push(shadow);
+                ExportDeclKind::Extern { shadow } => {
+                    if !anon && let Some(shadow) = shadow {
+                        fi.nested_module_paths.push(shadow.clone());
                     }
                     // The hidden marker is recorded unconditionally (the legacy
                     // `note_hidden_value_module` call is unguarded), on the
@@ -2242,7 +2284,7 @@ impl FileExportIndices {
                         if screen.is_some()
                             && matches!(file.exports.items[*item_idx].def, ExportDef::Own(_)) =>
                     {
-                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                        push_container_hidden(&mut fi, names, &decl.path, HiddenNames::SigDeclared);
                     }
                     Some(item_idx) => {
                         // Stage 3a: the AP case rides `value_exports` as a
@@ -2276,7 +2318,7 @@ impl FileExportIndices {
                     None => {
                         // Anonymous root: no cross-file handle, so keep today's
                         // conservative hidden-value marker for the container.
-                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
+                        push_container_hidden(&mut fi, names, &decl.path, HiddenNames::SigDeclared);
                     }
                 },
             }
@@ -2287,7 +2329,11 @@ impl FileExportIndices {
             // root must shadow conservatively (the generation bump) even
             // when the implementation's own decls produced no marker.
             for root in &screen.roots {
-                push_hidden(&mut fi, root.path.clone(), HiddenNames::SigDeclared);
+                push_hidden(
+                    &mut fi,
+                    DeclPath::new(names, &root.path),
+                    HiddenNames::SigDeclared,
+                );
             }
             // The bare names the signature exposes under a namespace without
             // an exported identity shadow by name.
@@ -2297,15 +2343,16 @@ impl FileExportIndices {
             // — auto-open even when the implementation carries no attribute,
             // and hidden so the namespace fold's barrier fires for them.
             for path in &screen.auto_open_nested {
+                let path = DeclPath::new(names, path);
                 fi.auto_open_module_paths.push(path.clone());
-                push_hidden(&mut fi, path.clone(), HiddenNames::SigDeclared);
+                push_hidden(&mut fi, path, HiddenNames::SigDeclared);
             }
             // A signature-declared `[<AutoOpen>]` type publishes members the
             // signature text need not name, and its verdict does not depend on
             // the implementation carrying the attribute — so the marker comes
             // from the screen rather than the implementation's own decl.
             for path in &screen.auto_open_type_containers {
-                push_hidden(&mut fi, path.clone(), HiddenNames::Borrowed);
+                push_hidden(&mut fi, DeclPath::new(names, path), HiddenNames::Borrowed);
             }
         } else {
             // No signature bounds this file's surface, so nothing name-screens
@@ -2523,7 +2570,7 @@ type ExportedTypeFacts = (bool, TypeSlot, Option<u32>);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExportDecl {
     /// Qualified path — per-kind meaning (see the type docs and [`ExportDeclKind`]).
-    pub(super) path: Vec<String>,
+    pub(super) path: DeclPath,
     /// Source position of the declaring occurrence (start). Provenance for
     /// positional contests and the future same-file convergence
     /// (`docs/export-decl-model-plan.md` Stage 4). No Stage-2 derivation reads it.
@@ -2579,11 +2626,7 @@ impl ExportDecl {
     /// `screened` says the file is a signature's paired implementation, whose
     /// own identities the signature replaces (so they are not counted twice
     /// beside the signature-derived ones).
-    pub(super) fn member_path(
-        &self,
-        items: &[ExportedItem],
-        screened: bool,
-    ) -> Option<Vec<String>> {
+    pub(super) fn member_path(&self, items: &[ExportedItem], screened: bool) -> Option<DeclPath> {
         if self.anonymous_root {
             return None;
         }
@@ -2601,14 +2644,9 @@ impl ExportDecl {
             } => (!screened || !matches!(items[*idx].def, ExportDef::Own(_)))
                 .then(|| self.path.clone()),
             ExportDeclKind::OpaqueCase => Some(self.path.clone()),
-            ExportDeclKind::Extern { name } if !name.is_empty() => {
-                let mut path = self.path.clone();
-                path.extend(name.iter().cloned());
-                Some(path)
-            }
+            ExportDeclKind::Extern { shadow } => shadow.clone(),
             ExportDeclKind::Item { item: None, .. }
             | ExportDeclKind::ActivePatternCase { item: None, .. }
-            | ExportDeclKind::Extern { .. }
             | ExportDeclKind::Type { .. }
             | ExportDeclKind::TypeAugmentation
             | ExportDeclKind::Module { .. }
@@ -2639,7 +2677,7 @@ pub(super) enum ExportDeclKind {
         /// threaded by [`export_type_qualified_case`](super::Resolver::export_type_qualified_case)
         /// for a non-RQA union case, an RQA union case, or an enum case; `None` for
         /// an ordinary value or an `exception` constructor. Feeds `type_qualified_cases`.
-        type_qualified: Option<Vec<String>>,
+        type_qualified: Option<DeclPath>,
     },
     /// A `type` name. `path` = container + name segment(s).
     ///
@@ -2680,11 +2718,11 @@ pub(super) enum ExportDeclKind {
     /// The value-namespace constructor is a separate [`Self::Item`] record.
     ExceptionTycon,
     /// An `extern` declaration. `path` = the *container* (its hidden-value path,
-    /// recorded unconditionally). `name` = the function-name segments (empty for a
-    /// nameless recovery node); `path` + `name` is the nested-module shadow path,
-    /// recorded only when `name` is non-empty (matching the legacy
+    /// recorded unconditionally). `shadow` = `path` extended by the function-name
+    /// segments, the nested-module shadow path; `None` for a nameless recovery
+    /// node, which records none (matching the legacy
     /// [`record_project_name_shadow`](super::Resolver::record_project_name_shadow) guard).
-    Extern { name: Vec<String> },
+    Extern { shadow: Option<DeclPath> },
     /// The union case `type T = X` may declare
     /// (`TyconCoreAbbrevThatIsReallyAUnion`), which the walk does not intern,
     /// when `T` does not require qualified access. `path` = container + `X`.
@@ -4009,9 +4047,10 @@ impl ResolvedFile {
     /// augmentation/attribute syntax, that is not a [`ResolvedFile`] field; the
     /// incremental fold checks it separately (it needs the source tree, which
     /// this method does not take).
-    pub(super) fn same_export_contribution(&self, other: &ResolvedFile) -> bool {
+    pub(super) fn same_export_contribution(&self, other: &ResolvedFile, names: &NameTable) -> bool {
         self.exports.items.len() == other.exports.items.len()
-            && FileExportIndices::from_decls(self) == FileExportIndices::from_decls(other)
+            && FileExportIndices::from_decls(self, names)
+                == FileExportIndices::from_decls(other, names)
             && self.own_type_simple_names == other.own_type_simple_names
             // What a later file reads of the types: each placed one's
             // position, path, arity and access root (never its def, which a
@@ -4111,7 +4150,12 @@ impl ResolvedFile {
     /// folds when the paired implementation's slot is reached; the screened
     /// derivation ([`FileExportIndices::derive`]) keeps exactly these
     /// sig-redirected identities while dropping the implementation's own.
-    pub(super) fn append_signature_exports(&mut self, sig: &ResolvedFile, sig_idx: usize) {
+    pub(super) fn append_signature_exports(
+        &mut self,
+        sig: &ResolvedFile,
+        sig_idx: usize,
+        names: &NameTable,
+    ) {
         // A headerless pair's implicit filename module: publish its header
         // (FCS's `ComputeAnonModuleName` makes it a real, openable module),
         // which nothing on the implementation side does — its fragments are
@@ -4125,16 +4169,18 @@ impl ResolvedFile {
                 // publishes them (`resolve.rs`'s header walk) — so the
                 // recovery form `open Pn; Md.shown` reaches the export
                 // (FCS-probed: it binds the `.fsi`).
-                for k in 1..root.path.len() {
+                let mut prefix = DeclPath::new::<String>(names, &[]);
+                for segment in root.path.iter().take(root.path.len().saturating_sub(1)) {
+                    prefix = prefix.extended(names, std::slice::from_ref(segment));
                     self.export_decls.push(ExportDecl {
-                        path: root.path[..k].to_vec(),
+                        path: prefix.clone(),
                         pos: TextSize::from(0),
                         anonymous_root: false,
                         kind: ExportDeclKind::Namespace,
                     });
                 }
                 self.export_decls.push(ExportDecl {
-                    path: root.path.clone(),
+                    path: DeclPath::new(names, &root.path),
                     pos: TextSize::from(0),
                     anonymous_root: false,
                     kind: ExportDeclKind::Module {
@@ -4165,12 +4211,15 @@ impl ResolvedFile {
                 attributed: ex.attributed,
             });
             self.export_decls.push(ExportDecl {
-                path: ex.path.clone(),
+                path: DeclPath::new(names, &ex.path),
                 pos: ex.pos,
                 anonymous_root: false,
                 kind: ExportDeclKind::Item {
                     item: Some(item_idx),
-                    type_qualified: ex.type_qualified.clone(),
+                    type_qualified: ex
+                        .type_qualified
+                        .as_ref()
+                        .map(|path| DeclPath::new(names, path)),
                 },
             });
         }
@@ -4677,6 +4726,40 @@ pub struct ResolvedProject {
 }
 
 impl ResolvedProject {
+    /// The same project with every id it holds of `from`'s name table
+    /// translated to `to`'s, by spelling: what a comparison of two results
+    /// computed against two tables compares.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn rekey_names(&self, from: &NameTable, to: &NameTable) -> ResolvedProject {
+        let rekey_kind = |kind: &ExportDeclKind| match kind {
+            ExportDeclKind::Item {
+                item,
+                type_qualified,
+            } => ExportDeclKind::Item {
+                item: *item,
+                type_qualified: type_qualified.as_ref().map(|p| p.rekey(from, to)),
+            },
+            ExportDeclKind::Extern { shadow } => ExportDeclKind::Extern {
+                shadow: shadow.as_ref().map(|p| p.rekey(from, to)),
+            },
+            other => other.clone(),
+        };
+        ResolvedProject {
+            files: self
+                .files
+                .iter()
+                .map(|file| {
+                    let mut file = ResolvedFile::clone(file);
+                    for decl in &mut file.export_decls {
+                        decl.path = decl.path.rekey(from, to);
+                        decl.kind = rekey_kind(&decl.kind);
+                    }
+                    Arc::new(file)
+                })
+                .collect(),
+        }
+    }
+
     /// The resolved files, in Compile order. Each is [`Arc`]-shared so a reused
     /// file (an incremental fold's unchanged file) is the *same* allocation as in
     /// the previous fold — [`Arc::ptr_eq`] against a prior result detects reuse.

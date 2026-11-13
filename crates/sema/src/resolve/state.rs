@@ -22,7 +22,7 @@ use super::model::{
 };
 use super::open_scope::{InternedPrefix, OpenScope};
 use super::path_set::PathSet;
-use crate::names::{ChildMap, Name, NameKey, NameTable, PathId};
+use crate::names::{ChildMap, Name, NameKey, NameTable, PathId, PathMap};
 
 /// The opens in scope that could supply a **dotted-path head** the walk does
 /// not otherwise see ([`OpenOpacityState::dotted`](crate::resolve::open_scope::OpenOpacityState::dotted)).
@@ -1789,7 +1789,7 @@ pub(super) struct Resolver<'a> {
     /// there ([`ExportDecl::member_path`]): the same-file half of
     /// [`Self::member_declarations`], kept beside the list by its one writer
     /// ([`Self::push_export_decl`]).
-    pub(super) member_decl_counts: HashMap<Vec<String>, usize>,
+    pub(super) member_decl_counts: PathMap<usize>,
     /// What the parser had to recover from in the file being walked, moved into
     /// [`ResolvedFile::recovery`](super::model::ResolvedFile). Set by
     /// [`resolve_file`](super::resolve_file) from its caller's parse;
