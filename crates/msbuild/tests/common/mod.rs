@@ -1509,11 +1509,17 @@ fn gen_grammar_arg_literal(rng: &mut SplitMix64, depth: u32) -> String {
 
 /// The 1-based line and column of byte `offset` in `text`, as MSBuild's XML
 /// reader reports an element's location: a line ends at `\n`, `\r\n` or a lone
-/// `\r`, and a column counts UTF-16 code units.
+/// `\r`, a column counts UTF-16 code units, and a leading byte-order mark is
+/// not part of the text.
 pub fn line_column(text: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut column = 1;
-    let mut chars = text[..offset].chars().peekable();
+    let start = if text.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8().min(offset)
+    } else {
+        0
+    };
+    let mut chars = text[start..offset].chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '\r' => {

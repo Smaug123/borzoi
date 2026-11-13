@@ -802,7 +802,7 @@ mod spliced_target_tests {
     /// Read target `Phantom` at the end of a walk of an SDK project whose
     /// `Sdk.props` and `Sdk.targets` bodies are given, beside a
     /// `Directory.Build.props` that defines it.
-    fn read_phantom(sdk_props: &str, sdk_targets: &str) -> TargetRead {
+    pub(super) fn read_phantom(sdk_props: &str, sdk_targets: &str) -> TargetRead {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::observed::host_fs::canonicalize(dir.path()).unwrap();
         let sdk = root.join("sdk");
@@ -868,5 +868,22 @@ mod spliced_target_tests {
         );
         assert!(read.definition.is_some());
         assert!(read.exact, "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod spliced_target_condition_tests {
+    use super::spliced_target_tests::read_phantom;
+
+    /// The props import point is reached, but its condition is false, so
+    /// MSBuild imports nothing there.
+    #[test]
+    fn a_props_import_point_whose_condition_is_false_declines() {
+        let read = read_phantom(
+            "<Project><Import Project=\"$(DirectoryBuildPropsPath)\" \
+             Condition=\"false And Exists('$(DirectoryBuildPropsPath)')\" /></Project>",
+            "<Project />",
+        );
+        assert!(!read.exact, "{read:?}");
     }
 }

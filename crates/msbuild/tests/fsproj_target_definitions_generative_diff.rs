@@ -54,8 +54,13 @@ fn targets(rng: &mut SplitMix64, out: &mut String) {
 
 /// One generated tree: the project and the files beside it.
 fn tree(rng: &mut SplitMix64) -> Vec<(&'static str, String)> {
-    let mut project =
-        String::from("<Project>\n  <PropertyGroup>\n    <Name>n</Name>\n  </PropertyGroup>\n");
+    let mut project = String::from("<Project>");
+    // A target on the first line, where a byte-order mark would shift the
+    // column.
+    if rng.below(3) == 0 {
+        project.push_str(&format!("<Target Name=\"{}\" />", name(rng)));
+    }
+    project.push_str("\n  <PropertyGroup>\n    <Name>n</Name>\n  </PropertyGroup>\n");
     targets(rng, &mut project);
     project.push_str(&format!(
         "  <Import Project=\"one.targets\"{} />\n",
@@ -90,6 +95,12 @@ fn tree(rng: &mut SplitMix64) -> Vec<(&'static str, String)> {
             targets(rng, &mut text);
             text.push_str("</Project>\n");
             files.push((beside, text));
+        }
+    }
+    // A byte-order mark, which MSBuild's locations do not count.
+    for (_, text) in &mut files {
+        if rng.below(4) == 0 {
+            text.insert(0, '\u{feff}');
         }
     }
     files

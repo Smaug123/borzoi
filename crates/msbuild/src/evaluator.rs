@@ -5478,10 +5478,6 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             .and_then(simple_property_reference)
             .is_some_and(|name| name.eq_ignore_ascii_case("DirectoryBuildPropsPath"));
         if is_props_rediscovery {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                state.directory_build_splices.props_point_reached = true;
-            }
             if !state.in_entry_body && state.directory_build_props_splice_pending {
                 fire_entry_directory_build_props_splice(state);
             } else if state.in_entry_body && state.pending_directory_build_props.take().is_some() {
@@ -5492,6 +5488,10 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
                 // `walk_external_file` (which `take()`s the stash) is a
                 // no-op afterwards.
                 fire_entry_directory_build_props_splice(state);
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            if props_import_point_imports_splice(node, current_file_dir, state) {
+                state.directory_build_splices.props_point_reached = true;
             }
         }
         return;
@@ -6601,6 +6601,51 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     state.depth -= 1;
     state.current_file = saved_current_file;
     state.exit_this_file(frame);
+}
+
+/// Whether the `Microsoft.Common.props` import of `$(DirectoryBuildPropsPath)`
+/// at `node` imports the file the walk spliced in for it: its condition
+/// decides true exactly, and the trusted path it names is that file. Read
+/// quietly ([`State::quiet_target_framework_reads`]): only the target probe
+/// asks.
+#[cfg(any(test, feature = "test-support"))]
+fn props_import_point_imports_splice(
+    node: Node<'_, '_>,
+    current_file_dir: &Path,
+    state: &State<'_>,
+) -> bool {
+    let Some(spliced) = state.directory_build_props_splice_path.as_ref() else {
+        return false;
+    };
+    let previous = state.quiet_target_framework_reads.replace(true);
+    let condition_holds = node.attribute("Condition").is_none_or(|condition| {
+        let exists = |path: &str| condition_exists(state.observer, path, current_file_dir);
+        let eval = condition::evaluate_with_exists(
+            condition,
+            &state.lookup,
+            condition::Probes {
+                exists: &exists,
+                observer: state.observer,
+            },
+        );
+        eval.outcome == condition::Outcome::True
+            && state.condition_is_decided_exactly(condition, Some(current_file_dir), &|name| {
+                state.undefined_read_is_exact(name)
+            })
+    });
+    state.quiet_target_framework_reads.set(previous);
+    let names_the_splice = !state
+        .trust_of("DirectoryBuildPropsPath")
+        .reference_is_untrusted()
+        && state
+            .lookup
+            .get_unescaped("DirectoryBuildPropsPath")
+            .map(|path| path.trim().to_owned())
+            .filter(|path| !path.is_empty())
+            .is_some_and(|path| {
+                canonicalise_or_normalise(state.observer, &current_file_dir.join(path)) == *spliced
+            });
+    condition_holds && names_the_splice
 }
 
 fn walk_directory_build_file(

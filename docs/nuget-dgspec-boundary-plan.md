@@ -1915,9 +1915,10 @@ target's XML from that file and range. The answer is exact only when:
   later;
 - every `Directory.Build.*` file the walk spliced in itself stands for an
   import an SDK chain really makes: the walk reached that file's import
-  point in `Microsoft.Common.props` or `.targets`. Without it MSBuild
-  imports no such file, and whatever it defines or steers is the walk's
-  alone;
+  point in `Microsoft.Common.props` or `.targets`, and, for the props file,
+  that import's condition decides true exactly and it names the file
+  spliced. Otherwise MSBuild imports no such file there, and whatever it
+  defines or steers is the walk's alone;
 - the name, and every name defined, is plain: printable ASCII, no `%`, no
   whitespace. MSBuild compares names unescaped, untrimmed and
   `OrdinalIgnoreCase`, which on plain names is ASCII case folding.
