@@ -382,9 +382,19 @@ impl<D: Disk> DiskCache<D> {
         self.open.map(|_| self.generation)
     }
 
+    /// The open generation's time, or `None` between generations.
+    pub fn now(&self) -> Option<Nanos> {
+        self.open
+    }
+
     /// What the current generation has observed so far.
     pub fn generation_counts(&self) -> ReadCounts {
         self.counts.get()
+    }
+
+    /// The disk the cache reads.
+    pub fn disk(&self) -> &D {
+        &self.disk
     }
 }
 

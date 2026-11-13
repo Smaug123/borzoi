@@ -155,6 +155,30 @@ impl Disk for HostDisk {
     }
 }
 
+// The project evaluations' reads are confirmed through the same host.
+#[allow(clippy::disallowed_methods)]
+impl crate::read_checks::Probe for HostDisk {
+    fn entry(&self, path: &Path) -> std::io::Result<crate::read_checks::EntryAt> {
+        use crate::read_checks::EntryAt;
+        let kind = std::fs::symlink_metadata(path)?.file_type();
+        Ok(if kind.is_symlink() {
+            EntryAt::Link(std::fs::read_link(path)?)
+        } else if kind.is_dir() {
+            EntryAt::Dir
+        } else {
+            EntryAt::Other
+        })
+    }
+
+    fn answer(
+        &self,
+        path: &Path,
+        query: &borzoi_msbuild::observed::Observation,
+    ) -> borzoi_msbuild::observed::Observation {
+        borzoi_msbuild::observed::answer_now(path, query)
+    }
+}
+
 /// A reason a file-system observation is **not** counted: the reader it
 /// belongs to, and so the plan stage that will route it through an observing
 /// module, or the fact that no stage does.

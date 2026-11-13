@@ -34,7 +34,8 @@
 //! body's own `<DefineConstants>` are still collected.
 
 use crate::observed::{EvaluationCounts, Unobserved};
-use crate::vfs::{DiskCache, Nanos};
+use crate::read_checks::{Check, ReadChecks};
+use crate::vfs::Nanos;
 use borzoi_msbuild::observed::{self as msbuild_observed, Observation, Observer, Read, ReadSet};
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -116,12 +117,9 @@ pub struct Workspace {
     /// a span of time can tell whether they all came from one generation of
     /// the cache — see [`Self::projects_generation`].
     projects_generation: ProjectsGeneration,
-    /// What the evaluations' files held when a generation last looked at
-    /// them, stamped, so confirming an unchanged file costs one `stat`.
-    files: DiskCache,
-    /// The open generation's validation queries other than whole-file
-    /// reads (which `files` counts).
-    queries: Cell<msbuild_observed::ReadCounts>,
+    /// Confirms the evaluations' reads once per generation, by stamps, so
+    /// confirming an unchanged file or directory costs one `stat`.
+    checker: ReadChecks,
     /// MSBuild evaluations run in the open generation.
     evaluated: Cell<u64>,
     /// SDK-resolution environment used to build a [`SdkDiscovery`] per
@@ -220,8 +218,8 @@ struct CachedEvaluation {
     evaluated: Option<EvaluatedProject>,
     /// The reads to confirm before serving `evaluated` again: everything the
     /// evaluation and the reads preparing it observed ([`Evaluation::reads`]),
-    /// less the immutable contents ([`immutable_content`]).
-    checks: Vec<Read>,
+    /// less the immutable contents ([`VersionDirs::contain`]).
+    checks: Vec<Check>,
     /// The generation that last confirmed `checks` (or that evaluated it);
     /// `None` when it was evaluated outside a generation.
     validated_in: Option<u64>,
@@ -242,95 +240,146 @@ struct Evaluation {
 
 impl Evaluation {
     /// The reads a cached copy must confirm.
-    fn checks(&self) -> Vec<Read> {
+    fn checks(&self) -> Vec<Check> {
+        let versions = self.immutable.versions(self.reads.reads());
         self.reads
             .reads()
             .iter()
-            .filter(|read| !immutable_content(&read.path, &self.immutable))
+            .filter(|read| !versions.contain(&read.path))
             .cloned()
+            .map(Check::new)
             .collect()
     }
 }
 
 /// The install roots whose versioned directories hold immutable contents
 /// (`docs/incremental-lsp-plan.md`, D3): every .NET install root the
-/// evaluation's SDK discovery consulted, and the NuGet global packages folder
-/// it resolves SDK references from.
+/// evaluation's SDK discovery consulted or its SDK resolved from, and the
+/// NuGet global packages folder it resolves SDK references from.
 #[derive(Debug, Default)]
 struct ImmutableRoots {
     dotnet: Vec<PathBuf>,
     nuget: Vec<PathBuf>,
 }
 
-/// Whether a read of `path` is of an immutable content: `path` lies strictly
-/// inside a versioned directory under one of `roots`, spelt without `.` or
-/// `..` below the root. Those directories are
-/// `<dotnet>/sdk/<version>/`, `<dotnet>/packs/<pack>/<version>/` and
-/// `<dotnet>/sdk-manifests/<band>/<manifest>/<version>/` under a .NET install
-/// root, and `<id>/<version>/` under the NuGet global packages folder; a
-/// version starts with an ASCII digit. An installer writes a new version
-/// beside the old ones and never changes one in place, so whatever an
-/// evaluation saw inside one, the file's text, what a path names, a listing,
-/// an absence, stands for as long as the version does.
-///
-/// What installing or removing a version does change is the listing of the
-/// directory holding the versions, and whether a version directory exists.
-/// Neither path lies strictly inside a version, so both are confirmed like
-/// any other read. So are the band and manifest directories of
-/// `sdk-manifests`, which a workload update writes into.
-fn immutable_content(path: &Path, roots: &ImmutableRoots) -> bool {
-    fn below<'p>(path: &'p Path, root: &Path) -> Option<Vec<&'p std::ffi::OsStr>> {
-        let rest = path.strip_prefix(root).ok()?;
-        rest.components()
-            .map(|component| match component {
-                Component::Normal(name) => Some(name),
-                _ => None,
-            })
-            .collect()
+impl ImmutableRoots {
+    /// The version directory `path` lies in or names, and how many
+    /// components of `path` lie below it. The version directories are
+    /// `<dotnet>/sdk/<version>`, `<dotnet>/packs/<pack>/<version>` and
+    /// `<dotnet>/sdk-manifests/<band>/<manifest>/<version>` under a .NET
+    /// install root, and `<id>/<version>` under the NuGet global packages
+    /// folder; a version starts with an ASCII digit. `path` is taken
+    /// lexically normal ([`lexically_normalize`]).
+    fn version_of(&self, path: &Path) -> Option<(PathBuf, usize)> {
+        let version = |name: &std::ffi::OsStr| {
+            name.as_encoded_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_digit)
+        };
+        let below = |root: &Path| -> Option<Vec<&std::ffi::OsStr>> {
+            path.strip_prefix(root)
+                .ok()?
+                .components()
+                .map(|component| match component {
+                    Component::Normal(name) => Some(name),
+                    _ => None,
+                })
+                .collect()
+        };
+        for root in &self.dotnet {
+            let Some(names) = below(root) else { continue };
+            let depth = match names.as_slice() {
+                [sdk, v, ..] if *sdk == "sdk" && version(v) => 2,
+                [packs, _, v, ..] if *packs == "packs" && version(v) => 3,
+                [manifests, _, _, v, ..] if *manifests == "sdk-manifests" && version(v) => 4,
+                _ => continue,
+            };
+            let dir = names[..depth]
+                .iter()
+                .fold(root.clone(), |dir, name| dir.join(name));
+            return Some((dir, names.len() - depth));
+        }
+        for root in &self.nuget {
+            let Some(names) = below(root) else { continue };
+            if let [id, v, ..] = names.as_slice()
+                && version(v)
+            {
+                return Some((root.join(id).join(v), names.len() - 2));
+            }
+        }
+        None
     }
-    let version = |name: &std::ffi::OsStr| {
-        name.as_encoded_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_digit)
-    };
-    let dotnet = roots
-        .dotnet
-        .iter()
-        .filter_map(|root| below(path, root))
-        .any(|names| match names.as_slice() {
-            [sdk, v, _, ..] if *sdk == "sdk" => version(v),
-            [packs, _, v, _, ..] if *packs == "packs" => version(v),
-            [manifests, _, _, v, _, ..] if *manifests == "sdk-manifests" => version(v),
-            _ => false,
-        });
-    dotnet
-        || roots
-            .nuget
-            .iter()
-            .filter_map(|root| below(path, root))
-            .any(|names| matches!(names.as_slice(), [_, v, _, ..] if version(v)))
+
+    /// Every version directory `reads` reach: those under the roots, and
+    /// the spelling a canonicalisation of one in `reads` resolved it to (an
+    /// install whose version directories are symlinks into another tree,
+    /// as Nix's combined installs are, is read through both spellings).
+    fn versions<'r>(&self, reads: impl IntoIterator<Item = &'r Read>) -> VersionDirs<'_> {
+        let mut aliases = Vec::new();
+        for read in reads {
+            let Observation::Canonical(Ok(canonical)) = &read.observation else {
+                continue;
+            };
+            let path = lexically_normalize(&read.path);
+            let Some((dir, below)) = self.version_of(&path) else {
+                continue;
+            };
+            // The canonical spelling of the version directory: the answer
+            // less the components below it, when they are the same names.
+            let tail: Vec<_> = path.components().rev().take(below).collect();
+            let canonical_tail: Vec<_> = canonical.components().rev().take(below).collect();
+            if tail != canonical_tail {
+                continue;
+            }
+            let mut alias = canonical.clone();
+            for _ in 0..below {
+                alias.pop();
+            }
+            if alias != dir {
+                aliases.push(alias);
+            }
+        }
+        VersionDirs {
+            roots: self,
+            aliases,
+        }
+    }
 }
 
-/// Whether `read`'s query, asked now, gets the answer recorded: a whole-file
-/// read through `files`, whose stamp confirms an unchanged file, and every
-/// other query asked of the host, counted in `queries`.
-fn answer_holds(
-    files: &DiskCache,
-    queries: &Cell<msbuild_observed::ReadCounts>,
-    read: &Read,
-) -> bool {
-    if let Observation::Text(recorded) = &read.observation {
-        return files.text_answer(&read.path) == *recorded;
+/// The version directories an evaluation's reads reach ([`ImmutableRoots::versions`]).
+struct VersionDirs<'a> {
+    roots: &'a ImmutableRoots,
+    aliases: Vec<PathBuf>,
+}
+
+impl VersionDirs<'_> {
+    /// Whether a read of `path` is of an immutable content: `path`, taken
+    /// lexically normal, lies strictly inside a version directory. An
+    /// installer writes a new version beside the old ones and never changes
+    /// one in place, so whatever an evaluation saw inside one (a file's
+    /// text, what a path names, a listing, an absence) stands for as long as
+    /// the version does. The axiom covers what a version links to as well:
+    /// a `..` below a version is taken lexically.
+    ///
+    /// What installing or removing a version does change is the listing of
+    /// the directory holding the versions, and whether a version directory
+    /// exists. Neither path lies strictly inside a version, so both are
+    /// confirmed like any other read. So are the band and manifest
+    /// directories of `sdk-manifests`, which a workload update writes into,
+    /// and a version directory's canonical spelling, which an alias rests on.
+    fn contain(&self, path: &Path) -> bool {
+        let path = lexically_normalize(path);
+        if self
+            .roots
+            .version_of(&path)
+            .is_some_and(|(_, below)| below > 0)
+        {
+            return true;
+        }
+        self.aliases
+            .iter()
+            .any(|alias| path.starts_with(alias) && path != *alias)
     }
-    let mut counts = queries.get();
-    match read.observation {
-        Observation::Text(_) => {}
-        Observation::Kind(_) | Observation::LinkKind(_) => counts.stats += 1,
-        Observation::Listing(_) => counts.listings += 1,
-        Observation::Canonical(_) => counts.canonicalizations += 1,
-    }
-    queries.set(counts);
-    msbuild_observed::answer_now(&read.path, &read.observation) == read.observation
 }
 
 /// The workspace's served-TFM verdict for an entry project
@@ -415,8 +464,7 @@ impl Workspace {
         Self {
             projects: HashMap::new(),
             projects_generation: ProjectsGeneration(0),
-            files: DiskCache::default(),
-            queries: Cell::new(msbuild_observed::ReadCounts::default()),
+            checker: ReadChecks::default(),
             evaluated: Cell::new(0),
             env,
             extra_build_properties,
@@ -467,7 +515,7 @@ impl Workspace {
     /// Watch events named `paths`: forget what the evaluations' files held at
     /// each, so the next validation re-reads it whatever its stamp says.
     pub fn hint<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
-        self.files.hint(paths);
+        self.checker.hint(paths);
     }
 
     /// Which generation of the project-evaluation cache lookups are served
@@ -491,35 +539,27 @@ impl Workspace {
     /// code that drives the workspace directly, as unit tests do) a cached
     /// evaluation is served as it is.
     pub fn begin_generation(&mut self, now: Nanos) {
-        self.files.begin_generation(now);
-        self.queries.set(msbuild_observed::ReadCounts::default());
+        self.checker.begin_generation(now);
         self.evaluated.set(0);
     }
 
     /// End the generation, returning what reading evaluations cost it.
     pub fn end_generation(&mut self) -> EvaluationCounts {
-        let (_, files) = self.files.end_generation();
-        let queries = self.queries.get();
         EvaluationCounts {
             evaluated: self.evaluated.get(),
-            validation: msbuild_observed::ReadCounts {
-                opens: files.opens,
-                stats: files.stats + queries.stats,
-                listings: queries.listings,
-                canonicalizations: queries.canonicalizations,
-            },
+            validation: self.checker.end_generation(),
         }
     }
 
     /// Confirm the cached evaluation of `project` for the open generation:
     /// every read it depends on (bar the immutable contents it was told it
-    /// may skip, see [`immutable_content`]) is asked again, once per
+    /// may skip, see [`VersionDirs::contain`]) is asked again, once per
     /// generation, and an entry any of whose answers moved is dropped, so the
     /// lookup that follows evaluates afresh. Dropping it ends the
     /// [`Self::projects_generation`]. Nothing happens outside a generation, or
     /// for a project not cached.
     pub fn validate(&mut self, project: &ProjectId) {
-        let Some(generation) = self.files.generation() else {
+        let Some(generation) = self.checker.generation() else {
             return;
         };
         let Some(cached) = self.projects.get_mut(project) else {
@@ -528,12 +568,8 @@ impl Workspace {
         if cached.validated_in == Some(generation) {
             return;
         }
-        let (files, queries) = (&self.files, &self.queries);
-        if cached
-            .checks
-            .iter()
-            .all(|read| answer_holds(files, queries, read))
-        {
+        let checker = &self.checker;
+        if cached.checks.iter().all(|check| checker.holds(check)) {
             cached.validated_in = Some(generation);
         } else {
             tracing::info!(
@@ -1047,7 +1083,7 @@ impl Workspace {
         let env = &self.env;
         let extra_build_properties = &self.extra_build_properties;
         let evaluated = &self.evaluated;
-        let generation = self.files.generation();
+        let generation = self.checker.generation();
         self.projects
             .entry(project.clone())
             .or_insert_with(|| {
@@ -1166,7 +1202,7 @@ impl Workspace {
         // confirmed it and it is of exactly this spelling: the walk's
         // seedless evaluation of the entry is the same computation, so it
         // reads the cache rather than evaluating again.
-        let generation = self.files.generation();
+        let generation = self.checker.generation();
         let entry_id = ProjectId::new(entry);
         let confirmed_entry = self
             .projects
@@ -1798,7 +1834,7 @@ fn evaluate_project(
             );
         })
         .ok();
-    let immutable = disc
+    let mut immutable = disc
         .as_ref()
         .map_or_else(ImmutableRoots::default, |disc| ImmutableRoots {
             dotnet: disc
@@ -1865,6 +1901,9 @@ fn evaluate_project(
         .as_deref()
         .and_then(install_root_from_sdk_path)
         .map(Path::to_path_buf);
+    // The install the SDK resolved from, as the evaluation spelt its reads
+    // there (a root SDK discovery names may reach it through a symlink).
+    immutable.dotnet.extend(sdk_install_root.clone());
     Evaluation {
         evaluated: Some(EvaluatedProject {
             parsed,
@@ -5653,6 +5692,261 @@ mod tests {
                 ws.dotnet_root_for_project(&proj).as_deref(),
                 Some(dotnet.as_path())
             );
+        }
+    }
+
+    /// Stage 3b: a cached evaluation carries what it read, and is confirmed
+    /// against the disk once per generation that reads it.
+    mod validation {
+        use super::*;
+        use borzoi_msbuild::observed::soundness::{self, Edit, Perturbation, Why};
+
+        /// A stub `Microsoft.NET.Sdk` of `version` under `dotnet`, whose
+        /// `Sdk.props` defines `define`.
+        fn install_sdk(dotnet: &Path, version: &str, define: &str) {
+            let sdk = dotnet.join(format!("sdk/{version}/Sdks/Microsoft.NET.Sdk/Sdk"));
+            fs::create_dir_all(&sdk).unwrap();
+            fs::write(
+                sdk.join("Sdk.props"),
+                format!(
+                    "<Project><PropertyGroup><DefineConstants>$(DefineConstants);{define}</DefineConstants></PropertyGroup></Project>"
+                ),
+            )
+            .unwrap();
+            fs::write(sdk.join("Sdk.targets"), "<Project />").unwrap();
+        }
+
+        /// A world with an SDK project that imports, globs, and sits under a
+        /// `Directory.Build.props`; its `.fsproj`, and the SDK discovery
+        /// environment. With `on_path`, the dotnet root is found by probing
+        /// `$PATH` rather than named by `$DOTNET_ROOT`.
+        fn world(root: &Path, on_path: bool) -> (PathBuf, SdkDiscoveryEnv) {
+            let dotnet = root.join("dotnet");
+            install_sdk(&dotnet, "10.0.100", "SDK_ONE");
+            write_file(&dotnet.join("dotnet"), "");
+            write_file(
+                &root.join("repo/Directory.Build.props"),
+                "<Project><PropertyGroup><DefineConstants>$(DefineConstants);DBP</DefineConstants></PropertyGroup></Project>",
+            );
+            write_file(
+                &root.join("repo/common.props"),
+                "<Project><PropertyGroup><DefineConstants>$(DefineConstants);COMMON</DefineConstants></PropertyGroup></Project>",
+            );
+            let project = root.join("repo/App/App.fsproj");
+            write_file(
+                &project,
+                r#"<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../common.props" Condition="Exists('../common.props')" />
+  <ItemGroup><Compile Include="*.fs" /></ItemGroup>
+</Project>"#,
+            );
+            write_file(&root.join("repo/App/A.fs"), "module A\n");
+            let env = if on_path {
+                SdkDiscoveryEnv {
+                    search_path: Some(dotnet.clone().into_os_string()),
+                    ..SdkDiscoveryEnv::default()
+                }
+            } else {
+                SdkDiscoveryEnv {
+                    dotnet_root: Some(dotnet),
+                    ..SdkDiscoveryEnv::default()
+                }
+            };
+            (project, env)
+        }
+
+        /// What a cached evaluation is: the served pass, with the whole read
+        /// set behind it. A failed evaluation is the evaluation of an empty
+        /// `<Project />`, which no perturbation of the world evaluates to,
+        /// with the reads behind the failure.
+        fn evaluation(project: &Path, env: &SdkDiscoveryEnv) -> ParsedProject {
+            let evaluation = evaluate_project(project, env, &HashMap::new(), &Cell::new(0));
+            let parsed = match evaluation.evaluated {
+                Some(evaluated) => evaluated.parsed,
+                None => borzoi_msbuild::parse_fsproj(
+                    "<Project />",
+                    project,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                )
+                .unwrap(),
+            };
+            ParsedProject {
+                read_set: evaluation.reads,
+                ..parsed
+            }
+        }
+
+        /// The read-set soundness property of `docs/incremental-lsp-plan.md`
+        /// (D7), through the LSP: for every perturbation of the world that
+        /// leaves every read the workspace recorded standing (the `.fsproj`
+        /// text and SDK discovery's reads included, beside each pass's own),
+        /// evaluating again gives the same evaluation. Installing a newer SDK
+        /// moves it, so the sweep is not vacuous.
+        #[test]
+        fn the_workspace_read_set_is_sound() {
+            for on_path in [false, true] {
+                let tmp = TempDir::new().unwrap();
+                let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+                let (project, env) = world(&root, on_path);
+                let newer = root.join("dotnet/sdk/10.0.200/Sdks/Microsoft.NET.Sdk/Sdk");
+                let extra = [
+                    Perturbation {
+                        why: Why::Extra,
+                        edits: vec![
+                            Edit::Write(
+                                newer.join("Sdk.props"),
+                                b"<Project><PropertyGroup><DefineConstants>NEWER</DefineConstants></PropertyGroup></Project>".to_vec(),
+                            ),
+                            Edit::Write(newer.join("Sdk.targets"), b"<Project />".to_vec()),
+                        ],
+                    },
+                    Perturbation {
+                        why: Why::Extra,
+                        edits: vec![Edit::Write(
+                            root.join("repo/global.json"),
+                            br#"{ "sdk": { "version": "9.0.100", "rollForward": "disable" } }"#
+                                .to_vec(),
+                        )],
+                    },
+                ];
+                let tally = soundness::sweep(&root, &|| evaluation(&project, &env), &extra);
+                assert_eq!(
+                    tally.moved(Why::Extra),
+                    2,
+                    "an SDK install and a global.json pin each move the evaluation \
+                     (on_path = {on_path}): {tally:#?}"
+                );
+            }
+        }
+
+        /// Which reads are exempt from validation as immutable contents.
+        #[test]
+        fn immutable_contents_lie_strictly_inside_a_version() {
+            let roots = ImmutableRoots {
+                dotnet: vec![PathBuf::from("/d")],
+                nuget: vec![PathBuf::from("/n")],
+            };
+            let cases = [
+                ("/d/sdk/10.0.100/Sdks/X/Sdk/Sdk.props", true),
+                ("/d/sdk/10.0.100/absent.props", true),
+                ("/d/packs/Microsoft.NETCore.App.Ref/10.0.0/data/x", true),
+                (
+                    "/d/sdk-manifests/10.0.100/microsoft.net.sdk.ios/26.0.1/WorkloadManifest.json",
+                    true,
+                ),
+                (
+                    "/n/fsharp.core/9.0.100/lib/netstandard2.1/FSharp.Core.dll",
+                    true,
+                ),
+                // The directories holding the versions, and the versions
+                // themselves: an install or an uninstall moves them.
+                ("/d/sdk", false),
+                ("/d/sdk/10.0.100", false),
+                ("/d/packs/Microsoft.NETCore.App.Ref", false),
+                ("/d/packs/Microsoft.NETCore.App.Ref/10.0.0", false),
+                ("/n/fsharp.core", false),
+                ("/n/fsharp.core/9.0.100", false),
+                // A workload update writes into a band and a manifest.
+                ("/d/sdk-manifests/10.0.100/microsoft.net.sdk.ios", false),
+                (
+                    "/d/sdk-manifests/10.0.100/microsoft.net.sdk.ios/WorkloadManifest.json",
+                    false,
+                ),
+                // Not a version.
+                ("/d/sdk/preview/x.props", false),
+                ("/d/packs/X/latest/x", false),
+                ("/d/metadata/workloads/10.0.100/userlocal", false),
+                // A `..` is taken lexically: one that stays inside the
+                // version, and ones that leave it.
+                ("/d/sdk/10.0.100/Sdks/X/Sdk/../../Y/Sdk/Sdk.props", true),
+                ("/d/sdk/10.0.100/Sdks/X/Sdk/../../../..", false),
+                ("/d/sdk/10.0.100/../../elsewhere/x", false),
+                // Not under a root.
+                ("/elsewhere/sdk/10.0.100/x", false),
+                // The canonical spelling of a version a read resolved.
+                ("/real/sdk/10.0.100/Sdks/X/Sdk/Sdk.props", true),
+                ("/real/sdk/10.0.100", false),
+                ("/real/sdk/10.0.200/x", false),
+            ];
+            // A canonicalisation that resolved a version to another tree.
+            let read = Read {
+                path: PathBuf::from("/d/sdk/10.0.100/Sdks/X"),
+                observation: Observation::Canonical(Ok(PathBuf::from("/real/sdk/10.0.100/Sdks/X"))),
+            };
+            let versions = roots.versions(std::slice::from_ref(&read));
+            for (path, expected) in cases {
+                assert_eq!(versions.contain(Path::new(path)), expected, "{path}");
+            }
+        }
+
+        /// The workspace serves a cached evaluation as it is outside a
+        /// generation, confirms it once per generation inside one, and
+        /// evaluates again, ending the projects generation, once a project
+        /// file it read has moved.
+        #[test]
+        fn a_moved_project_file_is_noticed_in_the_next_generation() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (_, env) = world(&root, false);
+            let file = root.join("repo/App/A.fs");
+            let mut ws = Workspace::with_env(env);
+            let at = |ws: &mut Workspace| {
+                // Old enough that no stamp is racy, so an unchanged file is
+                // confirmed by `stat` alone.
+                ws.begin_generation(Nanos(i128::MAX / 2));
+            };
+            at(&mut ws);
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            let first = ws.end_generation();
+            assert!(first.evaluated > 0);
+            let generation = ws.projects_generation();
+
+            at(&mut ws);
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            let confirmed = ws.end_generation();
+            assert_eq!(confirmed.evaluated, 0, "{confirmed:?}");
+            assert!(confirmed.validation.stats > 0, "{confirmed:?}");
+            assert_eq!(ws.projects_generation(), generation);
+
+            fs::remove_file(root.join("repo/common.props")).unwrap();
+            // Outside a generation the cache is served as it is.
+            assert!(ws.symbols_for(&file).contains("COMMON"));
+            at(&mut ws);
+            assert!(!ws.symbols_for(&file).contains("COMMON"));
+            let moved = ws.end_generation();
+            assert!(moved.evaluated > 0, "{moved:?}");
+            assert_ne!(ws.projects_generation(), generation);
+        }
+
+        /// A rewrite of a file inside an SDK version is not looked for: the
+        /// read is an immutable content. Installing a version beside it is.
+        #[test]
+        fn an_sdk_version_is_trusted_but_its_listing_is_confirmed() {
+            let tmp = TempDir::new().unwrap();
+            let root = crate::observed::host_fs::canonicalize(tmp.path()).unwrap();
+            let (_, env) = world(&root, false);
+            let file = root.join("repo/App/A.fs");
+            let mut ws = Workspace::with_env(env);
+            let generation = |ws: &mut Workspace, at: i128| ws.begin_generation(Nanos(at));
+            generation(&mut ws, i128::MAX / 2);
+            assert!(ws.symbols_for(&file).contains("SDK_ONE"));
+            ws.end_generation();
+
+            install_sdk(&root.join("dotnet"), "10.0.100", "REWRITTEN");
+            generation(&mut ws, i128::MAX / 2 + 1);
+            let symbols = ws.symbols_for(&file);
+            assert!(
+                symbols.contains("SDK_ONE") && !symbols.contains("REWRITTEN"),
+                "{symbols:?}"
+            );
+            ws.end_generation();
+
+            install_sdk(&root.join("dotnet"), "10.0.200", "SDK_TWO");
+            generation(&mut ws, i128::MAX / 2 + 2);
+            assert!(ws.symbols_for(&file).contains("SDK_TWO"));
+            ws.end_generation();
         }
     }
 }

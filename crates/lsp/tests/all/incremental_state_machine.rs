@@ -292,6 +292,10 @@ struct ProjectSpec {
     compile: Vec<Entry>,
     /// Malformed XML: the project fails to evaluate.
     broken: bool,
+    /// `<Project Sdk="Microsoft.NET.Sdk">`, resolved from the session's
+    /// `$DOTNET_ROOT`, which holds an SDK only where a script installed one
+    /// ([`Cmd::Install`]). The generator never sets it.
+    sdk: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -374,7 +378,11 @@ impl Content {
                 out
             }
             (Content::Project(spec), FileId::Proj(proj)) => {
-                let mut out = String::from("<Project>\n");
+                let mut out = String::from(if spec.sdk {
+                    "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+                } else {
+                    "<Project>\n"
+                });
                 if spec.import_props {
                     out.push_str("  <Import Project=\"../common.props\" />\n");
                 }
@@ -473,6 +481,11 @@ enum Cmd {
     /// tokens and hovers) without comparing — warms caches, including from disk
     /// state whose watch event is still queued.
     Peek(Src),
+    /// Write a file outside the model's [`FILES`] (a stub SDK's `Sdk.props`,
+    /// a `global.json`), relative to the world's root, queueing its watch
+    /// event as an [`InputClass::ProjectFiles`] write: every such file is an
+    /// input to project evaluation. Only pinned scripts use it.
+    Install(&'static str, String),
 }
 
 impl fmt::Debug for Cmd {
@@ -489,6 +502,7 @@ impl fmt::Debug for Cmd {
             Cmd::Flush => f.write_str("Flush"),
             Cmd::Check => f.write_str("Check"),
             Cmd::Peek(src) => write!(f, "Peek({:?})", FileId::Src(*src)),
+            Cmd::Install(rel, text) => write!(f, "Install({rel:?}, {text:?})"),
         }
     }
 }
@@ -701,6 +715,7 @@ fn project_strategy(proj: Proj, damage: Damage) -> impl Strategy<Value = Project
                     defines,
                     compile,
                     broken,
+                    sdk: false,
                 }
             },
         )
@@ -797,11 +812,46 @@ fn unwatched_cmd_strategy() -> impl Strategy<Value = Cmd> {
     ]
 }
 
-fn case_strategy() -> impl Strategy<Value = Case> {
-    case_strategy_with(cmd_strategy().boxed())
+/// A project file, for the writes and deletes of a script that never
+/// flushes: every one is [`InputClass::ProjectFiles`].
+fn project_file_strategy() -> impl Strategy<Value = FileId> {
+    prop_oneof![
+        1 => Just(FileId::Proj(Proj::O)),
+        3 => Just(FileId::Proj(Proj::P)),
+        2 => Just(FileId::Proj(Proj::Q)),
+        2 => Just(FileId::Props),
+    ]
 }
 
-fn case_strategy_with(cmds: BoxedStrategy<Cmd>) -> impl Strategy<Value = Case> {
+/// Commands that write project files and sources behind the server's back
+/// and never deliver the watch events, and comparisons are frequent. Only
+/// sources are opened: a write while a `.fsproj` buffer is open is
+/// [`InputClass::FsprojBufferInputs`], which would suspend comparisons.
+fn unwatched_project_cmd_strategy() -> impl Strategy<Value = Cmd> {
+    prop_oneof![
+        3 => source_file_strategy().prop_map(Cmd::Open),
+        3 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Edit(f, c)),
+        2 => source_file_strategy().prop_map(Cmd::Close),
+        2 => source_file_strategy().prop_map(Cmd::Save),
+        6 => with_content(project_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        2 => with_content(source_file_strategy()).prop_map(|(f, c)| Cmd::Write(f, c)),
+        1 => project_file_strategy().prop_map(Cmd::Delete),
+        2 => source_file_strategy().prop_map(Cmd::Delete),
+        4 => Just(Cmd::Check),
+        3 => src_strategy().prop_map(Cmd::Peek),
+    ]
+}
+
+fn case_strategy() -> impl Strategy<Value = Case> {
+    case_strategy_with(cmd_strategy().boxed(), buffer_file_strategy().boxed())
+}
+
+/// Cases whose scripts are drawn from `cmds`, after opening some of the files
+/// `opened` draws.
+fn case_strategy_with(
+    cmds: BoxedStrategy<Cmd>,
+    opened: BoxedStrategy<FileId>,
+) -> impl Strategy<Value = Case> {
     let mode = prop_oneof![Just(Mode::Push), Just(Mode::Pull)];
     // A healthy world (see `Damage`): every source and `common.props` exist,
     // `P.fsproj` always and the other projects often, and most projects are
@@ -857,7 +907,7 @@ fn case_strategy_with(cmds: BoxedStrategy<Cmd>) -> impl Strategy<Value = Case> {
         });
     // `documentSymbol`, `references` and `completion` answer only for open
     // buffers, so most scripts start by opening a few files.
-    let opens = prop::collection::vec(buffer_file_strategy(), 0..5);
+    let opens = prop::collection::vec(opened, 0..5);
     (mode, disk, opens, prop::collection::vec(cmds, 1..20)).prop_map(|(mode, disk, opens, cmds)| {
         Case {
             mode,
@@ -1151,10 +1201,25 @@ enum InputClass {
     /// rewrite, or a creation or deletion that only an explicitly listed item
     /// sees.
     SourceContent,
-    /// A `.fsproj` or `common.props`: an input to project evaluation.
+    /// A rewrite of a `.fsproj`, a write or delete of `common.props`, a
+    /// `global.json` or an SDK's files: an input to project evaluation.
     ProjectFiles,
     /// Which sources a directory holds, where a project's `*.fs` glob reads
-    /// it: a source created or deleted beside such a project.
+    /// it: a source created or deleted beside such a project. The
+    /// evaluation lists the directory, so this is an input to project
+    /// evaluation too.
+    GlobMembership,
+    /// An input to project evaluation ([`Self::ProjectFiles`] or
+    /// [`Self::GlobMembership`]) written while a `.fsproj` buffer is open.
+    /// That buffer's diagnostics evaluate the buffer itself, not the
+    /// workspace's cached evaluation, and nothing confirms what they read, so
+    /// nothing owes the client a refresh of the ones it is showing
+    /// (`docs/incremental-lsp-plan.md`, Stage 3b, "Split").
+    FsprojBufferInputs,
+    /// Which projects a directory holds: a `.fsproj` created or deleted,
+    /// which moves which project owns the sources around it. Ownership is
+    /// recomputed by every request, so what a request answers is current,
+    /// but nothing owes the client a refresh of what it is showing.
     DirectoryMembership,
     /// The assets file and the framework DLL: inputs to the assembly env's
     /// reference resolution.
@@ -1163,8 +1228,14 @@ enum InputClass {
 
 /// The input classes the server notices without a watch event. Stage 2b
 /// validates each cached fold's Compile item texts in every generation that
-/// reads the fold.
-const WITNESSED: &[InputClass] = &[InputClass::SourceContent];
+/// reads the fold; Stage 3b validates each cached project evaluation's read
+/// set (its project files, imports, SDK resolution and `<Compile>` glob
+/// listings) in every generation that reads the evaluation.
+const WITNESSED: &[InputClass] = &[
+    InputClass::SourceContent,
+    InputClass::ProjectFiles,
+    InputClass::GlobMembership,
+];
 
 /// A watch event the server has not yet been sent, and what its write changed.
 struct Pending {
@@ -1206,10 +1277,27 @@ impl World {
 
     /// What a write of `file` changes, `existence` saying whether it creates
     /// or deletes the file rather than rewriting it. Decided when the write is
-    /// made: any later change to a project that would decide it differently is
-    /// itself a pending [`InputClass::ProjectFiles`] event, so no comparison
-    /// runs until both are flushed.
+    /// made: a later project write that would decide a source's class
+    /// differently moves it between [`InputClass::SourceContent`] and
+    /// [`InputClass::GlobMembership`], which are both witnessed.
     fn class_of(&self, file: FileId, existence: bool) -> InputClass {
+        let class = self.class_of_write(file, existence);
+        self.seen_by_an_open_fsproj(class)
+    }
+
+    /// `class`, unless it is an input to project evaluation and a `.fsproj`
+    /// buffer is open ([`InputClass::FsprojBufferInputs`]).
+    fn seen_by_an_open_fsproj(&self, class: InputClass) -> InputClass {
+        let evaluation_input =
+            matches!(class, InputClass::ProjectFiles | InputClass::GlobMembership);
+        if evaluation_input && self.open.keys().any(|f| matches!(f, FileId::Proj(_))) {
+            InputClass::FsprojBufferInputs
+        } else {
+            class
+        }
+    }
+
+    fn class_of_write(&self, file: FileId, existence: bool) -> InputClass {
         match file {
             FileId::Src(src) => {
                 let globbed = [Proj::O, Proj::P, Proj::Q].into_iter().any(|proj| {
@@ -1219,11 +1307,12 @@ impl World {
                             .is_some_and(|text| text.contains("Include=\"*.fs\""))
                 });
                 if existence && globbed {
-                    InputClass::DirectoryMembership
+                    InputClass::GlobMembership
                 } else {
                     InputClass::SourceContent
                 }
             }
+            FileId::Proj(_) if existence => InputClass::DirectoryMembership,
             FileId::Proj(_) | FileId::Props => InputClass::ProjectFiles,
             FileId::Assets(_) | FileId::Dll => InputClass::ReferencedAssemblies,
         }
@@ -1240,6 +1329,21 @@ impl World {
         self.pending.push(Pending {
             event: json!({ "uri": self.uri(file), "type": typ }),
             class,
+        });
+    }
+
+    /// Write `text` at `rel` under the root, outside the model's files.
+    fn install(&mut self, rel: &str, text: &str) {
+        let path = self.root.join(rel);
+        let existed = path.host_exists();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        let uri = Uri::from_file_path(&path)
+            .expect("absolute path")
+            .to_string();
+        self.pending.push(Pending {
+            event: json!({ "uri": uri, "type": if existed { 2 } else { 1 } }),
+            class: self.seen_by_an_open_fsproj(InputClass::ProjectFiles),
         });
     }
 
@@ -1504,6 +1608,11 @@ struct Coverage {
     checks: usize,
     /// Checks made while witnessed watch events were still pending.
     unflushed_checks: usize,
+    /// Of those, the ones with a project file's write pending.
+    unflushed_project_checks: usize,
+    /// Of those, the ones with a globbed directory's membership change
+    /// pending.
+    unflushed_membership_checks: usize,
     queries: usize,
     /// A definition landing in a different file from the one asked about.
     cross_file_definitions: usize,
@@ -1655,6 +1764,13 @@ fn check(
         coverage.checks += 1;
         if unflushed {
             coverage.unflushed_checks += 1;
+            let pending = |class| world.pending.iter().any(|p| p.class == class);
+            if pending(InputClass::ProjectFiles) {
+                coverage.unflushed_project_checks += 1;
+            }
+            if pending(InputClass::GlobMembership) {
+                coverage.unflushed_membership_checks += 1;
+            }
         }
         for q in ordered {
             let got = warm.request(q.method, q.params.clone());
@@ -1804,6 +1920,9 @@ fn apply(
         }
         Cmd::Write(file, content) => {
             world.write(*file, &content.bytes(*file));
+        }
+        Cmd::Install(rel, text) => {
+            world.install(rel, text);
         }
         Cmd::Delete(file) => {
             world.delete(*file);
@@ -2025,7 +2144,10 @@ fn unwatched_source_writes_agree_with_a_fresh_session() {
     let cases = env_u64("BORZOI_LSP_STATE_MACHINE_CASES").map_or(DEFAULT_CASES, |n| n as u32);
     let seed = env_u64("BORZOI_LSP_STATE_MACHINE_SEED").unwrap_or(DEFAULT_SEED);
     let coverage = RefCell::new(Coverage::default());
-    let strategy = case_strategy_with(unwatched_cmd_strategy().boxed());
+    let strategy = case_strategy_with(
+        unwatched_cmd_strategy().boxed(),
+        buffer_file_strategy().boxed(),
+    );
     let result = runner(cases, seed).run(&strategy, |case| run_case(&case, &coverage));
     let coverage = coverage.into_inner();
     eprintln!("seed {seed}: {coverage:#?}");
@@ -2044,6 +2166,41 @@ fn unwatched_source_writes_agree_with_a_fresh_session() {
             && coverage.cross_file_definitions > 0
             && coverage.references > 0,
         "the generated cases made no comparison with writes pending: {coverage:#?}"
+    );
+}
+
+/// For all generated scripts that write project files (`.fsproj`,
+/// `common.props`) and sources on disk and never deliver a watch event, every
+/// answer agrees with fresh sessions at every comparison: a project
+/// evaluation's inputs are [`WITNESSED`], so the server notices the writes
+/// itself (`docs/incremental-lsp-plan.md`, Stage 3b).
+#[test]
+fn unwatched_project_writes_agree_with_a_fresh_session() {
+    let cases = env_u64("BORZOI_LSP_STATE_MACHINE_CASES").map_or(DEFAULT_CASES, |n| n as u32);
+    let seed = env_u64("BORZOI_LSP_STATE_MACHINE_SEED").unwrap_or(DEFAULT_SEED);
+    let coverage = RefCell::new(Coverage::default());
+    let strategy = case_strategy_with(
+        unwatched_project_cmd_strategy().boxed(),
+        source_file_strategy().boxed(),
+    );
+    let result = runner(cases, seed).run(&strategy, |case| run_case(&case, &coverage));
+    let coverage = coverage.into_inner();
+    eprintln!("seed {seed}: {coverage:#?}");
+    match result {
+        Ok(()) => {}
+        Err(TestError::Fail(_, case)) => {
+            let (case, message) = minimise(case);
+            panic!("seed {seed}: {message}\n\nminimal script: {case:?}");
+        }
+        Err(err) => panic!("seed {seed}: {err}"),
+    }
+    // Non-vacuity: comparisons were made with a project file's write still
+    // unannounced, and they compared real answers.
+    assert!(
+        coverage.unflushed_project_checks > 0
+            && coverage.cross_file_definitions > 0
+            && coverage.nonempty_diagnostics > 0,
+        "the generated cases made no comparison with a project write pending: {coverage:#?}"
     );
 }
 
@@ -2082,11 +2239,52 @@ fn project(defines: Vec<Sym>, compile: Vec<Src>) -> Content {
         defines,
         compile: compile.into_iter().map(Entry::File).collect(),
         broken: false,
+        sdk: false,
     })
 }
 
 fn x_is_zero() -> Item {
     Item::Let(Name::X, Expr::Lit(0))
+}
+
+/// `P` as an SDK project compiling `compile`.
+fn sdk_project(compile: Vec<Src>) -> Content {
+    Content::Project(ProjectSpec {
+        import_props: false,
+        defines: vec![],
+        compile: compile.into_iter().map(Entry::File).collect(),
+        broken: false,
+        sdk: true,
+    })
+}
+
+/// A command installing a stub `Microsoft.NET.Sdk` of `version` under the
+/// session's `$DOTNET_ROOT`, whose `Sdk.props` defines `define` if given.
+fn install_sdk(version: &str, define: Option<Sym>) -> Vec<Cmd> {
+    let props = match define {
+        Some(sym) => format!(
+            "<Project>\n  <PropertyGroup>\n    <DefineConstants>$(DefineConstants);{}</DefineConstants>\n  </PropertyGroup>\n</Project>\n",
+            sym.text()
+        ),
+        None => "<Project />\n".to_string(),
+    };
+    let dir = |file: &str| -> &'static str {
+        Box::leak(
+            format!("dotnet/sdk/{version}/Sdks/Microsoft.NET.Sdk/Sdk/{file}").into_boxed_str(),
+        )
+    };
+    vec![
+        Cmd::Install(dir("Sdk.props"), props),
+        Cmd::Install(dir("Sdk.targets"), "<Project />\n".to_string()),
+    ]
+}
+
+/// A `global.json` pinning the SDK to exactly `version`.
+fn pin_sdk(version: &str) -> Cmd {
+    Cmd::Install(
+        "global.json",
+        format!("{{ \"sdk\": {{ \"version\": \"{version}\", \"rollForward\": \"disable\" }} }}\n"),
+    )
 }
 
 /// Minimal scripts the generated run found against planted defects, replayed on
@@ -2313,6 +2511,125 @@ fn pinned_scripts() -> Vec<(&'static str, Case)> {
                     Cmd::Delete(FileId::Src(Src::A)),
                     Cmd::Check,
                     Cmd::Write(FileId::Src(Src::A), source(vec![x_is_zero()])),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // An SDK version installed with no watch event: `P` resolves the
+            // newest SDK, whose `Sdk.props` defines `FOO`, so the parse error
+            // under `#if FOO` appears. The listing of `dotnet/sdk` lies under
+            // an install root, beside the versions; exempting it from
+            // validation as an immutable content keeps the old SDK.
+            "an unwatched SDK install reaches the projects that resolve it",
+            Case {
+                mode: Mode::Pull,
+                disk: vec![
+                    (FileId::Proj(Proj::P), sdk_project(vec![Src::A])),
+                    (
+                        FileId::Src(Src::A),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                ],
+                cmds: install_sdk("10.0.100", None)
+                    .into_iter()
+                    .chain([Cmd::Flush, Cmd::Open(FileId::Src(Src::A)), Cmd::Check])
+                    .chain(install_sdk("10.0.200", Some(Sym::Foo)))
+                    .chain([Cmd::Check])
+                    .collect(),
+            },
+        ),
+        (
+            // A `global.json` rewritten with no watch event to select another
+            // installed SDK: SDK discovery's read of it is one of the reads
+            // the evaluation depends on.
+            "an unwatched global.json edit selects another SDK",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (FileId::Proj(Proj::P), sdk_project(vec![Src::A])),
+                    (
+                        FileId::Src(Src::A),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                ],
+                cmds: install_sdk("10.0.100", None)
+                    .into_iter()
+                    .chain(install_sdk("10.0.200", Some(Sym::Foo)))
+                    .chain([
+                        pin_sdk("10.0.100"),
+                        Cmd::Flush,
+                        Cmd::Open(FileId::Src(Src::A)),
+                        Cmd::Check,
+                        pin_sdk("10.0.200"),
+                        Cmd::Check,
+                    ])
+                    .collect(),
+            },
+        ),
+        (
+            // A source created where `P` globs, with no watch event: the
+            // evaluation listed the directory, and the new item `B` makes
+            // `A.x` visible to it.
+            "an unwatched source created in a globbed directory joins the project",
+            Case {
+                mode: Mode::Push,
+                disk: vec![
+                    (
+                        FileId::Proj(Proj::P),
+                        Content::Project(ProjectSpec {
+                            import_props: false,
+                            defines: vec![],
+                            compile: vec![Entry::Glob],
+                            broken: false,
+                            sdk: false,
+                        }),
+                    ),
+                    (FileId::Src(Src::A), source(vec![x_is_zero()])),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(
+                        FileId::Src(Src::B),
+                        source(vec![Item::Let(Name::Y, Expr::Qual(Src::A, Name::X))]),
+                    ),
+                    Cmd::Open(FileId::Src(Src::B)),
+                    Cmd::Check,
+                ],
+            },
+        ),
+        (
+            // `common.props` created with no watch event: `P`'s evaluation
+            // recorded the import's absence, and the props now define `FOO`.
+            "an unwatched import created reaches the projects that import it",
+            Case {
+                mode: Mode::Pull,
+                disk: vec![
+                    (
+                        FileId::Proj(Proj::P),
+                        Content::Project(ProjectSpec {
+                            import_props: true,
+                            defines: vec![],
+                            compile: vec![Entry::File(Src::A)],
+                            broken: false,
+                            sdk: false,
+                        }),
+                    ),
+                    (
+                        FileId::Src(Src::A),
+                        source(vec![Item::IfDef(Sym::Foo, vec![Item::Garbage], vec![])]),
+                    ),
+                ],
+                cmds: vec![
+                    Cmd::Open(FileId::Src(Src::A)),
+                    Cmd::Check,
+                    Cmd::Write(
+                        FileId::Props,
+                        Content::Props(PropsSpec {
+                            defines: vec![Sym::Foo],
+                        }),
+                    ),
                     Cmd::Check,
                 ],
             },

@@ -687,6 +687,69 @@ mod tests {
         assert_eq!(names, ["a", "b", "m", "q", "z"]);
     }
 
+    /// A whole-file read answers what `std::fs::read_to_string` answers,
+    /// for every byte content: text with a byte-order mark kept, and a file
+    /// that is not UTF-8 failing as invalid data. And [`answer_now`] gives
+    /// every query's recorded answer.
+    #[test]
+    fn a_read_answers_as_std_does() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let contents: [&[u8]; 6] = [
+            b"",
+            b"<Project />",
+            "\u{feff}<Project />".as_bytes(),
+            b"\xff\xfe",
+            b"ok\xc3",
+            "\u{e9}t\u{e9}".as_bytes(),
+        ];
+        for bytes in contents {
+            let path = dir.join("f");
+            std::fs::write(&path, bytes).unwrap();
+            let std = host_fs::read_to_string(&path);
+            let ours = read_to_string(&Observer::new(), &path);
+            match (&std, &ours) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b),
+                (Err(a), Err(b)) => assert_eq!(a.kind(), b.kind()),
+                _ => panic!("{bytes:?}: std {std:?}, ours {ours:?}"),
+            }
+        }
+        let observer = Observer::new();
+        let _ = read_to_string(&observer, &dir.join("f"));
+        let _ = read_to_string(&observer, &dir.join("absent"));
+        let _ = kind(&observer, &dir);
+        let _ = link_kind(&observer, &dir.join("f"));
+        let _ = read_dir(&observer, &dir);
+        let _ = canonicalize(&observer, &dir.join("f"));
+        let (read_set, _) = observer.finish();
+        for read in read_set.reads() {
+            assert_eq!(answer_now(&read.path, &read.observation), read.observation);
+        }
+    }
+
+    /// A union holds each read once, and a query answered two ways keeps
+    /// both answers, so it never validates.
+    #[test]
+    fn a_union_keeps_both_answers_of_a_query() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().host_canonicalize().unwrap();
+        let path = dir.join("p.props");
+        let ask = || {
+            let observer = Observer::new();
+            let _ = read_to_string(&observer, &path);
+            let _ = kind(&observer, &dir);
+            observer.finish().0
+        };
+        let before = ask();
+        assert_eq!(before.clone().union(before.clone()), before);
+        std::fs::write(&path, "<Project />").unwrap();
+        let after = ask();
+        let both = before.union(after.clone());
+        assert_eq!(both.len(), 3, "{both:#?}");
+        assert!(both.first_stale().is_some());
+        assert_eq!(after.first_stale(), None);
+    }
+
     /// Two evaluations that ask the same queries in different orders (a walk
     /// over a `HashMap`, say) have equal read sets.
     #[test]

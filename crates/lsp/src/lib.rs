@@ -15,6 +15,7 @@ pub mod project_deferral;
 pub mod project_graph;
 pub mod publish;
 pub mod pull;
+pub mod read_checks;
 pub mod restore;
 pub mod sdk_discovery;
 pub mod semantic;
